@@ -75,7 +75,7 @@ struct CommandPaletteView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(selected ? Color.accentColor.opacity(0.2) : Color.clear)
+        .background(selected ? Palette.selectionFill : Color.clear)
         .contentShape(Rectangle())
     }
 
