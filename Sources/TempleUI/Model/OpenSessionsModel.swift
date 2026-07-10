@@ -86,13 +86,20 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             activate(existing)
             return
         }
+        // Resolve the bare agent binary to the configured absolute path — a
+        // Finder-launched app has a minimal PATH, so `claude`/`codex` alone
+        // fails to spawn (instant exit → the tab would vanish).
+        var command = SessionLauncher.resume(session)
+        if !command.argv.isEmpty {
+            command.argv[0] = binaryPath(session.agent)
+        }
         let tab = SessionTab(
             kind: .session,
             sessionID: session.id,
             agent: session.agent,
             projectPath: session.projectPath,
             title: session.title,
-            command: SessionLauncher.resume(session))
+            command: command)
         tabs.append(tab)
         activate(tab)
         persist()
@@ -200,11 +207,16 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     public func closeTab(_ tabID: SessionTab.ID) {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
         if let surface = tab.surface, case .running = surface.processState {
-            runtime.close(surface)  // delegate .exited → removeTab
+            closingTabIDs.insert(tabID)  // user-initiated: always remove on exit
+            runtime.close(surface)       // delegate .exited → removeTab
         } else {
             removeTab(tabID)
         }
     }
+
+    /// Tabs the user explicitly closed — their `.exited` always removes the
+    /// tab, bypassing the early-exit grace that keeps failed launches visible.
+    private var closingTabIDs: Set<SessionTab.ID> = []
 
     public func closeActiveTab() {
         if let id = activeTabID { closeTab(id) }
@@ -236,6 +248,11 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     }
 
     // MARK: Auto-close on process exit (ADR-010 reverse direction)
+
+    /// Exits younger than this keep their tab (visible failure); older exits
+    /// auto-close (the user ended the agent). Tests shrink it to exercise the
+    /// auto-close path with instantly-exiting fakes.
+    var earlyExitGraceSeconds: TimeInterval = 5
 
     private func autoClose(surface: TerminalSurface) {
         guard let tab = tab(for: surface) else { return }
@@ -302,7 +319,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         guard !saved.isEmpty else { return }
         tabs = saved.map { p in
             let agent = p.resolvedAgent
-            let command = TerminalCommand(argv: agent.resumeArgv(sessionID: p.sessionID), cwd: p.projectPath)
+            var argv = agent.resumeArgv(sessionID: p.sessionID)
+            if !argv.isEmpty { argv[0] = binaryPath(agent) }  // GUI PATH lacks `claude`/`codex`
+            let command = TerminalCommand(argv: argv, cwd: p.projectPath)
             return SessionTab(kind: .session, sessionID: p.sessionID, agent: agent,
                               projectPath: p.projectPath, title: p.title, command: command)
         }
@@ -322,8 +341,19 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
         case .running(let pid):
             tab.activity = .running
             if let sid = tab.sessionID { registry.register(pid: pid, sessionID: sid) }
-        case .exited:
-            autoClose(surface: surface)  // tab == process (ADR-010)
+        case .exited(let status):
+            // Tab == process (ADR-010): a finished agent auto-closes its tab.
+            // Exception: a process that dies within seconds of spawning (and
+            // that the user did not close) almost certainly failed to launch
+            // (bad binary path, invalid session id, missing cwd) — keep the
+            // tab so the terminal's error output is readable instead of
+            // flashing and vanishing.
+            let age = tab.spawnedAt.map { Date().timeIntervalSince($0) } ?? .infinity
+            if closingTabIDs.remove(tab.id) == nil, age < earlyExitGraceSeconds {
+                tab.activity = .exited(status: status)
+            } else {
+                autoClose(surface: surface)
+            }
         case .notStarted:
             break
         }

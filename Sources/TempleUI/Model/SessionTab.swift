@@ -57,7 +57,13 @@ public final class SessionTab: ObservableObject, Identifiable {
     public var isUtility: Bool { kind != .session }
     public var hasSurface: Bool { surface != nil }
 
+    /// When the surface's process was spawned; drives the early-exit grace
+    /// window (a process dying right after launch keeps its tab so the error
+    /// output stays readable).
+    public private(set) var spawnedAt: Date?
+
     func attach(surface: TerminalSurface) {
         self.surface = surface
+        self.spawnedAt = Date()
     }
 }
