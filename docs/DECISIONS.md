@@ -120,3 +120,83 @@ surface's working directory set to the session's `cwd`.
 > launch path (`claude --resume` and `codex resume` are current best-known).
 
 Full reverse-engineered schemas: [SESSION-FORMATS.md](./SESSION-FORMATS.md).
+
+---
+
+## ADR-008 — Session identity: id == CLI id; asymmetric minting
+**Date:** 2026-07-10 · **Status:** Accepted
+
+Temple's session id **is** the underlying CLI's session id (UUID), and each
+session records its **type** (`claude` | `codex`). This keeps Temple's records
+1:1 with the CLIs' own session files — no separate id space to reconcile.
+
+Minting a *new* session's id differs by agent (verified against installed CLIs):
+
+- **Claude Code — inject.** `claude --session-id <uuid>` accepts a caller-chosen
+  id. Temple generates the UUID, passes it in, and **knows the id immediately**.
+  (Also available: `-r/--resume <id>`, `-n/--name <name>`, `--fork-session`.)
+- **Codex — reconcile.** Bare `codex` mints its own id (no injection flag). For a
+  new Codex session Temple launches `codex [prompt]` then **watches
+  `~/.codex/sessions` for the newly created rollout file** (match by `cwd` +
+  creation time) and **adopts** its `payload.session_id`. Resume is direct:
+  `codex resume <id> [prompt]`.
+
+Consequence: the launch layer needs a small **reconciliation watcher** for the
+Codex new-session case; everything else is deterministic.
+
+---
+
+## ADR-009 — Persistence: session DB for app state; filesystem is source of truth
+**Date:** 2026-07-10 · **Status:** Accepted
+
+Two stores with clear ownership:
+
+- **Filesystem session files** (`~/.claude/projects/**`, `~/.codex/sessions/**`)
+  are the **source of truth** for session existence, content, `cwd`, and titles.
+  Temple never writes them.
+- **Temple's own session DB** (local, SQLite via GRDB.swift is the intended
+  choice) holds **app state the CLIs don't track**: pinned/archived flags, custom
+  name/order, tab-restore state, last-opened, and a fast cached index. Keyed by
+  the CLI session id (ADR-008).
+
+A **filesystem watcher** (FSEvents/`DispatchSource`) keeps the DB/index in sync as
+session files appear/change. The DB is a cache + app-state layer, never the
+authority — it can be rebuilt from disk at any time.
+
+> v0 note: `TempleCore` currently derives everything directly from disk with no
+> DB. The DB lands when we add pins/tab-restore/process-registry (Phase 2–3).
+
+---
+
+## ADR-010 — Temple owns the agent processes; graceful lifecycle
+**Date:** 2026-07-10 · **Status:** Accepted
+
+Temple maintains the set of **running agent processes** (each a CLI in a
+libghostty PTY surface) and is responsible for their clean lifecycle:
+
+- **Close a tab** → gracefully end that session: signal the CLI to exit (flush its
+  session file), `SIGTERM`, wait, force-kill only past a timeout, then reap. The
+  session remains in the sidebar (it lives on disk) — closing a tab ends the
+  *process*, not the *session*.
+- **Quit the app** → shut down **all** live processes the same way before exiting;
+  never orphan an agent, never quit mid-write (avoids corrupting session files).
+- A **process registry** (in the DB, ADR-009) tracks live pids/sessions so a
+  crash-restart can detect and adopt or clean up stragglers.
+
+---
+
+## ADR-011 — Title source: first human prompt (CLI summaries unreliable)
+**Date:** 2026-07-10 · **Status:** Accepted
+
+Ideal is the CLI-generated session title, but empirically Claude Code sessions do
+**not** reliably carry a `summary`/title line in-file (0/40 recent sessions
+sampled). So the working rule:
+
+1. Use a CLI-generated **summary** if present (prefer it).
+2. Else the **first human prompt** (skipping synthetic wrappers — slash-command
+   echoes, `<local-command-caveat>`, `<bash-input>`; see
+   `ClaudeSessionStore.isLikelyHumanPrompt`). *(implemented)*
+3. Allow a **user rename**, stored in Temple's DB (ADR-009).
+
+Optionally, Temple may set a name at launch (`claude --name` / Codex session
+names) to influence the CLI's own display.
