@@ -37,8 +37,8 @@ struct SidebarView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 6)
                     .padding(.horizontal, 8)
-                    .background(Color.accentColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 7))
-                    .foregroundStyle(Color.accentColor)
+                    .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 7))
+                    .foregroundStyle(.primary)
             }
             .buttonStyle(.plain)
         }

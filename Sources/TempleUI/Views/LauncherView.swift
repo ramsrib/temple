@@ -2,120 +2,215 @@ import SwiftUI
 import AppKit
 import TempleCore
 
-/// The empty-state / ⌘N launcher (ADR-008/012, U4): pick an agent + a project
-/// (indexed, or Choose folder… for an un-indexed dir). Spawn-terminal MVP — no
-/// prompt input; submitting opens the terminal fresh.
+/// The empty-state / ⌘N launcher (ADR-008/012, U4): a quiet, typographic home —
+/// wordmark + tagline, a "Get started" action list (agent choice = which "New …"
+/// row you pick), and a "Recent projects" list. Monochrome, list-driven; no
+/// cards, segmented controls, or prominent buttons. Spawn-terminal MVP — a row
+/// click opens a fresh terminal (no prompt input).
 struct LauncherView: View {
     @EnvironmentObject var model: AppModel
     /// `true` when shown as a modal sheet (⌘N / + New session), `false` inline.
     let isSheet: Bool
     @Environment(\.dismiss) private var dismiss
 
-    @State private var agent: Agent = .claude
-    @State private var projectPath: String?
+    private let recentLimit = 5
+
+    private var recentProjects: [Project] {
+        Array(model.index.projects.prefix(recentLimit))
+    }
 
     var body: some View {
-        VStack(spacing: 22) {
-            VStack(spacing: 6) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 34))
-                    .foregroundStyle(.tertiary)
-                Text("Start a session")
-                    .font(.system(size: 20, weight: .semibold))
-                Text("Launch a fresh agent in a project directory.")
-                    .font(.system(size: 13))
+        VStack {
+            Spacer(minLength: 32)
+            VStack(alignment: .leading, spacing: 30) {
+                masthead
+                getStarted
+                if !recentProjects.isEmpty { recent }
+            }
+            .frame(maxWidth: 560, alignment: .leading)
+            .padding(.horizontal, 44)
+            Spacer(minLength: 40)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onExitCommand { if isSheet { close() } }
+    }
+
+    // MARK: Masthead
+
+    private var masthead: some View {
+        HStack(spacing: 16) {
+            Image(systemName: "building.columns")
+                .font(.system(size: 34, weight: .regular))
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Temple")
+                    .font(.system(size: 26, weight: .semibold, design: .rounded))
+                Text("A home for your agent sessions.")
+                    .font(.system(size: 14))
+                    .italic()
                     .foregroundStyle(.secondary)
             }
-
-            VStack(spacing: 14) {
-                agentSelector
-                projectPicker
-            }
-            .frame(maxWidth: 420)
-
-            HStack(spacing: 10) {
-                if isSheet {
-                    Button("Cancel") { close() }
-                        .keyboardShortcut(.cancelAction)
-                }
-                Button(action: start) {
-                    Text("Start \(agent.displayName)")
-                        .frame(minWidth: 120)
-                }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .disabled(projectPath == nil)
-            }
-        }
-        .padding(40)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear {
-            agent = model.settings.defaultAgent
-            if projectPath == nil { projectPath = model.launcherDefaultProject }
         }
     }
 
-    private var agentSelector: some View {
-        Picker("Agent", selection: $agent) {
-            ForEach(Agent.allCases, id: \.self) { a in
-                Text(a.displayName).tag(a)
+    // MARK: Get started
+
+    private var getStarted: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            SectionRule("Get started")
+
+            LauncherRow(icon: .agent(.claude), title: "New Claude Code session", shortcut: "⌘T") {
+                newSession(.claude)
+            }
+            LauncherRow(icon: .agent(.codex), title: "New Codex session") {
+                newSession(.codex)
+            }
+            LauncherRow(icon: .symbol("folder.badge.plus"), title: "Open folder…") {
+                openFolder()
+            }
+            LauncherRow(icon: .symbol("command"), title: "Command palette", shortcut: "⌘K") {
+                close()
+                model.commandPalettePresented = true
+            }
+            LauncherRow(icon: .symbol("gearshape"), title: "Settings", shortcut: "⌘,") {
+                close()
+                model.openSessions.openSettings()
             }
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
     }
 
-    private var projectPicker: some View {
-        HStack {
-            Text("Project")
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-            Spacer()
-            Menu {
-                ForEach(model.index.projects) { project in
-                    Button(project.name) { projectPath = project.path }
-                }
-                Divider()
-                Button("Choose folder…") { chooseFolder() }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "folder")
-                    Text(projectLabel)
-                        .lineLimit(1)
+    // MARK: Recent projects
+
+    private var recent: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            SectionRule("Recent projects")
+
+            ForEach(recentProjects) { project in
+                LauncherRow(icon: .symbol("folder"),
+                            title: project.name,
+                            trailing: RelativeTime.string(from: project.lastActivity)) {
+                    close()
+                    model.openSessions.newSessionDefaultAgent(projectPath: project.path)
                 }
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 12)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private var projectLabel: String {
-        guard let projectPath else { return "Choose…" }
-        return URL(fileURLWithPath: projectPath).lastPathComponent
+    // MARK: Actions
+
+    /// Start `agent` in the last-used project; if none is known, ask for a folder.
+    private func newSession(_ agent: Agent) {
+        if let path = model.launcherDefaultProject {
+            close()
+            model.openSessions.newSession(agent: agent, projectPath: path)
+        } else {
+            pickFolder { path in
+                close()
+                model.openSessions.newSession(agent: agent, projectPath: path)
+            }
+        }
     }
 
-    private func chooseFolder() {
+    private func openFolder() {
+        pickFolder { path in
+            close()
+            model.openSessions.newSessionDefaultAgent(projectPath: path)
+        }
+    }
+
+    private func pickFolder(_ then: (String) -> Void) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
+        panel.prompt = "Open"
         if panel.runModal() == .OK, let url = panel.url {
-            projectPath = url.path
+            then(url.path)
         }
-    }
-
-    private func start() {
-        guard let projectPath else { return }
-        model.openSessions.newSession(agent: agent, projectPath: projectPath)
-        close()
     }
 
     private func close() {
         model.launcherPresented = false
         if isSheet { dismiss() }
+    }
+}
+
+// MARK: - Row & section building blocks
+
+/// An uppercase, letter-spaced section label trailed by a hairline rule.
+private struct SectionRule: View {
+    let title: String
+    init(_ title: String) { self.title = title }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(title.uppercased())
+                .font(.system(size: 11, weight: .medium))
+                .tracking(1.4)
+                .foregroundStyle(.secondary)
+            Rectangle()
+                .fill(Palette.hairline)
+                .frame(height: 1)
+        }
+        .padding(.bottom, 8)
+    }
+}
+
+/// One home-list row: leading icon + label, optional right-aligned shortcut /
+/// metadata, hover highlight. The whole row is the hit target.
+private struct LauncherRow: View {
+    enum Icon {
+        case symbol(String)
+        case agent(Agent)
+    }
+
+    let icon: Icon
+    let title: String
+    var shortcut: String? = nil
+    var trailing: String? = nil
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                iconView
+                    .frame(width: 18, alignment: .center)
+                Text(title)
+                    .font(.system(size: 14.5))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Spacer(minLength: 12)
+                if let shortcut {
+                    Text(shortcut)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(.tertiary)
+                } else if let trailing {
+                    Text(trailing)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+            .background(hovering ? Palette.hoverFill : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+
+    @ViewBuilder
+    private var iconView: some View {
+        switch icon {
+        case .symbol(let name):
+            Image(systemName: name)
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+        case .agent(let agent):
+            AgentBadge(agent: agent, size: 15)
+        }
     }
 }
