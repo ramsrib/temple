@@ -3,14 +3,28 @@ import TempleCore
 
 /// Title-only session matching (UX "Search": sidebar filter + ⌘K palette).
 ///
-/// **Seam for Track C3.** The default is a local case-insensitive title match /
-/// ranker; when C3's `SessionIndex.search(_:)` lands, swap in a `CoreSessionSearch`
-/// adapter at the `AppModel` construction site (one line).
+/// `CoreSessionSearch` delegates palette ranking to TempleCore while preserving
+/// the sidebar's deliberately local title-only behavior.
 public protocol SessionSearch: Sendable {
     /// Filter (sidebar): keep sessions whose title matches. Empty query = all.
     func filter(_ sessions: [AgentSession], query: String) -> [AgentSession]
-    /// Rank (⌘K palette): best matches first. Empty query = recency order (input order).
+    /// Rank (⌘K palette): best matches first. Core ranking returns no results
+    /// for an empty query.
     func rank(_ sessions: [AgentSession], query: String) -> [AgentSession]
+}
+
+public struct CoreSessionSearch: SessionSearch {
+    public init() {}
+
+    public func filter(_ sessions: [AgentSession], query: String) -> [AgentSession] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return sessions }
+        return sessions.filter { $0.title.localizedCaseInsensitiveContains(q) }
+    }
+
+    public func rank(_ sessions: [AgentSession], query: String) -> [AgentSession] {
+        SessionIndex(projects: [Project(path: "", sessions: sessions)]).search(query)
+    }
 }
 
 public struct DefaultSessionSearch: SessionSearch {

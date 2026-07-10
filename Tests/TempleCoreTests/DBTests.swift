@@ -38,12 +38,44 @@ final class DBTests: XCTestCase {
         XCTAssertEqual(try db.openTabs(projectPath: "/project"), ["a", "b", "c"])
     }
 
+    func testOpenTabRecordsPreserveAgentTitleAndPerProjectOrder() throws {
+        let (db, _) = try database()
+        try db.replaceOpenTabs([
+            OpenTabRecord(projectPath: "/a", sessionID: "a1", position: 0,
+                          agent: "claude", title: "First"),
+            OpenTabRecord(projectPath: "/a", sessionID: "a2", position: 1,
+                          agent: "codex", title: "Second"),
+            OpenTabRecord(projectPath: "/b", sessionID: "b1", position: 0,
+                          agent: "codex", title: "Other"),
+        ])
+        let records = try db.openTabRecords()
+        XCTAssertEqual(records.map(\.sessionID), ["a1", "a2", "b1"])
+        XCTAssertEqual(records.map(\.agent), ["claude", "codex", "codex"])
+        XCTAssertEqual(records.map(\.title), ["First", "Second", "Other"])
+    }
+
     func testProcessRegistrationAndRemoval() throws {
         let (db, _) = try database()
         try db.registerProcess(pid: 42, sessionID: "s", startedAt: Date(timeIntervalSince1970: 10))
         XCTAssertEqual(try db.liveProcesses().map(\.pid), [42])
         try db.unregisterProcess(pid: 42)
         XCTAssertTrue(try db.liveProcesses().isEmpty)
+    }
+
+    func testProcessRemovalBySessionID() throws {
+        let (db, _) = try database()
+        try db.registerProcess(pid: 42, sessionID: "remove")
+        try db.registerProcess(pid: 43, sessionID: "keep")
+        try db.unregisterProcess(sessionID: "remove")
+        XCTAssertEqual(try db.liveProcesses().map(\.sessionID), ["keep"])
+    }
+
+    func testAllSessionStatesSupportOverlayCacheLoad() throws {
+        let (db, _) = try database()
+        try db.setPinned(true, sessionID: "pinned")
+        try db.setCustomName("Renamed", sessionID: "named")
+        let states = try db.sessionStates()
+        XCTAssertEqual(Set(states.map(\.id)), ["pinned", "named"])
     }
 
     func testReopeningDatabasePreservesState() throws {

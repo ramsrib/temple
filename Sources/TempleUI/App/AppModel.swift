@@ -45,7 +45,8 @@ public final class AppModel: ObservableObject {
     private var themeObserver: NSObjectProtocol?
     private var lastIndexSignature = ""
 
-    /// Cheap change-detection so the 5s poll doesn't re-filter an unchanged index.
+    /// Cheap change-detection so duplicate watcher events do not re-filter an
+    /// unchanged index.
     private static func signature(of index: SessionIndex) -> String {
         var count = 0
         var latest: TimeInterval = 0
@@ -58,23 +59,30 @@ public final class AppModel: ObservableObject {
 
     public init(surfaceFactory: TerminalSurfaceFactory = StubTerminalSurfaceFactory(),
                 indexSource: IndexSource? = nil,
-                search: SessionSearch = DefaultSessionSearch(),
-                noiseFilter: NoiseFilter = DefaultNoiseFilter(),
+                search: SessionSearch = CoreSessionSearch(),
+                noiseFilter: NoiseFilter = CoreNoiseFilter(),
                 registry: ProcessRegistry? = nil,
-                reconciler: CodexReconciler? = nil,
+                reconciler: CodexAdopting? = nil,
+                persistence: TabPersistence? = nil,
+                database: TempleDB? = nil,
                 settings: SettingsStore? = nil,
                 overlay: SessionOverlayStore? = nil) {
         // Defaults that touch @MainActor types are built here (not as default
         // arguments, which evaluate in a nonisolated context).
+        let database = database ?? Self.openDefaultDatabase()
         let settings = settings ?? SettingsStore()
-        let overlay = overlay ?? SessionOverlayStore()
-        let registry = registry ?? InMemoryProcessRegistry()
-        let reconciler = reconciler ?? NoopCodexReconciler()
+        let overlay = overlay ?? SessionOverlayStore(db: database)
+        let registry = registry ?? DBProcessRegistry(db: database)
+        let persistence = persistence ?? DBTabPersistence(db: database)
+        let resolvedIndexSource = indexSource ?? WatcherIndexSource()
+        let reconciler = reconciler ?? (resolvedIndexSource as? WatcherIndexSource).map {
+            WatcherCodexReconciler(indexSource: $0)
+        } ?? NoopCodexReconciler()
         self.settings = settings
         self.overlay = overlay
         self.search = search
         self.noiseFilter = noiseFilter
-        self.indexSource = indexSource ?? PollingIndexSource()
+        self.indexSource = resolvedIndexSource
         self.notifications = NotificationController()
 
         let runtime = SessionRuntimeController()
@@ -87,6 +95,7 @@ public final class AppModel: ObservableObject {
             runtime: runtime,
             registry: registry,
             reconciler: reconciler,
+            persistence: persistence,
             binaryPath: { settingsRef.binaryPath(for: $0) },
             defaultAgent: { settingsRef.defaultAgent })
 
@@ -95,6 +104,11 @@ public final class AppModel: ObservableObject {
             self?.currentAppearance() ?? .default
         }
         wire()
+    }
+
+    private static func openDefaultDatabase() -> TempleDB {
+        if let db = try? TempleDB(path: TempleDB.defaultPath()) { return db }
+        return try! TempleDB.inMemory()
     }
 
     private func wire() {

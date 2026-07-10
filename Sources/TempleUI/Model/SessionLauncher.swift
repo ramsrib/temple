@@ -52,20 +52,18 @@ public enum SessionLauncher {
 
 /// Adopts a freshly-launched Codex session's real id (ADR-008 reconcile).
 ///
-/// **Seam for Track C.** Track C ships the real matcher (watch
-/// `~/.codex/sessions` for the new rollout file, match by `cwd` + creation-time
-/// window, read `payload.session_id`). Here it's a placeholder a later
-/// integration connects to `OpenSessionsModel.adopt(sessionID:for:)`.
+/// `WatcherCodexReconciler` supplies the real watcher-backed implementation;
+/// the protocol keeps launch-model tests deterministic.
 @MainActor
-public protocol CodexReconciler: AnyObject {
+public protocol CodexAdopting: AnyObject {
     /// Begin watching for the rollout file of a Codex session just started in
     /// `projectPath`; call `adopt` with the discovered id when found.
     func reconcile(projectPath: String, startedAt: Date, adopt: @escaping (String) -> Void)
 }
 
-/// No-op default so Track U runs standalone; Track C swaps in the real one.
+/// No-op implementation for tests that do not exercise adoption.
 @MainActor
-public final class NoopCodexReconciler: CodexReconciler {
+public final class NoopCodexReconciler: CodexAdopting {
     public init() {}
     public func reconcile(projectPath: String, startedAt: Date, adopt: @escaping (String) -> Void) {
         // Intentionally does nothing until Track C's matcher is wired in.

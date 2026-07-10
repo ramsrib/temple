@@ -33,6 +33,23 @@ final class SearchFilterTests: XCTestCase {
         XCTAssertEqual(ranked.first?.id, "pre")   // prefix wins
     }
 
+    func testCoreSearchUsesCoreRankingButKeepsFilterTitleOnly() {
+        let search = CoreSessionSearch()
+        let sessions = [
+            Fixture.session("substring", project: "/work/else", title: "Fix the auth bug"),
+            Fixture.session("exact", project: "/work/else", title: "auth"),
+            Fixture.session("prefix", project: "/work/else", title: "Auth cleanup"),
+            Fixture.session("project", project: "/work/auth", title: "Unrelated"),
+            Fixture.session("agent", agent: .codex, project: "/work/else", title: "Other"),
+        ]
+
+        XCTAssertEqual(search.rank(sessions, query: "auth").map(\.id),
+                       ["exact", "prefix", "substring", "project"])
+        XCTAssertEqual(search.filter(sessions, query: "auth").map(\.id),
+                       ["substring", "exact", "prefix"])
+        XCTAssertTrue(search.filter(sessions, query: "codex").isEmpty)
+    }
+
     func testDefaultNoiseFilterHidesRootAndMissingDirs() {
         let filter = DefaultNoiseFilter()
         XCTAssertTrue(filter.isNoise(Fixture.session("a", project: "/")))
@@ -40,15 +57,31 @@ final class SearchFilterTests: XCTestCase {
         XCTAssertFalse(filter.isNoise(Fixture.session("c", project: NSTemporaryDirectory())))
     }
 
+    func testCoreNoiseFilterDelegatesAutomationClassification() {
+        let session = AgentSession(
+            id: "automation",
+            agent: .codex,
+            projectPath: NSTemporaryDirectory(),
+            title: "Automation",
+            createdAt: nil,
+            updatedAt: Date(),
+            filePath: URL(fileURLWithPath: "/tmp/automation.jsonl"),
+            originator: "codex_exec"
+        )
+        XCTAssertTrue(CoreNoiseFilter().isNoise(session))
+    }
+
     // MARK: AppModel sidebar wiring
 
     private func makeAppModel(_ index: SessionIndex, noise: NoiseFilter = NoNoiseFilter())
         -> (AppModel, SessionOverlayStore) {
-        let overlay = SessionOverlayStore(defaults: Fixture.uniqueDefaults())
+        let database = try! TempleDB.inMemory()
+        let overlay = SessionOverlayStore(db: database)
         let settings = SettingsStore(defaults: Fixture.uniqueDefaults())
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
                              indexSource: FakeIndexSource(index),
                              noiseFilter: noise,
+                             database: database,
                              settings: settings,
                              overlay: overlay)
         model.index = index
