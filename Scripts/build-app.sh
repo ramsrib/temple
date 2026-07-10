@@ -41,18 +41,25 @@ echo "==> xcodegen generate"
 xcodegen generate --spec "$ROOT/project.yml"
 
 # 3. resolve signing ---------------------------------------------------------
-# Manual signing needs an exact cert. Prefer a local "Apple Development" identity
-# (matched by its SHA-1 hash — the string "Apple Development" makes xcodebuild
-# look up a nonexistent "Mac Development" cert). Fall back to ad-hoc ("-"), which
-# builds and launches locally but fails Gatekeeper assessment.
+# Manual signing needs an exact cert (matched by SHA-1 hash — name strings make
+# xcodebuild resolve unpredictably). Preference order:
+#   1. "Developer ID Application" — the real distribution identity
+#   2. "Apple Development"        — local dev signing
+#   3. ad-hoc ("-")               — builds and launches locally only
 if [[ -z "${CODE_SIGN_IDENTITY:-}" ]]; then
-  DEV_LINE="$(security find-identity -v -p codesigning 2>/dev/null | grep '"Apple Development' | head -1 || true)"
-  if [[ -n "$DEV_LINE" ]]; then
-    CODE_SIGN_IDENTITY="$(echo "$DEV_LINE" | awk '{print $2}')"
-    echo "==> signing with Apple Development identity ($CODE_SIGN_IDENTITY)"
-  else
+  for KIND in "Developer ID Application" "Apple Development"; do
+    LINE="$(security find-identity -v -p codesigning 2>/dev/null | grep "\"$KIND" | head -1 || true)"
+    if [[ -n "$LINE" ]]; then
+      CODE_SIGN_IDENTITY="$(echo "$LINE" | awk '{print $2}')"
+      # Team id is the parenthesized suffix of the identity name.
+      DEVELOPMENT_TEAM="${DEVELOPMENT_TEAM:-$(echo "$LINE" | sed -n 's/.*(\([A-Z0-9]*\))".*/\1/p')}"
+      echo "==> signing with $KIND identity ($CODE_SIGN_IDENTITY, team ${DEVELOPMENT_TEAM:-n/a})"
+      break
+    fi
+  done
+  if [[ -z "${CODE_SIGN_IDENTITY:-}" ]]; then
     CODE_SIGN_IDENTITY="-"
-    echo "==> no Apple Development identity found; signing ad-hoc (-)"
+    echo "==> no signing identity found; signing ad-hoc (-)"
   fi
 fi
 
