@@ -104,10 +104,12 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         self.surface = created
         self.app?.register(self, for: created)
 
-        // Prime size + scale from the current geometry.
+        // Prime size + scale from the current geometry, and resolve the
+        // config's light:/dark: theme pair for the current app appearance.
         contentSize = bounds.size
         if bounds.size != .zero { pushSize(bounds.size) }
         pushContentScale()
+        apply(terminalAppearance)
         GhosttyApp.logger.info("ghostty surface created and process spawned")
     }
 

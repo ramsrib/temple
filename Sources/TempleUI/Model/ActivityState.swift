@@ -9,12 +9,16 @@ public enum ActivityState: Sendable, Equatable {
     case idle
     /// Agent finished or is waiting for input (bell / OSC notification).
     case needsAttention
+    /// The process exited but the tab was kept so its output stays readable
+    /// (early launch failures — see `OpenSessionsModel` exit handling).
+    case exited(status: Int32)
 
     var dotColor: Color {
         switch self {
         case .running: return .green
         case .idle: return .secondary.opacity(0.5)
         case .needsAttention: return .orange
+        case .exited: return .red
         }
     }
 

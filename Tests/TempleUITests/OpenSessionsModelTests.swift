@@ -61,11 +61,28 @@ final class OpenSessionsModelTests: XCTestCase {
 
     func testProcessSelfExitAutoClosesTab() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.earlyExitGraceSeconds = 0  // fake exits instantly; simulate a long-lived agent
         model.openSession(Fixture.session("a", project: "/p/a"))
         let fake = model.tabs.first?.surface as? FakeTerminalSurface
 
         fake?.simulateExit()    // agent quit / crash (ADR-010 reverse)
 
+        XCTAssertTrue(model.tabs.isEmpty)
+    }
+
+    func testEarlyExitKeepsTabWithExitedState() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a", project: "/p/a"))
+        let fake = model.tabs.first?.surface as? FakeTerminalSurface
+
+        fake?.simulateExit(status: 127)  // launch failure right after spawn
+
+        // The tab stays so the error output is readable; the chip shows exited.
+        XCTAssertEqual(model.tabs.count, 1)
+        XCTAssertEqual(model.tabs.first?.activity, .exited(status: 127))
+
+        // Explicitly closing the dead tab removes it.
+        model.closeTab(model.tabs.first!.id)
         XCTAssertTrue(model.tabs.isEmpty)
     }
 

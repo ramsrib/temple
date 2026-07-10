@@ -83,6 +83,9 @@ public final class GhosttyTerminalSurface: TerminalSurface {
 
     public func apply(_ appearance: TerminalAppearance) {
         self.appearance = appearance
+        // Runtime-wide config (font size/family, theme pair) + per-surface
+        // light/dark resolution. Idempotent across surfaces.
+        GhosttyApp.shared.update(appearance: appearance)
         ghosttyView.apply(appearance)
     }
 
@@ -126,6 +129,9 @@ public final class GhosttyTerminalSurface: TerminalSurface {
 public struct GhosttyTerminalSurfaceFactory: TerminalSurfaceFactory {
     public init() {}
     public func makeSurface(appearance: TerminalAppearance) -> TerminalSurface {
-        GhosttyTerminalSurface(appearance: appearance)
+        // Seed the runtime config before the first `GhosttyApp.shared` access
+        // so the first surface is born matching the app theme.
+        GhosttyApp.initialAppearance = appearance
+        return GhosttyTerminalSurface(appearance: appearance)
     }
 }
