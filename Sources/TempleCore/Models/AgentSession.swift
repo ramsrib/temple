@@ -1,7 +1,7 @@
 import Foundation
 
 /// A single resumable agent session, discovered on disk.
-public struct AgentSession: Identifiable, Hashable, Sendable {
+public struct AgentSession: Codable, Identifiable, Hashable, Sendable {
     public let id: String
     public let agent: Agent
     /// The true working directory the session ran in (read from file contents).
@@ -49,6 +49,25 @@ public struct AgentSession: Identifiable, Hashable, Sendable {
         self.lastMessagePreview = lastMessagePreview
         self.gitBranch = gitBranch
         self.originator = originator
+    }
+
+    /// Decodes caches defensively so additive model evolution can preserve old
+    /// snapshots instead of making startup depend on a cache migration.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? ""
+        agent = try container.decodeIfPresent(Agent.self, forKey: .agent) ?? .claude
+        projectPath = try container.decodeIfPresent(String.self, forKey: .projectPath) ?? ""
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
+        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+        filePath = try container.decodeIfPresent(URL.self, forKey: .filePath)
+            ?? URL(fileURLWithPath: "")
+        messageCount = try container.decodeIfPresent(Int.self, forKey: .messageCount)
+        model = try container.decodeIfPresent(String.self, forKey: .model)
+        lastMessagePreview = try container.decodeIfPresent(String.self, forKey: .lastMessagePreview)
+        gitBranch = try container.decodeIfPresent(String.self, forKey: .gitBranch)
+        originator = try container.decodeIfPresent(String.self, forKey: .originator)
     }
 
     /// argv + working directory to resume this session in a terminal surface.
