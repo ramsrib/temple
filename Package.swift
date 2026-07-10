@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "TempleCore", targets: ["TempleCore"]),
+        .library(name: "TempleUI", targets: ["TempleUI"]),
         .executable(name: "temple", targets: ["Temple"]),
         .executable(name: "templectl", targets: ["templectl"]),
     ],
@@ -17,12 +18,21 @@ let package = Package(
         // protocol + stub. Imports AppKit; free of ghostty and TempleCore.
         .target(name: "TempleTerminalAPI"),
 
-        // The SwiftUI/AppKit app shell (terminal pane is stubbed until Phase 3).
-        .executableTarget(name: "Temple", dependencies: ["TempleCore", "TempleTerminalAPI"]),
+        // The SwiftUI/AppKit app shell as a library so it is unit-testable
+        // (executables can't be imported cleanly). Bundles the agent brand icons.
+        .target(
+            name: "TempleUI",
+            dependencies: ["TempleCore", "TempleTerminalAPI"],
+            resources: [.process("Resources")]
+        ),
+
+        // Thin @main entry — just launches TempleUI's app scene.
+        .executableTarget(name: "Temple", dependencies: ["TempleUI"]),
 
         // CLI that prints the real project → session index.
         .executableTarget(name: "templectl", dependencies: ["TempleCore"]),
 
         .testTarget(name: "TempleCoreTests", dependencies: ["TempleCore"]),
+        .testTarget(name: "TempleUITests", dependencies: ["TempleUI"]),
     ]
 )
