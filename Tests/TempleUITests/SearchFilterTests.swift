@@ -141,4 +141,54 @@ final class SearchFilterTests: XCTestCase {
         let results = model.paletteResults("alp")
         XCTAssertEqual(Set(results.map(\.id)), ["1", "2"])
     }
+
+    // MARK: Project cap
+
+    private func manyProjectsIndex() -> SessionIndex {
+        SessionIndex(projects: (0..<12).map { number in
+            let path = "/projects/\(number)"
+            return Project(path: path, sessions: [
+                Fixture.session(
+                    "session-\(number)",
+                    project: path,
+                    title: "Project task \(number)",
+                    updated: TimeInterval(12 - number)
+                ),
+            ])
+        })
+    }
+
+    func testProjectListIsCappedByDefault() {
+        let (model, _) = makeAppModel(manyProjectsIndex())
+
+        XCTAssertEqual(model.cappedDisplayProjects.count, AppModel.projectCap)
+        XCTAssertEqual(model.hiddenProjectsCount, 4)
+    }
+
+    func testActiveProjectOutsideCapRemainsVisible() {
+        let index = manyProjectsIndex()
+        let (model, _) = makeAppModel(index)
+        let outsideProject = index.projects[11]
+
+        model.openSessions.openSession(outsideProject.sessions[0])
+
+        XCTAssertEqual(model.cappedDisplayProjects.count, AppModel.projectCap + 1)
+        XCTAssertTrue(model.cappedDisplayProjects.contains { $0.path == outsideProject.path })
+    }
+
+    func testSearchBypassesProjectCap() {
+        let (model, _) = makeAppModel(manyProjectsIndex())
+
+        model.searchText = "Project task 11"
+
+        XCTAssertEqual(model.cappedDisplayProjects.map(\.path), ["/projects/11"])
+        XCTAssertEqual(model.hiddenProjectsCount, 0)
+    }
+
+    func testProjectCapDoesNotLimitHighlightOrPaletteData() {
+        let (model, _) = makeAppModel(manyProjectsIndex())
+
+        XCTAssertEqual(model.highlightableSessions.count, 12)
+        XCTAssertEqual(model.paletteResults("Project task").count, 12)
+    }
 }
