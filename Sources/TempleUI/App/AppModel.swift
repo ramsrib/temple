@@ -40,10 +40,13 @@ public final class AppModel: ObservableObject {
     private let indexSource: IndexSource
     private let search: SessionSearch
     private let noiseFilter: NoiseFilter
+    private let cacheURL: URL
 
     private var cancellables: Set<AnyCancellable> = []
     private var themeObserver: NSObjectProtocol?
     private var lastIndexSignature = ""
+    /// A cached snapshot is replaced unconditionally by the first live index.
+    private(set) var isIndexStale = false
 
     /// Cheap change-detection so duplicate watcher events do not re-filter an
     /// unchanged index.
@@ -66,7 +69,8 @@ public final class AppModel: ObservableObject {
                 persistence: TabPersistence? = nil,
                 database: TempleDB? = nil,
                 settings: SettingsStore? = nil,
-                overlay: SessionOverlayStore? = nil) {
+                overlay: SessionOverlayStore? = nil,
+                cacheURL: URL = CachedIndexStore.defaultURL) {
         // Defaults that touch @MainActor types are built here (not as default
         // arguments, which evaluate in a nonisolated context).
         let database = database ?? Self.openDefaultDatabase()
@@ -74,7 +78,7 @@ public final class AppModel: ObservableObject {
         let overlay = overlay ?? SessionOverlayStore(db: database)
         let registry = registry ?? DBProcessRegistry(db: database)
         let persistence = persistence ?? DBTabPersistence(db: database)
-        let resolvedIndexSource = indexSource ?? WatcherIndexSource()
+        let resolvedIndexSource = indexSource ?? WatcherIndexSource(cacheURL: cacheURL)
         let reconciler = reconciler ?? (resolvedIndexSource as? WatcherIndexSource).map {
             WatcherCodexReconciler(indexSource: $0)
         } ?? NoopCodexReconciler()
@@ -83,6 +87,7 @@ public final class AppModel: ObservableObject {
         self.search = search
         self.noiseFilter = noiseFilter
         self.indexSource = resolvedIndexSource
+        self.cacheURL = cacheURL
         self.notifications = NotificationController()
 
         let runtime = SessionRuntimeController()
@@ -164,9 +169,21 @@ public final class AppModel: ObservableObject {
     public func start() {
         applyAppearance()
         openSessions.restore()
+        if let cachedIndex = CachedIndexStore.load(from: cacheURL) {
+            index = cachedIndex
+            isLoading = false
+            isIndexStale = true
+            Self.log("cached index published")
+        }
+        var isFirstLiveIndex = true
         indexSource.start { [weak self] index in
             guard let self else { return }
             self.isLoading = false
+            self.isIndexStale = false
+            if isFirstLiveIndex {
+                Self.log("live index published")
+                isFirstLiveIndex = false
+            }
             // Skip the recompute (disk-stat) storm when nothing actually changed.
             let signature = Self.signature(of: index)
             guard signature != self.lastIndexSignature else { return }
@@ -179,6 +196,10 @@ public final class AppModel: ObservableObject {
             object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in self?.applyAppearance() }
             }
+    }
+
+    private static func log(_ message: String) {
+        FileHandle.standardError.write(Data("Temple: \(message)\n".utf8))
     }
 
     /// App-quit drain (ADR-010) → returns true once all surfaces are down.

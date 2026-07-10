@@ -1,7 +1,7 @@
 import Foundation
 
 /// A working directory, grouping every agent session that ran in it.
-public struct Project: Identifiable, Hashable, Sendable {
+public struct Project: Codable, Identifiable, Hashable, Sendable {
     public var id: String { path }
     public let path: String
     public var sessions: [AgentSession]

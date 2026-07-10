@@ -11,11 +11,14 @@ final class CoreWiringTests: XCTestCase {
         try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
+        // Isolate the startup cache: never read or overwrite the developer's
+        // real ~/Library/Application Support cache from a test.
+        let cacheURL = root.appendingPathComponent("index-cache.json")
         let watcher = SessionWatcher(
             stores: [ClaudeSessionStore(root: root)],
             debounceInterval: 0.05
         )
-        let source = WatcherIndexSource(watcher: watcher)
+        let source = WatcherIndexSource(watcher: watcher, cacheURL: cacheURL)
         defer { source.stop() }
         let database = try TempleDB.inMemory()
         let model = AppModel(
@@ -23,7 +26,8 @@ final class CoreWiringTests: XCTestCase {
             indexSource: source,
             database: database,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
-            overlay: SessionOverlayStore(db: database)
+            overlay: SessionOverlayStore(db: database),
+            cacheURL: cacheURL
         )
         model.start()
 
@@ -55,7 +59,10 @@ final class CoreWiringTests: XCTestCase {
             stores: [CodexSessionStore(root: root)],
             debounceInterval: 0.05
         )
-        let source = WatcherIndexSource(watcher: watcher)
+        let source = WatcherIndexSource(
+            watcher: watcher,
+            cacheURL: root.appendingPathComponent("index-cache.json")
+        )
         defer { source.stop() }
         let reconciler = WatcherCodexReconciler(indexSource: source, window: 3)
         let adopted = expectation(description: "adopted Codex session id")

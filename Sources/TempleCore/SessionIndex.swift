@@ -1,7 +1,7 @@
 import Foundation
 
 /// The project → sessions model that drives the sidebar.
-public struct SessionIndex: Sendable {
+public struct SessionIndex: Codable, Equatable, Sendable {
     /// Projects, most-recently-active first; sessions within each newest-first.
     public let projects: [Project]
 
