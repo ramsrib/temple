@@ -13,7 +13,7 @@ auto-resumes that session.
 - **Product & feature spec:** [docs/FEATURES.md](docs/FEATURES.md)
 - **UX & interaction spec:** [docs/UX.md](docs/UX.md)
 - **Decisions & rationale:** [docs/DECISIONS.md](docs/DECISIONS.md)
-- **Build plan (phased):** [docs/PLAN.md](docs/PLAN.md)
+- **Build plan (parallel tracks):** [docs/PLAN.md](docs/PLAN.md)
 - **Session storage formats:** [docs/SESSION-FORMATS.md](docs/SESSION-FORMATS.md)
 
 ## Stack
