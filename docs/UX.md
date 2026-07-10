@@ -135,9 +135,12 @@ optional branch + initial prompt) → open a tab and launch:
   own id — no injection). *(ADR-008)*
 
 ### A tab **is** its agent process (1:1, both directions)
-The terminal never hosts a bare shell — it **always** runs a claude/codex process
-directly (a "new" tab is an *empty agent session*, not a shell prompt). So the tab
-and the agent process share one lifetime:
+*(This governs **session tabs** — the normal case. There is one exception: the
+**Settings** utility tab, which has no agent and no project — see "Settings" below.)*
+
+The terminal never hosts a bare shell — a session tab **always** runs a
+claude/codex process directly (a "new" tab is an *empty agent session*, not a
+shell prompt). So the tab and the agent process share one lifetime:
 
 - **Close the tab (UI)** → gracefully end the process *(see below)*.
 - **The agent process exits** — the user quits it (e.g. Ctrl+C to quit, `/exit`),
@@ -149,8 +152,8 @@ and the agent process share one lifetime:
   always attached to a tab, and a live tab always has an attached agent. If the
   agent chooses to exit on EOF, that's an ordinary process-exit → the tab closes
   like any other.
-- **Never orphan, never detach** *(ADR-010)*: no agent without a tab, no tab
-  without an agent.
+- **Never orphan, never detach** *(ADR-010)*: no agent without a tab, no *session*
+  tab without an agent.
 
 ### Close a tab
 **Gracefully end the session, don't just kill it** *(ADR-010)*:
@@ -165,6 +168,29 @@ and the agent process share one lifetime:
 Iterate **all** live sessions → graceful shutdown each → wait (bounded) →
 force-kill stragglers → exit. Temple never leaves orphaned agent processes and
 never quits mid-write (which could corrupt a session file). *(ADR-010)*
+
+### Settings
+Preferences open **as a tab**, not a separate `⌘,` window (VS-Code-style rather
+than the classic macOS Settings window) — reachable from the footer **gear** (and
+`⌘,`). It is a distinct kind of tab:
+
+- **App-level & project-agnostic** — a Settings tab is *not* bound to a project
+  and has *no* agent process (the "tab == agent process" invariant covers *session*
+  tabs only; this is the deliberate exception).
+- **Singleton** — reuse-or-focus: opening Settings again focuses the existing tab,
+  never a second one.
+- It stays available in the tab bar (independent of the active project) until
+  closed; closing it just closes the pane — nothing to shut down gracefully.
+
+**Contents — start small, refine later.** v0 exposes a handful of variables and we
+grow it over time. First cut:
+
+- **Terminal font size** (the explicit starter) + font family.
+- **Theme:** System / Light / Dark *(see Theme, above)*.
+- **Agent binary paths** (auto-detected, overridable) *(FEATURES §6)*.
+
+Everything else in FEATURES §6 (scan roots, startup behavior, per-agent flags,
+cursor, etc.) lands here incrementally.
 
 ---
 

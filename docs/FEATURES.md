@@ -113,9 +113,11 @@ Where the actual agent runs, powered by an embedded libghostty terminal.
 
 | Feature | Tier | Phase |
 |---|---|---|
+| **Settings surfaced as an app-level tab** (singleton, project-agnostic — not a `⌘,` window) | **MVP** | 4 |
+| **Terminal font size** (the first-cut variable; refine the rest later) | **MVP** | 4 |
 | Agent binary paths (auto-detect + override) | **MVP** | 4 |
 | Scan roots / excluded paths | v1 | 4 |
-| Terminal: font, size, theme, cursor | v1 | 4 |
+| Terminal: font family, theme, cursor | v1 | 4 |
 | Startup behavior (restore tabs, default agent) | v1 | 3/4 |
 
 ---
