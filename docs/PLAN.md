@@ -39,7 +39,7 @@ Legend: ✅ done · 🔨 in progress · ⬜ todo · **S/M/L** = rough size.
 |---|---|---|
 | **T — Terminal Engine** | Build, link, and wrap libghostty as a production `TerminalSurface` implementation. | Everything sits *behind* the `TerminalSurface` protocol. Touches only new targets (`CGhostty`/`GhosttyKit`, `TempleTerminal`) plus one `Package.swift` append. Zero dependence on TempleCore. |
 | **C — Core Data & Live Index** | Make `TempleCore` live and durable: FS watcher, search, noise filtering, richer metadata, GRDB session DB (ADR-009). | Pure `TempleCore` (no AppKit, ADR-006). Provable via `templectl` + unit tests; no UI or terminal needed. |
-| **U — UI Shell & Session Lifecycle** | The full app experience minus the terminal pixels: sidebar per UX.md, per-project tab model, launch/lifecycle controller (ADR-010), new-session flow (ADR-008/012), notifications & attention (U7) — against a stub surface. | Consumes `TerminalSurface` (stub impl) + TempleCore's existing public API. Where it needs Track C outputs, the seam is a plain protocol/closure it defaults trivially until C lands. |
+| **U — UI Shell & Session Lifecycle** | The full app experience minus the terminal pixels: sidebar per UX.md, per-project tab model, launch/lifecycle controller (ADR-010), new-session flow (ADR-008/012), notifications (U7), settings + theme (U9/U10) — against a stub surface. | Consumes `TerminalSurface` (stub impl) + TempleCore's existing public API. Where it needs Track C outputs, the seam is a plain protocol/closure it defaults trivially until C lands. |
 
 **T0/U0 — the interface package** is the only thing that precedes the tracks
 (§ *The one serial dependency*). After it lands, all three tracks run fully in
@@ -53,7 +53,8 @@ The `TempleTerminalAPI` package + `AppModel` extraction. ~½ day; everything han
 off it, so it is commit #1 (ideally authored by whoever runs Track U).
 
 - ⬜ New `TempleTerminalAPI` target: `TerminalSurface` protocol, delegate,
-  factory, `StubTerminalSurface` (see § *Decoupling interfaces*).
+  factory, **`TerminalAppearance`**, `StubTerminalSurface` (see § *Decoupling
+  interfaces*).
 - ⬜ Extract `AppModel` from `TempleApp.swift:19` into
   `Sources/Temple/AppModel.swift`.
 - ⬜ Detail pane hosts the stub surface where the placeholder `RoundedRectangle`
@@ -115,7 +116,9 @@ built and tested against the stub/fake.
 ### T6 — `GhosttyTerminalSurface: TerminalSurface` conformance ⬜ **M**
 - ⬜ Adapt T4/T5 to the protocol, including `requestGracefulExit()` /
   `terminate()` semantics (signal via libghostty's process control or the child
-  pid) and delegate events (exit, title).
+  pid), **`apply(_ appearance:)`** (map font size + light/dark scheme to a ghostty
+  palette), and delegate events — exit, title, and **bell (`surfaceDidRing`) + OSC
+  9/777 notifications (`didPostNotification`)** for U7.
 - **Exit — the fuse milestone:** swapping the factory in `TempleApp.swift` from
   stub → ghostty makes Track U's tab UI live.
 
@@ -186,8 +189,12 @@ built and tested against the stub/fake.
 - ⬜ **Select ≠ open:** arrow keys move a highlight only; **Enter / double-click**
   opens (spawns). The sidebar highlight **follows the active tab**. Right-click
   context menu (copy resume cmd / id, reveal in Finder, rename, pin, close).
+- ⬜ **Sidebar toggle** (`⌘\`) — collapse/expand; native `NSSplitViewController`
+  collapse for the real animation (polish coordinates with U6's AppKit chrome);
+  the tab bar insets ~70pt for the traffic lights when collapsed (UX "Window &
+  layout").
 - **Exit:** matches the UX.md wireframe; filtering/search work on real data;
-  arrowing the list spawns nothing.
+  arrowing the list spawns nothing; ⌘\ collapses/expands the sidebar.
 
 ### U2 — Tab model + reuse-or-focus ⬜ **M**
 - ⬜ `OpenSessionsModel` (ObservableObject): ordered open tabs, each owning a
@@ -202,6 +209,11 @@ built and tested against the stub/fake.
 - ⬜ **Lazy restore:** on launch, rebuild the per-project tab set + order from
   `open_tabs` as **inert chips** — a `TerminalSurface` is created only on click
   (no process storm).
+- ⬜ **Process-exit → auto-close:** a surface reporting `.exited` removes its tab —
+  the reverse of close-tab (a *session* tab always has a live agent; ADR-010, wired
+  in U3). The model also carries at most one **utility tab** (Settings, U9):
+  project-agnostic, no surface, always addressable, excluded from per-project
+  scoping.
 - **Exit:** with the stub factory, multiple tabs across ≥2 projects open/focus/
   close correctly; the tab bar shows only the active project's tabs and swaps when
   a session in another project is opened/focused; ⌘T/⌘W/⌘1–9 work; restored chips
@@ -213,8 +225,11 @@ built and tested against the stub/fake.
   `NSApplicationDelegate` termination delay; registers pids in C5's
   `process_registry` (until C5 lands, an in-memory registry behind the same tiny
   protocol).
+- ⬜ **Reverse direction:** the delegate's `didChangeState(.exited)` → tell
+  `OpenSessionsModel` to auto-close that tab (tab == process; the session persists
+  on disk). Covers user-quit, `/exit`, and crash.
 - **Exit:** unit-tested with a `FakeTerminalSurface` scripting exit timing
-  (graceful, slow, hung).
+  (graceful, slow, hung) — including a self-exit that auto-closes its tab.
 
 ### U4 — New-session flow (ADR-008 · ADR-012) ⬜ **M/L**
 - ⬜ Empty-state launcher (project chip + agent selector, per UX.md — MVP-lean
@@ -263,6 +278,28 @@ built and tested against the stub/fake.
   selecting a result opens/focuses that session's tab (switching active project).
 - **Exit:** ⌘K → type → Enter jumps to the session's tab.
 
+### U9 — Settings tab ⬜ **M**
+- ⬜ Settings as an **app-level singleton utility tab** (not a `⌘,` window; UX
+  "Settings") — reuse-or-focus, project-agnostic, no surface; opened from the
+  footer gear + **⌘,**. Slots into U2's tab model as the non-session tab case.
+- ⬜ First-cut variables (persist via C5, or `UserDefaults` until C5 lands):
+  **terminal font size** + family, **default agent** (Claude — used by ⌘T / `+`),
+  **theme** (System / Light / Dark, drives U10). Font/appearance changes propagate
+  live to open surfaces via `TerminalAppearance` → `apply(_:)`.
+- **Exit:** stub-mode — opening Settings focuses the single tab; changing font size
+  re-applies to open stub surfaces; default-agent + theme persist across restart.
+
+### U10 — Theme (System / Light / Dark) ⬜ **S/M** *(v1)*
+- ⬜ App honors the mode (default **System**, live-follow macOS) across sidebar,
+  tab bar, and chrome via AppKit/SwiftUI appearance; the user override lives in
+  Settings (U9).
+- ⬜ **Terminal palette tracks the theme:** resolve System → light/dark and push
+  the matching scheme to every open surface through `TerminalAppearance` so the
+  terminal never looks foreign (Track T maps it to a ghostty palette in T6; the
+  stub just tints).
+- **Exit:** toggling appearance (or the OS) re-tints app **and** open terminals;
+  the override persists.
+
 ---
 
 ## Decoupling interfaces
@@ -283,6 +320,13 @@ public enum TerminalProcessState: Sendable, Equatable {
     case exited(status: Int32)
 }
 
+public struct TerminalAppearance: Sendable, Equatable {          // Settings (U9) + theme (U10) → surface
+    public enum ColorScheme: Sendable, Equatable { case light, dark }  // System resolves to one of these
+    public var fontSize: Double
+    public var fontFamily: String?
+    public var colorScheme: ColorScheme
+}
+
 @MainActor
 public protocol TerminalSurface: AnyObject {
     var view: NSView { get }                       // the render-owning subview (ADR-003)
@@ -291,6 +335,7 @@ public protocol TerminalSurface: AnyObject {
 
     func start(_ command: TerminalCommand) throws  // spawn in the surface's PTY
     func focus()
+    func apply(_ appearance: TerminalAppearance)   // live: font size + light/dark palette (U9/U10)
     func requestGracefulExit()                     // polite: exit sequence / SIGTERM
     func terminate()                               // escalation: SIGKILL + reap
 }
@@ -307,7 +352,7 @@ public protocol TerminalSurfaceDelegate: AnyObject {
 
 @MainActor
 public protocol TerminalSurfaceFactory {
-    func makeSurface() -> TerminalSurface
+    func makeSurface(appearance: TerminalAppearance) -> TerminalSurface  // born with current Settings/theme
 }
 ```
 
@@ -346,6 +391,9 @@ two-method protocol until C5's GRDB store implements it.
   target to exist.
 - **Titles for launched sessions:** pass `-n/--name` for claude at launch
   (ADR-011 option) — decide during U4, it's free.
+- **Appearance seam:** `TerminalAppearance` lives in the T0 interface package, so
+  Settings (U9) + Theme (U10) drive font size / palette via `apply(_:)` against the
+  stub immediately; ghostty (T6) maps it to a real palette after the fuse.
 
 ---
 
