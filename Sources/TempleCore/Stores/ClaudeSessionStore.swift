@@ -1,8 +1,9 @@
+import Dispatch
 import Foundation
 
 /// Reads Claude Code sessions from `~/.claude/projects/<encoded-cwd>/<id>.jsonl`.
 /// See SESSION-FORMATS.md.
-public struct ClaudeSessionStore: SessionStore {
+public struct ClaudeSessionStore: IncrementalSessionStore {
     public let agent: Agent = .claude
     private let root: URL
 
@@ -11,73 +12,110 @@ public struct ClaudeSessionStore: SessionStore {
             .appendingPathComponent(".claude/projects", isDirectory: true)
     }
 
+    public var watchedURLs: [URL] { [root] }
+
     public func loadSessions() -> [AgentSession] {
+        let files = sessionFileURLs()
+        let collector = SessionCollector()
+        DispatchQueue.concurrentPerform(iterations: files.count) { index in
+            if let session = loadSession(at: files[index]) {
+                collector.append(session)
+            }
+        }
+        return collector.result()
+    }
+
+    public func sessionFileURLs() -> [URL] {
         let fm = FileManager.default
         guard let projectDirs = try? fm.contentsOfDirectory(
             at: root, includingPropertiesForKeys: [.isDirectoryKey]) else { return [] }
 
-        var sessions: [AgentSession] = []
+        var files: [URL] = []
         for dir in projectDirs {
             guard (try? dir.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true,
-                  let files = try? fm.contentsOfDirectory(
+                  let directoryFiles = try? fm.contentsOfDirectory(
                     at: dir, includingPropertiesForKeys: [.contentModificationDateKey])
             else { continue }
 
-            for file in files where file.pathExtension == "jsonl" {
-                if let session = parse(file: file, encodedDirName: dir.lastPathComponent) {
-                    sessions.append(session)
-                }
-            }
+            files.append(contentsOf: directoryFiles.filter { $0.pathExtension == "jsonl" })
         }
-        return sessions
+        return files
+    }
+
+    public func loadSession(at fileURL: URL) -> AgentSession? {
+        parse(file: fileURL, encodedDirName: fileURL.deletingLastPathComponent().lastPathComponent)
     }
 
     private func parse(file: URL, encodedDirName: String) -> AgentSession? {
         let id = file.deletingPathExtension().lastPathComponent
-        guard let head = StoreIO.readHead(file) else { return nil }
-        let lines = head.split(separator: "\n")
+        let signature = StoreIO.fileSignature(file)
+        guard let segments = StoreIO.boundedSegments(file, fileSize: signature?.fileSize),
+              let head = segments.first, !head.isEmpty else { return nil }
 
         var cwd: String?
         var createdAt: Date?
         var humanTitle: String?   // first real human prompt
         var anyUserTitle: String? // first user text of any kind (fallback)
+        var queuedTitle: String?
+        var validTypedLine = false
+        var count = 0
+        var model: String?
+        var preview: String?
+        var branch: String?
+        var summary: String?
 
-        for line in lines {
-            guard let obj = StoreIO.jsonObject(line) else { continue }
-            if cwd == nil, let c = obj["cwd"] as? String { cwd = c }
-            if createdAt == nil, let ts = obj["timestamp"] as? String {
-                createdAt = StoreIO.parseDate(ts)
-            }
-            if humanTitle == nil, (obj["type"] as? String) == "user",
-               let msg = obj["message"] as? [String: Any],
-               let text = Self.text(from: msg["content"]), !text.isEmpty {
-                if anyUserTitle == nil { anyUserTitle = text }
-                if Self.isLikelyHumanPrompt(text) { humanTitle = text }
-            }
-            if cwd != nil, createdAt != nil, humanTitle != nil { break }
-        }
-
-        // Fallbacks: any user text, then a queued prompt; lossy dir-name for cwd.
-        var title = humanTitle ?? anyUserTitle
-        if title == nil {
-            for line in lines {
-                if let obj = StoreIO.jsonObject(line),
-                   let c = obj["content"] as? String, !c.isEmpty {
-                    title = c
-                    break
+        for segment in segments {
+            for line in segment.split(separator: "\n") {
+                guard let obj = StoreIO.jsonObject(line) else { continue }
+                let type = obj["type"] as? String
+                if type != nil { validTypedLine = true }
+                if cwd == nil, let value = obj["cwd"] as? String { cwd = value }
+                if createdAt == nil, let value = obj["timestamp"] as? String {
+                    createdAt = StoreIO.parseDate(value)
+                }
+                if queuedTitle == nil, let value = obj["content"] as? String, !value.isEmpty {
+                    queuedTitle = value
+                }
+                if type == "user" || type == "assistant" {
+                    count += 1
+                    if let message = obj["message"] as? [String: Any] {
+                        if let value = message["model"] as? String { model = value }
+                        if let text = Self.text(from: message["content"]), !text.isEmpty {
+                            preview = StoreIO.cleanTitle(text, cap: 160)
+                            if type == "user" {
+                                if anyUserTitle == nil { anyUserTitle = text }
+                                if humanTitle == nil, Self.isLikelyHumanPrompt(text) {
+                                    humanTitle = text
+                                }
+                            }
+                        }
+                    }
+                }
+                if let value = obj["model"] as? String { model = value }
+                if let value = obj["gitBranch"] as? String { branch = value }
+                if let value = obj["summary"] as? String, !value.isEmpty {
+                    summary = StoreIO.cleanTitle(value)
                 }
             }
         }
+        guard validTypedLine else { return nil }
+
+        // Fallbacks: any user text, then a queued prompt; lossy dir-name for cwd.
+        let title = humanTitle ?? anyUserTitle ?? queuedTitle
         let projectPath = cwd ?? Self.decodeDirName(encodedDirName)
 
         return AgentSession(
             id: id,
             agent: .claude,
             projectPath: projectPath,
-            title: title.map { StoreIO.cleanTitle($0) } ?? "(untitled)",
+            title: summary ?? title.map { StoreIO.cleanTitle($0) } ?? "(untitled)",
             createdAt: createdAt,
-            updatedAt: StoreIO.modificationDate(file),
-            filePath: file
+            updatedAt: signature?.modificationDate ?? StoreIO.modificationDate(file),
+            filePath: file,
+            messageCount: count > 0 ? count : nil,
+            model: model,
+            lastMessagePreview: preview,
+            gitBranch: branch
         )
     }
 
