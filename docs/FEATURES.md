@@ -55,6 +55,7 @@ Where the actual agent runs, powered by an embedded libghostty terminal.
 | Multiple concurrent tabs, one per open session | **MVP** | 3 |
 | **Horizontal tab bar, scoped per project** — shows only the active project's open terminals (Codex sidebar + cmux-style tabs) | **MVP** | 3 |
 | **`+` in tab bar** — quick-launch a new session in the active project | v1 | 4 |
+| **Drag-reorder tabs** in the bar (per-project order, persisted across restarts) | v1 | 3 |
 | Tab shows agent + project + session title | **MVP** | 3 |
 | Working directory set to the session's `cwd` on launch | **MVP** | 3 |
 | **Restore tabs** across app restarts | v1 | 3 |
@@ -68,6 +69,8 @@ Where the actual agent runs, powered by an embedded libghostty terminal.
 
 | Feature | Tier | Phase |
 |---|---|---|
+| **Tab == agent process** — terminal always runs claude/codex (never a bare shell) | **MVP** | 3 |
+| **Process-exit → auto-close tab** — agent quits (Ctrl+C, `/exit`, crash) → tab closes | **MVP** | 3 |
 | **Resume** an existing session (the primary action) | **MVP** | 3 |
 | **New session** flow: pick agent + project (+ git branch) → launch fresh | **MVP** | 4 |
 | Reconcile a freshly-launched session's runtime id back into the index | **MVP** | 3 |
@@ -97,11 +100,12 @@ Where the actual agent runs, powered by an embedded libghostty terminal.
 | Feature | Tier | Phase |
 |---|---|---|
 | Sidebar ↔ detail split layout (Codex-desktop aesthetic) | **MVP** | 2 |
+| **Toggle sidebar** (native show/hide, `⌘\`; content expands full-width) | **MVP** | 2 |
 | **⌘K command palette / quick-open** (jump to any session) | v1 | 4 |
 | Keyboard tab switching (⌘1–9, ⌘[/]) | v1 | 4 |
 | Global keyboard search focus (⌘F) | v1 | 2 |
 | Empty / onboarding states | v1 | 2 |
-| Light/dark theme | v1 | 4 |
+| **Theme: System / Light / Dark** (follows macOS by default; user override) | v1 | 4 |
 
 ---
 

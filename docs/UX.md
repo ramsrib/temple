@@ -12,10 +12,22 @@ frameless, header-less native window.
 
 - **Frameless / hidden title bar** (unified toolbar). Traffic-light buttons float
   over the top of the sidebar; there is **no separate window header/chrome**.
-- **Two panes:** a fixed **Sidebar** (~280pt, collapsible) and a flexible **Main
-  content** area. The main content carries a **horizontal tab bar** in its
-  window-header strip (see below).
+- **Two panes:** a **Sidebar** (~280pt) and a flexible **Main content** area. The
+  main content carries a **horizontal tab bar** in its window-header strip (see
+  below).
+- **The sidebar is toggleable** — a native show/hide toggle (the standard macOS
+  sidebar button in the header, `⌘\` /  `⌥⌘S`, same gesture as Codex/Xcode/Mail);
+  hidden, the main content + tab bar expand full-width. Uses
+  `NSSplitViewController`'s native collapse for the real system look & animation,
+  not a hand-rolled panel.
 - Native macOS feel throughout (vibrancy on the sidebar, system fonts, native tabs).
+
+### Theme
+Three modes: **System / Light / Dark** — default **System** (follows the macOS
+appearance live), with a user override in Settings. The whole app respects it
+(sidebar, tab bar, chrome via standard AppKit/SwiftUI appearance). The **libghostty
+terminal palette tracks the active theme too** — a light and a dark color scheme
+that switch with the app so the terminal never looks foreign against the window.
 
 ```
 ┌──────────────┬──────────────────────────────────────────┐
@@ -90,6 +102,10 @@ A centered composer to start work — Temple's version of "What should we build 
   terminals** — one chip per open session. Each chip = **agent dot (◆/◇) + session
   title + a close ✕** (on hover); the active tab is highlighted. A trailing **`+`**
   starts a new session *in the active project* (quick launch).
+- Tabs are **drag-reorderable** within the bar (native drag, live insertion
+  gap/animation). Order is per-project and **persisted** to the session DB
+  (`open_tabs` order, ADR-009) so it survives restarts. Dragging only reorders —
+  it does not move a tab between projects (a tab's project is fixed by its `cwd`).
 - The tab bar is **scoped to the active project**: it never shows another
   project's tabs. With nothing open, there is no tab bar and the pane shows the
   launcher (A).
@@ -117,6 +133,24 @@ optional branch + initial prompt) → open a tab and launch:
 - **Codex:** run `codex [prompt]` in `cwd`, then **watch** `~/.codex/sessions`
   for the new rollout file and **adopt** its `session_id` (bare `codex` mints its
   own id — no injection). *(ADR-008)*
+
+### A tab **is** its agent process (1:1, both directions)
+The terminal never hosts a bare shell — it **always** runs a claude/codex process
+directly (a "new" tab is an *empty agent session*, not a shell prompt). So the tab
+and the agent process share one lifetime:
+
+- **Close the tab (UI)** → gracefully end the process *(see below)*.
+- **The agent process exits** — the user quits it (e.g. Ctrl+C to quit, `/exit`),
+  it finishes, or it crashes → Temple **detects the child exit** (via the
+  `TerminalSurface` delegate, `processState → .exited`) and **auto-closes the
+  tab.** The session still lives in the sidebar (it's on disk).
+- **Ctrl+D (EOF)** is passed straight through to the agent — Temple adds *no*
+  detach/background semantics. There is no "detached process" state: an agent is
+  always attached to a tab, and a live tab always has an attached agent. If the
+  agent chooses to exit on EOF, that's an ordinary process-exit → the tab closes
+  like any other.
+- **Never orphan, never detach** *(ADR-010)*: no agent without a tab, no tab
+  without an agent.
 
 ### Close a tab
 **Gracefully end the session, don't just kill it** *(ADR-010)*:

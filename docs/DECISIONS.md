@@ -194,10 +194,18 @@ authority — it can be rebuilt from disk at any time.
 Temple maintains the set of **running agent processes** (each a CLI in a
 libghostty PTY surface) and is responsible for their clean lifecycle:
 
+- **A tab *is* its agent process** (1:1, both directions). The terminal never
+  hosts a bare shell — it always runs a claude/codex process directly, so there is
+  no "detached process" state (an agent is always attached to a tab; a live tab
+  always has an agent).
 - **Close a tab** → gracefully end that session: signal the CLI to exit (flush its
   session file), `SIGTERM`, wait, force-kill only past a timeout, then reap. The
   session remains in the sidebar (it lives on disk) — closing a tab ends the
   *process*, not the *session*.
+- **Process exits on its own** (user quits the agent — Ctrl+C, `/exit`; it
+  finishes; or it crashes) → Temple detects the child exit and **auto-closes the
+  tab.** Ctrl+D (EOF) is passed through to the agent unmodified — Temple never
+  interprets it as detach/background. The session stays in the sidebar.
 - **Quit the app** → shut down **all** live processes the same way before exiting;
   never orphan an agent, never quit mid-write (avoids corrupting session files).
 - A **process registry** (in the DB, ADR-009) tracks live pids/sessions so a
