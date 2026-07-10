@@ -1,0 +1,10 @@
+.DS_Store
+.build/
+.swiftpm/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+.netrc
+# libghostty build artifacts (Phase 0)
+vendor/ghostty/zig-out/
+vendor/ghostty/zig-cache/
