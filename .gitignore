@@ -14,5 +14,9 @@ dist/
 vendor/ghostty/zig-out/
 vendor/ghostty/zig-cache/
 
+# Track T — libghostty toolchain (T1): checked-out source + built xcframework.
+# The source is cloned by Scripts/build-ghostty.sh; the artifact is a build output.
+Vendor/
+
 # obisidian
 .obsidian/

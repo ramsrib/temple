@@ -1,0 +1,60 @@
+name: Temple
+
+# U6 — Xcode app-target migration (docs/PLAN.md).
+#
+# This wraps the existing SwiftPM package (path ".") as a real, signable
+# `Temple.app`. The app target compiles only the thin `App/` entry point and
+# links the package's `TempleUI` library product — all app logic still lives in
+# SwiftPM, so Track T's upcoming `GhosttyKit.xcframework` binaryTarget lands with
+# zero changes here (the package brings it in transitively).
+#
+# Generated artifacts (Temple.xcodeproj) are git-ignored; this file + the plists,
+# entitlements and Scripts/ are the checked-in source of truth. Regenerate with
+# `xcodegen generate` or `Scripts/build-app.sh`.
+
+options:
+  bundleIdPrefix: dev.temple
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  minimumXcodeGenVersion: "2.40.0"
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # Signing: prefer the local "Apple Development" identity (see
+    # `security find-identity -v -p codesigning`). Override at the xcodebuild
+    # invocation for ad-hoc/CI signing, e.g.
+    #   xcodebuild ... CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=""
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "Apple Development"
+    DEVELOPMENT_TEAM: DV3HMW4HJ7
+    ENABLE_HARDENED_RUNTIME: YES
+
+packages:
+  Temple:
+    path: .
+
+targets:
+  Temple:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: App
+    dependencies:
+      - package: Temple
+        product: TempleUI
+    settings:
+      base:
+        PRODUCT_NAME: Temple
+        PRODUCT_BUNDLE_IDENTIFIER: dev.temple.Temple
+        INFOPLIST_FILE: App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/Temple.entitlements
+        SWIFT_VERSION: "5.10"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        COMBINE_HIDPI_IMAGES: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        # `Temple.app` is a UI app, not a background agent.
+        LSUIElement: NO
