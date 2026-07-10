@@ -191,4 +191,23 @@ final class SearchFilterTests: XCTestCase {
         XCTAssertEqual(model.highlightableSessions.count, 12)
         XCTAssertEqual(model.paletteResults("Project task").count, 12)
     }
+
+    // MARK: Launch-frozen project order
+
+    func testProjectOrderFrozenAtFirstPublishAndStableAcrossUpdates() {
+        let a = Project(path: "/p/a", sessions: [Fixture.session("a1", project: "/p/a")])
+        let b = Project(path: "/p/b", sessions: [Fixture.session("b1", project: "/p/b")])
+        let (model, _) = makeAppModel(SessionIndex(projects: [a, b]))
+        XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
+
+        // New activity re-sorts the incoming index (b now first) — the sidebar
+        // must NOT shuffle: launch order holds.
+        model.index = SessionIndex(projects: [b, a])
+        XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
+
+        // A genuinely new project surfaces at the top; existing ones stay put.
+        let c = Project(path: "/p/c", sessions: [Fixture.session("c1", project: "/p/c")])
+        model.index = SessionIndex(projects: [c, b, a])
+        XCTAssertEqual(model.displayProjects.map(\.path), ["/p/c", "/p/a", "/p/b"])
+    }
 }
