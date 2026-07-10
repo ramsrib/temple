@@ -3,12 +3,18 @@ import TempleCore
 
 /// Hides ambient / automation sessions from the sidebar (UX §1 noise filter).
 ///
-/// **Seam for Track C2.** The trivial local default hides sessions whose `cwd`
-/// is `/` or no longer exists on disk. When C2's `SessionFilter` lands in
-/// TempleCore, swap `DefaultNoiseFilter` for a `CoreNoiseFilter` adapter — a
-/// one-line change at the `AppModel` construction site.
+/// `CoreNoiseFilter` is the real app adapter. `DefaultNoiseFilter` remains as a
+/// narrow local implementation for focused seam tests.
 public protocol NoiseFilter: Sendable {
     func isNoise(_ session: AgentSession) -> Bool
+}
+
+public struct CoreNoiseFilter: NoiseFilter {
+    public init() {}
+
+    public func isNoise(_ session: AgentSession) -> Bool {
+        SessionFilter.isNoise(session)
+    }
 }
 
 public struct DefaultNoiseFilter: NoiseFilter {

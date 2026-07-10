@@ -21,12 +21,48 @@ public struct PersistedTab: Codable, Equatable {
 
 /// Persists per-project open-tab set + order (ADR-009 `open_tabs`, U2).
 ///
-/// **Seam for Track C5.** `UserDefaults` JSON today; C5's `open_tabs` table
-/// implements the same two methods later.
+/// The real app uses `DBTabPersistence`; the UserDefaults implementation remains
+/// useful for isolated model tests.
 @MainActor
 public protocol TabPersistence: AnyObject {
     func load() -> [PersistedTab]
     func save(_ tabs: [PersistedTab])
+}
+
+@MainActor
+public final class DBTabPersistence: TabPersistence {
+    private let db: TempleDB
+
+    public init(db: TempleDB) {
+        self.db = db
+    }
+
+    public func load() -> [PersistedTab] {
+        (try? db.openTabRecords().map {
+            PersistedTab(
+                sessionID: $0.sessionID,
+                agent: Agent(rawValue: $0.agent) ?? .claude,
+                projectPath: $0.projectPath,
+                title: $0.title
+            )
+        }) ?? []
+    }
+
+    public func save(_ tabs: [PersistedTab]) {
+        var positions: [String: Int] = [:]
+        let records = tabs.map { tab in
+            let position = positions[tab.projectPath, default: 0]
+            positions[tab.projectPath] = position + 1
+            return OpenTabRecord(
+                projectPath: tab.projectPath,
+                sessionID: tab.sessionID,
+                position: position,
+                agent: tab.agent,
+                title: tab.title
+            )
+        }
+        try? db.replaceOpenTabs(records)
+    }
 }
 
 @MainActor

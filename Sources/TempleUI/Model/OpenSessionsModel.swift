@@ -18,7 +18,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     private let appearanceProvider: () -> TerminalAppearance
     private let runtime: SessionRuntimeController
     private let registry: ProcessRegistry
-    private let reconciler: CodexReconciler
+    private let reconciler: CodexAdopting
     private let persistence: TabPersistence
     private let binaryPath: (Agent) -> String
     private let defaultAgent: () -> Agent
@@ -30,7 +30,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                 appearanceProvider: @escaping () -> TerminalAppearance,
                 runtime: SessionRuntimeController,
                 registry: ProcessRegistry,
-                reconciler: CodexReconciler? = nil,
+                reconciler: CodexAdopting? = nil,
                 persistence: TabPersistence? = nil,
                 binaryPath: @escaping (Agent) -> String = { $0.rawValue == "codex" ? "codex" : "claude" },
                 defaultAgent: @escaping () -> Agent = { .claude }) {

@@ -15,6 +15,22 @@ public struct ProcessRecord: Codable, Equatable, Sendable {
     public let startedAt: Date
 }
 
+public struct OpenTabRecord: Codable, Equatable, Sendable {
+    public let projectPath: String
+    public let sessionID: String
+    public let position: Int
+    public let agent: String
+    public let title: String
+
+    public init(projectPath: String, sessionID: String, position: Int, agent: String, title: String) {
+        self.projectPath = projectPath
+        self.sessionID = sessionID
+        self.position = position
+        self.agent = agent
+        self.title = title
+    }
+}
+
 /// Temple-owned, rebuildable application state. CLI session content remains on disk.
 public final class TempleDB: @unchecked Sendable {
     private let db: DatabaseQueue
@@ -26,6 +42,15 @@ public final class TempleDB: @unchecked Sendable {
         )
         db = try DatabaseQueue(path: path.path)
         try Self.migrator.migrate(db)
+    }
+
+    private init(database: DatabaseQueue) throws {
+        db = database
+        try Self.migrator.migrate(db)
+    }
+
+    public static func inMemory() throws -> TempleDB {
+        try TempleDB(database: DatabaseQueue())
     }
 
     public static func defaultPath() -> URL {
@@ -78,6 +103,20 @@ public final class TempleDB: @unchecked Sendable {
         }
     }
 
+    public func sessionStates() throws -> [SessionState] {
+        try db.read { database in
+            try Row.fetchAll(database, sql: "SELECT * FROM session_state ORDER BY id").map { row in
+                SessionState(
+                    id: row["id"],
+                    pinned: row["pinned"],
+                    archived: row["archived"],
+                    customName: row["custom_name"],
+                    lastOpenedAt: row["last_opened_at"]
+                )
+            }
+        }
+    }
+
     public func setOpenTabs(projectPath: String, sessionIDs: [String]) throws {
         try db.write { database in
             try database.execute(sql: "DELETE FROM open_tabs WHERE project_path = ?", arguments: [projectPath])
@@ -100,6 +139,42 @@ public final class TempleDB: @unchecked Sendable {
         }
     }
 
+    /// Atomically replaces every project's restorable tabs, including the
+    /// metadata required to reconstruct lazy inert chips.
+    public func replaceOpenTabs(_ records: [OpenTabRecord]) throws {
+        try db.write { database in
+            try database.execute(sql: "DELETE FROM open_tabs")
+            for record in records {
+                try database.execute(
+                    sql: """
+                        INSERT INTO open_tabs
+                            (project_path, session_id, position, agent, title)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                    arguments: [record.projectPath, record.sessionID, record.position,
+                                record.agent, record.title]
+                )
+            }
+        }
+    }
+
+    public func openTabRecords() throws -> [OpenTabRecord] {
+        try db.read { database in
+            try Row.fetchAll(
+                database,
+                sql: "SELECT * FROM open_tabs ORDER BY project_path, position"
+            ).map { row in
+                OpenTabRecord(
+                    projectPath: row["project_path"],
+                    sessionID: row["session_id"],
+                    position: row["position"],
+                    agent: row["agent"],
+                    title: row["title"]
+                )
+            }
+        }
+    }
+
     public func registerProcess(pid: Int32, sessionID: String, startedAt: Date = Date()) throws {
         try db.write { database in
             try database.execute(
@@ -112,6 +187,15 @@ public final class TempleDB: @unchecked Sendable {
     public func unregisterProcess(pid: Int32) throws {
         try db.write { database in
             try database.execute(sql: "DELETE FROM process_registry WHERE pid = ?", arguments: [Int64(pid)])
+        }
+    }
+
+    public func unregisterProcess(sessionID: String) throws {
+        try db.write { database in
+            try database.execute(
+                sql: "DELETE FROM process_registry WHERE session_id = ?",
+                arguments: [sessionID]
+            )
         }
     }
 
@@ -156,6 +240,12 @@ public final class TempleDB: @unchecked Sendable {
                 table.column("pid", .integer).primaryKey()
                 table.column("session_id", .text).notNull()
                 table.column("started_at", .datetime).notNull()
+            }
+        }
+        migrator.registerMigration("v2-open-tab-metadata") { database in
+            try database.alter(table: "open_tabs") { table in
+                table.add(column: "agent", .text).notNull().defaults(to: "claude")
+                table.add(column: "title", .text).notNull().defaults(to: "")
             }
         }
         return migrator

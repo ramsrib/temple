@@ -156,10 +156,40 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertTrue(model.tabs.allSatisfy { $0.surface == nil })
         XCTAssertEqual(factory.created.count, 0)   // no process storm
     }
+
+    func testDBPersistenceReopensAndRestoresFullInertTabMetadata() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("temple-ui-db-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("temple.sqlite")
+        let writer = DBTabPersistence(db: try TempleDB(path: path))
+        writer.save([
+            PersistedTab(sessionID: "claude-id", agent: .claude,
+                         projectPath: "/p/a", title: "Claude title"),
+            PersistedTab(sessionID: "codex-id", agent: .codex,
+                         projectPath: "/p/a", title: "Codex title"),
+        ])
+
+        let factory = FakeTerminalSurfaceFactory()
+        let model = OpenSessionsModel(
+            surfaceFactory: factory,
+            appearanceProvider: { .default },
+            runtime: SessionRuntimeController(),
+            registry: InMemoryProcessRegistry(),
+            persistence: DBTabPersistence(db: try TempleDB(path: path))
+        )
+        model.restore()
+
+        XCTAssertEqual(model.tabs.compactMap(\.sessionID), ["claude-id", "codex-id"])
+        XCTAssertEqual(model.tabs.map(\.agent), [.claude, .codex])
+        XCTAssertEqual(model.tabs.map(\.title), ["Claude title", "Codex title"])
+        XCTAssertTrue(model.tabs.allSatisfy { $0.surface == nil })
+        XCTAssertEqual(factory.created.count, 0)
+    }
 }
 
 @MainActor
-final class ImmediateReconciler: TempleUI.CodexReconciler {
+final class ImmediateReconciler: TempleUI.CodexAdopting {
     let id: String
     init(id: String) { self.id = id }
     func reconcile(projectPath: String, startedAt: Date, adopt: @escaping (String) -> Void) {
