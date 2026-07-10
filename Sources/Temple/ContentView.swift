@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import TempleCore
+import TempleTerminalAPI
 
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
@@ -12,6 +13,7 @@ struct ContentView: View {
         } detail: {
             if let session = model.selectedSession {
                 SessionDetailView(session: session)
+                    .id(session.id)  // fresh surface per session
             } else {
                 ContentUnavailableViewCompat(
                     "Select a session",
@@ -64,7 +66,10 @@ struct SessionRow: View {
 // MARK: - Detail
 
 struct SessionDetailView: View {
+    @EnvironmentObject var model: AppModel
     let session: AgentSession
+
+    @State private var surface: TerminalSurface?
 
     private var resumeCommand: String {
         session.resume.argv.joined(separator: " ")
@@ -78,19 +83,8 @@ struct SessionDetailView: View {
                     .font(.callout).foregroundStyle(.secondary)
             }
 
-            // Placeholder for the Phase 3 libghostty terminal surface.
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.black.opacity(0.85))
-                .overlay(
-                    VStack(spacing: 8) {
-                        Image(systemName: "terminal").font(.largeTitle)
-                        Text("Terminal surface (libghostty) — Phase 3")
-                        Text(resumeCommand)
-                            .font(.system(.footnote, design: .monospaced))
-                            .foregroundStyle(.green)
-                    }
-                    .foregroundStyle(.white.opacity(0.7))
-                )
+            terminalPane
+                .clipShape(RoundedRectangle(cornerRadius: 10))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             HStack {
@@ -105,6 +99,18 @@ struct SessionDetailView: View {
             }
         }
         .padding(20)
+    }
+
+    @ViewBuilder
+    private var terminalPane: some View {
+        if let surface {
+            TerminalSurfaceHost(surface: surface, command: TerminalCommand(resuming: session))
+                .id(session.id)
+        } else {
+            Color.clear.onAppear {
+                surface = model.surfaceFactory.makeSurface(appearance: .default)
+            }
+        }
     }
 }
 
