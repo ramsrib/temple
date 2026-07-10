@@ -13,26 +13,46 @@ frameless, header-less native window.
 - **Frameless / hidden title bar** (unified toolbar). Traffic-light buttons float
   over the top of the sidebar; there is **no separate window header/chrome**.
 - **Two panes:** a fixed **Sidebar** (~280pt, collapsible) and a flexible **Main
-  content** area.
-- Native macOS feel throughout (vibrancy on the sidebar, system fonts).
+  content** area. The main content carries a **horizontal tab bar** in its
+  window-header strip (see below).
+- Native macOS feel throughout (vibrancy on the sidebar, system fonts, native tabs).
 
 ```
-┌──────────────┬──────────────────────────────────────┐
-│ ● ● ●        │                                        │  ← no window header
-│ Temple    🔍 │                                        │
-│ + New session│         MAIN CONTENT                   │
-│              │   (empty launcher  ·OR·  terminal)     │
-│ Pinned       │                                        │
-│  · …         │                                        │
-│ Projects     │                                        │
-│  �¬ raven     │                                        │
-│    · Analyze…│                                        │
-│    · Inspect…│                                        │
-│  ▸ mentes-web│                                        │
-│              │                                        │
-│ ◐ Sri     ⚙  │                                        │
-└──────────────┴──────────────────────────────────────┘
+┌──────────────┬──────────────────────────────────────────┐
+│ ● ● ●        │ [◆ Analyze ✕][◇ Inspect ✕][ + ]      ▢ ▢ │  ← horizontal tab bar
+│ Temple    🔍 ├──────────────────────────────────────────┤     (active project's
+│ + New session│                                          │      OPEN terminals only)
+│              │                                          │
+│ Pinned       │            MAIN CONTENT                  │
+│  · …         │       (empty launcher ·OR· the           │
+│ Projects     │        active tab's libghostty           │
+│  ▾ raven     │              terminal)                   │
+│    · Analyze │                                          │
+│    · Inspect │                                          │
+│  ▸ mentes-web│                                          │
+│              │                                          │
+│ ◐ Sri     ⚙  │                                          │
+└──────────────┴──────────────────────────────────────────┘
 ```
+
+**The two-part navigation model** — the sidebar and the tab bar are distinct
+things, not two renderings of the same list:
+
+- The **sidebar is the full browse index**: *every* project, *every* recent
+  session, Codex-style (fully expanded, no accordion). A row here is *browsable*
+  — click it to open/focus.
+- A **"tab" is an *open terminal*** — a session you've actually launched or
+  resumed. The **horizontal tab bar** (native look, in the header strip above the
+  terminal) shows **only the open terminals of the active tab's project**. This is
+  the fast switcher between the live terminals in the project you're working in.
+- The **active project == the active tab's project.** Opening/focusing a session
+  in another project swaps the tab bar to *that* project's open terminals.
+  Switching projects never kills the other project's terminals — they live on
+  off-screen until you return *(ADR-010)*.
+
+So one open session has two representations: a browsable row in the sidebar **and**
+a chip in the tab bar. Design inspiration is explicit here: **Codex sidebar +
+cmux-style per-project horizontal tabs** — the tab bar is the piece Codex lacks.
 
 ### Sidebar (top → bottom)
 1. **Wordmark** "Temple" + **search** affordance.
@@ -64,8 +84,15 @@ A centered composer to start work — Temple's version of "What should we build 
 ### B. Terminal state (a session is open)
 - The **libghostty terminal** fills the content area, running the live CLI
   session (resumed or freshly started), ready to type into.
-- If multiple sessions are open, a **tab strip** sits at the top of the content
-  area; each tab = one open session (agent dot + title).
+- Unlike Codex, there is **no bottom composer** in this state — you type directly
+  *into* the terminal. The composer only exists in the empty/launcher state (A).
+- The **horizontal tab bar** in the header strip lists the **active project's open
+  terminals** — one chip per open session. Each chip = **agent dot (◆/◇) + session
+  title + a close ✕** (on hover); the active tab is highlighted. A trailing **`+`**
+  starts a new session *in the active project* (quick launch).
+- The tab bar is **scoped to the active project**: it never shows another
+  project's tabs. With nothing open, there is no tab bar and the pane shows the
+  launcher (A).
 
 ---
 
@@ -75,6 +102,11 @@ A centered composer to start work — Temple's version of "What should we build 
 Click a session in the sidebar →
 - if it's **already open**, focus its tab (never duplicate);
 - else open a **new tab** and spawn its resume command in the session's `cwd`.
+
+Either way, the session's project becomes the **active project**, and the
+horizontal tab bar swaps to show that project's open terminals (with the just-
+opened/focused one active). Clicking a session in a *different* project therefore
+switches the whole tab-bar context to that project.
 
 ### New session
 `+ New session` (or submit the launcher composer) → pick agent + project (+
@@ -116,11 +148,17 @@ never quits mid-write (which could corrupt a session file). *(ADR-010)*
 
 ---
 
+## Resolved
+- **Tabs vs. one-session-at-a-time** → **horizontal, per-project tabs.** The tab
+  bar lives in the content header and shows only the *active project's* open
+  terminals; the sidebar stays the full browse index. (Codex sidebar + cmux-style
+  per-project tabs.) *See "Window & layout" above.*
+
 ## Open questions (design)
 - Empty-state composer: full compose (prompt + agent + project) at launch, or
   just spawn a blank terminal and let the user type into the CLI? *(leaning:
   spawn terminal for MVP; rich composer later.)*
-- Tab strip vs. one-session-at-a-time (sidebar selection drives a single pane)?
-  *(leaning: tabs, to match "maintain all running processes".)*
+- Tab-bar overflow when a project has many open terminals: scroll, shrink-to-fit,
+  or an overflow "▾" menu? *(leaning: scroll + shrink, native-tab behavior.)*
 - Should closing a tab default to graceful-exit or background-detach (keep
   running, just hide)? *(leaning: graceful-exit; offer "keep running" later.)*
