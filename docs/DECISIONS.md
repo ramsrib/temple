@@ -46,9 +46,29 @@ single-surface GPU framework or a webview.
 > architecture rests on this — confirm against Ghostty's source first.
 
 libghostty is Zig; building it needs the Zig toolchain + Ghostty source. It is
-frontier as a *standalone* embed — the only battle-tested consumer is Ghostty's
-own macOS (Swift) and Linux (GTK) apps, which are our reference implementations
-(MIT-licensed).
+frontier as a *standalone* embed, but no longer unproven — see the reference
+implementations below.
+
+**Update 2026-07-10 — standalone Swift embeds exist; risk materially lower.**
+Beyond Ghostty's own macOS/Linux apps, third-party apps already embed libghostty
+in a standalone Swift/AppKit host — closely validating this ADR's central
+assumption *and* Temple's overall shape:
+
+- **[cmux](https://github.com/manaflow-ai/cmux)** (manaflow-ai, MIT) — a native
+  macOS Swift/AppKit terminal that uses **libghostty as a library (not a fork)**,
+  with vertical tabs purpose-built for AI coding agents (git branch, PR status,
+  cwd, ports, notifications per workspace) and a `cmux notify` CLI wired into
+  agent hooks. This is essentially Temple's architecture and near-adjacent
+  product — the single most relevant reference for Track T, and notable prior art
+  worth studying for what it does and doesn't solve (see ADR-002).
+- **[muxy](https://github.com/muxy-app/muxy)** — a lightweight **SwiftUI +
+  libghostty** terminal; a second standalone-embed reference.
+- **[awesome-libghostty](https://github.com/Uzaaft/awesome-libghostty)** — curated
+  list of libghostty embedding projects and API notes.
+
+Consequence: the "frontier standalone embed" risk in PLAN.md drops from *unknown*
+to *demonstrated* — cmux/muxy are working proofs and readable source, alongside
+Ghostty's own app.
 
 ---
 
