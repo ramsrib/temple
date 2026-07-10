@@ -88,7 +88,10 @@ built and tested against the stub/fake.
 
 ### T3 — `TempleTerminal` runtime wrapper ⬜ **M**
 - ⬜ Study `macos/Sources/Ghostty` in the ghostty repo (`Ghostty.App`,
-  `SurfaceView` are the reference impl, MIT). Write
+  `SurfaceView` are the reference impl, MIT) **and [cmux](https://github.com/manaflow-ai/cmux)**
+  (manaflow-ai, MIT) — a standalone Swift/AppKit app that already embeds
+  libghostty as a library in almost exactly Temple's shape; it's the closest
+  working reference for this task (see ADR-003 and the risk table). Write
   `Sources/TempleTerminal/GhosttyApp.swift`: one-per-process runtime init, config
   load, C-callback trampolines into Swift.
 - **Exit:** runtime initializes and shuts down cleanly under a unit test.
@@ -307,7 +310,7 @@ two-method protocol until C5's GRDB store implements it.
 
 | Risk | Track | Fallback |
 |---|---|---|
-| libghostty standalone embed is frontier; C-API churn or an undriveable surface mode (ADR-003 breaks) | T | The protocol is the insurance: slot **SwiftTerm** in as an interim `TerminalSurface` impl (pure Swift, proven embeddable) so the product ships while ADR-003 is revisited; or vendor ghostty's own `macos/Sources/Ghostty` Swift wrapper wholesale (MIT). |
+| libghostty standalone embed is frontier; C-API churn or an undriveable surface mode (ADR-003 breaks) | T | Lower than it looks — [cmux](https://github.com/manaflow-ai/cmux) and [muxy](https://github.com/muxy-app/muxy) are working standalone Swift embeds to crib from (ADR-003). Still, the protocol is the insurance: slot **SwiftTerm** in as an interim `TerminalSurface` impl (pure Swift, proven embeddable) so the product ships while ADR-003 is revisited; or vendor ghostty's own `macos/Sources/Ghostty` Swift wrapper wholesale (MIT). |
 | Zig/ghostty version drift breaks the build | T | Pin both in T1's script + doc; upgrade deliberately, never implicitly. |
 | Ghostty runtime resources missing outside a bundle | T | T7 exists for this; until then the demo sets `GHOSTTY_RESOURCES_DIR` to the checkout. |
 | FSEvents storms from multi-MB JSONL appends | C | Debounce + head-only re-parse (already the store pattern); coalesce per-file. |
