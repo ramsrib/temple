@@ -115,7 +115,7 @@ enum Fixture {
     /// A fresh OpenSessionsModel wired to a fake factory (isolated persistence).
     static func openModel(factory: FakeTerminalSurfaceFactory,
                           timeout: TimeInterval = 3,
-                          reconciler: CodexReconciler? = nil,
+                          reconciler: TempleUI.CodexReconciler? = nil,
                           defaultAgent: Agent = .claude) -> OpenSessionsModel {
         let persistence = UserDefaultsTabPersistence(defaults: uniqueDefaults())
         return OpenSessionsModel(
