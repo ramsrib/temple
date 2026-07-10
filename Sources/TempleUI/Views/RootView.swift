@@ -16,12 +16,14 @@ public struct RootView: View {
             MainContentView()
         }
         .navigationSplitViewStyle(.balanced)
+        .tint(Palette.accent)              // neutral accent everywhere (no blue)
         .background(KeyCatcher())
         .preferredColorScheme(model.settings.theme.colorScheme)
         .sheet(isPresented: $model.launcherPresented) {
             LauncherView(isSheet: true)
                 .environmentObject(model)
-                .frame(width: 520, height: 380)
+                .tint(Palette.accent)
+                .frame(width: 560, height: 560)
         }
         .overlay(alignment: .top) {
             if model.commandPalettePresented {
@@ -37,6 +39,7 @@ public struct RootView: View {
                 .onTapGesture { model.commandPalettePresented = false }
             CommandPaletteView()
                 .environmentObject(model)
+                .tint(Palette.accent)
                 .padding(.top, 90)
         }
         .transition(.opacity)
