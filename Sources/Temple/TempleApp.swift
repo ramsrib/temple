@@ -1,12 +1,24 @@
 import SwiftUI
 import TempleUI
+import TempleTerminal
 
 /// Thin entry point. All app logic lives in the testable `TempleUI` library.
-/// The terminal is stubbed until Track T swaps the factory (one line).
+/// This is the PLAN.md "fuse": the app runs the production libghostty
+/// terminal; tests and previews keep using the stub factory.
 @main
 struct TempleApp: App {
     @NSApplicationDelegateAdaptor(TempleAppDelegate.self) private var appDelegate
-    @StateObject private var model = AppModel()
+    @StateObject private var model: AppModel
+
+    init() {
+        // Un-bundled `swift run` dev path: resources live in the checkout.
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // Temple
+            .deletingLastPathComponent()  // Sources
+            .deletingLastPathComponent()  // repo root
+        GhosttyResources.configure(devCheckoutRoot: repoRoot)
+        _model = StateObject(wrappedValue: AppModel(surfaceFactory: GhosttyTerminalSurfaceFactory()))
+    }
 
     var body: some Scene {
         WindowGroup {

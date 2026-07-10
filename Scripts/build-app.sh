@@ -94,6 +94,22 @@ mkdir -p "$DIST"
 rm -rf "$DIST/$SCHEME.app"
 cp -R "$APP_SRC" "$DIST/$SCHEME.app"
 
+# 6. bundle ghostty runtime resources (T7) ------------------------------------
+# terminfo, shell integration, themes — GhosttyResources.configure() looks for
+# Contents/Resources/ghostty inside the bundle. Produced by build-ghostty.sh.
+GHOSTTY_SHARE="$ROOT/Vendor/ghostty/zig-out/share/ghostty"
+if [[ -d "$GHOSTTY_SHARE" ]]; then
+  echo "==> bundling ghostty resources"
+  cp -R "$GHOSTTY_SHARE" "$DIST/$SCHEME.app/Contents/Resources/ghostty"
+  # The bundle changed after xcodebuild's signature — re-sign.
+  RESIGN_ARGS=(--force -s "$CODE_SIGN_IDENTITY" --entitlements "$ROOT/App/Temple.entitlements")
+  [[ "$CODE_SIGN_IDENTITY" != "-" ]] && RESIGN_ARGS+=(--options runtime)
+  codesign "${RESIGN_ARGS[@]}" "$DIST/$SCHEME.app"
+else
+  echo "warning: $GHOSTTY_SHARE missing — run Scripts/build-ghostty.sh first;" >&2
+  echo "         the app will fall back to a dev checkout at runtime (degraded outside this machine)" >&2
+fi
+
 echo ""
 echo "==> built: $DIST/$SCHEME.app"
 echo "==> signature:"
