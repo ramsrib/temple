@@ -7,6 +7,8 @@ let package = Package(
     products: [
         .library(name: "TempleCore", targets: ["TempleCore"]),
         .library(name: "TempleUI", targets: ["TempleUI"]),
+        // Exposed so the U6 Xcode app target can link the ghostty engine.
+        .library(name: "TempleTerminal", targets: ["TempleTerminal"]),
         .executable(name: "temple", targets: ["Temple"]),
         .executable(name: "templectl", targets: ["templectl"]),
         // Track T dev harness: one window, one libghostty surface.
@@ -31,8 +33,9 @@ let package = Package(
             resources: [.process("Resources")]
         ),
 
-        // Thin @main entry — just launches TempleUI's app scene.
-        .executableTarget(name: "Temple", dependencies: ["TempleUI"]),
+        // Thin @main entry — launches TempleUI's app scene with the production
+        // libghostty terminal factory (the PLAN.md "fuse").
+        .executableTarget(name: "Temple", dependencies: ["TempleUI", "TempleTerminal"]),
 
         // CLI that prints the real project → session index.
         .executableTarget(name: "templectl", dependencies: ["TempleCore"]),

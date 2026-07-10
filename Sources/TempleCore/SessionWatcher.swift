@@ -27,6 +27,7 @@ public final class SessionWatcher: @unchecked Sendable {
         stores: [any SessionStore] = [ClaudeSessionStore(), CodexSessionStore()],
         debounceInterval: TimeInterval = 0.4
     ) {
+        FileDescriptorLimit.ensureRaised()
         self.stores = stores
         self.debounceInterval = debounceInterval
     }

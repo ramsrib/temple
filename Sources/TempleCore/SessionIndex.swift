@@ -15,6 +15,7 @@ public struct SessionIndex: Sendable {
 
     /// Build the index by merging every store and grouping by working directory.
     public static func build(stores: [SessionStore]) -> SessionIndex {
+        FileDescriptorLimit.ensureRaised()
         let all = stores.flatMap { $0.loadSessions() }
         let grouped = Dictionary(grouping: all, by: \.projectPath)
         let projects = grouped
