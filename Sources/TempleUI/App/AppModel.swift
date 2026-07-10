@@ -14,7 +14,26 @@ public final class AppModel: ObservableObject {
     public static let projectCap = 8
 
     // Data
-    @Published public var index = SessionIndex(projects: []) { didSet { recomputeNoise() } }
+    @Published public var index = SessionIndex(projects: []) {
+        didSet {
+            recomputeNoise()
+            extendFrozenProjectOrder()
+        }
+    }
+
+    /// Sidebar project order is frozen at launch: recency decides it once (at
+    /// the first index publish), then it stays put for the rest of the run so
+    /// projects don't shuffle underfoot as sessions update. Genuinely new
+    /// projects surface at the top; existing ones never move relative to each
+    /// other. Recomputed fresh next launch.
+    private var frozenProjectRank: [String: Int] = [:]
+
+    private func extendFrozenProjectOrder() {
+        let newPaths = index.projects.map(\.path).filter { frozenProjectRank[$0] == nil }
+        guard !newPaths.isEmpty else { return }
+        for key in frozenProjectRank.keys { frozenProjectRank[key]! += newPaths.count }
+        for (offset, path) in newPaths.enumerated() { frozenProjectRank[path] = offset }
+    }
     // (recomputeNoise refreshes the cached non-noise set below.)
     @Published public var isLoading = true
 
@@ -279,11 +298,15 @@ public final class AppModel: ObservableObject {
         objectWillChange.send()
     }
 
-    /// Projects for the sidebar (in-memory search over the cached non-noise set).
+    /// Projects for the sidebar (in-memory search over the cached non-noise
+    /// set), in the launch-frozen order — not live recency.
     public var displayProjects: [Project] {
-        noiseFilteredProjects.compactMap { project in
+        noiseFilteredProjects.compactMap { project -> Project? in
             let sessions = project.sessions.filter(matches)
             return sessions.isEmpty ? nil : Project(path: project.path, sessions: sessions)
+        }
+        .sorted {
+            (frozenProjectRank[$0.path] ?? .max) < (frozenProjectRank[$1.path] ?? .max)
         }
     }
 
