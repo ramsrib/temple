@@ -29,4 +29,35 @@ public struct SessionIndex: Sendable {
     public static func buildDefault() -> SessionIndex {
         build(stores: [ClaudeSessionStore(), CodexSessionStore()])
     }
+
+    /// Ranked, case-insensitive sidebar search. An empty query returns nothing.
+    public func search(_ query: String) -> [AgentSession] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return [] }
+
+        let scored = allSessions.compactMap { session -> (AgentSession, Int)? in
+            let title = session.title.lowercased()
+            let project = URL(fileURLWithPath: session.projectPath).lastPathComponent.lowercased()
+            let agentName = session.agent.displayName.lowercased()
+            let agentRaw = session.agent.rawValue.lowercased()
+            let score: Int
+            if title == needle {
+                score = 500
+            } else if title.hasPrefix(needle) {
+                score = 400
+            } else if title.contains(needle) {
+                score = 300
+            } else if project.contains(needle) {
+                score = 200
+            } else if agentName.contains(needle) || agentRaw.contains(needle) {
+                score = 100
+            } else {
+                return nil
+            }
+            return (session, score)
+        }
+        return scored.sorted {
+            $0.1 == $1.1 ? $0.0.updatedAt > $1.0.updatedAt : $0.1 > $1.1
+        }.map(\.0)
+    }
 }
