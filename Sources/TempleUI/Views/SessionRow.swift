@@ -39,7 +39,7 @@ struct SessionRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .listRowBackground(isHighlighted ? Color.accentColor.opacity(0.18) : Color.clear)
+        .listRowBackground(isHighlighted ? Palette.selectionFill : Color.clear)
         .contextMenu { contextMenu }
         .alert("Rename session", isPresented: $renaming) {
             TextField("Name", text: $draftName)
