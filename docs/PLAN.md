@@ -175,8 +175,10 @@ built and tested against the stub/fake.
 *(U0 = T0, the serial item above — do it first.)*
 
 ### U1 — Sidebar per UX.md ⬜ **M**
-- ⬜ Search field (⌘F focus, **title-only** filter per UX), agent badges (Claude ◆
-  / Codex ◇ — upgrade the colored `Circle()` in `SessionRow`), project disclosure
+- ⬜ Search field (⌘F focus, **title-only** filter per UX), agent badges — replace
+  the colored `Circle()` in `SessionRow` with the real brand marks staged in
+  `assets/agent-icons/` (`claude.svg` / `codex.svg`, keyed by `AgentSession.agent`),
+  project disclosure
   groups with per-project "Show more", relative timestamps, noise-filter toggle.
   Wire search/filter to C3/C2 when they land; until then a local
   `title.localizedCaseInsensitiveContains` predicate keeps U1 unblocked (one-line

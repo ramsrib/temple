@@ -30,7 +30,7 @@ browsable index.
 | Auto-discover sessions from Claude Code (`~/.claude`) + Codex (`~/.codex`) | **MVP** | 1 ✅ |
 | Group by **project** (true `cwd`), projects sorted by recent activity | **MVP** | 1 ✅ |
 | Recent sessions per project, newest-first, with human-prompt titles | **MVP** | 1 ✅ |
-| Agent badge per session (Claude ◆ / Codex ◇) | **MVP** | 2 |
+| Agent badge per session — real brand marks (`assets/agent-icons/`) | **MVP** | 2 |
 | **Live updates** — filesystem watcher re-indexes as sessions change | **MVP** | 1/2 |
 | **Search** sessions by **title** (sidebar filter; project/agent/content later) | **MVP** | 2 |
 | Collapse/hide **ambient & automation noise** (e.g. the 1,864 `cwd:/` Codex runs) | **MVP** | 2 |
