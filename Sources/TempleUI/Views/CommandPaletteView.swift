@@ -22,7 +22,7 @@ struct CommandPaletteView: View {
                     .font(.system(size: 16))
                     .focused($fieldFocused)
                     .onSubmit(openSelected)
-                    .onChange(of: query) { _ in selection = 0 }
+                    .onChange(of: query) { selection = 0 }
             }
             .padding(14)
 
@@ -46,7 +46,7 @@ struct CommandPaletteView: View {
                         }
                     }
                     .frame(maxHeight: 340)
-                    .onChange(of: selection) { proxy.scrollTo($0, anchor: .center) }
+                    .onChange(of: selection) { proxy.scrollTo(selection, anchor: .center) }
                 }
             }
         }

@@ -96,6 +96,21 @@ private struct KeyCatcher: NSViewRepresentable {
                 shift ? model.openSessions.selectPreviousTab() : model.openSessions.selectNextTab()
                 return true
             }
+
+            // Sidebar browse (UX "Select vs. open"): arrow keys move the highlight,
+            // Enter opens it — but ONLY while no terminal is focused, so a live
+            // agent still owns its arrow keys.
+            let browsing = model.openSessions.activeTab == nil
+                && !model.commandPalettePresented && !model.launcherPresented
+            if browsing && !cmd && !ctrl {
+                switch event.keyCode {
+                case 125: model.moveHighlight(by: 1); return true    // ↓
+                case 126: model.moveHighlight(by: -1); return true   // ↑
+                case 36, 76: model.openHighlighted(); return true    // return / enter
+                default: break
+                }
+            }
+
             guard cmd else { return false }
 
             switch chars {
