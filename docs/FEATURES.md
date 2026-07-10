@@ -53,6 +53,8 @@ Where the actual agent runs, powered by an embedded libghostty terminal.
 | Click a session → open a **tab** that auto-resumes it | **MVP** | 3 |
 | **Reuse-or-focus**: clicking an open session focuses its tab, no duplicate | **MVP** | 3 |
 | Multiple concurrent tabs, one per open session | **MVP** | 3 |
+| **Horizontal tab bar, scoped per project** — shows only the active project's open terminals (Codex sidebar + cmux-style tabs) | **MVP** | 3 |
+| **`+` in tab bar** — quick-launch a new session in the active project | v1 | 4 |
 | Tab shows agent + project + session title | **MVP** | 3 |
 | Working directory set to the session's `cwd` on launch | **MVP** | 3 |
 | **Restore tabs** across app restarts | v1 | 3 |

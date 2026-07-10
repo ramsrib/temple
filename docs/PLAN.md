@@ -185,10 +185,16 @@ built and tested against the stub/fake.
 
 ### U2 — Tab model + reuse-or-focus ⬜ **M**
 - ⬜ `OpenSessionsModel` (ObservableObject): ordered open tabs, each owning a
-  `TerminalSurface` from the injected factory; tab strip above the content area;
-  clicking an open session focuses, never duplicates.
-- **Exit:** with the stub factory, multiple tabs open/focus/close correctly; each
-  stub shows its session's resume argv + cwd.
+  `TerminalSurface` from the injected factory; clicking an open session focuses,
+  never duplicates. Tabs carry their `projectPath`; an `activeProjectPath`
+  (derived from the active tab) drives a **per-project horizontal tab bar** in the
+  content header — it renders only the active project's open terminals (Codex
+  sidebar + cmux-style per-project tabs; see UX.md). A trailing `+` quick-launches
+  a new session in the active project.
+- **Exit:** with the stub factory, multiple tabs across ≥2 projects open/focus/
+  close correctly; the tab bar shows only the active project's tabs and swaps when
+  a session in another project is opened/focused; each stub shows its session's
+  resume argv + cwd.
 
 ### U3 — `SessionRuntimeController` (ADR-010 lifecycle) ⬜ **M**
 - ⬜ Written *against the protocol*: close-tab → `requestGracefulExit()` → bounded
