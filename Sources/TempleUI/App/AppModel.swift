@@ -9,6 +9,10 @@ import TempleTerminalAPI
 /// hangs off here.
 @MainActor
 public final class AppModel: ObservableObject {
+    /// Default project limit exposed for future Settings integration; no
+    /// Settings UI row is wired yet.
+    public static let projectCap = 8
+
     // Data
     @Published public var index = SessionIndex(projects: []) { didSet { recomputeNoise() } }
     // (recomputeNoise refreshes the cached non-noise set below.)
@@ -281,6 +285,27 @@ public final class AppModel: ObservableObject {
             let sessions = project.sessions.filter(matches)
             return sessions.isEmpty ? nil : Project(path: project.path, sessions: sessions)
         }
+    }
+
+    /// Projects rendered in the collapsed sidebar. Search bypasses the cap, and
+    /// an active project outside it is appended so an opened session stays visible.
+    public var cappedDisplayProjects: [Project] {
+        guard searchText.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return displayProjects
+        }
+        var projects = Array(displayProjects.prefix(Self.projectCap))
+        if let activePath = openSessions.activeProjectPath,
+           !projects.contains(where: { $0.path == activePath }),
+           let activeProject = displayProjects.first(where: { $0.path == activePath }) {
+            projects.append(activeProject)
+        }
+        return projects
+    }
+
+    /// Number of projects hidden by the default cap; search always reports zero.
+    public var hiddenProjectsCount: Int {
+        guard searchText.trimmingCharacters(in: .whitespaces).isEmpty else { return 0 }
+        return max(0, displayProjects.count - Self.projectCap)
     }
 
     /// Pinned section: user-pinned sessions, search filtered (pins are in-memory).

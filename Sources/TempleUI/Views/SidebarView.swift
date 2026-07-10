@@ -7,6 +7,7 @@ import TempleCore
 struct SidebarView: View {
     @EnvironmentObject var model: AppModel
     @FocusState private var searchFocused: Bool
+    @State private var showAllProjects = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -85,8 +86,18 @@ struct SidebarView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
-                ForEach(model.displayProjects) { project in
+                ForEach(showAllProjects ? model.displayProjects : model.cappedDisplayProjects) { project in
                     ProjectDisclosure(project: project)
+                }
+                if model.searchText.isEmpty && model.hiddenProjectsCount > 0 {
+                    Button(showAllProjects
+                           ? "Show fewer"
+                           : "Show all projects (\(model.hiddenProjectsCount) more)") {
+                        showAllProjects.toggle()
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
                 }
             }
         }
