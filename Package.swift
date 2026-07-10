@@ -9,9 +9,12 @@ let package = Package(
         .executable(name: "temple", targets: ["Temple"]),
         .executable(name: "templectl", targets: ["templectl"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/groue/GRDB.swift", from: "6.29.3"),
+    ],
     targets: [
         // Pure logic — no AppKit/SwiftUI (ADR-006).
-        .target(name: "TempleCore"),
+        .target(name: "TempleCore", dependencies: [.product(name: "GRDB", package: "GRDB.swift")]),
 
         // The SwiftUI/AppKit app shell (terminal pane is stubbed until Phase 3).
         .executableTarget(name: "Temple", dependencies: ["TempleCore"]),
