@@ -21,6 +21,12 @@ frameless, header-less native window.
   `NSSplitViewController`'s native collapse for the real system look & animation,
   not a hand-rolled panel.
 - Native macOS feel throughout (vibrancy on the sidebar, system fonts, native tabs).
+- **Single main window** for MVP (multi-window is later). Traffic lights sit over
+  the sidebar; **when the sidebar is collapsed the tab bar insets ~70pt at its
+  leading edge** so it clears the reflowed traffic lights.
+- **Right-click context menu** on a sidebar row *and* a tab chip: open/focus, copy
+  resume command, copy session id, reveal session file in Finder, rename, pin,
+  close.
 
 ### Theme
 Three modes: **System / Light / Dark** — default **System** (follows the macOS
@@ -100,12 +106,17 @@ A centered composer to start work — Temple's version of "What should we build 
   *into* the terminal. The composer only exists in the empty/launcher state (A).
 - The **horizontal tab bar** in the header strip lists the **active project's open
   terminals** — one chip per open session. Each chip = **agent dot (◆/◇) + session
-  title + a close ✕** (on hover); the active tab is highlighted. A trailing **`+`**
-  starts a new session *in the active project* (quick launch).
+  title + a close ✕** (on hover) + an **activity dot** (running / needs-attention —
+  see *Notifications*); the active tab is highlighted. A trailing **`+`** opens a
+  menu — **New Claude Session** / **New Codex Session** — creating an empty session
+  in the active project (⌘T does the same with the default agent, no menu).
 - Tabs are **drag-reorderable** within the bar (native drag, live insertion
   gap/animation). Order is per-project and **persisted** to the session DB
-  (`open_tabs` order, ADR-009) so it survives restarts. Dragging only reorders —
-  it does not move a tab between projects (a tab's project is fixed by its `cwd`).
+  (`open_tabs` order, ADR-009). Dragging only reorders — it does not move a tab
+  between projects (a tab's project is fixed by its `cwd`).
+- **Restore across restarts is lazy:** on relaunch the per-project tab set + order
+  come back as **inert chips**; a terminal **spawns only when you click a chip** —
+  never a process storm at launch.
 - The tab bar is **scoped to the active project**: it never shows another
   project's tabs. With nothing open, there is no tab bar and the pane shows the
   launcher (A).
@@ -115,7 +126,7 @@ A centered composer to start work — Temple's version of "What should we build 
 ## Core interaction flows
 
 ### Open an existing session
-Click a session in the sidebar →
+**Click** a session in the sidebar →
 - if it's **already open**, focus its tab (never duplicate);
 - else open a **new tab** and spawn its resume command in the session's `cwd`.
 
@@ -124,15 +135,37 @@ horizontal tab bar swaps to show that project's open terminals (with the just-
 opened/focused one active). Clicking a session in a *different* project therefore
 switches the whole tab-bar context to that project.
 
+**Select vs. open (important):** opening a session **spawns a real agent process**,
+so browsing must not. Keyboard **arrow keys move a highlight only** (no spawn);
+**Enter** or **double-click** opens/focuses the highlighted session. "Highlighted
+in the sidebar" and "has a live process" are independent states — and the sidebar
+highlight **follows the active tab**, so the two views never disagree.
+
 ### New session
-`+ New session` (or submit the launcher composer) → pick agent + project (+
-optional branch + initial prompt) → open a tab and launch:
+Every new session is an **empty agent session** — the agent launched fresh in the
+target `cwd`, ready to type into (no initial prompt required). Three entry points:
+
+- **`+ New session` (sidebar / ⌘N)** → the launcher: pick **agent** + **project**.
+  The project picker lists indexed projects **and a "Choose folder…"** item
+  (NSOpenPanel) — the *only* path that can target a directory Temple hasn't seen
+  before (every other entry operates within already-indexed projects).
+- **`+` (tab bar)** → a click opens a menu: **New Claude Session** /
+  **New Codex Session**, created in the **active project**. Mouse path = explicit
+  agent choice.
+- **⌘T** → a new empty session in the **current project** using the **default
+  agent** (Claude; configurable in Settings). Keyboard path = fast, no menu.
+
+Launch mechanics per agent:
 - **Claude:** Temple generates a UUID and runs
   `claude --session-id <uuid> [--name <n>] [prompt]` in `cwd`. **The id is known
   immediately** and stored at once. *(ADR-008)*
 - **Codex:** run `codex [prompt]` in `cwd`, then **watch** `~/.codex/sessions`
   for the new rollout file and **adopt** its `session_id` (bare `codex` mints its
   own id — no injection). *(ADR-008)*
+
+Temple never touches git or the filesystem — no branch, worktree, or checkout. A
+"project" is just a working directory; a session is just an agent process running
+in it. *(ADR-012)*
 
 ### A tab **is** its agent process (1:1, both directions)
 *(This governs **session tabs** — the normal case. There is one exception: the
@@ -190,7 +223,45 @@ grow it over time. First cut:
 - **Agent binary paths** (auto-detected, overridable) *(FEATURES §6)*.
 
 Everything else in FEATURES §6 (scan roots, startup behavior, per-agent flags,
-cursor, etc.) lands here incrementally.
+cursor, etc.) lands here incrementally. The default agent (Claude) lives here too.
+
+### Search
+- **Sidebar search (⌘F)** filters the sidebar in place, matching **session title
+  only** (MVP — no project / agent / content search).
+- **⌘K command palette** — global quick-open across **all** projects and sessions
+  (title match). Pick a result → focus jumps to that project **and** session
+  (opens or focuses its tab, switching project context as needed). *(v1)*
+
+### Notifications & attention
+The reason to run a session *manager*: know which one needs you. Each open session
+carries an **activity state** — *running* (output flowing / agent working), *idle*,
+or **needs attention** (agent finished, or is waiting for your input).
+
+- **Signal source:** the terminal **bell** and the desktop-notification escape
+  sequences (OSC 9 / OSC 777) that Claude/Codex already emit — surfaced by
+  libghostty via delegate callbacks — plus **process exit** (session ended).
+- **Surfaces:** an **activity dot** on the tab chip *and* the sidebar row; and a
+  **native macOS notification** ("project · session" + message). Clicking the
+  notification **focuses that tab** (switching project context as needed).
+- Per-session / per-project **mute** and a Do-Not-Disturb toggle come later.
+
+## Keyboard shortcuts
+Temple's users live in terminals and editors (VS Code / Cursor), so it adopts
+their conventions — tabs behave like editor/browser tabs.
+
+| Shortcut | Action |
+|---|---|
+| **⌘T** | New empty session (tab) in the current project, **default agent** |
+| **⌘W** | Close the current tab (graceful end, ADR-010) |
+| **⌘N** | New session launcher (pick agent + project / choose folder) |
+| **⌘1–9** | Switch to tab *N* in the active project |
+| **⌃⇥ / ⌃⇧⇥** | Next / previous tab |
+| **⌘F** | Focus sidebar search |
+| **⌘K** | Command palette (quick-open any session) |
+| **⌘\\** | Toggle sidebar |
+| **⌘,** | Open Settings (as a tab) |
+
+*(⌘⇧T "reopen last-closed tab" and multi-window support are later.)*
 
 ---
 
@@ -209,10 +280,14 @@ cursor, etc.) lands here incrementally.
 ---
 
 ## Resolved
-- **Tabs vs. one-session-at-a-time** → **horizontal, per-project tabs.** The tab
-  bar lives in the content header and shows only the *active project's* open
-  terminals; the sidebar stays the full browse index. (Codex sidebar + cmux-style
-  per-project tabs.) *See "Window & layout" above.*
+- **Tabs vs. one-session-at-a-time** → **horizontal, per-project tabs.** *See
+  "Window & layout".*
+- **Search scope** → **session title only** (MVP); ⌘K palette adds global
+  quick-open. *See "Search".*
+- **Tab restore** → **lazy inert chips**; a process spawns only on click. *See §B.*
+- **Close a tab** → **graceful exit** (no background-detach state). *(ADR-010)*
+- **Select vs. open** → click / Enter opens (spawns); arrow-keys only highlight.
+- **Git / worktrees** → **out of scope**; sessions only. *(ADR-012)*
 
 ## Open questions (design)
 - Empty-state composer: full compose (prompt + agent + project) at launch, or
@@ -220,5 +295,3 @@ cursor, etc.) lands here incrementally.
   spawn terminal for MVP; rich composer later.)*
 - Tab-bar overflow when a project has many open terminals: scroll, shrink-to-fit,
   or an overflow "▾" menu? *(leaning: scroll + shrink, native-tab behavior.)*
-- Should closing a tab default to graceful-exit or background-detach (keep
-  running, just hide)? *(leaning: graceful-exit; offer "keep running" later.)*

@@ -228,3 +228,19 @@ sampled). So the working rule:
 
 Optionally, Temple may set a name at launch (`claude --name` / Codex session
 names) to influence the CLI's own display.
+
+---
+
+## ADR-012 — Scope boundary: agent **sessions** only — not git, not the filesystem
+**Date:** 2026-07-10 · **Status:** Accepted
+
+Temple manages **terminal agent sessions** and nothing else. It does **not** run
+git (no branch / checkout / worktree creation), does **not** create or edit files,
+and does **not** manage repositories. A "project" is simply a **working directory**
+an agent runs in; a "session" is an agent **process** in that directory.
+
+Consequence: the new-session flow picks an **agent** + a **directory** (an existing
+indexed project, or a "Choose folder…" pick) — never a branch or worktree. Any
+git/worktree workflow a user wants is the *agent's* job inside its terminal, not
+Temple's. This keeps Temple a thin, safe session manager with no destructive
+filesystem/git surface area, and is revisited only if a concrete need appears.

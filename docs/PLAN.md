@@ -39,7 +39,7 @@ Legend: ✅ done · 🔨 in progress · ⬜ todo · **S/M/L** = rough size.
 |---|---|---|
 | **T — Terminal Engine** | Build, link, and wrap libghostty as a production `TerminalSurface` implementation. | Everything sits *behind* the `TerminalSurface` protocol. Touches only new targets (`CGhostty`/`GhosttyKit`, `TempleTerminal`) plus one `Package.swift` append. Zero dependence on TempleCore. |
 | **C — Core Data & Live Index** | Make `TempleCore` live and durable: FS watcher, search, noise filtering, richer metadata, GRDB session DB (ADR-009). | Pure `TempleCore` (no AppKit, ADR-006). Provable via `templectl` + unit tests; no UI or terminal needed. |
-| **U — UI Shell & Session Lifecycle** | The full app experience minus the terminal pixels: sidebar per UX.md, tab model, launch/lifecycle controller (ADR-010), new-session flow (ADR-008) — against a stub surface. | Consumes `TerminalSurface` (stub impl) + TempleCore's existing public API. Where it needs Track C outputs, the seam is a plain protocol/closure it defaults trivially until C lands. |
+| **U — UI Shell & Session Lifecycle** | The full app experience minus the terminal pixels: sidebar per UX.md, per-project tab model, launch/lifecycle controller (ADR-010), new-session flow (ADR-008/012), notifications & attention (U7) — against a stub surface. | Consumes `TerminalSurface` (stub impl) + TempleCore's existing public API. Where it needs Track C outputs, the seam is a plain protocol/closure it defaults trivially until C lands. |
 
 **T0/U0 — the interface package** is the only thing that precedes the tracks
 (§ *The one serial dependency*). After it lands, all three tracks run fully in
@@ -175,13 +175,17 @@ built and tested against the stub/fake.
 *(U0 = T0, the serial item above — do it first.)*
 
 ### U1 — Sidebar per UX.md ⬜ **M**
-- ⬜ Search field (⌘F focus), agent badges (Claude ◆ / Codex ◇ — upgrade the
-  colored `Circle()` in `SessionRow`), project disclosure groups with per-project
-  "Show more", relative timestamps, noise-filter toggle. Wire search/filter to
-  C3/C2 when they land; until then a local
+- ⬜ Search field (⌘F focus, **title-only** filter per UX), agent badges (Claude ◆
+  / Codex ◇ — upgrade the colored `Circle()` in `SessionRow`), project disclosure
+  groups with per-project "Show more", relative timestamps, noise-filter toggle.
+  Wire search/filter to C3/C2 when they land; until then a local
   `title.localizedCaseInsensitiveContains` predicate keeps U1 unblocked (one-line
   swap later).
-- **Exit:** matches the UX.md wireframe; filtering/search work on real data.
+- ⬜ **Select ≠ open:** arrow keys move a highlight only; **Enter / double-click**
+  opens (spawns). The sidebar highlight **follows the active tab**. Right-click
+  context menu (copy resume cmd / id, reveal in Finder, rename, pin, close).
+- **Exit:** matches the UX.md wireframe; filtering/search work on real data;
+  arrowing the list spawns nothing.
 
 ### U2 — Tab model + reuse-or-focus ⬜ **M**
 - ⬜ `OpenSessionsModel` (ObservableObject): ordered open tabs, each owning a
@@ -189,12 +193,17 @@ built and tested against the stub/fake.
   never duplicates. Tabs carry their `projectPath`; an `activeProjectPath`
   (derived from the active tab) drives a **per-project horizontal tab bar** in the
   content header — it renders only the active project's open terminals (Codex
-  sidebar + cmux-style per-project tabs; see UX.md). A trailing `+` quick-launches
-  a new session in the active project.
+  sidebar + cmux-style per-project tabs; see UX.md).
+- ⬜ `+` opens a **New Claude / New Codex** menu (active project); **⌘T** = new
+  empty session with the **default agent**; **⌘W** = close current tab; **⌘1–9** /
+  **⌃⇥** switch tabs; drag-reorder persists to C5's `open_tabs`.
+- ⬜ **Lazy restore:** on launch, rebuild the per-project tab set + order from
+  `open_tabs` as **inert chips** — a `TerminalSurface` is created only on click
+  (no process storm).
 - **Exit:** with the stub factory, multiple tabs across ≥2 projects open/focus/
   close correctly; the tab bar shows only the active project's tabs and swaps when
-  a session in another project is opened/focused; each stub shows its session's
-  resume argv + cwd.
+  a session in another project is opened/focused; ⌘T/⌘W/⌘1–9 work; restored chips
+  stay inert until clicked; each stub shows its session's resume argv + cwd.
 
 ### U3 — `SessionRuntimeController` (ADR-010 lifecycle) ⬜ **M**
 - ⬜ Written *against the protocol*: close-tab → `requestGracefulExit()` → bounded
@@ -205,16 +214,20 @@ built and tested against the stub/fake.
 - **Exit:** unit-tested with a `FakeTerminalSurface` scripting exit timing
   (graceful, slow, hung).
 
-### U4 — New-session flow (ADR-008) ⬜ **M/L**
-- ⬜ Empty-state launcher (project chip + agent selector + prompt, per UX.md —
-  MVP-lean spawn-terminal variant). Claude path: mint UUID →
+### U4 — New-session flow (ADR-008 · ADR-012) ⬜ **M/L**
+- ⬜ Empty-state launcher (project chip + agent selector, per UX.md — MVP-lean
+  spawn-terminal variant). The project picker includes a **"Choose folder…"**
+  (NSOpenPanel) option so a *new*, un-indexed directory can be targeted — **agent +
+  directory only, no branch/worktree** (ADR-012). ⌘T / `+` / empty-tab default to
+  the configured **default agent** (Claude). Claude path: mint UUID →
   `claude --session-id <uuid> [-n name]`, id known immediately. Codex path:
   launch `codex [prompt]`, then `CodexReconciler` (in TempleCore — pure logic:
   match new rollout file by `cwd` + creation-time window, adopt
   `payload.session_id`); unit-test the matcher against fixtures without running
   codex.
-- **Exit:** stub-mode — new session appears in sidebar with the correct adopted id
-  after the CLI writes its file; ghostty-mode after the fuse — fully in-app.
+- **Exit:** stub-mode — new session (including one started via Choose folder…)
+  appears in sidebar with the correct adopted id after the CLI writes its file;
+  ghostty-mode after the fuse — fully in-app.
 
 ### U5 — Watcher + DB wiring ⬜ **S**
 - ⬜ `AppModel` consumes C1's `AsyncStream` (interim: a 5s poll timer, three
@@ -229,6 +242,24 @@ built and tested against the stub/fake.
   CGhostty linking model is known; before T7, which needs a bundle for
   resources).
 - **Exit:** `Temple.app` builds, signs, launches from Finder.
+
+### U7 — Notifications & attention state ⬜ **M**
+- ⬜ Consume the `TerminalSurface` delegate **bell** (`surfaceDidRing`) +
+  **desktop-notification** (`didPostNotification`, OSC 9/777) callbacks and
+  **process-exit**; derive a per-session activity state (running / idle /
+  needs-attention). Render an activity dot on the tab chip + sidebar row; raise a
+  native **`UNUserNotification`** ("project · session" + message) whose click
+  **focuses that tab** (via `OpenSessionsModel` + active-project switch).
+- ⬜ Depends on Track T wiring libghostty's bell/OSC-notification callbacks into
+  the two new delegate methods; until then drive it from `FakeTerminalSurface`
+  firing scripted bell/notification/exit events.
+- **Exit:** stub/fake-mode — a scripted attention event lights the dot and posts a
+  notification; clicking it focuses the right tab. Real bell/OSC after the fuse.
+
+### U8 — ⌘K command palette ⬜ **S** *(v1)*
+- ⬜ Global quick-open over the full index (title match, reuses C3's ranker);
+  selecting a result opens/focuses that session's tab (switching active project).
+- **Exit:** ⌘K → type → Enter jumps to the session's tab.
 
 ---
 
@@ -266,6 +297,10 @@ public protocol TerminalSurface: AnyObject {
 public protocol TerminalSurfaceDelegate: AnyObject {
     func surface(_ surface: TerminalSurface, didChangeState state: TerminalProcessState)
     func surface(_ surface: TerminalSurface, didUpdateTitle title: String)
+
+    // Attention signals → activity dots + native notifications (UX "Notifications").
+    func surfaceDidRing(_ surface: TerminalSurface)                                    // terminal bell
+    func surface(_ surface: TerminalSurface, didPostNotification title: String, body: String)  // OSC 9 / OSC 777
 }
 
 @MainActor
@@ -280,7 +315,7 @@ Three implementations:
   command + a scripted/manual state machine — what the current placeholder
   rectangle becomes.
 - **`FakeTerminalSurface`** (test-only): scriptable exit timing for U3's
-  lifecycle tests.
+  lifecycle tests, and scriptable bell / notification / exit events for U7.
 - **`GhosttyTerminalSurface`** (Track T, in `TempleTerminal`).
 
 `TempleApp` picks the factory at startup — **the fuse is one line.**
