@@ -10,6 +10,7 @@ auto-resumes that session.
 
 ## Why / what / how
 
+- **Product & feature spec:** [docs/FEATURES.md](docs/FEATURES.md)
 - **Decisions & rationale:** [docs/DECISIONS.md](docs/DECISIONS.md)
 - **Build plan (phased):** [docs/PLAN.md](docs/PLAN.md)
 - **Session storage formats:** [docs/SESSION-FORMATS.md](docs/SESSION-FORMATS.md)
