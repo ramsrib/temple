@@ -5,6 +5,11 @@
 *.xcworkspace/xcuserdata/
 DerivedData/
 .netrc
+
+# U6 Xcode app target: generated from project.yml; build output. Both are
+# reproducible via Scripts/build-app.sh, so neither is committed.
+Temple.xcodeproj/
+dist/
 # libghostty build artifacts (Phase 0)
 vendor/ghostty/zig-out/
 vendor/ghostty/zig-cache/
