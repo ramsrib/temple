@@ -159,7 +159,7 @@ final class OpenSessionsModelTests: XCTestCase {
 }
 
 @MainActor
-final class ImmediateReconciler: CodexReconciler {
+final class ImmediateReconciler: TempleUI.CodexReconciler {
     let id: String
     init(id: String) { self.id = id }
     func reconcile(projectPath: String, startedAt: Date, adopt: @escaping (String) -> Void) {
