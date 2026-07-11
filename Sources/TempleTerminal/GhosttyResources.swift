@@ -25,7 +25,7 @@ public enum GhosttyResources {
             setenv("GHOSTTY_RESOURCES_DIR", dir.path, 1)
             return dir.path
         }
-        NSLog("[TempleTerminal] WARNING: no ghostty resources dir found; terminfo/shell-integration may be degraded")
+        TempleTerminalLog.logger.error("no ghostty resources dir found; terminfo/shell-integration may be degraded")
         return nil
     }
 }

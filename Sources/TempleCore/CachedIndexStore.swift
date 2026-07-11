@@ -25,10 +25,14 @@ public final class CachedIndexStore {
             let data = try Data(contentsOf: url)
             let cache = try JSONDecoder().decode(PersistedIndexCache.self, from: data)
             guard cache.schemaVersion == PersistedIndexCache.currentSchemaVersion else {
+                TempleCoreLog.cache.error("cache schema mismatch at \(url.path, privacy: .public): found=\(cache.schemaVersion) expected=\(PersistedIndexCache.currentSchemaVersion)")
                 return nil
             }
             return cache.index
         } catch {
+            if (error as? CocoaError)?.code != .fileReadNoSuchFile {
+                TempleCoreLog.cache.error("failed to load cache at \(url.path, privacy: .public): \(String(describing: error), privacy: .public)")
+            }
             return nil
         }
     }
@@ -36,15 +40,20 @@ public final class CachedIndexStore {
     /// Atomically saves a complete snapshot, creating its parent directory when
     /// necessary. Session files remain the source of truth.
     public static func save(_ index: SessionIndex, to url: URL = defaultURL) throws {
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        let cache = PersistedIndexCache(
-            schemaVersion: PersistedIndexCache.currentSchemaVersion,
-            savedAt: Date(),
-            index: index
-        )
-        try JSONEncoder().encode(cache).write(to: url, options: .atomic)
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let cache = PersistedIndexCache(
+                schemaVersion: PersistedIndexCache.currentSchemaVersion,
+                savedAt: Date(),
+                index: index
+            )
+            try JSONEncoder().encode(cache).write(to: url, options: .atomic)
+        } catch {
+            TempleCoreLog.cache.error("failed to save cache at \(url.path, privacy: .public): \(String(describing: error), privacy: .public)")
+            throw error
+        }
     }
 }

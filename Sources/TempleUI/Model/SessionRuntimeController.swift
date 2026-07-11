@@ -30,8 +30,13 @@ public final class SessionRuntimeController {
         let timeout = gracefulTimeout
         Task { [weak surface] in
             try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-            guard let surface, Self.isRunning(surface) else { return }
-            surface.terminate()
+            guard let surface else { return }
+            if Self.isRunning(surface) {
+                TempleUILog.lifecycle.error("graceful close timed out after \(timeout)s, escalating to terminate()")
+                surface.terminate()
+            } else {
+                TempleUILog.lifecycle.debug("graceful close completed within \(timeout)s")
+            }
         }
     }
 

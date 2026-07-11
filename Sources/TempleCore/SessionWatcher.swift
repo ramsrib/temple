@@ -127,7 +127,11 @@ public final class SessionWatcher: @unchecked Sendable {
     private func installWatchLocked(url: URL, agent: Agent) {
         #if canImport(Darwin)
         let descriptor = open(url.path, O_EVTONLY)
-        guard descriptor >= 0 else { return }
+        guard descriptor >= 0 else {
+            let code = errno
+            TempleCoreLog.watcher.error("failed to watch path=\(url.path, privacy: .public) errno=\(code) (\(String(cString: strerror(code)), privacy: .public))")
+            return
+        }
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: descriptor,
             eventMask: [.write, .extend, .rename, .delete],
@@ -168,8 +172,11 @@ public final class SessionWatcher: @unchecked Sendable {
     }
 
     private func reloadIncrementallyLocked(_ store: any IncrementalSessionStore) {
-        guard var cache = cachesByAgent[store.agent],
+        let existingCache = cachesByAgent[store.agent]
+        guard var cache = existingCache,
               cache.invalidationToken == store.cacheInvalidationToken else {
+            let reason = existingCache == nil ? "cache missing" : "invalidation token mismatch"
+            TempleCoreLog.watcher.info("incremental reload falling back to full reload: agent=\(store.agent.rawValue, privacy: .public) reason=\(reason, privacy: .public)")
             let sessions = store.loadSessions()
             sessionsByAgent[store.agent] = sessions
             cachesByAgent[store.agent] = Self.makeCache(store: store, sessions: sessions)
@@ -177,7 +184,7 @@ public final class SessionWatcher: @unchecked Sendable {
         }
 
         var updated: [String: CacheEntry] = [:]
-        var parsedMidWrite = false
+        var midWriteCount = 0
         for file in store.sessionFileURLs() {
             let path = file.path
             guard let signature = FileSignature(file) else { continue }
@@ -194,15 +201,16 @@ public final class SessionWatcher: @unchecked Sendable {
             // new session stayed missing/noise until app restart.
             updated[path] = CacheEntry(signature: signature, session: session)
             if let finalSignature = FileSignature(file), finalSignature != signature {
-                parsedMidWrite = true
+                midWriteCount += 1
             }
         }
         cache.entries = updated
         cachesByAgent[store.agent] = cache
         sessionsByAgent[store.agent] = updated.values.compactMap(\.session)
-        if parsedMidWrite {
+        if midWriteCount > 0 {
             // Belt and braces: guarantee a follow-up pass even if the writer's
             // last event was coalesced into the reload we just did.
+            TempleCoreLog.watcher.debug("scheduling mid-write retry: agent=\(store.agent.rawValue, privacy: .public) files=\(midWriteCount)")
             recordChangeLocked(for: store.agent)
         }
     }

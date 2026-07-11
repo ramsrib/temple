@@ -63,24 +63,37 @@ public final class WatcherCodexReconciler: CodexAdopting {
             )
         }
 
-        let matches = pending.compactMap { id, request -> (UUID, PendingAdoption, String)? in
+        let requests = pending
+        for (id, request) in requests {
+            let candidateCount = candidates.filter {
+                $0.cwd == request.projectPath
+                    && abs($0.createdAt.timeIntervalSince(request.startedAt)) <= window
+            }.count
+            if candidateCount == 0 {
+                TempleUILog.reconcile.info("no Codex adoption match for cwd=\(request.projectPath, privacy: .public) within window=\(self.window)s")
+                continue
+            }
+            if candidateCount > 1 {
+                TempleUILog.reconcile.error("refused to adopt: \(candidateCount) candidates for cwd=\(request.projectPath, privacy: .public) within window=\(self.window)s")
+                continue
+            }
             guard let match = TempleCore.CodexReconciler.reconcile(
                 launchedCwd: request.projectPath,
                 launchedAt: request.startedAt,
                 window: window,
                 candidates: candidates
-            ) else { return nil }
-            return (id, request, match.sessionID)
-        }
-        for (id, request, sessionID) in matches {
+            ) else { continue }
             pending.removeValue(forKey: id)
-            request.adopt(sessionID)
+            request.adopt(match.sessionID)
+            TempleUILog.reconcile.info("adopted Codex session id=\(match.sessionID, privacy: .public) cwd=\(request.projectPath, privacy: .public)")
         }
         stopObservingIfIdle()
     }
 
     private func removePending(_ id: UUID) {
-        pending.removeValue(forKey: id)
+        if let request = pending.removeValue(forKey: id) {
+            TempleUILog.reconcile.info("Codex adoption timed out with no match for cwd=\(request.projectPath, privacy: .public) within window=\(self.window)s")
+        }
         stopObservingIfIdle()
     }
 
