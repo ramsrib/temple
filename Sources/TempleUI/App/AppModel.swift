@@ -62,6 +62,7 @@ public final class AppModel: ObservableObject {
     private var noiseFilteredProjects: [Project] = []
     @Published public var sidebarVisibility: NavigationSplitViewVisibility = .all
     @Published public var commandPalettePresented = false
+    @Published public var shortcutsPresented = false
     /// Pulsed to move keyboard focus into the sidebar search field (⌘F).
     @Published public var focusSearchToken = 0
 
@@ -380,7 +381,13 @@ public final class AppModel: ObservableObject {
     // MARK: Command palette (U8)
 
     public func paletteResults(_ query: String) -> [AgentSession] {
+        let sessions = noiseFilteredProjects.flatMap(\.sessions)
+        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
+            // Empty query = session switcher: the most recent sessions, ready
+            // to arrow-and-Enter between.
+            return Array(sessions.sorted { $0.updatedAt > $1.updatedAt }.prefix(4))
+        }
         // Rank over the cached non-noise set (respects the noise toggle).
-        search.rank(noiseFilteredProjects.flatMap(\.sessions), query: query)
+        return search.rank(sessions, query: query)
     }
 }

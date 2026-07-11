@@ -29,7 +29,7 @@ struct CommandPaletteView: View {
             Divider()
 
             if results.isEmpty {
-                Text(query.isEmpty ? "Type to search all sessions" : "No matches")
+                Text(query.isEmpty ? "No sessions yet" : "No matches")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)

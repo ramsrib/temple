@@ -24,6 +24,9 @@ public struct RootView: View {
             if model.commandPalettePresented {
                 paletteOverlay
             }
+            if model.shortcutsPresented {
+                shortcutsOverlay
+            }
         }
         .tint(Palette.accent)              // neutral accent everywhere (no blue)
         // AppKit hands initial key focus to the first text field it finds —
@@ -63,6 +66,17 @@ public struct RootView: View {
             name = tab.title
         }
         return "Close “\(name)”?"
+    }
+
+    /// ⌘/ reference card, same overlay pattern as the palette.
+    private var shortcutsOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.001)
+                .ignoresSafeArea()
+                .onTapGesture { model.shortcutsPresented = false }
+            ShortcutsView()
+        }
+        .transition(.opacity)
     }
 
     /// Full-window dimmer with the palette centered on BOTH axes over the entire
@@ -138,10 +152,11 @@ private struct KeyCatcher: NSViewRepresentable {
                 return true
             }
 
-            // Esc always dismisses the ⌘K palette, wherever focus is (its own
-            // .onKeyPress only fires while the palette field is focused).
-            if event.keyCode == 53, model.commandPalettePresented {
+            // Esc always dismisses overlays, wherever focus is (the palette's
+            // own .onKeyPress only fires while its field is focused).
+            if event.keyCode == 53, model.commandPalettePresented || model.shortcutsPresented {
                 model.commandPalettePresented = false
+                model.shortcutsPresented = false
                 return true
             }
 
@@ -174,7 +189,9 @@ private struct KeyCatcher: NSViewRepresentable {
                 model.focusSearchToken += 1; return true
             case "k":
                 model.commandPalettePresented.toggle(); return true
-            case "\\":
+            case "/":
+                model.shortcutsPresented.toggle(); return true
+            case "\\", "b":  // ⌘\ (UX.md) and ⌘B (VS Code / ChatGPT muscle memory)
                 withAnimation { model.sidebarVisibility = model.sidebarVisibility == .all ? .detailOnly : .all }
                 return true
             case ",":
