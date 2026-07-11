@@ -19,6 +19,7 @@ struct ShortcutsView: View {
     ]
 
     private static let navigation: [Shortcut] = [
+        .init(keys: "⌘P", action: "Switch project (open projects first; type to reach any)"),
         .init(keys: "⌘K", action: "Command palette (recent sessions + search)"),
         .init(keys: "⌘F", action: "Focus sidebar search"),
         .init(keys: "↑ ↓ / Return", action: "Browse the sidebar / open the highlighted session"),

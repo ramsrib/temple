@@ -72,6 +72,9 @@ struct LauncherView: View {
             LauncherRow(icon: .symbol("command"), title: "Command palette", shortcut: "⌘K") {
                 model.commandPalettePresented = true
             }
+            LauncherRow(icon: .symbol("folder"), title: "Switch project", shortcut: "⌘P") {
+                model.projectPalettePresented = true
+            }
             LauncherRow(icon: .symbol("keyboard"), title: "Keyboard shortcuts", shortcut: "⌘/") {
                 model.shortcutsPresented = true
             }
