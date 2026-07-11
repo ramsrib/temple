@@ -92,3 +92,14 @@ final class RobustnessTests: XCTestCase {
         XCTAssertTrue(sessions.contains(where: { $0.id == "readable" }))
     }
 }
+
+@MainActor
+final class LoginShellEnvironmentTests: XCTestCase {
+    func testResolveLoginShellPATHReturnsUsablePath() {
+        let path = LoginShellEnvironment.resolveLoginShellPATH()
+        XCTAssertNotNil(path)
+        XCTAssertTrue(path?.contains("/usr/bin") ?? false)
+        // A real login shell PATH has more than launchd's four entries.
+        XCTAssertGreaterThan(path?.split(separator: ":").count ?? 0, 4)
+    }
+}
