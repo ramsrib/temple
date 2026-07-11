@@ -6,10 +6,10 @@ rationale lives in [DECISIONS.md](./DECISIONS.md); session-store details live in
 
 ## What Temple is
 
-> Your CLI coding agents, as a chat app. Every Claude Code or Codex session is a
-> resumable conversation, grouped by project. Open one and Temple starts a real
-> terminal tab that resumes it. One home for everything you are working on
-> across agents and repositories.
+> A session manager for your CLI coding agents. Every Claude Code or Codex
+> session is a resumable piece of work, grouped by project and searchable. Open
+> one and Temple resumes it in a real terminal tab. One home for everything you
+> are working on across agents and repositories.
 
 Temple has three primitives:
 

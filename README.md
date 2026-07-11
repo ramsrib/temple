@@ -2,10 +2,10 @@
 
 **Where agents answer the call.**
 
-Temple is a native macOS app that turns your CLI coding agents — **Claude Code**
-and **Codex** — into something like a chat app. Every session you've ever run
-becomes a resumable conversation, organized by project. Click one and a real
-terminal opens, resumed exactly where you left off.
+Temple is a native macOS session manager for your CLI coding agents —
+**Claude Code** and **Codex**. Every session you've ever run, organized by
+project and searchable. Click one and it resumes in a real terminal, exactly
+where you left off.
 
 - **All your sessions, one place** — Temple reads the agents' own on-disk
   session stores and builds a live, searchable index. New sessions appear
