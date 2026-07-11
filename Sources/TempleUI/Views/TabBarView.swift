@@ -80,10 +80,18 @@ private struct TabChip: View {
                 AgentBadge(agent: tab.agent, size: 12)
                 ActivityDot(state: tab.activity, size: 5)
             }
-            Text(displayTitle)
-                .font(.system(size: 12))
-                .lineLimit(1)
-                .frame(maxWidth: 160)
+            if tab.kind == .settings {
+                // Fixed natural width — "Settings" must never truncate or
+                // stretch with its neighbors.
+                Text(displayTitle)
+                    .font(.system(size: 12))
+                    .fixedSize()
+            } else {
+                Text(displayTitle)
+                    .font(.system(size: 12))
+                    .lineLimit(1)
+                    .frame(maxWidth: 160)
+            }
             closeButton
                 .opacity(hovering || isActive ? 1 : 0)
         }

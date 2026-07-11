@@ -40,12 +40,16 @@ struct CommandPaletteView: View {
                         LazyVStack(spacing: 0) {
                             ForEach(Array(results.enumerated()), id: \.element.id) { idx, session in
                                 resultRow(session, selected: idx == selection)
+                                    .frame(height: Self.rowHeight)
                                     .id(idx)
                                     .onTapGesture { selection = idx; openSelected() }
                             }
                         }
                     }
-                    .frame(maxHeight: 340)
+                    // Hug the rows (a ScrollView greedily fills its proposal,
+                    // leaving dead space under short result lists); scroll
+                    // only past the cap.
+                    .frame(height: min(CGFloat(results.count) * Self.rowHeight, 340))
                     .onChange(of: selection) { proxy.scrollTo(selection, anchor: .center) }
                 }
             }
@@ -59,6 +63,9 @@ struct CommandPaletteView: View {
         .onKeyPress(.upArrow) { move(-1); return .handled }
         .onKeyPress(.escape) { model.commandPalettePresented = false; return .handled }
     }
+
+    /// Fixed row height so the list height is exact (two text lines + padding).
+    private static let rowHeight: CGFloat = 46
 
     private func resultRow(_ session: AgentSession, selected: Bool) -> some View {
         HStack(spacing: 10) {
