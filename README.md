@@ -49,7 +49,9 @@ make install                 # signed Temple.app → /Applications
 ```
 
 Needs Xcode 26+ and `brew install xcodegen`. Zig is self-provisioned at the
-pinned version. Details in [docs/BUILDING-GHOSTTY.md](docs/BUILDING-GHOSTTY.md).
+pinned version. Terminal-engine details in
+[docs/BUILDING-GHOSTTY.md](docs/BUILDING-GHOSTTY.md); cutting a signed,
+notarized release is in [RELEASE.md](RELEASE.md).
 
 ## Learn more
 
