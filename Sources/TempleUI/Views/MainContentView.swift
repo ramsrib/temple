@@ -1,21 +1,28 @@
 import SwiftUI
 
-/// The right pane: the per-project tab bar over either the active tab's terminal
-/// (or Settings), or the launcher when nothing is open (UX §Main content).
+/// The right pane: the active tab's terminal (or Settings), or the launcher when
+/// nothing is open (UX §Main content). The per-project tab strip now lives in
+/// the native unified toolbar / title-bar band (Item A), attached below.
 struct MainContentView: View {
     @EnvironmentObject var model: AppModel
 
     private var hasTabBar: Bool { !model.openSessions.visibleTabs.isEmpty }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if hasTabBar {
-                TabBarView()
-                Divider().opacity(0.5)
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .toolbar { tabStripToolbar }
+    }
+
+    /// The tab chips in the native title-bar band. Only present when the active
+    /// project has open tabs — otherwise the band is empty native chrome (c).
+    @ToolbarContentBuilder
+    private var tabStripToolbar: some ToolbarContent {
+        if hasTabBar {
+            ToolbarItem(placement: .navigation) {
+                TabBarStrip()
             }
-            content
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder

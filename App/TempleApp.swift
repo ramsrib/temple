@@ -37,5 +37,8 @@ struct TempleApp: App {
                 }
         }
         .windowStyle(.hiddenTitleBar)
+        // Unified toolbar: tab chips + sidebar toggle live in the native
+        // title-bar band, keeping native double-click-to-zoom / drag (Item A/B).
+        .windowToolbarStyle(.unified)
     }
 }

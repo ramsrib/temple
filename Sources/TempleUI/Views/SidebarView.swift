@@ -24,14 +24,13 @@ struct SidebarView: View {
     // MARK: Header
 
     private var header: some View {
-        // Search is the first element — no wordmark. Top inset clears the
-        // floating traffic lights of the hidden-titlebar window.
+        // Search is the first element — no wordmark. It sits just below the
+        // native unified-toolbar band (which carries the traffic lights +
+        // sidebar toggle and is itself the window drag area — Item A/F/G).
         searchField
             .padding(.horizontal, 14)
-            .padding(.top, 16)
+            .padding(.top, 10)
             .padding(.bottom, 10)
-            // The band above the search field is a native window drag area.
-            .background(WindowActionStrip())
     }
 
     private var searchField: some View {
