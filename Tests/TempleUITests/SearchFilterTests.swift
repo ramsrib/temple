@@ -142,6 +142,28 @@ final class SearchFilterTests: XCTestCase {
         XCTAssertEqual(Set(results.map(\.id)), ["1", "2"])
     }
 
+    /// ⌘P: the projects you are switching between are the ones you have open, so
+    /// an empty query lists those; typing must still reach a project with nothing
+    /// open, or the switcher can only ever return you where you have already been.
+    func testProjectPaletteListsOpenProjectsThenReachesAll() {
+        let index = SessionIndex(projects: [
+            Project(path: "/p/api", sessions: [Fixture.session("1", project: "/p/api", title: "t")]),
+            Project(path: "/p/web", sessions: [Fixture.session("2", project: "/p/web", title: "t")]),
+            Project(path: "/p/notes", sessions: [Fixture.session("3", project: "/p/notes", title: "t")]),
+        ])
+        let (model, _) = makeAppModel(index)
+
+        XCTAssertTrue(model.projectPaletteResults("").isEmpty, "nothing open yet")
+
+        model.openSessions.openSession(Fixture.session("2", project: "/p/web", title: "t"))
+        XCTAssertEqual(model.projectPaletteResults("").map(\.path), ["/p/web"])
+
+        // Typing reaches a project that has nothing open...
+        XCTAssertEqual(model.projectPaletteResults("notes").map(\.path), ["/p/notes"])
+        // ...but an open project outranks a closed one on an equal match.
+        XCTAssertEqual(model.projectPaletteResults("/p/").map(\.path).first, "/p/web")
+    }
+
     // MARK: Project cap
 
     private func manyProjectsIndex() -> SessionIndex {

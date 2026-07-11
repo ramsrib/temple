@@ -24,6 +24,9 @@ public struct RootView: View {
             if model.commandPalettePresented {
                 paletteOverlay
             }
+            if model.projectPalettePresented {
+                projectPaletteOverlay
+            }
             if model.shortcutsPresented {
                 shortcutsOverlay
             }
@@ -68,6 +71,23 @@ public struct RootView: View {
             name = tab.title
         }
         return "Close “\(name)”?"
+    }
+
+    /// ⌘P project switcher — same overlay geometry as ⌘K.
+    private var projectPaletteOverlay: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .top) {
+                Color.black.opacity(0.001)
+                    .ignoresSafeArea()
+                    .onTapGesture { model.projectPalettePresented = false }
+                ProjectPaletteView()
+                    .environmentObject(model)
+                    .tint(Palette.accent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, geo.size.height * 0.35)
+            }
+        }
+        .transition(.opacity)
     }
 
     /// ⌘/ reference card, same overlay pattern as the palette.
@@ -171,9 +191,11 @@ private struct KeyCatcher: NSViewRepresentable {
 
             // Esc always dismisses overlays, wherever focus is (the palette's
             // own .onKeyPress only fires while its field is focused).
-            if event.keyCode == 53, model.commandPalettePresented || model.shortcutsPresented {
+            if event.keyCode == 53,
+               model.commandPalettePresented || model.shortcutsPresented || model.projectPalettePresented {
                 model.commandPalettePresented = false
                 model.shortcutsPresented = false
+                model.projectPalettePresented = false
                 return true
             }
 
@@ -182,6 +204,7 @@ private struct KeyCatcher: NSViewRepresentable {
             // agent still owns its arrow keys.
             let browsing = model.openSessions.activeTab == nil
                 && !model.commandPalettePresented
+                && !model.projectPalettePresented
             if browsing && !cmd && !ctrl {
                 switch event.keyCode {
                 case 125: model.moveHighlight(by: 1); return true    // ↓
@@ -206,6 +229,8 @@ private struct KeyCatcher: NSViewRepresentable {
                 model.focusSearchToken += 1; return true
             case "k":
                 model.commandPalettePresented.toggle(); return true
+            case "p":
+                model.projectPalettePresented.toggle(); return true
             case "/":
                 model.shortcutsPresented.toggle(); return true
             case "b":  // VS Code / ChatGPT convention (supersedes UX.md's ⌘\)

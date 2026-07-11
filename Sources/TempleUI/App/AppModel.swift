@@ -62,6 +62,8 @@ public final class AppModel: ObservableObject {
     private var noiseFilteredProjects: [Project] = []
     @Published public var sidebarVisibility: NavigationSplitViewVisibility = .all
     @Published public var commandPalettePresented = false
+    /// ⌘P — the project switcher (see ProjectPaletteView).
+    @Published public var projectPalettePresented = false
     @Published public var shortcutsPresented = false
     /// Pulsed to move keyboard focus into the sidebar search field (⌘F).
     @Published public var focusSearchToken = 0
@@ -408,5 +410,38 @@ public final class AppModel: ObservableObject {
         let ranked = search.rank(sessions, query: query)
         let open = Set(openIDs)
         return ranked.filter { open.contains($0.id) } + ranked.filter { !open.contains($0.id) }
+    }
+
+    /// ⌘P project switcher. Empty query lists the projects you have work open in
+    /// (the ones you are switching between); typing reaches every project Temple
+    /// knows, so a project with nothing open is one shortcut away too.
+    public func projectPaletteResults(_ query: String) -> [Project] {
+        let byPath = Dictionary(noiseFilteredProjects.map { ($0.path, $0) },
+                                uniquingKeysWith: { first, _ in first })
+        let openPaths = openSessions.openProjects
+        let open = openPaths.compactMap { byPath[$0] }
+
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return open }
+
+        let matches = displayProjects.filter {
+            $0.name.localizedCaseInsensitiveContains(q) || $0.path.localizedCaseInsensitiveContains(q)
+        }
+        // Open projects first: while you are working, the project you want is far
+        // more often one you already have open than one you have not touched.
+        let openSet = Set(openPaths)
+        return matches.filter { openSet.contains($0.path) } + matches.filter { !openSet.contains($0.path) }
+    }
+
+    /// Switch to `project`: back to its last-used session if it is open, else
+    /// open its most recent session, else start a fresh one there.
+    public func switchToProject(_ project: Project) {
+        if openSessions.openProjects.contains(project.path) {
+            openSessions.activateProject(project.path)
+        } else if let recent = project.sessions.first {
+            openSessions.openSession(recent)
+        } else {
+            openSessions.newSessionDefaultAgent(projectPath: project.path)
+        }
     }
 }
