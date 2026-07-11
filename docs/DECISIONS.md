@@ -244,3 +244,54 @@ indexed project, or a "Choose folder…" pick) — never a branch or worktree. A
 git/worktree workflow a user wants is the *agent's* job inside its terminal, not
 Temple's. This keeps Temple a thin, safe session manager with no destructive
 filesystem/git surface area, and is revisited only if a concrete need appears.
+
+---
+
+## ADR-013 — v0.1 UX revisions from live use
+**Date:** 2026-07-10 · **Status:** Accepted
+
+Live use of v0.1 supersedes several speculative interaction choices in the
+original UX spec. The shipped app favors stable spatial memory, project-scoped
+actions, native window behavior, and visible failure over extra creation chrome.
+
+- **Launcher-as-home** replaces the modal new-session composer. The empty-state
+  launcher is the only general new-session UI; there is no separate sheet,
+  dialog, or prompt composer. It launches empty agent terminals in a project or
+  chosen directory *(ADR-008, ADR-012)*.
+- A per-project **`+` menu** replaces the global “+ New session” primary action.
+  Creation is scoped to each project header (plus the launcher's action rows,
+  the tab-bar `+`, and `⌘T` for the default-agent fast path).
+- Project and session order is frozen by recency at launch. New discoveries
+  prepend, but existing rows never live-resort under the user *(ADR-009)*.
+- The tab bar lives in the native unified title-bar toolbar band,
+  ChatGPT/Codex-desktop-style, rather than in a separate strip below a custom
+  frameless titlebar.
+- **`⌘B` toggles the sidebar**, superseding the earlier `⌘\` choice in UX.md.
+- Closing a busy tab asks for native confirmation before interrupting its agent.
+  A non-user-initiated exit within roughly five seconds of spawn remains visible
+  with a red exited dot so launch failures cannot flash away *(extends ADR-010)*.
+- Per-agent arguments apply to every new and resumed launch. Defaults deliberately
+  bypass permission/sandbox gates — `--dangerously-skip-permissions` for Claude
+  and `--dangerously-bypass-approvals-and-sandbox` for Codex — accepting that risk
+  for this local single-user app; either value is overridable or clearable in
+  Settings *(ADR-008)*.
+- The v0.1 app identity is settled as **`com.sriramb.temple`**, for both the
+  bundle identifier and the `os.Logger` subsystem prefix. The app adopts the
+  login-shell `PATH`, raises `RLIMIT_NOFILE`, caches the session index, and
+  retries files observed mid-write so sessions appear promptly. Its embedded
+  terminal uses a Temple-owned Adwaita/Adwaita Dark config and never reads the
+  user's Ghostty config.
+- Distribution is a deliberately monochrome/no-blue, Developer-ID signed app;
+  `make install` provides the local installation path. Notarized `.dmg`
+  packaging remains later.
+
+---
+
+## ADR-014 — Docs consolidation for the public repo
+**Date:** 2026-07-10 · **Status:** Accepted
+
+FEATURES.md is now the single product document: what Temple is, its shipped
+behavior, and its roadmap. UX.md and PLAN.md are retired, with their live content
+absorbed into FEATURES.md; DECISIONS.md remains the append-only “why” record,
+while SESSION-FORMATS.md and BUILDING-GHOSTTY.md remain technical references.
+Historical references to UX.md and PLAN.md in older ADRs remain intact as history.

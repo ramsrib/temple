@@ -1,4 +1,4 @@
-# Building libghostty (Track T)
+# Building libghostty
 
 Temple's terminal engine is Ghostty's renderer embedded via its C API
 (`ghostty.h`), per ADR-003. This doc pins the toolchain and explains how the
