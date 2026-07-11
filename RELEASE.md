@@ -82,6 +82,20 @@ spctl --assess -vv /Volumes/Temple/Temple.app   # → accepted, Notarized Develo
 hdiutil detach /Volumes/Temple
 ```
 
+## Homebrew
+
+The cask lives in [ramsrib/homebrew-tap](https://github.com/ramsrib/homebrew-tap)
+(`Casks/temple.rb`). After publishing a release, bump it:
+
+```sh
+shasum -a 256 dist/Temple-<version>-arm64.dmg      # new sha256
+# edit ../homebrew-tap/Casks/temple.rb: version + sha256
+cd ../homebrew-tap && brew style --fix Casks/temple.rb && git commit -am "temple: bump cask to <version>" && git push
+```
+
+Users then get it with `brew install --cask ramsrib/tap/temple` (or
+`brew upgrade --cask temple`).
+
 ## Version numbers
 
 `VERSION` (e.g. `v0.1.0`) drives the git tag, the artifact names, and the app's

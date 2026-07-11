@@ -29,12 +29,20 @@ contents — the CLIs' own files remain the source of truth.
 
 ## Install
 
-Grab the latest `Temple-vX.Y.Z.dmg` (or `.zip`) from
-[Releases](https://github.com/ramsrib/temple/releases), drag **Temple** to
-Applications, and launch.
+```sh
+brew install --cask ramsrib/tap/temple
+```
 
-Releases are Developer ID–signed and notarized by Apple, so they open
-normally — no Gatekeeper warnings, no right-click dance.
+Or grab the latest `Temple-vX.Y.Z-arm64.dmg` from
+[Releases](https://github.com/ramsrib/temple/releases) and drag **Temple** to
+Applications.
+
+Builds are Developer ID–signed and notarized by Apple, so they open normally —
+no Gatekeeper warnings, no right-click dance. Updates come through Homebrew:
+
+```sh
+brew upgrade --cask temple
+```
 
 **Requirements:** macOS 14+ on Apple Silicon, with
 [Claude Code](https://claude.com/claude-code) and/or
