@@ -26,6 +26,16 @@ public struct RootView: View {
             }
         }
         .tint(Palette.accent)              // neutral accent everywhere (no blue)
+        // AppKit hands initial key focus to the first text field it finds —
+        // the sidebar search. Focus must only reach it via ⌘F or a click.
+        .onAppear {
+            DispatchQueue.main.async {
+                let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first
+                if window?.firstResponder is NSTextView {  // field editor == a focused text field
+                    window?.makeFirstResponder(nil)
+                }
+            }
+        }
         // Guard against interrupting a busy agent on ⌘W / chip ✕ (supersedes the
         // no-prompt close in UX.md).
         .alert(pendingCloseTitle, isPresented: pendingCloseBinding) {
