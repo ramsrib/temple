@@ -112,8 +112,8 @@ private struct ProjectSwitcher: View {
                     }
                 }
                 Divider().padding(.vertical, 4)
-                // Adding a PROJECT, not a session — hence a folder, never the `+`
-                // that starts a session in a project you already have.
+                // Adding a PROJECT, not a session — hence the folder, not the bare
+                // `+` that starts a session in a project you already have.
                 Button {
                     presented = false
                     chooseProjectFolder { path in
@@ -139,10 +139,12 @@ private struct ProjectSwitcher: View {
                 .onHover { openHovering = $0 }
 
                 HStack(spacing: 6) {
-                    Text("⌘⇧[")
-                    Text("⌘⇧]")
+                    Text("⌘P")
                     Text("switch project")
                         .font(.system(size: 10.5))
+                    Spacer(minLength: 0)
+                    Text("⌘⇧[ ⌘⇧]")
+                        .foregroundStyle(.quaternary)
                 }
                 .font(.system(size: 10.5, design: .monospaced))
                 .foregroundStyle(.tertiary)

@@ -19,13 +19,16 @@ public struct RootView: View {
             }
             .navigationSplitViewStyle(.balanced)
             .background(KeyCatcher())
+            // The project control belongs at the FAR end of the title bar, not
+            // among the tabs: the tabs are the sessions inside this project, so a
+            // project control sitting among them reads as one of them.
             .preferredColorScheme(model.settings.theme.colorScheme)
 
             if model.commandPalettePresented {
                 paletteOverlay
             }
-            if model.projectPalettePresented {
-                projectPaletteOverlay
+            if model.projectSwitcherPresented {
+                projectSwitcherOverlay
             }
             if model.shortcutsPresented {
                 shortcutsOverlay
@@ -73,19 +76,15 @@ public struct RootView: View {
         return "Close “\(name)”?"
     }
 
-    /// ⌘P project switcher — same overlay geometry as ⌘K.
-    private var projectPaletteOverlay: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .top) {
-                Color.black.opacity(0.001)
-                    .ignoresSafeArea()
-                    .onTapGesture { model.projectPalettePresented = false }
-                ProjectPaletteView()
-                    .environmentObject(model)
-                    .tint(Palette.accent)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, geo.size.height * 0.35)
-            }
+    /// ⌘P switcher: centred like the app switcher, not top-anchored like ⌘K —
+    /// it is a momentary HUD you hold, not a surface you type into.
+    private var projectSwitcherOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.001)
+                .ignoresSafeArea()
+                .onTapGesture { model.cancelProjectSwitcher() }
+            ProjectSwitcherHUD()
+                .environmentObject(model)
         }
         .transition(.opacity)
     }
@@ -146,6 +145,10 @@ private struct KeyCatcher: NSViewRepresentable {
     final class Coordinator {
         weak var model: AppModel?
         private var monitor: Any?
+        /// The ⌘P switcher lands when ⌘ comes back up (the ⌘⇥ gesture), and a
+        /// modifier release is a flagsChanged event, not a keyDown.
+        private var flagsMonitor: Any?
+        private var resignObserver: NSObjectProtocol?
 
         func install() {
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -154,11 +157,29 @@ private struct KeyCatcher: NSViewRepresentable {
                     return self.handle(event, model) ? nil : event
                 }
             }
+            flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                MainActor.assumeIsolated {
+                    guard let self, let model = self.model, model.projectSwitcherPresented else { return event }
+                    if !event.modifierFlags.contains(.command) { model.commandReleasedForSwitcher() }
+                    return event
+                }
+            }
+            // A ⌘ released while another app is frontmost never reaches our monitor,
+            // and the switcher would still be up when Temple came back.
+            resignObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.model?.cancelProjectSwitcher() }
+            }
         }
 
         func remove() {
             if let monitor { NSEvent.removeMonitor(monitor) }
+            if let flagsMonitor { NSEvent.removeMonitor(flagsMonitor) }
+            if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
             monitor = nil
+            flagsMonitor = nil
+            resignObserver = nil
         }
 
         @MainActor
@@ -172,6 +193,23 @@ private struct KeyCatcher: NSViewRepresentable {
             let ctrl = flags.contains(.control)
             let shift = flags.contains(.shift)
             let chars = event.charactersIgnoringModifiers ?? ""
+
+            // While the switcher is up it OWNS the keyboard, exactly like ⌘⇥:
+            // ⌘P walks it, arrows walk it, Return lands, Esc leaves you where you
+            // were — and nothing else fires. Without this, ⌘W would close a tab and
+            // ⌘K would open a palette behind the HUD.
+            if model.projectSwitcherPresented {
+                switch event.keyCode {
+                case 35:  // p
+                    if cmd { model.advanceProjectSwitcher(by: shift ? -1 : 1) }
+                case 53: model.cancelProjectSwitcher()                    // esc
+                case 36, 76: model.commitProjectSwitcher()                // return
+                case 123: model.advanceProjectSwitcher(by: -1)            // ←
+                case 124: model.advanceProjectSwitcher(by: 1)             // →
+                default: break
+                }
+                return true
+            }
 
             // ⌃⇥ / ⌃⇧⇥ — next / previous tab (keyCode 48 = tab).
             if ctrl && event.keyCode == 48 {
@@ -189,13 +227,12 @@ private struct KeyCatcher: NSViewRepresentable {
                 }
             }
 
+
             // Esc always dismisses overlays, wherever focus is (the palette's
             // own .onKeyPress only fires while its field is focused).
-            if event.keyCode == 53,
-               model.commandPalettePresented || model.shortcutsPresented || model.projectPalettePresented {
+            if event.keyCode == 53, model.commandPalettePresented || model.shortcutsPresented {
                 model.commandPalettePresented = false
                 model.shortcutsPresented = false
-                model.projectPalettePresented = false
                 return true
             }
 
@@ -204,7 +241,6 @@ private struct KeyCatcher: NSViewRepresentable {
             // agent still owns its arrow keys.
             let browsing = model.openSessions.activeTab == nil
                 && !model.commandPalettePresented
-                && !model.projectPalettePresented
             if browsing && !cmd && !ctrl {
                 switch event.keyCode {
                 case 125: model.moveHighlight(by: 1); return true    // ↓
@@ -230,7 +266,7 @@ private struct KeyCatcher: NSViewRepresentable {
             case "k":
                 model.commandPalettePresented.toggle(); return true
             case "p":
-                model.projectPalettePresented.toggle(); return true
+                model.advanceProjectSwitcher(by: shift ? -1 : 1); return true
             case "/":
                 model.shortcutsPresented.toggle(); return true
             case "b":  // VS Code / ChatGPT convention (supersedes UX.md's ⌘\)
