@@ -33,13 +33,6 @@ struct SessionRow: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 4)
-                // Item D: the relative time is hidden until the row is hovered.
-                // Kept in the layout (opacity swap) so nothing jumps; it sits to
-                // the left of the state dot.
-                Text(RelativeTime.string(from: session.updatedAt))
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                    .opacity(hovering ? 1 : 0)
                 // Only open tabs carry a dot (running/idle/attention/exited).
                 if let activity {
                     ActivityDot(state: activity)

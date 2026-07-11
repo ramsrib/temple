@@ -130,47 +130,63 @@ private struct ProjectDisclosure: View {
         showAll ? project.sessions : Array(project.sessions.prefix(collapsedLimit))
     }
 
+    /// Session rows indent one shallow step (ChatGPT-style density): the agent
+    /// badge sits under the folder icon, not under the project name. Manual
+    /// header + rows because DisclosureGroup's child outline indent is fixed
+    /// and much deeper.
+    private static let childInset: CGFloat = 16
+
     var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
+        header
+        if expanded {
             ForEach(shownSessions) { session in
                 SessionRow(session: session)
+                    .padding(.leading, Self.childInset)
             }
             if project.sessions.count > collapsedLimit && !showAll {
-                // Mirror SessionRow's geometry (same listRowInsets + inner
-                // padding, +4pt for the badge glyph's optical inset) so the
-                // text starts exactly on the agent-badge column.
+                // Mirrors SessionRow's geometry (+4pt for the badge glyph's
+                // optical inset) so the text starts on the agent-badge column.
                 Button("Show more") { showAll = true }
                     .font(.system(size: 10.5))
                     .foregroundStyle(.tertiary)
                     .buttonStyle(.plain)
-                    .padding(.leading, 12)
+                    .padding(.leading, Self.childInset + 12)
                     .padding(.trailing, 8)
                     .padding(.vertical, 2)
                     .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8))
                     .listRowBackground(Color.clear)
             }
-        } label: {
-            HStack(spacing: 4) {
-                Label(project.name, systemImage: "folder")
-                    .font(.system(size: 12, weight: .medium))
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-            }
-            .padding(.vertical, 3)
-            .padding(.horizontal, 6)
-            // Item C: hover highlight on the project header row too.
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(headerHovering ? Palette.hoverFill : Color.clear))
-            // Whole row toggles the disclosure (name, icon, empty space) —
-            // matching the chevron. The `+` overlay keeps its own action.
-            .contentShape(Rectangle())
-            .onHover { headerHovering = $0 }
-            .onTapGesture { withAnimation { expanded.toggle() } }
-            .overlay(alignment: .trailing) {
-                NewSessionMenu(projectPath: project.path)
-            }
         }
+    }
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .rotationEffect(.degrees(expanded ? 90 : 0))
+                .frame(width: 12)
+            Label(project.name, systemImage: "folder")
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+            Spacer(minLength: 4)
+        }
+        .padding(.vertical, 3)
+        .padding(.horizontal, 6)
+        // Item C: hover highlight on the project header row too.
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(headerHovering ? Palette.hoverFill : Color.clear))
+        // Whole row toggles the disclosure (name, icon, empty space) —
+        // matching the chevron. The `+` overlay keeps its own action.
+        .contentShape(Rectangle())
+        .onHover { headerHovering = $0 }
+        .onTapGesture { withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() } }
+        .overlay(alignment: .trailing) {
+            NewSessionMenu(projectPath: project.path)
+        }
+        .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8))
+        .listRowBackground(Color.clear)
     }
 }
 
