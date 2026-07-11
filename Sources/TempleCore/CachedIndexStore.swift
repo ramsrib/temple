@@ -9,12 +9,28 @@ struct PersistedIndexCache: Codable {
     let index: SessionIndex
 }
 
+/// Where Temple keeps its own state (index cache, SQLite). `TEMPLE_STATE_DIR`
+/// redirects it so a demo or test run cannot read or clobber real state.
+public enum TempleState {
+    public static var directory: URL {
+        let url: URL
+        if let override = StoreIO.envRoot("TEMPLE_STATE_DIR") {
+            url = override
+        } else {
+            url = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support/Temple", isDirectory: true)
+        }
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+}
+
 /// Loads and saves the rebuildable session index used to make cold launch fast.
 public final class CachedIndexStore {
     /// The cache file beside Temple's SQLite application-state store.
-    public static let defaultURL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/Temple", isDirectory: true)
-        .appendingPathComponent("index-cache.json")
+    public static var defaultURL: URL {
+        TempleState.directory.appendingPathComponent("index-cache.json")
+    }
 
     private init() {}
 

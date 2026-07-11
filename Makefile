@@ -2,7 +2,7 @@ APP_NAME := Temple
 APP := dist/$(APP_NAME).app
 DEST := /Applications/$(APP_NAME).app
 
-.PHONY: build test run demo ghostty app open install release clean
+.PHONY: build test run demo demo-clean ghostty app open install release clean
 
 build: ## Compile the SwiftPM targets
 	swift build
@@ -17,7 +17,13 @@ demo: build ## Run against a fake session store (screenshots, demos — no real 
 	@./Scripts/demo-data.py
 	@TEMPLE_CLAUDE_ROOT=/private/tmp/temple-demo/claude-store \
 	 TEMPLE_CODEX_ROOT=/private/tmp/temple-demo/codex-store \
+	 TEMPLE_STATE_DIR=/private/tmp/temple-demo/state \
 	 .build/debug/temple
+
+demo-clean: ## Remove the demo store, demo state, and any sessions it created
+	@rm -rf /private/tmp/temple-demo
+	@rm -rf ~/.claude/projects/-private-tmp-temple-demo-projects-*
+	@echo "✓ demo data removed"
 
 ghostty: ## Build Vendor/GhosttyKit.xcframework (one-time; pins zig + ghostty)
 	./Scripts/build-ghostty.sh

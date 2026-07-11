@@ -5,8 +5,14 @@ exposing real projects.
     ./Scripts/demo-data.py          # writes /tmp/temple-demo/{claude,codex}-store
     make demo                       # seeds + launches Temple against it
 
-The app reads its index from TEMPLE_CLAUDE_ROOT / TEMPLE_CODEX_ROOT when set,
-so the real ~/.claude and ~/.codex stores are never touched.
+The app reads its index from TEMPLE_CLAUDE_ROOT / TEMPLE_CODEX_ROOT, and keeps
+its own state (index cache, SQLite) in TEMPLE_STATE_DIR, so a demo run neither
+reads nor clobbers real data.
+
+The seeded sessions are fixtures: they list and search, but they cannot resume
+(no agent ever ran them). To screenshot a live terminal, start a new session in
+a demo project from the app, then `make demo-clean` afterwards -- the agent
+writes that one to the real ~/.claude store, and demo-clean removes it.
 """
 import json
 import os

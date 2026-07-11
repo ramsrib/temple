@@ -54,10 +54,7 @@ public final class TempleDB: @unchecked Sendable {
     }
 
     public static func defaultPath() -> URL {
-        let directory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Temple", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory.appendingPathComponent("temple.sqlite")
+        TempleState.directory.appendingPathComponent("temple.sqlite")
     }
 
     public func setPinned(_ pinned: Bool, sessionID: String) throws {
