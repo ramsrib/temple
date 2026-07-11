@@ -194,6 +194,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             let projectChanged = activeProjectPath != tab.projectPath
             activeProjectPath = tab.projectPath
             lastActiveTabByProject[tab.projectPath] = tab.id
+            touchProject(tab.projectPath)
             ensureSurface(for: tab)
             // Keep the persisted active-project ordering current even when the
             // switch happens by focusing an already-open tab (no open/close).
@@ -381,6 +382,12 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         if let sid = tab.sessionID { registry.unregister(sessionID: sid) }
         let wasActive = activeTabID == tabID
         tabs.remove(at: index)
+        // A project with no tabs left is not switchable — forget it, or the MRU
+        // list grows for the life of the run as folders come and go.
+        if !tabs.contains(where: { $0.kind == .session && $0.projectPath == tab.projectPath }) {
+            projectMRU.removeAll { $0 == tab.projectPath }
+            lastActiveTabByProject.removeValue(forKey: tab.projectPath)
+        }
         if wasActive { selectNeighbor(removedIndex: index, removedProject: tab.projectPath, wasUtility: tab.isUtility) }
         persist()
     }
@@ -463,6 +470,23 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// The session last active in each project, so coming back to a project
     /// returns you to where you were, not to whichever chip happens to be first.
     private var lastActiveTabByProject: [String: SessionTab.ID] = [:]
+
+    /// Projects most-recently-used first. The ⌘P switcher walks this, so one tap
+    /// lands on the project you were just in — the reason ⌘⇥ is worth using. It
+    /// is deliberately NOT the order the sidebar or the title-bar list uses:
+    /// those must hold still while you read them, and this must not.
+    public var projectsByRecency: [String] {
+        let open = Set(openProjects)
+        let recent = projectMRU.filter(open.contains)
+        return recent + openProjects.filter { !recent.contains($0) }
+    }
+
+    private var projectMRU: [String] = []
+
+    private func touchProject(_ path: String) {
+        projectMRU.removeAll { $0 == path }
+        projectMRU.insert(path, at: 0)
+    }
 
     /// Switch the strip to `project` and re-activate its last-used session. The
     /// other projects' tabs stay alive (and their agents keep running) — they

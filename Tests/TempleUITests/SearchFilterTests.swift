@@ -142,26 +142,109 @@ final class SearchFilterTests: XCTestCase {
         XCTAssertEqual(Set(results.map(\.id)), ["1", "2"])
     }
 
-    /// ⌘P: the projects you are switching between are the ones you have open, so
-    /// an empty query lists those; typing must still reach a project with nothing
-    /// open, or the switcher can only ever return you where you have already been.
-    func testProjectPaletteListsOpenProjectsThenReachesAll() {
+    /// ⌘P is the ⌘⇥ gesture: the switcher walks projects most-recently-used
+    /// first, so one tap-and-release lands on the project you were just in.
+    func testProjectSwitcherWalksMostRecentlyUsedFirst() {
         let index = SessionIndex(projects: [
             Project(path: "/p/api", sessions: [Fixture.session("1", project: "/p/api", title: "t")]),
             Project(path: "/p/web", sessions: [Fixture.session("2", project: "/p/web", title: "t")]),
             Project(path: "/p/notes", sessions: [Fixture.session("3", project: "/p/notes", title: "t")]),
         ])
         let (model, _) = makeAppModel(index)
-
-        XCTAssertTrue(model.projectPaletteResults("").isEmpty, "nothing open yet")
-
+        model.openSessions.openSession(Fixture.session("1", project: "/p/api", title: "t"))
         model.openSessions.openSession(Fixture.session("2", project: "/p/web", title: "t"))
-        XCTAssertEqual(model.projectPaletteResults("").map(\.path), ["/p/web"])
+        model.openSessions.openSession(Fixture.session("3", project: "/p/notes", title: "t"))
 
-        // Typing reaches a project that has nothing open...
-        XCTAssertEqual(model.projectPaletteResults("notes").map(\.path), ["/p/notes"])
-        // ...but an open project outranks a closed one on an equal match.
-        XCTAssertEqual(model.projectPaletteResults("/p/").map(\.path).first, "/p/web")
+        // Current project first, then the rest in the order you last used them —
+        // NOT the order they were opened, which is what the sidebar shows.
+        XCTAssertEqual(model.switchableProjects, ["/p/notes", "/p/web", "/p/api"])
+
+        // One press highlights the PREVIOUS project; releasing lands on it.
+        model.advanceProjectSwitcher(by: 1)
+        XCTAssertEqual(model.projectSwitcherSelection, "/p/web")
+        model.commitProjectSwitcher()
+        XCTAssertEqual(model.openSessions.activeProjectPath, "/p/web")
+        XCTAssertFalse(model.projectSwitcherPresented)
+
+        // ...and pressing again bounces straight back, because /p/notes is now
+        // the most recent. That bounce is the whole point of the gesture.
+        model.advanceProjectSwitcher(by: 1)
+        model.commitProjectSwitcher()
+        XCTAssertEqual(model.openSessions.activeProjectPath, "/p/notes")
+    }
+
+    /// A project's last tab can exit while the switcher is up. With the selection
+    /// held as an index into a list that then shrank, releasing ⌘ would land on
+    /// whatever slid into that slot — a project you never highlighted.
+    func testProjectSwitcherSurvivesAProjectClosingWhileItIsUp() {
+        let index = SessionIndex(projects: [
+            Project(path: "/p/a", sessions: [Fixture.session("1", project: "/p/a", title: "t")]),
+            Project(path: "/p/b", sessions: [Fixture.session("2", project: "/p/b", title: "t")]),
+            Project(path: "/p/c", sessions: [Fixture.session("3", project: "/p/c", title: "t")]),
+        ])
+        let (model, _) = makeAppModel(index)
+        model.openSessions.openSession(Fixture.session("1", project: "/p/a", title: "t"))
+        model.openSessions.openSession(Fixture.session("2", project: "/p/b", title: "t"))
+        model.openSessions.openSession(Fixture.session("3", project: "/p/c", title: "t"))
+
+        model.advanceProjectSwitcher(by: 1)                   // highlights /p/b
+        XCTAssertEqual(model.projectSwitcherSelection, "/p/b")
+
+        // /p/b's only tab exits while the switcher is up.
+        let bTab = model.openSessions.tabs.first { $0.projectPath == "/p/b" }!
+        model.openSessions.closeTab(bTab.id)
+
+        model.commitProjectSwitcher()
+        XCTAssertEqual(model.openSessions.activeProjectPath, "/p/c",
+                       "must not land on a project that is no longer open, nor on whatever took its slot")
+        XCTAssertFalse(model.projectSwitcherPresented)
+        // ...and the closed project is forgotten, not kept forever in the MRU list.
+        XCTAssertFalse(model.switchableProjects.contains("/p/b"))
+    }
+
+    /// Opening the switcher from the home page (a click, no ⌘ held) must not be
+    /// committed by the next unrelated modifier press.
+    func testMouseOpenedSwitcherIsNotCommittedByAModifierRelease() {
+        let index = SessionIndex(projects: [
+            Project(path: "/p/a", sessions: [Fixture.session("1", project: "/p/a", title: "t")]),
+            Project(path: "/p/b", sessions: [Fixture.session("2", project: "/p/b", title: "t")]),
+        ])
+        let (model, _) = makeAppModel(index)
+        model.openSessions.openSession(Fixture.session("1", project: "/p/a", title: "t"))
+        model.openSessions.openSession(Fixture.session("2", project: "/p/b", title: "t"))
+        let active = model.openSessions.activeProjectPath
+
+        model.advanceProjectSwitcher(by: 1, heldCommand: false)
+        model.commandReleasedForSwitcher()                     // e.g. ⌘ pressed for something else
+
+        XCTAssertTrue(model.projectSwitcherPresented, "a click-opened switcher waits for Return or Esc")
+        XCTAssertEqual(model.openSessions.activeProjectPath, active)
+    }
+
+    func testProjectSwitcherWalksAndCancels() {
+        let index = SessionIndex(projects: [
+            Project(path: "/p/a", sessions: [Fixture.session("1", project: "/p/a", title: "t")]),
+            Project(path: "/p/b", sessions: [Fixture.session("2", project: "/p/b", title: "t")]),
+            Project(path: "/p/c", sessions: [Fixture.session("3", project: "/p/c", title: "t")]),
+        ])
+        let (model, _) = makeAppModel(index)
+        for id in ["1", "2", "3"] {
+            model.openSessions.openSession(Fixture.session(id, project: "/p/\(["1": "a", "2": "b", "3": "c"][id]!)", title: "t"))
+        }
+        let active = model.openSessions.activeProjectPath
+
+        // Holding ⌘ and tapping P twice walks two along; wrapping is circular.
+        let order = model.switchableProjects
+        model.advanceProjectSwitcher(by: 1)
+        model.advanceProjectSwitcher(by: 1)
+        XCTAssertEqual(model.projectSwitcherSelection, order[2])
+        model.advanceProjectSwitcher(by: 1)
+        XCTAssertEqual(model.projectSwitcherSelection, order[0], "wraps back to where you started")
+
+        // Esc leaves you exactly where you were.
+        model.cancelProjectSwitcher()
+        XCTAssertFalse(model.projectSwitcherPresented)
+        XCTAssertEqual(model.openSessions.activeProjectPath, active)
     }
 
     // MARK: Project cap

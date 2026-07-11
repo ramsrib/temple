@@ -62,8 +62,20 @@ public final class AppModel: ObservableObject {
     private var noiseFilteredProjects: [Project] = []
     @Published public var sidebarVisibility: NavigationSplitViewVisibility = .all
     @Published public var commandPalettePresented = false
-    /// ⌘P — the project switcher (see ProjectPaletteView).
-    @Published public var projectPalettePresented = false
+
+    // ⌘P project switcher (ProjectSwitcherHUD) — modelled on ⌘⇥, not on ⌘K:
+    // switching projects is picking from a handful you are holding in your head,
+    // not searching. Hold ⌘, tap P to walk the most-recently-used list, release
+    // to commit. Sessions get the search palette; projects get the switcher.
+    @Published public var projectSwitcherPresented = false
+    /// The highlighted project, held as a PATH rather than an index: a project's
+    /// last tab can exit while the switcher is up, and an index into a list that
+    /// shrank under you lands on the wrong project (or silently on none).
+    @Published public var projectSwitcherSelection: String?
+    /// True when ⌘ was down as the switcher opened. Only then does releasing ⌘
+    /// commit — otherwise opening it from the home page (mouse, no ⌘ held) would
+    /// be committed by the next unrelated modifier press.
+    private var switcherArmedByCommand = false
     @Published public var shortcutsPresented = false
     /// Pulsed to move keyboard focus into the sidebar search field (⌘F).
     @Published public var focusSearchToken = 0
@@ -412,36 +424,51 @@ public final class AppModel: ObservableObject {
         return ranked.filter { open.contains($0.id) } + ranked.filter { !open.contains($0.id) }
     }
 
-    /// ⌘P project switcher. Empty query lists the projects you have work open in
-    /// (the ones you are switching between); typing reaches every project Temple
-    /// knows, so a project with nothing open is one shortcut away too.
-    public func projectPaletteResults(_ query: String) -> [Project] {
-        let byPath = Dictionary(noiseFilteredProjects.map { ($0.path, $0) },
-                                uniquingKeysWith: { first, _ in first })
-        let openPaths = openSessions.openProjects
-        let open = openPaths.compactMap { byPath[$0] }
+    // MARK: ⌘P project switcher
 
-        let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return open }
-
-        let matches = displayProjects.filter {
-            $0.name.localizedCaseInsensitiveContains(q) || $0.path.localizedCaseInsensitiveContains(q)
-        }
-        // Open projects first: while you are working, the project you want is far
-        // more often one you already have open than one you have not touched.
-        let openSet = Set(openPaths)
-        return matches.filter { openSet.contains($0.path) } + matches.filter { !openSet.contains($0.path) }
+    /// What the switcher walks: the projects you have work open in, most recently
+    /// used first — the same set the app switcher shows for running apps.
+    public var switchableProjects: [String] {
+        openSessions.projectsByRecency
     }
 
-    /// Switch to `project`: back to its last-used session if it is open, else
-    /// open its most recent session, else start a fresh one there.
-    public func switchToProject(_ project: Project) {
-        if openSessions.openProjects.contains(project.path) {
-            openSessions.activateProject(project.path)
-        } else if let recent = project.sessions.first {
-            openSessions.openSession(recent)
+    /// ⌘P pressed. First press opens the switcher already on the PREVIOUS project,
+    /// so a tap-and-release bounces between two projects the way ⌘⇥ does; further
+    /// presses walk the list while ⌘ stays down.
+    public func advanceProjectSwitcher(by delta: Int, heldCommand: Bool = true) {
+        let projects = switchableProjects
+        guard projects.count > 1 else { return }
+
+        if projectSwitcherPresented {
+            let current = projectSwitcherSelection.flatMap { projects.firstIndex(of: $0) } ?? 0
+            projectSwitcherSelection = projects[(current + delta + projects.count) % projects.count]
         } else {
-            openSessions.newSessionDefaultAgent(projectPath: project.path)
+            projectSwitcherPresented = true
+            switcherArmedByCommand = heldCommand
+            projectSwitcherSelection = projects[delta > 0 ? 1 : projects.count - 1]
         }
     }
+
+    /// ⌘ came back up. Only lands the switcher if ⌘ is what opened it.
+    public func commandReleasedForSwitcher() {
+        guard projectSwitcherPresented, switcherArmedByCommand else { return }
+        commitProjectSwitcher()
+    }
+
+    /// Go where the highlight is (⌘ released, Return, or a click on a tile).
+    public func commitProjectSwitcher() {
+        guard projectSwitcherPresented else { return }
+        let selection = projectSwitcherSelection
+        cancelProjectSwitcher()
+        // The project may have closed its last tab while the switcher was up.
+        guard let selection, openSessions.openProjects.contains(selection) else { return }
+        openSessions.activateProject(selection)
+    }
+
+    public func cancelProjectSwitcher() {
+        projectSwitcherPresented = false
+        projectSwitcherSelection = nil
+        switcherArmedByCommand = false
+    }
+
 }

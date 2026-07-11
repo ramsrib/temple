@@ -93,10 +93,14 @@ The sidebar and tab bar form a two-part navigation model:
   switcher, from the sidebar's Projects header, or from the home page. That
   control is a folder, never the `+` that starts a session inside a project you
   already have.
-- `⌘P` is the keyboard route between projects: an empty query lists the projects
-  with work open, typing reaches every indexed project, and Enter switches —
-  returning to that project's last-used session, opening its most recent one, or
-  starting a fresh session if it has none. `⌘⇧[` / `⌘⇧]` cycle without a prompt.
+- `⌘P` is the keyboard route between projects, shaped like the macOS app switcher
+  rather than like `⌘K`: hold `⌘` and tap `P` to walk the projects you have work
+  open in, most recently used first, and release `⌘` to land — so one tap returns
+  you to the project you were just in. The project you are leaving is marked
+  *current*. Landing on a project returns you to the session you last used there.
+  `⌘⇧[` / `⌘⇧]` cycle without showing the switcher. Sessions get a search palette
+  (`⌘K`); projects get a switcher, because you hold a handful of them in your head
+  and search a hundred sessions.
 
 The active libghostty terminal fills the main content area. Temple launches the
 agent directly in the session's working directory and sends keyboard input to
@@ -227,7 +231,7 @@ Dark palettes and never reads or modifies the user's Ghostty configuration.
 | **⌘1–9** | Switch to tab *N* in the active project. |
 | **⌃⇥ / ⌃⇧⇥** | Next / previous tab. |
 | **⌘⇧[ / ⌘⇧]** | Previous / next project; returns to the session last used there. |
-| **⌘P** | Project switcher: open projects first, type to reach any project. |
+| **⌘P** | Project switcher (hold ⌘, tap P to walk, release to land). |
 | **⌘F** | Reveal the sidebar if needed and focus sidebar search. |
 | **⌘K** | Open-session switcher with an empty query; ranked session search when typed. |
 | **⌘/** | Open the Keyboard Shortcuts reference overlay. |

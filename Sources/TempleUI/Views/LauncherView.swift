@@ -72,8 +72,13 @@ struct LauncherView: View {
             LauncherRow(icon: .symbol("command"), title: "Command palette", shortcut: "⌘K") {
                 model.commandPalettePresented = true
             }
-            LauncherRow(icon: .symbol("folder"), title: "Switch project", shortcut: "⌘P") {
-                model.projectPalettePresented = true
+            // Only when there is somewhere to switch TO: with fewer than two
+            // projects open the switcher has nothing to show, and a row that does
+            // nothing when clicked is worse than no row.
+            if model.switchableProjects.count > 1 {
+                LauncherRow(icon: .symbol("folder"), title: "Switch project", shortcut: "⌘P") {
+                    model.advanceProjectSwitcher(by: 1, heldCommand: false)
+                }
             }
             LauncherRow(icon: .symbol("keyboard"), title: "Keyboard shortcuts", shortcut: "⌘/") {
                 model.shortcutsPresented = true
