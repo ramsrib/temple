@@ -52,6 +52,9 @@ targets:
       base:
         PRODUCT_NAME: Temple
         PRODUCT_BUNDLE_IDENTIFIER: dev.temple.Temple
+        # System-rendered controls (alert default buttons etc.) use the app
+        # accent — neutral graphite, never blue.
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         INFOPLIST_FILE: App/Info.plist
         CODE_SIGN_ENTITLEMENTS: App/Temple.entitlements
         SWIFT_VERSION: "5.10"
