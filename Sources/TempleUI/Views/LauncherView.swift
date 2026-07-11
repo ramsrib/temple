@@ -31,9 +31,10 @@ struct LauncherView: View {
             Spacer(minLength: 40)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // With no tab bar, the launcher IS the top band: its empty area behaves
-        // like the native title bar (drag / double-click). Rows capture their
-        // own clicks, so only the empty chrome triggers this.
+        // In the no-tab launcher state the detail-side toolbar carries no items,
+        // so its band can collapse; this shim keeps window drag / double-click in
+        // the launcher's empty top area (Item B). With tabs open the native
+        // unified toolbar (chips) provides this for free.
         .background(WindowActionStrip())
     }
 

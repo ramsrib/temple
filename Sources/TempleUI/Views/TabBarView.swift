@@ -2,10 +2,13 @@ import SwiftUI
 import UniformTypeIdentifiers
 import TempleCore
 
-/// The horizontal tab bar in the content header (UX §B). Shows ONLY the active
-/// project's open terminals, plus the project-agnostic Settings tab. Chips are
-/// drag-reorderable; the trailing `+` opens a New Claude/Codex menu.
-struct TabBarView: View {
+/// The tab strip that lives inside the native unified toolbar / title-bar band
+/// (Item A). Shows ONLY the active project's open terminals, plus the
+/// project-agnostic Settings tab, then the `+` menu. Intrinsically sized so the
+/// rest of the title-bar band stays empty native chrome (double-click-to-zoom +
+/// window-drag work there for free — Item B). Chips are drag-reorderable; the
+/// trailing `+` opens a New Claude/Codex menu.
+struct TabBarStrip: View {
     @EnvironmentObject var model: AppModel
     @State private var dragging: SessionTab.ID?
 
@@ -14,42 +17,26 @@ struct TabBarView: View {
     }
 
     var body: some View {
+        // A content-sized HStack (no Spacer / no greedy ScrollView): only the
+        // chips occupy the band; everything to their right is native titlebar.
         HStack(spacing: 6) {
-            // Inset so chips clear the reflowed traffic lights when the sidebar
-            // is collapsed (UX "Window & layout").
-            if model.sidebarVisibility == .detailOnly {
-                Color.clear.frame(width: 70)
-            }
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(sessionChips) { tab in
-                        TabChip(tab: tab)
-                            .onDrag {
-                                dragging = tab.id
-                                return NSItemProvider(object: tab.id.uuidString as NSString)
-                            }
-                            .onDrop(of: [.text],
-                                    delegate: TabDropDelegate(item: tab, model: model, dragging: $dragging))
+            ForEach(sessionChips) { tab in
+                TabChip(tab: tab)
+                    .onDrag {
+                        dragging = tab.id
+                        return NSItemProvider(object: tab.id.uuidString as NSString)
                     }
-                    // The project-agnostic Settings chip renders inline like any
-                    // other chip (gear icon), keeping its singleton semantics.
-                    if let settings = model.openSessions.settingsTab {
-                        TabChip(tab: settings)
-                    }
-                    // `+` sits immediately after the last chip — not pinned right.
-                    addMenu
-                }
-                .padding(.vertical, 6)
+                    .onDrop(of: [.text],
+                            delegate: TabDropDelegate(item: tab, model: model, dragging: $dragging))
             }
-
-            Spacer(minLength: 8)
+            // The project-agnostic Settings chip renders inline like any other
+            // chip (gear icon), keeping its singleton semantics.
+            if let settings = model.openSessions.settingsTab {
+                TabChip(tab: settings)
+            }
+            // `+` sits immediately after the last chip — not pinned right.
+            addMenu
         }
-        .padding(.horizontal, 10)
-        .frame(height: 40)
-        .background(.bar)
-        // Empty strip area behaves like the native title bar (drag / double-click).
-        .background(WindowActionStrip())
     }
 
     private var addMenu: some View {
