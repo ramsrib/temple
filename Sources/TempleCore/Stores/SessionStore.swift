@@ -88,6 +88,12 @@ enum StoreIO {
             .contentModificationDate) ?? .distantPast
     }
 
+    /// Optional store-root override from the environment (testing / demos).
+    static func envRoot(_ key: String) -> URL? {
+        guard let path = ProcessInfo.processInfo.environment[key], !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)
+    }
+
     static func fileSignature(_ url: URL) -> (modificationDate: Date, fileSize: Int)? {
         guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
               let modificationDate = values.contentModificationDate,

@@ -9,8 +9,11 @@ public struct CodexSessionStore: IncrementalSessionStore {
     private let historyFile: URL
 
     public init(root: URL? = nil) {
-        let base = root ?? FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex", isDirectory: true)
+        // TEMPLE_CODEX_ROOT: see ClaudeSessionStore.
+        let base = root
+            ?? StoreIO.envRoot("TEMPLE_CODEX_ROOT")
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".codex", isDirectory: true)
         self.sessionsRoot = base.appendingPathComponent("sessions", isDirectory: true)
         self.historyFile = base.appendingPathComponent("history.jsonl")
     }
