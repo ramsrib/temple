@@ -13,7 +13,7 @@ name: Temple
 # `xcodegen generate` or `Scripts/build-app.sh`.
 
 options:
-  bundleIdPrefix: dev.temple
+  bundleIdPrefix: com.sriramb
   deploymentTarget:
     macOS: "14.0"
   createIntermediateGroups: true
@@ -51,7 +51,7 @@ targets:
     settings:
       base:
         PRODUCT_NAME: Temple
-        PRODUCT_BUNDLE_IDENTIFIER: dev.temple.Temple
+        PRODUCT_BUNDLE_IDENTIFIER: com.sriramb.temple
         # System-rendered controls (alert default buttons etc.) use the app
         # accent — neutral graphite, never blue.
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
