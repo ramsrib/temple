@@ -121,13 +121,22 @@ private struct ProjectDisclosure: View {
     @EnvironmentObject var model: AppModel
     let project: Project
     @State private var expanded = true
-    @State private var showAll = false
     @State private var headerHovering = false
 
-    private let collapsedLimit = 6
+    /// How many sessions this project currently shows. Grows a batch at a time —
+    /// a project with 50+ sessions would otherwise dump all of them into the
+    /// sidebar on one click, with no way back.
+    @State private var limit = collapsedLimit
+
+    private static let collapsedLimit = 6
+    private static let batch = 10
 
     private var shownSessions: [AgentSession] {
-        showAll ? project.sessions : Array(project.sessions.prefix(collapsedLimit))
+        Array(project.sessions.prefix(limit))
+    }
+
+    private var hiddenCount: Int {
+        max(0, project.sessions.count - limit)
     }
 
     /// Session rows indent one shallow step (ChatGPT-style density): the agent
@@ -145,20 +154,41 @@ private struct ProjectDisclosure: View {
                     .listRowInsets(EdgeInsets(top: 1, leading: -10, bottom: 1, trailing: 8))
                     .listRowBackground(Color.clear)
             }
-            if project.sessions.count > collapsedLimit && !showAll {
-                // Mirrors SessionRow's geometry (+4pt for the badge glyph's
-                // optical inset) so the text starts on the agent-badge column.
-                Button("Show more") { showAll = true }
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.tertiary)
-                    .buttonStyle(.plain)
-                    .padding(.leading, Self.childInset + 12)
-                    .padding(.trailing, 8)
-                    .padding(.vertical, 2)
-                    .listRowInsets(EdgeInsets(top: 1, leading: -10, bottom: 1, trailing: 8))
-                    .listRowBackground(Color.clear)
+            if hiddenCount > 0 || limit > Self.collapsedLimit {
+                HStack(spacing: 10) {
+                    if hiddenCount > 0 {
+                        // The remaining count is the point: without it, one click
+                        // on a 53-session project is a surprise. It is only worth
+                        // showing when this batch won't finish the list.
+                        let next = min(Self.batch, hiddenCount)
+                        let title = next < hiddenCount
+                            ? "Show \(next) more (\(hiddenCount))"
+                            : "Show \(next) more"
+                        expandButton(title) { limit += Self.batch }
+                    }
+                    if limit > Self.collapsedLimit {
+                        expandButton("Show fewer") { limit = Self.collapsedLimit }
+                    }
+                }
+                // Starts on the agent-badge column: a plain Button's label sits
+                // further left in a List row than SessionRow's own content, so
+                // this inset is measured against the rendered badge (its ink
+                // begins 25pt in from the child inset), not derived from
+                // SessionRow's paddings.
+                .padding(.leading, Self.childInset + 25)
+                .padding(.trailing, 8)
+                .padding(.vertical, 2)
+                .listRowInsets(EdgeInsets(top: 1, leading: -10, bottom: 1, trailing: 8))
+                .listRowBackground(Color.clear)
             }
         }
+    }
+
+    private func expandButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .font(.system(size: 10.5))
+            .foregroundStyle(.tertiary)
+            .buttonStyle(.plain)
     }
 
     private var header: some View {
