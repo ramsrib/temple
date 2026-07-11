@@ -57,9 +57,9 @@ struct SidebarView: View {
 
     // MARK: List
 
-    /// "Projects" + the way to add one. A folder, not a `+`: the per-project `+`
-    /// starts a session inside a project you already have, and adding a project
-    /// Temple has never seen is a different act that must not wear the same icon.
+    /// "Projects" + the way to add one. A folder-with-plus, not the bare `+` the
+    /// project rows carry: that one starts a session inside a project you already
+    /// have, and opening a project Temple has never seen is a different act.
     private var projectsHeader: some View {
         HStack(spacing: 4) {
             Text("Projects")
@@ -77,6 +77,11 @@ struct SidebarView: View {
             }
             .buttonStyle(.plain)
             .help("Open a project folder…")
+            // Centred on the same column as each project's `+`. A List section
+            // header carries a different trailing inset from its rows, so this is
+            // measured against the rendered `+` (their ink centres line up at
+            // 242.5pt), not derived from the paddings.
+            .padding(.trailing, 24.5)
         }
         .onHover { headerHovering = $0 }
     }
@@ -203,12 +208,11 @@ private struct ProjectDisclosure: View {
                         expandButton("Show fewer") { limit = Self.collapsedLimit }
                     }
                 }
-                // Starts on the agent-badge column: a plain Button's label sits
-                // further left in a List row than SessionRow's own content, so
-                // this inset is measured against the rendered badge (its ink
-                // begins 25pt in from the child inset), not derived from
-                // SessionRow's paddings.
-                .padding(.leading, Self.childInset + 25)
+                // Starts on the agent-badge column (both inks begin at 48.5pt).
+                // A plain Button's label sits further left in a List row than
+                // SessionRow's own content, so this inset is measured against the
+                // rendered badge, not derived from SessionRow's paddings.
+                .padding(.leading, Self.childInset + 26)
                 .padding(.trailing, 8)
                 .padding(.vertical, 2)
                 .listRowInsets(EdgeInsets(top: 1, leading: -10, bottom: 1, trailing: 8))
