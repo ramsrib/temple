@@ -385,12 +385,18 @@ public final class AppModel: ObservableObject {
 
     public func paletteResults(_ query: String) -> [AgentSession] {
         let sessions = noiseFilteredProjects.flatMap(\.sessions)
+        let openIDs = openSessions.openSessionIDsInTabOrder
         guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
-            // Empty query = session switcher: the most recent sessions, ready
-            // to arrow-and-Enter between.
-            return Array(sessions.sorted { $0.updatedAt > $1.updatedAt }.prefix(4))
+            // Empty query = switcher over the OPEN sessions (across projects),
+            // in tab order; the list scrolls inside the palette's capped space.
+            let byID = Dictionary(sessions.map { ($0.id, $0) },
+                                  uniquingKeysWith: { first, _ in first })
+            return openIDs.compactMap { byID[$0] }
         }
-        // Rank over the cached non-noise set (respects the noise toggle).
-        return search.rank(sessions, query: query)
+        // Rank over the cached non-noise set (respects the noise toggle),
+        // with open sessions weighted above equally-ranked closed ones.
+        let ranked = search.rank(sessions, query: query)
+        let open = Set(openIDs)
+        return ranked.filter { open.contains($0.id) } + ranked.filter { !open.contains($0.id) }
     }
 }
