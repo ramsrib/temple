@@ -26,10 +26,16 @@ public final class NotificationController: NSObject {
     }
 
     private func requestAuthorizationIfAvailable() {
-        guard isAvailable else { return }
+        guard isAvailable else {
+            TempleUILog.notifications.info("notifications unavailable outside a real app bundle")
+            return
+        }
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
+            if !granted {
+                TempleUILog.notifications.info("notification authorization was not granted")
+            }
             Task { @MainActor in self?.authorized = granted }
         }
     }

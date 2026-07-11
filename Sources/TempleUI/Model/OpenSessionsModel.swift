@@ -202,7 +202,13 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         let surface = surfaceFactory.makeSurface(appearance: appearanceProvider())
         surface.delegate = self
         tab.attach(surface: surface)
-        try? surface.start(command)
+        do {
+            try surface.start(command)
+        } catch {
+            TempleUILog.launch.error("spawn failed: agent=\(tab.agent.rawValue, privacy: .public) argv0=\(command.argv.first ?? "?", privacy: .public) cwd=\(command.cwd, privacy: .public) error=\(String(describing: error), privacy: .public)")
+            tab.activity = .exited(status: -1)
+            return
+        }
         if case .running(let pid) = surface.processState, let sid = tab.sessionID {
             registry.register(pid: pid, sessionID: sid)
         }

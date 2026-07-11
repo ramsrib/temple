@@ -1,6 +1,5 @@
 import AppKit
 import Foundation
-import OSLog
 import GhosttyKit
 import TempleTerminalAPI
 
@@ -19,7 +18,7 @@ import TempleTerminalAPI
 /// forwards input; it never draws.
 @MainActor
 public final class GhosttyApp {
-    static let logger = Logger(subsystem: "com.temple.terminal", category: "ghostty")
+    static let logger = TempleTerminalLog.logger
 
     /// The process-wide runtime. Created on first access; there is exactly one.
     public static let shared = GhosttyApp()

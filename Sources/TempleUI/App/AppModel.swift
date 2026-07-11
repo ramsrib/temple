@@ -148,8 +148,13 @@ public final class AppModel: ObservableObject {
     }
 
     private static func openDefaultDatabase() -> TempleDB {
-        if let db = try? TempleDB(path: TempleDB.defaultPath()) { return db }
-        return try! TempleDB.inMemory()
+        let path = TempleDB.defaultPath()
+        do {
+            return try TempleDB(path: path)
+        } catch {
+            TempleUILog.db.fault("failed to open database at \(path.path, privacy: .public), falling back to in-memory (state will not persist): \(String(describing: error), privacy: .public)")
+            return try! TempleDB.inMemory()
+        }
     }
 
     private func wire() {
@@ -209,7 +214,9 @@ public final class AppModel: ObservableObject {
             index = cachedIndex
             isLoading = false
             isIndexStale = true
-            Self.log("cached index published")
+            // Startup breadcrumbs are greppable with:
+            // log show --predicate 'eventMessage CONTAINS "index published"'
+            TempleUILog.launch.info("cached index published")
         }
         var isFirstLiveIndex = true
         indexSource.start { [weak self] index in
@@ -217,7 +224,7 @@ public final class AppModel: ObservableObject {
             self.isLoading = false
             self.isIndexStale = false
             if isFirstLiveIndex {
-                Self.log("live index published")
+                TempleUILog.launch.info("live index published")
                 isFirstLiveIndex = false
             }
             // Skip the recompute (disk-stat) storm when nothing actually changed.
@@ -232,10 +239,6 @@ public final class AppModel: ObservableObject {
             object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in self?.applyAppearance() }
             }
-    }
-
-    private static func log(_ message: String) {
-        FileHandle.standardError.write(Data("Temple: \(message)\n".utf8))
     }
 
     /// App-quit drain (ADR-010) → returns true once all surfaces are down.

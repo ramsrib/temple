@@ -65,3 +65,7 @@ swift run temple
 
 Requires Swift 6+ / Xcode 26+ (plus `brew install xcodegen` for the app bundle).
 Zig is self-provisioned by `build-ghostty.sh` at the pinned version.
+
+## Debugging
+
+Inspect recent Temple logs with `log show --last 1h --predicate 'subsystem BEGINSWITH "com.sriramb.temple"'`, or stream debug logs with `log stream --predicate 'subsystem BEGINSWITH "com.sriramb.temple"' --level debug`.

@@ -20,6 +20,7 @@ public enum LoginShellEnvironment {
         do {
             try process.run()
         } catch {
+            TempleCoreLog.env.error("failed to launch login shell \(shell, privacy: .public): \(String(describing: error), privacy: .public)")
             return nil
         }
         let deadline = Date().addingTimeInterval(timeout)
@@ -28,12 +29,17 @@ public enum LoginShellEnvironment {
         }
         guard !process.isRunning else {
             process.terminate()
+            TempleCoreLog.env.error("login shell \(shell, privacy: .public) timed out after \(timeout)s while resolving PATH")
             return nil
         }
         let data = stdout.fileHandleForReading.readDataToEndOfFile()
         let path = String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (path?.isEmpty == false) ? path : nil
+        guard path?.isEmpty == false else {
+            TempleCoreLog.env.error("login shell \(shell, privacy: .public) returned an empty PATH")
+            return nil
+        }
+        return path
     }
 
     /// Replace this process's PATH with the login shell's (children inherit
