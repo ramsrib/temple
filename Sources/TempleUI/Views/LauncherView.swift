@@ -9,9 +9,6 @@ import TempleCore
 /// click opens a fresh terminal (no prompt input).
 struct LauncherView: View {
     @EnvironmentObject var model: AppModel
-    /// `true` when shown as a modal sheet (⌘N / + New session), `false` inline.
-    let isSheet: Bool
-    @Environment(\.dismiss) private var dismiss
 
     private let recentLimit = 5
 
@@ -34,7 +31,10 @@ struct LauncherView: View {
             Spacer(minLength: 40)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onExitCommand { if isSheet { close() } }
+        // With no tab bar, the launcher IS the top band: its empty area behaves
+        // like the native title bar (drag / double-click). Rows capture their
+        // own clicks, so only the empty chrome triggers this.
+        .background(WindowActionStrip())
     }
 
     // MARK: Masthead
@@ -71,11 +71,9 @@ struct LauncherView: View {
                 openFolder()
             }
             LauncherRow(icon: .symbol("command"), title: "Command palette", shortcut: "⌘K") {
-                close()
                 model.commandPalettePresented = true
             }
             LauncherRow(icon: .symbol("gearshape"), title: "Settings", shortcut: "⌘,") {
-                close()
                 model.openSessions.openSettings()
             }
         }
@@ -91,7 +89,6 @@ struct LauncherView: View {
                 LauncherRow(icon: .symbol("folder"),
                             title: project.name,
                             trailing: RelativeTime.string(from: project.lastActivity)) {
-                    close()
                     model.openSessions.newSessionDefaultAgent(projectPath: project.path)
                 }
             }
@@ -103,11 +100,9 @@ struct LauncherView: View {
     /// Start `agent` in the last-used project; if none is known, ask for a folder.
     private func newSession(_ agent: Agent) {
         if let path = model.launcherDefaultProject {
-            close()
             model.openSessions.newSession(agent: agent, projectPath: path)
         } else {
             pickFolder { path in
-                close()
                 model.openSessions.newSession(agent: agent, projectPath: path)
             }
         }
@@ -115,7 +110,6 @@ struct LauncherView: View {
 
     private func openFolder() {
         pickFolder { path in
-            close()
             model.openSessions.newSessionDefaultAgent(projectPath: path)
         }
     }
@@ -129,11 +123,6 @@ struct LauncherView: View {
         if panel.runModal() == .OK, let url = panel.url {
             then(url.path)
         }
-    }
-
-    private func close() {
-        model.launcherPresented = false
-        if isSheet { dismiss() }
     }
 }
 
