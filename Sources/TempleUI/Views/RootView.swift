@@ -159,6 +159,16 @@ private struct KeyCatcher: NSViewRepresentable {
                 return true
             }
 
+            // ⌘⇧[ / ⌘⇧] — previous / next project. Matched on keyCode because
+            // with shift held AppKit reports these as "{" / "}".
+            if cmd && shift {
+                switch event.keyCode {
+                case 33: model.openSessions.selectPreviousProject(); return true   // [
+                case 30: model.openSessions.selectNextProject(); return true       // ]
+                default: break
+                }
+            }
+
             // Esc always dismisses overlays, wherever focus is (the palette's
             // own .onKeyPress only fires while its field is focused).
             if event.keyCode == 53, model.commandPalettePresented || model.shortcutsPresented {

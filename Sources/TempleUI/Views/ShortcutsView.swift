@@ -15,6 +15,7 @@ struct ShortcutsView: View {
         .init(keys: "⌘N", action: "Go to the home page"),
         .init(keys: "⌘1–9", action: "Switch to tab 1–9 in the active project"),
         .init(keys: "⌃⇥ / ⌃⇧⇥", action: "Next / previous tab"),
+        .init(keys: "⌘⇧[ / ⌘⇧]", action: "Previous / next project (returns to its last session)"),
     ]
 
     private static let navigation: [Shortcut] = [

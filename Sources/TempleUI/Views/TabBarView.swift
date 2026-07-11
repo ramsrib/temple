@@ -18,6 +18,13 @@ struct TabBarStrip: View {
         // The Settings chip renders inline in the row like any other chip (at
         // its user-controlled offset), so it drag-reorders alongside sessions.
         HStack(spacing: 6) {
+            // The strip shows one project at a time; this names the project the
+            // chips belong to, and switches between the projects you have work
+            // open in (⌘⇧[ / ⌘⇧]).
+            if !model.openSessions.openProjects.isEmpty {
+                ProjectSwitcher()
+                Divider().frame(height: 16).opacity(0.5)
+            }
             ForEach(model.openSessions.visibleTabs) { tab in
                 TabChip(tab: tab)
                     .onDrag {
@@ -54,6 +61,148 @@ struct TabBarStrip: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help("New session in this project (⌘T)")
+    }
+}
+
+/// The project the tab strip is currently showing, and a picker for the other
+/// projects you have sessions open in. Picking one returns you to the session you
+/// were last on there.
+///
+/// A popover rather than an NSMenu: a menu row is one string, which forces the
+/// session count to collide with the project name and leaves no room for the
+/// containing folder — and without that folder, worktrees of one repo all read as
+/// the same project.
+private struct ProjectSwitcher: View {
+    @EnvironmentObject var model: AppModel
+    @State private var presented = false
+    @State private var hovering = false
+
+    private var active: String? { model.openSessions.activeProjectPath }
+
+    var body: some View {
+        Button { presented.toggle() } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "folder")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Text(active.map(model.projectName) ?? "Projects")
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(Color.primary.opacity(hovering || presented ? 0.08 : 0),
+                        in: RoundedRectangle(cornerRadius: 7))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .onHover { hovering = $0 }
+        .help("Switch project (⌘⇧[ / ⌘⇧])")
+        .popover(isPresented: $presented, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(model.openSessions.openProjects, id: \.self) { path in
+                    ProjectSwitcherRow(path: path, isCurrent: path == active) {
+                        model.openSessions.activateProject(path)
+                        presented = false
+                    }
+                }
+                Divider().padding(.vertical, 4)
+                HStack(spacing: 6) {
+                    Text("⌘⇧[")
+                    Text("⌘⇧]")
+                    Text("switch project")
+                        .font(.system(size: 10.5))
+                }
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 8)
+                .padding(.bottom, 2)
+            }
+            .padding(6)
+            .frame(width: 268)
+            // The popover holds the window's first responder while it is up, and
+            // AppKit does not hand it back on dismissal — so focusing the new
+            // project's terminal has to wait until the popover is actually gone,
+            // or you land in a session that ignores your typing (same trap as ⌘K).
+            .onDisappear {
+                DispatchQueue.main.async { model.openSessions.focusActiveTerminal() }
+            }
+        }
+    }
+}
+
+/// One project in the switcher: name over its containing folder, the number of
+/// sessions open there, and a dot if any of them is running or wants you.
+private struct ProjectSwitcherRow: View {
+    @EnvironmentObject var model: AppModel
+    let path: String
+    let isCurrent: Bool
+    let select: () -> Void
+
+    @State private var hovering = false
+
+    /// Tabs open in this project — the switcher only ever lists projects with some.
+    private var tabs: [SessionTab] {
+        model.openSessions.tabs.filter { $0.kind == .session && $0.projectPath == path }
+    }
+
+    /// The loudest state among them: someone waiting on you outranks someone working.
+    private var activity: ActivityState? {
+        let states = tabs.map(\.activity)
+        if states.contains(.needsAttention) { return .needsAttention }
+        if states.contains(.running) { return .running }
+        return nil
+    }
+
+    /// The folder the project sits in — what tells two worktrees of one repo apart.
+    private var parent: String {
+        let tilde = (path as NSString).abbreviatingWithTildeInPath
+        let folder = (tilde as NSString).deletingLastPathComponent
+        return folder.isEmpty ? tilde : folder
+    }
+
+    var body: some View {
+        Button(action: select) {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .opacity(isCurrent ? 1 : 0)
+                    .frame(width: 10)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(model.projectName(path))
+                        .font(.system(size: 13, weight: isCurrent ? .medium : .regular))
+                        .lineLimit(1)
+                    Text(parent)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                }
+
+                Spacer(minLength: 8)
+
+                if let activity { ActivityDot(state: activity, size: 5) }
+                Text("\(tabs.count)")
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(Color.primary.opacity(0.07), in: Capsule())
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(hovering ? Palette.hoverFill : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
 }
 

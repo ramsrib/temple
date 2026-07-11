@@ -63,6 +63,39 @@ final class OpenSessionsModelTests: XCTestCase {
                        "the sidebar/palette can only track a live title if it is handed up")
     }
 
+    func testSwitchingProjectReturnsToItsLastActiveSession() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a1", project: "/p/a"))
+        model.openSession(Fixture.session("a2", project: "/p/a"))
+        model.openSession(Fixture.session("b1", project: "/p/b"))
+
+        // Open in tab order, not recency — the switcher must not reshuffle.
+        XCTAssertEqual(model.openProjects, ["/p/a", "/p/b"])
+
+        // Last touched in /p/a was a1 (a2 was opened, then a1 refocused).
+        model.openSession(Fixture.session("a1", project: "/p/a"))
+        model.activateProject("/p/b")
+        XCTAssertEqual(model.activeTab?.sessionID, "b1")
+
+        model.activateProject("/p/a")
+        XCTAssertEqual(model.activeProjectPath, "/p/a")
+        XCTAssertEqual(model.activeTab?.sessionID, "a1", "should return to the last session used there")
+    }
+
+    func testProjectCyclingWrapsAndIgnoresASingleProject() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a1", project: "/p/a"))
+
+        model.selectNextProject()
+        XCTAssertEqual(model.activeProjectPath, "/p/a", "one project: cycling is a no-op")
+
+        model.openSession(Fixture.session("b1", project: "/p/b"))
+        model.selectNextProject()
+        XCTAssertEqual(model.activeProjectPath, "/p/a", "wraps past the end")
+        model.selectPreviousProject()
+        XCTAssertEqual(model.activeProjectPath, "/p/b", "wraps past the start")
+    }
+
     func testCloseTabGracefullyRemovesTab() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.openSession(Fixture.session("a", project: "/p/a"))
