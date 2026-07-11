@@ -21,7 +21,7 @@ struct ShortcutsView: View {
         .init(keys: "⌘K", action: "Command palette (recent sessions + search)"),
         .init(keys: "⌘F", action: "Focus sidebar search"),
         .init(keys: "↑ ↓ / Return", action: "Browse the sidebar / open the highlighted session"),
-        .init(keys: "⌘B / ⌘\\", action: "Toggle the sidebar"),
+        .init(keys: "⌘B", action: "Toggle the sidebar"),
     ]
 
     private static let app: [Shortcut] = [
