@@ -81,16 +81,21 @@ public struct RootView: View {
         .transition(.opacity)
     }
 
-    /// Full-window dimmer with the palette centered on BOTH axes over the entire
-    /// window (Item H).
+    /// Full-window dimmer; the palette's TOP edge is anchored (Spotlight-style,
+    /// ~35% down) so the card grows downward as results change instead of
+    /// re-centering and bouncing its top edge.
     private var paletteOverlay: some View {
-        ZStack {
-            Color.black.opacity(0.001)
-                .ignoresSafeArea()
-                .onTapGesture { model.commandPalettePresented = false }
-            CommandPaletteView()
-                .environmentObject(model)
-                .tint(Palette.accent)
+        GeometryReader { geo in
+            ZStack(alignment: .top) {
+                Color.black.opacity(0.001)
+                    .ignoresSafeArea()
+                    .onTapGesture { model.commandPalettePresented = false }
+                CommandPaletteView()
+                    .environmentObject(model)
+                    .tint(Palette.accent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, geo.size.height * 0.35)
+            }
         }
         .transition(.opacity)
     }
