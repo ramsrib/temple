@@ -20,3 +20,6 @@ Vendor/
 
 # obisidian
 .obsidian/
+
+# Local release credentials
+.env
