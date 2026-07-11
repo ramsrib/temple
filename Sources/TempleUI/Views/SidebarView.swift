@@ -114,6 +114,14 @@ struct SidebarView: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+        // With "Show scroll bars: Always" set in System Settings, AppKit gives the
+        // List a legacy scroller: a permanent ~15pt bar with a track, running the
+        // full height beside every row. Setting scrollerStyle on the NSScrollView
+        // does not stick (AppKit re-applies the system style on layout), so the
+        // indicator is removed outright — the sidebar is a short list you can see
+        // the extent of, not a document you navigate by scroll position.
+        .scrollIndicators(.never)
+        .background(SidebarScrollers())
     }
 
     // MARK: Footer
