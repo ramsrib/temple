@@ -21,7 +21,6 @@ struct TempleApp: App {
         // Agents spawned in Temple must see the user's real PATH (agent hooks
         // and tools break under launchd's minimal GUI environment).
         LoginShellEnvironment.adoptLoginShellPATH()
-        DefaultsMigration.migrateStandardDomainIfNeeded()
         _model = StateObject(wrappedValue: AppModel(surfaceFactory: GhosttyTerminalSurfaceFactory()))
     }
 
