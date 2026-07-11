@@ -14,7 +14,6 @@ public struct RootView: View {
             NavigationSplitView(columnVisibility: $model.sidebarVisibility) {
                 SidebarView()
                     .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
-                    .toolbar(removing: .sidebarToggle)
             } detail: {
                 MainContentView()
             }
