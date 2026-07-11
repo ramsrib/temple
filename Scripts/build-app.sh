@@ -26,6 +26,15 @@ SCHEME="Temple"
 DERIVED="$ROOT/.build/xcode-derived"
 DIST="$ROOT/dist"
 
+# 0. version -----------------------------------------------------------------
+# Info.plist takes these from the build settings ($(MARKETING_VERSION) /
+# $(CURRENT_PROJECT_VERSION)), so they are the single source of the version the
+# About box shows. release.sh passes MARKETING_VERSION; a local build derives it
+# from the last tag, so `make install` never claims to be some other release.
+MARKETING_VERSION="${MARKETING_VERSION:-$(git -C "$ROOT" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')}"
+MARKETING_VERSION="${MARKETING_VERSION:-0.0.0}"
+CURRENT_PROJECT_VERSION="${CURRENT_PROJECT_VERSION:-$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)}"
+
 # 1. icon --------------------------------------------------------------------
 if [[ ! -f "$ROOT/App/AppIcon.icns" ]]; then
   echo "==> app icon missing; generating"
@@ -77,8 +86,8 @@ XCB_ARGS=(
   "CODE_SIGNING_ALLOWED=YES"
   "PROVISIONING_PROFILE_SPECIFIER="
 )
-# Release versioning: Scripts/release.sh passes MARKETING_VERSION (e.g. 0.1.0).
-[[ -n "${MARKETING_VERSION:-}" ]] && XCB_ARGS+=("MARKETING_VERSION=${MARKETING_VERSION}")
+XCB_ARGS+=("MARKETING_VERSION=${MARKETING_VERSION}"
+           "CURRENT_PROJECT_VERSION=${CURRENT_PROJECT_VERSION}")
 if [[ "$CODE_SIGN_IDENTITY" == "-" ]]; then
   # ad-hoc: no team, and hardened runtime can't apply without a real identity
   XCB_ARGS+=("DEVELOPMENT_TEAM=" "ENABLE_HARDENED_RUNTIME=NO")
