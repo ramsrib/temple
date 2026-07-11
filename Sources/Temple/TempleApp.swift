@@ -22,6 +22,11 @@ struct TempleApp: App {
         // and tools break under launchd's minimal GUI environment).
         LoginShellEnvironment.adoptLoginShellPATH()
         _model = StateObject(wrappedValue: AppModel(surfaceFactory: GhosttyTerminalSurfaceFactory()))
+
+        // `swift run temple` / `make demo` launch an un-bundled binary, which
+        // AppKit treats as an accessory: no Dock icon, window opens behind
+        // everything. Promote it so the dev/demo path behaves like the .app.
+        NSApplication.shared.setActivationPolicy(.regular)
     }
 
     var body: some Scene {
@@ -32,6 +37,7 @@ struct TempleApp: App {
                 .task {
                     appDelegate.model = model
                     model.start()
+                    NSApplication.shared.activate()
                 }
         }
         .windowStyle(.hiddenTitleBar)
