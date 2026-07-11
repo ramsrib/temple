@@ -33,9 +33,10 @@ Grab the latest `Temple-vX.Y.Z.dmg` (or `.zip`) from
 [Releases](https://github.com/ramsrib/temple/releases), drag **Temple** to
 Applications, and launch.
 
-> If macOS warns about an unidentified developer on first launch, right-click
-> the app → **Open** (releases are Developer ID–signed; notarization is on the
-> roadmap).
+> Until releases are notarized, macOS blocks the first launch: go to
+> **System Settings → Privacy & Security**, scroll to *“Temple” was blocked*,
+> and click **Open Anyway** (once per install). Releases are Developer
+> ID–signed; notarization is coming.
 
 **Requirements:** macOS 14+ on Apple Silicon, with
 [Claude Code](https://claude.com/claude-code) and/or
