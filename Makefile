@@ -36,7 +36,7 @@ install: app ## Build, sign, and install to /Applications
 	@"$(LSREGISTER)" -f "$(DEST)" 2>/dev/null || true
 	@codesign --verify --strict "$(DEST)" && echo "✓ installed → $(DEST)"
 
-release: ## Build, sign, package, and publish a GitHub release (VERSION=v0.1.0)
+release: ## Build, sign, notarize, package, and publish a GitHub release (VERSION=v0.1.0; see RELEASE.md)
 	@test -n "$(VERSION)" || (echo "usage: make release VERSION=v0.1.0" && exit 1)
 	VERSION=$(VERSION) ./Scripts/release.sh
 
