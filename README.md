@@ -56,6 +56,7 @@ pinned version. Details in [docs/BUILDING-GHOSTTY.md](docs/BUILDING-GHOSTTY.md).
 - **Features & roadmap:** [docs/FEATURES.md](docs/FEATURES.md)
 - **Architecture decisions:** [docs/DECISIONS.md](docs/DECISIONS.md)
 - **Session storage formats:** [docs/SESSION-FORMATS.md](docs/SESSION-FORMATS.md)
+- **Cutting a release:** [RELEASE.md](RELEASE.md)
 
 Debug logging, if you ever need it:
 `log stream --predicate 'subsystem BEGINSWITH "com.sriramb.temple"' --level debug`
