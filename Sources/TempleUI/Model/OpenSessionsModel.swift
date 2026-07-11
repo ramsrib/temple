@@ -162,8 +162,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         if tab.kind == .session {
             activeProjectPath = tab.projectPath
             ensureSurface(for: tab)
-            // Viewing the tab clears its attention (U7).
-            if tab.activity == .needsAttention { tab.activity = .running }
+            // Viewing a tab that was waiting for you clears its attention. The
+            // agent already stopped working (that's what rang), so it settles to
+            // idle rather than back to running (Item E).
+            if tab.activity == .needsAttention { tab.activity = .idle }
         }
         tab.surface?.focus()
     }
@@ -191,6 +193,54 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             registry.register(pid: pid, sessionID: sid)
         }
         tab.activity = .running
+        // Item E: a freshly spawned agent boots into .running; if it never rings
+        // and its title goes quiet, settle it to .idle so the close gate doesn't
+        // treat a resting prompt as "still working".
+        lastTitleChange[tab.id] = Date()
+        scheduleSettle(for: tab)
+    }
+
+    // MARK: Activity settle (Item E)
+
+    /// How long after spawn (or the last title change) a still-`.running`, never-
+    /// rung session decays to `.idle`. Overridable so tests exercise it fast.
+    var settleDelaySeconds: TimeInterval = 15
+    /// A session whose title changed within this window is treated as actively
+    /// working (Claude Code live-updates its title while thinking).
+    var titleQuietWindow: TimeInterval = 4
+
+    /// Last time each tab's title changed — feeds the settle heuristic.
+    private var lastTitleChange: [SessionTab.ID: Date] = [:]
+    /// Pending settle timers, keyed by tab, so they can be cancelled/replaced.
+    private var settleTasks: [SessionTab.ID: Task<Void, Never>] = [:]
+
+    private func scheduleSettle(for tab: SessionTab) {
+        settleTasks[tab.id]?.cancel()
+        let delay = settleDelaySeconds
+        settleTasks[tab.id] = Task { [weak self, weak tab] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled, let self, let tab else { return }
+            self.settleIfQuiet(tab)
+        }
+    }
+
+    private func settleIfQuiet(_ tab: SessionTab) {
+        // Only a still-booting/working session decays; a bell (→ idle/attention),
+        // input (→ running, reschedules), or exit will have moved it on already.
+        guard tab.activity == .running else { return }
+        let sinceTitle = lastTitleChange[tab.id].map { Date().timeIntervalSince($0) } ?? .infinity
+        if sinceTitle >= titleQuietWindow {
+            tab.activity = .idle
+        } else {
+            // Title still moving → the agent is working; wait another window.
+            scheduleSettle(for: tab)
+        }
+    }
+
+    private func cancelSettle(for tabID: SessionTab.ID) {
+        settleTasks[tabID]?.cancel()
+        settleTasks[tabID] = nil
+        lastTitleChange[tabID] = nil
     }
 
     // MARK: Settings (U9) — singleton utility tab
@@ -266,6 +316,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     private func removeTab(_ tabID: SessionTab.ID) {
         guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
         let tab = tabs[index]
+        cancelSettle(for: tabID)
         if let sid = tab.sessionID { registry.unregister(sessionID: sid) }
         let wasActive = activeTabID == tabID
         tabs.remove(at: index)
@@ -403,9 +454,15 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
     public func surface(_ surface: TerminalSurface, didUpdateTitle title: String) {
         guard let tab = tab(for: surface), !title.isEmpty else { return }
         tab.title = title
+        // Item E: a live-updating title means the agent is working — keep the
+        // settle heuristic from prematurely idling it.
+        lastTitleChange[tab.id] = Date()
         persist()
     }
 
+    /// A bell / OSC notification means the agent stopped working — it finished or
+    /// is awaiting input (Item E). If you're watching the tab it settles to
+    /// idle; if it's in the background it raises attention.
     public func surfaceDidRing(_ surface: TerminalSurface) {
         raiseAttention(surface, title: "", body: "Terminal bell")
     }
@@ -414,11 +471,26 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
         raiseAttention(surface, title: title, body: body)
     }
 
+    /// The user submitted a prompt (Return) → the agent is now working (Item E).
+    public func surfaceDidSubmitInput(_ surface: TerminalSurface) {
+        guard let tab = tab(for: surface), tab.kind == .session else { return }
+        tab.activity = .running
+        // Restart the settle clock so it can decay again once work finishes.
+        lastTitleChange[tab.id] = Date()
+        scheduleSettle(for: tab)
+    }
+
     private func raiseAttention(_ surface: TerminalSurface, title: String, body: String) {
         guard let tab = tab(for: surface) else { return }
-        // A bell in the tab you're already looking at isn't "attention".
-        guard tab.id != activeTabID else { return }
-        tab.activity = .needsAttention
-        attentionHandler?(tab, title, body)
+        // The signal fired → the agent is no longer working. Cancel any pending
+        // settle; this decides the resting state directly.
+        cancelSettle(for: tab.id)
+        if tab.id == activeTabID {
+            // You're already looking at it — no attention, just at rest.
+            tab.activity = .idle
+        } else {
+            tab.activity = .needsAttention
+            attentionHandler?(tab, title, body)
+        }
     }
 }

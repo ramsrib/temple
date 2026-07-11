@@ -51,6 +51,9 @@ public final class StubTerminalSurface: TerminalSurface {
     public func simulateTitle(_ title: String) {
         delegate?.surface(self, didUpdateTitle: title)
     }
+    public func simulateSubmitInput() {
+        delegate?.surfaceDidSubmitInput(self)
+    }
 
     private func exitNow(status: Int32) {
         guard case .running = processState else { return }

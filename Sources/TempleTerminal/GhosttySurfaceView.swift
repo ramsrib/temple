@@ -21,6 +21,8 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
     var onTitle: ((String) -> Void)?
     var onBell: (() -> Void)?
     var onNotification: ((String, String) -> Void)?
+    /// The user pressed Return (no modifiers) — a submit signal (Item E).
+    var onSubmitInput: (() -> Void)?
     /// Reports the child exit code (once).
     var onChildExited: ((Int32) -> Void)?
     /// libghostty asks the host to close the surface (e.g. process gone).
@@ -206,6 +208,14 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
 
     public override func keyDown(with event: NSEvent) {
         guard let surface else { super.keyDown(with: event); return }
+
+        // Item E: a plain Return (keyCode 36, no modifiers) is a submit — the
+        // agent is about to work. Signal it, then fall through to normal input
+        // encoding so the keystroke still reaches the PTY.
+        if event.keyCode == 36,
+           event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty {
+            onSubmitInput?()
+        }
 
         let action: ghostty_input_action_e = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
         let markedBefore = markedText.length > 0
