@@ -45,6 +45,7 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         wantsLayer = true
         layerContentsRedrawPolicy = .duringViewResize
         focusRingType = .none
+        registerForDraggedTypes(Array(Self.dropTypes))
     }
 
     @available(*, unavailable)
@@ -345,6 +346,81 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
 
     private func mods(_ event: NSEvent) -> ghostty_input_mods_e {
         NSEvent.ghosttyMods(event.modifierFlags)
+    }
+
+    // MARK: Drag & drop
+
+    /// Dropping a file or an image onto an agent types its path into the prompt —
+    /// that is how you hand Claude or Codex a screenshot or a log to look at.
+    /// (Ported from Ghostty's SurfaceView, extended to cover images that arrive
+    /// as pixels rather than as a file.)
+    static let dropTypes: Set<NSPasteboard.PasteboardType> = [.fileURL, .URL, .string, .png, .tiff]
+
+    public override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard let types = sender.draggingPasteboard.types,
+              !Set(types).isDisjoint(with: Self.dropTypes) else { return [] }
+        return .copy   // .copy gets the right cursor + badge
+    }
+
+    public override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        draggingEntered(sender)
+    }
+
+    public override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        guard let text = Self.droppedText(from: sender.draggingPasteboard) else { return false }
+        DispatchQueue.main.async {
+            self.insertText(text, replacementRange: NSRange(location: 0, length: 0))
+        }
+        return true
+    }
+
+    /// The text a drop should type into the terminal.
+    static func droppedText(from pasteboard: NSPasteboard) -> String? {
+        // Files first — an agent reads a path, so a dropped file IS its path.
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL],
+           !urls.isEmpty,
+           urls.contains(where: \.isFileURL) {
+            return urls
+                .map { ShellQuoting.quote($0.isFileURL ? $0.path : $0.absoluteString) }
+                .joined(separator: " ")
+        }
+        // An image dragged out of a browser or Preview carries pixels, not a path.
+        // Nothing downstream can read pixels off a pasteboard, so spill it to a
+        // file and hand over that instead.
+        if let path = spillImageToFile(from: pasteboard) {
+            return ShellQuoting.quote(path)
+        }
+        // A web URL is quoted (its ?query&args would otherwise reach the shell).
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL], let url = urls.first {
+            return ShellQuoting.quote(url.absoluteString)
+        }
+        // Plain text is left exactly as-is: it may be a command meant to be run.
+        return pasteboard.string(forType: .string)
+    }
+
+    /// Write dropped image data to a temp file; returns its path.
+    private static func spillImageToFile(from pasteboard: NSPasteboard) -> String? {
+        let png: Data?
+        if let data = pasteboard.data(forType: .png) {
+            png = data
+        } else if let tiff = pasteboard.data(forType: .tiff) {
+            png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
+        } else {
+            png = nil
+        }
+        guard let png else { return nil }
+
+        do {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Temple/dropped-images", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let file = directory.appendingPathComponent("\(UUID().uuidString).png")
+            try png.write(to: file)
+            return file.path
+        } catch {
+            GhosttyApp.logger.error("dropped image could not be written: \(String(describing: error), privacy: .public)")
+            return nil
+        }
     }
 
     // MARK: NSTextInputClient

@@ -117,15 +117,7 @@ public final class GhosttyTerminalSurface: TerminalSurface {
     /// Build a shell command line from argv, quoting each element so paths with
     /// spaces and other metacharacters survive libghostty's shell parsing.
     nonisolated static func shellCommand(from argv: [String]) -> String? {
-        guard !argv.isEmpty else { return nil }
-        return argv.map(shellQuote).joined(separator: " ")
-    }
-
-    nonisolated private static func shellQuote(_ s: String) -> String {
-        if !s.isEmpty && s.allSatisfy({ $0.isLetter || $0.isNumber || "-_./:=@%+".contains($0) }) {
-            return s
-        }
-        return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        ShellQuoting.commandLine(argv)
     }
 }
 
