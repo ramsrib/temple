@@ -32,6 +32,22 @@ final class DBTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(db.sessionState("s")).pinned)
     }
 
+    /// The agent's self-assigned title lives nowhere on disk — losing it on close
+    /// would send a long session's row back to the prompt it opened with.
+    func testGeneratedTitleSurvivesReopen() throws {
+        let (db, path) = try database()
+        try db.setGeneratedTitle("Fixing the shift+enter encoding", sessionID: "s")
+        XCTAssertEqual(try db.sessionState("s")?.generatedTitle, "Fixing the shift+enter encoding")
+
+        let reopened = try TempleDB(path: path)
+        XCTAssertEqual(try reopened.sessionState("s")?.generatedTitle, "Fixing the shift+enter encoding")
+        // A rename is independent of it (the rename wins at display time).
+        try reopened.setCustomName("Keyboard work", sessionID: "s")
+        let state = try XCTUnwrap(reopened.sessionState("s"))
+        XCTAssertEqual(state.customName, "Keyboard work")
+        XCTAssertEqual(state.generatedTitle, "Fixing the shift+enter encoding")
+    }
+
     func testOpenTabsPreserveOrder() throws {
         let (db, _) = try database()
         try db.setOpenTabs(projectPath: "/project", sessionIDs: ["a", "b", "c"])
