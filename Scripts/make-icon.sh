@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# make-icon.sh — generate a minimal placeholder app icon (App/AppIcon.icns).
+# make-icon.sh — generate the app icon (App/AppIcon.icns).
 #
-# Draws a rounded-rect terracotta tile with a white "T" via CoreGraphics, then
-# builds a full .iconset (16pt→512pt @1x/@2x) and packs it with iconutil.
-# Tasteful, deliberately simple — replace App/AppIcon.icns with a real icon
-# later and this script becomes a no-op you can delete.
+# Draws a rounded-rect terracotta tile with a white `building.columns` glyph —
+# the same temple/columns mark used in the home-screen masthead — via
+# CoreGraphics, then builds a full .iconset (16pt→512pt @1x/@2x) and packs it
+# with iconutil.
 #
 # Idempotent: safe to re-run; overwrites App/AppIcon.icns.
 set -euo pipefail
@@ -48,17 +48,23 @@ path.addClip()
 NSGradient(starting: top, ending: bottom)!.draw(in: tile, angle: -90)
 NSGraphicsContext.current?.cgContext.resetClip()
 
-// White "T".
-let glyph = "T"
-let font = NSFont.systemFont(ofSize: size * 0.62, weight: .bold)
-let attrs: [NSAttributedString.Key: Any] = [
-    .font: font,
-    .foregroundColor: NSColor.white,
-]
-let s = NSAttributedString(string: glyph, attributes: attrs)
-let bounds = s.size()
-let origin = NSPoint(x: (size - bounds.width) / 2, y: (size - bounds.height) / 2)
-s.draw(at: origin)
+// White `building.columns` glyph (matches the home masthead).
+let symbolConfig = NSImage.SymbolConfiguration(pointSize: size * 0.40, weight: .regular)
+guard let symbol = NSImage(systemSymbolName: "building.columns", accessibilityDescription: nil)?
+        .withSymbolConfiguration(symbolConfig) else { fatalError("symbol") }
+
+// Render the (template) symbol tinted solid white.
+let glyphSize = symbol.size
+let tinted = NSImage(size: glyphSize)
+tinted.lockFocus()
+let glyphRect = NSRect(origin: .zero, size: glyphSize)
+symbol.draw(in: glyphRect)
+NSColor.white.set()
+glyphRect.fill(using: .sourceAtop)
+tinted.unlockFocus()
+
+let origin = NSPoint(x: (size - glyphSize.width) / 2, y: (size - glyphSize.height) / 2)
+tinted.draw(in: NSRect(origin: origin, size: glyphSize))
 
 NSGraphicsContext.restoreGraphicsState()
 
