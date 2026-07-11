@@ -67,6 +67,15 @@ public protocol TerminalSurfaceDelegate: AnyObject {
     func surfaceDidRing(_ surface: TerminalSurface)
     /// OSC 9 / OSC 777.
     func surface(_ surface: TerminalSurface, didPostNotification title: String, body: String)
+
+    /// The user submitted input in the surface (pressed Return with no
+    /// modifiers) — a strong signal the agent is now working (Item E). Default
+    /// no-op so existing conformers need not implement it.
+    func surfaceDidSubmitInput(_ surface: TerminalSurface)
+}
+
+public extension TerminalSurfaceDelegate {
+    func surfaceDidSubmitInput(_ surface: TerminalSurface) {}
 }
 
 @MainActor

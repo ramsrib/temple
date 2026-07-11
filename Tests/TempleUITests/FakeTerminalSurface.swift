@@ -65,6 +65,7 @@ final class FakeTerminalSurface: TerminalSurface {
         delegate?.surface(self, didPostNotification: title, body: body)
     }
     func simulateTitle(_ t: String) { delegate?.surface(self, didUpdateTitle: t) }
+    func simulateSubmitInput() { delegate?.surfaceDidSubmitInput(self) }
     func simulateExit(status: Int32 = 0) { exitNow(status: status) }
 
     private func exitNow(status: Int32) {
