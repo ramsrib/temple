@@ -249,6 +249,10 @@ public final class AppModel: ObservableObject {
 
     /// App-quit drain (ADR-010) → returns true once all surfaces are down.
     public func drainForQuit(completion: @escaping () -> Void) {
+        // Freeze the open-tab set BEFORE the agents start dying, so their exits
+        // can't be mistaken for "the agent finished" and close the tabs we are
+        // meant to reopen next launch.
+        openSessions.prepareForQuit()
         SessionRuntimeController().drainAll(openSessions.allSurfaces, completion: completion)
     }
 

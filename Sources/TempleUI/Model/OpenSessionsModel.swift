@@ -358,6 +358,18 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// tab, bypassing the early-exit grace that keeps failed launches visible.
     private var closingTabIDs: Set<SessionTab.ID> = []
 
+    /// Set once ⌘Q starts draining the agents. From here the open-tab set is
+    /// frozen: it is what the next launch restores, and nothing the dying
+    /// processes report may change it.
+    public private(set) var isQuitting = false
+
+    /// Freeze the tab set for restore, then let the caller drain the agents.
+    public func prepareForQuit() {
+        guard !isQuitting else { return }
+        persist()          // last write wins: capture the set as the user left it
+        isQuitting = true
+    }
+
     public func closeActiveTab() {
         if let id = activeTabID { closeTab(id) }
     }
@@ -540,6 +552,11 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 extension OpenSessionsModel: TerminalSurfaceDelegate {
     public func surface(_ surface: TerminalSurface, didChangeState state: TerminalProcessState) {
         guard let tab = tab(for: surface) else { return }
+        // Quitting drains every agent, so every surface reports .exited on the way
+        // out. Those exits are the app closing, NOT the agents finishing — acting
+        // on them would close every tab and persist an empty set, and ⌘Q would
+        // quietly erase the session list it is supposed to be saving.
+        if isQuitting { return }
         switch state {
         case .running(let pid):
             tab.activity = .running
