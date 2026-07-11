@@ -8,8 +8,12 @@ public struct ClaudeSessionStore: IncrementalSessionStore {
     private let root: URL
 
     public init(root: URL? = nil) {
-        self.root = root ?? FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/projects", isDirectory: true)
+        // TEMPLE_CLAUDE_ROOT points the index at an alternate store (testing,
+        // demos, screenshots). Defaults to the real one.
+        self.root = root
+            ?? StoreIO.envRoot("TEMPLE_CLAUDE_ROOT")
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".claude/projects", isDirectory: true)
     }
 
     public var watchedURLs: [URL] { [root] }
