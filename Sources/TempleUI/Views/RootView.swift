@@ -124,6 +124,13 @@ private struct KeyCatcher: NSViewRepresentable {
                 return true
             }
 
+            // Esc always dismisses the ⌘K palette, wherever focus is (its own
+            // .onKeyPress only fires while the palette field is focused).
+            if event.keyCode == 53, model.commandPalettePresented {
+                model.commandPalettePresented = false
+                return true
+            }
+
             // Sidebar browse (UX "Select vs. open"): arrow keys move the highlight,
             // Enter opens it — but ONLY while no terminal is focused, so a live
             // agent still owns its arrow keys.
