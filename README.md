@@ -2,30 +2,28 @@
 
 **Where agents answer the call.**
 
-Temple is a native macOS session manager for your CLI coding agents —
-**Claude Code** and **Codex**. Every session you've ever run, organized by
-project and searchable. Click one and it resumes in a real terminal, exactly
-where you left off.
+Temple is a native macOS session manager for Claude Code and Codex. It finds
+every session you have ever run, groups them by project, and lets you search
+them. Click one and it resumes in a real terminal, right where you left off.
 
-- **All your sessions, one place** — Temple reads the agents' own on-disk
-  session stores and builds a live, searchable index. New sessions appear
-  within a second, wherever they were started.
-- **Real terminals, not transcripts** — each session runs in an embedded
-  [Ghostty](https://ghostty.org) terminal (GPU-rendered, Metal). Type straight
-  into your agent.
-- **Per-project tabs in the title bar** — the tab strip shows the project
-  you're working in; switching projects never kills the others.
-- **Honest activity states** — green means the agent is actually working, gray
-  means it's waiting for you, orange means it needs attention. Closing a busy
-  agent asks first.
-- **Keyboard-first** — ⌘K to jump to any session, ⌘T for a new one, ⌘B for the
-  sidebar, ⌘/ to see everything else.
-- **Native and quiet** — monochrome chrome, light/dark theme (the terminal
-  follows), no Electron, no cloud, no accounts. Your sessions never leave your
-  machine.
+- **Every session in one place.** Temple reads the session files the agents
+  already write, so nothing is lost. Sessions you start elsewhere show up
+  within a second.
+- **Real terminals.** Each session runs in an embedded
+  [Ghostty](https://ghostty.org) terminal. You type straight into your agent,
+  the same as in any terminal.
+- **Tabs per project.** The tab strip shows the project you are working in.
+  Switching projects leaves the other agents running.
+- **Clear activity states.** Green means the agent is working. Gray means it is
+  waiting for you. Orange means it needs your attention. Closing a busy agent
+  asks first.
+- **Keyboard first.** ⌘K jumps to any session, ⌘T starts a new one, ⌘B toggles
+  the sidebar, ⌘/ lists the rest.
+- **Quiet and local.** Light and dark themes, no Electron, no accounts, no
+  cloud. Your sessions never leave your machine.
 
-Temple never edits your files, never runs git, and never touches the session
-contents — the CLIs' own files remain the source of truth.
+Temple does not edit your files, run git, or change session contents. The
+agents' own files stay the source of truth.
 
 ## Install
 
