@@ -77,6 +77,8 @@ XCB_ARGS=(
   "CODE_SIGNING_ALLOWED=YES"
   "PROVISIONING_PROFILE_SPECIFIER="
 )
+# Release versioning: Scripts/release.sh passes MARKETING_VERSION (e.g. 0.1.0).
+[[ -n "${MARKETING_VERSION:-}" ]] && XCB_ARGS+=("MARKETING_VERSION=${MARKETING_VERSION}")
 if [[ "$CODE_SIGN_IDENTITY" == "-" ]]; then
   # ad-hoc: no team, and hardened runtime can't apply without a real identity
   XCB_ARGS+=("DEVELOPMENT_TEAM=" "ENABLE_HARDENED_RUNTIME=NO")

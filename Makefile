@@ -2,7 +2,7 @@ APP_NAME := Temple
 APP := dist/$(APP_NAME).app
 DEST := /Applications/$(APP_NAME).app
 
-.PHONY: build test run ghostty app open install clean
+.PHONY: build test run ghostty app open install release clean
 
 build: ## Compile the SwiftPM targets
 	swift build
@@ -35,6 +35,10 @@ install: app ## Build, sign, and install to /Applications
 	@# Make /Applications the canonical handler (and drop the stale dist/ entry).
 	@"$(LSREGISTER)" -f "$(DEST)" 2>/dev/null || true
 	@codesign --verify --strict "$(DEST)" && echo "✓ installed → $(DEST)"
+
+release: ## Build, sign, package, and publish a GitHub release (VERSION=v0.1.0)
+	@test -n "$(VERSION)" || (echo "usage: make release VERSION=v0.1.0" && exit 1)
+	VERSION=$(VERSION) ./Scripts/release.sh
 
 clean: ## Remove build artifacts (keeps Vendor/)
 	rm -rf .build dist Temple.xcodeproj

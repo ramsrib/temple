@@ -1,71 +1,66 @@
 # Temple
 
-A native macOS app that wraps CLI coding agents (**Claude Code**, **Codex**) and
-presents their sessions as a chat-like, project-grouped index. Recent sessions
-per project; click one to open a tab with a **real terminal** (libghostty) that
-auto-resumes that session.
+**Where agents answer the call.**
 
-> Status: **v0.1 MVP** — live-updating sidebar, per-project terminal tabs with an
-> embedded libghostty surface, new-session launcher (Claude/Codex + Choose
-> folder…), graceful process lifecycle, notifications, ⌘K palette, Settings tab,
-> System/Light/Dark theme, signed `.app`. See [docs/FEATURES.md](docs/FEATURES.md).
+Temple is a native macOS app that turns your CLI coding agents — **Claude Code**
+and **Codex** — into something like a chat app. Every session you've ever run
+becomes a resumable conversation, organized by project. Click one and a real
+terminal opens, resumed exactly where you left off.
 
-## Why / what / how
+- **All your sessions, one place** — Temple reads the agents' own on-disk
+  session stores and builds a live, searchable index. New sessions appear
+  within a second, wherever they were started.
+- **Real terminals, not transcripts** — each session runs in an embedded
+  [Ghostty](https://ghostty.org) terminal (GPU-rendered, Metal). Type straight
+  into your agent.
+- **Per-project tabs in the title bar** — the tab strip shows the project
+  you're working in; switching projects never kills the others.
+- **Honest activity states** — green means the agent is actually working, gray
+  means it's waiting for you, orange means it needs attention. Closing a busy
+  agent asks first.
+- **Keyboard-first** — ⌘K to jump to any session, ⌘T for a new one, ⌘B for the
+  sidebar, ⌘/ to see everything else.
+- **Native and quiet** — monochrome chrome, light/dark theme (the terminal
+  follows), no Electron, no cloud, no accounts. Your sessions never leave your
+  machine.
 
-- **Product & feature spec:** [docs/FEATURES.md](docs/FEATURES.md)
-- **UX & interaction spec:** [docs/UX.md](docs/UX.md)
-- **Decisions & rationale:** [docs/DECISIONS.md](docs/DECISIONS.md)
-- **Build plan (parallel tracks):** [docs/PLAN.md](docs/PLAN.md)
-- **Session storage formats:** [docs/SESSION-FORMATS.md](docs/SESSION-FORMATS.md)
-- **Building libghostty:** [docs/BUILDING-GHOSTTY.md](docs/BUILDING-GHOSTTY.md)
+Temple never edits your files, never runs git, and never touches the session
+contents — the CLIs' own files remain the source of truth.
 
-## Stack
+## Install
 
-- **Swift + AppKit/SwiftUI**, native, macOS-first (Linux later, not Windows).
-- **libghostty** (Ghostty's engine, C API) as the embedded terminal — pinned
-  ghostty v1.3.1 / zig 0.15.2, built by `Scripts/build-ghostty.sh`.
-- **GRDB/SQLite** for app state (pins, tab restore, process registry); the
-  filesystem session files remain the source of truth (ADR-009).
-- **No Rust, no webview** — see ADR-005 for why.
+Grab the latest `Temple-vX.Y.Z.dmg` (or `.zip`) from
+[Releases](https://github.com/ramsrib/temple/releases), drag **Temple** to
+Applications, and launch.
 
-## Layout
+> If macOS warns about an unidentified developer on first launch, right-click
+> the app → **Open** (releases are Developer ID–signed; notarization is on the
+> roadmap).
 
-```
-Sources/
-  TempleCore/         session index, stores, watcher, search, filter, DB — no AppKit
-  TempleTerminalAPI/  the TerminalSurface seam (protocol + stub)
-  TempleTerminal/     libghostty runtime + GhosttyTerminalSurface
-  TempleUI/           the app experience (sidebar, tabs, lifecycle, settings)
-  Temple/             thin @main (SwiftPM dev run)
-  templectl/          CLI: real project→session index (--watch/--search/--all)
-  terminal-demo/      dev harness: one window, one ghostty surface
-App/                  Xcode app-target entry (Info.plist, entitlements, icon)
-Scripts/              build-ghostty.sh · build-app.sh · make-icon.sh
-Tests/                TempleCoreTests · TempleUITests · TempleTerminalTests
-docs/                 FEATURES · UX · DECISIONS · PLAN · SESSION-FORMATS · BUILDING-GHOSTTY
-```
+**Requirements:** macOS 14+ on Apple Silicon, with
+[Claude Code](https://claude.com/claude-code) and/or
+[Codex](https://github.com/openai/codex) installed. Temple auto-detects both
+(paths configurable in Settings).
 
-## Quickstart
+## Build from source
 
 ```sh
-# One-time: build the embedded terminal engine (pins zig + ghostty; 10–30 min)
-./Scripts/build-ghostty.sh
-
-swift build && swift test
-
-# Print your real projects + recent sessions from ~/.claude and ~/.codex:
-swift run templectl            # also: --watch, --search <q>, --all
-
-# Run the app from the checkout:
-swift run temple
-
-# Build the signed Temple.app (xcodegen + xcodebuild; bundles ghostty resources):
-./Scripts/build-app.sh         # → dist/Temple.app
+./Scripts/build-ghostty.sh   # one-time: builds the embedded terminal engine
+make install                 # signed Temple.app → /Applications
 ```
 
-Requires Swift 6+ / Xcode 26+ (plus `brew install xcodegen` for the app bundle).
-Zig is self-provisioned by `build-ghostty.sh` at the pinned version.
+Needs Xcode 26+ and `brew install xcodegen`. Zig is self-provisioned at the
+pinned version. Details in [docs/BUILDING-GHOSTTY.md](docs/BUILDING-GHOSTTY.md).
 
-## Debugging
+## Learn more
 
-Inspect recent Temple logs with `log show --last 1h --predicate 'subsystem BEGINSWITH "com.sriramb.temple"'`, or stream debug logs with `log stream --predicate 'subsystem BEGINSWITH "com.sriramb.temple"' --level debug`.
+- **Features & roadmap:** [docs/FEATURES.md](docs/FEATURES.md)
+- **Architecture decisions:** [docs/DECISIONS.md](docs/DECISIONS.md)
+- **Session storage formats:** [docs/SESSION-FORMATS.md](docs/SESSION-FORMATS.md)
+
+Debug logging, if you ever need it:
+`log stream --predicate 'subsystem BEGINSWITH "com.sriramb.temple"' --level debug`
+
+## License
+
+[MIT](LICENSE)
