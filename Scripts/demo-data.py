@@ -33,6 +33,9 @@ CLAUDE_SESSIONS = {
         ("why is the staging deploy 4x slower than prod?", 1500),
         ("bump the sdk and fix whatever breaks", 2600),
         ("can you review the rate limiter before I open the PR", 4300),
+        # Past the sidebar's collapse limit, so the demo shows "Show more".
+        ("split the monolith config into per-env files", 5200),
+        ("the idempotency key check is racy under load", 6100),
     ],
     "storefront": [
         ("checkout button does nothing on mobile safari", 12),

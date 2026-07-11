@@ -41,15 +41,20 @@ truth; Temple supplies the index, navigation, lifecycle, and attention layer.
 The sidebar is the browse index; it is not the set of running processes. Temple
 discovers Claude Code sessions under `~/.claude` and Codex sessions under
 `~/.codex`, reads their true working directories, and groups them by project.
-Session titles use a CLI summary when available and otherwise the first human
-prompt ([ADR-007](./DECISIONS.md#adr-007--session-index-is-built-from-the-clis-on-disk-stores),
+Session titles prefer the title an agent gives itself as the work moves on;
+Temple records that title, because the CLIs write it nowhere on disk and it would
+otherwise be lost when the session closes. A session with no such title yet falls
+back to the first human prompt
+([ADR-007](./DECISIONS.md#adr-007--session-index-is-built-from-the-clis-on-disk-stores),
 [ADR-011](./DECISIONS.md#adr-011--title-source-first-human-prompt-cli-summaries-unreliable)).
 
 - Projects and sessions are ordered by recency at launch, then frozen for that
   app run so activity cannot move a row under the pointer. Newly discovered
   entries prepend without reshuffling existing entries.
-- The initial view shows up to eight projects and six sessions per project;
-  **Show all projects** and **Show more** reveal the rest.
+- The initial view shows up to eight projects and six sessions per project.
+  **Show all projects** reveals the rest of the projects; within a project,
+  **Show more** reveals ten further sessions at a time and reports how many
+  remain, and **Show fewer** folds the list back.
 - Filesystem watching, an index cache, and retries for files caught mid-write
   keep the index current without blocking launch.
 - Agent badges distinguish Claude Code and Codex. Ambient and automation noise
@@ -80,11 +85,18 @@ The sidebar and tab bar form a two-part navigation model:
 - Opening a session in another project switches the tab-bar context without
   stopping that project's off-screen processes
   ([ADR-010](./DECISIONS.md#adr-010--temple-owns-the-agent-processes-graceful-lifecycle)).
+- A project switcher names the project the tabs belong to and lists every project
+  with sessions open, each with its containing folder, its session count, and a
+  dot when an agent there is running or waiting. Choosing one returns to the
+  session last used in it.
 
 The active libghostty terminal fills the main content area. Temple launches the
 agent directly in the session's working directory and sends keyboard input to
 the terminal; there is no bottom composer and no intervening shell.
 
+- Files and images dropped onto a terminal are typed into it as shell-escaped
+  paths, which is how an agent is handed a screenshot or a log. An image dragged
+  from a browser or Preview carries no file, so Temple writes one and passes that.
 - Each session chip shows its agent, title, activity dot, and close control.
 - The trailing `+` menu starts a new Claude or Codex session in the active
   project. `⌘T` takes the default-agent fast path.
@@ -206,6 +218,7 @@ Dark palettes and never reads or modifies the user's Ghostty configuration.
 | **⌘N** | Show the launcher/home page; existing tabs stay open. |
 | **⌘1–9** | Switch to tab *N* in the active project. |
 | **⌃⇥ / ⌃⇧⇥** | Next / previous tab. |
+| **⌘⇧[ / ⌘⇧]** | Previous / next project; returns to the session last used there. |
 | **⌘F** | Reveal the sidebar if needed and focus sidebar search. |
 | **⌘K** | Open-session switcher with an empty query; ranked session search when typed. |
 | **⌘/** | Open the Keyboard Shortcuts reference overlay. |
