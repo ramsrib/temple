@@ -177,6 +177,7 @@ public final class SessionWatcher: @unchecked Sendable {
         }
 
         var updated: [String: CacheEntry] = [:]
+        var parsedMidWrite = false
         for file in store.sessionFileURLs() {
             let path = file.path
             guard let signature = FileSignature(file) else { continue }
@@ -186,14 +187,24 @@ public final class SessionWatcher: @unchecked Sendable {
             }
 
             let session = store.loadSession(at: file)
-            // Restat after parsing so an event arriving during the read leaves
-            // the cache with the version that was actually observed last.
-            let finalSignature = FileSignature(file) ?? signature
-            updated[path] = CacheEntry(signature: finalSignature, session: session)
+            // Cache under the PRE-parse signature: if the file was written while
+            // we read it (a freshly-created session streaming in is the common
+            // case), the next event must re-parse. Caching the post-parse
+            // signature here used to pin the incomplete parse forever — a brand
+            // new session stayed missing/noise until app restart.
+            updated[path] = CacheEntry(signature: signature, session: session)
+            if let finalSignature = FileSignature(file), finalSignature != signature {
+                parsedMidWrite = true
+            }
         }
         cache.entries = updated
         cachesByAgent[store.agent] = cache
         sessionsByAgent[store.agent] = updated.values.compactMap(\.session)
+        if parsedMidWrite {
+            // Belt and braces: guarantee a follow-up pass even if the writer's
+            // last event was coalesced into the reload we just did.
+            recordChangeLocked(for: store.agent)
+        }
     }
 
     private static func makeCache(
@@ -227,9 +238,14 @@ private struct FileSignature: Equatable {
     let fileSize: Int
 
     init?(_ url: URL) {
-        guard let value = StoreIO.fileSignature(url) else { return nil }
-        modificationDate = value.modificationDate
-        fileSize = value.fileSize
+        // FileManager attributes, NOT URL.resourceValues — the latter caches
+        // per URL instance, so restatting the same URL after a parse returned
+        // stale values and mid-write races went undetected.
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let date = attrs[.modificationDate] as? Date,
+              let size = attrs[.size] as? Int else { return nil }
+        modificationDate = date
+        fileSize = size
     }
 }
 
