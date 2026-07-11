@@ -37,11 +37,13 @@ struct CommandPaletteView: View {
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(spacing: 0) {
+                        // A plain VStack (≤40 cheap rows): LazyVStack left
+                        // already-materialized rows with a stale `selected`
+                        // highlight when arrowing (two rows lit at once).
+                        VStack(spacing: 0) {
                             ForEach(Array(results.enumerated()), id: \.element.id) { idx, session in
                                 resultRow(session, selected: idx == selection)
                                     .frame(height: Self.rowHeight)
-                                    .id(idx)
                                     .onTapGesture { selection = idx; openSelected() }
                             }
                         }
@@ -50,7 +52,11 @@ struct CommandPaletteView: View {
                     // leaving dead space under short result lists); scroll
                     // only past the cap.
                     .frame(height: min(CGFloat(results.count) * Self.rowHeight, 340))
-                    .onChange(of: selection) { proxy.scrollTo(selection, anchor: .center) }
+                    .onChange(of: selection) {
+                        if results.indices.contains(selection) {
+                            proxy.scrollTo(results[selection].id, anchor: .center)
+                        }
+                    }
                 }
             }
         }
