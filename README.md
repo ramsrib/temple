@@ -26,8 +26,7 @@ Or grab the latest `Temple-vX.Y.Z-arm64.dmg` from
 [Releases](https://github.com/ramsrib/temple/releases) and drag **Temple** to
 Applications.
 
-Builds are signed with a Developer ID and notarized by Apple, so they open
-normally, with no Gatekeeper warnings. Updates come through Homebrew:
+To update:
 
 ```sh
 brew upgrade --cask temple
