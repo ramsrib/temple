@@ -210,4 +210,27 @@ final class SearchFilterTests: XCTestCase {
         model.index = SessionIndex(projects: [c, b, a])
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/c", "/p/a", "/p/b"])
     }
+
+    func testSessionOrderWithinProjectFrozenAndNewSessionsPrepend() {
+        let s1 = Fixture.session("s1", project: "/p/a")
+        let s2 = Fixture.session("s2", project: "/p/a")
+        let (model, _) = makeAppModel(SessionIndex(projects: [
+            Project(path: "/p/a", sessions: [s1, s2]),
+        ]))
+        XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["s1", "s2"])
+
+        // Opening/resuming s2 bumps its recency — the incoming index reorders,
+        // but the sidebar must not shuffle.
+        model.index = SessionIndex(projects: [
+            Project(path: "/p/a", sessions: [s2, s1]),
+        ])
+        XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["s1", "s2"])
+
+        // A brand-new session prepends at the top (fresh), others stay put.
+        let s3 = Fixture.session("s3", project: "/p/a")
+        model.index = SessionIndex(projects: [
+            Project(path: "/p/a", sessions: [s3, s2, s1]),
+        ])
+        XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["s3", "s1", "s2"])
+    }
 }
