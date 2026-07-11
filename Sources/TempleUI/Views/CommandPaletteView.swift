@@ -23,6 +23,17 @@ struct CommandPaletteView: View {
                     .focused($fieldFocused)
                     .onSubmit(openSelected)
                     .onChange(of: query) { selection = 0 }
+                if !query.isEmpty {
+                    Button {
+                        query = ""
+                        fieldFocused = true
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .padding(14)
 
