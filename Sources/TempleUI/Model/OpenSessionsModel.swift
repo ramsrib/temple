@@ -173,6 +173,13 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         activate(tab)
     }
 
+    /// ⌘N / "return home": deactivate to the empty-state launcher without
+    /// closing any tab. The launcher IS the new-session entry point (UX §New
+    /// session) — there is no modal duplicate. Clicking a chip reactivates.
+    public func showHome() {
+        activeTabID = nil
+    }
+
     /// Spawn the surface for a session tab on first activation (lazy restore).
     private func ensureSurface(for tab: SessionTab) {
         guard tab.kind == .session, tab.surface == nil, let command = tab.command else { return }
@@ -200,6 +207,40 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     }
 
     // MARK: Close (U3 lifecycle)
+
+    /// The tab awaiting a close-confirmation prompt (a busy agent). Drives the
+    /// confirmation dialog; nil when nothing is pending.
+    @Published public var pendingCloseTabID: SessionTab.ID?
+
+    public var pendingCloseTab: SessionTab? {
+        pendingCloseTabID.flatMap { id in tabs.first { $0.id == id } }
+    }
+
+    /// User-initiated close gate (chip ✕ / ⌘W). A session tab whose agent is
+    /// actively **working** (`.running`, with a live surface) asks first —
+    /// closing would interrupt it. Everything else (idle / needs-attention /
+    /// exited / inert chip / Settings) closes immediately.
+    public func requestClose(tabID: SessionTab.ID) {
+        guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
+        if tab.kind == .session, tab.hasSurface, tab.activity == .running {
+            pendingCloseTabID = tabID
+        } else {
+            closeTab(tabID)
+        }
+    }
+
+    public func requestCloseActiveTab() {
+        if let id = activeTabID { requestClose(tabID: id) }
+    }
+
+    /// Proceed with the pending close (user confirmed).
+    public func confirmPendingClose() {
+        guard let id = pendingCloseTabID else { return }
+        pendingCloseTabID = nil
+        closeTab(id)
+    }
+
+    public func cancelPendingClose() { pendingCloseTabID = nil }
 
     /// Close a tab from the UI. Session tabs end their process gracefully; the
     /// eventual `.exited` delegate callback removes the tab. Inert chips and the

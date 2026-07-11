@@ -86,6 +86,45 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertTrue(model.tabs.isEmpty)
     }
 
+    func testRequestCloseBusyTabPromptsBeforeRemoving() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a", project: "/p/a"))
+        let tabID = model.tabs.first!.id
+        XCTAssertEqual(model.tabs.first?.activity, .running)   // agent working
+
+        model.requestClose(tabID: tabID)
+        // Gated: nothing closes yet, a confirmation is pending.
+        XCTAssertEqual(model.pendingCloseTabID, tabID)
+        XCTAssertEqual(model.tabs.count, 1)
+
+        model.confirmPendingClose()
+        XCTAssertNil(model.pendingCloseTabID)
+        XCTAssertTrue(model.tabs.isEmpty)
+    }
+
+    func testCancelPendingCloseKeepsBusyTab() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a", project: "/p/a"))
+        let tabID = model.tabs.first!.id
+        model.requestClose(tabID: tabID)
+        XCTAssertEqual(model.pendingCloseTabID, tabID)
+
+        model.cancelPendingClose()
+        XCTAssertNil(model.pendingCloseTabID)
+        XCTAssertEqual(model.tabs.count, 1)                    // still open
+    }
+
+    func testRequestCloseIdleTabClosesImmediately() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a", project: "/p/a"))
+        model.tabs.first!.activity = .idle                     // not working
+
+        model.requestClose(tabID: model.tabs.first!.id)
+
+        XCTAssertNil(model.pendingCloseTabID)                  // no prompt
+        XCTAssertTrue(model.tabs.isEmpty)                      // closed right away
+    }
+
     func testClosingInertRestoredChipRemovesWithoutSpawning() {
         let defaults = Fixture.uniqueDefaults()
         let persistence = UserDefaultsTabPersistence(defaults: defaults)
