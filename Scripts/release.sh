@@ -27,8 +27,9 @@ cd "$ROOT"
 VERSION="${VERSION:?set VERSION, e.g. VERSION=v0.1.0}"
 APP="$ROOT/dist/Temple.app"
 OUT="$ROOT/dist"
-ZIP="$OUT/Temple-$VERSION.zip"
-DMG="$OUT/Temple-$VERSION.dmg"
+ARCH="$(uname -m)"   # arm64 — explicit in artifact names
+ZIP="$OUT/Temple-$VERSION-$ARCH.zip"
+DMG="$OUT/Temple-$VERSION-$ARCH.dmg"
 
 command -v gh >/dev/null || { echo "error: gh CLI required" >&2; exit 1; }
 
@@ -54,11 +55,25 @@ echo "==> packaging"
 rm -f "$ZIP" "$DMG"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
-STAGE="$(mktemp -d)"
-cp -R "$APP" "$STAGE/"
-ln -s /Applications "$STAGE/Applications"
-hdiutil create -volname "Temple" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
-rm -rf "$STAGE"
+if command -v create-dmg >/dev/null 2>&1; then
+  # Polished drag-to-install layout: background arrow, positioned icons.
+  create-dmg \
+    --volname "Temple" \
+    --background "$ROOT/assets/dmg/background.png" \
+    --window-size 660 420 \
+    --icon-size 110 \
+    --icon "Temple.app" 180 190 \
+    --app-drop-link 480 190 \
+    --hide-extension "Temple.app" \
+    "$DMG" "$APP" >/dev/null
+else
+  echo "    (create-dmg not installed — plain dmg; brew install create-dmg for the styled one)"
+  STAGE="$(mktemp -d)"
+  cp -R "$APP" "$STAGE/"
+  ln -s /Applications "$STAGE/Applications"
+  hdiutil create -volname "Temple" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+  rm -rf "$STAGE"
+fi
 
 echo "    $(du -h "$ZIP" | cut -f1)  $ZIP"
 echo "    $(du -h "$DMG" | cut -f1)  $DMG"
