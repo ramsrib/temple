@@ -53,17 +53,16 @@ public struct RootView: View {
         return "Close “\(name)”?"
     }
 
-    /// Full-window dimmer with the palette pinned top-center, sitting in the
-    /// upper third — horizontally centered over the entire window.
+    /// Full-window dimmer with the palette centered on BOTH axes over the entire
+    /// window (Item H).
     private var paletteOverlay: some View {
-        ZStack(alignment: .top) {
+        ZStack {
             Color.black.opacity(0.001)
                 .ignoresSafeArea()
                 .onTapGesture { model.commandPalettePresented = false }
             CommandPaletteView()
                 .environmentObject(model)
                 .tint(Palette.accent)
-                .padding(.top, 90)
         }
         .transition(.opacity)
     }
