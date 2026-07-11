@@ -19,6 +19,22 @@ func copyToPasteboard(_ string: String) {
     NSPasteboard.general.setString(string, forType: .string)
 }
 
+/// Ask for a folder to work in. This is how a project Temple has never seen gets
+/// in: the sidebar only knows projects the agents have already run in, so every
+/// other entry point can offer nothing but what already exists.
+@MainActor
+func chooseProjectFolder(_ then: (String) -> Void) {
+    let panel = NSOpenPanel()
+    panel.canChooseDirectories = true
+    panel.canChooseFiles = false
+    panel.allowsMultipleSelection = false
+    panel.prompt = "Open"
+    panel.message = "Choose a project folder to start a session in"
+    if panel.runModal() == .OK, let url = panel.url {
+        then(url.path)
+    }
+}
+
 /// Moving keyboard focus INTO a SwiftUI text field while a terminal is up.
 ///
 /// A live terminal is a raw AppKit `NSView` holding the window's first

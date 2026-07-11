@@ -76,6 +76,7 @@ private struct ProjectSwitcher: View {
     @EnvironmentObject var model: AppModel
     @State private var presented = false
     @State private var hovering = false
+    @State private var openHovering = false
 
     private var active: String? { model.openSessions.activeProjectPath }
 
@@ -111,6 +112,32 @@ private struct ProjectSwitcher: View {
                     }
                 }
                 Divider().padding(.vertical, 4)
+                // Adding a PROJECT, not a session — hence a folder, never the `+`
+                // that starts a session in a project you already have.
+                Button {
+                    presented = false
+                    chooseProjectFolder { path in
+                        model.openSessions.newSessionDefaultAgent(projectPath: path)
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "folder.badge.plus")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16)
+                        Text("Open project…")
+                            .font(.system(size: 13))
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 6)
+                    .background(openHovering ? Palette.hoverFill : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 6))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { openHovering = $0 }
+
                 HStack(spacing: 6) {
                     Text("⌘⇧[")
                     Text("⌘⇧]")
@@ -120,6 +147,7 @@ private struct ProjectSwitcher: View {
                 .font(.system(size: 10.5, design: .monospaced))
                 .foregroundStyle(.tertiary)
                 .padding(.horizontal, 8)
+                .padding(.top, 2)
                 .padding(.bottom, 2)
             }
             .padding(6)
