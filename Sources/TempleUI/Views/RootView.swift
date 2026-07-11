@@ -1,37 +1,61 @@
 import SwiftUI
 
-/// The window content: native split (sidebar + main), plus the launcher sheet,
-/// ⌘K palette overlay, keyboard handling, and live theme.
+/// The window content: native split (sidebar + main), plus the ⌘K palette
+/// overlay, keyboard handling, and live theme.
 public struct RootView: View {
     @EnvironmentObject var model: AppModel
 
     public init() {}
 
     public var body: some View {
-        NavigationSplitView(columnVisibility: $model.sidebarVisibility) {
-            SidebarView()
-                .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
-                .toolbar(removing: .sidebarToggle)
-        } detail: {
-            MainContentView()
-        }
-        .navigationSplitViewStyle(.balanced)
-        .tint(Palette.accent)              // neutral accent everywhere (no blue)
-        .background(KeyCatcher())
-        .preferredColorScheme(model.settings.theme.colorScheme)
-        .sheet(isPresented: $model.launcherPresented) {
-            LauncherView(isSheet: true)
-                .environmentObject(model)
-                .tint(Palette.accent)
-                .frame(width: 560, height: 560)
-        }
-        .overlay(alignment: .top) {
+        // A window-level ZStack so the ⌘K palette centers over the WHOLE window
+        // (Spotlight-style), not just the detail pane.
+        ZStack {
+            NavigationSplitView(columnVisibility: $model.sidebarVisibility) {
+                SidebarView()
+                    .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
+                    .toolbar(removing: .sidebarToggle)
+            } detail: {
+                MainContentView()
+            }
+            .navigationSplitViewStyle(.balanced)
+            .background(KeyCatcher())
+            .preferredColorScheme(model.settings.theme.colorScheme)
+
             if model.commandPalettePresented {
                 paletteOverlay
             }
         }
+        .tint(Palette.accent)              // neutral accent everywhere (no blue)
+        // Guard against interrupting a busy agent on ⌘W / chip ✕ (supersedes the
+        // no-prompt close in UX.md).
+        .alert(pendingCloseTitle, isPresented: pendingCloseBinding) {
+            Button("Cancel", role: .cancel) { model.openSessions.cancelPendingClose() }
+            Button("Close", role: .destructive) { model.openSessions.confirmPendingClose() }
+        } message: {
+            Text("Its agent is still working — closing will interrupt it.")
+        }
     }
 
+    private var pendingCloseBinding: Binding<Bool> {
+        Binding(
+            get: { model.openSessions.pendingCloseTabID != nil },
+            set: { if !$0 { model.openSessions.cancelPendingClose() } })
+    }
+
+    private var pendingCloseTitle: String {
+        guard let tab = model.openSessions.pendingCloseTab else { return "Close session?" }
+        let name: String
+        if let sid = tab.sessionID, let custom = model.overlay.customName(for: sid) {
+            name = custom
+        } else {
+            name = tab.title
+        }
+        return "Close “\(name)”?"
+    }
+
+    /// Full-window dimmer with the palette pinned top-center, sitting in the
+    /// upper third — horizontally centered over the entire window.
     private var paletteOverlay: some View {
         ZStack(alignment: .top) {
             Color.black.opacity(0.001)
@@ -104,7 +128,7 @@ private struct KeyCatcher: NSViewRepresentable {
             // Enter opens it — but ONLY while no terminal is focused, so a live
             // agent still owns its arrow keys.
             let browsing = model.openSessions.activeTab == nil
-                && !model.commandPalettePresented && !model.launcherPresented
+                && !model.commandPalettePresented
             if browsing && !cmd && !ctrl {
                 switch event.keyCode {
                 case 125: model.moveHighlight(by: 1); return true    // ↓
@@ -118,12 +142,12 @@ private struct KeyCatcher: NSViewRepresentable {
 
             switch chars {
             case "t":
-                if model.openSessions.newSessionDefaultAgent() == nil { model.presentLauncher() }
+                if model.openSessions.newSessionDefaultAgent() == nil { model.openSessions.showHome() }
                 return true
             case "w":
-                model.openSessions.closeActiveTab(); return true
+                model.openSessions.requestCloseActiveTab(); return true
             case "n":
-                model.presentLauncher(); return true
+                model.openSessions.showHome(); return true
             case "f":
                 if model.sidebarVisibility == .detailOnly { model.sidebarVisibility = .all }
                 model.focusSearchToken += 1; return true
