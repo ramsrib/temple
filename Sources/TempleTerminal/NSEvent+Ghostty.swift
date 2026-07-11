@@ -50,4 +50,19 @@ extension NSEvent {
         }
         return characters
     }
+
+    /// Text that may ride along with a key event — nil when ghostty must encode
+    /// the key from keycode + mods instead.
+    ///
+    /// Control text is always dropped. libghostty treats a key event carrying
+    /// text as "the modifiers were consumed producing that text", so attaching
+    /// Return's "\r" makes it drop Shift and encode a bare CR — Claude Code and
+    /// Codex then see a submit, not the kitty-protocol `CSI 13;2u` they read as
+    /// "insert a newline". Same for ctrl+enter, ctrl+tab, and friends. Upstream
+    /// Ghostty drops control text in `keyAction` for exactly this reason.
+    static func ghosttyKeyText(_ text: String?) -> String? {
+        guard let text, let first = text.unicodeScalars.first else { return nil }
+        if first.value < 0x20 || first.value == 0x7F { return nil }   // ghostty's isControl
+        return text
+    }
 }

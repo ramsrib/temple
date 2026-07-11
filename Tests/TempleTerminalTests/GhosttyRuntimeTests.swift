@@ -67,6 +67,22 @@ final class GhosttyRuntimeTests: XCTestCase {
             "x 'it'\\''s'")
     }
 
+    // Control text must never ride along with a key event: libghostty reads a
+    // text-carrying event as "the mods were consumed producing this text", so
+    // attaching Return's "\r" costs us the Shift and shift+enter degrades from
+    // the kitty-protocol CSI 13;2u (newline) to a bare CR (submit).
+    func testControlTextIsNotAttachedToKeyEvents() {
+        XCTAssertNil(NSEvent.ghosttyKeyText("\r"), "Return must be encoded from key+mods")
+        XCTAssertNil(NSEvent.ghosttyKeyText("\t"))
+        XCTAssertNil(NSEvent.ghosttyKeyText("\u{7F}"))
+        XCTAssertNil(NSEvent.ghosttyKeyText(""))
+        XCTAssertNil(NSEvent.ghosttyKeyText(nil))
+        // Printable text still rides along (that's how typing works).
+        XCTAssertEqual(NSEvent.ghosttyKeyText("a"), "a")
+        XCTAssertEqual(NSEvent.ghosttyKeyText("é"), "é")
+        XCTAssertEqual(NSEvent.ghosttyKeyText("日本"), "日本")
+    }
+
     // T3: clean shutdown. Named to run last — it invalidates the singleton.
     @MainActor
     func testZZZRuntimeShutdown() {
