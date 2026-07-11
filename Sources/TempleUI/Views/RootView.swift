@@ -191,7 +191,7 @@ private struct KeyCatcher: NSViewRepresentable {
                 model.commandPalettePresented.toggle(); return true
             case "/":
                 model.shortcutsPresented.toggle(); return true
-            case "\\", "b":  // ⌘\ (UX.md) and ⌘B (VS Code / ChatGPT muscle memory)
+            case "b":  // VS Code / ChatGPT convention (supersedes UX.md's ⌘\)
                 withAnimation { model.sidebarVisibility = model.sidebarVisibility == .all ? .detailOnly : .all }
                 return true
             case ",":
