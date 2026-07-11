@@ -28,7 +28,7 @@ struct MainContentView: View {
                 terminal(for: active)
             }
         } else {
-            LauncherView(isSheet: false)
+            LauncherView()
         }
     }
 
