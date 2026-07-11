@@ -24,6 +24,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# Local credentials (gitignored; see .env.example). Provides NOTARY_PROFILE so
+# releases are notarized by default.
+if [[ -f "$ROOT/.env" ]]; then
+  set -a; source "$ROOT/.env"; set +a
+fi
+
 VERSION="${VERSION:?set VERSION, e.g. VERSION=v0.1.0}"
 APP="$ROOT/dist/Temple.app"
 OUT="$ROOT/dist"
@@ -38,16 +44,21 @@ echo "==> building Temple.app ($VERSION)"
 MARKETING_VERSION="${VERSION#v}" ./Scripts/build-app.sh
 
 # 2. notarize (optional) --------------------------------------------------
+notarize() {  # notarize + staple any bundle/dmg
+  xcrun notarytool submit "$1" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun stapler staple "$1"
+}
+
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then
-  echo "==> notarizing (profile: $NOTARY_PROFILE)"
+  echo "==> notarizing the app (profile: $NOTARY_PROFILE)"
   ditto -c -k --keepParent "$APP" "$OUT/notarize-upload.zip"
-  xcrun notarytool submit "$OUT/notarize-upload.zip" \
-    --keychain-profile "$NOTARY_PROFILE" --wait
+  notarize "$OUT/notarize-upload.zip" >/dev/null || { echo "notarization failed" >&2; exit 1; }
   xcrun stapler staple "$APP"
   rm -f "$OUT/notarize-upload.zip"
+  spctl --assess -vv "$APP" 2>&1 | sed 's/^/      /'
 else
   echo "==> NOTARY_PROFILE not set — skipping notarization"
-  echo "    (downloaders must right-click → Open on first launch)"
+  echo "    (downloaders must approve the app in System Settings → Privacy & Security)"
 fi
 
 # 3. package ---------------------------------------------------------------
@@ -73,6 +84,11 @@ else
   ln -s /Applications "$STAGE/Applications"
   hdiutil create -volname "Temple" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
   rm -rf "$STAGE"
+fi
+
+if [[ -n "${NOTARY_PROFILE:-}" ]]; then
+  echo "==> notarizing the dmg"
+  notarize "$DMG" >/dev/null || { echo "dmg notarization failed" >&2; exit 1; }
 fi
 
 echo "    $(du -h "$ZIP" | cut -f1)  $ZIP"
