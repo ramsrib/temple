@@ -21,18 +21,32 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    /// Sidebar project order is frozen at launch: recency decides it once (at
-    /// the first index publish), then it stays put for the rest of the run so
-    /// projects don't shuffle underfoot as sessions update. Genuinely new
-    /// projects surface at the top; existing ones never move relative to each
-    /// other. Recomputed fresh next launch.
+    /// Sidebar order is frozen at launch: recency decides it once (at the
+    /// first index publish), then it stays put for the rest of the run so
+    /// neither projects nor the sessions inside them shuffle underfoot as
+    /// session files update. Genuinely NEW projects/sessions surface at the
+    /// top of their list (fresh activity); existing entries never move
+    /// relative to each other. Recomputed fresh next launch.
     private var frozenProjectRank: [String: Int] = [:]
+    /// Per project path: session id → frozen position.
+    private var frozenSessionRank: [String: [String: Int]] = [:]
 
     private func extendFrozenProjectOrder() {
         let newPaths = index.projects.map(\.path).filter { frozenProjectRank[$0] == nil }
-        guard !newPaths.isEmpty else { return }
-        for key in frozenProjectRank.keys { frozenProjectRank[key]! += newPaths.count }
-        for (offset, path) in newPaths.enumerated() { frozenProjectRank[path] = offset }
+        if !newPaths.isEmpty {
+            for key in frozenProjectRank.keys { frozenProjectRank[key]! += newPaths.count }
+            for (offset, path) in newPaths.enumerated() { frozenProjectRank[path] = offset }
+        }
+        for project in index.projects {
+            var ranks = frozenSessionRank[project.path] ?? [:]
+            // Incoming sessions are newest-first; unseen ids prepend in that order.
+            let newIDs = project.sessions.map(\.id).filter { ranks[$0] == nil }
+            if !newIDs.isEmpty {
+                for key in ranks.keys { ranks[key]! += newIDs.count }
+                for (offset, id) in newIDs.enumerated() { ranks[id] = offset }
+                frozenSessionRank[project.path] = ranks
+            }
+        }
     }
     // (recomputeNoise refreshes the cached non-noise set below.)
     @Published public var isLoading = true
@@ -48,8 +62,6 @@ public final class AppModel: ObservableObject {
     private var noiseFilteredProjects: [Project] = []
     @Published public var sidebarVisibility: NavigationSplitViewVisibility = .all
     @Published public var commandPalettePresented = false
-    /// ⌘N / "+ New session": show the launcher even when a tab is active.
-    @Published public var launcherPresented = false
     /// Pulsed to move keyboard focus into the sidebar search field (⌘F).
     @Published public var focusSearchToken = 0
 
@@ -263,8 +275,6 @@ public final class AppModel: ObservableObject {
         openSessions.openSession(session)
     }
 
-    public func presentLauncher() { launcherPresented = true }
-
     /// The project the launcher should default to (last active, else first indexed).
     public var launcherDefaultProject: String? {
         openSessions.activeProjectPath ?? index.projects.first?.path
@@ -299,10 +309,14 @@ public final class AppModel: ObservableObject {
     }
 
     /// Projects for the sidebar (in-memory search over the cached non-noise
-    /// set), in the launch-frozen order — not live recency.
+    /// set), projects AND their sessions in the launch-frozen order — not
+    /// live recency.
     public var displayProjects: [Project] {
         noiseFilteredProjects.compactMap { project -> Project? in
-            let sessions = project.sessions.filter(matches)
+            var sessions = project.sessions.filter(matches)
+            if let ranks = frozenSessionRank[project.path] {
+                sessions.sort { (ranks[$0.id] ?? .max) < (ranks[$1.id] ?? .max) }
+            }
             return sessions.isEmpty ? nil : Project(path: project.path, sessions: sessions)
         }
         .sorted {
