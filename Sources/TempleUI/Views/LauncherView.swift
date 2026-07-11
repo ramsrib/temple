@@ -48,7 +48,7 @@ struct LauncherView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Temple")
                     .font(.system(size: 26, weight: .semibold, design: .rounded))
-                Text("A home for your agent sessions.")
+                Text("Where agents answer the call.")
                     .font(.system(size: 14))
                     .italic()
                     .foregroundStyle(.secondary)
