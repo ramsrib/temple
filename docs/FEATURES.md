@@ -89,6 +89,10 @@ The sidebar and tab bar form a two-part navigation model:
   with sessions open, each with its containing folder, its session count, and a
   dot when an agent there is running or waiting. Choosing one returns to the
   session last used in it.
+- A project Temple has never seen is opened by choosing its folder, from the
+  switcher, from the sidebar's Projects header, or from the home page. That
+  control is a folder, never the `+` that starts a session inside a project you
+  already have.
 
 The active libghostty terminal fills the main content area. Temple launches the
 agent directly in the session's working directory and sends keyboard input to

@@ -105,26 +105,15 @@ struct LauncherView: View {
         if let path = model.launcherDefaultProject {
             model.openSessions.newSession(agent: agent, projectPath: path)
         } else {
-            pickFolder { path in
+            chooseProjectFolder { path in
                 model.openSessions.newSession(agent: agent, projectPath: path)
             }
         }
     }
 
     private func openFolder() {
-        pickFolder { path in
+        chooseProjectFolder { path in
             model.openSessions.newSessionDefaultAgent(projectPath: path)
-        }
-    }
-
-    private func pickFolder(_ then: (String) -> Void) {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Open"
-        if panel.runModal() == .OK, let url = panel.url {
-            then(url.path)
         }
     }
 }

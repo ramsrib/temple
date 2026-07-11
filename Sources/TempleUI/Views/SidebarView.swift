@@ -8,6 +8,7 @@ struct SidebarView: View {
     @EnvironmentObject var model: AppModel
     @FocusState private var searchFocused: Bool
     @State private var showAllProjects = false
+    @State private var headerHovering = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -56,6 +57,30 @@ struct SidebarView: View {
 
     // MARK: List
 
+    /// "Projects" + the way to add one. A folder, not a `+`: the per-project `+`
+    /// starts a session inside a project you already have, and adding a project
+    /// Temple has never seen is a different act that must not wear the same icon.
+    private var projectsHeader: some View {
+        HStack(spacing: 4) {
+            Text("Projects")
+            Spacer(minLength: 4)
+            Button {
+                chooseProjectFolder { path in
+                    model.openSessions.newSessionDefaultAgent(projectPath: path)
+                }
+            } label: {
+                Image(systemName: "folder.badge.plus")
+                    .font(.system(size: 11))
+                    .foregroundStyle(headerHovering ? .secondary : .tertiary)
+                    .frame(width: 18, height: 16)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Open a project folder…")
+        }
+        .onHover { headerHovering = $0 }
+    }
+
     private var sessionList: some View {
         List {
             if !model.pinnedSessions.isEmpty {
@@ -66,7 +91,7 @@ struct SidebarView: View {
                 }
             }
 
-            Section("Projects") {
+            Section(header: projectsHeader) {
                 if model.displayProjects.isEmpty && !model.isLoading {
                     Text(model.searchText.isEmpty ? "No sessions yet" : "No matches")
                         .font(.system(size: 12))
