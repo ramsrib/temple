@@ -14,6 +14,8 @@ tabs to find the work you were doing.
 Everything stays on your machine. Temple never edits your files, runs git, or
 changes your session history.
 
+![Temple](assets/screenshot.png)
+
 ## Install
 
 ```sh
