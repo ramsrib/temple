@@ -83,6 +83,47 @@ final class GhosttyRuntimeTests: XCTestCase {
         XCTAssertEqual(NSEvent.ghosttyKeyText("日本"), "日本")
     }
 
+    // Dropping a file/image onto an agent must type a path it can actually read.
+    @MainActor
+    func testDroppedFileBecomesAQuotedPath() {
+        let pasteboard = NSPasteboard(name: .init("temple-test-\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        pasteboard.writeObjects([
+            URL(fileURLWithPath: "/tmp/my shots/shot 1.png") as NSURL,
+            URL(fileURLWithPath: "/tmp/log.txt") as NSURL,
+        ])
+        // Spaces must not split one file into two arguments.
+        XCTAssertEqual(GhosttySurfaceView.droppedText(from: pasteboard),
+                       "'/tmp/my shots/shot 1.png' /tmp/log.txt")
+    }
+
+    @MainActor
+    func testDroppedImageDataIsSpilledToAFileTheAgentCanRead() throws {
+        let image = NSImage(size: NSSize(width: 2, height: 2))
+        image.lockFocus()
+        NSColor.red.drawSwatch(in: NSRect(x: 0, y: 0, width: 2, height: 2))
+        image.unlockFocus()
+
+        let pasteboard = NSPasteboard(name: .init("temple-test-\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        pasteboard.setData(image.tiffRepresentation, forType: .tiff)   // no file URL: pixels only
+
+        let dropped = try XCTUnwrap(GhosttySurfaceView.droppedText(from: pasteboard))
+        let path = dropped.trimmingCharacters(in: CharacterSet(charactersIn: "'"))
+        XCTAssertTrue(path.hasSuffix(".png"), "agents read files, not pasteboards: \(dropped)")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path))
+        try? FileManager.default.removeItem(atPath: path)
+    }
+
+    @MainActor
+    func testDroppedTextIsPassedThroughUnescaped() {
+        let pasteboard = NSPasteboard(name: .init("temple-test-\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        pasteboard.setString("git status --short", forType: .string)
+        // Text may be a command the user means to run — quoting it would break it.
+        XCTAssertEqual(GhosttySurfaceView.droppedText(from: pasteboard), "git status --short")
+    }
+
     // T3: clean shutdown. Named to run last — it invalidates the singleton.
     @MainActor
     func testZZZRuntimeShutdown() {
