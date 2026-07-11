@@ -65,4 +65,4 @@ if absent: first user turn in the rollout, or "(no prompt)".)
 **Resume:** `codex resume <session-id>` run in `cwd`.
 
 > ⚠️ Verify resume subcommands/flags against the installed CLI version before
-> wiring Phase 3 — both tools change quickly.
+> wiring the launch path — both tools change quickly.

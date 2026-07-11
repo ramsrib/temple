@@ -1,182 +1,240 @@
-# Temple — Product & Feature Spec
+# Temple — Product
 
-*What* Temple does, as a product. Companion to [PLAN.md](./PLAN.md) (the *how* /
-engineering phases) and [DECISIONS.md](./DECISIONS.md) (the *why*).
+What Temple is, what it does today, and what remains to build. Architectural
+rationale lives in [DECISIONS.md](./DECISIONS.md); session-store details live in
+[SESSION-FORMATS.md](./SESSION-FORMATS.md).
 
-Tiers: **MVP** (first usable release) · **v1** (rounds it out) · **Later**
-(post-1.0 / nice-to-have). Each feature notes the PLAN phase that delivers it.
+## What Temple is
 
----
+> Your CLI coding agents, as a chat app. Every Claude Code or Codex session is a
+> resumable conversation, grouped by project. Open one and Temple starts a real
+> terminal tab that resumes it. One home for everything you are working on
+> across agents and repositories.
 
-## 0. The core idea (north star)
+Temple has three primitives:
 
-> Your CLI coding agents, as a chat app. Every Claude Code / Codex session is a
-> resumable "conversation," grouped by project. Click one → a real terminal tab
-> opens and auto-resumes it. One home for everything you're working on across
-> agents and repos.
+- **Agent** — Claude Code, Codex, or another CLI coding agent.
+- **Project** — the working directory in which an agent runs.
+- **Session** — one resumable agent run, titled from its first human prompt when
+  no CLI summary is available.
 
-Three primitives: **Agent** (Claude Code, Codex, …) · **Project** (a working
-directory) · **Session** (one resumable agent run, with a title = first prompt).
+Temple is a native macOS session manager. It reads the agents' own on-disk
+session stores, presents them as a project-grouped index, and hosts each open
+agent in an embedded libghostty terminal. The terminal remains the source of
+truth; Temple supplies the index, navigation, lifecycle, and attention layer.
 
----
+### Explicit non-goals
 
-## 1. Session index & sidebar — *the left rail*
+- Temple is not a general terminal emulator intended to replace Ghostty or
+  iTerm. It hosts terminals for agent sessions.
+- Temple is not a chat renderer. It does not turn terminal output into message
+  bubbles or add a prompt composer.
+- Temple is not a git or filesystem tool. It never runs git, creates branches or
+  worktrees, or edits project files; those operations belong to the agent in its
+  terminal ([ADR-012](./DECISIONS.md#adr-012--scope-boundary-agent-sessions-only--not-git-not-the-filesystem)).
+- Temple has no cloud account, sync, or multi-machine service. It is local-first.
+- Windows is out of scope while libghostty supports macOS and Linux only
+  ([ADR-004](./DECISIONS.md#adr-004--platforms-macos-first-linux-later-not-windows)).
 
-The heart of the app: turn scattered on-disk agent sessions into an organized,
-browsable index.
+## Sidebar & session index
 
-| Feature | Tier | Phase |
-|---|---|---|
-| Auto-discover sessions from Claude Code (`~/.claude`) + Codex (`~/.codex`) | **MVP** | 1 ✅ |
-| Group by **project** (true `cwd`), projects sorted by recent activity | **MVP** | 1 ✅ |
-| Recent sessions per project, newest-first, with human-prompt titles | **MVP** | 1 ✅ |
-| Agent badge per session — real brand marks (`assets/agent-icons/`) | **MVP** | 2 |
-| **Live updates** — filesystem watcher re-indexes as sessions change | **MVP** | 1/2 |
-| **Search** sessions by **title** (sidebar filter; project/agent/content later) | **MVP** | 2 |
-| Collapse/hide **ambient & automation noise** (e.g. the 1,864 `cwd:/` Codex runs) | **MVP** | 2 |
-| Filters: by agent, by time range, active-only | v1 | 2 |
-| **Pinned** projects & sessions (sticky top section) | v1 | 4 |
-| Rich metadata: message count, model, git branch, last-message preview | v1 | 1/2 |
-| "Recents" flat view across all projects (most-recent-first) | v1 | 2 |
-| Manual scan roots / exclude paths (config) | v1 | 4 |
-| Session grouping by git repo (not just raw cwd) | Later | 4 |
+The sidebar is the browse index; it is not the set of running processes. Temple
+discovers Claude Code sessions under `~/.claude` and Codex sessions under
+`~/.codex`, reads their true working directories, and groups them by project.
+Session titles use a CLI summary when available and otherwise the first human
+prompt ([ADR-007](./DECISIONS.md#adr-007--session-index-is-built-from-the-clis-on-disk-stores),
+[ADR-011](./DECISIONS.md#adr-011--title-source-first-human-prompt-cli-summaries-unreliable)).
 
----
+- Projects and sessions are ordered by recency at launch, then frozen for that
+  app run so activity cannot move a row under the pointer. Newly discovered
+  entries prepend without reshuffling existing entries.
+- The initial view shows up to eight projects and six sessions per project;
+  **Show all projects** and **Show more** reveal the rest.
+- Filesystem watching, an index cache, and retries for files caught mid-write
+  keep the index current without blocking launch.
+- Agent badges distinguish Claude Code and Codex. Ambient and automation noise
+  is hidden by the default noise filter.
+- Sessions can be renamed and pinned. Pinned sessions appear in a dedicated
+  section and custom names become their displayed and searchable titles.
+- A session-row context menu can open or focus the session, copy its resume
+  command or ID, reveal its source file in Finder, rename it, pin or unpin it,
+  and close its tab when open.
+- The native sidebar can be shown or hidden. When hidden, the working surface
+  expands to the window edge.
 
-## 2. Terminal tabs — *the working surface*
+### Select versus open
 
-Where the actual agent runs, powered by an embedded libghostty terminal.
+Opening a session starts a real agent process, so browsing and opening are
+separate actions. Arrow keys move the sidebar highlight without spawning
+anything. Enter, double-click, or click opens the highlighted session; if it is
+already open, Temple focuses its existing tab instead of creating a duplicate.
+The sidebar highlight follows the active tab.
 
-| Feature | Tier | Phase |
-|---|---|---|
-| Embed a **libghostty terminal** surface (Metal-backed) | **MVP** | 0/3 |
-| Click a session → open a **tab** that auto-resumes it | **MVP** | 3 |
-| **Reuse-or-focus**: clicking an open session focuses its tab, no duplicate | **MVP** | 3 |
-| Multiple concurrent tabs, one per open session | **MVP** | 3 |
-| **Horizontal tab bar, scoped per project** — shows only the active project's open terminals (Codex sidebar + cmux-style tabs) | **MVP** | 3 |
-| **`+` menu in tab bar** — New Claude / New Codex session in the active project | **MVP** | 3 |
-| **⌘T / ⌘W** — new empty tab (default agent) / close current tab (graceful) | **MVP** | 3 |
-| **Drag-reorder tabs** in the bar (per-project order, persisted) | v1 | 3 |
-| Tab shows agent + project + session title | **MVP** | 3 |
-| Working directory set to the session's `cwd` on launch | **MVP** | 3 |
-| **Restore tabs** across restarts — **lazy** (inert chips; spawn on click) | v1 | 3 |
-| Running/idle/exited state indicator per tab | v1 | 3 |
-| Split panes (two terminals side by side) | Later | 4 |
-| Scrollback search, copy-mode, font/theme controls | Later | 4 |
+## Terminal tabs & the working surface
 
----
+The sidebar and tab bar form a two-part navigation model:
 
-## 3. Session lifecycle — *create, resume, manage*
+- The sidebar contains discovered sessions, whether open or closed.
+- A tab represents an open terminal. The horizontal tab bar shows only the
+  active project's open terminals, plus the project-agnostic Settings tab.
+- Opening a session in another project switches the tab-bar context without
+  stopping that project's off-screen processes
+  ([ADR-010](./DECISIONS.md#adr-010--temple-owns-the-agent-processes-graceful-lifecycle)).
 
-| Feature | Tier | Phase |
-|---|---|---|
-| **Tab == agent process** — terminal always runs claude/codex (never a bare shell) | **MVP** | 3 |
-| **Process-exit → auto-close tab** — agent quits (Ctrl+C, `/exit`, crash) → tab closes | **MVP** | 3 |
-| **Resume** an existing session (the primary action) | **MVP** | 3 |
-| **New session** flow: pick agent + project (or **Choose folder…**) → launch fresh | **MVP** | 4 |
-| Reconcile a freshly-launched session's runtime id back into the index | **MVP** | 3 |
-| Copy resume command / copy session id | **MVP** | 2 ✅(shell) |
-| Reveal session file in Finder | v1 | 4 |
-| **Rename** a session (custom title overriding first-prompt) | v1 | 4 |
-| **Pin / archive / delete** a session | v1 | 4 |
-| Duplicate / fork a session (`claude --fork-session`) | Later | 4 |
-| Quick "new task in <project>" from a project header | v1 | 4 |
+The active libghostty terminal fills the main content area. Temple launches the
+agent directly in the session's working directory and sends keyboard input to
+the terminal; there is no bottom composer and no intervening shell.
 
----
+- Each session chip shows its agent, title, activity dot, and close control.
+- The trailing `+` menu starts a new Claude or Codex session in the active
+  project. `⌘T` takes the default-agent fast path.
+- Tabs are drag-reorderable within their project. Temple persists each
+  project's open-tab set and order.
+- Open tabs restore lazily after relaunch as inert chips. No agent process starts
+  until its chip is activated, and Temple restores the last-active project
+  context.
+- The Settings chip is a singleton, sits inline with session chips, and can be
+  reordered like them.
+- Tab context menus copy the resume command or session ID and close the tab.
 
-## 4. Multi-agent support — *pluggable backends*
+## Session lifecycle
 
-| Feature | Tier | Phase |
-|---|---|---|
-| Claude Code + Codex, first-class | **MVP** | 1 ✅ |
-| **Agent adapter** abstraction (store location, title rule, resume argv) | **MVP** | 1 ✅(SessionStore) |
-| Per-agent config: binary path, extra launch flags | v1 | 4 |
-| Add a 3rd agent (e.g. Gemini CLI, aider) via a new adapter | Later | — |
-| Per-agent capabilities surfaced in UI (models, permissions) | Later | 4 |
+A live session tab and its agent process have the same lifetime. A session tab
+never hosts a bare shell: a new tab starts a fresh Claude or Codex process, and
+an existing-session tab starts that agent's resume command. Lazy restored chips
+have not started yet, retained launch-failure chips have already exited, and the
+Settings tab is the one agent-less exception.
 
----
+- Closing a live tab gracefully ends its process. Temple asks the CLI to exit,
+  terminates and reaps it, and force-kills only after a bounded timeout.
+- When a process exits on its own, Temple normally closes its tab. The session
+  persists on disk and remains in the sidebar.
+- Closing a tab asks for confirmation only while its agent is running. Return
+  confirms; Esc cancels. Idle, attention, exited, inert, and Settings tabs close
+  immediately.
+- A non-user-initiated exit within roughly five seconds of launch keeps the tab
+  visible with a red exited dot so the failure output can be read.
+- Quitting Temple gracefully shuts down all live agent processes; Temple does
+  not detach or orphan them.
+- `Ctrl+D` passes through unchanged. If the agent exits on EOF, Temple handles it
+  as an ordinary process exit.
 
-## 5. Navigation & UX — *fast, keyboard-first*
+New sessions are empty agent sessions, ready for terminal input. Temple can
+start one from the launcher, a project-header `+` menu, the tab-bar `+` menu, or
+`⌘T`. **Choose folder…** starts in a directory that is not yet indexed. Claude
+sessions receive a Temple-generated session ID; Codex creates its own ID, which
+Temple adopts when the new rollout file appears
+([ADR-008](./DECISIONS.md#adr-008--session-identity-id--cli-id-asymmetric-minting)).
 
-| Feature | Tier | Phase |
-|---|---|---|
-| Sidebar ↔ detail split layout (Codex-desktop aesthetic) | **MVP** | 2 |
-| **Toggle sidebar** (native show/hide, `⌘\`; content expands full-width) | **MVP** | 2 |
-| **Editor/terminal keybindings** — ⌘T new, ⌘W close, ⌘N launcher (VS Code / browser conventions) | **MVP** | 3 |
-| **⌘K command palette / quick-open** (jump to any session → focus its project + tab) | v1 | 4 |
-| Keyboard tab switching (⌘1–9, ⌃⇥) | v1 | 4 |
-| Global keyboard search focus (⌘F) | v1 | 2 |
-| Empty / onboarding states | v1 | 2 |
-| **Theme: System / Light / Dark** (follows macOS by default; user override) | v1 | 4 |
+## Launcher / home page
 
----
+`⌘N` shows the home page without closing existing tabs. Its masthead presents
+Temple and the tagline “Where agents answer the call.”
 
-## 6. Settings & preferences
+The **Get Started** section provides New Claude session, New Codex session, New
+session in folder…, Command palette, Keyboard shortcuts, and Settings. An agent
+row uses the last-used project, or asks for a folder if none exists; the folder
+row uses the default agent.
 
-| Feature | Tier | Phase |
-|---|---|---|
-| **Settings surfaced as an app-level tab** (singleton, project-agnostic — not a `⌘,` window) | **MVP** | 4 |
-| **Terminal font size** (the first-cut variable; refine the rest later) | **MVP** | 4 |
-| **Default agent** (Claude / Codex — used by ⌘T + empty tabs) | **MVP** | 4 |
-| Agent binary paths (auto-detect + override) | **MVP** | 4 |
-| Scan roots / excluded paths | v1 | 4 |
-| Terminal: font family, theme, cursor | v1 | 4 |
-| Startup behavior (restore tabs) | v1 | 3/4 |
+**Recent Projects** shows up to five noise-filtered projects in launch-frozen
+order, with relative activity time on hover. Choosing one starts a brand-new
+session there with the default agent; it does not reopen an existing session.
+The home page is the general creation surface—there is no new-session modal or
+prompt composer.
 
----
+## Command palette & search
 
-## 7. Notifications & activity — *know which session needs you*
+- Sidebar search filters session titles in place. It does not auto-focus at
+  launch; `⌘F` reveals the sidebar when necessary and focuses the field.
+- `⌘K` opens a top-anchored command palette. With an empty query it lists open
+  sessions across all projects in tab order and acts as a switcher.
+- Typing searches all indexed session titles and weights open matches above
+  closed ones. Choosing a result opens or focuses it and switches project
+  context as needed.
+- The palette field includes a `×` clear control. Esc dismisses the palette from
+  anywhere.
 
-| Feature | Tier | Phase |
-|---|---|---|
-| **Per-session activity state** (running / idle / needs-attention) as a dot on the tab + sidebar row | **MVP** | 3 |
-| **Native notification** on attention (agent finished / awaiting input) and on session exit | **MVP** | 3 |
-| Signal from terminal **bell** + desktop-notification escapes (OSC 9 / 777) via libghostty, plus process exit | **MVP** | 3 |
-| Click a notification → **focus that session's tab** (switch project context) | **MVP** | 3 |
-| Per-session / per-project **mute**, Do-Not-Disturb | v1 | 4 |
-| Badge counts (dock / sidebar) for sessions needing attention | v1 | 4 |
+## Notifications & activity
 
----
+Every open session has an activity dot in both its tab chip and sidebar row:
 
-## 8. Platform & packaging
+| Dot | Meaning |
+|---|---|
+| Green | The agent is running. |
+| Gray | The tab is open and idle. |
+| Orange | A background session needs attention. |
+| Red | The process exited during the retained launch-failure window. |
 
-| Feature | Tier | Phase |
-|---|---|---|
-| Native macOS `.app` bundle (Xcode target, entitlements, Metal) | **MVP** | 2/3 |
-| Code-signed, notarized `.dmg` | v1 | 4 |
-| Auto-update | v1 | 4 |
-| Menu-bar / dock integration | v1 | 4 |
-| Linux (GTK) build | Later | 5 |
+Temple derives these states from signals available through the terminal. A
+Return submitted to the terminal marks the session running. A terminal bell or
+desktop-notification escape (OSC 9 or OSC 777) marks the focused session idle or
+a background session as needing attention. Without a stronger signal, roughly
+15 seconds of quiet settles a running session to idle.
 
----
+A background bell or OSC signal also produces a native macOS notification with
+the project, session, and supplied message. Clicking the notification focuses
+that session and switches project context.
 
-## MVP definition (v0.1 — "it replaces my terminal-tab juggling")
+## Settings
 
-The smallest thing that's genuinely better than manually running
-`claude --resume`:
+Settings opens as a singleton, card-grouped tab rather than a separate window.
+Changes apply live where applicable.
 
-1. Sidebar lists my real projects + recent sessions, live-updating. *(core done)*
-2. I can **search** (by title) and **filter out the automation noise**.
-3. Clicking a session opens a **tab with a live, auto-resumed terminal**; per-project
-   horizontal tabs let me switch between the ones I have open.
-4. Clicking an already-open session **focuses** its tab.
-5. I can start a **new session** — in an existing project *or* a folder I choose —
-   from the UI (⌘T / `+` / launcher).
-6. I get a **notification** when a session finishes or needs my input.
-7. It's a real signed app I can leave running.
+- **Terminal:** font size and font family.
+- **Agents:** default agent used by `⌘T`, folder launches, and recent-project
+  launches.
+- **Claude:** configurable Command and Arguments fields. The shipped default
+  arguments are `--dangerously-skip-permissions`.
+- **Codex:** configurable Command and Arguments fields. The shipped default
+  arguments are `--dangerously-bypass-approvals-and-sandbox`.
+- **Appearance:** System, Light, or Dark theme.
 
-Everything in §§1–3 and §7 marked **MVP** plus the terminal embed (Phase 0/3) = v0.1.
+Agent arguments apply to both new and resumed sessions. Command paths are
+auto-detected and overridable; argument fields are clearable to launch without
+extra flags.
 
----
+System theme follows macOS live. Light and Dark override it. The embedded
+terminal follows the resolved appearance with Temple-owned Adwaita / Adwaita
+Dark palettes and never reads or modifies the user's Ghostty configuration.
 
-## Explicit non-goals (for now)
+## Keyboard shortcuts
 
-- Not a terminal *emulator* to replace Ghostty/iTerm — it's a session manager
-  that *hosts* terminals.
-- Not a chat UI that reformats agent output into bubbles — the terminal is the
-  source of truth; the "chat" framing is the *index/navigation*, not the render.
-- **Not a git or filesystem tool** — Temple manages terminal agent *sessions*
-  only; it never runs git, creates worktrees/branches, or edits your files. Any
-  such workflow is the *agent's* job inside its terminal. *(ADR-012)*
-- No cloud sync / accounts / multi-machine (local-first).
-- No Windows (see ADR-004).
+| Shortcut | Action |
+|---|---|
+| **⌘T** | New empty session in the current project with the default agent. |
+| **⌘W** | Close the current tab; asks first only when its agent is running. |
+| **⌘N** | Show the launcher/home page; existing tabs stay open. |
+| **⌘1–9** | Switch to tab *N* in the active project. |
+| **⌃⇥ / ⌃⇧⇥** | Next / previous tab. |
+| **⌘F** | Reveal the sidebar if needed and focus sidebar search. |
+| **⌘K** | Open-session switcher with an empty query; ranked session search when typed. |
+| **⌘/** | Open the Keyboard Shortcuts reference overlay. |
+| **⌘B** | Toggle the sidebar. |
+| **⌘,** | Open Settings as a tab. |
+| **Esc** | Dismiss the command palette or shortcuts overlay from anywhere; cancel busy-close confirmation. |
+
+## Platform & packaging
+
+Temple is a native Swift/AppKit/SwiftUI macOS app with a Metal-backed embedded
+libghostty surface. It ships as a Developer ID-signed `.app`; `make install`
+provides the local installation path. The bundle identifier is
+`com.sriramb.temple`.
+
+The app adopts the login-shell `PATH` so GUI-launched sessions can find the
+agent CLIs, raises its file-descriptor limit for large session stores, and uses a
+Temple-owned terminal configuration. Its single main window uses a native
+unified toolbar, standard macOS sidebar behavior, and System / Light / Dark
+appearance.
+
+## Roadmap / TODO
+
+| Area | Planned work |
+|---|---|
+| Distribution | Notarized `.dmg` releases; auto-update; additional menu-bar and Dock integration. |
+| Activity | Replace or strengthen the 15-second settle-timer heuristic; per-session and per-project mute; Do Not Disturb; Dock and sidebar badge counts. |
+| Sidebar & discovery | Project pinning; agent, time-range, and active-only filters; richer project/agent/content search; a flat **Recents** view across projects; configurable scan roots and excluded paths; rich metadata such as message count, model, git branch, and last-message preview. |
+| Session management | Archive and delete; duplicate/fork; grouping by git repository. Rename, pin/unpin, and context menus are already shipped. |
+| Terminal & tabs | Split panes; scrollback search and copy mode; terminal cursor controls; `⌘⇧T` reopen-closed-tab; tab-bar overflow handling. |
+| Windowing | Multi-window support. |
+| Agents | Third-agent adapters such as Gemini CLI and aider; surface agent-specific capabilities such as models and permission modes. |
+| Platforms | Linux build with a GTK libghostty host. |
