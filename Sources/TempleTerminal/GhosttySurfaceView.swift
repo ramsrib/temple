@@ -177,6 +177,36 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
     public override var acceptsFirstResponder: Bool { true }
     public override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+    /// A focus request that has not been honoured yet.
+    private var wantsFocus = false
+
+    /// Take the keyboard, once it is actually possible to.
+    ///
+    /// Two races make the obvious `makeFirstResponder` fail, and both bite when
+    /// you open a session and start typing:
+    ///   1. The view may not be in a window yet — a lazily spawned surface mounts
+    ///      on the next SwiftUI render, i.e. after the click that opened it.
+    ///   2. AppKit finishes the click AFTER us, so the sidebar row or the project
+    ///      popover that was clicked takes the responder straight back.
+    /// So the claim is deferred a runloop turn, and re-tried when the view lands
+    /// in a window.
+    func requestFocus() {
+        wantsFocus = true
+        DispatchQueue.main.async { [weak self] in self?.claimFocusIfWanted() }
+    }
+
+    private func claimFocusIfWanted() {
+        guard wantsFocus, let window else { return }
+        wantsFocus = false
+        window.makeFirstResponder(self)
+    }
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard wantsFocus else { return }
+        DispatchQueue.main.async { [weak self] in self?.claimFocusIfWanted() }
+    }
+
     public override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
         if let surface { ghostty_surface_set_focus(surface, true) }

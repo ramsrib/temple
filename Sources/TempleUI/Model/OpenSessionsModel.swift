@@ -202,6 +202,13 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         tab.surface?.focus()
     }
 
+    /// Hand the keyboard back to the active terminal — an overlay (⌘K, ⌘/) took
+    /// the window's first responder to type into, and closing it must not leave
+    /// focus nowhere.
+    public func focusActiveTerminal() {
+        activeTab?.surface?.focus()
+    }
+
     public func activate(tabID: SessionTab.ID) {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
         activate(tab)
