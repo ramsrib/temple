@@ -130,4 +130,82 @@ final class WatcherTests: XCTestCase {
         watcher.stop()
         watchTask.cancel()
     }
+
+    /// A brand-new session file is typically still being streamed by the CLI
+    /// when the watcher first parses it. If the incomplete parse (no `cwd` yet)
+    /// gets cached against the file's FINAL signature, the session stays
+    /// wrong/missing until app restart. This wrapper deterministically lands a
+    /// write inside the parse window.
+    func testMidWriteParseIsRetriedNotPinned() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("temple-watcher-race-\(UUID().uuidString)", isDirectory: true)
+        // Dir name decodes lossily to "/tmp/tw/proj" — distinguishable from the
+        // real cwd "/tmp/tw-proj" that only the late-written line carries.
+        let project = root.appendingPathComponent("-tmp-tw-proj", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let file = project.appendingPathComponent("racy-session.jsonl")
+        let store = MidWriteRacingStore(
+            inner: ClaudeSessionStore(root: root),
+            racingFile: file,
+            lateLine: "\n" + #"{"type":"user","message":{"content":"hello"},"cwd":"/tmp/tw-proj","timestamp":"2026-01-01T00:00:01Z"}"#)
+
+        let watcher = SessionWatcher(stores: [store], debounceInterval: 0.05)
+        let corrected = expectation(description: "re-parsed with real cwd after mid-write race")
+        let task = Task {
+            var isInitial = true
+            for await index in watcher.start() {
+                if isInitial {
+                    isInitial = false
+                    // Preamble only — a typed line but no cwd (like a freshly
+                    // created claude session).
+                    let preamble = #"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-01-01T00:00:00Z","content":"hi"}"#
+                    try preamble.write(to: file, atomically: true, encoding: .utf8)
+                } else if index.allSessions.contains(where: { $0.projectPath == "/tmp/tw-proj" }) {
+                    corrected.fulfill()
+                    break
+                }
+            }
+        }
+
+        await fulfillment(of: [corrected], timeout: 5)
+        watcher.stop()
+        task.cancel()
+    }
+}
+
+/// Simulates the CLI writing more of the session file while the watcher is
+/// mid-parse: the first `loadSession` for the racing file appends the late
+/// line after reading, then returns the stale (preamble-only) parse.
+private final class MidWriteRacingStore: IncrementalSessionStore, @unchecked Sendable {
+    private let inner: ClaudeSessionStore
+    private let racingFile: URL
+    private let lateLine: String
+    private var raced = false
+
+    init(inner: ClaudeSessionStore, racingFile: URL, lateLine: String) {
+        self.inner = inner
+        self.racingFile = racingFile
+        self.lateLine = lateLine
+    }
+
+    var agent: Agent { inner.agent }
+    var watchedURLs: [URL] { inner.watchedURLs }
+    func loadSessions() -> [AgentSession] { inner.loadSessions() }
+    func sessionFileURLs() -> [URL] { inner.sessionFileURLs() }
+
+    func loadSession(at fileURL: URL) -> AgentSession? {
+        let stale = inner.loadSession(at: fileURL)
+        // Compare by name: the enumerated URL may carry the resolved
+        // /private/var prefix while the fixture URL has /var (tmp symlink).
+        if !raced, fileURL.lastPathComponent == racingFile.lastPathComponent,
+           let handle = try? FileHandle(forWritingTo: racingFile) {
+            raced = true
+            handle.seekToEndOfFile()
+            handle.write(Data(lateLine.utf8))
+            try? handle.close()
+        }
+        return stale
+    }
 }
