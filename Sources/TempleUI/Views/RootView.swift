@@ -44,7 +44,9 @@ public struct RootView: View {
         .alert(pendingCloseTitle, isPresented: pendingCloseBinding) {
             Button("Cancel", role: .cancel) { model.openSessions.cancelPendingClose() }
             // Return confirms (the user explicitly asked to close); Esc cancels.
-            Button("Close", role: .destructive) { model.openSessions.confirmPendingClose() }
+            // No .destructive role: its red pressed-state flashes on activation,
+            // which reads as a glitch against the monochrome chrome.
+            Button("Close") { model.openSessions.confirmPendingClose() }
                 .keyboardShortcut(.defaultAction)
         } message: {
             Text("Its agent is still working — closing will interrupt it.")
