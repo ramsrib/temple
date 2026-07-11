@@ -24,27 +24,14 @@ struct SidebarView: View {
     // MARK: Header
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Temple")
-                    .font(.system(size: 17, weight: .semibold, design: .rounded))
-                Spacer()
-            }
-            searchField
-            Button(action: { model.presentLauncher() }) {
-                Label("New session", systemImage: "plus")
-                    .font(.system(size: 13, weight: .medium))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 8)
-                    .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 7))
-                    .foregroundStyle(.primary)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 14)
-        .padding(.top, 30)   // clear the floating traffic lights (hidden titlebar)
-        .padding(.bottom, 10)
+        // Search is the first element — no wordmark. Top inset clears the
+        // floating traffic lights of the hidden-titlebar window.
+        searchField
+            .padding(.horizontal, 14)
+            .padding(.top, 16)
+            .padding(.bottom, 10)
+            // The band above the search field is a native window drag area.
+            .background(WindowActionStrip())
     }
 
     private var searchField: some View {
@@ -155,9 +142,50 @@ private struct ProjectDisclosure: View {
                     .buttonStyle(.plain)
             }
         } label: {
-            Label(project.name, systemImage: "folder")
-                .font(.system(size: 12, weight: .medium))
-                .lineLimit(1)
+            HStack(spacing: 4) {
+                Label(project.name, systemImage: "folder")
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+            }
+            // Whole row toggles the disclosure (name, icon, empty space) —
+            // matching the chevron. The `+` overlay keeps its own action.
+            .contentShape(Rectangle())
+            .onTapGesture { withAnimation { expanded.toggle() } }
+            .overlay(alignment: .trailing) {
+                NewSessionMenu(projectPath: project.path)
+            }
         }
+    }
+}
+
+/// The right-aligned `+` on a project row → New Claude / New Codex in THAT
+/// project (UX §New session, per-project entry). Quiet until hover; monochrome.
+/// Its own click target so it never toggles the disclosure.
+private struct NewSessionMenu: View {
+    @EnvironmentObject var model: AppModel
+    let projectPath: String
+    @State private var hovering = false
+
+    var body: some View {
+        Menu {
+            Button {
+                model.openSessions.newSession(agent: .claude, projectPath: projectPath)
+            } label: { Label("New Claude Session", systemImage: "plus") }
+            Button {
+                model.openSessions.newSession(agent: .codex, projectPath: projectPath)
+            } label: { Label("New Codex Session", systemImage: "plus") }
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(hovering ? Color.primary : Color.secondary)
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .onHover { hovering = $0 }
+        .help("New session in \(model.projectName(projectPath))")
     }
 }
