@@ -136,10 +136,16 @@ private struct ProjectDisclosure: View {
                 SessionRow(session: session)
             }
             if project.sessions.count > collapsedLimit && !showAll {
+                // Mirror SessionRow's geometry exactly (same listRowInsets +
+                // inner padding) so the text starts on the agent-badge column.
                 Button("Show more") { showAll = true }
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.tertiary)
                     .buttonStyle(.plain)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8))
+                    .listRowBackground(Color.clear)
             }
         } label: {
             HStack(spacing: 4) {
