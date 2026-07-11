@@ -196,6 +196,58 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertEqual(model.visibleTabs.compactMap(\.sessionID), ["a2", "a1"])
     }
 
+    func testSettingsTabDefaultsToTrailingInVisibleRow() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a1", project: "/p/a"))
+        model.openSession(Fixture.session("a2", project: "/p/a"))
+        model.openSettings()
+        // Default offset keeps Settings at the end (matches original behavior).
+        XCTAssertEqual(model.visibleTabs.map(\.kind), [.session, .session, .settings])
+        XCTAssertEqual(model.visibleTabs.compactMap(\.sessionID), ["a1", "a2"])
+    }
+
+    func testMoveSettingsTabToMiddleReorders() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a1", project: "/p/a"))
+        model.openSession(Fixture.session("a2", project: "/p/a"))
+        model.openSettings()
+        // Row is [a1, a2, Settings]; drag Settings (index 2) to the middle (index 1).
+        model.moveTab(fromOffsets: IndexSet(integer: 2), toOffset: 1)
+        XCTAssertEqual(model.visibleTabs.map(\.kind), [.session, .settings, .session])
+        // Session order is untouched.
+        XCTAssertEqual(model.visibleTabs.compactMap(\.sessionID), ["a1", "a2"])
+    }
+
+    func testMoveSessionChipAroundSettingsReordersSessionsOnly() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a1", project: "/p/a"))
+        model.openSession(Fixture.session("a2", project: "/p/a"))
+        model.openSettings()
+        // Put Settings in the middle: [a1, Settings, a2].
+        model.moveTab(fromOffsets: IndexSet(integer: 2), toOffset: 1)
+        // Now drag a1 (index 0) past Settings to the end (index 3).
+        model.moveTab(fromOffsets: IndexSet(integer: 0), toOffset: 3)
+        XCTAssertEqual(model.visibleTabs.compactMap(\.sessionID), ["a2", "a1"])
+        XCTAssertEqual(model.visibleTabs.map(\.kind), [.session, .settings, .session])
+    }
+
+    func testSettingsOffsetIsGlobalAndClampsAcrossProjects() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a1", project: "/p/a"))
+        model.openSession(Fixture.session("a2", project: "/p/a"))
+        model.openSession(Fixture.session("b1", project: "/p/b"))
+        model.openSettings()
+        // Active project is /p/b (1 session). Row is [b1, Settings]; move Settings to front.
+        model.moveTab(fromOffsets: IndexSet(integer: 1), toOffset: 0)
+        XCTAssertEqual(model.visibleTabs.map(\.kind), [.settings, .session])
+
+        // Switch back to /p/a (2 sessions): offset 0 is preserved (global, clamped).
+        model.openSession(Fixture.session("a1", project: "/p/a"))
+        XCTAssertEqual(model.activeProjectPath, "/p/a")
+        XCTAssertEqual(model.visibleTabs.first?.kind, .settings)
+        XCTAssertEqual(model.visibleTabs.compactMap(\.sessionID), ["a1", "a2"])
+    }
+
     func testRestoreBuildsInertChips() {
         let defaults = Fixture.uniqueDefaults()
         let persistence = UserDefaultsTabPersistence(defaults: defaults)

@@ -12,15 +12,13 @@ struct TabBarStrip: View {
     @EnvironmentObject var model: AppModel
     @State private var dragging: SessionTab.ID?
 
-    private var sessionChips: [SessionTab] {
-        model.openSessions.visibleTabs.filter { $0.kind == .session }
-    }
-
     var body: some View {
         // A content-sized HStack (no Spacer / no greedy ScrollView): only the
         // chips occupy the band; everything to their right is native titlebar.
+        // The Settings chip renders inline in the row like any other chip (at
+        // its user-controlled offset), so it drag-reorders alongside sessions.
         HStack(spacing: 6) {
-            ForEach(sessionChips) { tab in
+            ForEach(model.openSessions.visibleTabs) { tab in
                 TabChip(tab: tab)
                     .onDrag {
                         dragging = tab.id
@@ -28,11 +26,6 @@ struct TabBarStrip: View {
                     }
                     .onDrop(of: [.text],
                             delegate: TabDropDelegate(item: tab, model: model, dragging: $dragging))
-            }
-            // The project-agnostic Settings chip renders inline like any other
-            // chip (gear icon), keeping its singleton semantics.
-            if let settings = model.openSessions.settingsTab {
-                TabChip(tab: settings)
             }
             // `+` sits immediately after the last chip — not pinned right.
             addMenu
@@ -152,9 +145,9 @@ private struct TabDropDelegate: DropDelegate {
     func dropEntered(info: DropInfo) {
         MainActor.assumeIsolated {
             guard let dragging, dragging != item.id else { return }
-            let chips = model.openSessions.visibleTabs.filter { $0.kind == .session }
-            guard let from = chips.firstIndex(where: { $0.id == dragging }),
-                  let to = chips.firstIndex(where: { $0.id == item.id }) else { return }
+            let row = model.openSessions.visibleTabs
+            guard let from = row.firstIndex(where: { $0.id == dragging }),
+                  let to = row.firstIndex(where: { $0.id == item.id }) else { return }
             withAnimation(.easeInOut(duration: 0.18)) {
                 model.openSessions.moveTab(fromOffsets: IndexSet(integer: from),
                                            toOffset: to > from ? to + 1 : to)
