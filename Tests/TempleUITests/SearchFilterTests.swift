@@ -233,4 +233,25 @@ final class SearchFilterTests: XCTestCase {
         ])
         XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["s3", "s1", "s2"])
     }
+
+    func testPaletteEmptyQueryListsOpenSessionsAndSearchWeightsThem() {
+        let a = Fixture.session("a1", project: "/p/a", title: "alpha work")
+        let b = Fixture.session("b1", project: "/p/b", title: "alpha review")
+        let c = Fixture.session("c1", project: "/p/c", title: "alpha notes")
+        let (model, _) = makeAppModel(SessionIndex(projects: [
+            Project(path: "/p/a", sessions: [a]),
+            Project(path: "/p/b", sessions: [b]),
+            Project(path: "/p/c", sessions: [c]),
+        ]))
+        // Nothing open → empty-query palette is empty (type-to-search hint).
+        XCTAssertTrue(model.paletteResults("").isEmpty)
+
+        model.openSessions.openSession(c)
+        model.openSessions.openSession(a)
+        // Empty query = open sessions across projects, in tab order.
+        XCTAssertEqual(model.paletteResults("").map(\.id), ["c1", "a1"])
+        // Search puts open matches above closed ones ("b1" matches but is closed).
+        XCTAssertEqual(model.paletteResults("alpha").map(\.id).last, "b1")
+        XCTAssertEqual(Set(model.paletteResults("alpha").prefix(2).map(\.id)), ["a1", "c1"])
+    }
 }

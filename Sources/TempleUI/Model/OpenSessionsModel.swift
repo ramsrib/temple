@@ -78,6 +78,11 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     }
 
     /// The open tab for a session id, if any (used by the sidebar for open/activity state).
+    /// Open session ids across ALL projects, in tab order (⌘K switcher).
+    public var openSessionIDsInTabOrder: [String] {
+        tabs.filter { $0.kind == .session }.compactMap(\.sessionID)
+    }
+
     public func openTab(forSessionID id: String) -> SessionTab? {
         sessionTab(withSessionID: id)
     }
