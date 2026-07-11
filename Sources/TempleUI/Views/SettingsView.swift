@@ -70,6 +70,24 @@ struct SettingsView: View {
                         .font(.system(size: 12, design: .monospaced))
                         .frame(maxWidth: 300)
                     }
+                    divider
+                    settingRow("Claude arguments",
+                               hint: "Passed to every Claude launch (new + resume). Clear to disable.") {
+                        TextField("", text: Binding(get: { settings.claudeExtraArgs },
+                                                    set: { settings.claudeExtraArgs = $0 }))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
+                        .frame(maxWidth: 300)
+                    }
+                    divider
+                    settingRow("Codex arguments",
+                               hint: "Passed to every Codex launch (new + resume). Clear to disable.") {
+                        TextField("", text: Binding(get: { settings.codexExtraArgs },
+                                                    set: { settings.codexExtraArgs = $0 }))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
+                        .frame(maxWidth: 300)
+                    }
                 }
 
                 card("Appearance") {

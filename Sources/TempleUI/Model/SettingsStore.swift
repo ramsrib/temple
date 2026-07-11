@@ -44,6 +44,9 @@ public final class SettingsStore: ObservableObject {
     @Published public var theme: ThemePreference { didSet { persist() } }
     @Published public var claudePath: String { didSet { persist() } }
     @Published public var codexPath: String { didSet { persist() } }
+    /// Extra CLI arguments appended to every launch (new + resume).
+    @Published public var claudeExtraArgs: String { didSet { persist() } }
+    @Published public var codexExtraArgs: String { didSet { persist() } }
 
     private let defaults: UserDefaults
     private var loading = false
@@ -57,6 +60,8 @@ public final class SettingsStore: ObservableObject {
         theme = ThemePreference(rawValue: defaults.string(forKey: Key.theme) ?? "") ?? .system
         claudePath = defaults.string(forKey: Key.claudePath) ?? SettingsStore.autodetect("claude")
         codexPath = defaults.string(forKey: Key.codexPath) ?? SettingsStore.autodetect("codex")
+        claudeExtraArgs = defaults.string(forKey: Key.claudeExtraArgs) ?? "--dangerously-skip-permissions"
+        codexExtraArgs = defaults.string(forKey: Key.codexExtraArgs) ?? "--dangerously-bypass-approvals-and-sandbox"
         loading = false
     }
 
@@ -68,6 +73,8 @@ public final class SettingsStore: ObservableObject {
         defaults.set(theme.rawValue, forKey: Key.theme)
         defaults.set(claudePath, forKey: Key.claudePath)
         defaults.set(codexPath, forKey: Key.codexPath)
+        defaults.set(claudeExtraArgs, forKey: Key.claudeExtraArgs)
+        defaults.set(codexExtraArgs, forKey: Key.codexExtraArgs)
     }
 
     /// Build a `TerminalAppearance` (U9 font + U10 resolved scheme) for surfaces.
@@ -75,6 +82,13 @@ public final class SettingsStore: ObservableObject {
         TerminalAppearance(fontSize: fontSize,
                            fontFamily: fontFamily.isEmpty ? nil : fontFamily,
                            colorScheme: scheme)
+    }
+
+    /// Extra args for an agent, whitespace-split (empty → none). Inserted
+    /// right after the binary so they precede subcommands (`codex ... resume`).
+    public func extraArgs(for agent: Agent) -> [String] {
+        let raw = agent == .claude ? claudeExtraArgs : codexExtraArgs
+        return raw.split(separator: " ").map(String.init)
     }
 
     /// Binary path a launcher should use for an agent (U4 uses this later).
@@ -104,5 +118,7 @@ public final class SettingsStore: ObservableObject {
         static let theme = "temple.settings.theme"
         static let claudePath = "temple.settings.claudePath"
         static let codexPath = "temple.settings.codexPath"
+        static let claudeExtraArgs = "temple.settings.claudeExtraArgs"
+        static let codexExtraArgs = "temple.settings.codexExtraArgs"
     }
 }

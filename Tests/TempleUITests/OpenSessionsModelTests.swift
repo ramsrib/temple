@@ -332,4 +332,24 @@ final class ImmediateReconciler: TempleUI.CodexAdopting {
     func reconcile(projectPath: String, startedAt: Date, adopt: @escaping (String) -> Void) {
         adopt(id)
     }
+
+    func testExtraArgsAreInsertedAfterBinaryForNewAndResume() {
+        let model = OpenSessionsModel(
+            surfaceFactory: FakeTerminalSurfaceFactory(),
+            appearanceProvider: { .default },
+            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+            persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
+            binaryPath: { $0 == .codex ? "/bin/codex" : "/bin/claude" },
+            extraArgs: { $0 == .codex ? ["--dangerously-bypass-approvals-and-sandbox"] : ["--dangerously-skip-permissions"] })
+
+        let tab = model.newSession(agent: .claude, projectPath: "/p/a")
+        XCTAssertEqual(tab.command?.argv.prefix(2).map { $0 },
+                       ["/bin/claude", "--dangerously-skip-permissions"])
+
+        model.openSession(Fixture.session("r1", agent: .codex, project: "/p/b"))
+        let resumed = model.tabs.first { $0.sessionID == "r1" }
+        // Flags precede the subcommand: codex <flags> resume <id>.
+        XCTAssertEqual(resumed?.command?.argv,
+                       ["/bin/codex", "--dangerously-bypass-approvals-and-sandbox", "resume", "r1"])
+    }
 }
