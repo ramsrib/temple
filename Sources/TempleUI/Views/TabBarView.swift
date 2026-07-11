@@ -32,21 +32,24 @@ struct TabBarView: View {
                             .onDrop(of: [.text],
                                     delegate: TabDropDelegate(item: tab, model: model, dragging: $dragging))
                     }
+                    // The project-agnostic Settings chip renders inline like any
+                    // other chip (gear icon), keeping its singleton semantics.
+                    if let settings = model.openSessions.settingsTab {
+                        TabChip(tab: settings)
+                    }
+                    // `+` sits immediately after the last chip — not pinned right.
+                    addMenu
                 }
                 .padding(.vertical, 6)
             }
 
-            addMenu
-
             Spacer(minLength: 8)
-
-            if let settings = model.openSessions.settingsTab {
-                TabChip(tab: settings)
-            }
         }
         .padding(.horizontal, 10)
         .frame(height: 40)
         .background(.bar)
+        // Empty strip area behaves like the native title bar (drag / double-click).
+        .background(WindowActionStrip())
     }
 
     private var addMenu: some View {
@@ -120,7 +123,7 @@ private struct TabChip: View {
     }
 
     private var closeButton: some View {
-        Button(action: { model.openSessions.closeTab(tab.id) }) {
+        Button(action: { model.openSessions.requestClose(tabID: tab.id) }) {
             Image(systemName: "xmark")
                 .font(.system(size: 8, weight: .bold))
                 .frame(width: 14, height: 14)
@@ -141,7 +144,7 @@ private struct TabChip: View {
             Button("Copy session ID") { if let sid = tab.sessionID { copyToPasteboard(sid) } }
             Divider()
         }
-        Button("Close tab") { model.openSessions.closeTab(tab.id) }
+        Button("Close tab") { model.openSessions.requestClose(tabID: tab.id) }
     }
 }
 
