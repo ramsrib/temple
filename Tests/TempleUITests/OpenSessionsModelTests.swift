@@ -201,6 +201,41 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertEqual(again.activeProjectPath, "/p/a")
     }
 
+    /// ⌘Q drains every agent, so every surface reports .exited on the way out. If
+    /// those exits are treated as agents finishing, quitting closes every tab and
+    /// saves an empty set — and the next launch comes back to nothing.
+    func testQuitDoesNotErasTheSessionsItMustRestore() {
+        let defaults = Fixture.uniqueDefaults()
+        let persistence = UserDefaultsTabPersistence(defaults: defaults)
+        let factory = FakeTerminalSurfaceFactory()
+        let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
+                                      runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+                                      persistence: persistence)
+        // Sessions you quit on are long-lived, i.e. well past the early-exit grace
+        // that keeps a failed launch visible — so their exits auto-close the tab.
+        model.earlyExitGraceSeconds = 0
+        model.openSession(Fixture.session("a1", project: "/p/a"))
+        model.openSession(Fixture.session("b1", project: "/p/b"))
+        XCTAssertEqual(persistence.load().count, 2)
+
+        // Quit: freeze the set, then every draining agent reports its exit.
+        model.prepareForQuit()
+        for tab in model.tabs {
+            guard let surface = tab.surface else { continue }
+            model.surface(surface, didChangeState: .exited(status: 0))
+        }
+
+        XCTAssertEqual(model.tabs.count, 2, "a drained agent is not a finished agent")
+        XCTAssertEqual(Set(persistence.load().map(\.sessionID)), ["a1", "b1"])
+
+        let relaunched = OpenSessionsModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+                                           appearanceProvider: { .default },
+                                           runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+                                           persistence: persistence)
+        relaunched.restore()
+        XCTAssertEqual(Set(relaunched.tabs.compactMap(\.sessionID)), ["a1", "b1"])
+    }
+
     func testClosingInertRestoredChipRemovesWithoutSpawning() {
         let defaults = Fixture.uniqueDefaults()
         let persistence = UserDefaultsTabPersistence(defaults: defaults)
