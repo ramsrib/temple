@@ -40,7 +40,9 @@ public struct RootView: View {
         // no-prompt close in UX.md).
         .alert(pendingCloseTitle, isPresented: pendingCloseBinding) {
             Button("Cancel", role: .cancel) { model.openSessions.cancelPendingClose() }
+            // Return confirms (the user explicitly asked to close); Esc cancels.
             Button("Close", role: .destructive) { model.openSessions.confirmPendingClose() }
+                .keyboardShortcut(.defaultAction)
         } message: {
             Text("Its agent is still working — closing will interrupt it.")
         }
@@ -120,6 +122,10 @@ private struct KeyCatcher: NSViewRepresentable {
 
         @MainActor
         private func handle(_ event: NSEvent, _ model: AppModel) -> Bool {
+            // A confirmation dialog owns the keyboard — pass everything through
+            // so Return/Esc reach the alert instead of our shortcuts.
+            if model.openSessions.pendingCloseTabID != nil { return false }
+
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let cmd = flags.contains(.command)
             let ctrl = flags.contains(.control)
