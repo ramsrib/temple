@@ -12,7 +12,7 @@ import Darwin
 public final class SessionWatcher: @unchecked Sendable {
     private let stores: [any SessionStore]
     private let debounceInterval: TimeInterval
-    private let queue = DispatchQueue(label: "com.temple.session-watcher")
+    private let queue = DispatchQueue(label: "com.sriramb.temple.session-watcher")
 
     // Accessed only on `queue`.
     private var continuation: AsyncStream<SessionIndex>.Continuation?
