@@ -269,7 +269,7 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
     ) {
         var key = event.ghosttyKeyEvent(action)
         key.composing = composing
-        if let text, !text.isEmpty {
+        if let text = NSEvent.ghosttyKeyText(text) {
             text.withCString { ptr in
                 key.text = ptr
                 _ = ghostty_surface_key(surface, key)
