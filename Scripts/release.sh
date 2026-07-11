@@ -41,6 +41,18 @@ command -v gh >/dev/null || { echo "error: gh CLI required" >&2; exit 1; }
 echo "==> building Temple.app ($VERSION)"
 MARKETING_VERSION="${VERSION#v}" ./Scripts/build-app.sh
 
+# The version is what a user sees in About, and a wrong one is invisible to us
+# and permanent to them (it shipped as 0.1.0 for the whole of v0.1.1, because
+# Info.plist hardcoded it and quietly won over the build setting). Assert it
+# before anything is notarized, tagged, or published.
+BUILT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
+if [[ "$BUILT_VERSION" != "${VERSION#v}" ]]; then
+  echo "error: built app says $BUILT_VERSION but this release is ${VERSION#v}" >&2
+  echo "       (App/Info.plist must take \$(MARKETING_VERSION), not a literal)" >&2
+  exit 1
+fi
+echo "    version: $BUILT_VERSION ($(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist"))"
+
 # 2. notarize (optional) --------------------------------------------------
 # notarytool only accepts .zip/.dmg/.pkg uploads; stapler only writes tickets to
 # the .app/.dmg itself — so submit and staple are deliberately separate.
