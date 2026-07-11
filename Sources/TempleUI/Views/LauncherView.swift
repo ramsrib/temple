@@ -89,7 +89,8 @@ struct LauncherView: View {
             ForEach(recentProjects) { project in
                 LauncherRow(icon: .symbol("folder"),
                             title: project.name,
-                            trailing: RelativeTime.string(from: project.lastActivity)) {
+                            trailing: RelativeTime.string(from: project.lastActivity),
+                            trailingOnHover: true) {
                     model.openSessions.newSessionDefaultAgent(projectPath: project.path)
                 }
             }
@@ -160,6 +161,9 @@ private struct LauncherRow: View {
     let title: String
     var shortcut: String? = nil
     var trailing: String? = nil
+    /// Item D: when true, `trailing` (e.g. a project's relative time) is hidden
+    /// until the row is hovered — matching the sidebar's on-hover timestamps.
+    var trailingOnHover: Bool = false
     let action: () -> Void
 
     @State private var hovering = false
@@ -182,6 +186,7 @@ private struct LauncherRow: View {
                     Text(trailing)
                         .font(.system(size: 11.5))
                         .foregroundStyle(.tertiary)
+                        .opacity(trailingOnHover && !hovering ? 0 : 1)
                 }
             }
             .padding(.horizontal, 8)

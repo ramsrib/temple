@@ -122,6 +122,7 @@ private struct ProjectDisclosure: View {
     let project: Project
     @State private var expanded = true
     @State private var showAll = false
+    @State private var headerHovering = false
 
     private let collapsedLimit = 6
 
@@ -147,9 +148,16 @@ private struct ProjectDisclosure: View {
                     .lineLimit(1)
                 Spacer(minLength: 4)
             }
+            .padding(.vertical, 3)
+            .padding(.horizontal, 6)
+            // Item C: hover highlight on the project header row too.
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(headerHovering ? Palette.hoverFill : Color.clear))
             // Whole row toggles the disclosure (name, icon, empty space) —
             // matching the chevron. The `+` overlay keeps its own action.
             .contentShape(Rectangle())
+            .onHover { headerHovering = $0 }
             .onTapGesture { withAnimation { expanded.toggle() } }
             .overlay(alignment: .trailing) {
                 NewSessionMenu(projectPath: project.path)
