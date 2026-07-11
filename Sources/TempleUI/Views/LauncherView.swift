@@ -42,9 +42,7 @@ struct LauncherView: View {
 
     private var masthead: some View {
         HStack(spacing: 16) {
-            Image(systemName: "building.columns")
-                .font(.system(size: 34, weight: .regular))
-                .foregroundStyle(.secondary)
+            TempleMark(size: 46)
             VStack(alignment: .leading, spacing: 3) {
                 Text("Temple")
                     .font(.system(size: 26, weight: .semibold, design: .rounded))
