@@ -2,7 +2,7 @@ APP_NAME := Temple
 APP := dist/$(APP_NAME).app
 DEST := /Applications/$(APP_NAME).app
 
-.PHONY: build test run demo demo-clean ghostty app open install release clean
+.PHONY: build test run demo demo-clean ghostty app open install release version clean
 
 build: ## Compile the SwiftPM targets
 	swift build
@@ -51,6 +51,18 @@ install: app ## Build, sign, and install to /Applications
 release: ## Build, sign, notarize, package, and publish a GitHub release (VERSION=v0.1.0; see RELEASE.md)
 	@test -n "$(VERSION)" || (echo "usage: make release VERSION=v0.1.0" && exit 1)
 	VERSION=$(VERSION) ./Scripts/release.sh
+
+version: ## What is released, what users get, and what is waiting to ship
+	@echo "released:   $$(git tag -l 'v*' --sort=-v:refname | head -3 | tr '\n' ' ')"
+	@echo "published:  $$(gh release list --limit 3 --json tagName,isDraft \
+	    --jq '.[] | .tagName + (if .isDraft then " (draft)" else "" end)' 2>/dev/null | tr '\n' ' ')"
+	@echo "on brew:    $$(brew info --cask ramsrib/tap/temple 2>/dev/null | head -1 | sed 's/.*: //')"
+	@echo "installed:  $$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+	    /Applications/Temple.app/Contents/Info.plist 2>/dev/null || echo 'not installed')"
+	@last=$$(git tag -l 'v*' --sort=-v:refname | head -1); \
+	  n=$$(git log --oneline $$last..HEAD 2>/dev/null | wc -l | tr -d ' '); \
+	  echo "unreleased: $$n commits since $$last"; \
+	  git log --oneline $$last..HEAD 2>/dev/null | sed 's/^/              /'
 
 clean: ## Remove build artifacts (keeps Vendor/)
 	rm -rf .build dist Temple.xcodeproj

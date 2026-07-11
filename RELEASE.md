@@ -55,9 +55,12 @@ notarization, and downloaders have to approve the app in System Settings.
 
 ## What `make release` does
 
+0. **Preflight** — refuses the release rather than publish something you cannot
+   take back. See [Version numbers](#version-numbers).
 1. **Build** — `Scripts/build-app.sh`: `xcodegen` → `xcodebuild` Release →
    bundles the Ghostty runtime resources → signs with Developer ID (hardened
-   runtime) → `dist/Temple.app`.
+   runtime) → `dist/Temple.app`. The built app's version must match the tag, or
+   the release stops before anything is notarized or published.
 2. **Notarize the app** — zips it, submits to Apple, waits for `Accepted`,
    **staples the ticket to the `.app`**, and asserts `spctl --assess` reports
    *Notarized Developer ID*. A rejection fails the release.
@@ -100,3 +103,36 @@ Users then get it with `brew install --cask ramsrib/tap/temple` (or
 
 `VERSION` (e.g. `v0.1.0`) drives the git tag, the artifact names, and the app's
 `MARKETING_VERSION`. Tag names use the `v` prefix; the bundle version drops it.
+`App/Info.plist` takes `$(MARKETING_VERSION)` and `$(CURRENT_PROJECT_VERSION)`
+from the build settings — never hardcode a version there, or About will report
+the wrong one no matter what you release (v0.1.1 shipped saying `0.1.0` this
+way). A local `make install` build takes its version from the last tag and its
+build number from the commit count.
+
+**Git tags are the record of what shipped.** To see where things stand:
+
+```sh
+make version
+```
+
+```
+released:   v0.1.1 v0.1.0          # tags
+published:  v0.1.1 v0.1.0          # GitHub releases
+on brew:    0.1.1                  # what users actually get
+installed:  0.1.1                  # your /Applications
+unreleased: 3 commits since v0.1.1
+```
+
+Because `VERSION` is typed by hand, `make release` checks it before it does
+anything, and each check is a mistake that cannot be undone once published:
+
+| Refused | Why |
+|---|---|
+| `0.1.2` (no `v`), `v0.1` | Must be `vX.Y.Z` — a malformed tag breaks the cask's `livecheck` and the artifact URLs. |
+| A version that already has a tag or release | Releases are immutable. Re-publishing under a version someone already downloaded gives two different builds the same name. |
+| A version that skips one (`v0.1.3` after `v0.1.1`) | A gap in the tags is indistinguishable from a release whose artifacts went missing. Pass `FORCE_VERSION=1` to skip deliberately — e.g. leaving `v0.2.0` for a feature still landing. |
+| A dirty working tree | The tag would name code that exists only on your machine. |
+| Commits not pushed to `origin/main` | Same: the tag would point at code nobody else can fetch. |
+
+So the next release after `v0.1.1` is `v0.1.2`, `v0.2.0`, or `v1.0.0`, and the
+script will tell you so if you type anything else.
