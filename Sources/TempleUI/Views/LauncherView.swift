@@ -74,6 +74,9 @@ struct LauncherView: View {
             LauncherRow(icon: .symbol("command"), title: "Command palette", shortcut: "⌘K") {
                 model.commandPalettePresented = true
             }
+            LauncherRow(icon: .symbol("keyboard"), title: "Keyboard shortcuts", shortcut: "⌘/") {
+                model.shortcutsPresented = true
+            }
             LauncherRow(icon: .symbol("gearshape"), title: "Settings", shortcut: "⌘,") {
                 model.openSessions.openSettings()
             }
