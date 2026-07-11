@@ -62,13 +62,13 @@ struct LauncherView: View {
         VStack(alignment: .leading, spacing: 2) {
             SectionRule("Get started")
 
-            LauncherRow(icon: .agent(.claude), title: "New Claude Code session", shortcut: "⌘T") {
+            LauncherRow(icon: .agent(.claude), title: "New Claude session", shortcut: "⌘T") {
                 newSession(.claude)
             }
             LauncherRow(icon: .agent(.codex), title: "New Codex session") {
                 newSession(.codex)
             }
-            LauncherRow(icon: .symbol("folder.badge.plus"), title: "Open folder…") {
+            LauncherRow(icon: .symbol("folder.badge.plus"), title: "New session in folder…") {
                 openFolder()
             }
             LauncherRow(icon: .symbol("command"), title: "Command palette", shortcut: "⌘K") {
