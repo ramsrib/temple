@@ -1,7 +1,5 @@
 # Temple
 
-**Where agents answer the call.**
-
 Temple is a native macOS session manager for Claude Code and Codex. It finds
 every session you have ever run, groups them by project, and lets you search
 them. Click one and it resumes in a real terminal, right where you left off.
@@ -35,8 +33,8 @@ Or grab the latest `Temple-vX.Y.Z-arm64.dmg` from
 [Releases](https://github.com/ramsrib/temple/releases) and drag **Temple** to
 Applications.
 
-Builds are Developer ID–signed and notarized by Apple, so they open normally —
-no Gatekeeper warnings, no right-click dance. Updates come through Homebrew:
+Builds are signed with a Developer ID and notarized by Apple, so they open
+normally, with no Gatekeeper warnings. Updates come through Homebrew:
 
 ```sh
 brew upgrade --cask temple
