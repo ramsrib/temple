@@ -51,11 +51,25 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     public var settingsTab: SessionTab? { tabs.first { $0.kind == .settings } }
 
+    /// Visible-row index of the project-agnostic Settings chip (its ORDER is
+    /// user-controlled via drag). This is a single GLOBAL offset, not a
+    /// per-project one: dragging Settings sets where it sits in the row, and
+    /// switching projects keeps that offset, clamped to the new project's row
+    /// length (so a short row can't push it off the end). `.max` means
+    /// "trailing" — the default, matching the original append behavior.
+    /// Runtime-only; not persisted across restarts (the Settings tab itself is
+    /// never persisted — it's re-created on demand — so there's nothing to
+    /// anchor a saved offset to).
+    private var settingsRowOffset: Int = .max
+
     /// The chips shown in the header strip: the active project's session tabs, in
-    /// order, plus the Settings tab (if open) which is project-agnostic.
+    /// order, with the project-agnostic Settings chip (if open) inserted at its
+    /// user-controlled `settingsRowOffset` (clamped to the row length).
     public var visibleTabs: [SessionTab] {
-        var result = tabs.filter { $0.kind == .session && $0.projectPath == activeProjectPath }
-        if let settings = settingsTab { result.append(settings) }
+        let sessions = tabs.filter { $0.kind == .session && $0.projectPath == activeProjectPath }
+        guard let settings = settingsTab else { return sessions }
+        var result = sessions
+        result.insert(settings, at: min(max(settingsRowOffset, 0), sessions.count))
         return result
     }
 
@@ -353,14 +367,28 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     // MARK: Drag reorder (per-project, persisted)
 
-    /// Move a tab within its project (visible-order indices).
+    /// Reorder the visible tab row by visible-row indices. The row is the active
+    /// project's session chips plus (if open) the Settings chip at its offset —
+    /// so both kinds are draggable. Dragging Settings just records its new global
+    /// `settingsRowOffset`; dragging a session chip reorders the sessions within
+    /// the active project (other projects' order is preserved).
     public func moveTab(fromOffsets: IndexSet, toOffset: Int) {
-        guard let project = activeProjectPath else { return }
-        var projectTabs = tabs.filter { $0.kind == .session && $0.projectPath == project }
-        projectTabs.move(fromOffsets: fromOffsets, toOffset: toOffset)
-        // Rebuild the master list preserving other projects' relative order.
+        let before = visibleTabs
+        var row = before
+        row.move(fromOffsets: fromOffsets, toOffset: toOffset)
+        // Only a drag OF the Settings chip changes its offset; dragging a session
+        // reorders sessions while Settings stays pinned at its current offset (it
+        // doesn't jump aside as sessions shuffle underneath it).
+        let movedSettings = fromOffsets.contains { before.indices.contains($0) && before[$0].kind == .settings }
+        if movedSettings, let settings = settingsTab {
+            settingsRowOffset = row.firstIndex { $0.id == settings.id } ?? settingsRowOffset
+        }
+        // Write the reordered session chips back into the master list, preserving
+        // other projects' relative order.
+        guard let project = activeProjectPath else { persist(); return }
+        let newOrder = row.filter { $0.kind == .session }
+        var iterator = newOrder.makeIterator()
         var reordered: [SessionTab] = []
-        var iterator = projectTabs.makeIterator()
         for tab in tabs {
             if tab.kind == .session && tab.projectPath == project {
                 if let next = iterator.next() { reordered.append(next) }
