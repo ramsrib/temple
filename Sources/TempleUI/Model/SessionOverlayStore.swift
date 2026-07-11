@@ -10,6 +10,11 @@ import TempleCore
 public final class SessionOverlayStore: ObservableObject {
     @Published public private(set) var pinned: Set<String>
     @Published public private(set) var customNames: [String: String]
+    /// The last title each agent gave itself. Claude and Codex retitle their
+    /// terminal as the work moves on, but write that title nowhere on disk — so
+    /// Temple remembers it, and a session keeps the name it earned even after it
+    /// is closed and the app restarts.
+    @Published public private(set) var generatedTitles: [String: String]
 
     private let db: TempleDB
 
@@ -20,6 +25,11 @@ public final class SessionOverlayStore: ObservableObject {
         self.customNames = Dictionary(
             uniqueKeysWithValues: states.compactMap { state in
                 state.customName.map { (state.id, $0) }
+            }
+        )
+        self.generatedTitles = Dictionary(
+            uniqueKeysWithValues: states.compactMap { state in
+                state.generatedTitle.map { (state.id, $0) }
             }
         )
     }
@@ -47,9 +57,22 @@ public final class SessionOverlayStore: ObservableObject {
         try? db.setCustomName(customNames[id], sessionID: id)
     }
 
-    /// Display title = custom name if set, else the on-disk title.
+    public func generatedTitle(for id: String) -> String? { generatedTitles[id] }
+
+    /// Record the agent's current self-assigned title. Cheap to call on every
+    /// retitle: unchanged titles don't touch the DB or republish.
+    public func recordGeneratedTitle(_ title: String, for id: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, generatedTitles[id] != trimmed else { return }
+        generatedTitles[id] = trimmed
+        try? db.setGeneratedTitle(trimmed, sessionID: id)
+    }
+
+    /// Display title: a rename wins, then whatever the agent last called itself,
+    /// then the title parsed from the session file (which is pinned to the first
+    /// prompt and never catches up with a long session).
     public func displayTitle(for session: AgentSession) -> String {
-        customName(for: session.id) ?? session.title
+        customName(for: session.id) ?? generatedTitle(for: session.id) ?? session.title
     }
 
     private static func openDefaultDatabase() -> TempleDB {

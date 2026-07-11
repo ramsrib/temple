@@ -172,6 +172,11 @@ public final class AppModel: ObservableObject {
         notifications.onActivateSession = { [weak self] sessionID in
             self?.openSession(id: sessionID)
         }
+        // The agent renamed itself → remember it, so the sidebar and ⌘K track a
+        // long session instead of showing the prompt it opened with an hour ago.
+        openSessions.titleHandler = { [weak self] sessionID, title in
+            self?.overlay.recordGeneratedTitle(title, for: sessionID)
+        }
         // Sidebar highlight follows the active tab (UX "Select vs. open").
         openSessions.$activeTabID
             .receive(on: RunLoop.main)

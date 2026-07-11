@@ -26,6 +26,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     /// U7 hook: fired when a non-active tab needs attention (bell / OSC / etc.).
     public var attentionHandler: ((SessionTab, _ title: String, _ body: String) -> Void)?
+    /// The agent retitled itself (sessionID, title) — AppModel persists it so the
+    /// sidebar/palette show it, live and after the session closes.
+    public var titleHandler: ((_ sessionID: String, _ title: String) -> Void)?
 
     public init(surfaceFactory: TerminalSurfaceFactory,
                 appearanceProvider: @escaping () -> TerminalAppearance,
@@ -524,6 +527,9 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
     public func surface(_ surface: TerminalSurface, didUpdateTitle title: String) {
         guard let tab = tab(for: surface), !title.isEmpty else { return }
         tab.title = title
+        // Agents retitle themselves as the work moves on, and record that title
+        // nowhere on disk — hand it up so the sidebar and ⌘K can keep it.
+        if let sid = tab.sessionID { titleHandler?(sid, title) }
         // Item E: a live-updating title means the agent is working — keep the
         // settle heuristic from prematurely idling it.
         lastTitleChange[tab.id] = Date()

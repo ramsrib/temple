@@ -49,6 +49,20 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertEqual(Set(model.visibleTabs.compactMap(\.sessionID)), ["a1", "a2"])
     }
 
+    func testAgentRetitleIsHandedUpWithItsSessionID() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a", project: "/p/a"))
+        var recorded: [String: String] = [:]
+        model.titleHandler = { recorded[$0] = $1 }
+
+        let surface = try! XCTUnwrap(model.tabs.first?.surface)
+        model.surface(surface, didUpdateTitle: "Fixing the shift+enter encoding")
+
+        XCTAssertEqual(model.tabs.first?.title, "Fixing the shift+enter encoding")
+        XCTAssertEqual(recorded, ["a": "Fixing the shift+enter encoding"],
+                       "the sidebar/palette can only track a live title if it is handed up")
+    }
+
     func testCloseTabGracefullyRemovesTab() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.openSession(Fixture.session("a", project: "/p/a"))

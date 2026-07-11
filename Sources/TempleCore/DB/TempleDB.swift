@@ -6,6 +6,10 @@ public struct SessionState: Codable, Equatable, Sendable {
     public let pinned: Bool
     public let archived: Bool
     public let customName: String?
+    /// The last title the agent gave itself (Claude/Codex retitle their terminal
+    /// as the work moves on). The session file never carries this, so if we don't
+    /// remember it here it is lost the moment the session closes.
+    public let generatedTitle: String?
     public let lastOpenedAt: Date?
 }
 
@@ -78,6 +82,13 @@ public final class TempleDB: @unchecked Sendable {
         }
     }
 
+    public func setGeneratedTitle(_ title: String?, sessionID: String) throws {
+        try ensureState(sessionID)
+        try db.write { database in
+            try database.execute(sql: "UPDATE session_state SET generated_title = ? WHERE id = ?", arguments: [title, sessionID])
+        }
+    }
+
     public func recordOpened(sessionID: String, at: Date = Date()) throws {
         try ensureState(sessionID)
         try db.write { database in
@@ -95,6 +106,7 @@ public final class TempleDB: @unchecked Sendable {
                 pinned: row["pinned"],
                 archived: row["archived"],
                 customName: row["custom_name"],
+                generatedTitle: row["generated_title"],
                 lastOpenedAt: row["last_opened_at"]
             )
         }
@@ -108,6 +120,7 @@ public final class TempleDB: @unchecked Sendable {
                     pinned: row["pinned"],
                     archived: row["archived"],
                     customName: row["custom_name"],
+                    generatedTitle: row["generated_title"],
                     lastOpenedAt: row["last_opened_at"]
                 )
             }
@@ -243,6 +256,11 @@ public final class TempleDB: @unchecked Sendable {
             try database.alter(table: "open_tabs") { table in
                 table.add(column: "agent", .text).notNull().defaults(to: "claude")
                 table.add(column: "title", .text).notNull().defaults(to: "")
+            }
+        }
+        migrator.registerMigration("v3-generated-title") { database in
+            try database.alter(table: "session_state") { table in
+                table.add(column: "generated_title", .text)
             }
         }
         return migrator
