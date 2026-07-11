@@ -142,6 +142,8 @@ private struct ProjectDisclosure: View {
             ForEach(shownSessions) { session in
                 SessionRow(session: session)
                     .padding(.leading, Self.childInset)
+                    .listRowInsets(EdgeInsets(top: 1, leading: -2, bottom: 1, trailing: 8))
+                    .listRowBackground(Color.clear)
             }
             if project.sessions.count > collapsedLimit && !showAll {
                 // Mirrors SessionRow's geometry (+4pt for the badge glyph's
@@ -153,7 +155,7 @@ private struct ProjectDisclosure: View {
                     .padding(.leading, Self.childInset + 12)
                     .padding(.trailing, 8)
                     .padding(.vertical, 2)
-                    .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8))
+                    .listRowInsets(EdgeInsets(top: 1, leading: -2, bottom: 1, trailing: 8))
                     .listRowBackground(Color.clear)
             }
         }
@@ -185,7 +187,9 @@ private struct ProjectDisclosure: View {
         .overlay(alignment: .trailing) {
             NewSessionMenu(projectPath: project.path)
         }
-        .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8))
+        // Negative leading inset cancels List's sidebar-section indent so the
+        // chevron column lines up with the "Projects" header.
+        .listRowInsets(EdgeInsets(top: 1, leading: -10, bottom: 1, trailing: 8))
         .listRowBackground(Color.clear)
     }
 }
