@@ -36,4 +36,8 @@ enum Palette {
 
     /// Hairline rules and separators.
     static let hairline = mono(light: 0.0, 0.11, dark: 1.0, 0.13)
+
+    /// A faint grouped-surface fill for cards / panels (Settings sections).
+    /// Quieter than `controlFill` so nested controls read as distinct.
+    static let surfaceFill = mono(light: 0.0, 0.035, dark: 1.0, 0.05)
 }
