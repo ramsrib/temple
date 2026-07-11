@@ -193,6 +193,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         if tab.kind == .session {
             let projectChanged = activeProjectPath != tab.projectPath
             activeProjectPath = tab.projectPath
+            lastActiveTabByProject[tab.projectPath] = tab.id
             ensureSurface(for: tab)
             // Keep the persisted active-project ordering current even when the
             // switch happens by focusing an already-open tab (no open/close).
@@ -432,6 +433,43 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         }
         tabs = reordered
         persist()
+    }
+
+    // MARK: Project switching (the strip is scoped to one project)
+
+    /// The projects you have sessions open in, in the order their first tab was
+    /// opened. Deliberately not recency-ordered: a switcher whose entries
+    /// reshuffle as you use it is one you can't build muscle memory for.
+    public var openProjects: [String] {
+        var seen: Set<String> = []
+        return tabs.compactMap { tab in
+            guard tab.kind == .session, seen.insert(tab.projectPath).inserted else { return nil }
+            return tab.projectPath
+        }
+    }
+
+    /// The session last active in each project, so coming back to a project
+    /// returns you to where you were, not to whichever chip happens to be first.
+    private var lastActiveTabByProject: [String: SessionTab.ID] = [:]
+
+    /// Switch the strip to `project` and re-activate its last-used session. The
+    /// other projects' tabs stay alive (and their agents keep running) — they
+    /// were only hidden.
+    public func activateProject(_ path: String) {
+        let inProject = tabs.filter { $0.kind == .session && $0.projectPath == path }
+        guard let first = inProject.first else { return }
+        let remembered = lastActiveTabByProject[path].flatMap { id in inProject.first { $0.id == id } }
+        activate(remembered ?? first)
+    }
+
+    public func selectNextProject() { cycleProject(by: 1) }
+    public func selectPreviousProject() { cycleProject(by: -1) }
+
+    private func cycleProject(by delta: Int) {
+        let list = openProjects
+        guard list.count > 1 else { return }
+        let current = activeProjectPath.flatMap { list.firstIndex(of: $0) } ?? 0
+        activateProject(list[(current + delta + list.count) % list.count])
     }
 
     // MARK: Keyboard switching
