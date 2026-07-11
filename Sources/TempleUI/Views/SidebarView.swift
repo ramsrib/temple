@@ -134,7 +134,7 @@ private struct ProjectDisclosure: View {
     /// badge sits under the folder icon, not under the project name. Manual
     /// header + rows because DisclosureGroup's child outline indent is fixed
     /// and much deeper.
-    private static let childInset: CGFloat = 16
+    private static let childInset: CGFloat = 8
 
     var body: some View {
         header
@@ -142,7 +142,7 @@ private struct ProjectDisclosure: View {
             ForEach(shownSessions) { session in
                 SessionRow(session: session)
                     .padding(.leading, Self.childInset)
-                    .listRowInsets(EdgeInsets(top: 1, leading: -2, bottom: 1, trailing: 8))
+                    .listRowInsets(EdgeInsets(top: 1, leading: -10, bottom: 1, trailing: 8))
                     .listRowBackground(Color.clear)
             }
             if project.sessions.count > collapsedLimit && !showAll {
@@ -155,7 +155,7 @@ private struct ProjectDisclosure: View {
                     .padding(.leading, Self.childInset + 12)
                     .padding(.trailing, 8)
                     .padding(.vertical, 2)
-                    .listRowInsets(EdgeInsets(top: 1, leading: -2, bottom: 1, trailing: 8))
+                    .listRowInsets(EdgeInsets(top: 1, leading: -10, bottom: 1, trailing: 8))
                     .listRowBackground(Color.clear)
             }
         }
