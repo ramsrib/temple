@@ -52,8 +52,10 @@ struct SettingsView: View {
                         .labelsHidden()
                         .frame(width: 220)
                     }
-                    divider
-                    settingRow("Claude binary",
+                }
+
+                card("Claude") {
+                    settingRow("Command",
                                hint: "Absolute path — auto-detected if left as the default.") {
                         TextField("claude", text: Binding(get: { settings.claudePath },
                                                           set: { settings.claudePath = $0 }))
@@ -62,16 +64,18 @@ struct SettingsView: View {
                         .frame(maxWidth: 300)
                     }
                     divider
-                    settingRow("Claude arguments",
-                               hint: "Passed to every Claude launch (new + resume). Clear to disable.") {
+                    settingRow("Arguments",
+                               hint: "Passed to every launch (new + resume). Clear to disable.") {
                         TextField("", text: Binding(get: { settings.claudeExtraArgs },
                                                     set: { settings.claudeExtraArgs = $0 }))
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12, design: .monospaced))
                         .frame(maxWidth: 300)
                     }
-                    divider
-                    settingRow("Codex binary",
+                }
+
+                card("Codex") {
+                    settingRow("Command",
                                hint: "Absolute path — auto-detected if left as the default.") {
                         TextField("codex", text: Binding(get: { settings.codexPath },
                                                          set: { settings.codexPath = $0 }))
@@ -80,8 +84,8 @@ struct SettingsView: View {
                         .frame(maxWidth: 300)
                     }
                     divider
-                    settingRow("Codex arguments",
-                               hint: "Passed to every Codex launch (new + resume). Clear to disable.") {
+                    settingRow("Arguments",
+                               hint: "Passed to every launch (new + resume). Clear to disable.") {
                         TextField("", text: Binding(get: { settings.codexExtraArgs },
                                                     set: { settings.codexExtraArgs = $0 }))
                         .textFieldStyle(.roundedBorder)
