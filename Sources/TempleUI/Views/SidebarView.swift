@@ -18,7 +18,7 @@ struct SidebarView: View {
             footer
         }
         .background(.ultraThinMaterial)
-        .onChange(of: model.focusSearchToken) { searchFocused = true }
+        .onChange(of: model.focusSearchToken) { FieldFocus.claim { searchFocused = true } }
     }
 
     // MARK: Header

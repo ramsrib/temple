@@ -75,7 +75,12 @@ struct CommandPaletteView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.1)))
         .shadow(radius: 30, y: 10)
-        .onAppear { fieldFocused = true }
+        // The terminal (a raw AppKit view) holds the window's first responder and
+        // SwiftUI focus can't take it — so ⌘K used to open a field that never
+        // received a keystroke, while everything typed went to the agent.
+        .onAppear { FieldFocus.claim { fieldFocused = true } }
+        // Closing hands the keyboard back to the agent we took it from.
+        .onDisappear { model.openSessions.focusActiveTerminal() }
         .onKeyPress(.downArrow) { move(1); return .handled }
         .onKeyPress(.upArrow) { move(-1); return .handled }
         .onKeyPress(.escape) { model.commandPalettePresented = false; return .handled }

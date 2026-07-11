@@ -78,11 +78,10 @@ public final class GhosttyTerminalSurface: TerminalSurface {
     }
 
     public func focus() {
-        guard let window = ghosttyView.window else {
-            // Not yet in a window; focus once it is.
-            return
-        }
-        window.makeFirstResponder(ghosttyView)
+        // Deferred + retried on mount: a surface spawned by this very click is not
+        // in a window yet, and AppKit hands the responder to whatever was clicked
+        // after we return. See GhosttySurfaceView.requestFocus().
+        ghosttyView.requestFocus()
     }
 
     public func apply(_ appearance: TerminalAppearance) {
