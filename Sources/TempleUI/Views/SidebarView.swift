@@ -1,7 +1,7 @@
 import SwiftUI
 import TempleCore
 
-/// The left rail (UX §Sidebar): wordmark + search, New session, Pinned, project
+/// The left rail: search-first, Pinned, project
 /// disclosure groups, footer. The full browse index — a row here is browsable
 /// (click opens); arrow keys only highlight (select ≠ open).
 struct SidebarView: View {
