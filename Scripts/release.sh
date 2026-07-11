@@ -44,17 +44,19 @@ echo "==> building Temple.app ($VERSION)"
 MARKETING_VERSION="${VERSION#v}" ./Scripts/build-app.sh
 
 # 2. notarize (optional) --------------------------------------------------
-notarize() {  # notarize + staple any bundle/dmg
-  xcrun notarytool submit "$1" --keychain-profile "$NOTARY_PROFILE" --wait
-  xcrun stapler staple "$1"
+# notarytool only accepts .zip/.dmg/.pkg uploads; stapler only writes tickets to
+# the .app/.dmg itself — so submit and staple are deliberately separate.
+submit_for_notarization() {
+  xcrun notarytool submit "$1" --keychain-profile "$NOTARY_PROFILE" --wait \
+    || { echo "error: notarization of $1 was not accepted" >&2; exit 1; }
 }
 
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then
   echo "==> notarizing the app (profile: $NOTARY_PROFILE)"
   ditto -c -k --keepParent "$APP" "$OUT/notarize-upload.zip"
-  notarize "$OUT/notarize-upload.zip" >/dev/null || { echo "notarization failed" >&2; exit 1; }
-  xcrun stapler staple "$APP"
+  submit_for_notarization "$OUT/notarize-upload.zip"
   rm -f "$OUT/notarize-upload.zip"
+  xcrun stapler staple "$APP"                      # ticket goes on the .app
   spctl --assess -vv "$APP" 2>&1 | sed 's/^/      /'
 else
   echo "==> NOTARY_PROFILE not set — skipping notarization"
@@ -88,7 +90,8 @@ fi
 
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then
   echo "==> notarizing the dmg"
-  notarize "$DMG" >/dev/null || { echo "dmg notarization failed" >&2; exit 1; }
+  submit_for_notarization "$DMG"
+  xcrun stapler staple "$DMG"                      # ticket goes on the .dmg
 fi
 
 echo "    $(du -h "$ZIP" | cut -f1)  $ZIP"
