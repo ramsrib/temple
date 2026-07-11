@@ -138,6 +138,7 @@ public final class AppModel: ObservableObject {
             reconciler: reconciler,
             persistence: persistence,
             binaryPath: { settingsRef.binaryPath(for: $0) },
+            extraArgs: { settingsRef.extraArgs(for: $0) },
             defaultAgent: { settingsRef.defaultAgent })
 
         // Now self is fully initialized — finish wiring the closures & observers.

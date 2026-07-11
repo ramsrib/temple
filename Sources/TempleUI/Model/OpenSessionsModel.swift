@@ -21,6 +21,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     private let reconciler: CodexAdopting
     private let persistence: TabPersistence
     private let binaryPath: (Agent) -> String
+    private let extraArgs: (Agent) -> [String]
     private let defaultAgent: () -> Agent
 
     /// U7 hook: fired when a non-active tab needs attention (bell / OSC / etc.).
@@ -33,6 +34,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                 reconciler: CodexAdopting? = nil,
                 persistence: TabPersistence? = nil,
                 binaryPath: @escaping (Agent) -> String = { $0.rawValue == "codex" ? "codex" : "claude" },
+                extraArgs: @escaping (Agent) -> [String] = { _ in [] },
                 defaultAgent: @escaping () -> Agent = { .claude }) {
         self.surfaceFactory = surfaceFactory
         self.appearanceProvider = appearanceProvider
@@ -41,6 +43,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         self.reconciler = reconciler ?? NoopCodexReconciler()
         self.persistence = persistence ?? UserDefaultsTabPersistence()
         self.binaryPath = binaryPath
+        self.extraArgs = extraArgs
         self.defaultAgent = defaultAgent
         super.init()
     }
@@ -111,6 +114,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         var command = SessionLauncher.resume(session)
         if !command.argv.isEmpty {
             command.argv[0] = binaryPath(session.agent)
+            // Extra args right after the binary so they precede subcommands
+            // (`codex <flags> resume <id>`); claude accepts them anywhere.
+            command.argv.insert(contentsOf: extraArgs(session.agent), at: 1)
         }
         let tab = SessionTab(
             kind: .session,
@@ -129,11 +135,14 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// New empty session in a project with an explicit agent (`+` menu).
     @discardableResult
     public func newSession(agent: Agent, projectPath: String) -> SessionTab {
-        let spec = SessionLauncher.newSession(
+        var spec = SessionLauncher.newSession(
             agent: agent,
             projectPath: projectPath,
             claudePath: binaryPath(.claude),
             codexPath: binaryPath(.codex))
+        if !spec.command.argv.isEmpty {
+            spec.command.argv.insert(contentsOf: extraArgs(agent), at: 1)
+        }
         let tab = SessionTab(
             kind: .session,
             sessionID: spec.sessionID,
@@ -463,7 +472,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         tabs = saved.map { p in
             let agent = p.resolvedAgent
             var argv = agent.resumeArgv(sessionID: p.sessionID)
-            if !argv.isEmpty { argv[0] = binaryPath(agent) }  // GUI PATH lacks `claude`/`codex`
+            if !argv.isEmpty {
+                argv[0] = binaryPath(agent)  // GUI PATH lacks `claude`/`codex`
+                argv.insert(contentsOf: extraArgs(agent), at: 1)
+            }
             let command = TerminalCommand(argv: argv, cwd: p.projectPath)
             return SessionTab(kind: .session, sessionID: p.sessionID, agent: agent,
                               projectPath: p.projectPath, title: p.title, command: command)
