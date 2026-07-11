@@ -174,8 +174,12 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     public func activate(_ tab: SessionTab) {
         activeTabID = tab.id
         if tab.kind == .session {
+            let projectChanged = activeProjectPath != tab.projectPath
             activeProjectPath = tab.projectPath
             ensureSurface(for: tab)
+            // Keep the persisted active-project ordering current even when the
+            // switch happens by focusing an already-open tab (no open/close).
+            if projectChanged { persist() }
             // Viewing a tab that was waiting for you clears its attention. The
             // agent already stopped working (that's what rang), so it settles to
             // idle rather than back to running (Item E).
@@ -429,12 +433,20 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     // MARK: Persistence & lazy restore (U2)
 
     private func persist() {
-        let restorable = tabs
+        var restorable = tabs
             .filter { $0.kind == .session && !$0.isProvisional }
             .compactMap { tab -> PersistedTab? in
                 guard let sid = tab.sessionID else { return nil }
                 return PersistedTab(sessionID: sid, agent: tab.agent, projectPath: tab.projectPath, title: tab.title)
             }
+        // The ACTIVE project's tabs go first (within-project order preserved):
+        // restore() derives the launch-time active project from the first
+        // saved tab, so this is what makes a relaunch come back showing the
+        // project you were last working in.
+        if let active = activeProjectPath {
+            restorable = restorable.filter { $0.projectPath == active }
+                + restorable.filter { $0.projectPath != active }
+        }
         persistence.save(restorable)
     }
 

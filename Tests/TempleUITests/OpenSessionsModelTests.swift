@@ -125,6 +125,35 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertTrue(model.tabs.isEmpty)                      // closed right away
     }
 
+    func testRestoreComesBackInLastActiveProject() {
+        let defaults = Fixture.uniqueDefaults()
+        let persistence = UserDefaultsTabPersistence(defaults: defaults)
+        let model = OpenSessionsModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+                                      appearanceProvider: { .default },
+                                      runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+                                      persistence: persistence)
+        model.openSession(Fixture.session("a1", project: "/p/a"))
+        model.openSession(Fixture.session("a2", project: "/p/a"))
+        model.openSession(Fixture.session("b1", project: "/p/b"))   // last active: /p/b
+
+        let relaunched = OpenSessionsModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+                                           appearanceProvider: { .default },
+                                           runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+                                           persistence: persistence)
+        relaunched.restore()
+        XCTAssertEqual(relaunched.activeProjectPath, "/p/b")
+        XCTAssertEqual(relaunched.tabs.count, 3)
+
+        // Switching back by focusing an existing tab also updates the record.
+        model.activate(model.tabs.first { $0.sessionID == "a1" }!)
+        let again = OpenSessionsModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+                                      appearanceProvider: { .default },
+                                      runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+                                      persistence: persistence)
+        again.restore()
+        XCTAssertEqual(again.activeProjectPath, "/p/a")
+    }
+
     func testClosingInertRestoredChipRemovesWithoutSpawning() {
         let defaults = Fixture.uniqueDefaults()
         let persistence = UserDefaultsTabPersistence(defaults: defaults)
