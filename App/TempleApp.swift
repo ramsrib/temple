@@ -1,5 +1,6 @@
 import SwiftUI
 import TempleUI
+import TempleCore
 import TempleTerminal
 
 /// Xcode app-target entry point (U6).
@@ -23,6 +24,9 @@ struct TempleApp: App {
             .deletingLastPathComponent()  // App
             .deletingLastPathComponent()  // repo root
         GhosttyResources.configure(devCheckoutRoot: repoRoot)
+        // Agents spawned in Temple must see the user's real PATH (agent hooks
+        // and tools break under launchd's minimal GUI environment).
+        LoginShellEnvironment.adoptLoginShellPATH()
         _model = StateObject(wrappedValue: AppModel(surfaceFactory: GhosttyTerminalSurfaceFactory()))
     }
 
