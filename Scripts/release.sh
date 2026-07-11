@@ -37,6 +37,44 @@ DMG="$OUT/Temple-$VERSION-$ARCH.dmg"
 
 command -v gh >/dev/null || { echo "error: gh CLI required" >&2; exit 1; }
 
+# 0. preflight ---------------------------------------------------------------
+# Tags are the record of what shipped, and VERSION is typed by hand — so check
+# the two claims that record can't recover from: releasing a version that
+# already exists, and skipping one (a gap in the tags is indistinguishable from
+# a release whose artifacts went missing). Set FORCE_VERSION=1 to jump on
+# purpose, e.g. to leave 0.2.0 for a feature that is still landing.
+[[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+  || { echo "error: VERSION must look like v1.2.3 (got '$VERSION')" >&2; exit 1; }
+
+git fetch --tags --quiet origin 2>/dev/null || true
+if git rev-parse "$VERSION" >/dev/null 2>&1 || gh release view "$VERSION" >/dev/null 2>&1; then
+  echo "error: $VERSION already exists — releases are immutable; cut the next version" >&2
+  exit 1
+fi
+
+LAST_TAG="$(git tag -l 'v*' --sort=-v:refname | head -1)"
+if [[ -n "$LAST_TAG" ]]; then
+  IFS=. read -r lm ln lp <<< "${LAST_TAG#v}"
+  IFS=. read -r nm nn np <<< "${VERSION#v}"
+  EXPECTED=("v$lm.$ln.$((lp + 1))" "v$lm.$((ln + 1)).0" "v$((lm + 1)).0.0")
+  if [[ ! " ${EXPECTED[*]} " =~ " $VERSION " && -z "${FORCE_VERSION:-}" ]]; then
+    echo "error: $VERSION does not follow $LAST_TAG — expected one of: ${EXPECTED[*]}" >&2
+    echo "       (FORCE_VERSION=1 to skip a version deliberately)" >&2
+    exit 1
+  fi
+fi
+
+# The tag must name code that others can actually get.
+[[ -z "$(git status --porcelain)" ]] \
+  || { echo "error: working tree is dirty — commit or stash before releasing" >&2; exit 1; }
+git fetch --quiet origin main 2>/dev/null || true
+if [[ -n "$(git log --oneline origin/main..HEAD 2>/dev/null)" ]]; then
+  echo "error: HEAD is ahead of origin/main — push before releasing, or the tag" >&2
+  echo "       points at code nobody else has" >&2
+  exit 1
+fi
+echo "==> releasing $VERSION (previous: ${LAST_TAG:-none})"
+
 # 1. build ---------------------------------------------------------------
 echo "==> building Temple.app ($VERSION)"
 MARKETING_VERSION="${VERSION#v}" ./Scripts/build-app.sh
