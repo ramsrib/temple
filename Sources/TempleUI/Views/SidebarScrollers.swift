@@ -15,37 +15,10 @@ struct SidebarScrollers: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         // The scroll view exists only once the List has been laid out.
         DispatchQueue.main.async {
-            for scrollView in scrollViews(near: nsView) {
+            for scrollView in ScrollViewFinder.scrollViews(near: nsView) {
                 scrollView.hasVerticalScroller = false
                 scrollView.hasHorizontalScroller = false
             }
         }
-    }
-
-    /// A `.background` view sits OUTSIDE the List's NSScrollView — it is neither
-    /// inside it nor an ancestor of it — so `enclosingScrollView` is nil and
-    /// walking up the superview chain never reaches it. Climb to the enclosing
-    /// container and search back down instead.
-    private func scrollViews(near view: NSView) -> [NSScrollView] {
-        var container: NSView? = view.superview
-        for _ in 0..<4 {
-            guard let current = container else { break }
-            let found = descendantScrollViews(of: current)
-            if !found.isEmpty { return found }
-            container = current.superview
-        }
-        return []
-    }
-
-    private func descendantScrollViews(of view: NSView) -> [NSScrollView] {
-        var found: [NSScrollView] = []
-        for subview in view.subviews {
-            if let scrollView = subview as? NSScrollView {
-                found.append(scrollView)
-            } else {
-                found.append(contentsOf: descendantScrollViews(of: subview))
-            }
-        }
-        return found
     }
 }
