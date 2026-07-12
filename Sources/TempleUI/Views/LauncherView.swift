@@ -164,7 +164,11 @@ private struct LauncherRow: View {
     var trailingOnHover: Bool = false
     let action: () -> Void
 
-    @State private var hovering = false
+    @State private var rawHovering = false
+    @Environment(\.overlayActive) private var overlayActive
+    /// Mouse tracking fires by rect through a floating panel; never render
+    /// (or reveal trailing text for) a hover that happens under one.
+    private var hovering: Bool { rawHovering && !overlayActive }
 
     var body: some View {
         Button(action: action) {
@@ -194,7 +198,7 @@ private struct LauncherRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { hovering = $0 }
+        .onHover { rawHovering = $0 }
     }
 
     @ViewBuilder

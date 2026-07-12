@@ -33,7 +33,7 @@ struct ShortcutsView: View {
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 22) {
             Text("Keyboard Shortcuts")
                 .font(.system(size: 16, weight: .semibold))
 
@@ -41,15 +41,13 @@ struct ShortcutsView: View {
             section("Navigation", Self.navigation)
             section("App", Self.app)
         }
-        .padding(24)
-        .frame(width: 460)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.1)))
-        .shadow(radius: 30, y: 10)
+        .padding(28)
+        .frame(width: 540)
+        .panelChrome()
     }
 
     private func section(_ title: String, _ shortcuts: [Shortcut]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
                 Text(title.uppercased())
                     .font(.system(size: 10.5, weight: .medium))
@@ -57,17 +55,40 @@ struct ShortcutsView: View {
                     .foregroundStyle(.secondary)
                 Rectangle().fill(Palette.hairline).frame(height: 1)
             }
+            .padding(.bottom, 6)
             ForEach(shortcuts) { shortcut in
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Text(shortcut.keys)
-                        .font(.system(size: 12.5, design: .monospaced))
-                        .foregroundStyle(.primary)
-                        .frame(width: 96, alignment: .leading)
+                HStack(spacing: 16) {
                     Text(shortcut.action)
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.primary)
+                    Spacer(minLength: 24)
+                    keycaps(shortcut.keys)
+                }
+                .padding(.vertical, 6)
+            }
+        }
+    }
+
+    /// "⌘⇧[ / ⌘⇧]" → keycap chips with a plain "/" between alternatives.
+    private func keycaps(_ keys: String) -> some View {
+        HStack(spacing: 4) {
+            ForEach(Array(keys.split(separator: " ").enumerated()), id: \.offset) { _, token in
+                if token == "/" {
+                    Text("/")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                } else {
+                    Text(String(token))
+                        .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                        .padding(.horizontal, 6)
+                        .frame(minWidth: 24)
+                        .frame(height: 22)
+                        .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 5))
+                        .overlay(RoundedRectangle(cornerRadius: 5)
+                            .strokeBorder(Palette.hairline))
                 }
             }
         }
+        .layoutPriority(1)
     }
 }
