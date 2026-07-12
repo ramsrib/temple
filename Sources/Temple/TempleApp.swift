@@ -41,9 +41,10 @@ struct TempleApp: App {
                 }
         }
         .windowStyle(.hiddenTitleBar)
-        // Unified toolbar: the tab chips live as toolbar items in the native
-        // title-bar band, so the empty band keeps native double-click-to-zoom
-        // and window-drag (Item A/B).
+        // Unified toolbar: the tab chips live in the native title-bar band, so
+        // the empty band keeps native double-click-to-zoom and window-drag
+        // (Item A/B). Full-height (not unifiedCompact — that also shrinks the
+        // sidebar header and traffic-light row); the chips grow instead.
         .windowToolbarStyle(.unified)
     }
 }
