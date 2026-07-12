@@ -92,6 +92,11 @@ final class MetadataTests: XCTestCase {
         let filler = String(repeating: "x", count: 80_000)
         let bigInstructions = #"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"\#(filler)"}]}}"#
         try writeRollout("deep-id", lines: [bigInstructions, prompt])
+        // Prompt past even the deep scan's 1 MiB cap: the tail-segment match
+        // is a later turn at worst, and still beats "(no prompt)".
+        let hugeFiller = String(repeating: "x", count: 1_100_000)
+        let hugeInstructions = #"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"\#(hugeFiller)"}]}}"#
+        try writeRollout("beyond-id", lines: [hugeInstructions, prompt])
 
         let byID = Dictionary(uniqueKeysWithValues:
             CodexSessionStore(root: root).loadSessions().map { ($0.id, $0.title) })
@@ -101,6 +106,7 @@ final class MetadataTests: XCTestCase {
         XCTAssertEqual(byID["blank-id"], "prompt from rollout")
         XCTAssertEqual(byID["bare-id"], "(no prompt)")
         XCTAssertEqual(byID["deep-id"], "prompt from rollout")
+        XCTAssertEqual(byID["beyond-id"], "prompt from rollout")
     }
 
     func testAutomationOriginatorIsNoise() {

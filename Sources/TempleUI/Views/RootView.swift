@@ -46,10 +46,22 @@ public struct RootView: View {
         // strays that got in; focus only reaches search via ⌘F or a click.
         .onAppear {
             let launchToken = model.focusSearchToken
+            let sweep = LaunchFocusSweep()
+            // A click is deliberate focus — the sweep must stand down for
+            // good, or it would clear a field the user just chose (and any
+            // text typed into it) up to a second into the app's life.
+            sweep.monitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.leftMouseDown, .rightMouseDown]) { event in
+                MainActor.assumeIsolated { sweep.cancel() }
+                return event
+            }
             for delay in [0.0, 0.1, 0.25, 0.5, 1.0] {
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    // ⌘F since launch means the focus is wanted — stand down.
-                    guard model.focusSearchToken == launchToken else { return }
+                    defer { if delay == 1.0 { sweep.cancel() } }  // last tick retires the monitor
+                    // ⌘F or an open palette means the focus is wanted.
+                    guard !sweep.cancelled,
+                          model.focusSearchToken == launchToken,
+                          !model.commandPalettePresented else { return }
                     let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first
                     if window?.firstResponder is NSTextView {  // field editor == a focused text field
                         window?.makeFirstResponder(nil)
@@ -141,6 +153,21 @@ public struct RootView: View {
             }
         }
         .transition(.opacity)
+    }
+}
+
+/// State for the launch focus sweep: one flag and the click monitor that
+/// retires it (a class so the monitor callback and the delayed ticks share
+/// mutations).
+@MainActor
+private final class LaunchFocusSweep {
+    var cancelled = false
+    var monitor: Any?
+
+    func cancel() {
+        cancelled = true
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
     }
 }
 
