@@ -53,9 +53,12 @@ struct CommandPaletteView: View {
                         // highlight when arrowing (two rows lit at once).
                         VStack(spacing: 0) {
                             ForEach(Array(results.enumerated()), id: \.element.id) { idx, session in
-                                resultRow(session, selected: idx == selection)
-                                    .frame(height: Self.rowHeight)
-                                    .onTapGesture { selection = idx; openSelected() }
+                                PaletteResultRow(session: session,
+                                                 selected: idx == selection) {
+                                    selection = idx
+                                    openSelected()
+                                }
+                                .frame(height: Self.rowHeight)
                             }
                         }
                     }
@@ -72,9 +75,7 @@ struct CommandPaletteView: View {
             }
         }
         .frame(width: 560)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.1)))
-        .shadow(radius: 30, y: 10)
+        .panelChrome()
         // The terminal (a raw AppKit view) holds the window's first responder and
         // SwiftUI focus can't take it — so ⌘K used to open a field that never
         // received a keystroke, while everything typed went to the agent.
@@ -89,7 +90,30 @@ struct CommandPaletteView: View {
     /// Fixed row height so the list height is exact (two text lines + padding).
     private static let rowHeight: CGFloat = 46
 
-    private func resultRow(_ session: AgentSession, selected: Bool) -> some View {
+    private func move(_ delta: Int) {
+        guard !results.isEmpty else { return }
+        selection = max(0, min(results.count - 1, selection + delta))
+    }
+
+    private func openSelected() {
+        guard results.indices.contains(selection) else { return }
+        model.openSessions.openSession(results[selection])
+        model.commandPalettePresented = false
+    }
+}
+
+/// One palette result. Hover shows its own subtle fill without moving the
+/// keyboard selection — the pointer resting on a row must never change what
+/// Return opens mid-typing.
+private struct PaletteResultRow: View {
+    @EnvironmentObject var model: AppModel
+    let session: AgentSession
+    let selected: Bool
+    let open: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
         HStack(spacing: 10) {
             AgentBadge(agent: session.agent, size: 14)
             VStack(alignment: .leading, spacing: 1) {
@@ -104,18 +128,10 @@ struct CommandPaletteView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(selected ? Palette.selectionFill : Color.clear)
+        .background(selected ? Palette.selectionFill
+                             : (hovering ? Palette.hoverFill : Color.clear))
         .contentShape(Rectangle())
-    }
-
-    private func move(_ delta: Int) {
-        guard !results.isEmpty else { return }
-        selection = max(0, min(results.count - 1, selection + delta))
-    }
-
-    private func openSelected() {
-        guard results.indices.contains(selection) else { return }
-        model.openSessions.openSession(results[selection])
-        model.commandPalettePresented = false
+        .onHover { hovering = $0 }
+        .onTapGesture(perform: open)
     }
 }

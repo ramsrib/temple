@@ -26,9 +26,7 @@ struct ProjectSwitcherHUD: View {
             }
         }
         .padding(14)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
-        .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(Color.primary.opacity(0.08)))
-        .shadow(radius: 30, y: 10)
+        .panelChrome(cornerRadius: 20)
         .fixedSize()
     }
 

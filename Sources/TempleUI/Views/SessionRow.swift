@@ -10,7 +10,11 @@ struct SessionRow: View {
 
     @State private var renaming = false
     @State private var draftName = ""
-    @State private var hovering = false
+    @State private var rawHovering = false
+    @Environment(\.overlayActive) private var overlayActive
+    /// Mouse tracking fires by rect through a floating panel (⌘K etc.);
+    /// never render a hover that happens under one.
+    private var hovering: Bool { rawHovering && !overlayActive }
 
     private var isHighlighted: Bool { model.highlightedID == session.id }
     private var openTab: SessionTab? { model.openSessions.openTab(forSessionID: session.id) }
@@ -48,7 +52,7 @@ struct SessionRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { hovering = $0 }
+        .onHover { rawHovering = $0 }
         .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8))
         .listRowBackground(Color.clear)
         .contextMenu { contextMenu }

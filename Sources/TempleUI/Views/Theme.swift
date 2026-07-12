@@ -40,4 +40,36 @@ enum Palette {
     /// A faint grouped-surface fill for cards / panels (Settings sections).
     /// Quieter than `controlFill` so nested controls read as distinct.
     static let surfaceFill = mono(light: 0.0, 0.035, dark: 1.0, 0.05)
+
+    /// Floating-panel surface (⌘K palette, ⌘P switcher, ⌘/ shortcuts).
+    /// Opaque window background: the translucent material read as a muddy
+    /// gray unrelated to the rest of the app.
+    static let panelBackground = Color(nsColor: .windowBackgroundColor)
+}
+
+/// True while a floating panel (⌘K / ⌘P / ⌘/) covers the window. Views with
+/// hover fills consult it: within one window, AppKit delivers mouse-tracking
+/// by RECTANGLE, ignoring z-order — without the gate a row lights up straight
+/// through the panel above it.
+private struct OverlayActiveKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var overlayActive: Bool {
+        get { self[OverlayActiveKey.self] }
+        set { self[OverlayActiveKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Chrome shared by every floating panel (⌘K / ⌘P / ⌘/), so they all
+    /// match the app: opaque surface, hairline edge, one soft shadow.
+    func panelChrome(cornerRadius: CGFloat = 12) -> some View {
+        background(Palette.panelBackground,
+                   in: RoundedRectangle(cornerRadius: cornerRadius))
+            .overlay(RoundedRectangle(cornerRadius: cornerRadius)
+                .strokeBorder(Palette.hairline))
+            .shadow(color: .black.opacity(0.22), radius: 28, y: 10)
+    }
 }

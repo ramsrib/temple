@@ -19,6 +19,10 @@ public struct RootView: View {
             }
             .navigationSplitViewStyle(.balanced)
             .background(KeyCatcher())
+            // See OverlayActiveKey: hover fills below a panel must stand down
+            // (an environment value, unlike allowsHitTesting, doesn't make
+            // SwiftUI rewrap the split view and break its titlebar inset).
+            .environment(\.overlayActive, overlayPresented)
             // The project control belongs at the FAR end of the title bar, not
             // among the tabs: the tabs are the sessions inside this project, so a
             // project control sitting among them reads as one of them.
@@ -36,12 +40,21 @@ public struct RootView: View {
         }
         .tint(Palette.accent)              // neutral accent everywhere (no blue)
         // AppKit hands initial key focus to the first text field it finds —
-        // the sidebar search. Focus must only reach it via ⌘F or a click.
+        // the sidebar search — and can re-seat it while the window settles,
+        // so a single async clear leaves a gap where fast launch typing
+        // lands in the field. Sweep the first second instead, dropping any
+        // strays that got in; focus only reaches search via ⌘F or a click.
         .onAppear {
-            DispatchQueue.main.async {
-                let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first
-                if window?.firstResponder is NSTextView {  // field editor == a focused text field
-                    window?.makeFirstResponder(nil)
+            let launchToken = model.focusSearchToken
+            for delay in [0.0, 0.1, 0.25, 0.5, 1.0] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    // ⌘F since launch means the focus is wanted — stand down.
+                    guard model.focusSearchToken == launchToken else { return }
+                    let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first
+                    if window?.firstResponder is NSTextView {  // field editor == a focused text field
+                        window?.makeFirstResponder(nil)
+                        if !model.searchText.isEmpty { model.searchText = "" }
+                    }
                 }
             }
         }
@@ -57,6 +70,13 @@ public struct RootView: View {
         } message: {
             Text("Its agent is still working — closing will interrupt it.")
         }
+    }
+
+    /// Any floating panel (⌘K / ⌘P / ⌘/) currently over the window.
+    private var overlayPresented: Bool {
+        model.commandPalettePresented
+            || model.projectSwitcherPresented
+            || model.shortcutsPresented
     }
 
     private var pendingCloseBinding: Binding<Bool> {
@@ -80,11 +100,13 @@ public struct RootView: View {
     /// it is a momentary HUD you hold, not a surface you type into.
     private var projectSwitcherOverlay: some View {
         ZStack {
-            Color.black.opacity(0.001)
+            OverlayBackdrop { model.cancelProjectSwitcher() }
                 .ignoresSafeArea()
-                .onTapGesture { model.cancelProjectSwitcher() }
-            ProjectSwitcherHUD()
-                .environmentObject(model)
+            PanelHost {
+                ProjectSwitcherHUD()
+                    .environmentObject(model)
+            }
+            .fixedSize()
         }
         .transition(.opacity)
     }
@@ -92,31 +114,76 @@ public struct RootView: View {
     /// ⌘/ reference card, same overlay pattern as the palette.
     private var shortcutsOverlay: some View {
         ZStack {
-            Color.black.opacity(0.001)
+            OverlayBackdrop { model.shortcutsPresented = false }
                 .ignoresSafeArea()
-                .onTapGesture { model.shortcutsPresented = false }
-            ShortcutsView()
+            PanelHost { ShortcutsView() }
+                .fixedSize()
         }
         .transition(.opacity)
     }
 
-    /// Full-window dimmer; the palette's TOP edge is anchored (Spotlight-style,
-    /// ~35% down) so the card grows downward as results change instead of
-    /// re-centering and bouncing its top edge.
+    /// Full-window backdrop; the palette's TOP edge is anchored (Spotlight-
+    /// style, ~35% down) so the card grows downward as results change instead
+    /// of re-centering and bouncing its top edge.
     private var paletteOverlay: some View {
         GeometryReader { geo in
             ZStack(alignment: .top) {
-                Color.black.opacity(0.001)
+                OverlayBackdrop { model.commandPalettePresented = false }
                     .ignoresSafeArea()
-                    .onTapGesture { model.commandPalettePresented = false }
-                CommandPaletteView()
-                    .environmentObject(model)
-                    .tint(Palette.accent)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, geo.size.height * 0.35)
+                PanelHost {
+                    CommandPaletteView()
+                        .environmentObject(model)
+                        .tint(Palette.accent)
+                }
+                .fixedSize()
+                .frame(maxWidth: .infinity)
+                .padding(.top, geo.size.height * 0.35)
             }
         }
         .transition(.opacity)
+    }
+}
+
+/// The floating panels are drawn by the window's ROOT SwiftUI layer, but the
+/// split view's columns are AppKit subviews — and AppKit routes clicks and
+/// hover to subviews first, so a purely drawn panel is visible yet
+/// untouchable: every event lands on the launcher beneath it (only the
+/// palette's NSView-backed text field ever responded). Both overlay layers
+/// therefore need REAL NSViews: a backdrop that swallows events (click =
+/// dismiss), and a nested hosting view that carries the panel itself.
+private struct OverlayBackdrop: NSViewRepresentable {
+    let dismiss: () -> Void
+
+    final class BackdropView: NSView {
+        var dismiss: () -> Void = {}
+        override func mouseDown(with event: NSEvent) { dismiss() }
+    }
+
+    func makeNSView(context: Context) -> BackdropView {
+        let view = BackdropView()
+        view.dismiss = dismiss
+        return view
+    }
+
+    func updateNSView(_ view: BackdropView, context: Context) {
+        view.dismiss = dismiss
+    }
+}
+
+/// See OverlayBackdrop. `clipsToBounds = false` keeps the panel's soft
+/// shadow, which extends past the hosting view's intrinsic bounds.
+private struct PanelHost<Content: View>: NSViewRepresentable {
+    @ViewBuilder let content: () -> Content
+
+    func makeNSView(context: Context) -> NSHostingView<Content> {
+        let view = NSHostingView(rootView: content())
+        view.sizingOptions = .intrinsicContentSize
+        view.clipsToBounds = false
+        return view
+    }
+
+    func updateNSView(_ view: NSHostingView<Content>, context: Context) {
+        view.rootView = content()
     }
 }
 
