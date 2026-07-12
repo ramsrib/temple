@@ -57,6 +57,52 @@ final class MetadataTests: XCTestCase {
         XCTAssertNil(plain.lastMessagePreview)
     }
 
+    func testCodexTitleFallbackChain() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = root.appendingPathComponent("sessions")
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+
+        try """
+        {"session_id":"hist-id","ts":10,"text":"typed prompt"}
+        {"session_id":"blank-id","ts":10,"text":"   "}
+        """.write(to: root.appendingPathComponent("history.jsonl"), atomically: true, encoding: .utf8)
+
+        try """
+        {"id":"hist-id","thread_name":"index name loses to history"}
+        {"id":"index-id","thread_name":"stale name"}
+        {"id":"index-id","thread_name":"companion thread"}
+        """.write(to: root.appendingPathComponent("session_index.jsonl"), atomically: true, encoding: .utf8)
+
+        func writeRollout(_ id: String, lines: [String]) throws {
+            let meta = #"{"type":"session_meta","payload":{"session_id":"\#(id)","cwd":"/work/project"}}"#
+            try ([meta] + lines).joined(separator: "\n")
+                .write(to: sessions.appendingPathComponent("rollout-\(id).jsonl"),
+                       atomically: true, encoding: .utf8)
+        }
+        let instructions = #"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"AGENTS.md instructions blob"}]}}"#
+        let prompt = #"{"type":"event_msg","payload":{"type":"user_message","message":"prompt from rollout"}}"#
+        try writeRollout("hist-id", lines: [prompt])
+        try writeRollout("index-id", lines: [prompt])
+        try writeRollout("exec-id", lines: [instructions, prompt])
+        try writeRollout("blank-id", lines: [prompt])
+        try writeRollout("bare-id", lines: [instructions])
+        // codex exec buries the prompt behind instruction blobs, routinely
+        // past the parser's 64 KB head window; the deep-scan must find it.
+        let filler = String(repeating: "x", count: 80_000)
+        let bigInstructions = #"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"\#(filler)"}]}}"#
+        try writeRollout("deep-id", lines: [bigInstructions, prompt])
+
+        let byID = Dictionary(uniqueKeysWithValues:
+            CodexSessionStore(root: root).loadSessions().map { ($0.id, $0.title) })
+        XCTAssertEqual(byID["hist-id"], "typed prompt")
+        XCTAssertEqual(byID["index-id"], "companion thread")
+        XCTAssertEqual(byID["exec-id"], "prompt from rollout")
+        XCTAssertEqual(byID["blank-id"], "prompt from rollout")
+        XCTAssertEqual(byID["bare-id"], "(no prompt)")
+        XCTAssertEqual(byID["deep-id"], "prompt from rollout")
+    }
+
     func testAutomationOriginatorIsNoise() {
         let session = AgentSession(id: "id", agent: .codex, projectPath: "/work", title: "x",
                                    createdAt: nil, updatedAt: Date(), filePath: URL(fileURLWithPath: "/tmp/x"),
