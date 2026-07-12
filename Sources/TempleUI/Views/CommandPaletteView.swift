@@ -66,6 +66,7 @@ struct CommandPaletteView: View {
                     // leaving dead space under short result lists); scroll
                     // only past the cap.
                     .frame(height: min(CGFloat(results.count) * Self.rowHeight, 340))
+                    .thinScrollers()
                     .onChange(of: selection) {
                         if results.indices.contains(selection) {
                             proxy.scrollTo(results[selection].id, anchor: .center)

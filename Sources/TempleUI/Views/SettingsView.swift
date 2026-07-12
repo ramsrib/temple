@@ -112,6 +112,7 @@ struct SettingsView: View {
             .padding(.top, 44)
             .padding(.bottom, 40)
         }
+        .thinScrollers()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
