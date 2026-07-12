@@ -80,6 +80,7 @@ public struct CodexSessionStore: IncrementalSessionStore {
         var model = payload["model_provider"] as? String
         var preview: String?
         var fallbackTitle: String?
+        var tailFallbackTitle: String?
         let git = payload["git"] as? [String: Any]
         let branch = git?["branch"] as? String
 
@@ -106,11 +107,17 @@ public struct CodexSessionStore: IncrementalSessionStore {
                         // role-user response_items also carry injected
                         // AGENTS.md instructions, so they can't title. Only
                         // the head segment can claim the FIRST prompt — a
-                        // tail match in a large file may be a later turn.
-                        if fallbackTitle == nil, segmentIndex == 0,
-                           payloadType == "user_message" {
+                        // tail match in a large file may be a later turn, so
+                        // it is kept as a last resort behind the deep scan.
+                        if payloadType == "user_message" {
                             let cleaned = StoreIO.cleanTitle(text)
-                            if !cleaned.isEmpty { fallbackTitle = cleaned }
+                            if !cleaned.isEmpty {
+                                if segmentIndex == 0 {
+                                    if fallbackTitle == nil { fallbackTitle = cleaned }
+                                } else if tailFallbackTitle == nil {
+                                    tailFallbackTitle = cleaned
+                                }
+                            }
                         }
                     }
                 }
@@ -119,9 +126,10 @@ public struct CodexSessionStore: IncrementalSessionStore {
 
         // `codex exec` sessions record their prompt behind the injected
         // instruction blobs — routinely past the 64 KB head window — so when
-        // nothing recorded a title, pay for one wider read to find it.
+        // nothing recorded a title, pay for one wider read to find it. Past
+        // even that cap, a later prompt from the tail beats "(no prompt)".
         if titles[id] == nil, fallbackTitle == nil {
-            fallbackTitle = Self.firstUserMessage(in: file)
+            fallbackTitle = Self.firstUserMessage(in: file) ?? tailFallbackTitle
         }
 
         return AgentSession(
