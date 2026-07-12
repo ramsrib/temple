@@ -48,19 +48,30 @@ the ground truth behind `TempleCore`'s stores.
 ```
 Subsequent lines are turn/event records.
 
-**Titles** come from `~/.codex/history.jsonl`, whose lines are:
-```json
-{"session_id":"019b…","ts":1769387854,"text":"first prompt text"}
-```
-Build `session_id → earliest text` once and use it as the session title. (Fallback
-if absent: first user turn in the rollout, or "(no prompt)".)
+**Titles** — Codex never generates one; the best available is the first prompt,
+recorded in different places depending on how the session started. Temple tries
+each in order (skipping entries that clean to empty):
+
+1. `~/.codex/history.jsonl` — written only by the interactive TUI:
+   ```json
+   {"session_id":"019b…","ts":1769387854,"text":"first prompt text"}
+   ```
+   Build `session_id → earliest text` once.
+2. `~/.codex/session_index.jsonl` — written only by app-server clients
+   (IDE companions, plugins); `{"id":"019b…","thread_name":"…"}`, last entry
+   per id wins.
+3. The rollout itself — the first `user_message` event payload's text. This is
+   the only source for plain `codex exec` runs, which write neither file above.
+   (The role-`user` `response_item` lines can't title: the first one is the
+   injected AGENTS.md instructions blob, not the prompt.)
+4. `"(no prompt)"`.
 
 **What TempleCore extracts:**
 - `id` = `payload.session_id`
 - `cwd` = `payload.cwd`
 - `createdAt` = `payload.timestamp` (or session line `timestamp`)
 - `updatedAt` = file modification time
-- `title` = history-map lookup by id
+- `title` = fallback chain above
 
 **Resume:** `codex resume <session-id>` run in `cwd`.
 
