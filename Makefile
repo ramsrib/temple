@@ -2,7 +2,7 @@ APP_NAME := Temple
 APP := dist/$(APP_NAME).app
 DEST := /Applications/$(APP_NAME).app
 
-.PHONY: build test run demo demo-clean ghostty app open install release version clean
+.PHONY: build test run demo demo-clean ghostty app open install stage release version clean
 
 build: ## Compile the SwiftPM targets
 	swift build
@@ -47,6 +47,20 @@ install: app ## Build, sign, and install to /Applications
 	@# Make /Applications the canonical handler (and drop the stale dist/ entry).
 	@"$(LSREGISTER)" -f "$(DEST)" 2>/dev/null || true
 	@codesign --verify --strict "$(DEST)" && echo "✓ installed → $(DEST)"
+
+stage: app ## Install to /Applications WITHOUT killing the running app (relaunch picks it up)
+	@# For working from a terminal that lives inside Temple itself: the running
+	@# instance keeps its bundle — moved to the Trash intact (its open files
+	@# stay valid, and it doubles as the rollback) — never deleted under it.
+	@if [ -d "$(DEST)" ]; then \
+	  mv "$(DEST)" "$$HOME/.Trash/$(APP_NAME).app.replaced-$$(date +%Y%m%d-%H%M%S)"; \
+	fi
+	@ditto "$(APP)" "$(DEST)"
+	@# Same LaunchServices hygiene as `install` (see comments there).
+	@rm -rf "$(APP)"
+	@"$(LSREGISTER)" -f "$(DEST)" 2>/dev/null || true
+	@codesign --verify --strict "$(DEST)" \
+	  && echo "✓ staged → $(DEST) — running app untouched; quit + reopen to pick it up"
 
 release: ## Build, sign, notarize, package, and publish a GitHub release (VERSION=v0.1.0; see RELEASE.md)
 	@test -n "$(VERSION)" || (echo "usage: make release VERSION=v0.1.0" && exit 1)
