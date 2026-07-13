@@ -12,6 +12,10 @@ public enum Agent: String, Codable, CaseIterable, Sendable {
         }
     }
 
+    /// The command the agent installs as, before any user override or `PATH`
+    /// resolution (see `LoginShellEnvironment.locate`).
+    public var binaryName: String { rawValue }
+
     /// argv to resume a session with this agent (run in the session's `cwd`).
     ///
     /// - Note: verify against the installed CLI version before relying on it in

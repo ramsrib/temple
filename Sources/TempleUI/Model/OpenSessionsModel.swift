@@ -36,7 +36,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                 registry: ProcessRegistry,
                 reconciler: CodexAdopting? = nil,
                 persistence: TabPersistence? = nil,
-                binaryPath: @escaping (Agent) -> String = { $0.rawValue == "codex" ? "codex" : "claude" },
+                binaryPath: @escaping (Agent) -> String = { $0.binaryName },
                 extraArgs: @escaping (Agent) -> [String] = { _ in [] },
                 defaultAgent: @escaping () -> Agent = { .claude }) {
         self.surfaceFactory = surfaceFactory

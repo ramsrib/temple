@@ -102,4 +102,64 @@ final class LoginShellEnvironmentTests: XCTestCase {
         // A real login shell PATH has more than launchd's four entries.
         XCTAssertGreaterThan(path?.split(separator: ":").count ?? 0, 4)
     }
+
+    /// The rc file is free to print a banner before we ever get a word in — an
+    /// instant prompt, a version-manager notice, an MOTD. Only the marker tells
+    /// us where the noise stops.
+    func testParseIgnoresRcFileChatter() {
+        let output = """
+        p10k instant prompt junk
+        nvm: using v22.11.0
+        __temple_path__
+        /usr/local/bin:/usr/bin
+        """
+        XCTAssertEqual(LoginShellEnvironment.parse(output), "/usr/local/bin:/usr/bin")
+    }
+
+    func testParseReturnsNilWhenShellPrintedNothingUseful() {
+        XCTAssertNil(LoginShellEnvironment.parse("command not found: printenv\n"))
+        XCTAssertNil(LoginShellEnvironment.parse("__temple_path__\n"))
+    }
+
+    /// Resolution follows PATH order, exactly as `command -v` would — this is the
+    /// whole point: a stale binary earlier in a *hardcoded* list must not win over
+    /// the one the user's own shell would pick.
+    func testLocateHonorsPATHOrder() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        let first = root.appendingPathComponent("first")
+        let second = root.appendingPathComponent("second")
+        for dir in [first, second] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let stale = second.appendingPathComponent("claude")
+        try Data().write(to: stale)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stale.path)
+
+        // Only the later directory has it → that's the answer.
+        XCTAssertEqual(LoginShellEnvironment.locate("claude", on: "\(first.path):\(second.path)"),
+                       stale.path)
+
+        // Now both do → the earlier one wins.
+        let current = first.appendingPathComponent("claude")
+        try Data().write(to: current)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: current.path)
+        XCTAssertEqual(LoginShellEnvironment.locate("claude", on: "\(first.path):\(second.path)"),
+                       current.path)
+    }
+
+    func testLocateSkipsNonExecutablesAndRelativeEntries() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        // Present, but not executable — not a command.
+        try Data().write(to: dir.appendingPathComponent("claude"))
+
+        XCTAssertNil(LoginShellEnvironment.locate("claude", on: dir.path))
+        XCTAssertNil(LoginShellEnvironment.locate("claude", on: "relative/bin"))
+        XCTAssertNil(LoginShellEnvironment.locate("claude", on: nil))
+    }
 }
