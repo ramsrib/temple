@@ -23,6 +23,7 @@ struct LauncherView: View {
             Spacer(minLength: 32)
             VStack(alignment: .leading, spacing: 30) {
                 masthead
+                toolchainWarnings
                 getStarted
                 if !recentProjects.isEmpty { recent }
             }
@@ -36,6 +37,51 @@ struct LauncherView: View {
         // the launcher's empty top area (Item B). With tabs open the native
         // unified toolbar (chips) provides this for free.
         .background(WindowActionStrip())
+    }
+
+    // MARK: Toolchain
+
+    /// Says out loud what Temple found wrong with the agent CLIs on this machine.
+    /// A launch that dies because the `claude` first on your PATH can't start is
+    /// indistinguishable from Temple being broken — unless something tells you.
+    /// - Important: **No `.fixedSize` here, ever.** It is the natural way to let a
+    ///   `Text` wrap inside an `HStack`, and it silently breaks the *sidebar*: the
+    ///   ideal-height measurement it forces propagates up and makes SwiftUI rewrap
+    ///   the `NavigationSplitView`, which drops the sidebar's titlebar inset and
+    ///   leaves its rows scrolling over the traffic lights. Bisected from exactly
+    ///   this banner. `allowsHitTesting` has the same effect (see RootView) — the
+    ///   split view's inset is fragile, and the detail pane can break it from here.
+    ///   Wrap text with an expanding frame instead, as below.
+    @ViewBuilder
+    private var toolchainWarnings: some View {
+        let warnings = model.toolchain.warnings(defaultAgent: model.settings.defaultAgent)
+        if !warnings.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(warnings) { warning in
+                    HStack(alignment: .firstTextBaseline, spacing: 9) {
+                        Image(systemName: warning.isFatal
+                              ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(warning.isFatal ? Color.red : .orange)
+                        Text(warning.message)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button("Settings") { model.openSessions.openSettings() }
+                            .buttonStyle(.link)
+                            .font(.system(size: 12))
+                    }
+                }
+            }
+            .padding(.vertical, 10)
+            .padding(.horizontal, 13)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Palette.surfaceFill, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8).strokeBorder(Palette.hairline, lineWidth: 1)
+            )
+        }
     }
 
     // MARK: Masthead

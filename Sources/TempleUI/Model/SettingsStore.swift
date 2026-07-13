@@ -36,17 +36,30 @@ public enum ThemePreference: String, CaseIterable, Identifiable, Sendable {
 ///
 /// **Seam for Track C5.** Swap the `UserDefaults` backing for the DB later; the
 /// published API is stable.
+/// **A stored setting is a decision the user made.** Nothing Temple computes —
+/// a detected binary, a resolved font, a default we inferred — is ever written
+/// here. Store a guess next to a choice and they become the same bytes: later you
+/// can't revisit the guess without risking someone's decision, and you're reduced
+/// to migrations that try to divine your own past intent. That's the bug that made
+/// Temple launch a stale `claude` (it persisted its own auto-detected path into
+/// the very key an override lives in), and the reason detection now lives in
+/// `ToolchainModel` and is recomputed every launch rather than saved.
+///
+/// The corollary, which the types enforce: **absent means undecided**, not
+/// "unknown". An empty `claudePath` isn't missing data to be backfilled — it is
+/// the user saying "you pick".
 @MainActor
 public final class SettingsStore: ObservableObject {
-    @Published public var fontSize: Double { didSet { persist() } }
-    @Published public var fontFamily: String { didSet { persist() } }
-    @Published public var defaultAgent: Agent { didSet { persist() } }
-    @Published public var theme: ThemePreference { didSet { persist() } }
-    @Published public var claudePath: String { didSet { persist() } }
-    @Published public var codexPath: String { didSet { persist() } }
+    @Published public var fontSize: Double { didSet { write(fontSize, Key.fontSize) } }
+    @Published public var fontFamily: String { didSet { write(fontFamily, Key.fontFamily) } }
+    @Published public var defaultAgent: Agent { didSet { write(defaultAgent.rawValue, Key.defaultAgent) } }
+    @Published public var theme: ThemePreference { didSet { write(theme.rawValue, Key.theme) } }
+    /// Empty = "detect it" (see `ToolchainModel`). Only ever set by the user.
+    @Published public var claudePath: String { didSet { write(claudePath, Key.claudePath) } }
+    @Published public var codexPath: String { didSet { write(codexPath, Key.codexPath) } }
     /// Extra CLI arguments appended to every launch (new + resume).
-    @Published public var claudeExtraArgs: String { didSet { persist() } }
-    @Published public var codexExtraArgs: String { didSet { persist() } }
+    @Published public var claudeExtraArgs: String { didSet { write(claudeExtraArgs, Key.claudeExtraArgs) } }
+    @Published public var codexExtraArgs: String { didSet { write(codexExtraArgs, Key.codexExtraArgs) } }
 
     private let defaults: UserDefaults
     private var loading = false
@@ -58,23 +71,20 @@ public final class SettingsStore: ObservableObject {
         fontFamily = defaults.string(forKey: Key.fontFamily) ?? "SF Mono"
         defaultAgent = Agent(rawValue: defaults.string(forKey: Key.defaultAgent) ?? "") ?? .claude
         theme = ThemePreference(rawValue: defaults.string(forKey: Key.theme) ?? "") ?? .system
-        claudePath = defaults.string(forKey: Key.claudePath) ?? SettingsStore.autodetect("claude")
-        codexPath = defaults.string(forKey: Key.codexPath) ?? SettingsStore.autodetect("codex")
+        claudePath = defaults.string(forKey: Key.claudePath) ?? ""
+        codexPath = defaults.string(forKey: Key.codexPath) ?? ""
         claudeExtraArgs = defaults.string(forKey: Key.claudeExtraArgs) ?? "--dangerously-skip-permissions"
         codexExtraArgs = defaults.string(forKey: Key.codexExtraArgs) ?? "--dangerously-bypass-approvals-and-sandbox"
         loading = false
     }
 
-    private func persist() {
+    /// One setting, one key. The old `persist()` rewrote *every* key on *any*
+    /// change, which is how an in-memory default (Temple's own guess at a binary
+    /// path) laundered itself into persisted user data the first time someone
+    /// dragged the font-size slider.
+    private func write(_ value: Any, _ key: String) {
         guard !loading else { return }
-        defaults.set(fontSize, forKey: Key.fontSize)
-        defaults.set(fontFamily, forKey: Key.fontFamily)
-        defaults.set(defaultAgent.rawValue, forKey: Key.defaultAgent)
-        defaults.set(theme.rawValue, forKey: Key.theme)
-        defaults.set(claudePath, forKey: Key.claudePath)
-        defaults.set(codexPath, forKey: Key.codexPath)
-        defaults.set(claudeExtraArgs, forKey: Key.claudeExtraArgs)
-        defaults.set(codexExtraArgs, forKey: Key.codexExtraArgs)
+        defaults.set(value, forKey: key)
     }
 
     /// Build a `TerminalAppearance` (U9 font + U10 resolved scheme) for surfaces.
@@ -84,32 +94,37 @@ public final class SettingsStore: ObservableObject {
                            colorScheme: scheme)
     }
 
-    /// Extra args for an agent, whitespace-split (empty → none). Inserted
-    /// right after the binary so they precede subcommands (`codex ... resume`).
+    /// Extra args for an agent, tokenized as a shell would (empty → none).
+    /// Inserted right after the binary so they precede subcommands
+    /// (`codex ... resume`).
     public func extraArgs(for agent: Agent) -> [String] {
-        let raw = agent == .claude ? claudeExtraArgs : codexExtraArgs
-        return raw.split(separator: " ").map(String.init)
+        ShellWords.split(extraArgsText(for: agent))
     }
 
-    /// Binary path a launcher should use for an agent (U4 uses this later).
-    public func binaryPath(for agent: Agent) -> String {
+    /// The user's explicit choice of binary for an agent, or `""` for "detect it"
+    /// — which is the default, and what `ToolchainModel` then answers.
+    public func overridePath(for agent: Agent) -> String {
+        agent == .claude ? claudePath : codexPath
+    }
+
+    public func setOverridePath(_ path: String, for agent: Agent) {
         switch agent {
-        case .claude: return claudePath
-        case .codex: return codexPath
+        case .claude: claudePath = path
+        case .codex: codexPath = path
         }
     }
 
-    private static func autodetect(_ bin: String) -> String {
-        let candidates = [
-            "/opt/homebrew/bin/\(bin)",
-            "/usr/local/bin/\(bin)",
-            "\(NSHomeDirectory())/.local/bin/\(bin)",
-        ]
-        for c in candidates where FileManager.default.isExecutableFile(atPath: c) {
-            return c
-        }
-        return bin  // rely on PATH
+    public func extraArgsText(for agent: Agent) -> String {
+        agent == .claude ? claudeExtraArgs : codexExtraArgs
     }
+
+    public func setExtraArgsText(_ text: String, for agent: Agent) {
+        switch agent {
+        case .claude: claudeExtraArgs = text
+        case .codex: codexExtraArgs = text
+        }
+    }
+
 
     private enum Key {
         static let fontSize = "temple.settings.fontSize"

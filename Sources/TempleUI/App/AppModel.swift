@@ -85,6 +85,8 @@ public final class AppModel: ObservableObject {
     public let overlay: SessionOverlayStore
     public let openSessions: OpenSessionsModel
     public let notifications: NotificationController
+    /// Which `claude`/`codex` this machine actually has, and which of them run.
+    public let toolchain: ToolchainModel
 
     // Seams (Track C)
     private let indexSource: IndexSource
@@ -140,6 +142,11 @@ public final class AppModel: ObservableObject {
         self.cacheURL = cacheURL
         self.notifications = NotificationController()
 
+        let toolchain = ToolchainModel()
+        toolchain.override = { [weak settings] in settings?.overridePath(for: $0) ?? "" }
+        toolchain.arguments = { [weak settings] in settings?.extraArgs(for: $0) ?? [] }
+        self.toolchain = toolchain
+
         let runtime = SessionRuntimeController()
         let settingsRef = settings
         // appearanceProvider is set after self is available (see wiring below).
@@ -151,7 +158,7 @@ public final class AppModel: ObservableObject {
             registry: registry,
             reconciler: reconciler,
             persistence: persistence,
-            binaryPath: { settingsRef.binaryPath(for: $0) },
+            binaryPath: { toolchain.launchPath(for: $0) },
             extraArgs: { settingsRef.extraArgs(for: $0) },
             defaultAgent: { settingsRef.defaultAgent })
 
@@ -160,6 +167,9 @@ public final class AppModel: ObservableObject {
             self?.currentAppearance() ?? .default
         }
         wire()
+        // Verify the agent CLIs in the background; launches before it lands fall
+        // back to the shell's own answer (see `ToolchainModel.launchPath`).
+        toolchain.detect()
     }
 
     private static func openDefaultDatabase() -> TempleDB {
@@ -215,6 +225,11 @@ public final class AppModel: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         openSessions.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        // Detection lands asynchronously — Settings and the launcher banner want it.
+        toolchain.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)

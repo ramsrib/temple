@@ -54,45 +54,8 @@ struct SettingsView: View {
                     }
                 }
 
-                card("Claude") {
-                    settingRow("Command",
-                               hint: "Absolute path — auto-detected if left as the default.") {
-                        TextField("claude", text: Binding(get: { settings.claudePath },
-                                                          set: { settings.claudePath = $0 }))
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-                        .frame(maxWidth: 300)
-                    }
-                    divider
-                    settingRow("Arguments",
-                               hint: "Passed to every launch (new + resume). Clear to disable.") {
-                        TextField("", text: Binding(get: { settings.claudeExtraArgs },
-                                                    set: { settings.claudeExtraArgs = $0 }))
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-                        .frame(maxWidth: 300)
-                    }
-                }
-
-                card("Codex") {
-                    settingRow("Command",
-                               hint: "Absolute path — auto-detected if left as the default.") {
-                        TextField("codex", text: Binding(get: { settings.codexPath },
-                                                         set: { settings.codexPath = $0 }))
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-                        .frame(maxWidth: 300)
-                    }
-                    divider
-                    settingRow("Arguments",
-                               hint: "Passed to every launch (new + resume). Clear to disable.") {
-                        TextField("", text: Binding(get: { settings.codexExtraArgs },
-                                                    set: { settings.codexExtraArgs = $0 }))
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-                        .frame(maxWidth: 300)
-                    }
-                }
+                agentCard(.claude)
+                agentCard(.codex)
 
                 card("Appearance") {
                     settingRow("Theme") {
@@ -114,6 +77,138 @@ struct SettingsView: View {
         }
         .thinScrollers()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: Agents
+
+    /// One agent's card: what Temple detected, everything else it found and why it
+    /// won't use it, and the override for when the user disagrees.
+    ///
+    /// Detection is shown rather than hidden on purpose. The failure that led here
+    /// — a stale `claude` from an old npm install, shadowing a current one — was
+    /// invisible precisely because Temple picked a binary silently and no screen
+    /// ever said which.
+    private func agentCard(_ agent: Agent) -> some View {
+        let resolution = model.toolchain.resolution(for: agent)
+        let override = settings.overridePath(for: agent)
+        let check = model.toolchain.overrideCheck(for: agent)
+        return card(agent.displayName) {
+            settingRow("Command",
+                       hint: "Leave blank to use the detected one.") {
+                VStack(alignment: .trailing, spacing: 4) {
+                    TextField(resolution?.chosen?.path ?? agent.binaryName,
+                              text: Binding(get: { settings.overridePath(for: agent) },
+                                            set: { settings.setOverridePath($0, for: agent) }))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                    .onSubmit { model.toolchain.recheckUserSettings() }
+                    // Your override runs, or it doesn't — either way you hear it
+                    // from Settings, not from a tab that dies on launch.
+                    if let check {
+                        Label(check.failure ?? check.version ?? "runs",
+                              systemImage: check.isUsable ? "checkmark.circle" : "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(check.isUsable ? Color.secondary : Color.red)
+                        .lineLimit(2)
+                        .help(check.details ?? "")
+                    }
+                }
+                .frame(maxWidth: 300)
+            }
+            divider
+            settingRow("Detected",
+                       hint: override.isEmpty ? nil : "Overridden above — detection ignored.") {
+                detectionStatus(resolution)
+                    .opacity(override.isEmpty ? 1 : 0.45)
+            }
+            if let resolution, resolution.installs.count > 1 || resolution.installs.contains(where: { !$0.isUsable }) {
+                divider
+                settingRow("Also found") {
+                    VStack(alignment: .trailing, spacing: 6) {
+                        ForEach(resolution.installs.filter { $0.path != resolution.chosen?.path }) { install in
+                            installRow(install)
+                        }
+                    }
+                    .frame(maxWidth: 300, alignment: .trailing)
+                }
+            }
+            divider
+            settingRow("Arguments",
+                       hint: "Passed to every launch (new + resume). Clear to disable.") {
+                VStack(alignment: .trailing, spacing: 4) {
+                    TextField("", text: Binding(get: { settings.extraArgsText(for: agent) },
+                                                set: { settings.setExtraArgsText($0, for: agent) }))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                    .onSubmit { model.toolchain.recheckUserSettings() }
+                    // Only ever shown when the CLI *objected*. Silence here is not
+                    // approval — `claude --version` ignores unknown flags entirely
+                    // — so there is deliberately no "arguments OK" tick to trust.
+                    if let complaint = model.toolchain.argumentComplaint(for: agent) {
+                        Label(complaint.failure, systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.red)
+                            .lineLimit(2)
+                            .help(complaint.details ?? "")
+                    }
+                }
+                .frame(maxWidth: 300)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func detectionStatus(_ resolution: ToolchainResolution?) -> some View {
+        HStack(spacing: 8) {
+            if model.toolchain.isDetecting && resolution == nil {
+                ProgressView().controlSize(.small)
+                Text("Checking…").font(.system(size: 12)).foregroundStyle(.secondary)
+            } else if let chosen = resolution?.chosen {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(chosen.path)
+                        .font(.system(size: 12, design: .monospaced))
+                        .lineLimit(1).truncationMode(.head)
+                    if let version = chosen.version {
+                        Text(version).font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                }
+            } else {
+                Text(resolution?.problem ?? "Not found")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.trailing)
+            }
+            Button {
+                model.toolchain.detect()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.borderless)
+            .disabled(model.toolchain.isDetecting)
+            .help("Check again")
+        }
+        .frame(maxWidth: 300, alignment: .trailing)
+    }
+
+    /// A rejected (or merely unused) install — with the reason, because "we didn't
+    /// pick this one" is useless without it.
+    private func installRow(_ install: AgentInstall) -> some View {
+        VStack(alignment: .trailing, spacing: 1) {
+            HStack(spacing: 5) {
+                Image(systemName: install.isUsable ? "circle" : "exclamationmark.triangle.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(install.isUsable ? Color.secondary : .orange)
+                Text(install.path)
+                    .font(.system(size: 11, design: .monospaced))
+                    .lineLimit(1).truncationMode(.head)
+            }
+            Text(install.failure ?? install.version ?? "")
+                .font(.system(size: 10))
+                .foregroundStyle(install.isUsable ? Color.secondary : Color.orange)
+                .lineLimit(2)
+                .multilineTextAlignment(.trailing)
+                .help(install.details ?? "")
+        }
     }
 
     // MARK: Header
