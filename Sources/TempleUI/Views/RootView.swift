@@ -45,6 +45,12 @@ public struct RootView: View {
         // lands in the field. Sweep the first second instead, dropping any
         // strays that got in; focus only reaches search via ⌘F or a click.
         .onAppear {
+            // Verify the agent CLIs (runs `claude --version` &c). Started from the UI,
+            // not from AppModel.init, so building a model in a test doesn't shell out.
+            // Launches before it lands fall back to the shell's own answer — see
+            // `ToolchainModel.launchPath`.
+            model.toolchain.detect()
+
             let launchToken = model.focusSearchToken
             let sweep = LaunchFocusSweep()
             // A click is deliberate focus — the sweep must stand down for

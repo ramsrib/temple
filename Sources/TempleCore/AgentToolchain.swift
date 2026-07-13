@@ -186,40 +186,19 @@ public enum AgentToolchain {
     /// opinion on any of that and shouldn't: it asks the only question it can answer
     /// honestly, "does this run?", and reports whatever the binary says back.
     public static func probe(_ path: String, arguments: [String] = []) -> (version: String?, failure: String?, details: String?) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = arguments + ["--version"]
-        // Inherit our environment: `adoptLoginShellPATH` has already put the user's
-        // PATH in it, so the binary resolves whatever it depends on exactly as it
-        // will at launch. Probing under a different environment than we launch under
-        // would make this test worthless.
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = output
-        process.standardInput = FileHandle.nullDevice
-
-        do {
-            try process.run()
-        } catch {
-            return (nil, "can't be launched", "\(error)")
+        // The command inherits our environment: `adoptLoginShellPATH` has already put
+        // the user's PATH in it, so the binary resolves whatever it depends on exactly
+        // as it will at launch. Probing under a different environment than we launch
+        // under would make this test worthless.
+        guard let result = CommandCapture.run(path, arguments + ["--version"], timeout: probeTimeout) else {
+            return (nil, "can't be launched", nil)
         }
-        let killed = TimeoutFlag()
-        let watchdog = DispatchWorkItem {
-            guard process.isRunning else { return }
-            killed.fired = true
-            process.terminate()
-        }
-        DispatchQueue.global().asyncAfter(deadline: .now() + probeTimeout, execute: watchdog)
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        watchdog.cancel()
-
-        let text = String(data: data, encoding: .utf8) ?? ""
-        if killed.fired {
+        let text = result.output
+        if result.timedOut {
             return (nil, "didn't respond to --version within \(Int(probeTimeout))s", text.isEmpty ? nil : text)
         }
-        guard process.terminationStatus == 0 else {
-            return (nil, summarize(text) ?? "exited with status \(process.terminationStatus)", text)
+        guard result.status == 0 else {
+            return (nil, summarize(text) ?? "exited with status \(result.status)", text)
         }
         return (firstLine(text), nil, nil)
     }
@@ -247,9 +226,5 @@ public enum AgentToolchain {
 
     private static func truncate(_ line: String, limit: Int = 140) -> String {
         line.count <= limit ? line : String(line.prefix(limit)) + "…"
-    }
-
-    private final class TimeoutFlag: @unchecked Sendable {
-        var fired = false
     }
 }

@@ -11,9 +11,15 @@ import Foundation
 /// string for libghostty.
 public enum ShellWords {
 
+    /// Inside double quotes a backslash escapes only these; before anything else it
+    /// is an ordinary character, exactly as in a POSIX shell. Getting this wrong is
+    /// not a rounding error: `--prompt "match \d+"` would silently reach the agent as
+    /// `match d+`, a different argument than the one the user typed.
+    private static let escapableInDoubleQuotes: Set<Character> = ["$", "`", "\"", "\\", "\n"]
+
     /// Tokenize `line` into arguments: whitespace separates, single quotes are
-    /// literal, double quotes allow backslash escapes, and a backslash outside
-    /// quotes escapes the next character.
+    /// literal, double quotes allow a restricted set of backslash escapes, and a
+    /// backslash outside quotes escapes the next character.
     public static func split(_ line: String) -> [String] {
         var words: [String] = []
         var current = ""
@@ -23,6 +29,11 @@ public enum ShellWords {
 
         for character in line {
             if escaped {
+                // In double quotes the backslash only escapes a few characters; before
+                // any other it stands for itself and must survive.
+                if quote == "\"" && !escapableInDoubleQuotes.contains(character) {
+                    current.append("\\")
+                }
                 current.append(character)
                 escaped = false
                 continue
@@ -51,6 +62,13 @@ public enum ShellWords {
                 current.append(character)
                 hasWord = true
             }
+        }
+        // A trailing backslash is a line continuation to a shell, but this is a
+        // one-line settings field: the user typed a character, so keep it rather than
+        // silently deleting it.
+        if escaped {
+            current.append("\\")
+            hasWord = true
         }
         if hasWord { words.append(current) }
         return words
