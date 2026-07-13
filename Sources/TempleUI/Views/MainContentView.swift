@@ -69,26 +69,34 @@ private struct SessionTerminalView: View {
         }
     }
 
-    /// An agent that died seconds after spawning didn't finish — it failed to start
-    /// (`OpenSessionsModel` keeps the tab precisely so its output survives). The
-    /// terminal below shows the CLI's own words about *why*; this says what Temple
-    /// actually ran, which is the one thing the terminal can't tell you and the only
-    /// half of the story Temple is responsible for.
+    /// An agent that died seconds after spawning (`OpenSessionsModel` keeps the tab
+    /// precisely so its output survives). This says what Temple actually ran — the one
+    /// thing the terminal can't tell you, and the only half of the story Temple is
+    /// responsible for.
+    ///
+    /// It is careful about *whose fault* it implies. If detection has verified the
+    /// binary and the CLI accepted the arguments, then the command is provably fine and
+    /// the agent died for its own reasons ("no conversation found with session ID …") —
+    /// so we point at the terminal, not at Settings. Blaming the command every time
+    /// would send people to a screen that can't help, and train them to ignore the
+    /// warning on the day the command really is at fault.
     private func launchFailure(status: Int32) -> some View {
         let argv = tab.command?.argv ?? []
+        let blameCommand = !model.toolchain.canLaunch(tab.agent)
+        // The status is only worth showing when it carries information. The surface
+        // reports 0 for a process that plainly crashed (libghostty spawns through
+        // `login`, whose own exit status is what comes back), and "(status 0)" next to
+        // a failure reads as a contradiction that makes a user distrust the message.
+        let exited = status == 0
+            ? "\(tab.agent.displayName) exited immediately"
+            : "\(tab.agent.displayName) exited immediately (status \(status))"
+
         return HStack(alignment: .firstTextBaseline, spacing: 9) {
             Image(systemName: "exclamationmark.octagon.fill")
                 .font(.system(size: 11))
-                .foregroundStyle(Color.red)
+                .foregroundStyle(blameCommand ? Color.red : Color.orange)
             VStack(alignment: .leading, spacing: 2) {
-                // The status is only worth showing when it carries information. The
-                // surface reports 0 for a process that plainly crashed (libghostty
-                // spawns through `login`, whose own exit status is what comes back),
-                // and "failed to start (status 0)" reads as a contradiction that
-                // makes a user distrust the whole message.
-                Text(status == 0
-                     ? "\(tab.agent.displayName) exited immediately — it failed to start."
-                     : "\(tab.agent.displayName) exited immediately (status \(status)) — it failed to start.")
+                Text(blameCommand ? "\(exited) — it failed to start." : "\(exited).")
                     .font(.system(size: 12, weight: .medium))
                 if !argv.isEmpty {
                     Text(argv.joined(separator: " "))
@@ -97,14 +105,18 @@ private struct SessionTerminalView: View {
                         .textSelection(.enabled)
                         .lineLimit(2)
                 }
-                Text("Check the command and arguments in Settings; the terminal below has the error.")
+                Text(blameCommand
+                     ? "Check the command and arguments in Settings; the terminal below has the error."
+                     : "The terminal below has the reason.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
-            Button("Settings") { model.openSessions.openSettings() }
-                .buttonStyle(.link)
-                .font(.system(size: 12))
+            if blameCommand {
+                Button("Settings") { model.openSessions.openSettings() }
+                    .buttonStyle(.link)
+                    .font(.system(size: 12))
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)

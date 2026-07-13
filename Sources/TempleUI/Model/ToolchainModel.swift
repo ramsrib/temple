@@ -218,6 +218,27 @@ public final class ToolchainModel: ObservableObject {
         return LoginShellEnvironment.locate(agent.binaryName) ?? agent.binaryName
     }
 
+    /// Nothing we know of is wrong with *how* we'd launch this agent: the binary we
+    /// picked runs, the user's override (if they set one) runs, and the CLI raised no
+    /// objection to their arguments.
+    ///
+    /// This is what tells an agent that died at launch apart from an agent Temple
+    /// launched wrongly. A `claude` that starts, parses its flags, and says "no
+    /// conversation found with session ID …" did not fail to start — it started and
+    /// told us something. Sending that user to Settings to check a command that is
+    /// provably fine wastes their time, and teaches them to ignore the warning for the
+    /// day the command really *is* the problem.
+    ///
+    /// Unknowns count as fine: while detection is still in flight, or when the user
+    /// pinned a path we haven't probed, we take their word rather than accuse them.
+    public func canLaunch(_ agent: Agent) -> Bool {
+        if argumentComplaint(for: agent) != nil { return false }
+        if let check = overrideCheck(for: agent) { return check.isUsable }
+        if !override(agent).isEmpty { return true }          // their explicit choice, unprobed
+        guard let resolution = resolutions[agent] else { return true }   // detection hasn't landed
+        return resolution.chosen != nil
+    }
+
     /// Problems worth interrupting the user for, as opposed to merely reporting in
     /// Settings.
     public func warnings(defaultAgent: Agent) -> [ToolchainWarning] {
