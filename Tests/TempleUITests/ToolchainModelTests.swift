@@ -101,6 +101,41 @@ final class ToolchainModelTests: XCTestCase {
         XCTAssertNil(model.overrideCheck(for: .claude))
     }
 
+    // MARK: Whose fault a dead tab is
+
+    /// A verified binary + accepted arguments means a launch that dies is the agent's
+    /// own business (a session that no longer exists, a cwd that moved). The UI must
+    /// not blame the command — and must not send the user to Settings to check
+    /// something that is provably fine.
+    func testAHealthyToolchainIsNotBlamedForAnAgentThatDiesOnItsOwn() {
+        let model = model([.claude: resolution(.claude, [install("/Users/x/.local/bin/claude")])],
+                          arguments: [.claude: ["--dangerously-skip-permissions"]])
+        XCTAssertTrue(model.canLaunch(.claude))
+    }
+
+    func testABrokenBinaryOrRejectedArgumentsDoesBlameTheCommand() {
+        let broken = model([.claude: resolution(.claude, [install("/opt/homebrew/bin/claude", failure: "TypeError: …")])])
+        XCTAssertFalse(broken.canLaunch(.claude))
+
+        let badArgs = model([.claude: resolution(.claude, [install("/Users/x/.local/bin/claude")])],
+                            arguments: [.claude: ["--bogus"]],
+                            rejected: ["--bogus"])
+        XCTAssertFalse(badArgs.canLaunch(.claude))
+
+        let badOverride = model([.claude: resolution(.claude, [install("/Users/x/.local/bin/claude")])],
+                                overrides: [.claude: "/custom/claude"],
+                                broken: ["/custom/claude"])
+        XCTAssertFalse(badOverride.canLaunch(.claude))
+    }
+
+    /// Before detection lands we know nothing — and an accusation we can't support is
+    /// worse than silence.
+    func testUnknownToolchainIsGivenTheBenefitOfTheDoubt() {
+        let fresh = ToolchainModel(resolve: { ToolchainResolution(agent: $0, installs: [], chosen: nil) },
+                                   probe: { _, _ in (version: "1.2.3", failure: nil, details: nil) })
+        XCTAssertTrue(fresh.canLaunch(.claude), "accused the command before detection had run")
+    }
+
     // MARK: Out-of-order results
 
     /// Probing is slow and off the main actor, so a startup detection can land *after*
