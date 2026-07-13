@@ -101,6 +101,44 @@ final class ToolchainModelTests: XCTestCase {
         XCTAssertNil(model.overrideCheck(for: .claude))
     }
 
+    // MARK: Out-of-order results
+
+    /// Probing is slow and off the main actor, so a startup detection can land *after*
+    /// a recheck the user triggered later. If the stale answer wins, the "your override
+    /// is broken" warning silently disappears — while the broken override is still
+    /// exactly what Temple launches. The newer verdict must survive.
+    func testAStaleDetectionCannotEraseANewerOverrideVerdict() {
+        var overridePath = ""
+        // Detection probes slowly; the recheck the user triggers will overtake it.
+        let model = ToolchainModel(
+            resolve: { agent in
+                Thread.sleep(forTimeInterval: 0.6)
+                return ToolchainResolution(agent: agent, installs: [], chosen: nil)
+            },
+            probe: { path, _ -> (version: String?, failure: String?, details: String?) in
+                path == "/broken/claude"
+                    ? (version: nil, failure: "TypeError: …", details: nil)
+                    : (version: "1.2.3", failure: nil, details: nil)
+            })
+        model.override = { _ in overridePath }
+        model.arguments = { _ in [] }
+
+        model.detect()                       // starts with NO override, and is slow
+        overridePath = "/broken/claude"      // user types a broken override…
+        model.recheckUserSettings()          // …and it is probed and lands first
+
+        let deadline = Date().addingTimeInterval(5)
+        while model.isDetecting && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        // Let any late (stale) publication from detect() attempt to land.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+
+        XCTAssertEqual(model.launchPath(for: .claude), "/broken/claude")
+        XCTAssertNotNil(model.overrideCheck(for: .claude), "the newer verdict was clobbered by the stale one")
+        XCTAssertTrue(model.warnings(defaultAgent: .claude).contains { $0.isFatal })
+    }
+
     // MARK: Arguments
 
     /// Extra args ride on *every* launch, so a flag the CLI rejects breaks every

@@ -28,51 +28,45 @@ public enum LoginShellEnvironment {
         ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
     }
 
+    /// How we ask, in order of how much we'd like the answer.
+    ///
+    /// Login *and interactive* first: a login-only zsh sources `.zshenv`/`.zprofile`
+    /// but never `.zshrc` — which is where a great deal of a real PATH gets assembled
+    /// (version-manager shims, `~/.local/bin`, per-tool exports). Without `-i` we'd
+    /// adopt a PATH the user has never actually typed a command into.
+    ///
+    /// But not every shell takes those flags: `csh`/`tcsh` reject the bundled `-lic`
+    /// outright (and csh's `-l` must stand alone), so a tcsh user would get *no* PATH
+    /// at all rather than a merely incomplete one. Fall back until one answers.
+    private static let invocations: [[String]] = [
+        ["-lic"],           // zsh, bash, fish: login + interactive
+        ["-l", "-c"],       // shells that reject bundled flags
+        ["-c"],             // csh/tcsh: `-l` may not be combined
+    ]
+
     /// Ask the user's login shell for its PATH. Bounded so a hung shell rc
     /// can never wedge app launch; nil on any failure.
     public static func resolveLoginShellPATH(timeout: TimeInterval = 5) -> String? {
         let shell = Self.shell
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: shell)
-        // Login *and interactive*. A login-only zsh sources `.zshenv`/`.zprofile`
-        // but never `.zshrc` — which is where a great deal of a real PATH gets
-        // assembled (version-manager shims, `~/.local/bin`, per-tool exports).
-        // Without `-i` we'd adopt a PATH the user has never actually typed a command
-        // into, and resolve tools they don't use to run their agents.
-        process.arguments = ["-lic", "echo \(marker); /usr/bin/printenv PATH"]
-        let stdout = Pipe()
-        process.standardOutput = stdout
-        process.standardError = FileHandle.nullDevice
-        // An interactive shell that inherits our stdin can block on a read.
-        process.standardInput = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            TempleCoreLog.env.error("failed to launch login shell \(shell, privacy: .public): \(String(describing: error), privacy: .public)")
-            return nil
+        let program = "echo \(marker); /usr/bin/printenv PATH"
+
+        for flags in invocations {
+            guard let result = CommandCapture.run(shell, flags + [program], timeout: timeout) else {
+                TempleCoreLog.env.error("failed to launch login shell \(shell, privacy: .public)")
+                return nil
+            }
+            if result.timedOut {
+                // A hung rc file is a property of the shell, not of the flags — retrying
+                // with different ones would just hang again.
+                TempleCoreLog.env.error("login shell \(shell, privacy: .public) timed out after \(timeout)s while resolving PATH")
+                return nil
+            }
+            if let path = parse(result.output), !path.isEmpty {
+                return path
+            }
         }
-        // Read to EOF rather than polling `isRunning`: the pipe holds 64K, and a
-        // chatty rc file can fill it and deadlock the shell we're waiting on.
-        let killed = TimeoutFlag()
-        let watchdog = DispatchWorkItem {
-            guard process.isRunning else { return }
-            killed.fired = true
-            process.terminate()
-        }
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
-        let data = stdout.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        watchdog.cancel()
-        if killed.fired {
-            TempleCoreLog.env.error("login shell \(shell, privacy: .public) timed out after \(timeout)s while resolving PATH")
-            return nil
-        }
-        guard let output = String(data: data, encoding: .utf8),
-              let path = parse(output), !path.isEmpty else {
-            TempleCoreLog.env.error("login shell \(shell, privacy: .public) returned an empty PATH")
-            return nil
-        }
-        return path
+        TempleCoreLog.env.error("login shell \(shell, privacy: .public) returned no PATH")
+        return nil
     }
 
     /// Replace this process's PATH with the login shell's (children inherit
@@ -111,18 +105,17 @@ public enum LoginShellEnvironment {
     /// MOTDs, version-manager chatter. Only what follows the marker is ours.
     private static let marker = "__temple_path__"
 
-    /// Written by the watchdog, read after the process is reaped — the two never
-    /// overlap, since `watchdog.cancel()` precedes the read.
-    private final class TimeoutFlag: @unchecked Sendable {
-        var fired = false
-    }
-
-    /// The first non-empty line after the marker.
+    /// The first line after the marker that actually looks like a PATH.
+    ///
+    /// We capture stderr alongside stdout (a shell that can't run our flags explains
+    /// itself there, and we want that in the log), so the line after the marker isn't
+    /// guaranteed to be ours — a warning printed late by an rc file would otherwise be
+    /// adopted as the PATH. Every real PATH entry is a directory, so require a `/`.
     static func parse(_ output: String) -> String? {
         let lines = output
             .split(separator: "\n", omittingEmptySubsequences: false)
             .map { $0.trimmingCharacters(in: .whitespaces) }
         guard let start = lines.lastIndex(of: marker) else { return nil }
-        return lines[lines.index(after: start)...].first { !$0.isEmpty }
+        return lines[lines.index(after: start)...].first { $0.contains("/") }
     }
 }

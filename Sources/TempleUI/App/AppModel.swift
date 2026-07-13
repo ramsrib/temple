@@ -167,9 +167,9 @@ public final class AppModel: ObservableObject {
             self?.currentAppearance() ?? .default
         }
         wire()
-        // Verify the agent CLIs in the background; launches before it lands fall
-        // back to the shell's own answer (see `ToolchainModel.launchPath`).
-        toolchain.detect()
+        // NB: detection is NOT started here. It runs real binaries (`claude --version`),
+        // and `AppModel` is constructed by tests — which must not shell out to whatever
+        // CLIs happen to be on the machine. `RootView` starts it when the UI appears.
     }
 
     private static func openDefaultDatabase() -> TempleDB {

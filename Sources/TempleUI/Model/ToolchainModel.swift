@@ -38,15 +38,37 @@ public final class ToolchainModel: ObservableObject {
         self.probe = probe
     }
 
+    /// Probing is slow and runs off the main actor, so answers can come back out of
+    /// order: a startup detection that began before the user typed an override can
+    /// land *after* the recheck that found the override broken, and clobber it — the
+    /// warning vanishes while the broken override is still what we launch. Every
+    /// publication therefore carries the generation it was computed from, and a stale
+    /// one is dropped.
+    ///
+    /// Two counters, because the two halves go stale for different reasons: the
+    /// machine's installs (`detectGeneration`) and what the user typed
+    /// (`userGeneration`). A slow detect can still publish its resolutions even if the
+    /// user has since edited a field — it just may not publish its view of that field.
+    private var detectGeneration = 0
+    private var userGeneration = 0
+
     public func detect() {
         guard !isDetecting else { return }
         isDetecting = true
+        detectGeneration += 1
+        userGeneration += 1
+        let detectGen = detectGeneration
+        let userGen = userGeneration
         let resolve = self.resolve
         let probe = self.probe
         // Read the user's settings on the main actor; the probing happens off it.
         let overrides = currentOverrides()
         let arguments = currentArguments()
-        Task.detached(priority: .userInitiated) {
+        // A plain dispatch queue, NOT `Task.detached`: probing blocks a thread for as
+        // long as the CLI takes to answer, and Swift's cooperative pool has one thread
+        // per core. Parking blocking work there starves every other task in the process
+        // — including the hop back to the main actor that publishes this very result.
+        Self.work.async {
             let found = Agent.allCases.reduce(into: [Agent: ToolchainResolution]()) { acc, agent in
                 acc[agent] = resolve(agent)
             }
@@ -56,14 +78,22 @@ public final class ToolchainModel: ObservableObject {
                                                                                   overrideChecks: checked,
                                                                                   resolutions: found),
                                              with: probe)
-            await MainActor.run { [weak self] in
-                self?.resolutions = found
-                self?.overrideChecks = checked
-                self?.argumentComplaints = complaints
-                self?.isDetecting = false
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if detectGen == self.detectGeneration {
+                    self.resolutions = found
+                    self.isDetecting = false
+                }
+                guard userGen == self.userGeneration else { return }  // the user has moved on
+                self.overrideChecks = checked
+                self.argumentComplaints = complaints
             }
         }
     }
+
+    /// Serial: two detections at once would only make the machine slower, and their
+    /// results are ordered by generation anyway.
+    private static let work = DispatchQueue(label: "com.sriramb.temple.toolchain", qos: .userInitiated)
 
     private func currentOverrides() -> [Agent: String] {
         Agent.allCases.reduce(into: [Agent: String]()) { acc, agent in
@@ -144,31 +174,36 @@ public final class ToolchainModel: ObservableObject {
     }
 
     /// The CLI's objection to this agent's arguments, keyed to the exact arguments
-    /// it objected to — so an edit invalidates the verdict rather than leaving a
-    /// complaint standing against text the user has already fixed.
+    /// *and the exact binary* it objected to — so editing either invalidates the
+    /// verdict rather than leaving a complaint standing against something the user has
+    /// already changed. One CLI's "unexpected argument" says nothing about another's.
     public func argumentComplaint(for agent: Agent) -> ArgumentComplaint? {
         guard let complaint = argumentComplaints[agent],
-              complaint.arguments == arguments(agent) else { return nil }
+              complaint.arguments == arguments(agent),
+              complaint.binary == launchPath(for: agent) else { return nil }
         return complaint
     }
 
     /// Re-run just the user's own settings (on commit of a Settings field) — no need
     /// to re-probe every install on the machine to answer "does this one work?".
     public func recheckUserSettings() {
+        userGeneration += 1
+        let userGen = userGeneration
         let probe = self.probe
         let overrides = currentOverrides()
         let arguments = currentArguments()
         let resolutions = self.resolutions
-        Task.detached(priority: .userInitiated) {
+        Self.work.async {
             let checked = Self.check(overrides, with: probe)
             let complaints = Self.complaints(about: arguments,
                                              launchPaths: Self.healthyLaunchPaths(overrides: overrides,
                                                                                   overrideChecks: checked,
                                                                                   resolutions: resolutions),
                                              with: probe)
-            await MainActor.run { [weak self] in
-                self?.overrideChecks = checked
-                self?.argumentComplaints = complaints
+            Task { @MainActor [weak self] in
+                guard let self, userGen == self.userGeneration else { return }
+                self.overrideChecks = checked
+                self.argumentComplaints = complaints
             }
         }
     }
