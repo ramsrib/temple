@@ -105,11 +105,13 @@ private struct SessionTerminalView: View {
                         .textSelection(.enabled)
                         .lineLimit(2)
                 }
-                Text(blameCommand
-                     ? "Check the command and arguments in Settings; the terminal below has the error."
-                     : "The terminal below has the reason.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                // Nothing here points at the terminal: it is directly below, in view,
+                // with the agent's own error in it. Say what to DO, or say nothing.
+                if blameCommand {
+                    Text("Check the command and arguments in Settings.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer(minLength: 8)
             if blameCommand {
