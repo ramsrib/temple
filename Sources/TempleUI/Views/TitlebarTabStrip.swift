@@ -59,17 +59,31 @@ struct TitlebarTabStripInstaller: NSViewRepresentable {
             controller.layoutAttribute = .right
             window.addTitlebarAccessoryViewController(controller)
             container = strip
-            // The accessory's clip view only exists after AppKit has placed
-            // the controller; re-anchor it a tick later (Ghostty does the same).
+            // The accessory's clip view only exists after AppKit has placed the
+            // controller, so the first attempt may be too early — see `layout()`,
+            // which keeps trying. Until the band is claimed the strip is whatever
+            // `.right` gives us: fit-to-content, pinned to the window's right edge,
+            // with every chip overflowed. That is a broken-looking title bar, so we
+            // must never stop at one attempt.
             DispatchQueue.main.async { [weak self] in
-                strip.claimTitlebarBand()
+                self?.claimBandIfNeeded()
                 self?.reportLeadingEdge()
             }
         }
 
         override func layout() {
             super.layout()
+            // Retry on every layout pass until it takes. The original one-shot
+            // attempt left the strip permanently mislaid on any machine where
+            // AppKit hadn't built the accessory's clip view by that single tick —
+            // a cold first launch on a slower Mac was enough.
+            claimBandIfNeeded()
             reportLeadingEdge()
+        }
+
+        private func claimBandIfNeeded() {
+            guard let container, !container.hasClaimedBand else { return }
+            container.claimTitlebarBand()
         }
 
         private func reportLeadingEdge() {
@@ -237,14 +251,43 @@ final class TabStripContainerView: NSView {
     /// Re-anchor the accessory's clip view to span the title-bar band from the
     /// sidebar edge to the window's right edge. AppKit gives a `.right`
     /// accessory only its fitting size; these constraints override that.
+    /// True once the strip spans the band. Until then it is fit-to-content at the
+    /// window's right edge — the caller retries.
+    private(set) var hasClaimedBand = false
+
+    /// Re-anchor the accessory's clip view to span from the sidebar divider to the
+    /// window's right edge.
+    ///
+    /// Two ways this used to fail silently, both leaving the title bar looking broken
+    /// (project switcher jammed right, every tab overflowed into the `‹ ›` cues):
+    ///
+    /// - Called before AppKit had created the clip view (`superview == nil`). It was
+    ///   attempted exactly once, a tick after install, so a cold launch on a slower
+    ///   machine simply lost. `layout()` now retries until this returns having claimed.
+    /// - The ancestor walk looks for AppKit's *private* `NSTitlebarView` by class name.
+    ///   If a macOS version shapes that hierarchy differently the walk finds nothing —
+    ///   and we used to give up. Now we fall back to whatever AppKit actually put the
+    ///   clip view in: spanning the wrong-but-real container still beats not spanning
+    ///   anything.
     func claimTitlebarBand() {
-        guard let clipView = superview else { return }
+        guard !hasClaimedBand, let clipView = superview else { return }
         var ancestor: NSView? = clipView
         while let view = ancestor, !view.className.contains("NSTitlebarView") {
             ancestor = view.superview
         }
-        guard let titlebarView = ancestor else { return }
-        let band = firstDescendant(of: titlebarView, className: "NSToolbarView") ?? titlebarView
+        let band: NSView
+        if let titlebarView = ancestor {
+            band = firstDescendant(of: titlebarView, className: "NSToolbarView") ?? titlebarView
+        } else if let fallback = clipView.superview {
+            // Worth knowing about: it means this macOS shapes the titlebar differently
+            // than we expect, and the strip is anchored to a guess. A misplaced title
+            // bar is otherwise diagnosable only from a screenshot.
+            TempleUILog.launch.warning("titlebar strip: NSTitlebarView not found; anchoring to \(fallback.className, privacy: .public)")
+            band = fallback
+        } else {
+            return   // nothing to anchor to yet — the next layout pass tries again
+        }
+        hasClaimedBand = true
 
         clipView.translatesAutoresizingMaskIntoConstraints = false
         translatesAutoresizingMaskIntoConstraints = false
