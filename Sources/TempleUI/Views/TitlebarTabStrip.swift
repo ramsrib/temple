@@ -278,14 +278,19 @@ final class TabStripContainerView: NSView {
         let band: NSView
         if let titlebarView = ancestor {
             band = firstDescendant(of: titlebarView, className: "NSToolbarView") ?? titlebarView
-        } else if let fallback = clipView.superview {
-            // Worth knowing about: it means this macOS shapes the titlebar differently
-            // than we expect, and the strip is anchored to a guess. A misplaced title
-            // bar is otherwise diagnosable only from a screenshot.
+        } else if let fallback = clipView.superview, spansTheWindow(fallback) {
+            // Worth knowing about: this macOS shapes the titlebar differently than we
+            // expect, and the strip is anchored to a guess. A misplaced title bar is
+            // otherwise diagnosable only from a screenshot.
             TempleUILog.launch.warning("titlebar strip: NSTitlebarView not found; anchoring to \(fallback.className, privacy: .public)")
             band = fallback
         } else {
-            return   // nothing to anchor to yet — the next layout pass tries again
+            // Nothing worth anchoring to yet. Return WITHOUT claiming, so `layout()`
+            // tries again: a fallback that doesn't span the window is an
+            // accessory-sized wrapper, and pinning ourselves inside it would cement
+            // the very fit-to-content bug we're here to fix — permanently, since a
+            // claim suppresses all future retries.
+            return
         }
         hasClaimedBand = true
 
@@ -306,6 +311,15 @@ final class TabStripContainerView: NSView {
             topAnchor.constraint(equalTo: clipView.topAnchor),
             heightAnchor.constraint(equalTo: clipView.heightAnchor),
         ])
+    }
+
+    /// Is this view wide enough to BE the title-bar band? The band runs the width of
+    /// the window; an accessory-sized wrapper does not. Without this check the
+    /// fallback would happily anchor the strip inside a box the size of its own
+    /// content — which looks exactly like the bug it is meant to fix.
+    private func spansTheWindow(_ view: NSView) -> Bool {
+        guard let window, window.frame.width > 0 else { return false }
+        return view.bounds.width >= window.frame.width * 0.8
     }
 
     private func firstDescendant(of view: NSView, className: String) -> NSView? {

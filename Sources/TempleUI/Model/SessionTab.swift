@@ -27,6 +27,14 @@ public final class SessionTab: ObservableObject, Identifiable {
     public let projectPath: String
     @Published public var title: String
     @Published public var activity: ActivityState = .idle
+
+    /// Was the *command* a suspect when this tab died? Frozen at the moment of
+    /// death, because the tab shows the argv it launched with — and Settings can
+    /// change afterwards. Judging a past failure by present settings makes an old
+    /// tab's verdict flip when the user edits an unrelated field: fix your arguments
+    /// and a bad-argv failure quietly loses its explanation; break them and a healthy
+    /// failure suddenly gets blamed for something that hadn't happened yet.
+    @Published public var commandWasSuspect = false
     @Published public var isProvisional: Bool
 
     /// The command the surface spawns. `nil` for the Settings tab.

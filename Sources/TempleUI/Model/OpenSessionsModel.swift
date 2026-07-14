@@ -23,6 +23,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     private let binaryPath: (Agent) -> String
     private let extraArgs: (Agent) -> [String]
     private let defaultAgent: () -> Agent
+    /// "Is there anything wrong with how we'd launch this agent?" — asked at the
+    /// moment a tab dies, never afterwards (see `SessionTab.commandWasSuspect`).
+    private let canLaunch: (Agent) -> Bool
 
     /// U7 hook: fired when a non-active tab needs attention (bell / OSC / etc.).
     public var attentionHandler: ((SessionTab, _ title: String, _ body: String) -> Void)?
@@ -38,7 +41,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                 persistence: TabPersistence? = nil,
                 binaryPath: @escaping (Agent) -> String = { $0.binaryName },
                 extraArgs: @escaping (Agent) -> [String] = { _ in [] },
-                defaultAgent: @escaping () -> Agent = { .claude }) {
+                defaultAgent: @escaping () -> Agent = { .claude },
+                canLaunch: @escaping (Agent) -> Bool = { _ in true }) {
         self.surfaceFactory = surfaceFactory
         self.appearanceProvider = appearanceProvider
         self.runtime = runtime
@@ -48,6 +52,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         self.binaryPath = binaryPath
         self.extraArgs = extraArgs
         self.defaultAgent = defaultAgent
+        self.canLaunch = canLaunch
         super.init()
     }
 
@@ -236,6 +241,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             try surface.start(command)
         } catch {
             TempleUILog.launch.error("spawn failed: agent=\(tab.agent.rawValue, privacy: .public) argv0=\(command.argv.first ?? "?", privacy: .public) cwd=\(command.cwd, privacy: .public) error=\(String(describing: error), privacy: .public)")
+            // A surface that won't even start is always the command's problem.
+            tab.commandWasSuspect = true
             tab.activity = .exited(status: -1)
             return
         }
@@ -594,6 +601,10 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
             // flashing and vanishing.
             let age = tab.spawnedAt.map { Date().timeIntervalSince($0) } ?? .infinity
             if closingTabIDs.remove(tab.id) == nil, age < earlyExitGraceSeconds {
+                // Freeze the verdict WITH the failure. The header shows the argv this
+                // tab launched with, so it must be judged by what we knew then — not
+                // by settings the user edits afterwards.
+                tab.commandWasSuspect = !canLaunch(tab.agent)
                 tab.activity = .exited(status: status)
             } else {
                 autoClose(surface: surface)

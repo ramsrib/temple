@@ -160,7 +160,8 @@ public final class AppModel: ObservableObject {
             persistence: persistence,
             binaryPath: { toolchain.launchPath(for: $0) },
             extraArgs: { settingsRef.extraArgs(for: $0) },
-            defaultAgent: { settingsRef.defaultAgent })
+            defaultAgent: { settingsRef.defaultAgent },
+            canLaunch: { toolchain.canLaunch($0) })
 
         // Now self is fully initialized — finish wiring the closures & observers.
         resolveAppearance = { [weak self] in

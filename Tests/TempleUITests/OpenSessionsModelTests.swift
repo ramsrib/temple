@@ -405,14 +405,45 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertTrue(model.tabs.allSatisfy { $0.surface == nil })
         XCTAssertEqual(factory.created.count, 0)
     }
-}
 
-@MainActor
-final class ImmediateReconciler: TempleUI.CodexAdopting {
-    let id: String
-    init(id: String) { self.id = id }
-    func reconcile(projectPath: String, startedAt: Date, adopt: @escaping (String) -> Void) {
-        adopt(id)
+    /// The launch-failure header shows the argv the tab launched with, so its "is the
+    /// command to blame?" verdict must be frozen when the tab dies. Re-deriving it from
+    /// today's settings lets an unrelated edit rewrite history: break your arguments an
+    /// hour later and a healthy old failure suddenly gets blamed for it.
+    func testLaunchBlameIsFrozenWhenTheTabDies() {
+        var toolchainHealthy = true
+        let model = OpenSessionsModel(
+            surfaceFactory: FakeTerminalSurfaceFactory(),
+            appearanceProvider: { .default },
+            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+            persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
+            binaryPath: { _ in "/bin/claude" },
+            canLaunch: { _ in toolchainHealthy })
+
+        let tab = model.newSession(agent: .claude, projectPath: "/p/a")
+        let surface = tab.surface as? FakeTerminalSurface
+        surface?.simulateExit(status: 1)                 // dies while the toolchain is fine
+
+        XCTAssertFalse(tab.commandWasSuspect, "a verified command was blamed")
+
+        // The user later breaks their settings. The dead tab's verdict must not move.
+        toolchainHealthy = false
+        XCTAssertFalse(tab.commandWasSuspect, "an old failure was re-judged by new settings")
+    }
+
+    func testATabThatDiesWithABrokenToolchainDoesBlameTheCommand() {
+        let model = OpenSessionsModel(
+            surfaceFactory: FakeTerminalSurfaceFactory(),
+            appearanceProvider: { .default },
+            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+            persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
+            binaryPath: { _ in "/bin/claude" },
+            canLaunch: { _ in false })
+
+        let tab = model.newSession(agent: .claude, projectPath: "/p/a")
+        (tab.surface as? FakeTerminalSurface)?.simulateExit(status: 1)
+
+        XCTAssertTrue(tab.commandWasSuspect)
     }
 
     func testExtraArgsAreInsertedAfterBinaryForNewAndResume() {
@@ -433,5 +464,14 @@ final class ImmediateReconciler: TempleUI.CodexAdopting {
         // Flags precede the subcommand: codex <flags> resume <id>.
         XCTAssertEqual(resumed?.command?.argv,
                        ["/bin/codex", "--dangerously-bypass-approvals-and-sandbox", "resume", "r1"])
+    }
+}
+
+@MainActor
+final class ImmediateReconciler: TempleUI.CodexAdopting {
+    let id: String
+    init(id: String) { self.id = id }
+    func reconcile(projectPath: String, startedAt: Date, adopt: @escaping (String) -> Void) {
+        adopt(id)
     }
 }

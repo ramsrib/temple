@@ -84,7 +84,15 @@ public final class ToolchainModel: ObservableObject {
                     self.resolutions = found
                     self.isDetecting = false
                 }
-                guard userGen == self.userGeneration else { return }  // the user has moved on
+                guard userGen == self.userGeneration else {
+                    // The user edited a field while we were probing, so their verdict
+                    // was computed against a toolchain we hadn't resolved yet: with no
+                    // known binary, `complaints` had nothing to ask, and its empty
+                    // result would read as "your arguments are fine" forever. Now that
+                    // the installs ARE known, redo the user's half against them.
+                    self.recheckUserSettings()
+                    return
+                }
                 self.overrideChecks = checked
                 self.argumentComplaints = complaints
             }
