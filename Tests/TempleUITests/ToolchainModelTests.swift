@@ -174,6 +174,42 @@ final class ToolchainModelTests: XCTestCase {
         XCTAssertTrue(model.warnings(defaultAgent: .claude).contains { $0.isFatal })
     }
 
+    /// Editing arguments *while startup detection is still running* used to lose the
+    /// argument probe entirely: the recheck snapshotted an empty `resolutions`, so it
+    /// had no binary to ask, and detection's own answer was then dropped as stale. The
+    /// rejected flag was never reported — false confidence, permanently.
+    func testArgumentsEditedDuringDetectionAreStillProbedOnceTheInstallsAreKnown() {
+        var args: [String] = []
+        let model = ToolchainModel(
+            resolve: { agent in
+                Thread.sleep(forTimeInterval: 0.5)          // detection is slow…
+                return ToolchainResolution(
+                    agent: agent,
+                    installs: [AgentInstall(path: "/bin/\(agent.binaryName)", origin: .path(rank: 0), version: "1.2.3")],
+                    chosen: AgentInstall(path: "/bin/\(agent.binaryName)", origin: .path(rank: 0), version: "1.2.3"))
+            },
+            probe: { _, probed -> (version: String?, failure: String?, details: String?) in
+                probed.contains("--bogus")
+                    ? (version: nil, failure: "error: unexpected argument '--bogus' found", details: nil)
+                    : (version: "1.2.3", failure: nil, details: nil)
+            })
+        model.override = { _ in "" }
+        model.arguments = { _ in args }
+
+        model.detect()                    // …and starts before the user types anything
+        args = ["--bogus"]
+        model.recheckUserSettings()       // lands while `resolutions` is still empty
+
+        let deadline = Date().addingTimeInterval(5)
+        while model.argumentComplaint(for: .claude) == nil && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+
+        XCTAssertNotNil(model.argumentComplaint(for: .claude),
+                        "the rejected argument was never probed against the detected binary")
+        XCTAssertFalse(model.canLaunch(.claude))
+    }
+
     // MARK: Arguments
 
     /// Extra args ride on *every* launch, so a flag the CLI rejects breaks every

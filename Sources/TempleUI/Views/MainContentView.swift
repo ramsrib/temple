@@ -82,7 +82,9 @@ private struct SessionTerminalView: View {
     /// warning on the day the command really is at fault.
     private func launchFailure(status: Int32) -> some View {
         let argv = tab.command?.argv ?? []
-        let blameCommand = !model.toolchain.canLaunch(tab.agent)
+        // Frozen when the tab died — NOT re-derived from today's settings, which
+        // would let an unrelated edit flip an old failure's verdict.
+        let blameCommand = tab.commandWasSuspect
         // The status is only worth showing when it carries information. The surface
         // reports 0 for a process that plainly crashed (libghostty spawns through
         // `login`, whose own exit status is what comes back), and "(status 0)" next to
