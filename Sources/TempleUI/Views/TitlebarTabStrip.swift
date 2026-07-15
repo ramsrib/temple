@@ -248,12 +248,85 @@ final class TabStripContainerView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { nil }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        let center = NotificationCenter.default
+        for name in [NSWindow.didChangeScreenNotification,
+                     NSWindow.didEnterFullScreenNotification,
+                     NSWindow.didExitFullScreenNotification,
+                     NSWindow.didBecomeKeyNotification] {
+            center.removeObserver(self, name: name, object: nil)
+        }
+        NSWorkspace.shared.notificationCenter.removeObserver(
+            self, name: NSWorkspace.didWakeNotification, object: nil)
+        guard let window else { return }
+        // `layout()` self-heals a dropped claim, but only when a layout pass
+        // runs. After the display sleeps, changes, or a full-screen toggle,
+        // nothing necessarily invalidates this view — so nudge it on those
+        // events, and the re-claim happens at once instead of on the next
+        // incidental pass.
+        for name in [NSWindow.didChangeScreenNotification,
+                     NSWindow.didEnterFullScreenNotification,
+                     NSWindow.didExitFullScreenNotification,
+                     NSWindow.didBecomeKeyNotification] {
+            center.addObserver(self, selector: #selector(forceReclaim),
+                               name: name, object: window)
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(forceReclaim),
+            name: NSWorkspace.didWakeNotification, object: nil)
+    }
+
+    @objc private func forceReclaim() { needsLayout = true }
+
+    /// The band we anchored the clip view to, and the clip view itself, tracked
+    /// weakly so we can tell when AppKit has swapped either out from under us.
+    private weak var anchoredBand: NSView?
+    private weak var anchoredClipView: NSView?
+    /// The span constraints from the current claim; deactivated and rebuilt on
+    /// every re-claim so a stale, now-dangling set never piles up.
+    private var claimConstraints: [NSLayoutConstraint] = []
+
     /// Re-anchor the accessory's clip view to span the title-bar band from the
     /// sidebar edge to the window's right edge. AppKit gives a `.right`
     /// accessory only its fitting size; these constraints override that.
-    /// True once the strip spans the band. Until then it is fit-to-content at the
-    /// window's right edge — the caller retries.
-    private(set) var hasClaimedBand = false
+    ///
+    /// This is NOT a one-way latch. AppKit tears down and rebuilds the titlebar
+    /// accessory hierarchy on discrete events — sleep/wake, display
+    /// reconfiguration, full-screen transitions, and some late cold-launch
+    /// layout passes — and each rebuild silently drops the span constraints and
+    /// reverts the accessory to its default `.right` fit-to-content box pinned
+    /// at the window's right edge (switcher jammed right, every tab overflowed).
+    /// A latched `hasClaimedBand = true` made that unrecoverable, so the strip
+    /// stayed broken until relaunch. Instead we re-derive whether the claim is
+    /// still intact every layout pass and re-claim the instant it isn't.
+    ///
+    /// A claim is intact only while every load-bearing piece still holds:
+    /// - the clip view is the SAME object we anchored (a rebuild makes a new one);
+    /// - the clip AND this container still have autoresizing off (a rebuild flips
+    ///   it back on, which is what restores AppKit's fit-to-content sizing);
+    /// - the clip and the band are still in the same live window — the ONLY
+    ///   spatial requirement, since the band (`NSToolbarView`) is a *sibling* of
+    ///   the clip under `NSTitlebarView`, not an ancestor: a common window is what
+    ///   makes our sibling-to-sibling span constraints resolvable, and demanding a
+    ///   descendant relationship here would read "not claimed" the instant after a
+    ///   real claim and thrash the layout; and
+    /// - our span constraints are still installed AND active. The non-empty check
+    ///   is load-bearing: `claimTitlebarBand()` clears `claimConstraints` up front
+    ///   and, if the band lookup then misses (a transient reparent mid-rebuild),
+    ///   returns leaving it empty. Without `!isEmpty`, `allSatisfy` is vacuously
+    ///   true, so a claim that installed ZERO constraints would read as intact and
+    ///   permanently suppress every retry — the collapsed strip, frozen.
+    var hasClaimedBand: Bool {
+        guard let clip = anchoredClipView, clip === superview,
+              !clip.translatesAutoresizingMaskIntoConstraints,
+              !translatesAutoresizingMaskIntoConstraints,
+              let band = anchoredBand, let win = clip.window, win === band.window,
+              !claimConstraints.isEmpty, claimConstraints.allSatisfy(\.isActive) else {
+            return false
+        }
+        return true
+    }
 
     /// Re-anchor the accessory's clip view to span from the sidebar divider to the
     /// window's right edge.
@@ -271,6 +344,11 @@ final class TabStripContainerView: NSView {
     ///   anything.
     func claimTitlebarBand() {
         guard !hasClaimedBand, let clipView = superview else { return }
+        // A prior claim's constraints are pinned to a band AppKit may have just
+        // torn down; drop them before building a fresh set so dangling
+        // constraints don't accumulate across rebuilds.
+        NSLayoutConstraint.deactivate(claimConstraints)
+        claimConstraints = []
         var ancestor: NSView? = clipView
         while let view = ancestor, !view.className.contains("NSTitlebarView") {
             ancestor = view.superview
@@ -292,7 +370,6 @@ final class TabStripContainerView: NSView {
             // claim suppresses all future retries.
             return
         }
-        hasClaimedBand = true
 
         clipView.translatesAutoresizingMaskIntoConstraints = false
         translatesAutoresizingMaskIntoConstraints = false
@@ -301,7 +378,7 @@ final class TabStripContainerView: NSView {
             equalTo: band.leftAnchor,
             constant: max(detailMinX, Self.windowButtonsInset) + Self.leadingGap)
         bandLeft = left
-        NSLayoutConstraint.activate([
+        claimConstraints = [
             left,
             clipView.rightAnchor.constraint(equalTo: band.rightAnchor),
             clipView.topAnchor.constraint(equalTo: band.topAnchor),
@@ -310,7 +387,10 @@ final class TabStripContainerView: NSView {
             trailingAnchor.constraint(equalTo: clipView.trailingAnchor),
             topAnchor.constraint(equalTo: clipView.topAnchor),
             heightAnchor.constraint(equalTo: clipView.heightAnchor),
-        ])
+        ]
+        anchoredBand = band
+        anchoredClipView = clipView
+        NSLayoutConstraint.activate(claimConstraints)
     }
 
     /// Is this view wide enough to BE the title-bar band? The band runs the width of
@@ -353,6 +433,9 @@ final class TabStripContainerView: NSView {
 
     override func layout() {
         super.layout()
+        // Self-heal: if AppKit rebuilt the titlebar and dropped our span, this
+        // re-claims; if the claim is intact it's a cheap guard check and no-op.
+        claimTitlebarBand()
         if offset > maxOffset { offset = maxOffset }
         updateOverflowCues()
     }
