@@ -154,6 +154,14 @@ final class TabStripContainerView: NSView {
         max(0, chipsHost.frame.width - scrollClip.bounds.width)
     }
 
+    /// Whether the chips currently overflow the band. The cue GUTTERS are
+    /// reserved (or not) from this alone — never from whether an arrow is
+    /// visible — so a cue fading in can't change the clip width. That coupling
+    /// was the flicker: the clip width fed `maxOffset`, `maxOffset` decided cue
+    /// visibility, and cue visibility resized the clip, so a title-driven chip
+    /// resize near the edge made the row oscillate left/right every layout pass.
+    private var isScrollable = false
+
     /// Every chip's frame in the chips row's coordinates, left to right
     /// (reported by TabStripChipsRow); what the cue clicks step across.
     var chipFrames: [CGRect] = []
@@ -440,14 +448,45 @@ final class TabStripContainerView: NSView {
         updateOverflowCues()
     }
 
-    /// A cue's slot opens on a side exactly while chips are clipped past it.
+    /// Reserve (or release) BOTH cue gutters from overflow alone, with a full
+    /// gutter-pair of hysteresis so a chip resizing right at the edge can't flip
+    /// the reservation — and jump the chips — on successive layout passes. The
+    /// gutter width is what used to track cue visibility and feed back into the
+    /// scroll math; decoupling it is the fix.
+    private func updateScrollability() {
+        // Don't decide against an unresolved clip. A frame-change callback can
+        // fire with the chips already sized but `scrollClip` not yet laid out
+        // (width 0); reconstructing `bandWidth` from that reads 0, latches
+        // scrollable for any non-empty content, and — because the close
+        // threshold then sits a full gutter-pair below the true band — never
+        // recovers for content that actually fits. Wait for a real width.
+        guard scrollClip.bounds.width > 0 else { return }
+        // Reconstruct the cue-independent width (clip + whatever gutters are
+        // reserved right now). Both terms come from the last resolved layout, so
+        // this total is invariant as the gutters open and close — the decision
+        // below can't chase its own tail.
+        let bandWidth = scrollClip.bounds.width
+            + leftCueWidth.constant + rightCueWidth.constant
+        let content = chipsHost.frame.width
+        if isScrollable {
+            // Only give the gutters back once the content clears the band by the
+            // whole reservation, so we don't immediately re-enter scrollable.
+            if content <= bandWidth - 2 * Self.cueSlotWidth { isScrollable = false }
+        } else if content > bandWidth {
+            isScrollable = true
+        }
+        let gutter = isScrollable ? Self.cueSlotWidth : 0
+        if leftCueWidth.constant != gutter { leftCueWidth.constant = gutter }
+        if rightCueWidth.constant != gutter { rightCueWidth.constant = gutter }
+    }
+
+    /// Fade a cue in exactly while chips are clipped past its side. This toggles
+    /// only visibility, never width — the gutter is already reserved by
+    /// `updateScrollability`, so showing an arrow leaves the clip width untouched.
     private func updateOverflowCues() {
-        let showLeft = offset > 0.5
-        let showRight = offset < maxOffset - 0.5
-        leftCue.isHidden = !showLeft
-        rightCue.isHidden = !showRight
-        leftCueWidth.constant = showLeft ? Self.cueSlotWidth : 0
-        rightCueWidth.constant = showRight ? Self.cueSlotWidth : 0
+        updateScrollability()
+        leftCue.isHidden = !(isScrollable && offset > 0.5)
+        rightCue.isHidden = !(isScrollable && offset < maxOffset - 0.5)
     }
 
     /// Scroll a chip (rect in the chips row's own coordinate space) into view.
@@ -455,6 +494,13 @@ final class TabStripContainerView: NSView {
         // A brand-new chip's frame arrives from SwiftUI before AppKit has
         // laid out the hosting view's new intrinsic width; without fresh
         // widths the clamp below under-scrolls and the chip stays hidden.
+        layoutSubtreeIfNeeded()
+        // The new chip may have just tipped the row into scrollable, opening the
+        // gutters — but their width lands on the NEXT pass, so the clip below
+        // would still read its pre-gutter (36pt wider) bounds and under-scroll,
+        // leaving this very chip clipped with no retry. Settle the reservation,
+        // then resolve the clip to its real width before measuring.
+        updateScrollability()
         layoutSubtreeIfNeeded()
         let clipWidth = scrollClip.bounds.width
         guard clipWidth > 0 else { return }
