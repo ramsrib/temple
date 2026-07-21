@@ -202,6 +202,14 @@ public final class AppModel: ObservableObject {
         openSessions.titleHandler = { [weak self] sessionID, title in
             self?.overlay.recordGeneratedTitle(title, for: sessionID)
         }
+        // A dead-on-arrival resume gets its verdict annotated from the index.
+        // The RAW index (pre noise-filter) is the right set: existence is the
+        // question, visibility is not. nil while still loading — an unknown
+        // must never be recorded as a missing transcript.
+        openSessions.sessionKnown = { [weak self] sessionID in
+            guard let self, !self.isLoading else { return nil }
+            return self.index.allSessions.contains { $0.id == sessionID }
+        }
         // Sidebar highlight follows the active tab (UX "Select vs. open").
         openSessions.$activeTabID
             .receive(on: RunLoop.main)

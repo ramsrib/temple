@@ -32,6 +32,11 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// The agent retitled itself (sessionID, title) — AppModel persists it so the
     /// sidebar/palette show it, live and after the session closes.
     public var titleHandler: ((_ sessionID: String, _ title: String) -> Void)?
+    /// Does any transcript on disk carry this session id? Answered from the
+    /// index (AppModel wires it); nil means "can't say yet" — the index is
+    /// still loading — and no verdict is recorded. Only a provable absence
+    /// annotates a failure; this can prove a missing target, never a good one.
+    public var sessionKnown: (_ sessionID: String) -> Bool? = { _ in nil }
 
     public init(surfaceFactory: TerminalSurfaceFactory,
                 appearanceProvider: @escaping () -> TerminalAppearance,
@@ -634,6 +639,9 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
                 // tab launched with, so it must be judged by what we knew then — not
                 // by settings the user edits afterwards.
                 tab.commandWasSuspect = !canLaunch(tab.agent)
+                if let sid = tab.sessionID {
+                    tab.resumeTargetMissing = sessionKnown(sid) == false
+                }
                 tab.activity = .exited(status: status)
             } else {
                 autoClose(surface: surface)
