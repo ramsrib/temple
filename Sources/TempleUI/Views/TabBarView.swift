@@ -383,6 +383,13 @@ private struct TabChip: View {
     @ObservedObject var tab: SessionTab
     @State private var hovering = false
 
+    /// Every session chip is exactly this wide (browser-style). The title is
+    /// live — Claude rewrites it continuously while working — so any width
+    /// that derives from the text turns title updates into row-wide layout
+    /// shifts. Sized so ~20 characters of title survive after the badge, dot
+    /// slot, and close button take their share.
+    static let sessionWidth: CGFloat = 200
+
     private var isActive: Bool { model.openSessions.activeTabID == tab.id }
 
     var body: some View {
@@ -391,11 +398,12 @@ private struct TabChip: View {
                 Image(systemName: "gearshape").font(.system(size: 11))
             } else {
                 AgentBadge(agent: tab.agent, size: 12)
-                // Being open is what a chip already means — the dot appears
-                // only when it has something to say (running / attention).
-                if tab.activity != .idle {
-                    ActivityDot(state: tab.activity, size: 5)
-                }
+                // Being open is what a chip already means — the dot paints only
+                // when it has something to say (running / attention). Its slot is
+                // permanent: inserting it on state change resized the chip, and
+                // any width change moves every chip to the right of it.
+                ActivityDot(state: tab.activity, size: 5)
+                    .opacity(tab.activity == .idle ? 0 : 1)
             }
             if tab.kind == .settings {
                 // Fixed natural width — "Settings" must never truncate or
@@ -407,12 +415,16 @@ private struct TabChip: View {
                 Text(displayTitle)
                     .font(.system(size: 12))
                     .lineLimit(1)
-                    .frame(maxWidth: 160)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             closeButton
                 .opacity(hovering || isActive ? 1 : 0)
         }
         .padding(.horizontal, 9)
+        // Constant width for session chips: inside a fixed box a title change
+        // repaints text but can never move the strip. Settings keeps its
+        // natural size — its title is a constant.
+        .frame(width: tab.kind == .settings ? nil : Self.sessionWidth)
         // Full-height: the container stretches the chips row to the band (the
         // band's height is fixed by the sidebar header), so the chip claims
         // all of it instead of floating in dead air.
@@ -485,9 +497,12 @@ private struct TabChipDragPreview: View {
             Text(title)
                 .font(.system(size: 12))
                 .lineLimit(1)
-                .frame(maxWidth: 160)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 9)
+        // Match the chip's fixed footprint so the drag reads as lifting the
+        // tab itself, not a reflowed copy of it.
+        .frame(width: tab.kind == .settings ? nil : TabChip.sessionWidth)
         .padding(.vertical, 8)
         .background(
             // The active-chip look, made self-sufficient: the strip's band
