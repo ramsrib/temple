@@ -112,6 +112,50 @@ final class NotificationStateTests: XCTestCase {
         XCTAssertEqual(tab.activity, .idle)              // decayed on its own
     }
 
+    func testTitleMovementPromotesIdleBackToRunning() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.ringGraceSeconds = -1  // out of grace immediately
+        model.openSession(Fixture.session("a", project: "/p/a"))
+        let tab = model.activeTab!
+        let surface = tab.surface as? FakeTerminalSurface
+        surface?.simulateBell()
+        XCTAssertEqual(tab.activity, .idle)
+
+        // The agent resumed with no Return through this surface (single-key
+        // permission answer, mouse click, self-wakeup) — its moving title is
+        // the only signal.
+        surface?.simulateTitle("✳ Thinking…")
+        XCTAssertEqual(tab.activity, .running)
+    }
+
+    func testFinishingRetitleInsideRingGraceStaysIdle() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a", project: "/p/a"))
+        let tab = model.activeTab!
+        let surface = tab.surface as? FakeTerminalSurface
+        surface?.simulateBell()
+        XCTAssertEqual(tab.activity, .idle)
+
+        // work → bell → the agent resets its own title: not new work.
+        surface?.simulateTitle("~/p/a")
+        XCTAssertEqual(tab.activity, .idle)
+    }
+
+    func testTitleMovementDoesNotClearAttention() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.ringGraceSeconds = -1
+        model.openSession(Fixture.session("a", project: "/p/a"))
+        model.openSession(Fixture.session("b", project: "/p/b"))  // b active
+        let a = model.openTab(forSessionID: "a")!
+        (a.surface as? FakeTerminalSurface)?.simulateBell()
+        XCTAssertEqual(a.activity, .needsAttention)
+
+        // Attention is sticky: a title twitch must not silently clear a
+        // prompt the user hasn't seen.
+        (a.surface as? FakeTerminalSurface)?.simulateTitle("✳ Thinking…")
+        XCTAssertEqual(a.activity, .needsAttention)
+    }
+
     func testCloseGatePromptsOnlyWhenRunning() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.openSession(Fixture.session("a", project: "/p/a"))
