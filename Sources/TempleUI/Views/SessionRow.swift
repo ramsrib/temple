@@ -25,9 +25,16 @@ struct SessionRow: View {
     var body: some View {
         Button(action: open) {
             HStack(spacing: 8) {
+                // Same volume rule as the tab strip: the mark repeats once per
+                // row, so it speaks at full strength only where the session is
+                // open (or under the pointer) — a rail of full-orange badges
+                // outshouts the titles it's meant to label.
                 AgentBadge(agent: session.agent)
+                    .opacity(openTab != nil || hovering ? 1 : 0.75)
                 Text(model.displayTitle(session))
-                    .font(.system(size: 12.5))
+                    // Medium on the highlighted row — the same "you are here"
+                    // weight the active tab chip carries.
+                    .font(.system(size: 12.5, weight: isHighlighted ? .medium : .regular))
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .foregroundStyle(openTab != nil ? Color.primary : Color.primary.opacity(0.85))
@@ -44,11 +51,15 @@ struct SessionRow: View {
             }
             .padding(.vertical, 4)
             .padding(.horizontal, 8)
-            // Item C: selection stays distinct; hover adds a subtle fill.
+            // Item C: selection stays distinct; hover adds a subtle fill. The
+            // hairline seat matches the active tab chip — one selection
+            // language across the strip and the rail.
             .background(
                 RoundedRectangle(cornerRadius: 6)
                     .fill(isHighlighted ? Palette.selectionFill
-                                        : (hovering ? Palette.hoverFill : Color.clear)))
+                                        : (hovering ? Palette.hoverFill : Color.clear))
+                    .overlay(RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(Palette.hairline.opacity(isHighlighted ? 1 : 0))))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
