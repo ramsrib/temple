@@ -59,13 +59,38 @@ public final class SessionOverlayStore: ObservableObject {
 
     public func generatedTitle(for id: String) -> String? { generatedTitles[id] }
 
+    /// How long live retitles coalesce before one publish + DB write. Every
+    /// WORKING agent retitles about once a second, and `generatedTitles` is
+    /// @Published on a store the whole app observes — flushing per tick meant
+    /// a full re-render plus a synchronous DB write per title, per agent.
+    var titleFlushDelay: TimeInterval = 1.0
+    /// Latest unflushed title per session (last one in a window wins).
+    private var pendingGeneratedTitles: [String: String] = [:]
+    private var titleFlushTask: Task<Void, Never>?
+
     /// Record the agent's current self-assigned title. Cheap to call on every
-    /// retitle: unchanged titles don't touch the DB or republish.
+    /// retitle: unchanged titles are dropped here, and changed ones batch into
+    /// one flush per `titleFlushDelay` window.
     public func recordGeneratedTitle(_ title: String, for id: String) {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, generatedTitles[id] != trimmed else { return }
-        generatedTitles[id] = trimmed
-        try? db.setGeneratedTitle(trimmed, sessionID: id)
+        pendingGeneratedTitles[id] = trimmed
+        guard titleFlushTask == nil else { return }
+        titleFlushTask = Task { [weak self] in
+            if let delay = self?.titleFlushDelay, delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+            self?.flushGeneratedTitles()
+        }
+    }
+
+    private func flushGeneratedTitles() {
+        titleFlushTask = nil
+        for (id, title) in pendingGeneratedTitles where generatedTitles[id] != title {
+            generatedTitles[id] = title
+            try? db.setGeneratedTitle(title, sessionID: id)
+        }
+        pendingGeneratedTitles.removeAll()
     }
 
     /// Display title: a rename wins, then whatever the agent last called itself,
