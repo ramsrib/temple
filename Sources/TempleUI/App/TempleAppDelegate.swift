@@ -8,7 +8,13 @@ public final class TempleAppDelegate: NSObject, NSApplicationDelegate {
     public weak var model: AppModel?
 
     public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let model, !model.openSessions.allSurfaces.isEmpty else { return .terminateNow }
+        guard let model, !model.openSessions.allSurfaces.isEmpty else {
+            // No agents to drain, but a just-retitled session may still be
+            // inside the title-coalescing window — drainForQuit (which also
+            // flushes) never runs on this path.
+            model?.overlay.flushPendingTitles()
+            return .terminateNow
+        }
         model.drainForQuit {
             NSApp.reply(toApplicationShouldTerminate: true)
         }

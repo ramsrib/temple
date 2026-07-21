@@ -73,15 +73,35 @@ public final class SessionOverlayStore: ObservableObject {
     /// one flush per `titleFlushDelay` window.
     public func recordGeneratedTitle(_ title: String, for id: String) {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, generatedTitles[id] != trimmed else { return }
+        guard !trimmed.isEmpty else { return }
+        // Compare against what the flush WOULD publish (pending first), not
+        // just what is published: a title that returns to the published value
+        // mid-window must clear the pending intermediate, or the flush would
+        // regress to it ("Ready" → "Thinking" → "Ready" must stay "Ready").
+        guard (pendingGeneratedTitles[id] ?? generatedTitles[id]) != trimmed else { return }
+        if generatedTitles[id] == trimmed {
+            pendingGeneratedTitles.removeValue(forKey: id)
+            return
+        }
         pendingGeneratedTitles[id] = trimmed
         guard titleFlushTask == nil else { return }
         titleFlushTask = Task { [weak self] in
             if let delay = self?.titleFlushDelay, delay > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
+            // A cancelled task must not fire a second, early flush after
+            // `flushPendingTitles()` already ran it.
+            guard !Task.isCancelled else { return }
             self?.flushGeneratedTitles()
         }
+    }
+
+    /// Quit paths call this so the last title an agent gave itself survives
+    /// the coalescing window — losing it is losing the one thing this store
+    /// exists to keep.
+    public func flushPendingTitles() {
+        titleFlushTask?.cancel()
+        flushGeneratedTitles()
     }
 
     private func flushGeneratedTitles() {

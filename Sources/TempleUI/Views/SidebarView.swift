@@ -96,19 +96,23 @@ struct SidebarView: View {
                 }
             }
 
+            // ONE displayProjects pass per body: every access refilters and
+            // resorts all sessions, and this body re-runs on every publish.
+            let allProjects = model.displayProjects
+            let hidden = model.hiddenCount(allProjects)
             Section(header: projectsHeader) {
-                if model.displayProjects.isEmpty && !model.isLoading {
+                if allProjects.isEmpty && !model.isLoading {
                     Text(model.searchText.isEmpty ? "No sessions yet" : "No matches")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
-                ForEach(showAllProjects ? model.displayProjects : model.cappedDisplayProjects) { project in
+                ForEach(showAllProjects ? allProjects : model.capped(allProjects)) { project in
                     ProjectDisclosure(project: project)
                 }
-                if model.searchText.isEmpty && model.hiddenProjectsCount > 0 {
+                if model.searchText.isEmpty && hidden > 0 {
                     Button(showAllProjects
                            ? "Show fewer"
-                           : "Show all projects (\(model.hiddenProjectsCount) more)") {
+                           : "Show all projects (\(hidden) more)") {
                         showAllProjects.toggle()
                     }
                     .font(.system(size: 11))

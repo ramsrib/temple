@@ -446,7 +446,7 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertTrue(tab.commandWasSuspect)
     }
 
-    func testAnEarlyExitWithAMissingResumeTargetGetsAnnotated() {
+    private func modelForResumeTests(sessionKnown: @escaping (String) -> Bool?) -> OpenSessionsModel {
         let model = OpenSessionsModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
             appearanceProvider: { .default },
@@ -454,11 +454,17 @@ final class OpenSessionsModelTests: XCTestCase {
             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
             binaryPath: { _ in "/bin/claude" },
             canLaunch: { _ in true })
+        model.sessionKnown = sessionKnown
+        return model
+    }
+
+    func testAnEarlyExitingResumeWithAMissingTargetGetsAnnotated() {
         // Index loaded, and no transcript on disk carries this id (the id
         // rotated out from under the tab via in-session /resume or /clear).
-        model.sessionKnown = { _ in false }
+        let model = modelForResumeTests(sessionKnown: { _ in false })
 
-        let tab = model.newSession(agent: .claude, projectPath: "/p/a")
+        model.openSession(Fixture.session("gone", project: "/p/a"))  // resume of an indexed session
+        let tab = model.activeTab!
         (tab.surface as? FakeTerminalSurface)?.simulateExit(status: 1)
 
         XCTAssertTrue(tab.resumeTargetMissing)
@@ -466,14 +472,19 @@ final class OpenSessionsModelTests: XCTestCase {
     }
 
     func testAnUnloadedIndexNeverClaimsAMissingResumeTarget() {
-        let model = OpenSessionsModel(
-            surfaceFactory: FakeTerminalSurfaceFactory(),
-            appearanceProvider: { .default },
-            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
-            persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
-            binaryPath: { _ in "/bin/claude" },
-            canLaunch: { _ in true })
-        model.sessionKnown = { _ in nil }  // index still loading: unknown, not missing
+        let model = modelForResumeTests(sessionKnown: { _ in nil })  // index loading: unknown, not missing
+
+        model.openSession(Fixture.session("gone", project: "/p/a"))
+        let tab = model.activeTab!
+        (tab.surface as? FakeTerminalSurface)?.simulateExit(status: 1)
+
+        XCTAssertFalse(tab.resumeTargetMissing)
+    }
+
+    func testANewSessionEarlyExitIsNeverBlamedOnIdRotation() {
+        // A NEW tab's freshly minted id is legitimately absent from the index;
+        // its early exit (auth, config, anything) is not a resume failure.
+        let model = modelForResumeTests(sessionKnown: { _ in false })
 
         let tab = model.newSession(agent: .claude, projectPath: "/p/a")
         (tab.surface as? FakeTerminalSurface)?.simulateExit(status: 1)

@@ -53,13 +53,21 @@ public final class SessionTab: ObservableObject, Identifiable {
     /// Retains the per-tab delegate so the surface's `weak delegate` stays alive.
     var coordinator: AnyObject?
 
+    /// Was this tab spawned to RESUME an existing conversation (sidebar open,
+    /// relaunch restore) rather than to start a fresh one? Only a resume can
+    /// meaningfully fail with "that session id owns no transcript" — a new
+    /// tab's freshly minted id is legitimately unknown to the index, and
+    /// blaming its unrelated early exit on id rotation would mislead.
+    public let isResume: Bool
+
     public init(kind: TabKind,
                 sessionID: String?,
                 agent: Agent,
                 projectPath: String,
                 title: String,
                 command: TerminalCommand?,
-                isProvisional: Bool = false) {
+                isProvisional: Bool = false,
+                isResume: Bool = false) {
         self.kind = kind
         self.sessionID = sessionID
         self.agent = agent
@@ -67,6 +75,7 @@ public final class SessionTab: ObservableObject, Identifiable {
         self.title = title
         self.command = command
         self.isProvisional = isProvisional
+        self.isResume = isResume
     }
 
     public var isUtility: Bool { kind != .session }
