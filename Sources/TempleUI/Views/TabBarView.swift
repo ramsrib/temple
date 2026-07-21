@@ -137,11 +137,15 @@ struct TabStripChipsRow: View {
             ForEach(Array(model.openSessions.visibleTabs.enumerated()),
                     id: \.element.id) { index, tab in
                 // A hairline tick marks the boundary between adjacent tabs —
-                // full-height chips carry no outline of their own.
+                // full-height chips carry no outline of their own. Beside the
+                // active tab it goes invisible, not absent: its fill marks that
+                // boundary already, and removing the tick would change the row's
+                // width — which must never depend on which tab is active.
                 if index > 0 {
                     RoundedRectangle(cornerRadius: 0.5)
                         .fill(Color.primary.opacity(0.15))
-                        .frame(width: 1, height: 28)
+                        .frame(width: 1, height: 16)
+                        .opacity(tickVisible(before: index) ? 1 : 0)
                 }
                 TabChip(tab: tab)
                     // The dimmed slot is the drop indicator: it travels with
@@ -190,6 +194,14 @@ struct TabStripChipsRow: View {
             pendingReveal = model.openSessions.activeTabID
             flushReveal()
         }
+    }
+
+    /// The tick before `index` separates two inactive neighbors; the active
+    /// tab's own fill already draws its boundaries.
+    private func tickVisible(before index: Int) -> Bool {
+        let tabs = model.openSessions.visibleTabs
+        let active = model.openSessions.activeTabID
+        return tabs[index].id != active && tabs[index - 1].id != active
     }
 
     /// Reveal waits until the activated chip has a reported frame — a brand-new
@@ -395,9 +407,16 @@ private struct TabChip: View {
     var body: some View {
         HStack(spacing: 6) {
             if tab.kind == .settings {
-                Image(systemName: "gearshape").font(.system(size: 11))
+                Image(systemName: "gearshape")
+                    .font(.system(size: 11))
+                    .foregroundStyle(isActive ? AnyShapeStyle(.primary)
+                                              : AnyShapeStyle(.secondary))
             } else {
+                // Quieter when the tab is at rest: a row of tabs repeats this
+                // mark once per chip, and at full strength the repetition is
+                // louder than the titles it sits beside.
                 AgentBadge(agent: tab.agent, size: 12)
+                    .opacity(isActive || hovering ? 1 : 0.75)
                 // Being open is what a chip already means — the dot paints only
                 // when it has something to say (running / attention). Its slot is
                 // permanent: inserting it on state change resized the chip, and
@@ -409,11 +428,18 @@ private struct TabChip: View {
                 // Fixed natural width — "Settings" must never truncate or
                 // stretch with its neighbors.
                 Text(displayTitle)
-                    .font(.system(size: 12))
+                    .font(.system(size: 12, weight: isActive ? .medium : .regular))
+                    .foregroundStyle(isActive ? AnyShapeStyle(.primary)
+                                              : AnyShapeStyle(.secondary))
                     .fixedSize()
             } else {
+                // Active reads first: weight + full-strength ink against the
+                // secondary ink of resting tabs. The fill alone was the only
+                // difference, and a flat gray slab is a weak signal.
                 Text(displayTitle)
-                    .font(.system(size: 12))
+                    .font(.system(size: 12, weight: isActive ? .medium : .regular))
+                    .foregroundStyle(isActive ? AnyShapeStyle(.primary)
+                                              : AnyShapeStyle(.secondary))
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -432,9 +458,14 @@ private struct TabChip: View {
         .background(
             // No outline: boundaries come from the ticks between chips, and
             // the active/hover fills mark the tab itself (browser-tab style).
+            // Lighter than it was: weight and ink now say "active", so the
+            // fill only has to seat the tab, not shout it.
             RoundedRectangle(cornerRadius: 6)
                 .fill(Color.primary.opacity(
-                    isActive ? 0.12 : (hovering ? 0.05 : 0)))
+                    isActive ? 0.09 : (hovering ? 0.05 : 0)))
+                .overlay(RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(Color.primary.opacity(isActive ? 0.12 : 0),
+                                  lineWidth: 1))
         )
         .contentShape(Rectangle())
         .onHover { hovering = $0 }

@@ -137,9 +137,9 @@ final class TabStripContainerView: NSView {
     /// A visible cue slot's width; collapsed to 0 when that side has nothing
     /// hidden. Slightly wider than the 16pt control so the circle gets air.
     private static let cueSlotWidth: CGFloat = 18
-    /// Chips run edge-to-edge in the band (browser-tab style): any inset plus
-    /// the chip's own silhouette reads as a stray frame inside the title bar.
-    private static let chipVerticalInset: CGFloat = 0
+    /// Chips float inside the band with a little air (Safari-style pill),
+    /// instead of running edge-to-edge.
+    private static let chipVerticalInset: CGFloat = 4
     private static let revealMargin: CGFloat = 12
 
     /// How far the chips are scrolled (0 = leading edge flush).
