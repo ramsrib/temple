@@ -464,7 +464,7 @@ private struct TabChip: View {
                 .fill(Color.primary.opacity(
                     isActive ? 0.09 : (hovering ? 0.05 : 0)))
                 .overlay(RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(Color.primary.opacity(isActive ? 0.12 : 0),
+                    .strokeBorder(Palette.hairline.opacity(isActive ? 1 : 0),
                                   lineWidth: 1))
         )
         .contentShape(Rectangle())
