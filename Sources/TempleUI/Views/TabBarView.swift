@@ -133,8 +133,14 @@ struct TabStripChipsRow: View {
         // A content-sized HStack (no Spacer / no greedy ScrollView). The
         // Settings chip renders inline in the row like any other chip (at
         // its user-controlled offset), so it drag-reorders alongside sessions.
+        // One snapshot feeds BOTH the ForEach and the tick lookups below:
+        // re-reading visibleTabs inside the loop indexes a possibly newer
+        // array with this iteration's index — out of bounds the moment a
+        // close or reorder lands mid-reconciliation.
+        let visible = model.openSessions.visibleTabs
+        let activeID = model.openSessions.activeTabID
         HStack(spacing: 2) {
-            ForEach(Array(model.openSessions.visibleTabs.enumerated()),
+            ForEach(Array(visible.enumerated()),
                     id: \.element.id) { index, tab in
                 // A hairline tick marks the boundary between adjacent tabs —
                 // full-height chips carry no outline of their own. Beside the
@@ -145,7 +151,8 @@ struct TabStripChipsRow: View {
                     RoundedRectangle(cornerRadius: 0.5)
                         .fill(Color.primary.opacity(0.15))
                         .frame(width: 1, height: 16)
-                        .opacity(tickVisible(before: index) ? 1 : 0)
+                        .opacity(tab.id != activeID && visible[index - 1].id != activeID
+                                 ? 1 : 0)
                 }
                 TabChip(tab: tab)
                     // The dimmed slot is the drop indicator: it travels with
@@ -194,14 +201,6 @@ struct TabStripChipsRow: View {
             pendingReveal = model.openSessions.activeTabID
             flushReveal()
         }
-    }
-
-    /// The tick before `index` separates two inactive neighbors; the active
-    /// tab's own fill already draws its boundaries.
-    private func tickVisible(before index: Int) -> Bool {
-        let tabs = model.openSessions.visibleTabs
-        let active = model.openSessions.activeTabID
-        return tabs[index].id != active && tabs[index - 1].id != active
     }
 
     /// Reveal waits until the activated chip has a reported frame — a brand-new
@@ -426,9 +425,13 @@ private struct TabChip: View {
             }
             if tab.kind == .settings {
                 // Fixed natural width — "Settings" must never truncate or
-                // stretch with its neighbors.
+                // stretch with its neighbors. And CONSTANT weight: this chip
+                // is its text's size, so the active medium weight the session
+                // chips get would widen the row ~2pt on activation — the very
+                // state-dependent width 5134ecb removed. Ink, fill, and seat
+                // carry its active state instead.
                 Text(displayTitle)
-                    .font(.system(size: 12, weight: isActive ? .medium : .regular))
+                    .font(.system(size: 12))
                     .foregroundStyle(isActive ? AnyShapeStyle(.primary)
                                               : AnyShapeStyle(.secondary))
                     .fixedSize()
