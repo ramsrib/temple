@@ -114,6 +114,12 @@ private struct SessionTerminalView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
+                if tab.resumeTargetMissing {
+                    Text("No session on disk has this ID — /resume or /clear inside a tab moves the conversation to a different ID. Reopen it from the sidebar; the transcript is still there under its own ID.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
             Spacer(minLength: 8)
             if blameCommand {

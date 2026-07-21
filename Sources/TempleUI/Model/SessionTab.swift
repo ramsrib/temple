@@ -35,6 +35,13 @@ public final class SessionTab: ObservableObject, Identifiable {
     /// and a bad-argv failure quietly loses its explanation; break them and a healthy
     /// failure suddenly gets blamed for something that hadn't happened yet.
     @Published public var commandWasSuspect = false
+    /// Did this tab die resuming a session id that no transcript on disk
+    /// carries? Claude rotates ids INSIDE a live process (/resume continues an
+    /// older conversation under its own id; /clear starts a fresh one), so the
+    /// id a tab booted with can end the day owning no conversation at all —
+    /// and the resume that fails is Temple's, built from its persisted id.
+    /// Frozen at death, same reasoning as `commandWasSuspect`.
+    @Published public var resumeTargetMissing = false
     @Published public var isProvisional: Bool
 
     /// The command the surface spawns. `nil` for the Settings tab.

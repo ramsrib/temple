@@ -446,6 +446,41 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertTrue(tab.commandWasSuspect)
     }
 
+    func testAnEarlyExitWithAMissingResumeTargetGetsAnnotated() {
+        let model = OpenSessionsModel(
+            surfaceFactory: FakeTerminalSurfaceFactory(),
+            appearanceProvider: { .default },
+            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+            persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
+            binaryPath: { _ in "/bin/claude" },
+            canLaunch: { _ in true })
+        // Index loaded, and no transcript on disk carries this id (the id
+        // rotated out from under the tab via in-session /resume or /clear).
+        model.sessionKnown = { _ in false }
+
+        let tab = model.newSession(agent: .claude, projectPath: "/p/a")
+        (tab.surface as? FakeTerminalSurface)?.simulateExit(status: 1)
+
+        XCTAssertTrue(tab.resumeTargetMissing)
+        XCTAssertFalse(tab.commandWasSuspect, "a healthy command must not be blamed too")
+    }
+
+    func testAnUnloadedIndexNeverClaimsAMissingResumeTarget() {
+        let model = OpenSessionsModel(
+            surfaceFactory: FakeTerminalSurfaceFactory(),
+            appearanceProvider: { .default },
+            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+            persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
+            binaryPath: { _ in "/bin/claude" },
+            canLaunch: { _ in true })
+        model.sessionKnown = { _ in nil }  // index still loading: unknown, not missing
+
+        let tab = model.newSession(agent: .claude, projectPath: "/p/a")
+        (tab.surface as? FakeTerminalSurface)?.simulateExit(status: 1)
+
+        XCTAssertFalse(tab.resumeTargetMissing)
+    }
+
     func testExtraArgsAreInsertedAfterBinaryForNewAndResume() {
         let model = OpenSessionsModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
