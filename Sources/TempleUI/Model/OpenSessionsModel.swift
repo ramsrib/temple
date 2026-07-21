@@ -265,9 +265,15 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// A session whose title changed within this window is treated as actively
     /// working (Claude Code live-updates its title while thinking).
     var titleQuietWindow: TimeInterval = 4
+    /// A title change this soon after a bell is the agent's own finishing
+    /// retitle (work → bell → title resets), not new work — the idle→running
+    /// promotion in `didUpdateTitle` ignores it.
+    var ringGraceSeconds: TimeInterval = 3
 
     /// Last time each tab's title changed — feeds the settle heuristic.
     private var lastTitleChange: [SessionTab.ID: Date] = [:]
+    /// Last bell/notification per tab — guards the idle→running promotion.
+    private var lastRing: [SessionTab.ID: Date] = [:]
     /// Pending settle timers, keyed by tab, so they can be cancelled/replaced.
     private var settleTasks: [SessionTab.ID: Task<Void, Never>] = [:]
 
@@ -298,6 +304,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         settleTasks[tabID]?.cancel()
         settleTasks[tabID] = nil
         lastTitleChange[tabID] = nil
+        lastRing[tabID] = nil
     }
 
     // MARK: Settings (U9) — singleton utility tab
@@ -623,6 +630,20 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
         // Item E: a live-updating title means the agent is working — keep the
         // settle heuristic from prematurely idling it.
         lastTitleChange[tab.id] = Date()
+        // The same signal promotes a RESTING tab back to running. Return was
+        // the only way back before, and plenty of resumptions never send one
+        // through this surface: a permission prompt answered with a single
+        // key or a mouse click, or the agent waking itself (scheduled tasks,
+        // background notifications) — the dot sat gray through all of them.
+        // Two deliberate exclusions: inside the ring grace the change is the
+        // agent's own finishing retitle, not new work; and `.needsAttention`
+        // stays sticky — it means "wants you", and a title twitch must not
+        // clear a prompt you haven't seen.
+        if tab.activity == .idle,
+           Date().timeIntervalSince(lastRing[tab.id] ?? .distantPast) > ringGraceSeconds {
+            tab.activity = .running
+            scheduleSettle(for: tab)
+        }
         persist()
     }
 
@@ -651,6 +672,7 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
         // The signal fired → the agent is no longer working. Cancel any pending
         // settle; this decides the resting state directly.
         cancelSettle(for: tab.id)
+        lastRing[tab.id] = Date()
         if tab.id == activeTabID {
             // You're already looking at it — no attention, just at rest.
             tab.activity = .idle
