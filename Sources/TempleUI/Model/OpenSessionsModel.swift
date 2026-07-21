@@ -381,6 +381,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Freeze the tab set for restore, then let the caller drain the agents.
     public func prepareForQuit() {
         guard !isQuitting else { return }
+        titlePersistTask?.cancel()
+        titlePersistTask = nil
         persist()          // last write wins: capture the set as the user left it
         isQuitting = true
     }
@@ -544,6 +546,26 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     // MARK: Persistence & lazy restore (U2)
 
+    /// Title churn persists on a trailing edge. Every retitle used to rewrite
+    /// the whole tab set through the DB synchronously — once a second per
+    /// WORKING agent, forever. A restore only needs the title to be roughly
+    /// current, so batching loses nothing; structural changes (open, close,
+    /// reorder, quit) still call `persist()` directly.
+    var titlePersistDelay: TimeInterval = 2.0
+    private var titlePersistTask: Task<Void, Never>?
+
+    private func schedulePersistForTitleChurn() {
+        guard titlePersistTask == nil else { return }
+        titlePersistTask = Task { [weak self] in
+            if let delay = self?.titlePersistDelay, delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+            guard let self, !Task.isCancelled, !self.isQuitting else { return }
+            self.titlePersistTask = nil
+            self.persist()
+        }
+    }
+
     private func persist() {
         var restorable = tabs
             .filter { $0.kind == .session && !$0.isProvisional }
@@ -644,7 +666,7 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
             tab.activity = .running
             scheduleSettle(for: tab)
         }
-        persist()
+        schedulePersistForTitleChurn()
     }
 
     /// A bell / OSC notification means the agent stopped working — it finished or

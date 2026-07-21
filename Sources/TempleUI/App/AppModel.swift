@@ -344,9 +344,19 @@ public final class AppModel: ObservableObject {
     /// Disk stage: drop noise. Runs only when the index or the toggle changes,
     /// never during view body. Publishes so the computed views below refresh.
     private func recomputeNoise() {
+        // Memoize the existence stat per unique project path: this runs on the
+        // main thread a couple of times a second while any agent is appending
+        // to its session file, and sessions vastly outnumber projects.
+        var exists: [String: Bool] = [:]
+        func pathExists(_ path: String) -> Bool {
+            if let hit = exists[path] { return hit }
+            let result = FileManager.default.fileExists(atPath: path)
+            exists[path] = result
+            return result
+        }
         noiseFilteredProjects = index.projects.compactMap { project in
             let sessions = showNoise ? project.sessions
-                                     : project.sessions.filter { !noiseFilter.isNoise($0) }
+                                     : project.sessions.filter { !noiseFilter.isNoise($0, pathExists: pathExists) }
             return sessions.isEmpty ? nil : Project(path: project.path, sessions: sessions)
         }
         objectWillChange.send()
@@ -371,13 +381,17 @@ public final class AppModel: ObservableObject {
     /// Projects rendered in the collapsed sidebar. Search bypasses the cap, and
     /// an active project outside it is appended so an opened session stays visible.
     public var cappedDisplayProjects: [Project] {
+        // One displayProjects pass, not three: each access refilters and
+        // resorts every session, and this property is read from view bodies
+        // that re-evaluate on every publish.
+        let all = displayProjects
         guard searchText.trimmingCharacters(in: .whitespaces).isEmpty else {
-            return displayProjects
+            return all
         }
-        var projects = Array(displayProjects.prefix(Self.projectCap))
+        var projects = Array(all.prefix(Self.projectCap))
         if let activePath = openSessions.activeProjectPath,
            !projects.contains(where: { $0.path == activePath }),
-           let activeProject = displayProjects.first(where: { $0.path == activePath }) {
+           let activeProject = all.first(where: { $0.path == activePath }) {
             projects.append(activeProject)
         }
         return projects
