@@ -137,7 +137,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             agent: session.agent,
             projectPath: session.projectPath,
             title: session.title,
-            command: command)
+            command: command,
+            isResume: true)
         tabs.append(tab)
         activate(tab)
         persist()
@@ -603,7 +604,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             }
             let command = TerminalCommand(argv: argv, cwd: p.projectPath)
             return SessionTab(kind: .session, sessionID: p.sessionID, agent: agent,
-                              projectPath: p.projectPath, title: p.title, command: command)
+                              projectPath: p.projectPath, title: p.title, command: command,
+                              isResume: true)
         }
         // Restore active project context without spawning anything.
         activeProjectPath = tabs.first?.projectPath
@@ -639,7 +641,10 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
                 // tab launched with, so it must be judged by what we knew then — not
                 // by settings the user edits afterwards.
                 tab.commandWasSuspect = !canLaunch(tab.agent)
-                if let sid = tab.sessionID {
+                // Resumes only: a NEW tab's freshly minted id is legitimately
+                // absent from the index, and its early exit (auth, config)
+                // has nothing to do with id rotation.
+                if tab.isResume, let sid = tab.sessionID {
                     tab.resumeTargetMissing = sessionKnown(sid) == false
                 }
                 tab.activity = .exited(status: status)

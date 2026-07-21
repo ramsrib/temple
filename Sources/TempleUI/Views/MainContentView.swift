@@ -115,7 +115,11 @@ private struct SessionTerminalView: View {
                         .foregroundStyle(.secondary)
                 }
                 if tab.resumeTargetMissing {
-                    Text("No session on disk has this ID — /resume or /clear inside a tab moves the conversation to a different ID. Reopen it from the sidebar; the transcript is still there under its own ID.")
+                    // States only what the index proves (no transcript carries
+                    // this id) and the most common cause — it must not promise
+                    // the conversation survives, because a pruned or deleted
+                    // transcript produces this same verdict.
+                    Text("No session on disk has this ID. If you used /resume or /clear in this tab, the conversation continued under a different ID — check the sidebar.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)

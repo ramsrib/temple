@@ -204,10 +204,12 @@ public final class AppModel: ObservableObject {
         }
         // A dead-on-arrival resume gets its verdict annotated from the index.
         // The RAW index (pre noise-filter) is the right set: existence is the
-        // question, visibility is not. nil while still loading — an unknown
-        // must never be recorded as a missing transcript.
+        // question, visibility is not. nil while still loading OR while only
+        // the stale cached snapshot is up — a session created just before the
+        // relaunch is absent from that cache, and an unknown must never be
+        // recorded as a missing transcript.
         openSessions.sessionKnown = { [weak self] sessionID in
-            guard let self, !self.isLoading else { return nil }
+            guard let self, !self.isLoading, !self.isIndexStale else { return nil }
             return self.index.allSessions.contains { $0.id == sessionID }
         }
         // Sidebar highlight follows the active tab (UX "Select vs. open").
@@ -287,6 +289,8 @@ public final class AppModel: ObservableObject {
 
     /// App-quit drain (ADR-010) → returns true once all surfaces are down.
     public func drainForQuit(completion: @escaping () -> Void) {
+        // The last title an agent gave itself may still be coalescing.
+        overlay.flushPendingTitles()
         // Freeze the open-tab set BEFORE the agents start dying, so their exits
         // can't be mistaken for "the agent finished" and close the tabs we are
         // meant to reopen next launch.
@@ -388,11 +392,13 @@ public final class AppModel: ObservableObject {
 
     /// Projects rendered in the collapsed sidebar. Search bypasses the cap, and
     /// an active project outside it is appended so an opened session stays visible.
-    public var cappedDisplayProjects: [Project] {
-        // One displayProjects pass, not three: each access refilters and
-        // resorts every session, and this property is read from view bodies
-        // that re-evaluate on every publish.
-        let all = displayProjects
+    public var cappedDisplayProjects: [Project] { capped(displayProjects) }
+
+    /// Cap applied to an already-computed `displayProjects` — the sidebar body
+    /// computes that list ONCE and derives everything from it, because each
+    /// `displayProjects` access refilters and resorts every session and view
+    /// bodies re-evaluate on every publish.
+    public func capped(_ all: [Project]) -> [Project] {
         guard searchText.trimmingCharacters(in: .whitespaces).isEmpty else {
             return all
         }
@@ -406,9 +412,11 @@ public final class AppModel: ObservableObject {
     }
 
     /// Number of projects hidden by the default cap; search always reports zero.
-    public var hiddenProjectsCount: Int {
+    public var hiddenProjectsCount: Int { hiddenCount(displayProjects) }
+
+    public func hiddenCount(_ all: [Project]) -> Int {
         guard searchText.trimmingCharacters(in: .whitespaces).isEmpty else { return 0 }
-        return max(0, displayProjects.count - Self.projectCap)
+        return max(0, all.count - Self.projectCap)
     }
 
     /// Pinned section: user-pinned sessions, search filtered (pins are in-memory).
