@@ -458,7 +458,7 @@ public final class AppModel: ObservableObject {
     /// launch-frozen sidebar order, the palette is a transient quick switcher
     /// where the sessions touched most recently should be easiest to reach.
     public func paletteResults(_ query: String) -> [AgentSession] {
-        let sessions = noiseFilteredProjects.flatMap(\.sessions)
+        let sessions = Self.dedupedByID(noiseFilteredProjects.flatMap(\.sessions))
         let openIDs = openSessions.openSessionIDsInTabOrder
         guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
             let open = Set(openIDs)
@@ -481,8 +481,17 @@ public final class AppModel: ObservableObject {
 
     // MARK: Session history
 
+    /// The index can surface the same session id under more than one project
+    /// (the pre-recency palette silently uniqued through a Dictionary). Lists
+    /// keyed by id — ForEach identity, selection maps — must never see a
+    /// duplicate, so both palettes dedupe up front, first occurrence wins.
+    private static func dedupedByID(_ sessions: [AgentSession]) -> [AgentSession] {
+        var seen = Set<String>()
+        return sessions.filter { seen.insert($0.id).inserted }
+    }
+
     public func historyResults(_ query: String) -> [AgentSession] {
-        let sessions = noiseFilteredProjects.flatMap(\.sessions)
+        let sessions = Self.dedupedByID(noiseFilteredProjects.flatMap(\.sessions))
         guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
             return sessions.sorted { lhs, rhs in
                 if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
