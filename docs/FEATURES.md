@@ -59,8 +59,10 @@ back to the first human prompt
   keep the index current without blocking launch.
 - Agent badges distinguish Claude Code and Codex. Ambient and automation noise
   is hidden by the default noise filter.
-- Sessions can be renamed and pinned. Pinned sessions appear in a dedicated
-  section and custom names become their displayed and searchable titles.
+- Sessions can be renamed, pinned, and color-marked. Pinned sessions appear in a
+  dedicated section and custom names become their displayed and searchable
+  titles. A color mark set on a session's tab shows in the sidebar as a slim
+  leading capsule.
 - A session-row context menu can open or focus the session, copy its resume
   command or ID, reveal its source file in Finder, rename it, pin or unpin it,
   and close its tab when open.
@@ -110,6 +112,12 @@ the terminal; there is no bottom composer and no intervening shell.
   paths, which is how an agent is handed a screenshot or a log. An image dragged
   from a browser or Preview carries no file, so Temple writes one and passes that.
 - Each session chip shows its agent, title, activity dot, and close control.
+  Double-clicking a chip renames the session in place: Enter commits, Esc
+  cancels, and an emptied field reverts to the automatic title.
+- A chip can carry one of seven fixed color marks (context menu → Color),
+  Warp-style: the chip's fill and hairline take the tint, as does its drag
+  preview and sidebar row. Marks are keyed to the session, so they survive
+  closing the tab and relaunching Temple.
 - The trailing `+` menu starts a new Claude or Codex session in the active
   project. `⌘T` takes the default-agent fast path.
 - Tabs are drag-reorderable within their project. Temple persists each
@@ -119,7 +127,11 @@ the terminal; there is no bottom composer and no intervening shell.
   context.
 - The Settings chip is a singleton, sits inline with session chips, and can be
   reordered like them.
-- Tab context menus copy the resume command or session ID and close the tab.
+- Tab context menus rename the session, set its color mark, copy the resume
+  command or session ID, and close the tab.
+- `⌘⇧T` reopens the most recently user-closed tab, browser-style, resuming its
+  session. Tabs whose agent exited on its own are not restacked — reopening is
+  an undo for closes you performed.
 
 ## Session lifecycle
 
@@ -166,17 +178,25 @@ session there with the default agent; it does not reopen an existing session.
 The home page is the general creation surface—there is no new-session modal or
 prompt composer.
 
-## Command palette & search
+## Command palette, history & search
 
 - Sidebar search filters session titles in place. It does not auto-focus at
   launch; `⌘F` reveals the sidebar when necessary and focuses the field.
-- `⌘K` opens a top-anchored command palette. With an empty query it lists open
-  sessions across all projects in tab order and acts as a switcher.
-- Typing searches all indexed session titles and weights open matches above
-  closed ones. Choosing a result opens or focuses it and switches project
-  context as needed.
-- The palette field includes a `×` clear control. Esc dismisses the palette from
-  anywhere.
+- `⌘K` opens a top-anchored command palette. With an empty query it lists every
+  session newest-activity-first, with the open sessions floated on top as a
+  switcher block, a **Recent** divider between the blocks, and a relative
+  timestamp on each row. Unlike the launch-frozen sidebar, this order is live.
+- Typing searches all indexed sessions and weights open matches above closed
+  ones. Search matches the *displayed* title — a rename or the agent's own
+  title — as well as the original first-prompt title, whichever scores better.
+  Choosing a result opens or focuses it and switches project context as needed.
+- `⌘Y` opens the session history: every non-noise session, newest first,
+  grouped under Today / Yesterday / date headers, each row carrying its agent,
+  displayed title, last-message preview, project, and relative time. Typing
+  switches to a flat ranked search; Enter or a click resumes the session.
+- The palette and history fields include a `×` clear control. Esc dismisses
+  either from anywhere. `⌘K`, `⌘Y`, `⌘P`, and `⌘/` are mutually exclusive —
+  presenting one dismisses the others.
 
 ## Notifications & activity
 
@@ -227,17 +247,19 @@ Dark palettes and never reads or modifies the user's Ghostty configuration.
 |---|---|
 | **⌘T** | New empty session in the current project with the default agent. |
 | **⌘W** | Close the current tab; asks first only when its agent is running. |
+| **⌘⇧T** | Reopen the last closed tab (user-initiated closes only). |
 | **⌘N** | Show the launcher/home page; existing tabs stay open. |
 | **⌘1–9** | Switch to tab *N* in the active project. |
 | **⌃⇥ / ⌃⇧⇥** | Next / previous tab. |
 | **⌘⇧[ / ⌘⇧]** | Previous / next project; returns to the session last used there. |
 | **⌘P** | Project switcher (hold ⌘, tap P to walk, release to land). |
 | **⌘F** | Reveal the sidebar if needed and focus sidebar search. |
-| **⌘K** | Open-session switcher with an empty query; ranked session search when typed. |
+| **⌘K** | Command palette: recency-ordered sessions (open first) when empty; ranked search when typed. |
+| **⌘Y** | Session history: every session, newest first, grouped by day. |
 | **⌘/** | Open the Keyboard Shortcuts reference overlay. |
 | **⌘B** | Toggle the sidebar. |
 | **⌘,** | Open Settings as a tab. |
-| **Esc** | Dismiss the command palette or shortcuts overlay from anywhere; cancel busy-close confirmation. |
+| **Esc** | Dismiss the palette, history, or shortcuts overlay from anywhere; cancel busy-close confirmation. |
 
 ## Platform & packaging
 
@@ -258,9 +280,9 @@ appearance.
 |---|---|
 | Distribution | Notarized `.dmg` releases; auto-update; additional menu-bar and Dock integration. |
 | Activity | Replace or strengthen the 15-second settle-timer heuristic; per-session and per-project mute; Do Not Disturb; Dock and sidebar badge counts. |
-| Sidebar & discovery | Project pinning; agent, time-range, and active-only filters; richer project/agent/content search; a flat **Recents** view across projects; configurable scan roots and excluded paths; rich metadata such as message count, model, git branch, and last-message preview. |
-| Session management | Archive and delete; duplicate/fork; grouping by git repository. Rename, pin/unpin, and context menus are already shipped. |
-| Terminal & tabs | Split panes; scrollback search and copy mode; terminal cursor controls; `⌘⇧T` reopen-closed-tab; tab-bar overflow handling. |
+| Sidebar & discovery | Project pinning; agent, time-range, and active-only filters; richer project/agent/content search; configurable scan roots and excluded paths; rich metadata such as message count, model, and git branch in the sidebar. A flat recents view shipped as the `⌘Y` history and the `⌘K` recency list. |
+| Session management | Archive and delete; duplicate/fork; grouping by git repository. Rename, pin/unpin, color marks, and context menus are already shipped. |
+| Terminal & tabs | Split panes; scrollback search and copy mode; terminal cursor controls; tab-bar overflow handling. `⌘⇧T` reopen-closed-tab shipped. |
 | Windowing | Multi-window support. |
 | Agents | Third-agent adapters such as Gemini CLI and aider; surface agent-specific capabilities such as models and permission modes. |
 | Platforms | Linux build with a GTK libghostty host. |
