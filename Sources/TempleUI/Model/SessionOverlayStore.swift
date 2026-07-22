@@ -137,6 +137,13 @@ public final class SessionOverlayStore: ObservableObject {
         customName(for: session.id) ?? generatedTitle(for: session.id) ?? session.title
     }
 
+    /// session id → the displayed title, for search (same precedence as
+    /// `displayTitle(for:)`): a session must be findable under the name the
+    /// list shows, not only under the file title nobody sees anymore.
+    public var displayTitleOverrides: [String: String] {
+        generatedTitles.merging(customNames) { _, custom in custom }
+    }
+
     private static func openDefaultDatabase() -> TempleDB {
         if let db = try? TempleDB(path: TempleDB.defaultPath()) { return db }
         // A DB-open failure should not make the UI unusable; mutations remain

@@ -470,7 +470,10 @@ public final class AppModel: ObservableObject {
         }
         // Rank over the cached non-noise set (respects the noise toggle),
         // with open sessions weighted above equally-ranked closed ones.
-        let ranked = search.rank(sessions, query: query)
+        // Overlay titles participate: a renamed or agent-retitled session
+        // must be findable under the title the row displays.
+        let ranked = search.rank(sessions, query: query,
+                                 titleOverrides: overlay.displayTitleOverrides)
         let open = Set(openIDs)
         return ranked.filter { open.contains($0.id) } + ranked.filter { !open.contains($0.id) }
     }

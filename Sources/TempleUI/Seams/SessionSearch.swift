@@ -9,8 +9,17 @@ public protocol SessionSearch: Sendable {
     /// Filter (sidebar): keep sessions whose title matches. Empty query = all.
     func filter(_ sessions: [AgentSession], query: String) -> [AgentSession]
     /// Rank (⌘K palette): best matches first. Core ranking returns no results
-    /// for an empty query.
-    func rank(_ sessions: [AgentSession], query: String) -> [AgentSession]
+    /// for an empty query. `titleOverrides` maps session id → the displayed
+    /// title (rename or agent-generated) so search matches what the user
+    /// sees, not only what the session file recorded.
+    func rank(_ sessions: [AgentSession], query: String,
+              titleOverrides: [String: String]) -> [AgentSession]
+}
+
+public extension SessionSearch {
+    func rank(_ sessions: [AgentSession], query: String) -> [AgentSession] {
+        rank(sessions, query: query, titleOverrides: [:])
+    }
 }
 
 public struct CoreSessionSearch: SessionSearch {
@@ -22,8 +31,10 @@ public struct CoreSessionSearch: SessionSearch {
         return sessions.filter { $0.title.localizedCaseInsensitiveContains(q) }
     }
 
-    public func rank(_ sessions: [AgentSession], query: String) -> [AgentSession] {
-        SessionIndex(projects: [Project(path: "", sessions: sessions)]).search(query)
+    public func rank(_ sessions: [AgentSession], query: String,
+                     titleOverrides: [String: String]) -> [AgentSession] {
+        SessionIndex(projects: [Project(path: "", sessions: sessions)])
+            .search(query, titleOverrides: titleOverrides)
     }
 }
 
@@ -36,13 +47,16 @@ public struct DefaultSessionSearch: SessionSearch {
         return sessions.filter { $0.title.localizedCaseInsensitiveContains(q) }
     }
 
-    public func rank(_ sessions: [AgentSession], query: String) -> [AgentSession] {
+    public func rank(_ sessions: [AgentSession], query: String,
+                     titleOverrides: [String: String]) -> [AgentSession] {
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return sessions }
         // Simple ranking: prefix match > word-boundary match > substring match.
         return sessions
             .compactMap { session -> (AgentSession, Int)? in
-                guard let score = Self.score(title: session.title, query: q) else { return nil }
+                let scores = [session.title, titleOverrides[session.id]]
+                    .compactMap { $0.flatMap { Self.score(title: $0, query: q) } }
+                guard let score = scores.max() else { return nil }
                 return (session, score)
             }
             .sorted { lhs, rhs in
