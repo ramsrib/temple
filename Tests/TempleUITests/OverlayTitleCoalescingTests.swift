@@ -12,6 +12,22 @@ final class OverlayTitleCoalescingTests: XCTestCase {
         SessionOverlayStore(db: try! TempleDB.inMemory())
     }
 
+    func testCustomNameSetOverwriteClearAndReload() throws {
+        let db = try TempleDB.inMemory()
+        let overlay = SessionOverlayStore(db: db)
+
+        overlay.rename("s", to: "First name")
+        XCTAssertEqual(overlay.customName(for: "s"), "First name")
+
+        overlay.rename("s", to: "Replacement name")
+        XCTAssertEqual(overlay.customName(for: "s"), "Replacement name")
+        XCTAssertEqual(SessionOverlayStore(db: db).customName(for: "s"), "Replacement name")
+
+        overlay.rename("s", to: "")
+        XCTAssertNil(overlay.customName(for: "s"))
+        XCTAssertNil(SessionOverlayStore(db: db).customName(for: "s"))
+    }
+
     func testTitleReturningToPublishedValueDropsStaleIntermediate() async {
         let overlay = store()
         overlay.titleFlushDelay = 0.05

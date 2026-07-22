@@ -399,6 +399,9 @@ private struct TabChip: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var tab: SessionTab
     @State private var hovering = false
+    @State private var editing = false
+    @State private var draft = ""
+    @FocusState private var editFocused: Bool
 
     /// Every session chip is exactly this wide (browser-style). The title is
     /// live — Claude rewrites it continuously while working — so any width
@@ -445,15 +448,30 @@ private struct TabChip: View {
                 // Active reads first: weight + full-strength ink against the
                 // secondary ink of resting tabs. The fill alone was the only
                 // difference, and a flat gray slab is a weak signal.
-                Text(displayTitle)
-                    .font(.system(size: 12, weight: isActive ? .medium : .regular))
-                    .foregroundStyle(isActive ? AnyShapeStyle(.primary)
-                                              : AnyShapeStyle(.secondary))
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                if editing {
+                    TextField("", text: $draft)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12, weight: isActive ? .medium : .regular))
+                        .focused($editFocused)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .onSubmit(commitRename)
+                        .onExitCommand(perform: cancelRename)
+                        .onChange(of: editFocused) { _, focused in
+                            if !focused { commitRename() }
+                        }
+                } else {
+                    Text(displayTitle)
+                        .font(.system(size: 12, weight: isActive ? .medium : .regular))
+                        .foregroundStyle(isActive ? AnyShapeStyle(.primary)
+                                                  : AnyShapeStyle(.secondary))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
-            closeButton
-                .opacity(hovering || isActive ? 1 : 0)
+            if !editing {
+                closeButton
+                    .opacity(hovering || isActive ? 1 : 0)
+            }
         }
         .padding(.horizontal, 9)
         // Constant width for session chips: inside a fixed box a title change
@@ -478,6 +496,7 @@ private struct TabChip: View {
         )
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
+        .onTapGesture(count: 2) { beginRename() }
         .onTapGesture { model.openSessions.activate(tabID: tab.id) }
         .contextMenu { chipContextMenu }
     }
@@ -488,6 +507,26 @@ private struct TabChip: View {
         if tab.kind == .settings { return "Settings" }
         if let sid = tab.sessionID, let name = model.overlay.customName(for: sid) { return name }
         return tab.isProvisional ? "\(tab.title) (starting…)" : tab.title
+    }
+
+    private func beginRename() {
+        guard tab.kind == .session, !editing, tab.sessionID != nil else { return }
+        draft = displayTitle
+        editing = true
+        FieldFocus.claim { editFocused = true }
+    }
+
+    private func commitRename() {
+        guard editing, let sid = tab.sessionID else { return }
+        model.overlay.rename(sid, to: draft)
+        editing = false
+        model.openSessions.focusActiveTerminal()
+    }
+
+    private func cancelRename() {
+        guard editing else { return }
+        editing = false
+        model.openSessions.focusActiveTerminal()
     }
 
     private var closeButton: some View {
@@ -504,6 +543,9 @@ private struct TabChip: View {
     @ViewBuilder
     private var chipContextMenu: some View {
         if tab.kind == .session {
+            Button("Rename…") { beginRename() }
+                .disabled(tab.sessionID == nil)
+            Divider()
             Button("Copy resume command") {
                 if let sid = tab.sessionID {
                     copyToPasteboard(tab.agent.resumeArgv(sessionID: sid).joined(separator: " "))
