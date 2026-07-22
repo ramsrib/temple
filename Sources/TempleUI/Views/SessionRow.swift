@@ -21,6 +21,11 @@ struct SessionRow: View {
     /// Only an *open* tab has activity worth a dot; a closed session shows none.
     private var activity: ActivityState? { openTab?.activity }
     private var isPinned: Bool { model.overlay.isPinned(session.id) }
+    private var colorMark: Color? {
+        model.overlay.color(for: session.id).flatMap {
+            TabColorMark(rawValue: $0)?.color
+        }
+    }
 
     var body: some View {
         Button(action: open) {
@@ -60,6 +65,14 @@ struct SessionRow: View {
                                         : (hovering ? Palette.hoverFill : Color.clear))
                     .overlay(RoundedRectangle(cornerRadius: 6)
                         .strokeBorder(Palette.hairline.opacity(isHighlighted ? 1 : 0))))
+            .overlay(alignment: .leading) {
+                if let colorMark {
+                    Capsule()
+                        .fill(colorMark)
+                        .frame(width: 3)
+                        .padding(.vertical, 4)
+                }
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

@@ -32,6 +32,25 @@ final class DBTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(db.sessionState("s")).pinned)
     }
 
+    func testSessionColorRoundTripClearAndAutoCreate() throws {
+        let (db, _) = try database()
+
+        try db.setColor("blue", sessionID: "unseen")
+        XCTAssertEqual(try db.sessionState("unseen")?.color, "blue")
+
+        try db.setColor(nil, sessionID: "unseen")
+        XCTAssertNil(try db.sessionState("unseen")?.color)
+    }
+
+    func testSessionColorMigrationIsIdempotentAcrossReopen() throws {
+        let (db, path) = try database()
+        try db.setCustomName("Existing state", sessionID: "s")
+        XCTAssertNil(try db.sessionState("s")?.color)
+
+        let reopened = try TempleDB(path: path)
+        XCTAssertNil(try reopened.sessionState("s")?.color)
+    }
+
     /// The agent's self-assigned title lives nowhere on disk — losing it on close
     /// would send a long session's row back to the prompt it opened with.
     func testGeneratedTitleSurvivesReopen() throws {
