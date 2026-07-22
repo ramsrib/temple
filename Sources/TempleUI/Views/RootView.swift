@@ -19,7 +19,6 @@ public struct RootView: View {
             }
             .navigationSplitViewStyle(.balanced)
             .background(KeyCatcher())
-            .background(SidebarToggleTooltip(sidebarVisible: model.sidebarVisibility != .detailOnly))
             // See OverlayActiveKey: hover fills below a panel must stand down
             // (an environment value, unlike allowsHitTesting, doesn't make
             // SwiftUI rewrap the split view and break its titlebar inset).
@@ -276,64 +275,6 @@ private struct PanelHost<Content: View>: NSViewRepresentable {
 
     func updateNSView(_ view: NSHostingView<Content>, context: Context) {
         view.rootView = content()
-    }
-}
-
-/// The sidebar-toggle button in the toolbar is AppKit's own — NavigationSplitView
-/// installs it, and SwiftUI's .help() can't reach it — so its tooltip (which is
-/// how the ⌘B shortcut gets discovered) is set by walking the window's toolbar.
-///
-/// AppKit re-sets that tooltip lazily ("Hide Sidebar"/"Show Sidebar"), including
-/// mid-hover, so a one-shot write gets stomped. Annotation therefore (a) uses
-/// state-matched wording so a stomp-then-reassert doesn't visibly change meaning,
-/// and (b) re-asserts on every SwiftUI update, checking the BUTTON's tooltip too —
-/// AppKit writes the view's, not the item's, so guarding on the item alone never
-/// notices the stomp.
-private struct SidebarToggleTooltip: NSViewRepresentable {
-    var sidebarVisible: Bool
-
-    final class ProbeView: NSView {
-        var tip = ""
-        private var attempts = 0
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            annotate()
-        }
-
-        func annotate() {
-            guard let toolbar = window?.toolbar else { return retry() }
-            let toggles = toolbar.items.filter {
-                $0.itemIdentifier.rawValue.localizedCaseInsensitiveContains("togglesidebar")
-            }
-            guard !toggles.isEmpty else { return retry() }
-            for item in toggles {
-                // Validation is what rewrites the tooltip back to AppKit's
-                // "Hide Sidebar" — mid-hover, which reads as a flicker. The
-                // toggle is never disabled, so validation buys it nothing;
-                // turning it off lets our shortcut-bearing tip stand.
-                item.autovalidates = false
-                if item.toolTip != tip || item.view?.toolTip != tip {
-                    item.toolTip = tip
-                    item.view?.toolTip = tip
-                }
-            }
-        }
-
-        private func retry() {
-            guard attempts < 20 else { return }
-            attempts += 1
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                self?.annotate()
-            }
-        }
-    }
-
-    func makeNSView(context: Context) -> ProbeView { ProbeView() }
-
-    func updateNSView(_ view: ProbeView, context: Context) {
-        view.tip = sidebarVisible ? "Hide the sidebar (⌘B)" : "Show the sidebar (⌘B)"
-        view.annotate()
     }
 }
 
