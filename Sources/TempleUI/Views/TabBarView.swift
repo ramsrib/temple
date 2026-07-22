@@ -183,11 +183,17 @@ struct TabStripChipsRow: View {
                             tab: tab,
                             title: TabChip.displayTitle(for: tab, model: model))
                     }
-                    .onDrop(of: [.text],
-                            delegate: TabDropDelegate(item: tab, model: model, dragging: $dragging))
             }
         }
         .coordinateSpace(name: "temple.chipsRow")
+        .onDrop(of: [.text], delegate: TabRowReorderDelegate(
+            model: model,
+            dragging: $dragging,
+            chipMidpoints: {
+                frames.map { (id: $0.key, midX: $0.value.midX) }
+                    .sorted { $0.midX < $1.midX }
+            }
+        ))
         .onPreferenceChange(ChipFramesKey.self) { new in
             frames = new
             framesChanged(new.values.sorted { $0.minX < $1.minX })
@@ -553,28 +559,53 @@ private struct TabChipDragPreview: View {
     }
 }
 
-/// Live reorder within the active project's chips (native insertion feel).
-private struct TabDropDelegate: DropDelegate {
-    let item: SessionTab
+enum TabReorderMath {
+    /// Where a drag at `x` should insert, or nil when the row is already right.
+    /// Midpoint rule: you take a chip's slot only once you're past its middle —
+    /// which is also what makes the result stable under repeated ticks.
+    static func insertionOffset(x: CGFloat, midXs: [CGFloat], from: Int) -> Int? {
+        let insertion = midXs.firstIndex(where: { x < $0 }) ?? midXs.count
+        return (insertion == from || insertion == from + 1) ? nil : insertion
+    }
+}
+
+/// Level-triggered live reorder across the active project's entire chips row.
+private struct TabRowReorderDelegate: DropDelegate {
     let model: AppModel
     @Binding var dragging: SessionTab.ID?
+    let chipMidpoints: () -> [(id: SessionTab.ID, midX: CGFloat)]
 
-    func dropEntered(info: DropInfo) {
+    private func reorder(to x: CGFloat) {
         MainActor.assumeIsolated {
-            guard let dragging, dragging != item.id else { return }
+            guard let dragging else { return }
             let row = model.openSessions.visibleTabs
-            guard let from = row.firstIndex(where: { $0.id == dragging }),
-                  let to = row.firstIndex(where: { $0.id == item.id }) else { return }
+            let midpoints = chipMidpoints()
+            // Geometry preferences can trail a close or reorder by one layout
+            // tick. Only act on a snapshot that describes this exact row.
+            guard midpoints.count == row.count,
+                  zip(midpoints, row).allSatisfy({ $0.0.id == $0.1.id }),
+                  let from = row.firstIndex(where: { $0.id == dragging }),
+                  let to = TabReorderMath.insertionOffset(
+                    x: x, midXs: midpoints.map(\.midX), from: from)
+            else { return }
             withAnimation(.easeInOut(duration: 0.18)) {
                 model.openSessions.moveTab(fromOffsets: IndexSet(integer: from),
-                                           toOffset: to > from ? to + 1 : to)
+                                           toOffset: to)
             }
         }
     }
 
-    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func validateDrop(info: DropInfo) -> Bool {
+        MainActor.assumeIsolated { dragging != nil }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        reorder(to: info.location.x)
+        return DropProposal(operation: .move)
+    }
 
     func performDrop(info: DropInfo) -> Bool {
+        reorder(to: info.location.x)
         MainActor.assumeIsolated { dragging = nil }
         return true
     }
