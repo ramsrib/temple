@@ -63,6 +63,7 @@ public final class AppModel: ObservableObject {
     @Published public var sidebarVisibility: NavigationSplitViewVisibility = .all
     @Published public var commandPalettePresented = false
     @Published public var historyPresented = false
+    @Published public var newSessionPickerPresented = false
 
     // ⌘P project switcher (ProjectSwitcherHUD) — modelled on ⌘⇥, not on ⌘K:
     // switching projects is picking from a handful you are holding in your head,
@@ -506,6 +507,7 @@ public final class AppModel: ObservableObject {
         historyPresented = presenting
         guard presenting else { return }
         commandPalettePresented = false
+        newSessionPickerPresented = false
         shortcutsPresented = false
         cancelProjectSwitcher()
     }
@@ -515,8 +517,44 @@ public final class AppModel: ObservableObject {
         commandPalettePresented = presenting
         guard presenting else { return }
         historyPresented = false
+        newSessionPickerPresented = false
         shortcutsPresented = false
         cancelProjectSwitcher()
+    }
+
+    /// Which agent the ⌘N picker will launch — set at present time, so the
+    /// panel can label itself and the open action needs no extra state.
+    public private(set) var newSessionPickerAgent: Agent = .claude
+
+    /// ⌘N — pick a project, start a new session in it with the default agent.
+    /// ⌘⇧N (`alternateAgent`) — same picker, the OTHER agent: shift scales the
+    /// verb from "my usual" to "the other one" without a settings trip.
+    public func toggleNewSessionPicker(alternateAgent: Bool = false) {
+        let agent = alternateAgent
+            ? (Agent.allCases.first { $0 != settings.defaultAgent } ?? settings.defaultAgent)
+            : settings.defaultAgent
+        // Re-invoking while up: same agent dismisses (a toggle); the other
+        // shortcut retargets the open panel instead of blinking it.
+        if newSessionPickerPresented, newSessionPickerAgent == agent {
+            newSessionPickerPresented = false
+            return
+        }
+        newSessionPickerAgent = agent
+        newSessionPickerPresented = true
+        commandPalettePresented = false
+        historyPresented = false
+        shortcutsPresented = false
+        cancelProjectSwitcher()
+    }
+
+    /// Projects for the ⌘N picker: every non-noise project, most recent
+    /// activity first (live recency, like the palettes); typing filters on
+    /// the folder name or any path component.
+    public func projectPickerResults(_ query: String) -> [Project] {
+        let projects = noiseFilteredProjects.sorted { $0.lastActivity > $1.lastActivity }
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return projects }
+        return projects.filter { $0.path.localizedCaseInsensitiveContains(q) }
     }
 
     // MARK: ⌘P project switcher
@@ -538,10 +576,11 @@ public final class AppModel: ObservableObject {
             let current = projectSwitcherSelection.flatMap { projects.firstIndex(of: $0) } ?? 0
             projectSwitcherSelection = projects[(current + delta + projects.count) % projects.count]
         } else {
-            // Panels are mutually exclusive (same rule as ⌘K/⌘Y/⌘/): the HUD
-            // must not stack over an open palette or history panel.
+            // Panels are mutually exclusive (same rule as ⌘K/⌘Y/⌘N/⌘/): the
+            // HUD must not stack over an open palette or history panel.
             commandPalettePresented = false
             historyPresented = false
+            newSessionPickerPresented = false
             shortcutsPresented = false
             projectSwitcherPresented = true
             switcherArmedByCommand = heldCommand

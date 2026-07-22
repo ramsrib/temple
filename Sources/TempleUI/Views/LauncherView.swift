@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 import TempleCore
 
-/// The empty-state / ⌘N launcher (ADR-008/012, U4): a quiet, typographic home —
+/// The empty-state / ⌘⇧H launcher (ADR-008/012, U4): a quiet, typographic home —
 /// wordmark + tagline, a "Get started" action list (agent choice = which "New …"
 /// row you pick), and a "Recent projects" list. Monochrome, list-driven; no
 /// cards, segmented controls, or prominent buttons. Spawn-terminal MVP — a row

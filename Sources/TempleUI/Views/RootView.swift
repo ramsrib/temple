@@ -35,6 +35,9 @@ public struct RootView: View {
             if model.historyPresented {
                 historyOverlay
             }
+            if model.newSessionPickerPresented {
+                newSessionPickerOverlay
+            }
             if model.projectSwitcherPresented {
                 projectSwitcherOverlay
             }
@@ -72,7 +75,8 @@ public struct RootView: View {
                     guard !sweep.cancelled,
                           model.focusSearchToken == launchToken,
                           !model.commandPalettePresented,
-                          !model.historyPresented else { return }
+                          !model.historyPresented,
+                          !model.newSessionPickerPresented else { return }
                     let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first
                     if window?.firstResponder is NSTextView {  // field editor == a focused text field
                         window?.makeFirstResponder(nil)
@@ -99,6 +103,7 @@ public struct RootView: View {
     private var overlayPresented: Bool {
         model.commandPalettePresented
             || model.historyPresented
+            || model.newSessionPickerPresented
             || model.projectSwitcherPresented
             || model.shortcutsPresented
     }
@@ -177,6 +182,25 @@ public struct RootView: View {
                     .ignoresSafeArea()
                 PanelHost {
                     HistoryView()
+                        .environmentObject(model)
+                        .tint(Palette.accent)
+                }
+                .fixedSize()
+                .frame(maxWidth: .infinity)
+                .padding(.top, geo.size.height * 0.35)
+            }
+        }
+        .transition(.opacity)
+    }
+
+    /// ⌘N / ⌘⇧N — the project picker for a new session; ⌘K's chrome exactly.
+    private var newSessionPickerOverlay: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .top) {
+                OverlayBackdrop { model.newSessionPickerPresented = false }
+                    .ignoresSafeArea()
+                PanelHost {
+                    NewSessionPickerView()
                         .environmentObject(model)
                         .tint(Palette.accent)
                 }
@@ -417,9 +441,11 @@ private struct KeyCatcher: NSViewRepresentable {
             // Esc always dismisses overlays, wherever focus is (the palette's
             // own .onKeyPress only fires while its field is focused).
             if event.keyCode == 53,
-               model.commandPalettePresented || model.historyPresented || model.shortcutsPresented {
+               model.commandPalettePresented || model.historyPresented
+                || model.newSessionPickerPresented || model.shortcutsPresented {
                 model.commandPalettePresented = false
                 model.historyPresented = false
+                model.newSessionPickerPresented = false
                 model.shortcutsPresented = false
                 return true
             }
@@ -430,6 +456,7 @@ private struct KeyCatcher: NSViewRepresentable {
             let browsing = model.openSessions.activeTab == nil
                 && !model.commandPalettePresented
                 && !model.historyPresented
+                && !model.newSessionPickerPresented
             if browsing && !cmd && !ctrl {
                 switch event.keyCode {
                 case 125: model.moveHighlight(by: 1); return true    // ↓
@@ -451,6 +478,11 @@ private struct KeyCatcher: NSViewRepresentable {
             case "w":
                 model.openSessions.requestCloseActiveTab(); return true
             case "n":
+                model.toggleNewSessionPicker(); return true
+            case "N":   // ⇧ (or caps lock — treat as plain ⌘N then)
+                model.toggleNewSessionPicker(alternateAgent: shift); return true
+            case "H":   // ⌘⇧H — home; plain ⌘H stays the system Hide
+                guard shift else { return false }
                 model.openSessions.showHome(); return true
             case "f":
                 if model.sidebarVisibility == .detailOnly { model.sidebarVisibility = .all }
@@ -467,6 +499,7 @@ private struct KeyCatcher: NSViewRepresentable {
                 if presenting {
                     model.commandPalettePresented = false
                     model.historyPresented = false
+                    model.newSessionPickerPresented = false
                     model.cancelProjectSwitcher()
                 }
                 return true
