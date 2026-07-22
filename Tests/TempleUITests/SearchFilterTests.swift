@@ -388,6 +388,42 @@ final class SearchFilterTests: XCTestCase {
         XCTAssertEqual(Set(model.paletteResults("alpha").prefix(2).map(\.id)), ["a1", "c1"])
     }
 
+    func testCoreSearchRanksOverlayTitles() {
+        let search = CoreSessionSearch()
+        let sessions = [
+            Fixture.session("renamed", project: "/p", title: "can you look at this thing"),
+            Fixture.session("raw", project: "/p", title: "fivetran replication question"),
+        ]
+        // Without the override the renamed session is invisible to its
+        // displayed title; with it, both match and the better band wins.
+        XCTAssertEqual(search.rank(sessions, query: "fivetran").map(\.id), ["raw"])
+        let ranked = search.rank(sessions, query: "finish fivetran",
+                                 titleOverrides: ["renamed": "finish fivetran setup"])
+        XCTAssertEqual(ranked.map(\.id), ["renamed"])
+    }
+
+    func testPaletteSearchMatchesRenamedAndGeneratedTitles() {
+        let a = Fixture.session("a1", project: "/p/a", title: "first prompt about databases")
+        let b = Fixture.session("b1", project: "/p/b", title: "unrelated prompt")
+        let (model, overlay) = makeAppModel(SessionIndex(projects: [
+            Project(path: "/p/a", sessions: [a]),
+            Project(path: "/p/b", sessions: [b]),
+        ]))
+
+        // The palette renders display titles, so search must match them too.
+        overlay.rename("b1", to: "finish fivetran setup")
+        XCTAssertEqual(model.paletteResults("fivetran").map(\.id), ["b1"])
+
+        // Agent-generated titles participate the same way…
+        overlay.titleFlushDelay = 0
+        overlay.recordGeneratedTitle("fivetran backfill audit", for: "a1")
+        overlay.flushPendingTitles()
+        XCTAssertEqual(Set(model.paletteResults("fivetran").map(\.id)), ["a1", "b1"])
+
+        // …and the raw file title still matches after an overlay exists.
+        XCTAssertEqual(model.paletteResults("databases").map(\.id), ["a1"])
+    }
+
     func testPaletteEmptyQueryBreaksRecencyTiesByID() {
         let b = Fixture.session("b", project: "/p/a", updated: 10)
         let a = Fixture.session("a", project: "/p/b", updated: 10)

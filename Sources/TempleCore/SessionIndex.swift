@@ -32,22 +32,25 @@ public struct SessionIndex: Codable, Equatable, Sendable {
     }
 
     /// Ranked, case-insensitive sidebar search. An empty query returns nothing.
-    public func search(_ query: String) -> [AgentSession] {
+    ///
+    /// `titleOverrides` maps session id → the title the UI actually displays
+    /// (a user rename or the agent's self-assigned title). The session file
+    /// only carries the first prompt, so without the override a session is
+    /// findable by a name nobody sees and invisible under the one they do.
+    /// Both titles participate; the better band wins.
+    public func search(_ query: String, titleOverrides: [String: String] = [:]) -> [AgentSession] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else { return [] }
 
         let scored = allSessions.compactMap { session -> (AgentSession, Int)? in
-            let title = session.title.lowercased()
+            var titles = [session.title.lowercased()]
+            if let override = titleOverrides[session.id] { titles.append(override.lowercased()) }
             let project = URL(fileURLWithPath: session.projectPath).lastPathComponent.lowercased()
             let agentName = session.agent.displayName.lowercased()
             let agentRaw = session.agent.rawValue.lowercased()
             let score: Int
-            if title == needle {
-                score = 500
-            } else if title.hasPrefix(needle) {
-                score = 400
-            } else if title.contains(needle) {
-                score = 300
+            if let best = titles.compactMap({ Self.titleBand($0, needle) }).max() {
+                score = best
             } else if project.contains(needle) {
                 score = 200
             } else if agentName.contains(needle) || agentRaw.contains(needle) {
@@ -60,5 +63,12 @@ public struct SessionIndex: Codable, Equatable, Sendable {
         return scored.sorted {
             $0.1 == $1.1 ? $0.0.updatedAt > $1.0.updatedAt : $0.1 > $1.1
         }.map(\.0)
+    }
+
+    private static func titleBand(_ title: String, _ needle: String) -> Int? {
+        if title == needle { return 500 }
+        if title.hasPrefix(needle) { return 400 }
+        if title.contains(needle) { return 300 }
+        return nil
     }
 }
