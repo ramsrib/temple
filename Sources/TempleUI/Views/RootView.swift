@@ -353,6 +353,9 @@ private struct KeyCatcher: NSViewRepresentable {
             guard cmd else { return false }
 
             switch chars {
+            case "T":
+                guard shift else { return false }
+                model.openSessions.reopenLastClosedTab(); return true
             case "t":
                 if model.openSessions.newSessionDefaultAgent() == nil { model.openSessions.showHome() }
                 return true
