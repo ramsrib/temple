@@ -118,6 +118,9 @@ struct LauncherView: View {
             LauncherRow(icon: .symbol("command"), title: "Command palette", shortcut: "⌘K") {
                 model.commandPalettePresented = true
             }
+            LauncherRow(icon: .symbol("clock.arrow.circlepath"), title: "Session history", shortcut: "⌘Y") {
+                model.historyPresented = true
+            }
             // Only when there is somewhere to switch TO: with fewer than two
             // projects open the switcher has nothing to show, and a row that does
             // nothing when clicked is worse than no row.

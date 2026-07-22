@@ -19,6 +19,7 @@ public struct RootView: View {
             }
             .navigationSplitViewStyle(.balanced)
             .background(KeyCatcher())
+            .background(SidebarToggleTooltip())
             // See OverlayActiveKey: hover fills below a panel must stand down
             // (an environment value, unlike allowsHitTesting, doesn't make
             // SwiftUI rewrap the split view and break its titlebar inset).
@@ -251,6 +252,47 @@ private struct PanelHost<Content: View>: NSViewRepresentable {
     func updateNSView(_ view: NSHostingView<Content>, context: Context) {
         view.rootView = content()
     }
+}
+
+/// The sidebar-toggle button in the toolbar is AppKit's own — NavigationSplitView
+/// installs it, and SwiftUI's .help() can't reach it — so its tooltip (which is
+/// how the ⌘B shortcut gets discovered) is set by walking the window's toolbar.
+/// The toolbar populates after the window appears and AppKit can rebuild the
+/// item, so annotation retries briefly and re-runs on SwiftUI updates.
+private struct SidebarToggleTooltip: NSViewRepresentable {
+    static let tip = "Toggle the sidebar (⌘B)"
+
+    final class ProbeView: NSView {
+        private var attempts = 0
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            annotate()
+        }
+
+        func annotate() {
+            guard let toolbar = window?.toolbar else { return retry() }
+            let toggles = toolbar.items.filter {
+                $0.itemIdentifier.rawValue.localizedCaseInsensitiveContains("togglesidebar")
+            }
+            guard !toggles.isEmpty else { return retry() }
+            for item in toggles where item.toolTip != SidebarToggleTooltip.tip {
+                item.toolTip = SidebarToggleTooltip.tip
+                item.view?.toolTip = SidebarToggleTooltip.tip
+            }
+        }
+
+        private func retry() {
+            guard attempts < 20 else { return }
+            attempts += 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.annotate()
+            }
+        }
+    }
+
+    func makeNSView(context: Context) -> ProbeView { ProbeView() }
+    func updateNSView(_ view: ProbeView, context: Context) { view.annotate() }
 }
 
 /// Installs an app-local key monitor for Temple's shortcuts (UX "Keyboard
