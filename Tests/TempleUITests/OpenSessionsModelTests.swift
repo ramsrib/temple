@@ -127,6 +127,32 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertEqual(factory.created.count, 2)
     }
 
+    func testReopenDuringGracefulCloseKeepsRecordForRetry() {
+        // ⌘⇧T can race the close: the record is pushed at closeTab, but a
+        // running tab stays in `tabs` until its process exits. Reopening in
+        // that window must not spend the record (it once did, silently).
+        let factory = FakeTerminalSurfaceFactory()
+        let model = Fixture.openModel(factory: factory, timeout: 60)
+        model.openSession(Fixture.session("a", project: "/p/a"))
+        factory.created[0].behavior = .hung
+        let tabID = model.tabs[0].id
+
+        model.closeTab(tabID)
+        XCTAssertEqual(model.tabs.count, 1)   // still draining
+
+        model.reopenLastClosedTab()           // races the close: must no-op
+        XCTAssertEqual(model.tabs.count, 1)
+        XCTAssertEqual(model.tabs[0].id, tabID)
+
+        factory.created[0].simulateExit()     // the close finally lands
+        XCTAssertTrue(model.tabs.isEmpty)
+
+        model.reopenLastClosedTab()           // the record survived the race
+        XCTAssertEqual(model.tabs.count, 1)
+        XCTAssertEqual(model.tabs[0].sessionID, "a")
+        XCTAssertTrue(model.tabs[0].isResume)
+    }
+
     func testReopenLastClosedTabUsesLIFOOrder() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.openSession(Fixture.session("a", project: "/p/a"))
