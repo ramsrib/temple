@@ -339,24 +339,63 @@ final class SearchFilterTests: XCTestCase {
         XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["s3", "s1", "s2"])
     }
 
-    func testPaletteEmptyQueryListsOpenSessionsAndSearchWeightsThem() {
-        let a = Fixture.session("a1", project: "/p/a", title: "alpha work")
-        let b = Fixture.session("b1", project: "/p/b", title: "alpha review")
-        let c = Fixture.session("c1", project: "/p/c", title: "alpha notes")
+    func testPaletteEmptyQueryWithNothingOpenListsAllSessionsByRecency() {
+        let a = Fixture.session("a1", project: "/p/a", updated: 10)
+        let b = Fixture.session("b1", project: "/p/b", updated: 30)
+        let c = Fixture.session("c1", project: "/p/c", updated: 20)
         let (model, _) = makeAppModel(SessionIndex(projects: [
             Project(path: "/p/a", sessions: [a]),
             Project(path: "/p/b", sessions: [b]),
             Project(path: "/p/c", sessions: [c]),
         ]))
-        // Nothing open → empty-query palette is empty (type-to-search hint).
-        XCTAssertTrue(model.paletteResults("").isEmpty)
+
+        XCTAssertEqual(model.paletteResults("").map(\.id), ["b1", "c1", "a1"])
+    }
+
+    func testPaletteEmptyQueryFloatsOpenBlockAndSortsEachBlockByRecency() {
+        let a = Fixture.session("a1", project: "/p/a", updated: 50)
+        let b = Fixture.session("b1", project: "/p/b", updated: 40)
+        let c = Fixture.session("c1", project: "/p/c", updated: 20)
+        let d = Fixture.session("d1", project: "/p/d", updated: 30)
+        let (model, _) = makeAppModel(SessionIndex(projects: [
+            Project(path: "/p/a", sessions: [a]),
+            Project(path: "/p/b", sessions: [b]),
+            Project(path: "/p/c", sessions: [c]),
+            Project(path: "/p/d", sessions: [d]),
+        ]))
 
         model.openSessions.openSession(c)
         model.openSessions.openSession(a)
-        // Empty query = open sessions across projects, in tab order.
-        XCTAssertEqual(model.paletteResults("").map(\.id), ["c1", "a1"])
+        // Open sessions float as one block, but are ordered by live recency,
+        // not by their tab order. Closed sessions form a second recency block.
+        XCTAssertEqual(model.paletteResults("").map(\.id), ["a1", "c1", "b1", "d1"])
+    }
+
+    func testPaletteNonEmptyQueryWeightsOpenMatches() {
+        let a = Fixture.session("a1", project: "/p/a", title: "alpha work", updated: 10)
+        let b = Fixture.session("b1", project: "/p/b", title: "alpha review", updated: 30)
+        let c = Fixture.session("c1", project: "/p/c", title: "alpha notes", updated: 20)
+        let (model, _) = makeAppModel(SessionIndex(projects: [
+            Project(path: "/p/a", sessions: [a]),
+            Project(path: "/p/b", sessions: [b]),
+            Project(path: "/p/c", sessions: [c]),
+        ]))
+
+        model.openSessions.openSession(c)
+        model.openSessions.openSession(a)
         // Search puts open matches above closed ones ("b1" matches but is closed).
         XCTAssertEqual(model.paletteResults("alpha").map(\.id).last, "b1")
         XCTAssertEqual(Set(model.paletteResults("alpha").prefix(2).map(\.id)), ["a1", "c1"])
+    }
+
+    func testPaletteEmptyQueryBreaksRecencyTiesByID() {
+        let b = Fixture.session("b", project: "/p/a", updated: 10)
+        let a = Fixture.session("a", project: "/p/b", updated: 10)
+        let (model, _) = makeAppModel(SessionIndex(projects: [
+            Project(path: "/p/a", sessions: [b]),
+            Project(path: "/p/b", sessions: [a]),
+        ]))
+
+        XCTAssertEqual(model.paletteResults("").map(\.id), ["a", "b"])
     }
 }

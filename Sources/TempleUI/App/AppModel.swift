@@ -453,15 +453,20 @@ public final class AppModel: ObservableObject {
 
     // MARK: Command palette (U8)
 
+    /// Empty-query results intentionally use live session recency. Unlike the
+    /// launch-frozen sidebar order, the palette is a transient quick switcher
+    /// where the sessions touched most recently should be easiest to reach.
     public func paletteResults(_ query: String) -> [AgentSession] {
         let sessions = noiseFilteredProjects.flatMap(\.sessions)
         let openIDs = openSessions.openSessionIDsInTabOrder
         guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
-            // Empty query = switcher over the OPEN sessions (across projects),
-            // in tab order; the list scrolls inside the palette's capped space.
-            let byID = Dictionary(sessions.map { ($0.id, $0) },
-                                  uniquingKeysWith: { first, _ in first })
-            return openIDs.compactMap { byID[$0] }
+            let open = Set(openIDs)
+            let byRecency: (AgentSession, AgentSession) -> Bool = { lhs, rhs in
+                if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+                return lhs.id < rhs.id
+            }
+            return sessions.filter { open.contains($0.id) }.sorted(by: byRecency)
+                + sessions.filter { !open.contains($0.id) }.sorted(by: byRecency)
         }
         // Rank over the cached non-noise set (respects the noise toggle),
         // with open sessions weighted above equally-ranked closed ones.

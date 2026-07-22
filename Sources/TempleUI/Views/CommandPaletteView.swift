@@ -13,6 +13,17 @@ struct CommandPaletteView: View {
         Array(model.paletteResults(query).prefix(40))
     }
 
+    private var openCount: Int {
+        let open = Set(model.openSessions.openSessionIDsInTabOrder)
+        return results.prefix { open.contains($0.id) }.count
+    }
+
+    private var showsRecentHeader: Bool {
+        query.trimmingCharacters(in: .whitespaces).isEmpty
+            && openCount > 0
+            && openCount < results.count
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
@@ -40,7 +51,8 @@ struct CommandPaletteView: View {
             Divider()
 
             if results.isEmpty {
-                Text(query.isEmpty ? "No open sessions — type to search all" : "No matches")
+                Text(query.trimmingCharacters(in: .whitespaces).isEmpty
+                     ? "No sessions yet" : "No matches")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -53,6 +65,17 @@ struct CommandPaletteView: View {
                         // highlight when arrowing (two rows lit at once).
                         VStack(spacing: 0) {
                             ForEach(Array(results.enumerated()), id: \.element.id) { idx, session in
+                                if showsRecentHeader && idx == openCount {
+                                    HStack(spacing: 12) {
+                                        Text("RECENT")
+                                            .font(.system(size: 10.5, weight: .medium))
+                                            .tracking(1.3)
+                                            .foregroundStyle(.secondary)
+                                        Rectangle().fill(Palette.hairline).frame(height: 1)
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .frame(height: Self.sectionHeaderHeight)
+                                }
                                 PaletteResultRow(session: session,
                                                  selected: idx == selection) {
                                     selection = idx
@@ -65,7 +88,11 @@ struct CommandPaletteView: View {
                     // Hug the rows (a ScrollView greedily fills its proposal,
                     // leaving dead space under short result lists); scroll
                     // only past the cap.
-                    .frame(height: min(CGFloat(results.count) * Self.rowHeight, 340))
+                    .frame(height: min(
+                        CGFloat(results.count) * Self.rowHeight
+                            + (showsRecentHeader ? Self.sectionHeaderHeight : 0),
+                        340
+                    ))
                     .thinScrollers()
                     .onChange(of: selection) {
                         if results.indices.contains(selection) {
@@ -90,6 +117,7 @@ struct CommandPaletteView: View {
 
     /// Fixed row height so the list height is exact (two text lines + padding).
     private static let rowHeight: CGFloat = 46
+    private static let sectionHeaderHeight: CGFloat = 25
 
     private func move(_ delta: Int) {
         guard !results.isEmpty else { return }
@@ -126,6 +154,9 @@ private struct PaletteResultRow: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            Text(RelativeTime.string(from: session.updatedAt))
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
