@@ -422,7 +422,19 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// was opened by another route in the meantime, preventing duplicate tabs.
     public func reopenLastClosedTab() {
         while let closed = closedTabs.popLast() {
-            guard sessionTab(withSessionID: closed.sessionID) == nil else { continue }
+            if let open = sessionTab(withSessionID: closed.sessionID) {
+                // ⌘⇧T can race the graceful close: the record is pushed the
+                // moment the user closes, but the tab stays in `tabs` until
+                // the process exits (up to the graceful timeout). That tab is
+                // not "reopened elsewhere" — keep the record for the retry
+                // after the exit lands, and resume nothing while the old
+                // process still owns the session.
+                if closingTabIDs.contains(open.id) {
+                    closedTabs.append(closed)
+                    return
+                }
+                continue  // genuinely reopened by another route — spent
+            }
             let tab = SessionTab(
                 kind: .session,
                 sessionID: closed.sessionID,
