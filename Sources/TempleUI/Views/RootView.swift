@@ -31,6 +31,9 @@ public struct RootView: View {
             if model.commandPalettePresented {
                 paletteOverlay
             }
+            if model.historyPresented {
+                historyOverlay
+            }
             if model.projectSwitcherPresented {
                 projectSwitcherOverlay
             }
@@ -67,7 +70,8 @@ public struct RootView: View {
                     // ⌘F or an open palette means the focus is wanted.
                     guard !sweep.cancelled,
                           model.focusSearchToken == launchToken,
-                          !model.commandPalettePresented else { return }
+                          !model.commandPalettePresented,
+                          !model.historyPresented else { return }
                     let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first
                     if window?.firstResponder is NSTextView {  // field editor == a focused text field
                         window?.makeFirstResponder(nil)
@@ -90,9 +94,10 @@ public struct RootView: View {
         }
     }
 
-    /// Any floating panel (⌘K / ⌘P / ⌘/) currently over the window.
+    /// Any floating panel (⌘K / ⌘Y / ⌘P / ⌘/) currently over the window.
     private var overlayPresented: Bool {
         model.commandPalettePresented
+            || model.historyPresented
             || model.projectSwitcherPresented
             || model.shortcutsPresented
     }
@@ -156,6 +161,26 @@ public struct RootView: View {
                 .fixedSize()
                 .frame(maxWidth: .infinity)
                 .padding(.top, geo.size.height * 0.35)
+            }
+        }
+        .transition(.opacity)
+    }
+
+    /// ⌘Y history is taller than the quick palette, so it starts near the top
+    /// of the window and grows downward without re-centering as results change.
+    private var historyOverlay: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .top) {
+                OverlayBackdrop { model.historyPresented = false }
+                    .ignoresSafeArea()
+                PanelHost {
+                    HistoryView()
+                        .environmentObject(model)
+                        .tint(Palette.accent)
+                }
+                .fixedSize()
+                .frame(maxWidth: .infinity)
+                .padding(.top, geo.size.height * 0.12)
             }
         }
         .transition(.opacity)
@@ -330,8 +355,10 @@ private struct KeyCatcher: NSViewRepresentable {
 
             // Esc always dismisses overlays, wherever focus is (the palette's
             // own .onKeyPress only fires while its field is focused).
-            if event.keyCode == 53, model.commandPalettePresented || model.shortcutsPresented {
+            if event.keyCode == 53,
+               model.commandPalettePresented || model.historyPresented || model.shortcutsPresented {
                 model.commandPalettePresented = false
+                model.historyPresented = false
                 model.shortcutsPresented = false
                 return true
             }
@@ -341,6 +368,7 @@ private struct KeyCatcher: NSViewRepresentable {
             // agent still owns its arrow keys.
             let browsing = model.openSessions.activeTab == nil
                 && !model.commandPalettePresented
+                && !model.historyPresented
             if browsing && !cmd && !ctrl {
                 switch event.keyCode {
                 case 125: model.moveHighlight(by: 1); return true    // ↓
@@ -367,11 +395,20 @@ private struct KeyCatcher: NSViewRepresentable {
                 if model.sidebarVisibility == .detailOnly { model.sidebarVisibility = .all }
                 model.focusSearchToken += 1; return true
             case "k":
-                model.commandPalettePresented.toggle(); return true
+                model.toggleCommandPalette(); return true
+            case "y":
+                model.toggleHistory(); return true
             case "p":
                 model.advanceProjectSwitcher(by: shift ? -1 : 1); return true
             case "/":
-                model.shortcutsPresented.toggle(); return true
+                let presenting = !model.shortcutsPresented
+                model.shortcutsPresented = presenting
+                if presenting {
+                    model.commandPalettePresented = false
+                    model.historyPresented = false
+                    model.cancelProjectSwitcher()
+                }
+                return true
             case "b":  // VS Code / ChatGPT convention (supersedes UX.md's ⌘\)
                 withAnimation { model.sidebarVisibility = model.sidebarVisibility == .all ? .detailOnly : .all }
                 return true

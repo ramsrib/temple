@@ -62,6 +62,7 @@ public final class AppModel: ObservableObject {
     private var noiseFilteredProjects: [Project] = []
     @Published public var sidebarVisibility: NavigationSplitViewVisibility = .all
     @Published public var commandPalettePresented = false
+    @Published public var historyPresented = false
 
     // ⌘P project switcher (ProjectSwitcherHUD) — modelled on ⌘⇥, not on ⌘K:
     // switching projects is picking from a handful you are holding in your head,
@@ -476,6 +477,38 @@ public final class AppModel: ObservableObject {
                                  titleOverrides: overlay.displayTitleOverrides)
         let open = Set(openIDs)
         return ranked.filter { open.contains($0.id) } + ranked.filter { !open.contains($0.id) }
+    }
+
+    // MARK: Session history
+
+    public func historyResults(_ query: String) -> [AgentSession] {
+        let sessions = noiseFilteredProjects.flatMap(\.sessions)
+        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return sessions.sorted { lhs, rhs in
+                if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+                return lhs.id < rhs.id
+            }
+        }
+        return search.rank(sessions, query: query,
+                           titleOverrides: overlay.displayTitleOverrides)
+    }
+
+    public func toggleHistory() {
+        let presenting = !historyPresented
+        historyPresented = presenting
+        guard presenting else { return }
+        commandPalettePresented = false
+        shortcutsPresented = false
+        cancelProjectSwitcher()
+    }
+
+    public func toggleCommandPalette() {
+        let presenting = !commandPalettePresented
+        commandPalettePresented = presenting
+        guard presenting else { return }
+        historyPresented = false
+        shortcutsPresented = false
+        cancelProjectSwitcher()
     }
 
     // MARK: ⌘P project switcher
