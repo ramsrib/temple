@@ -40,6 +40,7 @@ struct TempleApp: App {
                     model.start()
                 }
         }
+        .commands { TempleCommands(model: model) }
         .windowStyle(.hiddenTitleBar)
         // Unified toolbar: tab chips + sidebar toggle live in the native
         // title-bar band, keeping native double-click-to-zoom / drag (Item A/B).
