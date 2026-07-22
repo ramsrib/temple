@@ -19,7 +19,7 @@ public struct RootView: View {
             }
             .navigationSplitViewStyle(.balanced)
             .background(KeyCatcher())
-            .background(SidebarToggleTooltip())
+            .background(SidebarToggleTooltip(sidebarVisible: model.sidebarVisibility != .detailOnly))
             // See OverlayActiveKey: hover fills below a panel must stand down
             // (an environment value, unlike allowsHitTesting, doesn't make
             // SwiftUI rewrap the split view and break its titlebar inset).
@@ -167,8 +167,9 @@ public struct RootView: View {
         .transition(.opacity)
     }
 
-    /// ⌘Y history is taller than the quick palette, so it starts near the top
-    /// of the window and grows downward without re-centering as results change.
+    /// ⌘Y history sits exactly where ⌘K does — the two are siblings (same
+    /// width, same top anchor, same capped list), differing in content, not
+    /// chrome, so switching between them never feels like a mode change.
     private var historyOverlay: some View {
         GeometryReader { geo in
             ZStack(alignment: .top) {
@@ -181,7 +182,7 @@ public struct RootView: View {
                 }
                 .fixedSize()
                 .frame(maxWidth: .infinity)
-                .padding(.top, geo.size.height * 0.12)
+                .padding(.top, geo.size.height * 0.35)
             }
         }
         .transition(.opacity)
@@ -257,12 +258,18 @@ private struct PanelHost<Content: View>: NSViewRepresentable {
 /// The sidebar-toggle button in the toolbar is AppKit's own — NavigationSplitView
 /// installs it, and SwiftUI's .help() can't reach it — so its tooltip (which is
 /// how the ⌘B shortcut gets discovered) is set by walking the window's toolbar.
-/// The toolbar populates after the window appears and AppKit can rebuild the
-/// item, so annotation retries briefly and re-runs on SwiftUI updates.
+///
+/// AppKit re-sets that tooltip lazily ("Hide Sidebar"/"Show Sidebar"), including
+/// mid-hover, so a one-shot write gets stomped. Annotation therefore (a) uses
+/// state-matched wording so a stomp-then-reassert doesn't visibly change meaning,
+/// and (b) re-asserts on every SwiftUI update, checking the BUTTON's tooltip too —
+/// AppKit writes the view's, not the item's, so guarding on the item alone never
+/// notices the stomp.
 private struct SidebarToggleTooltip: NSViewRepresentable {
-    static let tip = "Toggle the sidebar (⌘B)"
+    var sidebarVisible: Bool
 
     final class ProbeView: NSView {
+        var tip = ""
         private var attempts = 0
 
         override func viewDidMoveToWindow() {
@@ -276,9 +283,9 @@ private struct SidebarToggleTooltip: NSViewRepresentable {
                 $0.itemIdentifier.rawValue.localizedCaseInsensitiveContains("togglesidebar")
             }
             guard !toggles.isEmpty else { return retry() }
-            for item in toggles where item.toolTip != SidebarToggleTooltip.tip {
-                item.toolTip = SidebarToggleTooltip.tip
-                item.view?.toolTip = SidebarToggleTooltip.tip
+            for item in toggles where item.toolTip != tip || item.view?.toolTip != tip {
+                item.toolTip = tip
+                item.view?.toolTip = tip
             }
         }
 
@@ -292,7 +299,11 @@ private struct SidebarToggleTooltip: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> ProbeView { ProbeView() }
-    func updateNSView(_ view: ProbeView, context: Context) { view.annotate() }
+
+    func updateNSView(_ view: ProbeView, context: Context) {
+        view.tip = sidebarVisible ? "Hide the sidebar (⌘B)" : "Show the sidebar (⌘B)"
+        view.annotate()
+    }
 }
 
 /// Installs an app-local key monitor for Temple's shortcuts (UX "Keyboard
