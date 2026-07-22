@@ -94,7 +94,15 @@ struct SessionRow: View {
 
     @ViewBuilder
     private var contextMenu: some View {
+        // Same shape as the tab chip's menu (rename/pin → copies/reveal →
+        // close → color row), so the two right-clicks read as one menu.
         Button(openTab != nil ? "Focus" : "Open") { open() }
+        Divider()
+        Button("Rename session") {
+            draftName = model.displayTitle(session)
+            renaming = true
+        }
+        Button(isPinned ? "Unpin" : "Pin") { model.overlay.togglePin(session.id) }
         Divider()
         Button("Copy resume command") {
             copyToPasteboard(session.resume.argv.joined(separator: " "))
@@ -103,15 +111,26 @@ struct SessionRow: View {
         Button("Reveal session file in Finder") {
             NSWorkspace.shared.activateFileViewerSelecting([session.filePath])
         }
-        Divider()
-        Button("Rename…") {
-            draftName = model.displayTitle(session)
-            renaming = true
-        }
-        Button(isPinned ? "Unpin" : "Pin") { model.overlay.togglePin(session.id) }
         if let tab = openTab {
             Divider()
             Button("Close tab") { model.openSessions.closeTab(tab.id) }
         }
+        Divider()
+        Picker("", selection: Binding(
+            get: { model.overlay.color(for: session.id).flatMap(TabColorMark.init(rawValue:)) },
+            set: { model.overlay.setColor($0?.rawValue, for: session.id) }
+        )) {
+            Image(systemName: "slash.circle")
+                .tag(TabColorMark?.none)
+                .help("No color")
+            ForEach(TabColorMark.allCases) { mark in
+                Image(systemName: "circle.fill")
+                    .tint(mark.color)
+                    .tag(TabColorMark?.some(mark))
+                    .help(mark.label)
+            }
+        }
+        .pickerStyle(.palette)
+        .controlSize(.small)
     }
 }
