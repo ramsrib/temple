@@ -551,25 +551,28 @@ private struct TabChip: View {
         if tab.kind == .session {
             Button("Rename…") { beginRename() }
                 .disabled(tab.sessionID == nil)
-            Menu("Color") {
-                ForEach(TabColorMark.allCases) { mark in
-                    Button {
-                        if let sid = tab.sessionID {
-                            model.overlay.setColor(mark.rawValue, for: sid)
-                        }
-                    } label: {
-                        Label {
-                            Text(mark.label)
-                        } icon: {
-                            Image(nsImage: mark.menuSwatch(selected: colorMark == mark))
-                        }
+            // Warp-style: the swatches ARE the menu row (palette pickers
+            // render horizontally inside menus on macOS 14+), no submenu,
+            // no text. First slot clears the mark.
+            Picker("", selection: Binding(
+                get: { colorMark },
+                set: { mark in
+                    if let sid = tab.sessionID {
+                        model.overlay.setColor(mark?.rawValue, for: sid)
                     }
                 }
-                Divider()
-                Button("None") {
-                    if let sid = tab.sessionID { model.overlay.setColor(nil, for: sid) }
+            )) {
+                Image(systemName: "slash.circle")
+                    .tag(TabColorMark?.none)
+                    .help("No color")
+                ForEach(TabColorMark.allCases) { mark in
+                    Image(systemName: "circle.fill")
+                        .tint(mark.color)
+                        .tag(TabColorMark?.some(mark))
+                        .help(mark.label)
                 }
             }
+            .pickerStyle(.palette)
             .disabled(tab.sessionID == nil)
             Divider()
             Button("Copy resume command") {

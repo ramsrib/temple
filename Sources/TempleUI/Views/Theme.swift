@@ -20,27 +20,6 @@ enum TabColorMark: String, CaseIterable, Identifiable {
     }
 
     var color: Color { Color(nsColor: nsColor) }
-
-    /// A menu swatch that stays colored. SF-symbol Label icons get template-
-    /// rendered by NSMenu, so a `foregroundStyle` tint comes out monochrome —
-    /// a drawn, non-template NSImage is the only reliable way to put real
-    /// color in a context-menu item. The ring marks the current selection.
-    func menuSwatch(selected: Bool) -> NSImage {
-        let side: CGFloat = 16
-        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
-            nsColor.setFill()
-            NSBezierPath(ovalIn: rect.insetBy(dx: 3, dy: 3)).fill()
-            if selected {
-                NSColor.labelColor.withAlphaComponent(0.8).setStroke()
-                let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 0.75, dy: 0.75))
-                ring.lineWidth = 1.5
-                ring.stroke()
-            }
-            return true
-        }
-        image.isTemplate = false
-        return image
-    }
 }
 
 // MARK: - Adaptive color helper
