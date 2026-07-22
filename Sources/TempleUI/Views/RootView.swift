@@ -237,6 +237,14 @@ private struct PanelHost<Content: View>: NSViewRepresentable {
         let view = NSHostingView(rootView: content())
         view.sizingOptions = .intrinsicContentSize
         view.clipsToBounds = false
+        // A floating panel wants no safe-area participation — and on macOS 26
+        // the default (tracking the window's safe areas) sets up a feedback
+        // loop: every constraint pass re-invalidates this hosting view's safe
+        // area, which requests another pass, until AppKit's loop detector
+        // ("more Update Constraints passes than views") kills the app. The
+        // shortcuts card crashed on ⌘/ from exactly this, via
+        // NSHostingView.invalidateSafeAreaInsets in the crash backtrace.
+        view.safeAreaRegions = []
         return view
     }
 
