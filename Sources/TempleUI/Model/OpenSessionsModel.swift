@@ -240,7 +240,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         activate(tab)
     }
 
-    /// ⌘N / "return home": deactivate to the empty-state launcher without
+    /// ⌘⇧H / "return home": deactivate to the empty-state launcher without
     /// closing any tab. The launcher IS the new-session entry point (UX §New
     /// session) — there is no modal duplicate. Clicking a chip reactivates.
     public func showHome() {

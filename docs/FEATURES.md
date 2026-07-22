@@ -164,7 +164,7 @@ Temple adopts when the new rollout file appears
 
 ## Launcher / home page
 
-`⌘N` shows the home page without closing existing tabs. Its masthead presents
+`⌘⇧H` shows the home page without closing existing tabs. Its masthead presents
 Temple and the tagline “Where agents answer the call.”
 
 The **Get Started** section provides New Claude session, New Codex session, New
@@ -249,7 +249,8 @@ Dark palettes and never reads or modifies the user's Ghostty configuration.
 | **⌘T** | New empty session in the current project with the default agent. |
 | **⌘W** | Close the current tab; asks first only when its agent is running. |
 | **⌘⇧T** | Reopen the last closed tab (user-initiated closes only). |
-| **⌘N** | Show the launcher/home page; existing tabs stay open. |
+| **⌘N** | New session in a project you pick (default agent); `⌘⇧N` uses the other agent. |
+| **⌘⇧H** | Show the launcher/home page; existing tabs stay open. |
 | **⌘1–9** | Switch to tab *N* in the active project. |
 | **⌃⇥ / ⌃⇧⇥** | Next / previous tab. |
 | **⌘⇧[ / ⌘⇧]** | Previous / next project; returns to the session last used there. |
