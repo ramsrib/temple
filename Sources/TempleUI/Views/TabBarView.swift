@@ -181,7 +181,12 @@ struct TabStripChipsRow: View {
                         // clear, so only the bare title text appears to drag.
                         TabChipDragPreview(
                             tab: tab,
-                            title: TabChip.displayTitle(for: tab, model: model))
+                            title: TabChip.displayTitle(for: tab, model: model),
+                            mark: tab.sessionID.flatMap { sid in
+                                model.overlay.color(for: sid).flatMap {
+                                    TabColorMark(rawValue: $0)?.color
+                                }
+                            })
                     }
             }
         }
@@ -411,6 +416,11 @@ private struct TabChip: View {
     static let sessionWidth: CGFloat = 200
 
     private var isActive: Bool { model.openSessions.activeTabID == tab.id }
+    private var colorMark: TabColorMark? {
+        tab.sessionID
+            .flatMap { model.overlay.color(for: $0) }
+            .flatMap(TabColorMark.init(rawValue:))
+    }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -482,18 +492,7 @@ private struct TabChip: View {
         // band's height is fixed by the sidebar header), so the chip claims
         // all of it instead of floating in dead air.
         .frame(maxHeight: .infinity)
-        .background(
-            // No outline: boundaries come from the ticks between chips, and
-            // the active/hover fills mark the tab itself (browser-tab style).
-            // Lighter than it was: weight and ink now say "active", so the
-            // fill only has to seat the tab, not shout it.
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color.primary.opacity(
-                    isActive ? 0.09 : (hovering ? 0.05 : 0)))
-                .overlay(RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(Palette.hairline.opacity(isActive ? 1 : 0),
-                                  lineWidth: 1))
-        )
+        .background { chipBackground }
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture(count: 2) { beginRename() }
@@ -545,6 +544,28 @@ private struct TabChip: View {
         if tab.kind == .session {
             Button("Rename…") { beginRename() }
                 .disabled(tab.sessionID == nil)
+            Menu("Color") {
+                ForEach(TabColorMark.allCases) { mark in
+                    Button {
+                        if let sid = tab.sessionID {
+                            model.overlay.setColor(mark.rawValue, for: sid)
+                        }
+                    } label: {
+                        Label {
+                            Text(mark.label)
+                        } icon: {
+                            Image(systemName: colorMark == mark
+                                  ? "largecircle.fill.circle" : "circle.fill")
+                                .foregroundStyle(mark.color)
+                        }
+                    }
+                }
+                Divider()
+                Button("None") {
+                    if let sid = tab.sessionID { model.overlay.setColor(nil, for: sid) }
+                }
+            }
+            .disabled(tab.sessionID == nil)
             Divider()
             Button("Copy resume command") {
                 if let sid = tab.sessionID {
@@ -556,6 +577,27 @@ private struct TabChip: View {
         }
         Button("Close tab") { model.openSessions.requestClose(tabID: tab.id) }
     }
+
+    @ViewBuilder
+    private var chipBackground: some View {
+        if let mark = colorMark?.color {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(mark.opacity(isActive ? 0.22 : (hovering ? 0.14 : 0.10)))
+                .overlay(RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(mark.opacity(isActive ? 0.55 : 0.28), lineWidth: 1))
+        } else {
+            // No outline: boundaries come from the ticks between chips, and
+            // the active/hover fills mark the tab itself (browser-tab style).
+            // Lighter than it was: weight and ink now say "active", so the
+            // fill only has to seat the tab, not shout it.
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.primary.opacity(
+                    isActive ? 0.09 : (hovering ? 0.05 : 0)))
+                .overlay(RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(Palette.hairline.opacity(isActive ? 1 : 0),
+                                  lineWidth: 1))
+        }
+    }
 }
 
 /// What travels with the cursor during a chip drag: the whole chip — badge,
@@ -565,6 +607,7 @@ private struct TabChip: View {
 private struct TabChipDragPreview: View {
     let tab: SessionTab
     let title: String
+    let mark: Color?
 
     var body: some View {
         HStack(spacing: 6) {
@@ -586,18 +629,25 @@ private struct TabChipDragPreview: View {
         // tab itself, not a reflowed copy of it.
         .frame(width: tab.kind == .settings ? nil : TabChip.sessionWidth)
         .padding(.vertical, 8)
-        .background(
-            // The active-chip look, made self-sufficient: the strip's band
-            // isn't underneath the preview, so it gets its own opaque base.
-            ZStack {
-                RoundedRectangle(cornerRadius: 7).fill(Color(nsColor: .windowBackgroundColor))
-                RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.12))
-            }
-        )
-        .overlay(
+        .background { previewBackground }
+        .overlay { previewBorder }
+    }
+
+    @ViewBuilder
+    private var previewBackground: some View {
+        // The active-chip look, made self-sufficient: the strip's band
+        // isn't underneath the preview, so it gets its own opaque base.
+        ZStack {
+            RoundedRectangle(cornerRadius: 7).fill(Color(nsColor: .windowBackgroundColor))
             RoundedRectangle(cornerRadius: 7)
-                .strokeBorder(Color.primary.opacity(0.15), lineWidth: 1)
-        )
+                .fill(mark?.opacity(0.22) ?? Color.primary.opacity(0.12))
+        }
+    }
+
+    @ViewBuilder
+    private var previewBorder: some View {
+        RoundedRectangle(cornerRadius: 7)
+            .strokeBorder(mark?.opacity(0.55) ?? Color.primary.opacity(0.15), lineWidth: 1)
     }
 }
 

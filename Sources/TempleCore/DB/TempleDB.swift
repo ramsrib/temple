@@ -6,6 +6,7 @@ public struct SessionState: Codable, Equatable, Sendable {
     public let pinned: Bool
     public let archived: Bool
     public let customName: String?
+    public let color: String?
     /// The last title the agent gave itself (Claude/Codex retitle their terminal
     /// as the work moves on). The session file never carries this, so if we don't
     /// remember it here it is lost the moment the session closes.
@@ -82,6 +83,13 @@ public final class TempleDB: @unchecked Sendable {
         }
     }
 
+    public func setColor(_ color: String?, sessionID: String) throws {
+        try ensureState(sessionID)
+        try db.write { database in
+            try database.execute(sql: "UPDATE session_state SET color = ? WHERE id = ?", arguments: [color, sessionID])
+        }
+    }
+
     public func setGeneratedTitle(_ title: String?, sessionID: String) throws {
         try ensureState(sessionID)
         try db.write { database in
@@ -106,6 +114,7 @@ public final class TempleDB: @unchecked Sendable {
                 pinned: row["pinned"],
                 archived: row["archived"],
                 customName: row["custom_name"],
+                color: row["color"],
                 generatedTitle: row["generated_title"],
                 lastOpenedAt: row["last_opened_at"]
             )
@@ -120,6 +129,7 @@ public final class TempleDB: @unchecked Sendable {
                     pinned: row["pinned"],
                     archived: row["archived"],
                     customName: row["custom_name"],
+                    color: row["color"],
                     generatedTitle: row["generated_title"],
                     lastOpenedAt: row["last_opened_at"]
                 )
@@ -261,6 +271,11 @@ public final class TempleDB: @unchecked Sendable {
         migrator.registerMigration("v3-generated-title") { database in
             try database.alter(table: "session_state") { table in
                 table.add(column: "generated_title", .text)
+            }
+        }
+        migrator.registerMigration("v4-session-color") { database in
+            try database.alter(table: "session_state") { table in
+                table.add(column: "color", .text)
             }
         }
         return migrator

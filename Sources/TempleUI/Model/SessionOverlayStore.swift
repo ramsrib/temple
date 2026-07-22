@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import TempleCore
 
-/// App-state overlay the CLIs don't track: pins + custom names (ADR-009).
+/// App-state overlay the CLIs don't track: pins, custom names, and color marks (ADR-009).
 ///
 /// Values are cached in memory for synchronous SwiftUI reads and written
 /// through to TempleDB on mutation.
@@ -10,6 +10,7 @@ import TempleCore
 public final class SessionOverlayStore: ObservableObject {
     @Published public private(set) var pinned: Set<String>
     @Published public private(set) var customNames: [String: String]
+    @Published public private(set) var colors: [String: String]
     /// The last title each agent gave itself. Claude and Codex retitle their
     /// terminal as the work moves on, but write that title nowhere on disk — so
     /// Temple remembers it, and a session keeps the name it earned even after it
@@ -25,6 +26,11 @@ public final class SessionOverlayStore: ObservableObject {
         self.customNames = Dictionary(
             uniqueKeysWithValues: states.compactMap { state in
                 state.customName.map { (state.id, $0) }
+            }
+        )
+        self.colors = Dictionary(
+            uniqueKeysWithValues: states.compactMap { state in
+                state.color.map { (state.id, $0) }
             }
         )
         self.generatedTitles = Dictionary(
@@ -55,6 +61,17 @@ public final class SessionOverlayStore: ObservableObject {
             customNames[id] = trimmed
         }
         try? db.setCustomName(customNames[id], sessionID: id)
+    }
+
+    public func color(for id: String) -> String? { colors[id] }
+
+    public func setColor(_ name: String?, for id: String) {
+        if let name {
+            colors[id] = name
+        } else {
+            colors.removeValue(forKey: id)
+        }
+        try? db.setColor(colors[id], sessionID: id)
     }
 
     public func generatedTitle(for id: String) -> String? { generatedTitles[id] }

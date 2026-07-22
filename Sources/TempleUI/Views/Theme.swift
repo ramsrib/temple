@@ -1,6 +1,25 @@
 import SwiftUI
 import AppKit
 
+enum TabColorMark: String, CaseIterable, Identifiable {
+    case red, orange, yellow, green, blue, purple, pink
+
+    var id: String { rawValue }
+    var label: String { rawValue.capitalized }
+
+    var color: Color {
+        switch self {
+        case .red: Color(nsColor: .systemRed)
+        case .orange: Color(nsColor: .systemOrange)
+        case .yellow: Color(nsColor: .systemYellow)
+        case .green: Color(nsColor: .systemGreen)
+        case .blue: Color(nsColor: .systemBlue)
+        case .purple: Color(nsColor: .systemPurple)
+        case .pink: Color(nsColor: .systemPink)
+        }
+    }
+}
+
 // MARK: - Adaptive color helper
 
 extension Color {

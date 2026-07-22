@@ -19,6 +19,22 @@ final class PersistenceAdapterTests: XCTestCase {
         XCTAssertEqual(reader.customName(for: "session"), "Custom title")
     }
 
+    func testDBOverlayStorePublishesAndReloadsColor() throws {
+        let db = try TempleDB.inMemory()
+        let writer = SessionOverlayStore(db: db)
+
+        writer.setColor("purple", for: "session")
+        XCTAssertEqual(writer.colors["session"], "purple")
+        XCTAssertEqual(writer.color(for: "session"), "purple")
+
+        let reader = SessionOverlayStore(db: db)
+        XCTAssertEqual(reader.color(for: "session"), "purple")
+
+        writer.setColor(nil, for: "session")
+        XCTAssertNil(writer.colors["session"])
+        XCTAssertNil(SessionOverlayStore(db: db).color(for: "session"))
+    }
+
     func testDBProcessRegistryUnregistersBySession() throws {
         let db = try TempleDB.inMemory()
         let registry = DBProcessRegistry(db: db)
