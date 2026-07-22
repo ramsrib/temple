@@ -167,7 +167,10 @@ struct HistoryView: View {
     private func reload() {
         let results = Array(model.historyResults(query).prefix(250))
         flatResults = results
-        indexByID = Dictionary(uniqueKeysWithValues: results.enumerated().map { ($0.element.id, $0.offset) })
+        // Defensive uniquing: a duplicate id here is a hard crash with
+        // uniqueKeysWithValues, and the index has produced duplicates before.
+        indexByID = Dictionary(results.enumerated().map { ($0.element.id, $0.offset) },
+                               uniquingKeysWith: { first, _ in first })
         if grouped {
             groups = HistoryGrouping.groups(results)
         } else {
