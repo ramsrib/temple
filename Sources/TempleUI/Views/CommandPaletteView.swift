@@ -155,9 +155,6 @@ private struct PaletteResultRow: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Text(RelativeTime.string(from: session.updatedAt))
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)

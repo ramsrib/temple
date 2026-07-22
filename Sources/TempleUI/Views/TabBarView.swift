@@ -197,7 +197,8 @@ struct TabStripChipsRow: View {
             chipMidpoints: {
                 frames.map { (id: $0.key, midX: $0.value.midX) }
                     .sorted { $0.midX < $1.midX }
-            }
+            },
+            reveal: reveal
         ))
         .onPreferenceChange(ChipFramesKey.self) { new in
             frames = new
@@ -495,8 +496,14 @@ private struct TabChip: View {
         .background { chipBackground }
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .onTapGesture(count: 2) { beginRename() }
+        // Activate on the FIRST click, not after a double-click timeout: two
+        // stacked onTapGestures make SwiftUI hold the single tap back while
+        // it waits to rule out a double, and tab switching visibly lags the
+        // keyboard shortcuts. Simultaneous recognition fires the single tap
+        // immediately; a second click then also lands rename — activating
+        // the tab you are about to rename is correct anyway.
         .onTapGesture { model.openSessions.activate(tabID: tab.id) }
+        .simultaneousGesture(TapGesture(count: 2).onEnded { beginRename() })
         .contextMenu { chipContextMenu }
     }
 
@@ -554,9 +561,7 @@ private struct TabChip: View {
                         Label {
                             Text(mark.label)
                         } icon: {
-                            Image(systemName: colorMark == mark
-                                  ? "largecircle.fill.circle" : "circle.fill")
-                                .foregroundStyle(mark.color)
+                            Image(nsImage: mark.menuSwatch(selected: colorMark == mark))
                         }
                     }
                 }
@@ -581,10 +586,13 @@ private struct TabChip: View {
     @ViewBuilder
     private var chipBackground: some View {
         if let mark = colorMark?.color {
+            // Same grammar as uncolored chips: the border belongs to the
+            // ACTIVE state only. A resting mark is a quiet wash of color —
+            // give it a border and every marked tab reads as selected.
             RoundedRectangle(cornerRadius: 6)
-                .fill(mark.opacity(isActive ? 0.22 : (hovering ? 0.14 : 0.10)))
+                .fill(mark.opacity(isActive ? 0.26 : (hovering ? 0.12 : 0.08)))
                 .overlay(RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(mark.opacity(isActive ? 0.55 : 0.28), lineWidth: 1))
+                    .strokeBorder(mark.opacity(isActive ? 0.55 : 0), lineWidth: 1))
         } else {
             // No outline: boundaries come from the ticks between chips, and
             // the active/hover fills mark the tab itself (browser-tab style).
@@ -666,10 +674,19 @@ private struct TabRowReorderDelegate: DropDelegate {
     let model: AppModel
     @Binding var dragging: SessionTab.ID?
     let chipMidpoints: () -> [(id: SessionTab.ID, midX: CGFloat)]
+    /// Scrolls a row-coordinate rect into the strip's visible clip. The strip
+    /// shows a window onto the row, and without this a drag stalls at the
+    /// visible edge — a tab could never travel past the chips on screen.
+    let reveal: (CGRect) -> Void
 
     private func reorder(to x: CGFloat) {
         MainActor.assumeIsolated {
             guard let dragging else { return }
+            // Keep the neighborhood of the cursor visible: pushing against
+            // either edge of the clip creeps the strip in that direction, so
+            // long moves (position 0 → 6 across an overflowing row) work in
+            // one gesture. reveal() no-ops while the rect is already visible.
+            reveal(CGRect(x: x - 60, y: 0, width: 120, height: 1))
             let row = model.openSessions.visibleTabs
             let midpoints = chipMidpoints()
             // Geometry preferences can trail a close or reorder by one layout

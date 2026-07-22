@@ -7,16 +7,39 @@ enum TabColorMark: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var label: String { rawValue.capitalized }
 
-    var color: Color {
+    var nsColor: NSColor {
         switch self {
-        case .red: Color(nsColor: .systemRed)
-        case .orange: Color(nsColor: .systemOrange)
-        case .yellow: Color(nsColor: .systemYellow)
-        case .green: Color(nsColor: .systemGreen)
-        case .blue: Color(nsColor: .systemBlue)
-        case .purple: Color(nsColor: .systemPurple)
-        case .pink: Color(nsColor: .systemPink)
+        case .red: .systemRed
+        case .orange: .systemOrange
+        case .yellow: .systemYellow
+        case .green: .systemGreen
+        case .blue: .systemBlue
+        case .purple: .systemPurple
+        case .pink: .systemPink
         }
+    }
+
+    var color: Color { Color(nsColor: nsColor) }
+
+    /// A menu swatch that stays colored. SF-symbol Label icons get template-
+    /// rendered by NSMenu, so a `foregroundStyle` tint comes out monochrome —
+    /// a drawn, non-template NSImage is the only reliable way to put real
+    /// color in a context-menu item. The ring marks the current selection.
+    func menuSwatch(selected: Bool) -> NSImage {
+        let side: CGFloat = 16
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            nsColor.setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 3, dy: 3)).fill()
+            if selected {
+                NSColor.labelColor.withAlphaComponent(0.8).setStroke()
+                let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 0.75, dy: 0.75))
+                ring.lineWidth = 1.5
+                ring.stroke()
+            }
+            return true
+        }
+        image.isTemplate = false
+        return image
     }
 }
 
