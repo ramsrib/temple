@@ -182,10 +182,11 @@ prompt composer.
 
 - Sidebar search filters session titles in place. It does not auto-focus at
   launch; `⌘F` reveals the sidebar when necessary and focuses the field.
-- `⌘K` opens a top-anchored command palette. With an empty query it lists every
-  session newest-activity-first, with the open sessions floated on top as a
-  switcher block, a **Recent** divider between the blocks, and a relative
-  timestamp on each row. Unlike the launch-frozen sidebar, this order is live.
+- `⌘K` opens a top-anchored command palette. With an empty query it is a
+  switcher over the **open** sessions only, most recent activity first (live
+  recency, unlike the launch-frozen sidebar). Browsing everything is `⌘Y`'s
+  job — the two panels render as visual siblings but split switcher vs.
+  history.
 - Typing searches all indexed sessions and weights open matches above closed
   ones. Search matches the *displayed* title — a rename or the agent's own
   title — as well as the original first-prompt title, whichever scores better.
@@ -254,7 +255,7 @@ Dark palettes and never reads or modifies the user's Ghostty configuration.
 | **⌘⇧[ / ⌘⇧]** | Previous / next project; returns to the session last used there. |
 | **⌘P** | Project switcher (hold ⌘, tap P to walk, release to land). |
 | **⌘F** | Reveal the sidebar if needed and focus sidebar search. |
-| **⌘K** | Command palette: recency-ordered sessions (open first) when empty; ranked search when typed. |
+| **⌘K** | Command palette: open sessions by recency when empty; ranked search over everything when typed. |
 | **⌘Y** | Session history: every session, newest first, grouped by day. |
 | **⌘/** | Open the Keyboard Shortcuts reference overlay. |
 | **⌘B** | Toggle the sidebar. |
@@ -280,7 +281,7 @@ appearance.
 |---|---|
 | Distribution | Notarized `.dmg` releases; auto-update; additional menu-bar and Dock integration. |
 | Activity | Replace or strengthen the 15-second settle-timer heuristic; per-session and per-project mute; Do Not Disturb; Dock and sidebar badge counts. |
-| Sidebar & discovery | Project pinning; agent, time-range, and active-only filters; richer project/agent/content search; configurable scan roots and excluded paths; rich metadata such as message count, model, and git branch in the sidebar. A flat recents view shipped as the `⌘Y` history and the `⌘K` recency list. |
+| Sidebar & discovery | Project pinning; agent, time-range, and active-only filters; richer project/agent/content search; configurable scan roots and excluded paths; rich metadata such as message count, model, and git branch in the sidebar. A flat recents view shipped as the `⌘Y` history. |
 | Session management | Archive and delete; duplicate/fork; grouping by git repository. Rename, pin/unpin, color marks, and context menus are already shipped. |
 | Terminal & tabs | Split panes; scrollback search and copy mode; terminal cursor controls; tab-bar overflow handling. `⌘⇧T` reopen-closed-tab shipped. |
 | Windowing | Multi-window support. |

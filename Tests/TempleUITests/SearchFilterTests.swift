@@ -339,36 +339,24 @@ final class SearchFilterTests: XCTestCase {
         XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["s3", "s1", "s2"])
     }
 
-    func testPaletteEmptyQueryWithNothingOpenListsAllSessionsByRecency() {
-        let a = Fixture.session("a1", project: "/p/a", updated: 10)
-        let b = Fixture.session("b1", project: "/p/b", updated: 30)
-        let c = Fixture.session("c1", project: "/p/c", updated: 20)
-        let (model, _) = makeAppModel(SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [a]),
-            Project(path: "/p/b", sessions: [b]),
-            Project(path: "/p/c", sessions: [c]),
-        ]))
-
-        XCTAssertEqual(model.paletteResults("").map(\.id), ["b1", "c1", "a1"])
-    }
-
-    func testPaletteEmptyQueryFloatsOpenBlockAndSortsEachBlockByRecency() {
+    func testPaletteEmptyQueryListsOpenSessionsOnlyByRecency() {
         let a = Fixture.session("a1", project: "/p/a", updated: 50)
         let b = Fixture.session("b1", project: "/p/b", updated: 40)
         let c = Fixture.session("c1", project: "/p/c", updated: 20)
-        let d = Fixture.session("d1", project: "/p/d", updated: 30)
         let (model, _) = makeAppModel(SessionIndex(projects: [
             Project(path: "/p/a", sessions: [a]),
             Project(path: "/p/b", sessions: [b]),
             Project(path: "/p/c", sessions: [c]),
-            Project(path: "/p/d", sessions: [d]),
         ]))
+        // Nothing open → empty-query palette is empty (type-to-search hint);
+        // browsing everything is ⌘Y's job.
+        XCTAssertTrue(model.paletteResults("").isEmpty)
 
         model.openSessions.openSession(c)
         model.openSessions.openSession(a)
-        // Open sessions float as one block, but are ordered by live recency,
-        // not by their tab order. Closed sessions form a second recency block.
-        XCTAssertEqual(model.paletteResults("").map(\.id), ["a1", "c1", "b1", "d1"])
+        // Open in "wrong" recency order: the switcher sorts by live activity,
+        // not tab order, and never mixes in closed sessions ("b1").
+        XCTAssertEqual(model.paletteResults("").map(\.id), ["a1", "c1"])
     }
 
     func testPaletteNonEmptyQueryWeightsOpenMatches() {
@@ -432,6 +420,8 @@ final class SearchFilterTests: XCTestCase {
             Project(path: "/p/b", sessions: [a]),
         ]))
 
+        model.openSessions.openSession(b)
+        model.openSessions.openSession(a)
         XCTAssertEqual(model.paletteResults("").map(\.id), ["a", "b"])
     }
 }

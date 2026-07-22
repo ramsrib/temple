@@ -549,11 +549,24 @@ private struct TabChip: View {
     @ViewBuilder
     private var chipContextMenu: some View {
         if tab.kind == .session {
-            Button("Rename…") { beginRename() }
+            Button("Rename tab") { beginRename() }
                 .disabled(tab.sessionID == nil)
+            Button("Copy resume command") {
+                if let sid = tab.sessionID {
+                    copyToPasteboard(tab.agent.resumeArgv(sessionID: sid).joined(separator: " "))
+                }
+            }
+            Button("Copy session ID") { if let sid = tab.sessionID { copyToPasteboard(sid) } }
+            Divider()
+        }
+        Button("Close tab") { model.openSessions.requestClose(tabID: tab.id) }
+        if tab.kind == .session {
+            Divider()
             // Warp-style: the swatches ARE the menu row (palette pickers
             // render horizontally inside menus on macOS 14+), no submenu,
-            // no text. First slot clears the mark.
+            // no text, anchored at the bottom like Warp's. First slot
+            // clears the mark. .small keeps the row from dictating an
+            // extra-wide menu.
             Picker("", selection: Binding(
                 get: { colorMark },
                 set: { mark in
@@ -573,17 +586,9 @@ private struct TabChip: View {
                 }
             }
             .pickerStyle(.palette)
+            .controlSize(.small)
             .disabled(tab.sessionID == nil)
-            Divider()
-            Button("Copy resume command") {
-                if let sid = tab.sessionID {
-                    copyToPasteboard(tab.agent.resumeArgv(sessionID: sid).joined(separator: " "))
-                }
-            }
-            Button("Copy session ID") { if let sid = tab.sessionID { copyToPasteboard(sid) } }
-            Divider()
         }
-        Button("Close tab") { model.openSessions.requestClose(tabID: tab.id) }
     }
 
     @ViewBuilder
