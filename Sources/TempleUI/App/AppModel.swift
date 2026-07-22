@@ -530,6 +530,11 @@ public final class AppModel: ObservableObject {
             let current = projectSwitcherSelection.flatMap { projects.firstIndex(of: $0) } ?? 0
             projectSwitcherSelection = projects[(current + delta + projects.count) % projects.count]
         } else {
+            // Panels are mutually exclusive (same rule as ⌘K/⌘Y/⌘/): the HUD
+            // must not stack over an open palette or history panel.
+            commandPalettePresented = false
+            historyPresented = false
+            shortcutsPresented = false
             projectSwitcherPresented = true
             switcherArmedByCommand = heldCommand
             projectSwitcherSelection = projects[delta > 0 ? 1 : projects.count - 1]

@@ -13,18 +13,19 @@ struct CommandPaletteView: View {
         Array(model.paletteResults(query).prefix(40))
     }
 
-    private var openCount: Int {
+    private func openCount(in results: [AgentSession]) -> Int {
         let open = Set(model.openSessions.openSessionIDsInTabOrder)
         return results.prefix { open.contains($0.id) }.count
     }
 
-    private var showsRecentHeader: Bool {
-        query.trimmingCharacters(in: .whitespaces).isEmpty
+    var body: some View {
+        // One ranking pass per render: the palette re-renders on every title
+        // tick while it's open, and paletteResults sorts the whole index.
+        let results = self.results
+        let openCount = openCount(in: results)
+        let showsRecentHeader = query.trimmingCharacters(in: .whitespaces).isEmpty
             && openCount > 0
             && openCount < results.count
-    }
-
-    var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
