@@ -77,8 +77,9 @@ struct HistoryView: View {
     private var headerCount: Int { grouped ? groups.count : 0 }
 
     private var listHeight: CGFloat {
+        // Same cap as the ⌘K palette: the two panels are visual siblings.
         min(CGFloat(flatResults.count) * Self.rowHeight
-            + CGFloat(headerCount) * Self.headerHeight, 460)
+            + CGFloat(headerCount) * Self.headerHeight, 340)
     }
 
     var body: some View {
@@ -148,7 +149,7 @@ struct HistoryView: View {
                 }
             }
         }
-        .frame(width: 640)
+        .frame(width: 560)   // matches CommandPaletteView — visual siblings
         .panelChrome()
         .onAppear {
             reload()
