@@ -549,14 +549,28 @@ private struct TabChip: View {
     @ViewBuilder
     private var chipContextMenu: some View {
         if tab.kind == .session {
+            // Same shape as the sidebar row's menu (rename/pin → copies/
+            // reveal → close → color row): one right-click grammar everywhere.
             Button("Rename tab") { beginRename() }
                 .disabled(tab.sessionID == nil)
+            Button(tab.sessionID.map { model.overlay.isPinned($0) } == true ? "Unpin" : "Pin") {
+                if let sid = tab.sessionID { model.overlay.togglePin(sid) }
+            }
+            .disabled(tab.sessionID == nil)
+            Divider()
             Button("Copy resume command") {
                 if let sid = tab.sessionID {
                     copyToPasteboard(tab.agent.resumeArgv(sessionID: sid).joined(separator: " "))
                 }
             }
             Button("Copy session ID") { if let sid = tab.sessionID { copyToPasteboard(sid) } }
+            Button("Reveal session file in Finder") {
+                if let sid = tab.sessionID,
+                   let session = model.index.allSessions.first(where: { $0.id == sid }) {
+                    NSWorkspace.shared.activateFileViewerSelecting([session.filePath])
+                }
+            }
+            .disabled(tab.sessionID == nil)
             Divider()
         }
         Button("Close tab") { model.openSessions.requestClose(tabID: tab.id) }

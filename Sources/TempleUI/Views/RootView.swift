@@ -307,9 +307,16 @@ private struct SidebarToggleTooltip: NSViewRepresentable {
                 $0.itemIdentifier.rawValue.localizedCaseInsensitiveContains("togglesidebar")
             }
             guard !toggles.isEmpty else { return retry() }
-            for item in toggles where item.toolTip != tip || item.view?.toolTip != tip {
-                item.toolTip = tip
-                item.view?.toolTip = tip
+            for item in toggles {
+                // Validation is what rewrites the tooltip back to AppKit's
+                // "Hide Sidebar" — mid-hover, which reads as a flicker. The
+                // toggle is never disabled, so validation buys it nothing;
+                // turning it off lets our shortcut-bearing tip stand.
+                item.autovalidates = false
+                if item.toolTip != tip || item.view?.toolTip != tip {
+                    item.toolTip = tip
+                    item.view?.toolTip = tip
+                }
             }
         }
 
