@@ -287,7 +287,24 @@ private struct KeyCatcher: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         context.coordinator.model = model
         context.coordinator.install()
-        return NSView()
+        return InitialFocusDenier()
+    }
+
+    /// AppKit seats initial keyboard focus on the first text field in the
+    /// key-view loop — the sidebar search. The launch sweep (RootView.onAppear)
+    /// then clears it, which used to be invisible; macOS 26 pops a completions
+    /// dropdown the instant a field is focused, so the transient seat now
+    /// flashes UI. Refuse the initial seat outright — the sweep stays as the
+    /// backstop for AppKit re-seating focus while the window settles.
+    final class InitialFocusDenier: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window else { return }
+            window.initialFirstResponder = nil
+            if window.firstResponder is NSTextView {
+                window.makeFirstResponder(nil)
+            }
+        }
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
