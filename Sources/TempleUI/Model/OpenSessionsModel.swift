@@ -16,7 +16,17 @@ struct ClosedTabRecord {
 @MainActor
 public final class OpenSessionsModel: NSObject, ObservableObject {
     @Published public private(set) var tabs: [SessionTab] = []
-    @Published public private(set) var activeTabID: SessionTab.ID?
+    @Published public private(set) var activeTabID: SessionTab.ID? {
+        didSet {
+            guard let id = activeTabID, id != oldValue else { return }
+            activationHistory.removeAll { $0 == id }
+            activationHistory.append(id)
+            if activationHistory.count > 50 { activationHistory.removeFirst() }
+        }
+    }
+    /// Tab ids in activation order, most recent last — the "where you came
+    /// from" trail that closing a tab walks back (browser MRU, not first-tab).
+    private var activationHistory: [SessionTab.ID] = []
     /// Derived from the active *session* tab; the Settings tab never changes it.
     @Published public private(set) var activeProjectPath: String?
 
@@ -461,6 +471,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         if let sid = tab.sessionID { registry.unregister(sessionID: sid) }
         let wasActive = activeTabID == tabID
         tabs.remove(at: index)
+        // A gone tab must not be anyone's "go back here" target — least of
+        // all its own successor's.
+        activationHistory.removeAll { $0 == tabID }
         // A project with no tabs left is not switchable — forget it, or the MRU
         // list grows for the life of the run as folders come and go.
         if !tabs.contains(where: { $0.kind == .session && $0.projectPath == tab.projectPath }) {
@@ -472,7 +485,16 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     }
 
     private func selectNeighbor(removedIndex: Int, removedProject: String, wasUtility: Bool) {
-        // Prefer another tab in the same project; else any session tab; else nil.
+        // Go back where you came from (browser MRU): closing Settings or a
+        // just-opened tab returns to the previously active tab, wherever it
+        // lives — not to the first tab in the row.
+        if let previousID = activationHistory.last,
+           let previous = tabs.first(where: { $0.id == previousID }) {
+            if previous.kind == .session { activate(previous) } else { activeTabID = previous.id }
+            return
+        }
+        // No history (e.g. relaunch-restored chips): prefer another tab in the
+        // same project; else any session tab; else nil.
         let sameProject = tabs.filter { $0.kind == .session && $0.projectPath == removedProject }
         if let next = sameProject.first {
             activate(next)
