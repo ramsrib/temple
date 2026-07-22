@@ -106,6 +106,124 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertTrue(model.tabs.isEmpty)
     }
 
+    func testReopenLastClosedTabResumesActivatesAndSpawnsNewSurface() {
+        let factory = FakeTerminalSurfaceFactory()
+        let model = Fixture.openModel(factory: factory)
+        model.openSession(Fixture.session("a", project: "/p/a", title: "Work"))
+        let originalTabID = model.tabs[0].id
+
+        model.closeTab(originalTabID)
+        XCTAssertTrue(model.tabs.isEmpty)
+        XCTAssertEqual(factory.created.count, 1)
+
+        model.reopenLastClosedTab()
+
+        XCTAssertEqual(model.tabs.count, 1)
+        XCTAssertNotEqual(model.tabs[0].id, originalTabID)
+        XCTAssertEqual(model.tabs[0].sessionID, "a")
+        XCTAssertEqual(model.tabs[0].title, "Work")
+        XCTAssertTrue(model.tabs[0].isResume)
+        XCTAssertEqual(model.activeTabID, model.tabs[0].id)
+        XCTAssertEqual(factory.created.count, 2)
+    }
+
+    func testReopenLastClosedTabUsesLIFOOrder() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a", project: "/p/a"))
+        model.openSession(Fixture.session("b", project: "/p/a"))
+        let aID = model.openTab(forSessionID: "a")!.id
+        let bID = model.openTab(forSessionID: "b")!.id
+
+        model.closeTab(aID)
+        model.closeTab(bID)
+        model.reopenLastClosedTab()
+        XCTAssertEqual(model.activeTab?.sessionID, "b")
+
+        model.reopenLastClosedTab()
+        XCTAssertEqual(model.activeTab?.sessionID, "a")
+    }
+
+    func testReopenSkipsSessionOpenedAgainAndUsesNextClosedEntry() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        let a = Fixture.session("a", project: "/p/a")
+        let b = Fixture.session("b", project: "/p/a")
+        model.openSession(a)
+        model.openSession(b)
+        model.closeTab(model.openTab(forSessionID: "a")!.id)
+        model.closeTab(model.openTab(forSessionID: "b")!.id)
+
+        model.openSession(b)
+        model.reopenLastClosedTab()
+
+        XCTAssertEqual(Set(model.tabs.compactMap(\.sessionID)), ["a", "b"])
+        XCTAssertEqual(model.tabs.filter { $0.sessionID == "b" }.count, 1)
+        XCTAssertEqual(model.activeTab?.sessionID, "a")
+    }
+
+    func testClosingSettingsDoesNotRecordReopenEntry() {
+        let factory = FakeTerminalSurfaceFactory()
+        let model = Fixture.openModel(factory: factory)
+        model.openSettings()
+
+        model.closeTab(model.settingsTab!.id)
+        model.reopenLastClosedTab()
+
+        XCTAssertTrue(model.tabs.isEmpty)
+        XCTAssertEqual(factory.created.count, 0)
+    }
+
+    func testClosingProvisionalTabDoesNotRecordReopenEntry() {
+        let factory = FakeTerminalSurfaceFactory()
+        let model = Fixture.openModel(factory: factory)
+        let provisional = model.newSession(agent: .codex, projectPath: "/p/a")
+        XCTAssertNil(provisional.sessionID)
+
+        model.closeTab(provisional.id)
+        model.reopenLastClosedTab()
+
+        XCTAssertTrue(model.tabs.isEmpty)
+        XCTAssertEqual(factory.created.count, 1)
+    }
+
+    func testSelfExitDoesNotRecordReopenEntry() {
+        let factory = FakeTerminalSurfaceFactory()
+        let model = Fixture.openModel(factory: factory)
+        model.earlyExitGraceSeconds = 0
+        model.openSession(Fixture.session("a", project: "/p/a"))
+
+        factory.created[0].simulateExit()
+        model.reopenLastClosedTab()
+
+        XCTAssertTrue(model.tabs.isEmpty)
+        XCTAssertEqual(factory.created.count, 1)
+    }
+
+    func testReopenLastClosedTabSwitchesBackToItsProject() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a", project: "/p/a"))
+        model.openSession(Fixture.session("b", project: "/p/b"))
+        model.closeTab(model.openTab(forSessionID: "a")!.id)
+        XCTAssertEqual(model.activeProjectPath, "/p/b")
+
+        model.reopenLastClosedTab()
+
+        XCTAssertEqual(model.activeTab?.sessionID, "a")
+        XCTAssertEqual(model.activeProjectPath, "/p/a")
+    }
+
+    func testConfirmedPendingCloseRecordsReopenEntry() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a", project: "/p/a"))
+
+        model.requestClose(tabID: model.tabs[0].id)
+        XCTAssertNotNil(model.pendingCloseTabID)
+        model.confirmPendingClose()
+        model.reopenLastClosedTab()
+
+        XCTAssertEqual(model.activeTab?.sessionID, "a")
+        XCTAssertTrue(model.activeTab?.isResume == true)
+    }
+
     func testProcessSelfExitAutoClosesTab() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.earlyExitGraceSeconds = 0  // fake exits instantly; simulate a long-lived agent

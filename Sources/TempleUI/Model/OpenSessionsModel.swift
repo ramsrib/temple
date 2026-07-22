@@ -2,6 +2,13 @@ import SwiftUI
 import TempleCore
 import TempleTerminalAPI
 
+struct ClosedTabRecord {
+    let sessionID: String
+    let agent: Agent
+    let projectPath: String
+    let title: String
+}
+
 /// The set of open tabs and the active one (U2). Each session tab owns a
 /// `TerminalSurface` from the injected factory; reuse-or-focus prevents
 /// duplicates; the active project (derived from the active session tab) scopes
@@ -26,6 +33,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// "Is there anything wrong with how we'd launch this agent?" — asked at the
     /// moment a tab dies, never afterwards (see `SessionTab.commandWasSuspect`).
     private let canLaunch: (Agent) -> Bool
+    /// User-closed sessions only, oldest first. Process exits bypass this stack.
+    private var closedTabs: [ClosedTabRecord] = []
+    private static let closedTabLimit = 20
 
     /// U7 hook: fired when a non-active tab needs attention (bell / OSC / etc.).
     public var attentionHandler: ((SessionTab, _ title: String, _ body: String) -> Void)?
@@ -367,6 +377,17 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Settings tab are removed immediately.
     public func closeTab(_ tabID: SessionTab.ID) {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
+        if tab.kind == .session, let sessionID = tab.sessionID {
+            closedTabs.append(ClosedTabRecord(
+                sessionID: sessionID,
+                agent: tab.agent,
+                projectPath: tab.projectPath,
+                title: tab.title
+            ))
+            if closedTabs.count > Self.closedTabLimit {
+                closedTabs.removeFirst(closedTabs.count - Self.closedTabLimit)
+            }
+        }
         if let surface = tab.surface, case .running = surface.processState {
             closingTabIDs.insert(tabID)  // user-initiated: always remove on exit
             runtime.close(surface)       // delegate .exited → removeTab
@@ -395,6 +416,30 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     public func closeActiveTab() {
         if let id = activeTabID { closeTab(id) }
+    }
+
+    /// Reopen the newest user-closed session. Entries are spent if that session
+    /// was opened by another route in the meantime, preventing duplicate tabs.
+    public func reopenLastClosedTab() {
+        while let closed = closedTabs.popLast() {
+            guard sessionTab(withSessionID: closed.sessionID) == nil else { continue }
+            let tab = SessionTab(
+                kind: .session,
+                sessionID: closed.sessionID,
+                agent: closed.agent,
+                projectPath: closed.projectPath,
+                title: closed.title,
+                command: resumeCommand(
+                    agent: closed.agent,
+                    sessionID: closed.sessionID,
+                    cwd: closed.projectPath),
+                isResume: true
+            )
+            tabs.append(tab)
+            activate(tab)
+            persist()
+            return
+        }
     }
 
     private func removeTab(_ tabID: SessionTab.ID) {
@@ -590,6 +635,15 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         persistence.save(restorable)
     }
 
+    private func resumeCommand(agent: Agent, sessionID: String, cwd: String) -> TerminalCommand {
+        var argv = agent.resumeArgv(sessionID: sessionID)
+        if !argv.isEmpty {
+            argv[0] = binaryPath(agent)
+            argv.insert(contentsOf: extraArgs(agent), at: 1)
+        }
+        return TerminalCommand(argv: argv, cwd: cwd)
+    }
+
     /// Rebuild the per-project tab set + order as **inert chips** (no surface
     /// spawns until a chip is clicked). Call once at launch.
     public func restore() {
@@ -597,12 +651,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         guard !saved.isEmpty else { return }
         tabs = saved.map { p in
             let agent = p.resolvedAgent
-            var argv = agent.resumeArgv(sessionID: p.sessionID)
-            if !argv.isEmpty {
-                argv[0] = binaryPath(agent)  // GUI PATH lacks `claude`/`codex`
-                argv.insert(contentsOf: extraArgs(agent), at: 1)
-            }
-            let command = TerminalCommand(argv: argv, cwd: p.projectPath)
+            let command = resumeCommand(agent: agent, sessionID: p.sessionID,
+                                        cwd: p.projectPath)
             return SessionTab(kind: .session, sessionID: p.sessionID, agent: agent,
                               projectPath: p.projectPath, title: p.title, command: command,
                               isResume: true)

@@ -12,6 +12,7 @@ struct ShortcutsView: View {
     private static let sessions: [Shortcut] = [
         .init(keys: "⌘T", action: "New session in the current project (default agent)"),
         .init(keys: "⌘W", action: "Close the current tab (asks first if the agent is working)"),
+        .init(keys: "⌘⇧T", action: "Reopen the last closed tab"),
         .init(keys: "⌘N", action: "Go to the home page"),
         .init(keys: "⌘1–9", action: "Switch to tab 1–9 in the active project"),
         .init(keys: "⌃⇥ / ⌃⇧⇥", action: "Next / previous tab"),
