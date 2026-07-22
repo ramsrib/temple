@@ -242,6 +242,17 @@ System theme follows macOS live. Light and Dark override it. The embedded
 terminal follows the resolved appearance with Temple-owned Adwaita / Adwaita
 Dark palettes and never reads or modifies the user's Ghostty configuration.
 
+## Menu bar
+
+The native menu bar mirrors Temple's commands instead of WindowGroup's
+defaults: **File** carries the session lifecycle (New Session, New Session in
+Project…, the other-agent variant, Reopen Closed Tab, Close Tab) in place of
+New Window; **View** owns Toggle Sidebar at `⌘B` plus the palette, history,
+home, and shortcuts card; a **Project** menu mirrors the switcher and project
+cycling; **Settings…** sits in the app menu. Menu items call the same actions
+as the shortcuts below — the in-app key monitor remains the keyboard's source
+of truth.
+
 ## Keyboard shortcuts
 
 | Shortcut | Action |
