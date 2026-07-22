@@ -7,6 +7,13 @@ import AppKit
 public final class TempleAppDelegate: NSObject, NSApplicationDelegate {
     public weak var model: AppModel?
 
+    public func applicationWillFinishLaunching(_ notification: Notification) {
+        // Temple has its own tab system; macOS window tabbing would stack
+        // whole windows in a second tab bar under the chip strip. Opting out
+        // also removes View's confusing "Show Tab Bar"/"Show All Tabs" items.
+        NSWindow.allowsAutomaticWindowTabbing = false
+    }
+
     public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model, !model.openSessions.allSurfaces.isEmpty else {
             // No agents to drain, but a just-retitled session may still be

@@ -60,25 +60,38 @@ public struct TempleCommands: Commands {
 
         // View: our sidebar toggle replaces the default (⌃⌘S) so the menu
         // advertises the same ⌘B the app actually binds.
+        // Icons throughout: the system's Enter Full Screen item carries one
+        // on macOS 26, which makes the menu reserve an icon column — lone
+        // text items then read as misaligned.
         CommandGroup(replacing: .sidebar) {
-            Button("Toggle Sidebar") {
+            Button {
                 withAnimation {
                     model.sidebarVisibility = model.sidebarVisibility == .all ? .detailOnly : .all
                 }
+            } label: {
+                Label("Toggle Sidebar", systemImage: "sidebar.left")
             }
             .keyboardShortcut("b")
         }
         CommandGroup(after: .sidebar) {
             Divider()
-            Button("Command Palette") { model.toggleCommandPalette() }
-                .keyboardShortcut("k")
-            Button("Session History") { model.toggleHistory() }
-                .keyboardShortcut("y")
-            Button("Home") { model.openSessions.showHome() }
-                .keyboardShortcut("h", modifiers: [.command, .shift])
+            Button { model.toggleCommandPalette() } label: {
+                Label("Command Palette", systemImage: "command")
+            }
+            .keyboardShortcut("k")
+            Button { model.toggleHistory() } label: {
+                Label("Session History", systemImage: "clock.arrow.circlepath")
+            }
+            .keyboardShortcut("y")
+            Button { model.openSessions.showHome() } label: {
+                Label("Home", systemImage: "house")
+            }
+            .keyboardShortcut("h", modifiers: [.command, .shift])
             Divider()
-            Button("Keyboard Shortcuts") { model.shortcutsPresented.toggle() }
-                .keyboardShortcut("/")
+            Button { model.shortcutsPresented.toggle() } label: {
+                Label("Keyboard Shortcuts", systemImage: "keyboard")
+            }
+            .keyboardShortcut("/")
         }
 
         CommandMenu("Project") {
