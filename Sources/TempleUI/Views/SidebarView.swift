@@ -239,8 +239,17 @@ private struct ProjectDisclosure: View {
                 .foregroundStyle(.secondary)
                 .rotationEffect(.degrees(expanded ? 90 : 0))
                 .frame(width: 12)
-            Label(project.name, systemImage: "folder")
+            // Hand-rolled, not Label(_, systemImage:): in a .sidebar List a
+            // Label picks up the sidebar label style, which dims with window
+            // key-state — making project titles the ONLY thing in the app
+            // that reacts to focus changes. Plain Image+Text render like the
+            // session rows below and hold steady.
+            Image(systemName: "folder")
                 .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text(project.name)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.primary)
                 .lineLimit(1)
             Spacer(minLength: 4)
         }
