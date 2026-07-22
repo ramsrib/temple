@@ -96,6 +96,32 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertEqual(model.activeProjectPath, "/p/b", "wraps past the start")
     }
 
+    func testCloseReturnsToPreviouslyActiveTabNotFirst() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a", project: "/p/a"))
+        model.openSession(Fixture.session("b", project: "/p/a"))
+        // From b, open Settings; closing it must land back on b, not a.
+        model.openSettings()
+        model.closeTab(model.settingsTab!.id)
+        XCTAssertEqual(model.activeTab?.sessionID, "b")
+
+        // From b, revisit a, then open c; closing c walks back to a.
+        model.activate(model.openTab(forSessionID: "a")!)
+        model.openSession(Fixture.session("c", project: "/p/a"))
+        model.closeTab(model.openTab(forSessionID: "c")!.id)
+        XCTAssertEqual(model.activeTab?.sessionID, "a")
+    }
+
+    func testCloseWalksHistoryAcrossProjects() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a", project: "/p/a"))
+        model.openSession(Fixture.session("b", project: "/p/b"))
+        model.closeTab(model.openTab(forSessionID: "b")!.id)
+        // The previous tab lives in another project — return there anyway.
+        XCTAssertEqual(model.activeTab?.sessionID, "a")
+        XCTAssertEqual(model.activeProjectPath, "/p/a")
+    }
+
     func testCloseTabGracefullyRemovesTab() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.openSession(Fixture.session("a", project: "/p/a"))
