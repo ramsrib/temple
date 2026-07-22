@@ -4,6 +4,21 @@ import TempleCore
 
 @MainActor
 final class PersistenceAdapterTests: XCTestCase {
+    func testDBTabPersistenceKeepsActiveProjectFirstAcrossReload() throws {
+        // persist() writes the ACTIVE project's tabs first and restore()
+        // treats the first record's project as active. The SQL used to
+        // re-sort by project_path, silently handing the active seat to
+        // whichever project sorts first alphabetically ("/a" here).
+        let db = try TempleDB.inMemory()
+        DBTabPersistence(db: db).save([
+            PersistedTab(sessionID: "z1", agent: .claude, projectPath: "/z/active", title: "z"),
+            PersistedTab(sessionID: "a1", agent: .claude, projectPath: "/a/other", title: "a"),
+        ])
+
+        let loaded = DBTabPersistence(db: db).load()
+        XCTAssertEqual(loaded.map(\.projectPath), ["/z/active", "/a/other"])
+    }
+
     func testDBOverlayStoreReloadsPinsAndCustomNames() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("temple-overlay-db-\(UUID().uuidString)", isDirectory: true)

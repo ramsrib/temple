@@ -526,6 +526,19 @@ public final class AppModel: ObservableObject {
     /// panel can label itself and the open action needs no extra state.
     public private(set) var newSessionPickerAgent: Agent = .claude
 
+    /// ⌘/ — the shortcuts card, exclusive with the other panels like all of
+    /// them. Every presenter (key monitor, menu bar, launcher row) must come
+    /// through here, or a click can stack two panels.
+    public func toggleShortcuts() {
+        let presenting = !shortcutsPresented
+        shortcutsPresented = presenting
+        guard presenting else { return }
+        commandPalettePresented = false
+        historyPresented = false
+        newSessionPickerPresented = false
+        cancelProjectSwitcher()
+    }
+
     /// ⌘N — pick a project, start a new session in it with the default agent.
     /// ⌘⇧N (`alternateAgent`) — same picker, the OTHER agent: shift scales the
     /// verb from "my usual" to "the other one" without a settings trip.

@@ -157,6 +157,13 @@ struct HistoryView: View {
         }
         .onDisappear { model.openSessions.focusActiveTerminal() }
         .onChange(of: query) { _, _ in reload() }
+        // The results live in @State (recomputed, not derived per body eval —
+        // arrow keys must not re-sort the index), so a session created,
+        // updated, or retitled while the panel is open needs an explicit
+        // refresh. Selection sticks to its session id across the reload.
+        .onChange(of: model.index) { _, _ in reloadPreservingSelection() }
+        .onReceive(model.overlay.objectWillChange
+            .receive(on: DispatchQueue.main)) { _ in reloadPreservingSelection() }
         .onKeyPress(.downArrow) { move(1); return .handled }
         .onKeyPress(.upArrow) { move(-1); return .handled }
         .onKeyPress(.escape) { model.historyPresented = false; return .handled }
@@ -180,6 +187,12 @@ struct HistoryView: View {
                 : [HistoryDayGroup(day: .distantPast, title: "", sessions: results)]
         }
         selection = 0
+    }
+
+    private func reloadPreservingSelection() {
+        let selectedID = flatResults.indices.contains(selection) ? flatResults[selection].id : nil
+        reload()
+        if let selectedID, let index = indexByID[selectedID] { selection = index }
     }
 
     private func move(_ delta: Int) {

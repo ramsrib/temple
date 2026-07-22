@@ -117,5 +117,11 @@ final class HistoryTests: XCTestCase {
         XCTAssertFalse(model.historyPresented)
         XCTAssertFalse(model.shortcutsPresented)
         XCTAssertFalse(model.projectSwitcherPresented)
+
+        // The shortcuts card is exclusive too — the native menu item and the
+        // launcher row go through the same toggle as the key monitor.
+        model.toggleShortcuts()
+        XCTAssertTrue(model.shortcutsPresented)
+        XCTAssertFalse(model.commandPalettePresented)
     }
 }

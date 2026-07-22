@@ -116,10 +116,10 @@ struct LauncherView: View {
                 openFolder()
             }
             LauncherRow(icon: .symbol("command"), title: "Command palette", shortcut: "⌘K") {
-                model.commandPalettePresented = true
+                model.toggleCommandPalette()
             }
             LauncherRow(icon: .symbol("clock.arrow.circlepath"), title: "Session history", shortcut: "⌘Y") {
-                model.historyPresented = true
+                model.toggleHistory()
             }
             // Only when there is somewhere to switch TO: with fewer than two
             // projects open the switcher has nothing to show, and a row that does
@@ -130,7 +130,7 @@ struct LauncherView: View {
                 }
             }
             LauncherRow(icon: .symbol("keyboard"), title: "Keyboard shortcuts", shortcut: "⌘/") {
-                model.shortcutsPresented = true
+                model.toggleShortcuts()
             }
             LauncherRow(icon: .symbol("gearshape"), title: "Settings", shortcut: "⌘,") {
                 model.openSessions.openSettings()

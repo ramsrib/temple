@@ -459,15 +459,7 @@ private struct KeyCatcher: NSViewRepresentable {
             case "p":
                 model.advanceProjectSwitcher(by: shift ? -1 : 1); return true
             case "/":
-                let presenting = !model.shortcutsPresented
-                model.shortcutsPresented = presenting
-                if presenting {
-                    model.commandPalettePresented = false
-                    model.historyPresented = false
-                    model.newSessionPickerPresented = false
-                    model.cancelProjectSwitcher()
-                }
-                return true
+                model.toggleShortcuts(); return true
             case "b":  // VS Code / ChatGPT convention (supersedes UX.md's ⌘\)
                 withAnimation { model.sidebarVisibility = model.sidebarVisibility == .all ? .detailOnly : .all }
                 return true

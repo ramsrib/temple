@@ -88,7 +88,7 @@ public struct TempleCommands: Commands {
             }
             .keyboardShortcut("h", modifiers: [.command, .shift])
             Divider()
-            Button { model.shortcutsPresented.toggle() } label: {
+            Button { model.toggleShortcuts() } label: {
                 Label("Keyboard Shortcuts", systemImage: "keyboard")
             }
             .keyboardShortcut("/")
