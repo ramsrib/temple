@@ -182,7 +182,11 @@ public final class TempleDB: @unchecked Sendable {
         try db.read { database in
             try Row.fetchAll(
                 database,
-                sql: "SELECT * FROM open_tabs ORDER BY project_path, position"
+                // rowid = insertion order. replaceOpenTabs writes the ACTIVE
+                // project's records first so relaunch reopens the last-used
+                // project; sorting by project_path here would hand that seat
+                // to whichever project sorts first alphabetically.
+                sql: "SELECT * FROM open_tabs ORDER BY rowid"
             ).map { row in
                 OpenTabRecord(
                     projectPath: row["project_path"],
