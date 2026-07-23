@@ -70,17 +70,35 @@ public enum ClaudeUsageReader {
     static let userAgent = "claude-code/2.1.201"
     static let keychainService = "Claude Code-credentials"
 
-    public static func read() async -> ClaudeUsage? {
-        guard let creds = await loadCredentials() else { return nil }
+    public enum Outcome: Sendable {
+        /// No token anywhere — including a DENIED Keychain prompt. The caller
+        /// must stop asking for the rest of the run, or the poll re-prompts
+        /// the user every cycle.
+        case noCredentials
+        /// Had a token, endpoint didn't answer usefully — retry later, this
+        /// path never prompts anyone.
+        case endpointFailure
+        /// The endpoint said 429: it is rate-limited server-side, so the
+        /// caller should back off well past the normal poll interval.
+        case rateLimited
+        case usage(ClaudeUsage)
+    }
+
+    public static func read() async -> Outcome {
+        guard let creds = await loadCredentials() else { return .noCredentials }
         var request = URLRequest(url: usageURL, timeoutInterval: 15)
         request.setValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200
-        else { return nil }
-        return parse(data, plan: creds.plan)
+              let status = (response as? HTTPURLResponse)?.statusCode
+        else { return .endpointFailure }
+        if status == 429 { return .rateLimited }
+        guard status == 200, let usage = parse(data, plan: creds.plan) else {
+            return .endpointFailure
+        }
+        return .usage(usage)
     }
 
     /// Pure mapping of the endpoint's JSON — tolerant: absent fields drop out.

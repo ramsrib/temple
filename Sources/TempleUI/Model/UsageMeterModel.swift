@@ -14,13 +14,25 @@ public final class UsageMeterModel: ObservableObject {
     @Published private(set) var updatedAt: Date?
 
     /// Seams for tests.
-    var claudeFetch: @Sendable () async -> ClaudeUsage? = { await ClaudeUsageReader.read() }
+    var claudeFetch: @Sendable () async -> ClaudeUsageReader.Outcome = { await ClaudeUsageReader.read() }
     var codexFetch: @Sendable () async -> CodexUsage? = { CodexUsageReader.read() }
 
-    /// The Claude number is a live endpoint hit — poll gently: a slow timer
-    /// plus app activation, with a floor between any two attempts.
+    /// Tripped by a no-credentials read and never reset within the run: the
+    /// credential lookup is what raises the macOS Keychain prompt, so a user
+    /// who clicked Deny (or has no login) must not be re-prompted every poll.
+    /// Endpoint failures do NOT trip this — they never prompt, so retrying
+    /// them silently is free. Relaunch retries once.
+    private var claudeCredentialsMissing = false
+    /// Set by a 429: no Claude reads until it passes.
+    private var claudeBackoffUntil: Date = .distantPast
+
+    /// The Claude number is a live endpoint hit against an API Anthropic
+    /// rate-limits — poll gently: a slow timer plus app activation, with a
+    /// floor high enough that rapid app-switching can't add real load.
     var refreshInterval: TimeInterval = 600
-    var activationFloor: TimeInterval = 60
+    var activationFloor: TimeInterval = 300
+    /// How long a 429 silences the Claude reader.
+    var rateLimitBackoff: TimeInterval = 3600
 
     private var timer: Timer?
     private var activationObserver: NSObjectProtocol?
@@ -47,9 +59,17 @@ public final class UsageMeterModel: ObservableObject {
 
     func refreshNow() async {
         lastAttempt = Date()
-        async let claudeReading = claudeFetch()
         async let codexReading = codexFetch()
-        let (newClaude, newCodex) = await (claudeReading, codexReading)
+        var newClaude: ClaudeUsage?
+        if !claudeCredentialsMissing, Date() >= claudeBackoffUntil {
+            switch await claudeFetch() {
+            case .usage(let usage): newClaude = usage
+            case .noCredentials: claudeCredentialsMissing = true
+            case .rateLimited: claudeBackoffUntil = Date().addingTimeInterval(rateLimitBackoff)
+            case .endpointFailure: break
+            }
+        }
+        let newCodex = await codexReading
         // Keep the last good reading through a transient failure; only a
         // fresh success moves the numbers (or reveals the meter at all).
         if newClaude != nil { claude = newClaude }
