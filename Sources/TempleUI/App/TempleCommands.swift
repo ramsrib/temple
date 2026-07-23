@@ -54,8 +54,10 @@ public struct TempleCommands: Commands {
         // App menu: Settings… (no Settings scene exists, so SwiftUI won't
         // add one on its own).
         CommandGroup(replacing: .appSettings) {
-            Button("Settings…") { model.openSessions.openSettings() }
-                .keyboardShortcut(",")
+            Button { model.openSessions.openSettings() } label: {
+                Label("Settings…", systemImage: "gearshape")
+            }
+            .keyboardShortcut(",")
         }
 
         // View: our sidebar toggle replaces the default (⌃⌘S) so the menu

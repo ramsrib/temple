@@ -10,6 +10,8 @@ struct SidebarView: View {
     @State private var showAllProjects = false
     @State private var headerHovering = false
 
+    @State private var hoveringGear = false
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -135,25 +137,40 @@ struct SidebarView: View {
 
     // MARK: Footer
 
+    /// A gear that opens a MENU — a bare gear button that jumped straight to
+    /// a Settings tab read as broken (a gear promises choices). The username
+    /// that used to sit here was decoration: it never changed and did nothing.
     private var footer: some View {
         HStack {
-            Image(systemName: "person.crop.circle.fill")
-                .font(.system(size: 18))
-                .foregroundStyle(.secondary)
-            Text(NSFullUserName().isEmpty ? "You" : NSFullUserName())
-                .font(.system(size: 12))
-                .lineLimit(1)
             Spacer()
-            Button(action: { model.openSessions.openSettings() }) {
+            Menu {
+                Button {
+                    model.openSessions.openSettings()
+                } label: {
+                    Label("Settings…", systemImage: "gearshape")
+                }
+                Button {
+                    model.toggleShortcuts()
+                } label: {
+                    Label("Keyboard Shortcuts", systemImage: "keyboard")
+                }
+                Divider()
+                Button("About Temple") {
+                    NSApp.orderFrontStandardAboutPanel(nil)
+                }
+            } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(hoveringGear ? Color.primary : Color.secondary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .help("Settings (⌘,)")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .onHover { hoveringGear = $0 }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
     }
 }
 
