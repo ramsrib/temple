@@ -499,17 +499,25 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertEqual(model.visibleTabs.compactMap(\.sessionID), ["a1", "a2"])
     }
 
-    func testMoveSessionChipAroundSettingsReordersSessionsOnly() {
+    func testSessionCrossesSettingsInOneStep() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.openSession(Fixture.session("a1", project: "/p/a"))
         model.openSession(Fixture.session("a2", project: "/p/a"))
         model.openSettings()
         // Put Settings in the middle: [a1, Settings, a2].
         model.moveTab(fromOffsets: IndexSet(integer: 2), toOffset: 1)
-        // Now drag a1 (index 0) past Settings to the end (index 3).
-        model.moveTab(fromOffsets: IndexSet(integer: 0), toOffset: 3)
+        // The drag gesture swaps one slot at a time: a1 crossing Settings is
+        // the adjacent exchange move(0 → 2). Settings must step aside — the
+        // old pinned-offset behavior reconstructed the identical row and the
+        // drag could never pass the Settings chip.
+        model.moveTab(fromOffsets: IndexSet(integer: 0), toOffset: 2)
+        XCTAssertEqual(model.visibleTabs.map(\.kind), [.settings, .session, .session])
+        XCTAssertEqual(model.visibleTabs.compactMap(\.sessionID), ["a1", "a2"])
+
+        // The next step exchanges a1 with a2; Settings keeps its new slot.
+        model.moveTab(fromOffsets: IndexSet(integer: 1), toOffset: 3)
+        XCTAssertEqual(model.visibleTabs.map(\.kind), [.settings, .session, .session])
         XCTAssertEqual(model.visibleTabs.compactMap(\.sessionID), ["a2", "a1"])
-        XCTAssertEqual(model.visibleTabs.map(\.kind), [.session, .settings, .session])
     }
 
     func testSettingsOffsetIsGlobalAndClampsAcrossProjects() {

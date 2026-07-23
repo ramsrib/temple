@@ -531,12 +531,15 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         let before = visibleTabs
         var row = before
         row.move(fromOffsets: fromOffsets, toOffset: toOffset)
-        // Only a drag OF the Settings chip changes its offset; dragging a session
-        // reorders sessions while Settings stays pinned at its current offset (it
-        // doesn't jump aside as sessions shuffle underneath it).
-        let movedSettings = fromOffsets.contains { before.indices.contains($0) && before[$0].kind == .settings }
-        if movedSettings, let settings = settingsTab {
-            settingsRowOffset = row.firstIndex { $0.id == settings.id } ?? settingsRowOffset
+        // Settings' offset always follows the moved row — including when a
+        // SESSION was dragged across it. The drag gesture moves one slot per
+        // swap, so "session crosses Settings" arrives as an adjacent exchange;
+        // keeping Settings pinned made that exchange reconstruct the original
+        // row (a silent no-op the drag's slot arithmetic then drifted against),
+        // and no session could ever pass the Settings chip.
+        if let settings = settingsTab,
+           let offset = row.firstIndex(where: { $0.id == settings.id }) {
+            settingsRowOffset = offset
         }
         // Write the reordered session chips back into the master list, preserving
         // other projects' relative order.
