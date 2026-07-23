@@ -192,7 +192,7 @@ private struct UsageMeterView: View {
                 usage.manualRefresh()   // the card should show fresh numbers
                 showingCard = true
             }
-            .help("Subscription usage — click for details")
+            .help("Click to view the usage")
             .popover(isPresented: $showingCard, arrowEdge: .bottom) {
                 UsageCard(usage: usage)
             }
@@ -263,7 +263,11 @@ private struct UsageCard: View {
                     .help("Refresh now")
                 }
             }
-            .padding(8)
+            // Flush with the content column: the icon's right edge sits on
+            // the same line as the percentages' (the card's 16pt padding),
+            // not floating in the card's corner.
+            .padding(.top, 12)
+            .padding(.trailing, 13)
         }
     }
 
