@@ -148,12 +148,51 @@ struct SidebarView: View {
                 .font(.system(size: 12))
                 .lineLimit(1)
             Spacer()
+            UsageMeterView(usage: model.usage)
             FooterGearMenu(model: model)
                 .frame(width: 22, height: 22)
                 .help("Settings and more")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+    }
+}
+
+/// EXPERIMENTAL — compact subscription usage: one headline percentage per
+/// agent (the most constrained window), full breakdown in the tooltip.
+/// Renders NOTHING until a reader succeeds, so machines without a
+/// subscription login never see it.
+private struct UsageMeterView: View {
+    @ObservedObject var usage: UsageMeterModel
+
+    var body: some View {
+        let claude = usage.claudeHeadlinePct
+        let codex = usage.codexHeadlinePct
+        if claude != nil || codex != nil {
+            HStack(spacing: 5) {
+                if let claude {
+                    AgentBadge(agent: .claude, size: 10)
+                    percent(claude)
+                }
+                if claude != nil && codex != nil {
+                    Text("·").font(.system(size: 10)).foregroundStyle(.tertiary)
+                }
+                if let codex {
+                    AgentBadge(agent: .codex, size: 10)
+                    percent(codex)
+                }
+            }
+            .help(usage.breakdown)
+            .padding(.trailing, 8)
+        }
+    }
+
+    private func percent(_ pct: Int) -> some View {
+        Text("\(pct)%")
+            .font(.system(size: 11))
+            .foregroundStyle(pct >= 95 ? Color.red
+                             : pct >= 80 ? Color.orange
+                             : Color.secondary)
     }
 }
 

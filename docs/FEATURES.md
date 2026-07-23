@@ -242,6 +242,20 @@ System theme follows macOS live. Light and Dark override it. The embedded
 terminal follows the resolved appearance with Temple-owned Adwaita / Adwaita
 Dark palettes and never reads or modifies the user's Ghostty configuration.
 
+## Subscription usage (experimental)
+
+When a Claude Code or Codex subscription login is present, the sidebar footer
+shows a compact usage readout — one headline percentage per agent (the most
+constrained window: five-hour, weekly, or a per-model cap), full breakdown in
+the tooltip, colored as it approaches the limit. Claude is a live read of the
+OAuth usage endpoint using the CLI's own token (Keychain, file fallback);
+Codex is the latest rate-limit snapshot from its rollout logs, as fresh as the
+last Codex turn. Refreshes gently: on activation and a slow timer.
+
+Experimental by construction: the endpoint is undocumented, so every reader
+treats any surprise as absence — no login, no subscription, or a changed API
+means the meter simply doesn't render, never an error.
+
 ## Menu bar
 
 The native menu bar mirrors Temple's commands instead of WindowGroup's
