@@ -158,9 +158,9 @@ struct SidebarView: View {
     }
 }
 
-/// EXPERIMENTAL — compact subscription usage: one headline percentage per
-/// agent (the most constrained window), full breakdown in the tooltip.
-/// Renders NOTHING until a reader succeeds, so machines without a
+/// Compact subscription usage: one headline percentage per agent (the most
+/// constrained window), per-agent breakdown in the tooltip, click to
+/// refresh. Renders NOTHING until a reader succeeds, so machines without a
 /// subscription login never see it.
 private struct UsageMeterView: View {
     @ObservedObject var usage: UsageMeterModel
@@ -188,6 +188,8 @@ private struct UsageMeterView: View {
                     .help(usage.codexBreakdown ?? "")
                 }
             }
+            .contentShape(Rectangle())
+            .onTapGesture { usage.manualRefresh() }
             .padding(.trailing, 8)
         }
     }

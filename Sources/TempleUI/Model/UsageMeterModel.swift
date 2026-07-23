@@ -1,7 +1,7 @@
 import SwiftUI
 import TempleCore
 
-/// EXPERIMENTAL — subscription usage in the sidebar footer, read natively:
+/// Subscription usage in the sidebar footer, read natively:
 /// Claude from the OAuth usage endpoint (live), Codex from its rollout-log
 /// snapshot (fresh as the last Codex turn). See SubscriptionUsage.swift for
 /// the mechanics; both readers return nil on any surprise, and nil renders
@@ -27,10 +27,11 @@ public final class UsageMeterModel: ObservableObject {
     private var claudeBackoffUntil: Date = .distantPast
 
     /// The Claude number is a live endpoint hit against an API Anthropic
-    /// rate-limits — poll gently: a slow timer plus app activation, with a
-    /// floor high enough that rapid app-switching can't add real load.
-    var refreshInterval: TimeInterval = 600
-    var activationFloor: TimeInterval = 300
+    /// rate-limits — poll politely: a timer plus app activation and manual
+    /// clicks, each floored so no path can hammer the endpoint.
+    var refreshInterval: TimeInterval = 300
+    var activationFloor: TimeInterval = 120
+    var manualFloor: TimeInterval = 20
     /// How long a 429 silences the Claude reader.
     var rateLimitBackoff: TimeInterval = 3600
 
@@ -55,6 +56,13 @@ public final class UsageMeterModel: ObservableObject {
                 await self.refreshNow()
             }
         }
+    }
+
+    /// Click-to-refresh: the meter exists because its user checks usage all
+    /// day, and "the number, now" needs a mouse route. Floored, not free.
+    public func manualRefresh() {
+        guard Date().timeIntervalSince(lastAttempt) > manualFloor else { return }
+        Task { await refreshNow() }
     }
 
     func refreshNow() async {
