@@ -226,7 +226,7 @@ private struct UsageCard: View {
         VStack(alignment: .leading, spacing: 14) {
             if let claude = usage.claude {
                 section(agent: .claude, name: "Claude", plan: claude.plan,
-                        rows: claudeRows(claude), footnote: nil)
+                        rows: claudeRows(claude), footnote: nil, showsRefresh: true)
             }
             if usage.claude != nil && usage.codex != nil {
                 Divider()
@@ -236,37 +236,35 @@ private struct UsageCard: View {
                         rows: codexRows(codex),
                         footnote: codex.capturedAt.map {
                             "As of the last Codex turn, \(RelativeTime.string(from: $0))"
-                        })
+                        },
+                        showsRefresh: usage.claude == nil)
             }
         }
         .padding(16)
         .frame(width: 264)
-        // The card's own refresh: the meter click already refreshes on the
-        // way in, but the card stays open while you watch a long window
-        // drain, and "again, now" deserves a control.
-        .overlay(alignment: .topTrailing) {
-            // The fetch usually finishes in milliseconds, so an in-flight
-            // spinner alone reads as a dead button — every click spins the
-            // arrow a full turn as its acknowledgment.
-            Button {
-                usage.manualRefresh()
-                withAnimation(.easeInOut(duration: 0.7)) { spinDegrees += 360 }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(spinDegrees))
-                    .frame(width: 18, height: 18)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Refresh now")
-            // Flush with the content column: the icon's right edge sits on
-            // the same line as the percentages' (the card's 16pt padding),
-            // not floating in the card's corner.
-            .padding(.top, 12)
-            .padding(.trailing, 13)
+    }
+
+    /// The card's own refresh: the meter click already refreshes on the way
+    /// in, but the card stays open while you watch a window drain. Lives IN
+    /// the first section's header row, in the same trailing column as the
+    /// percentages — an overlay can only eyeball that alignment; sharing the
+    /// column makes it structural. The fetch usually finishes in
+    /// milliseconds, so the arrow spins a full turn as the click's
+    /// acknowledgment.
+    private var refreshButton: some View {
+        Button {
+            usage.manualRefresh()
+            withAnimation(.easeInOut(duration: 0.7)) { spinDegrees += 360 }
+        } label: {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .rotationEffect(.degrees(spinDegrees))
+                .frame(width: 18, height: 18, alignment: .trailing)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .help("Refresh now")
     }
 
     private func claudeRows(_ claude: ClaudeUsage) -> [(String, Double)] {
@@ -287,7 +285,8 @@ private struct UsageCard: View {
 
     @ViewBuilder
     private func section(agent: Agent, name: String, plan: String?,
-                         rows: [(String, Double)], footnote: String?) -> some View {
+                         rows: [(String, Double)], footnote: String?,
+                         showsRefresh: Bool) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 AgentBadge(agent: agent, size: 12)
@@ -300,6 +299,11 @@ private struct UsageCard: View {
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1.5)
                         .background(Color.primary.opacity(0.07), in: Capsule())
+                }
+                if showsRefresh {
+                    Spacer(minLength: 8)
+                    refreshButton
+                        .frame(width: 36, alignment: .trailing)
                 }
             }
             ForEach(rows, id: \.0) { label, pct in
