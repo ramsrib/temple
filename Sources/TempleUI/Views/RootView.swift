@@ -56,6 +56,7 @@ public struct RootView: View {
             // Launches before it lands fall back to the shell's own answer — see
             // `ToolchainModel.launchPath`.
             model.toolchain.detect()
+            model.usage.start()
 
             let launchToken = model.focusSearchToken
             let sweep = LaunchFocusSweep()

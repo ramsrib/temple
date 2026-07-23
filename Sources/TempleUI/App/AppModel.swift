@@ -87,6 +87,9 @@ public final class AppModel: ObservableObject {
     public let overlay: SessionOverlayStore
     public let openSessions: OpenSessionsModel
     public let notifications: NotificationController
+    /// EXPERIMENTAL: subscription usage for the sidebar footer (see
+    /// UsageMeterModel). Inert until start() — tests never hit the network.
+    public let usage = UsageMeterModel()
     /// Which `claude`/`codex` this machine actually has, and which of them run.
     public let toolchain: ToolchainModel
 
