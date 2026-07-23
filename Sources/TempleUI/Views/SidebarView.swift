@@ -240,6 +240,31 @@ private struct UsageCard: View {
         }
         .padding(16)
         .frame(width: 264)
+        // The card's own refresh: the meter click already refreshes on the
+        // way in, but the card stays open while you watch a long window
+        // drain, and "again, now" deserves a control.
+        .overlay(alignment: .topTrailing) {
+            Group {
+                if usage.refreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.7)
+                } else {
+                    Button {
+                        usage.manualRefresh()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 18, height: 18)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Refresh now")
+                }
+            }
+            .padding(8)
+        }
     }
 
     private func claudeRows(_ claude: ClaudeUsage) -> [(String, Double)] {
