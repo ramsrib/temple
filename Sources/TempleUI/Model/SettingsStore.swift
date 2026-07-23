@@ -67,7 +67,7 @@ public final class SettingsStore: ObservableObject {
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         loading = true
-        fontSize = defaults.object(forKey: Key.fontSize) as? Double ?? 13
+        fontSize = defaults.object(forKey: Key.fontSize) as? Double ?? 14
         fontFamily = defaults.string(forKey: Key.fontFamily) ?? "SF Mono"
         defaultAgent = Agent(rawValue: defaults.string(forKey: Key.defaultAgent) ?? "") ?? .claude
         theme = ThemePreference(rawValue: defaults.string(forKey: Key.theme) ?? "") ?? .system

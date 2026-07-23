@@ -9,9 +9,10 @@ import Foundation
 //   Codex  : the most recent rate-limit snapshot Codex persists into its
 //            rollout logs — free, but only as fresh as the last Codex turn.
 //
-// EXPERIMENTAL: the endpoint is undocumented and the log shape is Codex's
-// private business; either can change under us. Every reader returns nil on
-// any surprise — the feature degrades to absence, never to an error surface.
+// Caveat that shapes everything here: the endpoint is undocumented and the
+// log shape is Codex's private business; either can change under us. Every
+// reader returns nil on any surprise — the meter degrades to absence, never
+// to an error surface.
 
 public struct UsageWindow: Equatable, Sendable {
     public let pct: Double
