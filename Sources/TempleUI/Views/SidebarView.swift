@@ -220,6 +220,7 @@ private enum UsageSeverity {
 /// a section per provider, a severity-colored bar per window.
 private struct UsageCard: View {
     @ObservedObject var usage: UsageMeterModel
+    @State private var spinDegrees = 0.0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -244,25 +245,22 @@ private struct UsageCard: View {
         // way in, but the card stays open while you watch a long window
         // drain, and "again, now" deserves a control.
         .overlay(alignment: .topTrailing) {
-            Group {
-                if usage.refreshing {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.7)
-                } else {
-                    Button {
-                        usage.manualRefresh()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 18, height: 18)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Refresh now")
-                }
+            // The fetch usually finishes in milliseconds, so an in-flight
+            // spinner alone reads as a dead button — every click spins the
+            // arrow a full turn as its acknowledgment.
+            Button {
+                usage.manualRefresh()
+                withAnimation(.easeInOut(duration: 0.7)) { spinDegrees += 360 }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(spinDegrees))
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help("Refresh now")
             // Flush with the content column: the icon's right edge sits on
             // the same line as the percentages' (the card's 16pt padding),
             // not floating in the card's corner.
