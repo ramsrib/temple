@@ -499,6 +499,25 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertEqual(model.visibleTabs.compactMap(\.sessionID), ["a1", "a2"])
     }
 
+    func testMoveTabToFrontAndToEnd() {
+        // The chip menu's restacking controls: front = toOffset 0, end =
+        // toOffset row-count, from any middle position — Settings included.
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a", project: "/p/a"))
+        model.openSession(Fixture.session("b", project: "/p/a"))
+        model.openSession(Fixture.session("c", project: "/p/a"))
+        model.openSettings()   // [a, b, c, Settings]
+
+        model.moveTab(fromOffsets: IndexSet(integer: 1), toOffset: 0)   // b to front
+        XCTAssertEqual(model.visibleTabs.compactMap(\.sessionID), ["b", "a", "c"])
+
+        let count = model.visibleTabs.count
+        model.moveTab(fromOffsets: IndexSet(integer: 1), toOffset: count)   // a to end
+        XCTAssertEqual(model.visibleTabs.compactMap(\.sessionID), ["b", "c", "a"])
+        // a passed Settings on its way to the end; Settings stepped aside.
+        XCTAssertEqual(model.visibleTabs.map(\.kind), [.session, .session, .settings, .session])
+    }
+
     func testSessionCrossesSettingsInOneStep() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.openSession(Fixture.session("a1", project: "/p/a"))

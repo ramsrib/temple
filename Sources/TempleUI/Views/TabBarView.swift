@@ -628,6 +628,7 @@ private struct TabChip: View {
             }
             .disabled(tab.sessionID == nil)
             Divider()
+            moveControls
             Button("Copy resume command") {
                 if let sid = tab.sessionID {
                     copyToPasteboard(tab.agent.resumeArgv(sessionID: sid).joined(separator: " "))
@@ -672,6 +673,31 @@ private struct TabChip: View {
             .pickerStyle(.palette)
             .controlSize(.small)
             .disabled(tab.sessionID == nil)
+        }
+    }
+
+    /// Restacking for crowded rows: jump a chip to either end without
+    /// dragging it across everything in between. Each control appears only
+    /// when it would do something.
+    @ViewBuilder
+    private var moveControls: some View {
+        let row = model.openSessions.visibleTabs
+        if let from = row.firstIndex(where: { $0.id == tab.id }) {
+            if from > 0 {
+                Button("Move to Front") {
+                    model.openSessions.moveTab(fromOffsets: IndexSet(integer: from),
+                                               toOffset: 0)
+                }
+            }
+            if from < row.count - 1 {
+                Button("Move to End") {
+                    model.openSessions.moveTab(fromOffsets: IndexSet(integer: from),
+                                               toOffset: row.count)
+                }
+            }
+            if row.count > 1 {
+                Divider()
+            }
         }
     }
 
