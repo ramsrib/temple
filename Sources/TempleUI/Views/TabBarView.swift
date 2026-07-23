@@ -50,6 +50,17 @@ struct StripOverflowCue: View {
     }
 }
 
+/// Holds an NSEvent monitor for a view's lifetime (a class, so remove()
+/// works from nonmutating SwiftUI callbacks).
+@MainActor
+private final class MonitorBox {
+    var monitor: Any?
+    func remove() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
+}
+
 /// Chip frames in the chips row's coordinate space, for scroll-into-view.
 private struct ChipFramesKey: PreferenceKey {
     static var defaultValue: [SessionTab.ID: CGRect] { [:] }
@@ -113,6 +124,7 @@ struct TabStripChipsRow: View {
     let framesChanged: ([CGRect]) -> Void
 
     @State private var dragging: SessionTab.ID?
+    private let dragWatchdog = MonitorBox()
     /// Cursor-to-chip-leading-edge distance at grab time: the chip's virtual
     /// frame is reconstructed from the live cursor for the whole gesture.
     @State private var dragGrabOffset: CGFloat = 0
@@ -203,6 +215,38 @@ struct TabStripChipsRow: View {
         .onAppear {
             pendingReveal = model.openSessions.activeTabID
             flushReveal()
+            // Cancellation safety net: a DragGesture that gets CANCELLED
+            // (window deactivates, Mission Control, system interruption)
+            // never fires onEnded — the chip then freezes mid-drag in its
+            // opaque in-hand skin at a stale offset, half-clipped under the
+            // pinned cluster, until the next interaction re-enters the
+            // gesture. Every physical drag ends with a mouse-up in this app
+            // or the app losing key, so both check that onEnded really ran
+            // and settle the chip if it didn't. (Seen in the wild.)
+            dragWatchdog.monitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.leftMouseUp]) { event in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    settleLeakedDrag()
+                }
+                return event
+            }
+        }
+        .onDisappear { dragWatchdog.remove() }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didResignActiveNotification)) { _ in
+            settleLeakedDrag()
+        }
+    }
+
+    /// Clears a drag whose gesture died without onEnded. A live drag can't
+    /// coexist with either trigger (mouse-up already fired onEnded by the
+    /// time the delayed check runs; a deactivated app has no drag).
+    private func settleLeakedDrag() {
+        guard dragging != nil else { return }
+        TempleUILog.drag.warning("settling leaked drag state")
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            dragging = nil
+            dragVirtualMinX = nil
         }
     }
 
