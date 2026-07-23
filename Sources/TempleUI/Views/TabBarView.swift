@@ -50,19 +50,6 @@ struct StripOverflowCue: View {
     }
 }
 
-/// Runs its closure when the drag session lets go of its item provider —
-/// the only signal SwiftUI leaves for a drag that ended without a drop.
-private final class DragSessionEnd {
-    private let end: @MainActor () -> Void
-    init(_ end: @escaping @MainActor () -> Void) { self.end = end }
-    deinit {
-        let end = self.end
-        Task { @MainActor in end() }
-    }
-}
-
-private nonisolated(unsafe) var dragSessionEndKey: UInt8 = 0
-
 /// Chip frames in the chips row's coordinate space, for scroll-into-view.
 private struct ChipFramesKey: PreferenceKey {
     static var defaultValue: [SessionTab.ID: CGRect] { [:] }
@@ -126,6 +113,22 @@ struct TabStripChipsRow: View {
     let framesChanged: ([CGRect]) -> Void
 
     @State private var dragging: SessionTab.ID?
+    /// Cursor-to-chip-leading-edge distance at grab time: the chip's virtual
+    /// frame is reconstructed from the live cursor for the whole gesture.
+    @State private var dragGrabOffset: CGFloat = 0
+    /// The dragged chip's virtual leading edge (row coords) — where the hand
+    /// is holding it, independent of which slot the model currently gives it.
+    @State private var dragVirtualMinX: CGFloat?
+    /// The dragged chip's width, cached at grab: the live frames dict is
+    /// never trusted for the dragged chip itself mid-flight.
+    @State private var dragChipWidth: CGFloat = 0
+    /// The dragged chip's slot origin, tracked ARITHMETICALLY across swaps
+    /// (new slot = old ± neighbor width ± gap). Reading it back from the
+    /// measured frames lags a preference tick behind layout and the chip
+    /// visibly shook around the cursor at every swap.
+    @State private var dragSlotMinX: CGFloat = 0
+    /// Inter-chip gap (spacing + separator), captured at grab.
+    @State private var dragGap: CGFloat = 5
     @State private var frames: [SessionTab.ID: CGRect] = [:]
     @State private var pendingReveal: SessionTab.ID?
 
@@ -153,53 +156,36 @@ struct TabStripChipsRow: View {
                         .frame(width: 1, height: 16)
                         .opacity(tab.id != activeID && visible[index - 1].id != activeID
                                  ? 1 : 0)
+                        .animation(.easeInOut(duration: 0.18), value: visible.map(\.id))
                 }
-                TabChip(tab: tab)
-                    // The dimmed slot is the drop indicator: it travels with
-                    // the live reorder, showing exactly where release lands.
-                    .opacity(dragging == tab.id ? 0.3 : 1)
-                    .animation(.easeInOut(duration: 0.15), value: dragging)
+                // The chip itself travels with the cursor (Chrome-style
+                // mouse tracking, not system drag-and-drop: the ghost
+                // preview + spring-back of NSItemProvider drags read as
+                // "nothing happened"). A slight lift + shadow says it's in
+                // hand; neighbors shuffle out of the way live. The background
+                // GeometryReader sits OUTSIDE the offset chain, so it reports
+                // the chip's layout SLOT, not its dragged position.
+                TabChip(tab: tab, dragged: dragging == tab.id)
+                    .offset(x: dragOffset(for: tab.id))
+                    // No scaleEffect lift: rasterize-and-scale blurs the
+                    // title. The shadow and opaque skin carry "in hand".
+                    .shadow(color: .black.opacity(dragging == tab.id ? 0.25 : 0),
+                            radius: 6, y: 2)
+                    .gesture(chipDragGesture(for: tab.id))
                     .background(GeometryReader { geo in
                         Color.clear.preference(key: ChipFramesKey.self,
                                                value: [tab.id: geo.frame(in: .named("temple.chipsRow"))])
                     })
-                    .onDrag {
-                        dragging = tab.id
-                        let provider = NSItemProvider(object: tab.id.uuidString as NSString)
-                        // A cancelled drag (released outside the strip) gets
-                        // no SwiftUI callback; the session releasing its item
-                        // provider is the only end-of-drag signal, so the
-                        // un-dim rides on the provider's lifetime.
-                        objc_setAssociatedObject(
-                            provider, &dragSessionEndKey,
-                            DragSessionEnd { dragging = nil },
-                            .OBJC_ASSOCIATION_RETAIN)
-                        return provider
-                    } preview: {
-                        // Without an explicit preview the system snapshots the
-                        // chip as rendered — and an inactive chip's fill is
-                        // clear, so only the bare title text appears to drag.
-                        TabChipDragPreview(
-                            tab: tab,
-                            title: TabChip.displayTitle(for: tab, model: model),
-                            mark: tab.sessionID.flatMap { sid in
-                                model.overlay.color(for: sid).flatMap {
-                                    TabColorMark(rawValue: $0)?.color
-                                }
-                            })
-                    }
+                    .zIndex(dragging == tab.id ? 2 : 0)
+                    // Neighbors GLIDE aside to open the drop gap (the natural
+                    // make-room feel); the chip in hand is exempt — its slot
+                    // hop must be instant or the offset glue math chases an
+                    // animating base and the chip shakes at every swap.
+                    .animation(dragging == tab.id ? nil : .easeInOut(duration: 0.18),
+                               value: visible.map(\.id))
             }
         }
         .coordinateSpace(name: "temple.chipsRow")
-        .onDrop(of: [.text], delegate: TabRowReorderDelegate(
-            model: model,
-            dragging: $dragging,
-            chipMidpoints: {
-                frames.map { (id: $0.key, midX: $0.value.midX) }
-                    .sorted { $0.midX < $1.midX }
-            },
-            reveal: reveal
-        ))
         .onPreferenceChange(ChipFramesKey.self) { new in
             frames = new
             framesChanged(new.values.sorted { $0.minX < $1.minX })
@@ -213,6 +199,79 @@ struct TabStripChipsRow: View {
             pendingReveal = model.openSessions.activeTabID
             flushReveal()
         }
+    }
+
+    /// The dragged chip is glued to the hand: its visual position is the
+    /// virtual frame, wherever its slot currently is. Everyone else stays put.
+    private func dragOffset(for id: SessionTab.ID) -> CGFloat {
+        guard dragging == id, let virtualMinX = dragVirtualMinX else { return 0 }
+        return virtualMinX - dragSlotMinX
+    }
+
+    private func chipDragGesture(for id: SessionTab.ID) -> some Gesture {
+        DragGesture(minimumDistance: 3, coordinateSpace: .named("temple.chipsRow"))
+            .onChanged { value in
+                if dragging != id {
+                    guard let frame = frames[id] else { return }
+                    dragging = id
+                    dragGrabOffset = value.startLocation.x - frame.minX
+                    dragChipWidth = frame.width
+                    dragSlotMinX = frame.minX
+                    // Real inter-chip gap from a live neighbor (falls back to
+                    // the nominal spacing+separator when the row has one chip).
+                    let row = model.openSessions.visibleTabs
+                    if let at = row.firstIndex(where: { $0.id == id }) {
+                        if at + 1 < row.count, let rf = frames[row[at + 1].id] {
+                            dragGap = rf.minX - frame.maxX
+                        } else if at > 0, let lf = frames[row[at - 1].id] {
+                            dragGap = frame.minX - lf.maxX
+                        }
+                    }
+                    TempleUILog.drag.debug("drag begin grab=\(Int(dragGrabOffset)) width=\(Int(dragChipWidth)) gap=\(Int(dragGap))")
+                }
+                let virtualMinX = value.location.x - dragGrabOffset
+                dragVirtualMinX = virtualMinX
+                // Pushing against the clip edge creeps the strip so long
+                // moves work in one gesture; no-op while already visible.
+                reveal(CGRect(x: value.location.x - 60, y: 0, width: 120, height: 1))
+                // The swap decision needs exactly three chips: the one in
+                // hand (cached at grab) and its CURRENT neighbors, looked up
+                // by id. No whole-row snapshot agreement is required — the
+                // sorted-frames guard this replaces wedged after the first
+                // swap and blocked every further move in both directions.
+                let row = model.openSessions.visibleTabs
+                guard let from = row.firstIndex(where: { $0.id == id }) else { return }
+                let rightFrame = from + 1 < row.count ? frames[row[from + 1].id] : nil
+                let leftFrame = from > 0 ? frames[row[from - 1].id] : nil
+                let step = TabReorderMath.step(
+                    chipMin: virtualMinX, chipMax: virtualMinX + dragChipWidth,
+                    leftNeighborMidX: leftFrame?.midX, rightNeighborMidX: rightFrame?.midX)
+                if step != 0 {
+                    let to = step > 0 ? from + 2 : from - 1
+                    // The slot origin moves by the passed neighbor's width
+                    // plus one gap — arithmetic, so the glue math never waits
+                    // on a layout measurement.
+                    if step > 0, let rightFrame {
+                        dragSlotMinX += rightFrame.width + dragGap
+                    } else if step < 0, let leftFrame {
+                        dragSlotMinX -= leftFrame.width + dragGap
+                    }
+                    TempleUILog.drag.debug("drag: MOVE from=\(from) to=\(to)")
+                    // No transaction animation: the per-chip .animation(value:)
+                    // modifiers animate the neighbors; the dragged chip's own
+                    // slot hop must land instantly (see dragOffset).
+                    model.openSessions.moveTab(fromOffsets: IndexSet(integer: from),
+                                               toOffset: to)
+                }
+            }
+            .onEnded { _ in
+                TempleUILog.drag.debug("drag end")
+                // The chip settles from the hand into its slot.
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    dragging = nil
+                    dragVirtualMinX = nil
+                }
+            }
     }
 
     /// Reveal waits until the activated chip has a reported frame — a brand-new
@@ -404,6 +463,8 @@ private struct ProjectSwitcherRow: View {
 private struct TabChip: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var tab: SessionTab
+    /// True while this chip rides the drag gesture (set by the row).
+    var dragged = false
     @State private var hovering = false
     @State private var editing = false
     @State private var draft = ""
@@ -472,9 +533,13 @@ private struct TabChip: View {
                         }
                 } else {
                     Text(displayTitle)
+                        // In hand keeps its resting weight (a jump to .medium
+                        // reads as blur mid-motion) but takes primary ink —
+                        // secondary gray over the lifted skin made the title
+                        // recede exactly when it matters.
                         .font(.system(size: 12, weight: isActive ? .medium : .regular))
-                        .foregroundStyle(isActive ? AnyShapeStyle(.primary)
-                                                  : AnyShapeStyle(.secondary))
+                        .foregroundStyle(isActive || dragged ? AnyShapeStyle(.primary)
+                                                             : AnyShapeStyle(.secondary))
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -607,7 +672,22 @@ private struct TabChip: View {
 
     @ViewBuilder
     private var chipBackground: some View {
-        if let mark = colorMark?.color {
+        if dragged {
+            // In hand: an OPAQUE base. Resting chips are near-transparent
+            // washes over the band, so a lifted transparent chip showed its
+            // neighbors sliding through it — read as flicker, not a lift.
+            ZStack {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color(nsColor: .windowBackgroundColor))
+                // Active-strength wash, not heavier: the border and shadow
+                // already say "lifted", and a darker fill dimmed the title.
+                RoundedRectangle(cornerRadius: 6)
+                    .fill((colorMark?.color.opacity(0.20)) ?? Color.primary.opacity(0.08))
+            }
+            .overlay(RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(colorMark?.color.opacity(0.55) ?? Palette.hairline,
+                              lineWidth: 1))
+        } else if let mark = colorMark?.color {
             // Same grammar as uncolored chips: the border belongs to the
             // ACTIVE state only. A resting mark is a quiet wash of color —
             // give it a border and every marked tab reads as selected.
@@ -630,114 +710,18 @@ private struct TabChip: View {
     }
 }
 
-/// What travels with the cursor during a chip drag: the whole chip — badge,
-/// activity dot, title — on an opaque rounded fill, so the drag reads as
-/// moving the tab, not its text. Rendered standalone (no environment), so the
-/// resolved title is passed in.
-private struct TabChipDragPreview: View {
-    let tab: SessionTab
-    let title: String
-    let mark: Color?
-
-    var body: some View {
-        HStack(spacing: 6) {
-            if tab.kind == .settings {
-                Image(systemName: "gearshape").font(.system(size: 11))
-            } else {
-                AgentBadge(agent: tab.agent, size: 12)
-                if tab.activity != .idle {
-                    ActivityDot(state: tab.activity, size: 5)
-                }
-            }
-            Text(title)
-                .font(.system(size: 12))
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.horizontal, 9)
-        // Match the chip's fixed footprint so the drag reads as lifting the
-        // tab itself, not a reflowed copy of it.
-        .frame(width: tab.kind == .settings ? nil : TabChip.sessionWidth)
-        .padding(.vertical, 8)
-        .background { previewBackground }
-        .overlay { previewBorder }
-    }
-
-    @ViewBuilder
-    private var previewBackground: some View {
-        // The active-chip look, made self-sufficient: the strip's band
-        // isn't underneath the preview, so it gets its own opaque base.
-        ZStack {
-            RoundedRectangle(cornerRadius: 7).fill(Color(nsColor: .windowBackgroundColor))
-            RoundedRectangle(cornerRadius: 7)
-                .fill(mark?.opacity(0.22) ?? Color.primary.opacity(0.12))
-        }
-    }
-
-    @ViewBuilder
-    private var previewBorder: some View {
-        RoundedRectangle(cornerRadius: 7)
-            .strokeBorder(mark?.opacity(0.55) ?? Color.primary.opacity(0.15), lineWidth: 1)
-    }
-}
-
 enum TabReorderMath {
-    /// Where a drag at `x` should insert, or nil when the row is already right.
-    /// Midpoint rule: you take a chip's slot only once you're past its middle —
-    /// which is also what makes the result stable under repeated ticks.
-    static func insertionOffset(x: CGFloat, midXs: [CGFloat], from: Int) -> Int? {
-        let insertion = midXs.firstIndex(where: { x < $0 }) ?? midXs.count
-        return (insertion == from || insertion == from + 1) ? nil : insertion
+    /// Which way the dragged chip should move now: -1 (left), +1 (right), or
+    /// 0 (stay). Chrome's rule, chip-edge based: the chip in hand takes a
+    /// neighbor's slot the moment its edge crosses that neighbor's center.
+    /// One step per call; repeated gesture ticks cascade across longer
+    /// distances. Stable: after an equal-width swap the crossing threshold
+    /// lands behind the cursor, so the same position never swaps back.
+    static func step(chipMin: CGFloat, chipMax: CGFloat,
+                     leftNeighborMidX: CGFloat?, rightNeighborMidX: CGFloat?) -> Int {
+        if let rightNeighborMidX, chipMax > rightNeighborMidX { return 1 }
+        if let leftNeighborMidX, chipMin < leftNeighborMidX { return -1 }
+        return 0
     }
 }
 
-/// Level-triggered live reorder across the active project's entire chips row.
-private struct TabRowReorderDelegate: DropDelegate {
-    let model: AppModel
-    @Binding var dragging: SessionTab.ID?
-    let chipMidpoints: () -> [(id: SessionTab.ID, midX: CGFloat)]
-    /// Scrolls a row-coordinate rect into the strip's visible clip. The strip
-    /// shows a window onto the row, and without this a drag stalls at the
-    /// visible edge — a tab could never travel past the chips on screen.
-    let reveal: (CGRect) -> Void
-
-    private func reorder(to x: CGFloat) {
-        MainActor.assumeIsolated {
-            guard let dragging else { return }
-            // Keep the neighborhood of the cursor visible: pushing against
-            // either edge of the clip creeps the strip in that direction, so
-            // long moves (position 0 → 6 across an overflowing row) work in
-            // one gesture. reveal() no-ops while the rect is already visible.
-            reveal(CGRect(x: x - 60, y: 0, width: 120, height: 1))
-            let row = model.openSessions.visibleTabs
-            let midpoints = chipMidpoints()
-            // Geometry preferences can trail a close or reorder by one layout
-            // tick. Only act on a snapshot that describes this exact row.
-            guard midpoints.count == row.count,
-                  zip(midpoints, row).allSatisfy({ $0.0.id == $0.1.id }),
-                  let from = row.firstIndex(where: { $0.id == dragging }),
-                  let to = TabReorderMath.insertionOffset(
-                    x: x, midXs: midpoints.map(\.midX), from: from)
-            else { return }
-            withAnimation(.easeInOut(duration: 0.18)) {
-                model.openSessions.moveTab(fromOffsets: IndexSet(integer: from),
-                                           toOffset: to)
-            }
-        }
-    }
-
-    func validateDrop(info: DropInfo) -> Bool {
-        MainActor.assumeIsolated { dragging != nil }
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        reorder(to: info.location.x)
-        return DropProposal(operation: .move)
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        reorder(to: info.location.x)
-        MainActor.assumeIsolated { dragging = nil }
-        return true
-    }
-}
