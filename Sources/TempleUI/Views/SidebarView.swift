@@ -159,11 +159,12 @@ struct SidebarView: View {
 }
 
 /// Compact subscription usage: one headline percentage per agent (the most
-/// constrained window), per-agent breakdown in the tooltip, click to
-/// refresh. Renders NOTHING until a reader succeeds, so machines without a
-/// subscription login never see it.
+/// constrained window). Click for the full card — per-window severity bars —
+/// which also refreshes. Renders NOTHING until a reader succeeds, so
+/// machines without a subscription login never see it.
 private struct UsageMeterView: View {
     @ObservedObject var usage: UsageMeterModel
+    @State private var showingCard = false
 
     var body: some View {
         let claude = usage.claudeHeadlinePct
@@ -175,7 +176,6 @@ private struct UsageMeterView: View {
                         AgentBadge(agent: .claude, size: 10)
                         percent(claude)
                     }
-                    .help(usage.claudeBreakdown ?? "")
                 }
                 if claude != nil && codex != nil {
                     Text("·").font(.system(size: 10)).foregroundStyle(.tertiary)
@@ -185,11 +185,17 @@ private struct UsageMeterView: View {
                         AgentBadge(agent: .codex, size: 10)
                         percent(codex)
                     }
-                    .help(usage.codexBreakdown ?? "")
                 }
             }
             .contentShape(Rectangle())
-            .onTapGesture { usage.manualRefresh() }
+            .onTapGesture {
+                usage.manualRefresh()   // the card should show fresh numbers
+                showingCard = true
+            }
+            .help("Subscription usage — click for details")
+            .popover(isPresented: $showingCard, arrowEdge: .bottom) {
+                UsageCard(usage: usage)
+            }
             .padding(.trailing, 8)
         }
     }
@@ -197,9 +203,115 @@ private struct UsageMeterView: View {
     private func percent(_ pct: Int) -> some View {
         Text("\(pct)%")
             .font(.system(size: 11))
-            .foregroundStyle(pct >= 95 ? Color.red
-                             : pct >= 80 ? Color.orange
-                             : Color.secondary)
+            .foregroundStyle(UsageSeverity.color(pct: Double(pct), resting: .secondary))
+    }
+}
+
+/// ccmeter's severity bands: fine → orange at 80 → red at 95.
+private enum UsageSeverity {
+    static func color(pct: Double, resting: Color = .green) -> Color {
+        if pct >= 95 { return .red }
+        if pct >= 80 { return .orange }
+        return resting
+    }
+}
+
+/// The rich readout the tooltip could never be (tooltips are plain text):
+/// a section per provider, a severity-colored bar per window.
+private struct UsageCard: View {
+    @ObservedObject var usage: UsageMeterModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let claude = usage.claude {
+                section(agent: .claude, name: "Claude", plan: claude.plan,
+                        rows: claudeRows(claude), footnote: nil)
+            }
+            if usage.claude != nil && usage.codex != nil {
+                Divider()
+            }
+            if let codex = usage.codex {
+                section(agent: .codex, name: "Codex", plan: codex.plan,
+                        rows: codexRows(codex),
+                        footnote: codex.capturedAt.map {
+                            "As of the last Codex turn, \(RelativeTime.string(from: $0))"
+                        })
+            }
+        }
+        .padding(16)
+        .frame(width: 264)
+    }
+
+    private func claudeRows(_ claude: ClaudeUsage) -> [(String, Double)] {
+        var rows: [(String, Double)] = []
+        if let window = claude.fiveHour { rows.append(("5-hour", window.pct)) }
+        if let window = claude.weekly { rows.append(("Weekly", window.pct)) }
+        for scope in claude.scoped { rows.append((scope.label, scope.pct)) }
+        if let credits = claude.creditsPct { rows.append(("Credits", credits)) }
+        return rows
+    }
+
+    private func codexRows(_ codex: CodexUsage) -> [(String, Double)] {
+        var rows: [(String, Double)] = []
+        if let window = codex.fiveHour { rows.append(("5-hour", window.pct)) }
+        if let window = codex.weekly { rows.append(("Weekly", window.pct)) }
+        return rows
+    }
+
+    @ViewBuilder
+    private func section(agent: Agent, name: String, plan: String?,
+                         rows: [(String, Double)], footnote: String?) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                AgentBadge(agent: agent, size: 12)
+                Text(name)
+                    .font(.system(size: 12, weight: .semibold))
+                if let plan {
+                    Text(plan.capitalized)
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1.5)
+                        .background(Color.primary.opacity(0.07), in: Capsule())
+                }
+            }
+            ForEach(rows, id: \.0) { label, pct in
+                HStack(spacing: 8) {
+                    Text(label)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .frame(width: 58, alignment: .leading)
+                    UsageBar(pct: pct)
+                    Text("\(Int(pct.rounded()))%")
+                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                        .foregroundStyle(UsageSeverity.color(pct: pct, resting: .primary))
+                        .frame(width: 36, alignment: .trailing)
+                }
+            }
+            if let footnote {
+                Text(footnote)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+}
+
+/// One window's fill against its cap — green until 80, orange until 95, red.
+private struct UsageBar: View {
+    let pct: Double
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.primary.opacity(0.08))
+                Capsule()
+                    .fill(UsageSeverity.color(pct: pct))
+                    .frame(width: max(5, geo.size.width * min(pct, 100) / 100))
+            }
+        }
+        .frame(height: 5)
     }
 }
 
