@@ -171,18 +171,23 @@ private struct UsageMeterView: View {
         if claude != nil || codex != nil {
             HStack(spacing: 5) {
                 if let claude {
-                    AgentBadge(agent: .claude, size: 10)
-                    percent(claude)
+                    HStack(spacing: 3) {
+                        AgentBadge(agent: .claude, size: 10)
+                        percent(claude)
+                    }
+                    .help(usage.claudeBreakdown ?? "")
                 }
                 if claude != nil && codex != nil {
                     Text("·").font(.system(size: 10)).foregroundStyle(.tertiary)
                 }
                 if let codex {
-                    AgentBadge(agent: .codex, size: 10)
-                    percent(codex)
+                    HStack(spacing: 3) {
+                        AgentBadge(agent: .codex, size: 10)
+                        percent(codex)
+                    }
+                    .help(usage.codexBreakdown ?? "")
                 }
             }
-            .help(usage.breakdown)
             .padding(.trailing, 8)
         }
     }

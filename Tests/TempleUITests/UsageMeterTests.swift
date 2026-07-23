@@ -30,8 +30,10 @@ final class UsageMeterTests: XCTestCase {
 
         XCTAssertEqual(model.claudeHeadlinePct, 54)   // the scoped cap is the wall
         XCTAssertEqual(model.codexHeadlinePct, 31)
-        XCTAssertTrue(model.breakdown.contains("Fable 54%"))
-        XCTAssertTrue(model.breakdown.contains("Claude (team)"))
+        let claudeTip = model.claudeBreakdown ?? ""
+        XCTAssertTrue(claudeTip.contains("Fable: 54%"))
+        XCTAssertTrue(claudeTip.contains("Claude (team)"))
+        XCTAssertFalse(claudeTip.contains("Codex"))   // per-segment tooltips
     }
 
     func testNoReadersMeansNoMeter() async {
@@ -112,6 +114,8 @@ final class UsageMeterTests: XCTestCase {
 
         XCTAssertNil(model.claudeHeadlinePct)
         XCTAssertEqual(model.codexHeadlinePct, 17)
-        XCTAssertTrue(model.breakdown.contains("Codex (pro): weekly 17%"))
+        XCTAssertNil(model.claudeBreakdown)
+        XCTAssertTrue((model.codexBreakdown ?? "").contains("Codex (pro)"))
+        XCTAssertTrue((model.codexBreakdown ?? "").contains("Weekly: 17%"))
     }
 }

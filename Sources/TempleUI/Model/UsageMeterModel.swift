@@ -96,35 +96,32 @@ public final class UsageMeterModel: ObservableObject {
         return Int(worst.rounded())
     }
 
-    /// The full story for the tooltip, one provider per line.
-    var breakdown: String {
-        var lines: [String] = []
-        if let claude {
-            var parts: [String] = []
-            if let window = claude.fiveHour { parts.append("5h \(Int(window.pct.rounded()))%") }
-            if let window = claude.weekly { parts.append("weekly \(Int(window.pct.rounded()))%") }
-            for scope in claude.scoped {
-                parts.append("\(scope.label) \(Int(scope.pct.rounded()))%")
-            }
-            if let credits = claude.creditsPct {
-                parts.append("credits \(Int(credits.rounded()))%")
-            }
-            let plan = claude.plan.map { " (\($0))" } ?? ""
-            lines.append("Claude\(plan): " + parts.joined(separator: " · "))
+    /// Tooltip for the Claude segment: one window per line, headline first.
+    var claudeBreakdown: String? {
+        guard let claude else { return nil }
+        let plan = claude.plan.map { " (\($0))" } ?? ""
+        var lines = ["Claude\(plan)"]
+        if let window = claude.fiveHour { lines.append("5-hour window: \(Int(window.pct.rounded()))%") }
+        if let window = claude.weekly { lines.append("Weekly: \(Int(window.pct.rounded()))%") }
+        for scope in claude.scoped {
+            lines.append("\(scope.label): \(Int(scope.pct.rounded()))%")
         }
-        if let codex {
-            var parts: [String] = []
-            if let window = codex.fiveHour { parts.append("5h \(Int(window.pct.rounded()))%") }
-            if let window = codex.weekly { parts.append("weekly \(Int(window.pct.rounded()))%") }
-            let plan = codex.plan.map { " (\($0))" } ?? ""
-            var line = "Codex\(plan): " + parts.joined(separator: " · ")
-            if let captured = codex.capturedAt {
-                line += " — as of last Codex turn (\(RelativeTime.string(from: captured)))"
-            }
-            lines.append(line)
+        if let credits = claude.creditsPct {
+            lines.append("Extra-usage credits: \(Int(credits.rounded()))%")
         }
-        if let updatedAt {
-            lines.append("Updated \(RelativeTime.string(from: updatedAt)) · experimental")
+        return lines.joined(separator: "\n")
+    }
+
+    /// Tooltip for the Codex segment, with the snapshot's freshness — its
+    /// numbers only move when Codex itself runs a turn.
+    var codexBreakdown: String? {
+        guard let codex else { return nil }
+        let plan = codex.plan.map { " (\($0))" } ?? ""
+        var lines = ["Codex\(plan)"]
+        if let window = codex.fiveHour { lines.append("5-hour window: \(Int(window.pct.rounded()))%") }
+        if let window = codex.weekly { lines.append("Weekly: \(Int(window.pct.rounded()))%") }
+        if let captured = codex.capturedAt {
+            lines.append("As of the last Codex turn, \(RelativeTime.string(from: captured))")
         }
         return lines.joined(separator: "\n")
     }
