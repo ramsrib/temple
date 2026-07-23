@@ -156,7 +156,8 @@ struct TabStripChipsRow: View {
                         .frame(width: 1, height: 16)
                         .opacity(tab.id != activeID && visible[index - 1].id != activeID
                                  ? 1 : 0)
-                        .animation(.easeInOut(duration: 0.18), value: visible.map(\.id))
+                        .animation(dragging != nil ? .easeInOut(duration: 0.18) : nil,
+                                   value: visible.map(\.id))
                 }
                 // The chip itself travels with the cursor (Chrome-style
                 // mouse tracking, not system drag-and-drop: the ghost
@@ -178,10 +179,14 @@ struct TabStripChipsRow: View {
                     })
                     .zIndex(dragging == tab.id ? 2 : 0)
                     // Neighbors GLIDE aside to open the drop gap (the natural
-                    // make-room feel); the chip in hand is exempt — its slot
-                    // hop must be instant or the offset glue math chases an
-                    // animating base and the chip shakes at every swap.
-                    .animation(dragging == tab.id ? nil : .easeInOut(duration: 0.18),
+                    // make-room feel) — but ONLY while a drag is in hand. The
+                    // ids array also changes when tabs open/close, and an
+                    // unscoped animation turned those instant reflows (gutter
+                    // reservation, reveal scroll) into a visible wiggle. The
+                    // dragged chip stays exempt: its slot hop must be instant
+                    // or the offset glue chases an animating base.
+                    .animation(dragging != nil && dragging != tab.id
+                               ? .easeInOut(duration: 0.18) : nil,
                                value: visible.map(\.id))
             }
         }
