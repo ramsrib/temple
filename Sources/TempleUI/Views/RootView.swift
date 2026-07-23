@@ -422,6 +422,7 @@ private struct KeyCatcher: NSViewRepresentable {
                 && !model.commandPalettePresented
                 && !model.historyPresented
                 && !model.newSessionPickerPresented
+                && !model.shortcutsPresented
             if browsing && !cmd && !ctrl {
                 switch event.keyCode {
                 case 125: model.moveHighlight(by: 1); return true    // ↓
