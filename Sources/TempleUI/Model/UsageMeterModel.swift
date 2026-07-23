@@ -12,6 +12,8 @@ public final class UsageMeterModel: ObservableObject {
     @Published private(set) var claude: ClaudeUsage?
     @Published private(set) var codex: CodexUsage?
     @Published private(set) var updatedAt: Date?
+    /// True while a fetch is in flight — the card's refresh control spins.
+    @Published private(set) var refreshing = false
 
     /// Seams for tests.
     var claudeFetch: @Sendable () async -> ClaudeUsageReader.Outcome = { await ClaudeUsageReader.read() }
@@ -31,7 +33,7 @@ public final class UsageMeterModel: ObservableObject {
     /// clicks, each floored so no path can hammer the endpoint.
     var refreshInterval: TimeInterval = 300
     var activationFloor: TimeInterval = 120
-    var manualFloor: TimeInterval = 20
+    var manualFloor: TimeInterval = 5
     /// How long a 429 silences the Claude reader.
     var rateLimitBackoff: TimeInterval = 3600
 
@@ -67,6 +69,8 @@ public final class UsageMeterModel: ObservableObject {
 
     func refreshNow() async {
         lastAttempt = Date()
+        refreshing = true
+        defer { refreshing = false }
         async let codexReading = codexFetch()
         var newClaude: ClaudeUsage?
         if !claudeCredentialsMissing, Date() >= claudeBackoffUntil {
