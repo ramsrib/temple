@@ -10,8 +10,6 @@ struct SidebarView: View {
     @State private var showAllProjects = false
     @State private var headerHovering = false
 
-    @State private var hoveringGear = false
-
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -138,39 +136,88 @@ struct SidebarView: View {
     // MARK: Footer
 
     /// A gear that opens a MENU — a bare gear button that jumped straight to
-    /// a Settings tab read as broken (a gear promises choices). The username
-    /// that used to sit here was decoration: it never changed and did nothing.
+    /// a Settings tab read as broken (a gear promises choices). The menu pops
+    /// UPWARD, right-aligned over the window: the gear sits in the window's
+    /// bottom corner, and a default drop-down spilled outside the window.
     private var footer: some View {
         HStack {
+            Image(systemName: "person.crop.circle.fill")
+                .font(.system(size: 18))
+                .foregroundStyle(.secondary)
+            Text(NSFullUserName().isEmpty ? "You" : NSFullUserName())
+                .font(.system(size: 12))
+                .lineLimit(1)
             Spacer()
-            Menu {
-                Button {
-                    model.openSessions.openSettings()
-                } label: {
-                    Label("Settings…", systemImage: "gearshape")
-                }
-                Button {
-                    model.toggleShortcuts()
-                } label: {
-                    Label("Keyboard Shortcuts", systemImage: "keyboard")
-                }
-                Divider()
-                Button("About Temple") {
-                    NSApp.orderFrontStandardAboutPanel(nil)
-                }
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 14))
-                    .foregroundStyle(hoveringGear ? Color.primary : Color.secondary)
-                    .frame(width: 22, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .onHover { hoveringGear = $0 }
+            FooterGearMenu(model: model)
+                .frame(width: 22, height: 22)
+                .help("Settings and more")
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.vertical, 10)
+    }
+}
+
+/// The footer gear: an AppKit button so its menu can pop UP-and-left from the
+/// window's bottom corner (SwiftUI's Menu always drops down and happily
+/// escapes the window). Anchoring the popup on its LAST item makes NSMenu
+/// grow upward; the x offset right-aligns the menu with the gear.
+private struct FooterGearMenu: NSViewRepresentable {
+    let model: AppModel
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton()
+        button.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Settings")
+        button.isBordered = false
+        button.imagePosition = .imageOnly
+        button.contentTintColor = .secondaryLabelColor
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.popUp(_:))
+        return button
+    }
+
+    func updateNSView(_ view: NSButton, context: Context) {
+        context.coordinator.model = model
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(model: model) }
+
+    @MainActor
+    final class Coordinator: NSObject, NSMenuDelegate {
+        var model: AppModel
+
+        init(model: AppModel) {
+            self.model = model
+        }
+
+        @objc func popUp(_ sender: NSButton) {
+            let menu = NSMenu()
+            menu.addItem(item("Settings…", symbol: "gearshape", key: ",",
+                              #selector(openSettings)))
+            menu.addItem(item("Keyboard Shortcuts", symbol: "keyboard", key: "/",
+                              #selector(openShortcuts)))
+            menu.addItem(.separator())
+            menu.addItem(item("About Temple", symbol: "info.circle", key: "",
+                              #selector(openAbout)))
+            // Anchor the LAST item just above the gear so the menu grows
+            // upward, and shift left so its right edge meets the gear's.
+            let anchor = NSPoint(x: sender.bounds.maxX - menu.size.width,
+                                 y: sender.bounds.minY - 6)
+            menu.popUp(positioning: menu.items.last, at: anchor, in: sender)
+        }
+
+        private func item(_ title: String, symbol: String?, key: String,
+                          _ action: Selector) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.target = self
+            if let symbol {
+                item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            }
+            return item
+        }
+
+        @objc private func openSettings() { model.openSessions.openSettings() }
+        @objc private func openShortcuts() { model.toggleShortcuts() }
+        @objc private func openAbout() { NSApp.orderFrontStandardAboutPanel(nil) }
     }
 }
 
