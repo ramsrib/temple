@@ -103,6 +103,13 @@ The sidebar and tab bar form a two-part navigation model:
   `⌘⇧[` / `⌘⇧]` cycle without showing the switcher. Sessions get a search palette
   (`⌘K`); projects get a switcher, because you hold a handful of them in your head
   and search a hundred sessions.
+- `⌃⇥` is the same gesture one level down: hold `⌃` and tap `⇥` to walk the open
+  tabs **most recently visited first** (`⌃⇧⇥` walks the other way), release `⌃`
+  to land — so one tap bounces to the tab you were just on. The trail spans
+  projects, and each row names the project it would take you to; landing
+  elsewhere switches the strip. The tab you are leaving is marked *current*, and
+  a dot flags tabs whose agent is running or waiting. `⌘1`–`⌘9` remain the
+  positional route within the active project.
 
 The active libghostty terminal fills the main content area. Temple launches the
 agent directly in the session's working directory and sends keyboard input to
@@ -279,7 +286,7 @@ of truth.
 | **⌘N** | New session in a project you pick (default agent); `⌘⇧N` uses the other agent. |
 | **⌘⇧H** | Show the launcher/home page; existing tabs stay open. |
 | **⌘1–9** | Switch to tab *N* in the active project. |
-| **⌃⇥ / ⌃⇧⇥** | Next / previous tab. |
+| **⌃⇥ / ⌃⇧⇥** | Tab switcher: previous / next visited tab (hold ⌃ to walk the MRU list, release to land). |
 | **⌘⇧[ / ⌘⇧]** | Previous / next project; returns to the session last used there. |
 | **⌘P** | Project switcher (hold ⌘, tap P to walk, release to land). |
 | **⌘F** | Reveal the sidebar if needed and focus sidebar search. |

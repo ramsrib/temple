@@ -621,13 +621,7 @@ private struct TabChip: View {
         .contextMenu { chipContextMenu }
     }
 
-    private var displayTitle: String { Self.displayTitle(for: tab, model: model) }
-
-    static func displayTitle(for tab: SessionTab, model: AppModel) -> String {
-        if tab.kind == .settings { return "Settings" }
-        if let sid = tab.sessionID, let name = model.overlay.customName(for: sid) { return name }
-        return tab.isProvisional ? "\(tab.title) (starting…)" : tab.title
-    }
+    private var displayTitle: String { model.tabDisplayTitle(tab) }
 
     private func beginRename() {
         guard tab.kind == .session, !editing, tab.sessionID != nil else { return }

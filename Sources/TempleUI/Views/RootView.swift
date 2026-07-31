@@ -40,6 +40,9 @@ public struct RootView: View {
             if model.projectSwitcherPresented {
                 projectSwitcherOverlay
             }
+            if model.tabSwitcherPresented {
+                tabSwitcherOverlay
+            }
             if model.shortcutsPresented {
                 shortcutsOverlay
             }
@@ -105,6 +108,7 @@ public struct RootView: View {
             || model.historyPresented
             || model.newSessionPickerPresented
             || model.projectSwitcherPresented
+            || model.tabSwitcherPresented
             || model.shortcutsPresented
     }
 
@@ -133,6 +137,20 @@ public struct RootView: View {
                 .ignoresSafeArea()
             PanelHost {
                 ProjectSwitcherHUD()
+                    .environmentObject(model)
+            }
+            .fixedSize()
+        }
+        .transition(.opacity)
+    }
+
+    /// ⌃⇥ switcher: the same momentary HUD as ⌘P, one level down.
+    private var tabSwitcherOverlay: some View {
+        ZStack {
+            OverlayBackdrop { model.cancelTabSwitcher() }
+                .ignoresSafeArea()
+            PanelHost {
+                TabSwitcherHUD()
                     .environmentObject(model)
             }
             .fixedSize()
@@ -335,17 +353,25 @@ private struct KeyCatcher: NSViewRepresentable {
             }
             flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
                 MainActor.assumeIsolated {
-                    guard let self, let model = self.model, model.projectSwitcherPresented else { return event }
-                    if !event.modifierFlags.contains(.command) { model.commandReleasedForSwitcher() }
+                    guard let self, let model = self.model else { return event }
+                    if model.projectSwitcherPresented, !event.modifierFlags.contains(.command) {
+                        model.commandReleasedForSwitcher()
+                    }
+                    if model.tabSwitcherPresented, !event.modifierFlags.contains(.control) {
+                        model.controlReleasedForTabSwitcher()
+                    }
                     return event
                 }
             }
-            // A ⌘ released while another app is frontmost never reaches our monitor,
-            // and the switcher would still be up when Temple came back.
+            // A modifier released while another app is frontmost never reaches our
+            // monitor, and the switcher would still be up when Temple came back.
             resignObserver = NotificationCenter.default.addObserver(
                 forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
             ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.model?.cancelProjectSwitcher() }
+                MainActor.assumeIsolated {
+                    self?.model?.cancelProjectSwitcher()
+                    self?.model?.cancelTabSwitcher()
+                }
             }
         }
 
@@ -387,9 +413,27 @@ private struct KeyCatcher: NSViewRepresentable {
                 return true
             }
 
-            // ⌃⇥ / ⌃⇧⇥ — next / previous tab (keyCode 48 = tab).
+            // While the tab switcher is up it owns the keyboard, exactly like
+            // the ⌘P block above: ⌃⇥ walks it, arrows walk it, Return lands,
+            // Esc leaves you where you were.
+            if model.tabSwitcherPresented {
+                switch event.keyCode {
+                case 48: model.advanceTabSwitcher(by: shift ? -1 : 1)     // tab
+                case 53: model.cancelTabSwitcher()                        // esc
+                case 36, 76: model.commitTabSwitcher()                    // return
+                case 125, 124: model.advanceTabSwitcher(by: 1)            // ↓ →
+                case 126, 123: model.advanceTabSwitcher(by: -1)           // ↑ ←
+                default: break
+                }
+                return true
+            }
+
+            // ⌃⇥ / ⌃⇧⇥ — the tab switcher (keyCode 48 = tab): walks open tabs
+            // most-recently-visited first, so one tap-and-release bounces to
+            // the tab you were just on. Terminals never see ⌃⇥ anyway — Tab IS
+            // ⌃I, so the combination has no escape sequence to forward.
             if ctrl && event.keyCode == 48 {
-                shift ? model.openSessions.selectPreviousTab() : model.openSessions.selectNextTab()
+                model.advanceTabSwitcher(by: shift ? -1 : 1)
                 return true
             }
 

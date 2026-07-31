@@ -78,6 +78,16 @@ public final class AppModel: ObservableObject {
     /// commit — otherwise opening it from the home page (mouse, no ⌘ held) would
     /// be committed by the next unrelated modifier press.
     private var switcherArmedByCommand = false
+
+    // ⌃⇥ tab switcher (TabSwitcherHUD) — the same gesture one level down:
+    // hold ⌃, tap ⇥ to walk the most-recently-visited tabs, release to land.
+    // One tap-and-release bounces to the tab you were just on.
+    @Published public var tabSwitcherPresented = false
+    /// Held as a tab ID, not an index — a tab can close while the switcher is
+    /// up, and an index into a list that shrank lands on the wrong tab.
+    @Published public var tabSwitcherSelection: SessionTab.ID?
+    /// Same arming rule as the ⌘P switcher, for ⌃.
+    private var tabSwitcherArmedByControl = false
     @Published public var shortcutsPresented = false
     /// Pulsed to move keyboard focus into the sidebar search field (⌘F).
     @Published public var focusSearchToken = 0
@@ -347,6 +357,14 @@ public final class AppModel: ObservableObject {
         overlay.displayTitle(for: session)
     }
 
+    /// A tab's display title everywhere chrome shows one (chips, ⌃⇥ switcher):
+    /// the user's custom name wins; provisional tabs say they are starting.
+    public func tabDisplayTitle(_ tab: SessionTab) -> String {
+        if tab.kind == .settings { return "Settings" }
+        if let sid = tab.sessionID, let name = overlay.customName(for: sid) { return name }
+        return tab.isProvisional ? "\(tab.title) (starting…)" : tab.title
+    }
+
     public func projectName(_ path: String) -> String {
         path.isEmpty ? "—" : URL(fileURLWithPath: path).lastPathComponent
     }
@@ -513,6 +531,7 @@ public final class AppModel: ObservableObject {
         newSessionPickerPresented = false
         shortcutsPresented = false
         cancelProjectSwitcher()
+        cancelTabSwitcher()
     }
 
     public func toggleCommandPalette() {
@@ -523,6 +542,7 @@ public final class AppModel: ObservableObject {
         newSessionPickerPresented = false
         shortcutsPresented = false
         cancelProjectSwitcher()
+        cancelTabSwitcher()
     }
 
     /// Which agent the ⌘N picker will launch — set at present time, so the
@@ -540,6 +560,7 @@ public final class AppModel: ObservableObject {
         historyPresented = false
         newSessionPickerPresented = false
         cancelProjectSwitcher()
+        cancelTabSwitcher()
     }
 
     /// ⌘N — pick a project, start a new session in it with the default agent.
@@ -561,6 +582,7 @@ public final class AppModel: ObservableObject {
         historyPresented = false
         shortcutsPresented = false
         cancelProjectSwitcher()
+        cancelTabSwitcher()
     }
 
     /// Projects for the ⌘N picker: every non-noise project, most recent
@@ -598,6 +620,7 @@ public final class AppModel: ObservableObject {
             historyPresented = false
             newSessionPickerPresented = false
             shortcutsPresented = false
+            cancelTabSwitcher()
             projectSwitcherPresented = true
             switcherArmedByCommand = heldCommand
             projectSwitcherSelection = projects[delta > 0 ? 1 : projects.count - 1]
@@ -624,6 +647,59 @@ public final class AppModel: ObservableObject {
         projectSwitcherPresented = false
         projectSwitcherSelection = nil
         switcherArmedByCommand = false
+    }
+
+    // MARK: ⌃⇥ tab switcher
+
+    /// What the switcher walks: every open tab, most recently visited first.
+    public var switchableTabs: [SessionTab] {
+        openSessions.tabsByRecency
+    }
+
+    /// ⌃⇥ pressed. First press opens the switcher already on the PREVIOUS tab,
+    /// so a tap-and-release bounces between two tabs the way ⌘⇥ does; further
+    /// presses walk the list while ⌃ stays down.
+    public func advanceTabSwitcher(by delta: Int, heldControl: Bool = true) {
+        let list = switchableTabs
+        guard list.count > 1 else { return }
+
+        if tabSwitcherPresented {
+            let current = tabSwitcherSelection.flatMap { sel in list.firstIndex { $0.id == sel } } ?? 0
+            tabSwitcherSelection = list[(current + delta + list.count) % list.count].id
+        } else {
+            // Panels are mutually exclusive (same rule as ⌘K/⌘Y/⌘N/⌘/).
+            commandPalettePresented = false
+            historyPresented = false
+            newSessionPickerPresented = false
+            shortcutsPresented = false
+            cancelProjectSwitcher()
+            tabSwitcherPresented = true
+            tabSwitcherArmedByControl = heldControl
+            tabSwitcherSelection = list[delta > 0 ? 1 : list.count - 1].id
+        }
+    }
+
+    /// ⌃ came back up. Only lands the switcher if ⌃ is what opened it.
+    public func controlReleasedForTabSwitcher() {
+        guard tabSwitcherPresented, tabSwitcherArmedByControl else { return }
+        commitTabSwitcher()
+    }
+
+    /// Go where the highlight is (⌃ released, Return, or a click on a row).
+    public func commitTabSwitcher() {
+        guard tabSwitcherPresented else { return }
+        let selection = tabSwitcherSelection
+        cancelTabSwitcher()
+        // The tab may have closed while the switcher was up.
+        guard let selection,
+              let tab = openSessions.tabs.first(where: { $0.id == selection }) else { return }
+        openSessions.activate(tab)
+    }
+
+    public func cancelTabSwitcher() {
+        tabSwitcherPresented = false
+        tabSwitcherSelection = nil
+        tabSwitcherArmedByControl = false
     }
 
 }

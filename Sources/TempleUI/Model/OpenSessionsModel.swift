@@ -621,15 +621,15 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         activate(sessionTabs[index - 1])
     }
 
-    public func selectNextTab() { cycle(by: 1) }
-    public func selectPreviousTab() { cycle(by: -1) }
-
-    private func cycle(by delta: Int) {
-        let list = visibleTabs
-        guard !list.isEmpty else { return }
-        let current = list.firstIndex { $0.id == activeTabID } ?? 0
-        let next = (current + delta + list.count) % list.count
-        activate(list[next])
+    /// What the ⌃⇥ switcher walks: every open tab, most recently visited first
+    /// (the active tab leads, mirroring `projectsByRecency`). Spans projects —
+    /// the activation trail does too, and `activate` handles the project
+    /// switch. Tabs never visited this run (relaunch-restored chips) follow in
+    /// row order, so nothing open is unreachable.
+    public var tabsByRecency: [SessionTab] {
+        let visited = activationHistory.reversed().compactMap { id in tabs.first { $0.id == id } }
+        let unvisited = tabs.filter { tab in !activationHistory.contains(tab.id) }
+        return visited + unvisited
     }
 
     // MARK: Persistence & lazy restore (U2)
