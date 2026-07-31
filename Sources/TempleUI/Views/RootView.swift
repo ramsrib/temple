@@ -144,16 +144,21 @@ public struct RootView: View {
         .transition(.opacity)
     }
 
-    /// ⌃⇥ switcher: the same momentary HUD as ⌘P, one level down.
+    /// ⌃⇥ switcher: a momentary HUD you hold, but visually a ⌘K sibling —
+    /// same width, same top anchor — so it never feels like a mode change.
     private var tabSwitcherOverlay: some View {
-        ZStack {
-            OverlayBackdrop { model.cancelTabSwitcher() }
-                .ignoresSafeArea()
-            PanelHost {
-                TabSwitcherHUD()
-                    .environmentObject(model)
+        GeometryReader { geo in
+            ZStack(alignment: .top) {
+                OverlayBackdrop { model.cancelTabSwitcher() }
+                    .ignoresSafeArea()
+                PanelHost {
+                    TabSwitcherHUD()
+                        .environmentObject(model)
+                }
+                .fixedSize()
+                .frame(maxWidth: .infinity)
+                .padding(.top, geo.size.height * 0.35)
             }
-            .fixedSize()
         }
         .transition(.opacity)
     }

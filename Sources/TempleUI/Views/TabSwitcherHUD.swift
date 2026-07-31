@@ -1,106 +1,92 @@
 import SwiftUI
 import TempleCore
 
-/// ⌃⇥ — the tab switcher, shaped like the ⌘P project switcher one level down.
+/// ⌃⇥ — the tab switcher. It walks open tabs most-recently-visited first (the
+/// ⌘⇥ order), not row order: hold ⌃ and tap ⇥ to walk, release ⌃ to land — so
+/// one tap bounces to the tab you were just on, wherever it lives.
 ///
-/// It walks open tabs most-recently-visited first (the ⌘⇥ order), not row
-/// order: hold ⌃ and tap ⇥ to walk, release ⌃ to land — so one tap bounces to
-/// the tab you were just on, wherever it lives. Tabs read top-to-bottom (they
-/// are titles, not tiles), unlike ⌘P's horizontal row of folders.
+/// Chrome-wise it is a ⌘K sibling (same width, same top anchor, same capped
+/// row list) so flicking between the palettes and the switcher never feels
+/// like a mode change — but it stays a momentary HUD you hold, so there is no
+/// search field: you pick from tabs you are already holding in your head.
 struct TabSwitcherHUD: View {
     @EnvironmentObject var model: AppModel
 
-    /// The walk can outrun what fits on screen; the list windows itself to
-    /// keep the highlight visible instead of scrolling (a HUD you hold has no
-    /// business needing a scroll bar).
-    private static let maxVisible = 12
-
     private var tabs: [SessionTab] { model.switchableTabs }
 
-    /// Where you are switching FROM — outlined like ⌘P's current project.
+    /// Where you are switching FROM — labeled, because the highlight alone
+    /// tells you where you would land but not where you would be leaving.
     private var current: SessionTab.ID? { model.openSessions.activeTabID }
 
     var body: some View {
-        let all = tabs
-        let selected = all.firstIndex { $0.id == model.tabSwitcherSelection } ?? 0
-        // Slide a fixed window along the list so the highlight is always shown.
-        let start = max(0, min(selected - (Self.maxVisible - 1), all.count - Self.maxVisible))
-        let end = min(start + Self.maxVisible, all.count)
-
-        VStack(alignment: .leading, spacing: 2) {
-            if start > 0 {
-                moreLabel(start, edge: "above")
+        let tabs = self.tabs
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(tabs) { tab in
+                        row(tab, selected: tab.id == model.tabSwitcherSelection)
+                            .frame(height: Self.rowHeight)
+                    }
+                }
             }
-            ForEach(all[start..<end]) { tab in
-                row(tab, selected: tab.id == model.tabSwitcherSelection)
-            }
-            if end < all.count {
-                moreLabel(all.count - end, edge: "below")
+            // Hug the rows (⌘K's rule): scroll only past the cap.
+            .frame(height: min(CGFloat(tabs.count) * Self.rowHeight, 340))
+            .thinScrollers()
+            .onChange(of: model.tabSwitcherSelection) {
+                if let selection = model.tabSwitcherSelection {
+                    proxy.scrollTo(selection, anchor: .center)
+                }
             }
         }
-        .padding(10)
-        .frame(width: 440)
-        .panelChrome(cornerRadius: 16)
-        .fixedSize()
+        .frame(width: 560)
+        .panelChrome()
     }
+
+    /// Same metrics as a ⌘K result row (two text lines + padding).
+    private static let rowHeight: CGFloat = 46
 
     private func row(_ tab: SessionTab, selected: Bool) -> some View {
         let isCurrent = tab.id == current
-        return HStack(spacing: 9) {
+        return HStack(spacing: 10) {
             if tab.kind == .settings {
                 Image(systemName: "gearshape")
-                    .font(.system(size: 12))
-                    .frame(width: 15)
-                    .foregroundStyle(selected ? .primary : .secondary)
+                    .font(.system(size: 13))
+                    .frame(width: 14)
+                    .foregroundStyle(.secondary)
             } else {
-                AgentBadge(agent: tab.agent, size: 15)
+                AgentBadge(agent: tab.agent, size: 14)
             }
-
-            Text(model.tabDisplayTitle(tab))
-                .font(.system(size: 12.5, weight: selected ? .semibold : .regular))
-                .foregroundStyle(selected ? .primary : .secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(model.tabDisplayTitle(tab))
+                    .font(.system(size: 13))
+                    .lineLimit(1)
+                // The trail spans projects, so say where each tab would take you.
+                if tab.kind == .session {
+                    Text(model.projectName(tab.projectPath))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
 
             // An agent working (or waiting on you) in a tab you are NOT
             // looking at is the whole reason to glance at this list.
             if tab.activity == .running || tab.activity == .needsAttention {
                 ActivityDot(state: tab.activity, size: 6)
             }
-
-            Spacer(minLength: 12)
-
-            // The trail spans projects, so say where each tab would take you.
-            Text(tab.kind == .settings
-                 ? (isCurrent ? "current" : "")
-                 : (isCurrent ? "current" : model.projectName(tab.projectPath)))
-                .font(.system(size: 10.5, weight: isCurrent ? .medium : .regular))
-                .tracking(isCurrent ? 0.4 : 0)
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
+            if isCurrent {
+                Text("current")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(selected ? Palette.selectionFill : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 8))
-        // The tab you are leaving keeps a quiet outline even when the
-        // highlight has moved on somewhere else.
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.primary.opacity(isCurrent ? 0.18 : 0), lineWidth: 1)
-        )
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(selected ? Palette.selectionFill : Color.clear)
         .contentShape(Rectangle())
         .onTapGesture {
             model.tabSwitcherSelection = tab.id
             model.commitTabSwitcher()
         }
-    }
-
-    private func moreLabel(_ count: Int, edge: String) -> some View {
-        Text("\(count) more \(edge)")
-            .font(.system(size: 10))
-            .foregroundStyle(.tertiary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 2)
     }
 }
