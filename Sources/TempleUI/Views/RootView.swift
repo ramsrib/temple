@@ -349,21 +349,40 @@ private struct KeyCatcher: NSViewRepresentable {
         private var flagsMonitor: Any?
         private var resignObserver: NSObjectProtocol?
 
+        /// Keycodes whose keyDown we swallowed. Their keyUp must be swallowed
+        /// too: the terminal surface forwards releases to libghostty, and a
+        /// release for a key Ghostty never saw pressed is a phantom event to
+        /// any client that tracks key state (kitty keyboard protocol).
+        private var pendingKeyUps = Set<UInt16>()
+
         func install() {
-            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
                 MainActor.assumeIsolated {
                     guard let self, let model = self.model else { return event }
-                    return self.handle(event, model) ? nil : event
+                    if event.type == .keyUp {
+                        return self.pendingKeyUps.remove(event.keyCode) != nil ? nil : event
+                    }
+                    if self.handle(event, model) {
+                        self.pendingKeyUps.insert(event.keyCode)
+                        return nil
+                    }
+                    return event
                 }
             }
             flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
                 MainActor.assumeIsolated {
                     guard let self, let model = self.model else { return event }
+                    // Commit AFTER this release event reaches the focused
+                    // surface: committing here would move focus synchronously,
+                    // and the surface that saw the modifier press would never
+                    // see its release — Ghostty then holds a stale pressed
+                    // modifier for that terminal. Deferred one turn, the
+                    // release lands first and the switch follows.
                     if model.projectSwitcherPresented, !event.modifierFlags.contains(.command) {
-                        model.commandReleasedForSwitcher()
+                        DispatchQueue.main.async { model.commandReleasedForSwitcher() }
                     }
                     if model.tabSwitcherPresented, !event.modifierFlags.contains(.control) {
-                        model.controlReleasedForTabSwitcher()
+                        DispatchQueue.main.async { model.controlReleasedForTabSwitcher() }
                     }
                     return event
                 }
@@ -376,6 +395,10 @@ private struct KeyCatcher: NSViewRepresentable {
                 MainActor.assumeIsolated {
                     self?.model?.cancelProjectSwitcher()
                     self?.model?.cancelTabSwitcher()
+                    // KeyUps released while another app is frontmost never
+                    // reach the monitor; drop the IOUs or the next innocent
+                    // press of those keys loses its release.
+                    self?.pendingKeyUps.removeAll()
                 }
             }
         }
