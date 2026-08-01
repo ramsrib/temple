@@ -621,6 +621,7 @@ public final class AppModel: ObservableObject {
             newSessionPickerPresented = false
             shortcutsPresented = false
             cancelTabSwitcher()
+            deferredLanding = nil
             projectSwitcherPresented = true
             switcherArmedByCommand = heldCommand
             projectSwitcherSelection = projects[delta > 0 ? 1 : projects.count - 1]
@@ -640,7 +641,48 @@ public final class AppModel: ObservableObject {
         cancelProjectSwitcher()
         // The project may have closed its last tab while the switcher was up.
         guard let selection, openSessions.openProjects.contains(selection) else { return }
-        openSessions.activateProject(selection)
+        land(releasing: .command) { [openSessions] in
+            guard openSessions.openProjects.contains(selection) else { return }
+            openSessions.activateProject(selection)
+        }
+    }
+
+    // MARK: Landing a switcher (balanced modifier delivery)
+
+    /// A landing parked because the arming modifier was still physically held
+    /// at commit time (Return, or a click on a row). Moving focus right then
+    /// would send the modifier's eventual release to the DESTINATION surface,
+    /// leaving the source terminal holding a press it never sees released —
+    /// so the activation waits for the physical release instead.
+    private var deferredLanding: (flag: NSEvent.ModifierFlags, land: () -> Void)?
+
+    /// Seam: physical modifier state (tests inject; real code asks AppKit).
+    var heldModifiers: () -> NSEvent.ModifierFlags = {
+        NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    }
+
+    private func land(releasing flag: NSEvent.ModifierFlags, _ activate: @escaping () -> Void) {
+        if heldModifiers().contains(flag) {
+            deferredLanding = (flag, activate)
+        } else {
+            activate()
+        }
+    }
+
+    /// Every flagsChanged passes through here (after the release event has
+    /// been dispatched): performs a parked landing once its modifier is up.
+    public func flagsChangedForDeferredLanding(_ flags: NSEvent.ModifierFlags) {
+        guard let deferred = deferredLanding, !flags.contains(deferred.flag) else { return }
+        deferredLanding = nil
+        deferred.land()
+    }
+
+    /// The app deactivated mid-hold: the release will never reach our monitor,
+    /// but the user did choose a destination — land it now rather than lose it.
+    public func performDeferredLandingNow() {
+        guard let deferred = deferredLanding else { return }
+        deferredLanding = nil
+        deferred.land()
     }
 
     public func cancelProjectSwitcher() {
@@ -673,6 +715,9 @@ public final class AppModel: ObservableObject {
             newSessionPickerPresented = false
             shortcutsPresented = false
             cancelProjectSwitcher()
+            // A fresh walk supersedes a landing still parked on a held
+            // modifier — committing both would activate two tabs in a row.
+            deferredLanding = nil
             tabSwitcherPresented = true
             tabSwitcherArmedByControl = heldControl
             tabSwitcherSelection = list[delta > 0 ? 1 : list.count - 1].id
@@ -692,8 +737,12 @@ public final class AppModel: ObservableObject {
         cancelTabSwitcher()
         // The tab may have closed while the switcher was up.
         guard let selection,
-              let tab = openSessions.tabs.first(where: { $0.id == selection }) else { return }
-        openSessions.activate(tab)
+              openSessions.tabs.contains(where: { $0.id == selection }) else { return }
+        land(releasing: .control) { [openSessions] in
+            // ...and it can close again between parking and landing.
+            guard let tab = openSessions.tabs.first(where: { $0.id == selection }) else { return }
+            openSessions.activate(tab)
+        }
     }
 
     public func cancelTabSwitcher() {

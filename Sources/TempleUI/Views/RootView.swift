@@ -384,6 +384,11 @@ private struct KeyCatcher: NSViewRepresentable {
                     if model.tabSwitcherPresented, !event.modifierFlags.contains(.control) {
                         DispatchQueue.main.async { model.controlReleasedForTabSwitcher() }
                     }
+                    // A Return/click commit parked while its modifier was
+                    // still held lands here, once the release has reached
+                    // the focused surface.
+                    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                    DispatchQueue.main.async { model.flagsChangedForDeferredLanding(flags) }
                     return event
                 }
             }
@@ -395,6 +400,9 @@ private struct KeyCatcher: NSViewRepresentable {
                 MainActor.assumeIsolated {
                     self?.model?.cancelProjectSwitcher()
                     self?.model?.cancelTabSwitcher()
+                    // A parked landing's modifier release will never reach the
+                    // monitor now — but the user did choose a destination.
+                    self?.model?.performDeferredLandingNow()
                     // KeyUps released while another app is frontmost never
                     // reach the monitor; drop the IOUs or the next innocent
                     // press of those keys loses its release.

@@ -142,6 +142,74 @@ final class TabSwitcherTests: XCTestCase {
         XCTAssertFalse(model.tabSwitcherPresented, "nothing to switch to")
     }
 
+    /// Return (or a click) while ⌃ is still physically held must not move
+    /// focus yet: the source terminal saw the modifier press, and moving
+    /// focus first would send its release to the destination instead —
+    /// Ghostty then holds a stale pressed modifier. The landing parks until
+    /// the release.
+    func testCommitWhileControlHeldParksTheLandingUntilRelease() {
+        let model = modelWithThreeTabs()
+        model.heldModifiers = { .control }
+
+        model.advanceTabSwitcher(by: 1)
+        model.commitTabSwitcher()                     // Return, ⌃ still down
+        XCTAssertFalse(model.tabSwitcherPresented, "the HUD dismisses right away")
+        XCTAssertEqual(model.openSessions.activeTab?.sessionID, "3",
+                       "no focus move while ⌃ is held")
+
+        model.heldModifiers = { [] }
+        model.flagsChangedForDeferredLanding([])      // ⌃ came up
+        XCTAssertEqual(model.openSessions.activeTab?.sessionID, "2")
+
+        // The release only pays once — later flag changes land nothing.
+        model.openSessions.activate(tabID: tabID(model, "1"))
+        model.flagsChangedForDeferredLanding([])
+        XCTAssertEqual(model.openSessions.activeTab?.sessionID, "1")
+    }
+
+    /// Walking again while a landing is still parked supersedes it — the two
+    /// must not both activate.
+    func testAFreshWalkSupersedesAParkedLanding() {
+        let model = modelWithThreeTabs()
+        model.heldModifiers = { .control }
+
+        model.advanceTabSwitcher(by: 1)
+        model.commitTabSwitcher()                     // parks a landing on "2"
+        model.advanceTabSwitcher(by: 1)               // new walk, still holding ⌃
+        model.cancelTabSwitcher()
+
+        model.flagsChangedForDeferredLanding([])
+        XCTAssertEqual(model.openSessions.activeTab?.sessionID, "3",
+                       "the superseded landing must not fire")
+    }
+
+    /// Deactivating mid-hold means the release never reaches the monitor,
+    /// but the user did choose a destination — deactivation lands it.
+    func testDeactivationLandsAParkedCommit() {
+        let model = modelWithThreeTabs()
+        model.heldModifiers = { .control }
+
+        model.advanceTabSwitcher(by: 1)
+        model.commitTabSwitcher()
+        model.performDeferredLandingNow()
+        XCTAssertEqual(model.openSessions.activeTab?.sessionID, "2")
+    }
+
+    /// The same parking protects the ⌘P project switcher.
+    func testProjectSwitcherCommitWhileCommandHeldParksTheLanding() {
+        let model = modelWithThreeTabs()
+        model.heldModifiers = { .command }
+
+        model.advanceProjectSwitcher(by: 1)
+        model.commitProjectSwitcher()
+        XCTAssertFalse(model.projectSwitcherPresented)
+        XCTAssertEqual(model.openSessions.activeProjectPath, "/p/web",
+                       "no project switch while ⌘ is held")
+
+        model.flagsChangedForDeferredLanding([])
+        XCTAssertEqual(model.openSessions.activeProjectPath, "/p/api")
+    }
+
     func testTabSwitcherIsMutuallyExclusiveWithTheOtherPanels() {
         let model = modelWithThreeTabs()
 
