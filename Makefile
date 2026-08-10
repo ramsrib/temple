@@ -62,8 +62,8 @@ stage: app ## Install to /Applications WITHOUT killing the running app (relaunch
 	@codesign --verify --strict "$(DEST)" \
 	  && echo "✓ staged → $(DEST) — running app untouched; quit + reopen to pick it up"
 
-release: ## Build, sign, notarize, package, and publish a GitHub release (VERSION=v0.1.0; see RELEASE.md)
-	@test -n "$(VERSION)" || (echo "usage: make release VERSION=v0.1.0" && exit 1)
+release: ## Build, sign, notarize, package, and publish a GitHub release (VERSION=v0.x.y; see RELEASE.md)
+	@test -n "$(VERSION)" || (echo "usage: make release VERSION=v0.x.y  (run 'make version' for the last tag)" && exit 1)
 	VERSION=$(VERSION) ./Scripts/release.sh
 
 version: ## What is released, what users get, and what is waiting to ship

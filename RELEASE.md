@@ -5,7 +5,7 @@ Releases are Developer ID–signed, notarized by Apple, and published to
 `.dmg` and `.zip` (Apple Silicon).
 
 ```sh
-make release VERSION=v0.1.0
+make release VERSION=v0.x.y   # `make version` prints the last tag
 ```
 
 That single command builds, signs, notarizes, staples, packages, tags, and
@@ -101,7 +101,11 @@ Users then get it with `brew install --cask ramsrib/tap/temple` (or
 
 ## Version numbers
 
-`VERSION` (e.g. `v0.1.0`) drives the git tag, the artifact names, and the app's
+Every version in this file is written `v0.x.y`, and it is always a placeholder:
+run `make version` for the real numbers. (An earlier draft used a plausible
+`v0.1.0` throughout, and a reader took the example for the current release.)
+
+`VERSION` (`vX.Y.Z`) drives the git tag, the artifact names, and the app's
 `MARKETING_VERSION`. Tag names use the `v` prefix; the bundle version drops it.
 `App/Info.plist` takes `$(MARKETING_VERSION)` and `$(CURRENT_PROJECT_VERSION)`
 from the build settings — never hardcode a version there, or About will report
@@ -116,11 +120,11 @@ make version
 ```
 
 ```
-released:   v0.1.1 v0.1.0          # tags
-published:  v0.1.1 v0.1.0          # GitHub releases
-on brew:    0.1.1                  # what users actually get
-installed:  0.1.1                  # your /Applications
-unreleased: 3 commits since v0.1.1
+released:   v0.x.y v0.x.y-1        # tags
+published:  v0.x.y v0.x.y-1        # GitHub releases
+on brew:    0.x.y                  # what users actually get
+installed:  0.x.y                  # your /Applications
+unreleased: 3 commits since v0.x.y
 ```
 
 Because `VERSION` is typed by hand, `make release` checks it before it does
@@ -134,5 +138,5 @@ anything, and each check is a mistake that cannot be undone once published:
 | A dirty working tree | The tag would name code that exists only on your machine. |
 | Commits not pushed to `origin/main` | Same: the tag would point at code nobody else can fetch. |
 
-So the next release after `v0.1.1` is `v0.1.2`, `v0.2.0`, or `v1.0.0`, and the
+So the release after `v0.x.y` is `v0.x.y+1`, `v0.x+1.0`, or `v1.0.0`, and the
 script will tell you so if you type anything else.
