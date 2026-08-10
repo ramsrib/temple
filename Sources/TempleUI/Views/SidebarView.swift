@@ -225,8 +225,17 @@ private struct UsageCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let claude = usage.claude {
+                // Silence means live. A line appears only once the reader has
+                // missed enough polls that the numbers can't be trusted —
+                // otherwise a card you open every hour would carry a "2m ago"
+                // that never says anything.
                 section(agent: .claude, name: "Claude", plan: claude.plan,
-                        rows: claudeRows(claude), footnote: nil, showsRefresh: true)
+                        rows: claudeRows(claude),
+                        footnote: usage.claudeStaleSince.map {
+                            "Couldn't refresh. Read \(RelativeTime.string(from: $0))."
+                        },
+                        showsRefresh: true,
+                        footnoteWarns: usage.claudeStaleSince != nil)
             }
             if usage.claude != nil && usage.codex != nil {
                 Divider()
@@ -286,7 +295,7 @@ private struct UsageCard: View {
     @ViewBuilder
     private func section(agent: Agent, name: String, plan: String?,
                          rows: [(String, Double)], footnote: String?,
-                         showsRefresh: Bool) -> some View {
+                         showsRefresh: Bool, footnoteWarns: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 AgentBadge(agent: agent, size: 12)
@@ -321,9 +330,15 @@ private struct UsageCard: View {
                 }
             }
             if let footnote {
+                // Codex's as-of line is a fact about how its numbers work, so
+                // it sits in tertiary with everything else that isn't asking
+                // for attention. A failed refresh is not that: the rows above
+                // it are wrong, and a note nobody reads is how this stayed
+                // invisible in the first place.
                 Text(footnote)
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(footnoteWarns ? AnyShapeStyle(Color.orange)
+                                                   : AnyShapeStyle(.tertiary))
             }
         }
     }

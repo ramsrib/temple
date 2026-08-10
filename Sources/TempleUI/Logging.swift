@@ -7,4 +7,5 @@ enum TempleUILog {
     static let reconcile = Logger(subsystem: "com.sriramb.temple.app", category: "reconcile")
     static let notifications = Logger(subsystem: "com.sriramb.temple.app", category: "notifications")
     static let drag = Logger(subsystem: "com.sriramb.temple.app", category: "drag")
+    static let usage = Logger(subsystem: "com.sriramb.temple.app", category: "usage")
 }
