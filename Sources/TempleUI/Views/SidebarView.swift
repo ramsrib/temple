@@ -262,7 +262,10 @@ private struct UsageCard: View {
     /// acknowledgment.
     private var refreshButton: some View {
         Button {
-            usage.manualRefresh()
+            // The one control that may raise a Keychain prompt: it is the
+            // explicit ask, and the stale line it sits beside is what sent the
+            // user here. Opening the card must not do this.
+            usage.manualRefresh(retryingCredentials: true)
             withAnimation(.easeInOut(duration: 0.7)) { spinDegrees += 360 }
         } label: {
             Image(systemName: "arrow.clockwise")

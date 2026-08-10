@@ -64,40 +64,57 @@ public final class UsageMeterModel: ObservableObject {
         // second activation observer on top of the first — every poll then hit
         // the endpoint twice. Re-entry still refreshes, floored like activation.
         guard timer == nil else {
-            if Date().timeIntervalSince(lastAttempt) > activationFloor {
-                Task { await refreshNow() }
-            }
+            refreshIfIdle(floor: activationFloor)
             return
         }
-        Task { await refreshNow() }
-        timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { _ in
-            Task { @MainActor [weak self] in await self?.refreshNow() }
+        refreshIfIdle(floor: activationFloor)   // launch: lastAttempt is distantPast
+        timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshIfIdle(floor: 0) }
         }
         activationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
-        ) { _ in
-            Task { @MainActor [weak self] in
-                guard let self,
-                      Date().timeIntervalSince(self.lastAttempt) > self.activationFloor
-                else { return }
-                await self.refreshNow()
-            }
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refreshIfIdle(floor: self?.activationFloor ?? 0) }
+        }
+    }
+
+    /// An unattended refresh: skipped while one is already in flight, and
+    /// floored so no path can hammer the endpoint.
+    ///
+    /// Both checks run when the task EXECUTES, not when it is queued. Queued
+    /// checks let two calls in the same main-actor turn — a window rebuild
+    /// landing on top of launch — each pass a test against state neither has
+    /// had the chance to move yet, and two overlapping fetches are not merely
+    /// wasteful: they finish in either order, so an older reading can land on
+    /// top of a newer one, and a `.noCredentials` from the loser can latch the
+    /// breaker over the winner's success.
+    private func refreshIfIdle(floor: TimeInterval) {
+        Task { @MainActor [weak self] in
+            guard let self, !self.refreshing,
+                  Date().timeIntervalSince(self.lastAttempt) > floor else { return }
+            await self.refreshNow()
         }
     }
 
     /// Click-to-refresh: the meter exists because its user checks usage all
     /// day, and "the number, now" needs a mouse route. Floored, not free.
-    public func manualRefresh() {
-        guard Date().timeIntervalSince(lastAttempt) > manualFloor else { return }
-        // A click is the user asking for the number NOW, so it clears the
-        // no-credentials breaker: the reason that breaker exists is to keep
-        // *unattended* polls from raising a Keychain prompt, and a deliberate
-        // click is the one moment a prompt is expected and answerable. Without
-        // this the control spins and changes nothing, forever.
-        //
-        // The 429 backoff deliberately survives — that one is the server
-        // telling us to stop, and clicking harder is the wrong answer.
-        claudeCredentialsMissing = false
+    ///
+    /// `retryingCredentials` is the escape hatch from the no-credentials
+    /// breaker, and ONLY the explicit refresh control passes it. Opening the
+    /// card is a navigation gesture that happens to refresh on the way in; if
+    /// it also retried the lookup, a user who denied the Keychain prompt would
+    /// be asked again every time they looked at their usage, which is the exact
+    /// nagging the breaker exists to stop. The button says "Refresh now" and is
+    /// sitting right next to the line explaining that the numbers are stale, so
+    /// that is where a prompt belongs.
+    ///
+    /// The 429 backoff survives both: that one is the server telling us to
+    /// stop, and clicking harder is the wrong answer.
+    public func manualRefresh(retryingCredentials: Bool = false) {
+        // Re-arm before the floor check: the click re-arms the reader even on
+        // the clicks that are too soon to spend a request on.
+        if retryingCredentials { claudeCredentialsMissing = false }
+        guard !refreshing, Date().timeIntervalSince(lastAttempt) > manualFloor else { return }
         Task { await refreshNow() }
     }
 
@@ -130,28 +147,45 @@ public final class UsageMeterModel: ObservableObject {
         if newClaude != nil {
             claude = newClaude
             claudeUpdatedAt = Date()
+            claudeMissedRefreshes = 0
+        } else {
+            claudeMissedRefreshes += 1
         }
         if newCodex != nil { codex = newCodex }
         if newClaude != nil || newCodex != nil { updatedAt = Date() }
     }
 
-    /// How long Claude's figures may go unrefreshed before the card says so.
-    /// Three missed polls: a single hiccup stays quiet, a reader that has
-    /// actually stopped does not.
-    var stalenessThreshold: TimeInterval { refreshInterval * 3 }
+    /// Refreshes in a row that produced no Claude reading — counting the ones
+    /// that never even asked, because the breaker was tripped or a 429 backoff
+    /// was still running.
+    ///
+    /// Counting the skipped ones is the whole point. The eight-day bug failed
+    /// zero times: after the latch, nothing was ever attempted, so a counter of
+    /// *failures* would have sat at 1 forever while the numbers rotted. What
+    /// the user cares about is not whether a request failed, it is whether the
+    /// figures in front of them moved.
+    @Published private(set) var claudeMissedRefreshes = 0
 
-    /// When the on-screen Claude figures were read, once they are old enough
-    /// to be worth admitting to; nil while they are current.
+    /// Three in a row before the card says anything: one hiccup stays quiet, a
+    /// reader that has actually stopped does not.
+    static let staleAfterMissedRefreshes = 3
+
+    /// When the on-screen Claude figures were read, once enough refreshes have
+    /// come and gone without moving them; nil while they are current.
     ///
     /// The meter's whole failure mode is silence — a dead reader and a healthy
     /// one look identical, because a percentage that isn't moving is also what
-    /// "you haven't used any" looks like. Codex has always carried its
-    /// as-of line (its numbers are a snapshot by nature); Claude claimed to be
-    /// live and had no way to say when it stopped being live.
+    /// "you haven't used any" looks like. Codex has always carried its as-of
+    /// line (its numbers are a snapshot by nature); Claude claimed to be live
+    /// and had no way to say when it stopped being live.
+    ///
+    /// Deliberately counted, not timed. A `Date()` comparison read during view
+    /// evaluation goes true at a moment nothing publishes, so an open card
+    /// would keep its silence until some unrelated change redrew it.
     var claudeStaleSince: Date? {
-        guard claude != nil, let at = claudeUpdatedAt,
-              Date().timeIntervalSince(at) > stalenessThreshold else { return nil }
-        return at
+        guard claude != nil,
+              claudeMissedRefreshes >= Self.staleAfterMissedRefreshes else { return nil }
+        return claudeUpdatedAt
     }
 
     // MARK: What the footer shows
