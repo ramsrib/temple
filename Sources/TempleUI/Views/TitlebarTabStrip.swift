@@ -150,8 +150,18 @@ final class TabStripContainerView: NSView {
         }
     }
 
+    /// The row's true extent: the fresher of AppKit's hosted frame and
+    /// SwiftUI's own chip report. A ⌘T chip is in `chipFrames` the moment its
+    /// reveal fires, but the hosting view's intrinsic-size invalidation lands
+    /// a runloop tick later — `layoutSubtreeIfNeeded()` can't hurry it — so a
+    /// width read from the frame alone is short by exactly the new chip, and
+    /// the reveal clamp then parks the PREVIOUS tab at the right edge.
+    private var effectiveContentWidth: CGFloat {
+        max(chipsHost.frame.width, chipFrames.last?.maxX ?? 0)
+    }
+
     private var maxOffset: CGFloat {
-        max(0, chipsHost.frame.width - scrollClip.bounds.width)
+        max(0, effectiveContentWidth - scrollClip.bounds.width)
     }
 
     /// Whether the chips currently overflow the band. The cue GUTTERS are
@@ -163,8 +173,17 @@ final class TabStripContainerView: NSView {
     private var isScrollable = false
 
     /// Every chip's frame in the chips row's coordinates, left to right
-    /// (reported by TabStripChipsRow); what the cue clicks step across.
-    var chipFrames: [CGRect] = []
+    /// (reported by TabStripChipsRow); what the cue clicks step across, and
+    /// half of `effectiveContentWidth`.
+    var chipFrames: [CGRect] = [] {
+        didSet {
+            // Mirror of `contentFrameChanged`: closing tabs can shrink the
+            // SwiftUI report before OR after AppKit's frame notification, and
+            // whichever side lands second must drop a stale over-scroll.
+            if offset > maxOffset { offset = maxOffset }
+            updateOverflowCues()
+        }
+    }
 
     /// Detail pane's leading edge in window coordinates (set by the installer).
     var detailMinX: CGFloat = 0 {
@@ -467,7 +486,10 @@ final class TabStripContainerView: NSView {
         // below can't chase its own tail.
         let bandWidth = scrollClip.bounds.width
             + leftCueWidth.constant + rightCueWidth.constant
-        let content = chipsHost.frame.width
+        // Effective, not the hosted frame: a just-appended chip must tip the
+        // row into scrollable NOW, in the same pass its reveal measures the
+        // clip — not a tick later when the hosting view's width catches up.
+        let content = effectiveContentWidth
         if isScrollable {
             // Only give the gutters back once the content clears the band by the
             // whole reservation, so we don't immediately re-enter scrollable.
