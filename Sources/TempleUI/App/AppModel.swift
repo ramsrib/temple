@@ -720,7 +720,12 @@ public final class AppModel: ObservableObject {
             deferredLanding = nil
             tabSwitcherPresented = true
             tabSwitcherArmedByControl = heldControl
-            tabSwitcherSelection = list[delta > 0 ? 1 : list.count - 1].id
+            // A fresh press opens on the previously visited tab regardless of
+            // direction: a quick tap of ⌃⇥ OR ⌃⇧⇥ must bounce between the two
+            // most recent tabs (⌃⇧⇥ starting at the list's tail sent a tap to
+            // the OLDEST tab, reshuffling recency on every landing). Direction
+            // only matters for later presses while ⌃ holds the switcher open.
+            tabSwitcherSelection = list[1].id
         }
     }
 

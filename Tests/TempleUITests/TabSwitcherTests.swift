@@ -71,6 +71,23 @@ final class TabSwitcherTests: XCTestCase {
         XCTAssertEqual(model.openSessions.activeTab?.sessionID, "3")
     }
 
+    /// A fresh ⌃⇧⇥ tap is the same bounce as ⌃⇥ — NOT a jump to the oldest
+    /// tab. Alternating the two chords must ping-pong between two tabs;
+    /// direction only diverges on later presses while the switcher is up.
+    func testFreshShiftTabAlsoBouncesToThePreviousTab() {
+        let model = modelWithThreeTabs()
+
+        model.advanceTabSwitcher(by: -1)
+        XCTAssertEqual(model.tabSwitcherSelection, tabID(model, "2"))
+        model.commitTabSwitcher()
+        XCTAssertEqual(model.openSessions.activeTab?.sessionID, "2")
+
+        model.advanceTabSwitcher(by: 1)
+        model.commitTabSwitcher()
+        XCTAssertEqual(model.openSessions.activeTab?.sessionID, "3",
+                       "⌃⇥ after ⌃⇧⇥ returns to where you started")
+    }
+
     /// The trail spans projects: landing on a tab that lives elsewhere also
     /// switches the strip to its project.
     func testCommitSwitchesProjectWhenThePreviousTabLivesElsewhere() {
