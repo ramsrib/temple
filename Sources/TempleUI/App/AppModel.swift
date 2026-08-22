@@ -703,7 +703,13 @@ public final class AppModel: ObservableObject {
     /// presses walk the list while ⌃ stays down.
     public func advanceTabSwitcher(by delta: Int, heldControl: Bool = true) {
         let list = switchableTabs
-        guard list.count > 1 else { return }
+        // On the home page no tab is active, so list[0] is not "where we
+        // are" — it IS the last-visited tab, the bounce target. Anchoring on
+        // a live active tab keeps both cases honest: from a tab, slot 0 is
+        // the current tab and the walk starts at slot 1; from home, slot 0
+        // is the destination — and a single open tab is then enough to go.
+        let anchor = openSessions.activeTabID == nil ? 0 : 1
+        guard list.count > anchor else { return }
 
         if tabSwitcherPresented {
             let current = tabSwitcherSelection.flatMap { sel in list.firstIndex { $0.id == sel } } ?? 0
@@ -724,8 +730,10 @@ public final class AppModel: ObservableObject {
             // direction: a quick tap of ⌃⇥ OR ⌃⇧⇥ must bounce between the two
             // most recent tabs (⌃⇧⇥ starting at the list's tail sent a tap to
             // the OLDEST tab, reshuffling recency on every landing). Direction
-            // only matters for later presses while ⌃ holds the switcher open.
-            tabSwitcherSelection = list[1].id
+            // only matters for later presses while ⌃ holds the switcher open —
+            // where stepping back onto the current tab and releasing is a
+            // deliberate no-op, the ⌘⇥ way of bailing out of a walk.
+            tabSwitcherSelection = list[anchor].id
         }
     }
 

@@ -469,7 +469,12 @@ private struct KeyCatcher: NSViewRepresentable {
             // the tab you were just on. Terminals never see ⌃⇥ anyway — Tab IS
             // ⌃I, so the combination has no escape sequence to forward.
             if ctrl && event.keyCode == 48 {
-                model.advanceTabSwitcher(by: shift ? -1 : 1)
+                // Direction is deliberately NOT passed here: a fresh press of
+                // either chord opens on the previously visited tab (the
+                // bounce). Shift only steers the walk in the presented block
+                // above — honoring it here would send a quick ⌃⇧⇥ tap to the
+                // oldest tab again.
+                model.advanceTabSwitcher(by: 1)
                 return true
             }
 

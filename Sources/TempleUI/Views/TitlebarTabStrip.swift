@@ -150,14 +150,17 @@ final class TabStripContainerView: NSView {
         }
     }
 
-    /// The row's true extent: the fresher of AppKit's hosted frame and
-    /// SwiftUI's own chip report. A ⌘T chip is in `chipFrames` the moment its
-    /// reveal fires, but the hosting view's intrinsic-size invalidation lands
-    /// a runloop tick later — `layoutSubtreeIfNeeded()` can't hurry it — so a
-    /// width read from the frame alone is short by exactly the new chip, and
-    /// the reveal clamp then parks the PREVIOUS tab at the right edge.
+    /// The row's true extent: SwiftUI's own chip report, NOT the hosted
+    /// frame. A ⌘T chip is in `chipFrames` the moment its reveal fires, but
+    /// the hosting view's intrinsic-size invalidation lands a runloop tick
+    /// later — `layoutSubtreeIfNeeded()` can't hurry it — so a width read
+    /// from the frame is short by exactly the new chip, and the reveal clamp
+    /// then parks the PREVIOUS tab at the right edge. Closes mirror it: the
+    /// frame lags there too, and taking a max() of the two would keep
+    /// `maxOffset` inflated until BOTH had shrunk. The frame is only the
+    /// fallback for the moment before the first preference pass reports.
     private var effectiveContentWidth: CGFloat {
-        max(chipsHost.frame.width, chipFrames.last?.maxX ?? 0)
+        chipFrames.last?.maxX ?? chipsHost.frame.width
     }
 
     private var maxOffset: CGFloat {
@@ -176,13 +179,7 @@ final class TabStripContainerView: NSView {
     /// (reported by TabStripChipsRow); what the cue clicks step across, and
     /// half of `effectiveContentWidth`.
     var chipFrames: [CGRect] = [] {
-        didSet {
-            // Mirror of `contentFrameChanged`: closing tabs can shrink the
-            // SwiftUI report before OR after AppKit's frame notification, and
-            // whichever side lands second must drop a stale over-scroll.
-            if offset > maxOffset { offset = maxOffset }
-            updateOverflowCues()
-        }
+        didSet { clampOffsetAndRefreshCues() }
     }
 
     /// Detail pane's leading edge in window coordinates (set by the installer).
@@ -453,9 +450,20 @@ final class TabStripContainerView: NSView {
         offset = min(max(0, offset - delta), maxOffset)
     }
 
+    /// The one copy of the "never leave a stale over-scroll" invariant. It
+    /// runs from every width source — AppKit frame notifications, layout
+    /// passes, and SwiftUI's chip report — because tab closes can shrink
+    /// those in either order, and whichever lands second must clamp.
+    private func clampOffsetAndRefreshCues() {
+        if offset > maxOffset {
+            offset = maxOffset  // its didSet refreshes the cues
+        } else {
+            updateOverflowCues()
+        }
+    }
+
     @objc private func contentFrameChanged() {
-        if offset > maxOffset { offset = maxOffset }
-        updateOverflowCues()
+        clampOffsetAndRefreshCues()
     }
 
     override func layout() {
@@ -463,8 +471,7 @@ final class TabStripContainerView: NSView {
         // Self-heal: if AppKit rebuilt the titlebar and dropped our span, this
         // re-claims; if the claim is intact it's a cheap guard check and no-op.
         claimTitlebarBand()
-        if offset > maxOffset { offset = maxOffset }
-        updateOverflowCues()
+        clampOffsetAndRefreshCues()
     }
 
     /// Reserve (or release) BOTH cue gutters from overflow alone, with a full
@@ -513,9 +520,10 @@ final class TabStripContainerView: NSView {
 
     /// Scroll a chip (rect in the chips row's own coordinate space) into view.
     func reveal(_ rect: CGRect) {
-        // A brand-new chip's frame arrives from SwiftUI before AppKit has
-        // laid out the hosting view's new intrinsic width; without fresh
-        // widths the clamp below under-scrolls and the chip stays hidden.
+        // Settle any pending band/clip layout before measuring. This does NOT
+        // freshen the content width — the hosted frame lags SwiftUI by a tick
+        // no matter what, which is why `effectiveContentWidth` reads the chip
+        // report instead — it's here for the clip's own geometry.
         layoutSubtreeIfNeeded()
         // The new chip may have just tipped the row into scrollable, opening the
         // gutters — but their width lands on the NEXT pass, so the clip below

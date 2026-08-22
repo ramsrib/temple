@@ -88,6 +88,53 @@ final class TabSwitcherTests: XCTestCase {
                        "⌃⇥ after ⌃⇧⇥ returns to where you started")
     }
 
+    /// On the home page no tab is active, so the recency list's HEAD is the
+    /// bounce target — anchoring at slot 1 there skipped the tab just left.
+    func testSwitcherFromHomeReturnsToTheTabJustLeft() {
+        let model = modelWithThreeTabs()
+        model.openSessions.showHome()
+        XCTAssertNil(model.openSessions.activeTabID)
+
+        model.advanceTabSwitcher(by: 1)
+        XCTAssertEqual(model.tabSwitcherSelection, tabID(model, "3"))
+        model.commitTabSwitcher()
+        XCTAssertEqual(model.openSessions.activeTab?.sessionID, "3")
+    }
+
+    /// From home even a single open tab is somewhere to go; the two-tab
+    /// guard only applies while one of them is already active.
+    func testSwitcherFromHomeWorksWithASingleTab() {
+        let session = Fixture.session("1", project: "/p/api", title: "t")
+        let model = makeModel(SessionIndex(projects: [
+            Project(path: "/p/api", sessions: [session]),
+        ]))
+        model.openSessions.openSession(session)
+
+        model.advanceTabSwitcher(by: 1)
+        XCTAssertFalse(model.tabSwitcherPresented, "active tab is the only tab — nowhere to go")
+
+        model.openSessions.showHome()
+        model.advanceTabSwitcher(by: 1)
+        XCTAssertEqual(model.tabSwitcherSelection, tabID(model, "1"))
+        model.commitTabSwitcher()
+        XCTAssertEqual(model.openSessions.activeTab?.sessionID, "1")
+    }
+
+    /// Pinned on purpose: mid-walk, ⇧⇥ steps back through the cycle — onto
+    /// the current tab (release there = deliberate bail-out, the ⌘⇥ way)
+    /// and past it to the tail. NOT a bug; the fresh press is the bounce.
+    func testHeldReverseWalkStepsBackThroughCurrentAndWraps() {
+        let model = modelWithThreeTabs()
+
+        model.advanceTabSwitcher(by: 1)                             // open on "2"
+        model.advanceTabSwitcher(by: -1)
+        XCTAssertEqual(model.tabSwitcherSelection, tabID(model, "3"),
+                       "steps back onto the current tab")
+        model.advanceTabSwitcher(by: -1)
+        XCTAssertEqual(model.tabSwitcherSelection, tabID(model, "1"),
+                       "wraps past it to the oldest")
+    }
+
     /// The trail spans projects: landing on a tab that lives elsewhere also
     /// switches the strip to its project.
     func testCommitSwitchesProjectWhenThePreviousTabLivesElsewhere() {
