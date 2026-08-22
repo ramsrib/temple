@@ -104,8 +104,11 @@ The sidebar and tab bar form a two-part navigation model:
   (`⌘K`); projects get a switcher, because you hold a handful of them in your head
   and search a hundred sessions.
 - `⌃⇥` is the same gesture one level down: hold `⌃` and tap `⇥` to walk the open
-  tabs **most recently visited first** (`⌃⇧⇥` walks the other way), release `⌃`
-  to land — so one tap bounces to the tab you were just on. The trail spans
+  tabs **most recently visited first**, release `⌃` to land — so one tap bounces
+  to the tab you were just on. A fresh tap of `⌃⇧⇥` is the same bounce (not a
+  jump to the oldest tab), so alternating the two chords ping-pongs between two
+  tabs; `⇧` steers direction only mid-walk, while `⌃` holds the switcher open.
+  From the home page the bounce returns to the tab you left. The trail spans
   projects, and each row names the project it would take you to; landing
   elsewhere switches the strip. The tab you are leaving is marked *current*, and
   a dot flags tabs whose agent is running or waiting. `⌘1`–`⌘9` remain the
@@ -286,7 +289,7 @@ of truth.
 | **⌘N** | New session in a project you pick (default agent); `⌘⇧N` uses the other agent. |
 | **⌘⇧H** | Show the launcher/home page; existing tabs stay open. |
 | **⌘1–9** | Switch to tab *N* in the active project. |
-| **⌃⇥ / ⌃⇧⇥** | Tab switcher: previous / next visited tab (hold ⌃ to walk the MRU list, release to land). |
+| **⌃⇥ / ⌃⇧⇥** | Tab switcher: last visited tab (hold ⌃ to walk the MRU list, ⇧ reverses mid-walk, release to land). |
 | **⌘⇧[ / ⌘⇧]** | Previous / next project; returns to the session last used there. |
 | **⌘P** | Project switcher (hold ⌘, tap P to walk, release to land). |
 | **⌘F** | Reveal the sidebar if needed and focus sidebar search. |
