@@ -9,8 +9,7 @@ public struct PersistedTab: Codable, Equatable {
     public var projectPath: String
     public var title: String
     /// The tab that was on screen when the app was last quit, so a relaunch can
-    /// put the user back where they were instead of on the launcher. Optional in
-    /// the decoder: a set saved before this existed simply has no active tab.
+    /// put the user back where they were instead of on the launcher.
     public var isActive: Bool = false
 
     public init(sessionID: String, agent: Agent, projectPath: String, title: String,
@@ -20,6 +19,20 @@ public struct PersistedTab: Codable, Equatable {
         self.projectPath = projectPath
         self.title = title
         self.isActive = isActive
+    }
+
+    /// Hand-written because a stored-property default does NOT make the
+    /// synthesized decoder tolerant of a missing key — it still requires it and
+    /// throws `keyNotFound`. `load()` turns any throw into an empty set, so
+    /// relying on the default would have silently erased every restored tab the
+    /// first time a set written before this field was read back.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try container.decode(String.self, forKey: .sessionID)
+        agent = try container.decode(String.self, forKey: .agent)
+        projectPath = try container.decode(String.self, forKey: .projectPath)
+        title = try container.decode(String.self, forKey: .title)
+        isActive = try container.decodeIfPresent(Bool.self, forKey: .isActive) ?? false
     }
 
     public var resolvedAgent: Agent { Agent(rawValue: agent) ?? .claude }

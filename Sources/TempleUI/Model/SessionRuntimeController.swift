@@ -44,7 +44,16 @@ public final class SessionRuntimeController {
     /// the stragglers, then call `completion` (wire to `.terminateLater`).
     public func drainAll(_ surfaces: [TerminalSurface], completion: @escaping () -> Void) {
         let running = surfaces.filter(Self.isRunning)
-        guard !running.isEmpty else { completion(); return }
+        guard !running.isEmpty else {
+            // NEVER synchronously: the caller wires this to
+            // `reply(toApplicationShouldTerminate:)`, which AppKit requires to
+            // come *after* `.terminateLater` has been returned. Replying first
+            // left the app deferred with no reply ever coming — unquittable,
+            // window open, ⌘Q and the close button both inert. Reachable with a
+            // tab whose agent had already exited.
+            DispatchQueue.main.async { completion() }
+            return
+        }
         for surface in running { surface.requestGracefulExit() }
         let timeout = gracefulTimeout
         Task {

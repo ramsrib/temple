@@ -52,7 +52,19 @@ final class RuntimeControllerTests: XCTestCase {
 
     func testDrainAllWithNoLiveSurfacesCompletesImmediately() {
         let done = expectation(description: "drained")
-        SessionRuntimeController().drainAll([]) { done.fulfill() }
-        wait(for: [done], timeout: 0.1)
+        var calledBeforeReturning = false
+        var returned = false
+        SessionRuntimeController().drainAll([]) {
+            if !returned { calledBeforeReturning = true }
+            done.fulfill()
+        }
+        returned = true
+        // AppKit requires reply(toApplicationShouldTerminate:) to come AFTER
+        // .terminateLater is returned. Calling back from inside drainAll replied
+        // first, and left the app deferred with no reply ever coming — running,
+        // window open, and impossible to quit. Reachable with a tab whose agent
+        // had already exited.
+        XCTAssertFalse(calledBeforeReturning, "must not complete before the caller returns")
+        wait(for: [done], timeout: 1.0)
     }
 }

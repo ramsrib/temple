@@ -332,7 +332,18 @@ produced two prompts. The close handler decides in place, and a close it approve
 marks the quit as already-confirmed so the drain does not re-ask. Deciding there
 means displacing SwiftUI's window delegate, so Temple interposes a forwarding
 proxy that answers this one selector and passes everything else through,
-reinstalled whenever the window becomes main rather than latched once.
+reinstalled whenever the window becomes main or key, swept once at launch for a
+window that became main before the observers existed, and dropped when the window
+closes.
+
+Two traps found by review, both real. The prompt must not be gated on a window
+being *visible*: `isVisible` and `canBecomeMain` are false for a minimized or
+⌘H-hidden window, so that test skipped the warning for an app the user could
+restore perfectly well, and killed the agent in silence. The gate is the window's
+lifetime instead — it exists until it posts `willClose`. And the "already asked"
+approval is scoped to the window that was closing and expires on the next run-loop
+turn; a global flag would be banked by a close that never terminated and spent
+later by an unrelated ⌘Q.
 
 Restore is the other half of making an accidental quit cheap. Lazy restore
 *(ADR-009)* rebuilt the chips but left no tab active, so every relaunch landed on

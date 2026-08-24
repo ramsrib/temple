@@ -19,6 +19,33 @@ final class PersistenceAdapterTests: XCTestCase {
         XCTAssertEqual(loaded.map(\.projectPath), ["/z/active", "/a/other"])
     }
 
+    /// The active flag has to survive the store the app actually uses, not just
+    /// the UserDefaults seam the model tests run on.
+    func testDBTabPersistenceRoundTripsTheActiveTab() throws {
+        let db = try TempleDB.inMemory()
+        DBTabPersistence(db: db).save([
+            PersistedTab(sessionID: "a", agent: .claude, projectPath: "/p", title: "a"),
+            PersistedTab(sessionID: "b", agent: .codex, projectPath: "/p", title: "b", isActive: true),
+        ])
+
+        let loaded = DBTabPersistence(db: db).load()
+        XCTAssertEqual(loaded.filter(\.isActive).map(\.sessionID), ["b"])
+    }
+
+    /// A tab set written before `isActive` existed must still load. A stored
+    /// property default does NOT make the synthesized decoder tolerant of the
+    /// missing key — it throws, and `load()` turns any throw into an empty set,
+    /// so this would have silently erased every restored tab.
+    func testPersistedTabDecodesDataWrittenBeforeTheActiveFlag() throws {
+        let legacy = """
+        [{"sessionID":"a","agent":"claude","projectPath":"/p","title":"t"}]
+        """.data(using: .utf8)!
+
+        let tabs = try JSONDecoder().decode([PersistedTab].self, from: legacy)
+        XCTAssertEqual(tabs.map(\.sessionID), ["a"])
+        XCTAssertFalse(tabs[0].isActive)
+    }
+
     func testDBOverlayStoreReloadsPinsAndCustomNames() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("temple-overlay-db-\(UUID().uuidString)", isDirectory: true)

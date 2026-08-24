@@ -20,8 +20,12 @@ final class AppLifecycleTests: XCTestCase {
     }
 
     private func makeWindow() -> NSWindow {
-        NSWindow(contentRect: .init(x: 0, y: 0, width: 400, height: 300),
-                 styleMask: [.titled, .closable], backing: .buffered, defer: true)
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 400, height: 300),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: true)
+        // Closing one of these for real is the point of the tests below, and the
+        // AppKit default would then over-release it under the test's own ref.
+        window.isReleasedWhenClosed = false
+        return window
     }
 
     /// The prompt has to be answered while the window is still on screen. It used
@@ -29,12 +33,12 @@ final class AppLifecycleTests: XCTestCase {
     /// and Cancel had no window to return to — SwiftUI tore the windowless scene
     /// down and exited anyway, so Cancel lost the work it offered to save.
     func testCancellingTheCloseKeepsTheWindow() {
-        let interceptor = WindowCloseInterceptor(forwardingTo: nil, approveClose: { false })
+        let interceptor = WindowCloseInterceptor(forwardingTo: nil, approveClose: { _ in false })
         XCTAssertFalse(interceptor.windowShouldClose(makeWindow()))
     }
 
     func testApprovingTheCloseLetsTheWindowGo() {
-        let interceptor = WindowCloseInterceptor(forwardingTo: nil, approveClose: { true })
+        let interceptor = WindowCloseInterceptor(forwardingTo: nil, approveClose: { _ in true })
         XCTAssertTrue(interceptor.windowShouldClose(makeWindow()))
     }
 
@@ -84,7 +88,7 @@ final class AppLifecycleTests: XCTestCase {
             func windowDidResize(_ notification: Notification) { didResize = true }
         }
         let recorder = Recorder()
-        let interceptor = WindowCloseInterceptor(forwardingTo: recorder, approveClose: { true })
+        let interceptor = WindowCloseInterceptor(forwardingTo: recorder, approveClose: { _ in true })
 
         XCTAssertTrue(interceptor.responds(to: #selector(NSWindowDelegate.windowDidResize(_:))))
         (interceptor as NSWindowDelegate).windowDidResize?(
@@ -92,9 +96,27 @@ final class AppLifecycleTests: XCTestCase {
         XCTAssertTrue(recorder.didResize, "forwarded to the delegate we displaced")
     }
 
-    /// If the window is somehow already gone, Cancel would be a lie: there is
-    /// nothing to return to. Drain and quit rather than offer the choice.
-    func testNoPromptWhenThereIsNoWindowToReturnTo() {
+    /// A minimized or ⌘H-hidden Temple must still ask. The first fix gated the
+    /// prompt on a window being *visible*, which is false in both of those
+    /// states — so quitting from the Dock killed a working agent in silence.
+    func testHiddenWindowStillAsksBeforeQuitting() {
+        let delegate = TempleAppDelegate()
+        let model = makeModel()
+        delegate.model = model
+        model.openSessions.openSession(Fixture.session("a1", project: "/p/a"))
+
+        // Hidden or minimized: the window still exists, so it is still tracked.
+        delegate.hasCancellableWindow = { true }
+        var asked = false
+        delegate.confirmQuitWhileWorking = { _ in asked = true; return false }
+        XCTAssertEqual(delegate.applicationShouldTerminate(NSApplication.shared), .terminateCancel)
+        XCTAssertTrue(asked, "off-screen is not gone — the warning still applies")
+    }
+
+    /// The other side of it: a window that has genuinely gone (something bypassed
+    /// the interceptor with a direct `close()`) must not be offered a Cancel that
+    /// cannot put it back. That was the v0.1.13 lie.
+    func testNoPromptOnceTheWindowIsActuallyGone() {
         let delegate = TempleAppDelegate()
         let model = makeModel()
         delegate.model = model
@@ -105,6 +127,65 @@ final class AppLifecycleTests: XCTestCase {
         delegate.confirmQuitWhileWorking = { _ in asked = true; return false }
         XCTAssertEqual(delegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
         XCTAssertFalse(asked)
+    }
+
+    /// The close button is the thing under test, not the closure behind it: press
+    /// it for real and assert the window survives. Every earlier test here passed
+    /// against an interceptor that was never installed on a window at all.
+    func testPressingCloseWithWorkRunningLeavesTheWindowOpen() {
+        let delegate = TempleAppDelegate()
+        let model = makeModel()
+        delegate.model = model
+        model.openSessions.openSession(Fixture.session("a1", project: "/p/a"))
+        delegate.confirmQuitWhileWorking = { _ in false }
+
+        let window = makeWindow()
+        window.delegate = WindowCloseInterceptor(forwardingTo: window.delegate) { closing in
+            delegate.approveCloseForQuit(closing)
+        }
+        window.makeKeyAndOrderFront(nil)
+        window.performClose(nil)
+
+        XCTAssertTrue(window.isVisible, "Cancel must leave the window exactly where it was")
+    }
+
+    func testPressingCloseAfterApprovalLetsTheWindowGo() {
+        let delegate = TempleAppDelegate()
+        let model = makeModel()
+        delegate.model = model
+        model.openSessions.openSession(Fixture.session("a1", project: "/p/a"))
+        delegate.confirmQuitWhileWorking = { _ in true }
+
+        let window = makeWindow()
+        window.delegate = WindowCloseInterceptor(forwardingTo: window.delegate) { closing in
+            delegate.approveCloseForQuit(closing)
+        }
+        window.makeKeyAndOrderFront(nil)
+        window.performClose(nil)
+
+        XCTAssertFalse(window.isVisible)
+    }
+
+    /// An approved close that does not go on to terminate (a second window) must
+    /// not bank its "yes" for a later, unrelated quit.
+    func testApprovalDoesNotSurviveIntoAnUnrelatedQuit() async {
+        let delegate = TempleAppDelegate()
+        let model = makeModel()
+        delegate.model = model
+        delegate.hasCancellableWindow = { true }
+        model.openSessions.openSession(Fixture.session("a1", project: "/p/a"))
+
+        var prompts = 0
+        delegate.confirmQuitWhileWorking = { _ in prompts += 1; return true }
+        XCTAssertTrue(delegate.approveCloseForQuit(makeWindow()))
+        XCTAssertEqual(prompts, 1)
+
+        // The close never became a termination; let the run loop turn over.
+        await Task.yield()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(delegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
+        XCTAssertEqual(prompts, 2, "the later quit asks on its own account")
     }
 
     func testQuitWithNoAgentsDoesNotAsk() {
@@ -121,10 +202,11 @@ final class AppLifecycleTests: XCTestCase {
         let delegate = TempleAppDelegate()
         let model = makeModel()
         delegate.model = model
+        delegate.hasCancellableWindow = { true }
+        delegate.hasCancellableWindow = { true }
         model.openSessions.openSession(Fixture.session("a1", project: "/p/a"))
         XCTAssertEqual(model.openSessions.workingTabs.count, 1)
 
-        delegate.hasCancellableWindow = { true }
         var workingCount = 0
         delegate.confirmQuitWhileWorking = { workingCount = $0; return false }
         XCTAssertEqual(delegate.applicationShouldTerminate(NSApplication.shared), .terminateCancel)
@@ -136,8 +218,8 @@ final class AppLifecycleTests: XCTestCase {
         let delegate = TempleAppDelegate()
         let model = makeModel()
         delegate.model = model
-        model.openSessions.openSession(Fixture.session("a1", project: "/p/a"))
         delegate.hasCancellableWindow = { true }
+        model.openSessions.openSession(Fixture.session("a1", project: "/p/a"))
         delegate.confirmQuitWhileWorking = { _ in true }
 
         XCTAssertEqual(delegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
@@ -150,6 +232,7 @@ final class AppLifecycleTests: XCTestCase {
         let delegate = TempleAppDelegate()
         let model = makeModel()
         delegate.model = model
+        delegate.hasCancellableWindow = { true }
         model.openSessions.openSession(Fixture.session("a1", project: "/p/a"))
         model.openSessions.tabs.first?.activity = .idle
 
