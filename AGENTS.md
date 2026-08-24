@@ -56,6 +56,41 @@ you have found another one. Before adding a layout modifier that forces measurem
 `MainContentView`, scroll the sidebar and check the traffic lights. The real fix is to
 stop depending on the implicit inset — until someone does that, this list will grow.
 
+## Quitting: ask before the window goes, and never reply early
+
+Temple is single-window, so **closing the window quits** — the red button routes
+through `windowShouldClose` → `applicationShouldTerminate` → drain. Three traps
+here, each one shipped as a bug first.
+
+- **Ask in `windowShouldClose`, not in `applicationShouldTerminate`.** AppKit only
+  reaches the terminate delegate *after* the window is closed, so a confirmation
+  there has nothing to cancel back to: v0.1.13 put the "an agent is still working"
+  prompt up over a destroyed window, and SwiftUI — its `WindowGroup` now empty —
+  tore the scene down and exited regardless of `.terminateCancel`. Cancel killed
+  the agent it offered to protect.
+- **Don't answer that prompt by starting a termination.** Calling `NSApp.terminate`
+  from inside `windowShouldClose` (even deferred a run-loop turn) re-enters: SwiftUI
+  re-delivers `windowShouldClose` during its scene teardown, so one click produced
+  two prompts and the second quit despite Cancel. Decide synchronously in the
+  callback and return the answer; record the approval so the termination it starts
+  doesn't ask again. That approval must be scoped to the closing window and expire
+  — a global "already said yes" gets banked by a close that never terminated.
+- **`reply(toApplicationShouldTerminate:)` must come *after* `.terminateLater` is
+  returned.** `SessionRuntimeController.drainAll` used to invoke its completion
+  synchronously when nothing was running, which replied first; AppKit then waited
+  forever for a reply that had already come. Symptom: **the app cannot be quit at
+  all** — window open, close button and `⌘Q` both inert, no error anywhere.
+  Reachable whenever a tab's agent had already exited.
+
+Deciding in `windowShouldClose` means displacing SwiftUI's own window delegate, so
+`WindowCloseInterceptor` answers that one selector and forwards everything else via
+`responds(to:)` + `forwardingTarget(for:)`. Like the titlebar band claim, it
+**self-heals rather than latches**: reinstalled on `didBecomeMain`/`didBecomeKey`,
+swept once at launch for a window that beat the observers, dropped on `willClose`.
+Anything gated on a window being *visible* is wrong here — `isVisible` and
+`canBecomeMain` are both false for a minimized or `⌘H`-hidden window, which is
+still a window the user can come back to.
+
 ## Settings: shipped default → detected → user override
 
 Three layers, and **only the third is ever persisted**:
@@ -80,6 +115,13 @@ each setting writes only its own key (`write(_:_:)`), and detection is never sav
 
 A user override **wins outright** — including a broken one. Temple launches what
 they chose and reports that it's broken; it never silently substitutes its own pick.
+
+**Adding a field to a persisted `Codable` needs an explicit decoder.** A stored-property
+default does *not* make synthesized `Decodable` tolerant of a missing key — it still
+requires the key and throws `keyNotFound`. Every `load()` here turns a throw into an
+empty result, so the field that was meant to default quietly erases the whole record
+set the first time older data is read. Write `init(from:)` with `decodeIfPresent`, and
+pin it with a fixture of the *old* JSON.
 
 ## Agent binaries are detected, never guessed
 
