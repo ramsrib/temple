@@ -127,6 +127,12 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         tabs.first { $0.surface === surface }
     }
 
+    /// Session tabs whose agent is mid-task. Quitting interrupts these, which is
+    /// what the quit gate asks about.
+    public var workingTabs: [SessionTab] {
+        tabs.filter { $0.kind == .session && $0.hasSurface && $0.activity == .running }
+    }
+
     public var allSurfaces: [TerminalSurface] {
         tabs.compactMap { $0.surface }
     }
@@ -659,7 +665,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             .filter { $0.kind == .session && !$0.isProvisional }
             .compactMap { tab -> PersistedTab? in
                 guard let sid = tab.sessionID else { return nil }
-                return PersistedTab(sessionID: sid, agent: tab.agent, projectPath: tab.projectPath, title: tab.title)
+                return PersistedTab(sessionID: sid, agent: tab.agent, projectPath: tab.projectPath,
+                                    title: tab.title, isActive: tab.id == activeTabID)
             }
         // The ACTIVE project's tabs go first (within-project order preserved):
         // restore() derives the launch-time active project from the first
@@ -696,8 +703,15 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         }
         // Restore active project context without spawning anything.
         activeProjectPath = tabs.first?.projectPath
-        // No active tab → launcher shows until the user clicks a chip.
-        activeTabID = nil
+        // Every other chip stays inert until clicked (lazy restore). The one the
+        // user was looking at when they quit is the exception: reopening to the
+        // launcher after a quit reads as "Temple lost my session", so that one
+        // tab is activated — which resumes exactly one agent, not the whole set.
+        guard let activeIndex = saved.firstIndex(where: \.isActive) else {
+            activeTabID = nil
+            return
+        }
+        activate(tabs[activeIndex])
     }
 }
 

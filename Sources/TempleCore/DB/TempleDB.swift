@@ -26,13 +26,18 @@ public struct OpenTabRecord: Codable, Equatable, Sendable {
     public let position: Int
     public let agent: String
     public let title: String
+    /// The tab that had the screen when the app was last quit. At most one
+    /// record carries it; a set with none simply restores to the launcher.
+    public let isActive: Bool
 
-    public init(projectPath: String, sessionID: String, position: Int, agent: String, title: String) {
+    public init(projectPath: String, sessionID: String, position: Int, agent: String,
+                title: String, isActive: Bool = false) {
         self.projectPath = projectPath
         self.sessionID = sessionID
         self.position = position
         self.agent = agent
         self.title = title
+        self.isActive = isActive
     }
 }
 
@@ -168,11 +173,11 @@ public final class TempleDB: @unchecked Sendable {
                 try database.execute(
                     sql: """
                         INSERT INTO open_tabs
-                            (project_path, session_id, position, agent, title)
-                        VALUES (?, ?, ?, ?, ?)
+                            (project_path, session_id, position, agent, title, active)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         """,
                     arguments: [record.projectPath, record.sessionID, record.position,
-                                record.agent, record.title]
+                                record.agent, record.title, record.isActive]
                 )
             }
         }
@@ -193,7 +198,8 @@ public final class TempleDB: @unchecked Sendable {
                     sessionID: row["session_id"],
                     position: row["position"],
                     agent: row["agent"],
-                    title: row["title"]
+                    title: row["title"],
+                    isActive: row["active"]
                 )
             }
         }
@@ -280,6 +286,11 @@ public final class TempleDB: @unchecked Sendable {
         migrator.registerMigration("v4-session-color") { database in
             try database.alter(table: "session_state") { table in
                 table.add(column: "color", .text)
+            }
+        }
+        migrator.registerMigration("v5-open-tab-active") { database in
+            try database.alter(table: "open_tabs") { table in
+                table.add(column: "active", .boolean).notNull().defaults(to: false)
             }
         }
         return migrator

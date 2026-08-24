@@ -8,12 +8,18 @@ public struct PersistedTab: Codable, Equatable {
     public var agent: String
     public var projectPath: String
     public var title: String
+    /// The tab that was on screen when the app was last quit, so a relaunch can
+    /// put the user back where they were instead of on the launcher. Optional in
+    /// the decoder: a set saved before this existed simply has no active tab.
+    public var isActive: Bool = false
 
-    public init(sessionID: String, agent: Agent, projectPath: String, title: String) {
+    public init(sessionID: String, agent: Agent, projectPath: String, title: String,
+                isActive: Bool = false) {
         self.sessionID = sessionID
         self.agent = agent.rawValue
         self.projectPath = projectPath
         self.title = title
+        self.isActive = isActive
     }
 
     public var resolvedAgent: Agent { Agent(rawValue: agent) ?? .claude }
@@ -43,7 +49,8 @@ public final class DBTabPersistence: TabPersistence {
                 sessionID: $0.sessionID,
                 agent: Agent(rawValue: $0.agent) ?? .claude,
                 projectPath: $0.projectPath,
-                title: $0.title
+                title: $0.title,
+                isActive: $0.isActive
             )
         }) ?? []
     }
@@ -58,7 +65,8 @@ public final class DBTabPersistence: TabPersistence {
                 sessionID: tab.sessionID,
                 position: position,
                 agent: tab.agent,
-                title: tab.title
+                title: tab.title,
+                isActive: tab.isActive
             )
         }
         try? db.replaceOpenTabs(records)

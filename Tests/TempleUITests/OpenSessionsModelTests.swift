@@ -371,6 +371,54 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertEqual(again.activeProjectPath, "/p/a")
     }
 
+    func testRestoreReopensTheTabYouWereLookingAt() {
+        let defaults = Fixture.uniqueDefaults()
+        let persistence = UserDefaultsTabPersistence(defaults: defaults)
+        let model = OpenSessionsModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+                                      appearanceProvider: { .default },
+                                      runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+                                      persistence: persistence)
+        model.openSession(Fixture.session("a1", project: "/p/a"))
+        model.openSession(Fixture.session("a2", project: "/p/a"))
+        model.activate(model.tabs.first { $0.sessionID == "a1" }!)
+        model.prepareForQuit()
+
+        let relaunched = OpenSessionsModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+                                           appearanceProvider: { .default },
+                                           runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+                                           persistence: persistence)
+        relaunched.restore()
+
+        let restoredActive = relaunched.tabs.first { $0.sessionID == "a1" }
+        XCTAssertEqual(relaunched.activeTabID, restoredActive?.id, "reopens on the tab you left")
+        XCTAssertNotNil(restoredActive?.surface, "the active tab resumes its agent")
+        // Lazy restore still holds for everything else: one agent comes back, not all.
+        XCTAssertNil(relaunched.tabs.first { $0.sessionID == "a2" }?.surface)
+    }
+
+    /// Quitting from the launcher (⌘⇧H, then ⌘Q) is a deliberate "show me nothing"
+    /// — restoring a tab over it would override the last thing the user chose.
+    func testRestoreShowsLauncherWhenNoTabWasActiveAtQuit() {
+        let defaults = Fixture.uniqueDefaults()
+        let persistence = UserDefaultsTabPersistence(defaults: defaults)
+        let model = OpenSessionsModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+                                      appearanceProvider: { .default },
+                                      runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+                                      persistence: persistence)
+        model.openSession(Fixture.session("a1", project: "/p/a"))
+        model.showHome()
+        model.prepareForQuit()
+
+        let relaunched = OpenSessionsModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+                                           appearanceProvider: { .default },
+                                           runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+                                           persistence: persistence)
+        relaunched.restore()
+        XCTAssertEqual(relaunched.tabs.count, 1, "the chip is still restored")
+        XCTAssertNil(relaunched.activeTabID)
+        XCTAssertNil(relaunched.tabs.first?.surface, "nothing spawned")
+    }
+
     /// ⌘Q drains every agent, so every surface reports .exited on the way out. If
     /// those exits are treated as agents finishing, quitting closes every tab and
     /// saves an empty set — and the next launch comes back to nothing.

@@ -134,7 +134,14 @@ the terminal; there is no bottom composer and no intervening shell.
   project's open-tab set and order.
 - Open tabs restore lazily after relaunch as inert chips. No agent process starts
   until its chip is activated, and Temple restores the last-active project
-  context.
+  context. The one exception is the tab that was on screen when you quit: it is
+  reactivated and its agent resumed, so relaunching puts you back where you were
+  rather than on the launcher. Quit from the launcher (`⌘⇧H`) and you come back
+  to the launcher.
+- Closing the window quits Temple. The window is the app, so the red button runs
+  the same graceful shutdown as `⌘Q` — every agent drained, the tab set saved —
+  instead of leaving a windowless process with agents running out of sight. If an
+  agent is mid-task, Temple asks before quitting.
 - The Settings chip is a singleton, sits inline with session chips, and can be
   reordered like them.
 - Tab context menus rename the session, set its color mark, copy the resume
