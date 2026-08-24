@@ -34,6 +34,7 @@ struct ShortcutsView: View {
         .init(keys: "⌘,", action: "Settings"),
         .init(keys: "⌘/", action: "This panel"),
         .init(keys: "Esc", action: "Dismiss palette / dialogs"),
+        .init(keys: "⌘Q", action: "Quit — closing the window does the same; asks if an agent is working"),
     ]
 
     var body: some View {

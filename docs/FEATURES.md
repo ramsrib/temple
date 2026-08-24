@@ -298,6 +298,7 @@ of truth.
 | **⌘1–9** | Switch to tab *N* in the active project. |
 | **⌃⇥ / ⌃⇧⇥** | Tab switcher: last visited tab (hold ⌃ to walk the MRU list, ⇧ reverses mid-walk, release to land). |
 | **⌘⇧[ / ⌘⇧]** | Previous / next project; returns to the session last used there. |
+| **⌘Q** | Quit, draining every agent first; closing the window does the same. Asks first if an agent is mid-task. |
 | **⌘P** | Project switcher (hold ⌘, tap P to walk, release to land). |
 | **⌘F** | Reveal the sidebar if needed and focus sidebar search. |
 | **⌘K** | Command palette: open sessions by recency when empty; ranked search over everything when typed. |

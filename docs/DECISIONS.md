@@ -295,3 +295,36 @@ behavior, and its roadmap. UX.md and PLAN.md are retired, with their live conten
 absorbed into FEATURES.md; DECISIONS.md remains the append-only “why” record,
 while SESSION-FORMATS.md and BUILDING-GHOSTTY.md remain technical references.
 Historical references to UX.md and PLAN.md in older ADRs remain intact as history.
+
+---
+
+## ADR-015 — The window is the app: closing it quits, and a relaunch returns to the active tab
+**Date:** 2026-08-24 · **Status:** Accepted
+
+Temple is a single-window, document-less app, so the window's lifetime *is* the
+app's. Closing it now quits through the normal `applicationShouldTerminate` path
+*(ADR-010)* rather than leaving a windowless process behind.
+
+Keeping the process alive was not the safe option it appeared to be. The agents
+kept running with no way to see or reach them, and the moment a new window was
+created SwiftUI rebuilt `RootView` — which recreates the terminal surface views
+and drops the old ones, killing every attached agent within seconds and skipping
+the graceful drain entirely. Measured: alive 60s after the window was shut, gone
+5s after reopening it. The alternative fix (make the surfaces survive window
+re-creation, plus an `applicationShouldHandleReopen`) is strictly more machinery
+in service of a state — an invisible app holding live agents — that we do not
+want to offer.
+
+Because the close button is one stray click, quitting now **asks** when any agent
+is mid-task, and cancels cleanly without freezing the tab set. Idle sessions
+never prompt: they resume from disk with nothing lost. This applies to `⌘Q` too,
+so both routes out of the app behave identically *(extends ADR-010, and the
+busy-tab confirmation in ADR-013)*.
+
+Restore is the other half of making an accidental quit cheap. Lazy restore
+*(ADR-009)* rebuilt the chips but left no tab active, so every relaunch landed on
+the launcher and read as "Temple lost my session". The persisted tab set now
+records **which** tab was active (`open_tabs.active`), and restore reactivates
+exactly that one — resuming a single agent, not the whole set. Quitting from the
+launcher (`⌘⇧H`) still returns to the launcher: an empty active tab is a
+deliberate choice by the user, not missing state to be filled in.
