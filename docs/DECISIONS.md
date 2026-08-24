@@ -321,6 +321,19 @@ never prompt: they resume from disk with nothing lost. This applies to `⌘Q` to
 so both routes out of the app behave identically *(extends ADR-010, and the
 busy-tab confirmation in ADR-013)*.
 
+**The question must be asked before the window closes, from `windowShouldClose`.**
+v0.1.13 shipped it in `applicationShouldTerminate`, which AppKit only reaches once
+the window is already destroyed: the prompt appeared over nothing, Cancel had no
+window to return to, and SwiftUI — its `WindowGroup` now empty — tore the scene
+down and exited regardless of `.terminateCancel`. Cancel lost exactly the work it
+offered to protect. Nor may the close handler answer by starting a termination and
+letting *that* ask: `NSApp.terminate()` re-enters the close callback, and one click
+produced two prompts. The close handler decides in place, and a close it approved
+marks the quit as already-confirmed so the drain does not re-ask. Deciding there
+means displacing SwiftUI's window delegate, so Temple interposes a forwarding
+proxy that answers this one selector and passes everything else through,
+reinstalled whenever the window becomes main rather than latched once.
+
 Restore is the other half of making an accidental quit cheap. Lazy restore
 *(ADR-009)* rebuilt the chips but left no tab active, so every relaunch landed on
 the launcher and read as "Temple lost my session". The persisted tab set now
