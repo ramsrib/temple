@@ -205,6 +205,42 @@ public final class TempleDB: @unchecked Sendable {
         }
     }
 
+    /// Window chrome the user arranged, keyed by name. Lives here rather than in
+    /// `UserDefaults` so `TEMPLE_STATE_DIR` isolates it: a `make demo` run must not
+    /// change what the installed app looks like on its next launch.
+    ///
+    /// A missing key is not missing data — it means "defer to the shipped
+    /// default", so `setUIState(nil, for:)` deletes rather than storing an empty
+    /// string.
+    public func uiState() throws -> [String: String] {
+        try db.read { database in
+            var values: [String: String] = [:]
+            for row in try Row.fetchAll(database, sql: "SELECT key, value FROM ui_state") {
+                values[row["key"]] = row["value"]
+            }
+            return values
+        }
+    }
+
+    public func uiState(_ key: String) throws -> String? {
+        try db.read { database in
+            try String.fetchOne(database, sql: "SELECT value FROM ui_state WHERE key = ?", arguments: [key])
+        }
+    }
+
+    public func setUIState(_ value: String?, for key: String) throws {
+        try db.write { database in
+            guard let value else {
+                try database.execute(sql: "DELETE FROM ui_state WHERE key = ?", arguments: [key])
+                return
+            }
+            try database.execute(
+                sql: "INSERT OR REPLACE INTO ui_state (key, value) VALUES (?, ?)",
+                arguments: [key, value]
+            )
+        }
+    }
+
     public func registerProcess(pid: Int32, sessionID: String, startedAt: Date = Date()) throws {
         try db.write { database in
             try database.execute(
@@ -291,6 +327,12 @@ public final class TempleDB: @unchecked Sendable {
         migrator.registerMigration("v5-open-tab-active") { database in
             try database.alter(table: "open_tabs") { table in
                 table.add(column: "active", .boolean).notNull().defaults(to: false)
+            }
+        }
+        migrator.registerMigration("v6-ui-state") { database in
+            try database.create(table: "ui_state") { table in
+                table.column("key", .text).primaryKey()
+                table.column("value", .text).notNull()
             }
         }
         return migrator

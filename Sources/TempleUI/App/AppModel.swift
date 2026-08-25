@@ -60,7 +60,12 @@ public final class AppModel: ObservableObject {
     // toggle changes) so it never runs during view body. Search + pins are
     // applied cheaply in-memory on top (below).
     private var noiseFilteredProjects: [Project] = []
-    @Published public var sidebarVisibility: NavigationSplitViewVisibility = .all
+    /// Restored from `UIStateStore` in `init` (property observers don't fire
+    /// there, so the restore doesn't write itself straight back). Every later
+    /// change persists — including the ones SwiftUI makes through the binding.
+    @Published public var sidebarVisibility: NavigationSplitViewVisibility {
+        didSet { uiState.setSidebarVisibility(sidebarVisibility) }
+    }
     @Published public var commandPalettePresented = false
     @Published public var historyPresented = false
     @Published public var newSessionPickerPresented = false
@@ -94,6 +99,7 @@ public final class AppModel: ObservableObject {
 
     // Sub-models
     public let settings: SettingsStore
+    let uiState: UIStateStore
     public let overlay: SessionOverlayStore
     public let openSessions: OpenSessionsModel
     public let notifications: NotificationController
@@ -143,6 +149,7 @@ public final class AppModel: ObservableObject {
         let database = database ?? Self.openDefaultDatabase()
         let settings = settings ?? SettingsStore()
         let overlay = overlay ?? SessionOverlayStore(db: database)
+        let uiState = UIStateStore(db: database)
         let registry = registry ?? DBProcessRegistry(db: database)
         let persistence = persistence ?? DBTabPersistence(db: database)
         let resolvedIndexSource = indexSource ?? WatcherIndexSource(cacheURL: cacheURL)
@@ -151,6 +158,8 @@ public final class AppModel: ObservableObject {
         } ?? NoopCodexReconciler()
         self.settings = settings
         self.overlay = overlay
+        self.uiState = uiState
+        self.sidebarVisibility = uiState.sidebarVisibility ?? .all
         self.search = search
         self.noiseFilter = noiseFilter
         self.indexSource = resolvedIndexSource

@@ -537,7 +537,7 @@ private struct KeyCatcher: NSViewRepresentable {
                 guard shift else { return false }
                 model.openSessions.showHome(); return true
             case "f":
-                if model.sidebarVisibility == .detailOnly { model.sidebarVisibility = .all }
+                if model.sidebarVisibility.isSidebarHidden { model.sidebarVisibility = .all }
                 model.focusSearchToken += 1; return true
             case "k":
                 model.toggleCommandPalette(); return true
@@ -548,7 +548,10 @@ private struct KeyCatcher: NSViewRepresentable {
             case "/":
                 model.toggleShortcuts(); return true
             case "b":  // VS Code / ChatGPT convention (supersedes UX.md's ⌘\)
-                withAnimation { model.sidebarVisibility = model.sidebarVisibility == .all ? .detailOnly : .all }
+                withAnimation {
+                    // Keyed on hidden, not on `== .all` — see `isSidebarHidden`.
+                    model.sidebarVisibility = model.sidebarVisibility.isSidebarHidden ? .all : .detailOnly
+                }
                 return true
             case ",":
                 model.openSessions.openSettings(); return true

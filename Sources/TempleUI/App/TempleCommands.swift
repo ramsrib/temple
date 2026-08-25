@@ -68,7 +68,8 @@ public struct TempleCommands: Commands {
         CommandGroup(replacing: .sidebar) {
             Button {
                 withAnimation {
-                    model.sidebarVisibility = model.sidebarVisibility == .all ? .detailOnly : .all
+                    // Keyed on hidden, not on `== .all` — see `isSidebarHidden`.
+                    model.sidebarVisibility = model.sidebarVisibility.isSidebarHidden ? .all : .detailOnly
                 }
             } label: {
                 Label("Toggle Sidebar", systemImage: "sidebar.left")
