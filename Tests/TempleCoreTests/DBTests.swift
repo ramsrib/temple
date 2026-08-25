@@ -97,34 +97,40 @@ final class DBTests: XCTestCase {
     /// nothing. This is the same trick as pinning a decoder with a fixture of
     /// the OLD JSON — the test has to start from data that predates the change
     /// or it proves nothing about it.
-    func testUIStateTableIsAddedToAPreV6Database() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("temple-db-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let path = directory.appendingPathComponent("temple.sqlite")
-        paths.append(path)
+    func testUIStateTableIsAddedFromEveryEarlierSchemaVersion() throws {
+        // Not just v5: a user who skipped a few releases upgrades from whichever
+        // version they stopped at, and every one of those runs v6 last.
+        for start in ["v1", "v2-open-tab-metadata", "v3-generated-title",
+                      "v4-session-color", "v5-open-tab-active"] {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("temple-db-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let path = directory.appendingPathComponent("temple.sqlite")
+            paths.append(path)
 
-        try Self.writePreV6Database(at: path)
-        // Sanity: the fixture really is missing the table, so the assertions
-        // below are about the migration rather than about a table already there.
-        let legacy = try DatabaseQueue(path: path.path)
-        let hadTable = try legacy.read { try $0.tableExists("ui_state") }
-        XCTAssertFalse(hadTable)
-        try legacy.close()
+            try Self.writePreV6Database(at: path, upTo: start)
+            // Sanity: the fixture really is missing the table, so the assertions
+            // below are about the migration rather than a table already there.
+            let legacy = try DatabaseQueue(path: path.path)
+            let hadTable = try legacy.read { try $0.tableExists("ui_state") }
+            XCTAssertFalse(hadTable, "fixture at \(start) already had ui_state")
+            try legacy.close()
 
-        let migrated = try TempleDB(path: path)
-        try migrated.setUIState("detailOnly", for: "sidebarVisibility")
-        XCTAssertEqual(try migrated.uiState("sidebarVisibility"), "detailOnly")
-        // v1–v5 data has to come through untouched.
-        XCTAssertEqual(try migrated.sessionState("s")?.customName, "Existing state")
-        XCTAssertTrue(try XCTUnwrap(migrated.sessionState("s")).pinned)
-        XCTAssertEqual(try migrated.openTabRecords().map(\.sessionID), ["s"])
+            let migrated = try TempleDB(path: path)
+            try migrated.setUIState("detailOnly", for: "sidebarVisibility")
+            XCTAssertEqual(try migrated.uiState("sidebarVisibility"), "detailOnly", "from \(start)")
+            // Data written under the old schema has to come through untouched.
+            XCTAssertEqual(try migrated.sessionState("s")?.customName, "Existing state", "from \(start)")
+            XCTAssertTrue(try XCTUnwrap(migrated.sessionState("s")).pinned, "from \(start)")
+            XCTAssertEqual(try migrated.openTabRecords().map(\.sessionID), ["s"], "from \(start)")
+        }
     }
 
-    /// A database at v5: the v1–v5 schema, GRDB's own migration bookkeeping for
-    /// those five, and a row in each table so the migration has something to
+    /// A database stopped at `target`: the v1–v5 migrations registered as
+    /// production spells them, applied only up to that identifier, with GRDB's own
+    /// bookkeeping and a row in each table so the migration has something to
     /// preserve.
-    private static func writePreV6Database(at path: URL) throws {
+    private static func writePreV6Database(at path: URL, upTo target: String) throws {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1") { database in
             try database.create(table: "session_state") { table in
@@ -170,15 +176,14 @@ final class DBTests: XCTestCase {
         }
 
         let queue = try DatabaseQueue(path: path.path)
-        try migrator.migrate(queue)
+        try migrator.migrate(queue, upTo: target)
+        // Only the v1 columns: the later ones do not exist yet at every start
+        // point this fixture is asked for, and they all carry defaults.
         try queue.write { database in
             try database.execute(
                 sql: "INSERT INTO session_state (id, pinned, custom_name) VALUES ('s', 1, 'Existing state')")
             try database.execute(
-                sql: """
-                    INSERT INTO open_tabs (project_path, session_id, position, agent, title, active)
-                    VALUES ('/p', 's', 0, 'claude', 'Existing tab', 1)
-                    """)
+                sql: "INSERT INTO open_tabs (project_path, session_id, position) VALUES ('/p', 's', 0)")
         }
         try queue.close()
     }

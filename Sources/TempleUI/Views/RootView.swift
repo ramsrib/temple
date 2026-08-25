@@ -548,10 +548,7 @@ private struct KeyCatcher: NSViewRepresentable {
             case "/":
                 model.toggleShortcuts(); return true
             case "b":  // VS Code / ChatGPT convention (supersedes UX.md's ⌘\)
-                withAnimation {
-                    // Keyed on hidden, not on `== .all` — see `isSidebarHidden`.
-                    model.sidebarVisibility = model.sidebarVisibility.isSidebarHidden ? .all : .detailOnly
-                }
+                withAnimation { model.toggleSidebar() }
                 return true
             case ",":
                 model.openSessions.openSettings(); return true

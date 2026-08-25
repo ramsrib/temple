@@ -80,6 +80,28 @@ final class UIStateTests: XCTestCase {
         XCTAssertTrue(NavigationSplitViewVisibility.detailOnly.isSidebarHidden)
     }
 
+    /// ⌘B, through the method both call sites now share. Reverting either site
+    /// to its own inline `== .all` ternary used to leave every test green.
+    func testToggleSidebarClosesFromEveryShownVisibility() throws {
+        for shown in [NavigationSplitViewVisibility.all, .doubleColumn, .automatic] {
+            let model = makeModel(db: try TempleDB.inMemory())
+            model.sidebarVisibility = shown
+            model.toggleSidebar()
+            XCTAssertEqual(model.sidebarVisibility, .detailOnly)
+            model.toggleSidebar()
+            XCTAssertEqual(model.sidebarVisibility, .all)
+        }
+    }
+
+    func testTogglePersistsEachPress() throws {
+        let db = try TempleDB.inMemory()
+        let model = makeModel(db: db)
+        model.toggleSidebar()
+        XCTAssertEqual(try db.uiState(UIStateStore.Key.sidebarVisibility), "detailOnly")
+        model.toggleSidebar()
+        XCTAssertEqual(try db.uiState(UIStateStore.Key.sidebarVisibility), "all")
+    }
+
     func testUnrecognisedStoredValueFallsBackToTheDefault() throws {
         let db = try TempleDB.inMemory()
         try db.setUIState("sideways", for: UIStateStore.Key.sidebarVisibility)

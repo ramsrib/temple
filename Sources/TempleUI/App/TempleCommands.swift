@@ -67,10 +67,7 @@ public struct TempleCommands: Commands {
         // text items then read as misaligned.
         CommandGroup(replacing: .sidebar) {
             Button {
-                withAnimation {
-                    // Keyed on hidden, not on `== .all` — see `isSidebarHidden`.
-                    model.sidebarVisibility = model.sidebarVisibility.isSidebarHidden ? .all : .detailOnly
-                }
+                withAnimation { model.toggleSidebar() }
             } label: {
                 Label("Toggle Sidebar", systemImage: "sidebar.left")
             }

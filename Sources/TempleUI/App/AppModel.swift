@@ -66,6 +66,15 @@ public final class AppModel: ObservableObject {
     @Published public var sidebarVisibility: NavigationSplitViewVisibility {
         didSet { uiState.setSidebarVisibility(sidebarVisibility) }
     }
+    /// The one definition of what ⌘B does. Both callers — the key handler and
+    /// the View menu item — go through here: when this lived inline in two
+    /// places, both spelled the test as `== .all`, and both were wrong the same
+    /// way (see `isSidebarHidden`). A second copy is a second chance to get it
+    /// wrong, and neither copy was reachable from a test.
+    public func toggleSidebar() {
+        sidebarVisibility = sidebarVisibility.isSidebarHidden ? .all : .detailOnly
+    }
+
     @Published public var commandPalettePresented = false
     @Published public var historyPresented = false
     @Published public var newSessionPickerPresented = false
