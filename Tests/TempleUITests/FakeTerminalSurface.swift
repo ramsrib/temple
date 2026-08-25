@@ -98,6 +98,39 @@ final class FakeIndexSource: IndexSource {
     func emit(_ new: SessionIndex) { index = new; onUpdate?(new) }
 }
 
+
+
+/// A `UserDefaults` that never touches the disk.
+///
+/// `UserDefaults(suiteName:)` is not a scratch object: it writes a real plist
+/// into ~/Library/Preferences and nothing ever takes it away — one suite per
+/// call, several per test, every run. 2,853 of them had accumulated before
+/// anyone looked.
+///
+/// Sweeping them afterwards does not work, and was tried first: the suites are
+/// still live when the bundle finishes (a `SettingsStore` under test is holding
+/// one), so cfprefsd writes them back out at process exit, contents restored.
+/// `removePersistentDomain` also leaves a 42-byte plist behind even when it does
+/// take effect. The only reliable fix is to never create one.
+///
+/// Overriding the documented primitives is enough — the typed accessors are
+/// defined in terms of `object(forKey:)` — but `string` and `data` are overridden
+/// too, since those are the two this codebase actually reads and an Apple
+/// implementation detail must not be able to quietly reopen the hole.
+final class InMemoryDefaults: UserDefaults {
+    private var storage: [String: Any] = [:]
+
+    convenience init() { self.init(suiteName: nil)! }
+
+    override func object(forKey defaultName: String) -> Any? { storage[defaultName] }
+    override func set(_ value: Any?, forKey defaultName: String) { storage[defaultName] = value }
+    override func removeObject(forKey defaultName: String) { storage.removeValue(forKey: defaultName) }
+    override func string(forKey defaultName: String) -> String? { storage[defaultName] as? String }
+    override func data(forKey defaultName: String) -> Data? { storage[defaultName] as? Data }
+    override func dictionaryRepresentation() -> [String: Any] { storage }
+    override func synchronize() -> Bool { true }
+}
+
 // MARK: - Fixtures
 
 @MainActor
@@ -109,9 +142,8 @@ enum Fixture {
                      filePath: URL(fileURLWithPath: "/tmp/\(id).jsonl"))
     }
 
-    static func uniqueDefaults() -> UserDefaults {
-        UserDefaults(suiteName: "temple.tests.\(UUID().uuidString)")!
-    }
+    /// An isolated defaults object that never reaches the disk.
+    static func uniqueDefaults() -> UserDefaults { InMemoryDefaults() }
 
     /// A fresh OpenSessionsModel wired to a fake factory (isolated persistence).
     static func openModel(factory: FakeTerminalSurfaceFactory,
