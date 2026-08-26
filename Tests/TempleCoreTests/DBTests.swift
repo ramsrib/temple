@@ -125,6 +125,7 @@ final class DBTests: XCTestCase {
             // let a migration that drops populated rows pass.
             let state = try XCTUnwrap(migrated.sessionState("s"), "from \(start)")
             XCTAssertEqual(state.customName, "Existing state", "from \(start)")
+            XCTAssertEqual(state.lastOpenedAt, Self.seededDate, "from \(start)")
             XCTAssertTrue(state.pinned, "from \(start)")
             XCTAssertTrue(state.archived, "from \(start)")
             if index >= 2 { XCTAssertEqual(state.generatedTitle, "Agent title", "from \(start)") }
@@ -133,13 +134,25 @@ final class DBTests: XCTestCase {
             let tab = try XCTUnwrap(migrated.openTabRecords().first, "from \(start)")
             XCTAssertEqual(tab.sessionID, "s", "from \(start)")
             XCTAssertEqual(tab.projectPath, "/p", "from \(start)")
+            XCTAssertEqual(tab.position, 3, "from \(start)")
             if index >= 1 {
                 XCTAssertEqual(tab.agent, "codex", "from \(start)")
                 XCTAssertEqual(tab.title, "Existing tab", "from \(start)")
             }
             if index >= 4 { XCTAssertTrue(tab.isActive, "from \(start)") }
+
+            let process = try XCTUnwrap(migrated.liveProcesses().first, "from \(start)")
+            XCTAssertEqual(process.pid, 4242, "from \(start)")
+            XCTAssertEqual(process.sessionID, "s", "from \(start)")
+            XCTAssertEqual(process.startedAt, Self.seededDate, "from \(start)")
         }
     }
+
+    /// 2024-01-02 03:04:05 UTC, in both the form GRDB stores and the form it
+    /// hands back, so the datetime columns are pinned to a real value rather
+    /// than left null where a dropped write would look identical.
+    private static let seededDate = Date(timeIntervalSince1970: 1_704_164_645)
+    private static let seededDateLiteral = "2024-01-02 03:04:05.000"
 
     /// The migration identifiers before v6, oldest first.
     private static let preV6Versions = [
@@ -203,19 +216,27 @@ final class DBTests: XCTestCase {
         // populated rows would slip past a fixture full of zeroes and "".
         let reached = preV6Versions.prefix(through: preV6Versions.firstIndex(of: target)!)
         var sessionColumns = ["id": "'s'", "pinned": "1", "archived": "1",
-                              "custom_name": "'Existing state'"]
+                              "custom_name": "'Existing state'",
+                              "last_opened_at": "'\(seededDateLiteral)'"]
         if reached.contains("v3-generated-title") { sessionColumns["generated_title"] = "'Agent title'" }
         if reached.contains("v4-session-color") { sessionColumns["color"] = "'blue'" }
 
-        var tabColumns = ["project_path": "'/p'", "session_id": "'s'", "position": "0"]
+        var tabColumns = ["project_path": "'/p'", "session_id": "'s'", "position": "3"]
         if reached.contains("v2-open-tab-metadata") {
             tabColumns["agent"] = "'codex'"
             tabColumns["title"] = "'Existing tab'"
         }
         if reached.contains("v5-open-tab-active") { tabColumns["active"] = "1" }
 
+        // process_registry has existed since v1 and nothing since has touched
+        // it, which is exactly why it is easy to forget in a fixture.
+        let processColumns = ["pid": "4242", "session_id": "'s'",
+                              "started_at": "'\(seededDateLiteral)'"]
+
         try queue.write { database in
-            for (table, columns) in [("session_state", sessionColumns), ("open_tabs", tabColumns)] {
+            for (table, columns) in [("session_state", sessionColumns),
+                                     ("open_tabs", tabColumns),
+                                     ("process_registry", processColumns)] {
                 let names = columns.keys.sorted()
                 try database.execute(sql: """
                     INSERT INTO \(table) (\(names.joined(separator: ", ")))
