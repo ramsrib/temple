@@ -100,8 +100,7 @@ final class DBTests: XCTestCase {
     func testUIStateTableIsAddedFromEveryEarlierSchemaVersion() throws {
         // Not just v5: a user who skipped a few releases upgrades from whichever
         // version they stopped at, and every one of those runs v6 last.
-        for start in ["v1", "v2-open-tab-metadata", "v3-generated-title",
-                      "v4-session-color", "v5-open-tab-active"] {
+        for (index, start) in Self.preV6Versions.enumerated() {
             let directory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("temple-db-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -119,12 +118,34 @@ final class DBTests: XCTestCase {
             let migrated = try TempleDB(path: path)
             try migrated.setUIState("detailOnly", for: "sidebarVisibility")
             XCTAssertEqual(try migrated.uiState("sidebarVisibility"), "detailOnly", "from \(start)")
-            // Data written under the old schema has to come through untouched.
-            XCTAssertEqual(try migrated.sessionState("s")?.customName, "Existing state", "from \(start)")
-            XCTAssertTrue(try XCTUnwrap(migrated.sessionState("s")).pinned, "from \(start)")
-            XCTAssertEqual(try migrated.openTabRecords().map(\.sessionID), ["s"], "from \(start)")
+
+            // Everything the old schema could hold has to come through
+            // untouched — every column that existed at THIS starting version,
+            // each seeded with a non-default value. A fixture of defaults would
+            // let a migration that drops populated rows pass.
+            let state = try XCTUnwrap(migrated.sessionState("s"), "from \(start)")
+            XCTAssertEqual(state.customName, "Existing state", "from \(start)")
+            XCTAssertTrue(state.pinned, "from \(start)")
+            XCTAssertTrue(state.archived, "from \(start)")
+            if index >= 2 { XCTAssertEqual(state.generatedTitle, "Agent title", "from \(start)") }
+            if index >= 3 { XCTAssertEqual(state.color, "blue", "from \(start)") }
+
+            let tab = try XCTUnwrap(migrated.openTabRecords().first, "from \(start)")
+            XCTAssertEqual(tab.sessionID, "s", "from \(start)")
+            XCTAssertEqual(tab.projectPath, "/p", "from \(start)")
+            if index >= 1 {
+                XCTAssertEqual(tab.agent, "codex", "from \(start)")
+                XCTAssertEqual(tab.title, "Existing tab", "from \(start)")
+            }
+            if index >= 4 { XCTAssertTrue(tab.isActive, "from \(start)") }
         }
     }
+
+    /// The migration identifiers before v6, oldest first.
+    private static let preV6Versions = [
+        "v1", "v2-open-tab-metadata", "v3-generated-title",
+        "v4-session-color", "v5-open-tab-active",
+    ]
 
     /// A database stopped at `target`: the v1–v5 migrations registered as
     /// production spells them, applied only up to that identifier, with GRDB's own
@@ -177,13 +198,30 @@ final class DBTests: XCTestCase {
 
         let queue = try DatabaseQueue(path: path.path)
         try migrator.migrate(queue, upTo: target)
-        // Only the v1 columns: the later ones do not exist yet at every start
-        // point this fixture is asked for, and they all carry defaults.
+        // Seed every column that exists at this starting version, each with a
+        // value distinguishable from its default — otherwise a v6 that dropped
+        // populated rows would slip past a fixture full of zeroes and "".
+        let reached = preV6Versions.prefix(through: preV6Versions.firstIndex(of: target)!)
+        var sessionColumns = ["id": "'s'", "pinned": "1", "archived": "1",
+                              "custom_name": "'Existing state'"]
+        if reached.contains("v3-generated-title") { sessionColumns["generated_title"] = "'Agent title'" }
+        if reached.contains("v4-session-color") { sessionColumns["color"] = "'blue'" }
+
+        var tabColumns = ["project_path": "'/p'", "session_id": "'s'", "position": "0"]
+        if reached.contains("v2-open-tab-metadata") {
+            tabColumns["agent"] = "'codex'"
+            tabColumns["title"] = "'Existing tab'"
+        }
+        if reached.contains("v5-open-tab-active") { tabColumns["active"] = "1" }
+
         try queue.write { database in
-            try database.execute(
-                sql: "INSERT INTO session_state (id, pinned, custom_name) VALUES ('s', 1, 'Existing state')")
-            try database.execute(
-                sql: "INSERT INTO open_tabs (project_path, session_id, position) VALUES ('/p', 's', 0)")
+            for (table, columns) in [("session_state", sessionColumns), ("open_tabs", tabColumns)] {
+                let names = columns.keys.sorted()
+                try database.execute(sql: """
+                    INSERT INTO \(table) (\(names.joined(separator: ", ")))
+                    VALUES (\(names.map { columns[$0]! }.joined(separator: ", ")))
+                    """)
+            }
         }
         try queue.close()
     }
