@@ -1,6 +1,7 @@
 APP_NAME := Temple
 APP := dist/$(APP_NAME).app
 DEST := /Applications/$(APP_NAME).app
+BUNDLE_ID := com.sriramb.temple
 
 .PHONY: build test run demo demo-clean ghostty app open install stage release version clean
 
@@ -46,6 +47,15 @@ install: app ## Build, sign, and install to /Applications
 	@rm -rf "$(APP)"
 	@# Make /Applications the canonical handler (and drop the stale dist/ entry).
 	@"$(LSREGISTER)" -f "$(DEST)" 2>/dev/null || true
+	@# Every rebuild gets a new cdhash, and TCC pins the screen-recording grant
+	@# to the exact cdhash it was granted for — so replacing the bundle leaves a
+	@# Settings row that still reads "Temple, allowed" while the pin is stale.
+	@# The next process Temple is responsible for (an agent shelling out to
+	@# `screencapture`) prompts anyway, with no hint why. Drop the row so it
+	@# stops claiming a grant that is not in force: the prompt still comes, it
+	@# just stops contradicting Settings. Nothing here is needed by shipped
+	@# builds — users re-grant with one click per update.
+	@tccutil reset ScreenCapture $(BUNDLE_ID) >/dev/null 2>&1 || true
 	@codesign --verify --strict "$(DEST)" && echo "✓ installed → $(DEST)"
 
 stage: app ## Install to /Applications WITHOUT killing the running app (relaunch picks it up)
@@ -59,6 +69,8 @@ stage: app ## Install to /Applications WITHOUT killing the running app (relaunch
 	@# Same LaunchServices hygiene as `install` (see comments there).
 	@rm -rf "$(APP)"
 	@"$(LSREGISTER)" -f "$(DEST)" 2>/dev/null || true
+	@# Same stale-TCC-pin cleanup as `install` (see comments there).
+	@tccutil reset ScreenCapture $(BUNDLE_ID) >/dev/null 2>&1 || true
 	@codesign --verify --strict "$(DEST)" \
 	  && echo "✓ staged → $(DEST) — running app untouched; quit + reopen to pick it up"
 
