@@ -307,6 +307,26 @@ public final class GhosttyApp {
             view.handleChildExited(code: Int32(bitPattern: action.action.child_exited.exit_code))
             return true
 
+        // Find in terminal. libghostty does the matching; these tell the host
+        // what to show. A negative count means "none" (Ghostty.App does the same).
+        case GHOSTTY_ACTION_START_SEARCH:
+            view.handleSearchStarted(needle: action.action.start_search.needle.map { String(cString: $0) })
+            return true
+
+        case GHOSTTY_ACTION_END_SEARCH:
+            view.handleSearchEnded()
+            return true
+
+        case GHOSTTY_ACTION_SEARCH_TOTAL:
+            let total = action.action.search_total.total
+            view.handleSearchTotal(total >= 0 ? Int(total) : nil)
+            return true
+
+        case GHOSTTY_ACTION_SEARCH_SELECTED:
+            let selected = action.action.search_selected.selected
+            view.handleSearchSelected(selected >= 0 ? Int(selected) : nil)
+            return true
+
         default:
             return false
         }

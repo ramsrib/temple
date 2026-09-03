@@ -55,6 +55,28 @@ public protocol TerminalSurface: AnyObject {
     func requestGracefulExit()
     /// Escalation: SIGKILL + reap.
     func terminate()
+
+    // Find in the terminal (⌘F). The surface owns matching and highlighting;
+    // the host draws the bar and reports the count.
+    /// Search the scrollback for `needle`, replacing any current search. An
+    /// empty needle clears the highlights.
+    func search(_ needle: String)
+    /// Move the selected match; no-op without an active search.
+    func navigateSearch(_ direction: TerminalSearchDirection)
+    /// Tear the search down (highlights and count go with it).
+    func endSearch()
+}
+
+public enum TerminalSearchDirection: Sendable, Equatable {
+    case next, previous
+}
+
+/// Searching is optional: a surface that can't (the stub, test doubles) simply
+/// does nothing, and the host's bar shows no count.
+public extension TerminalSurface {
+    func search(_ needle: String) {}
+    func navigateSearch(_ direction: TerminalSearchDirection) {}
+    func endSearch() {}
 }
 
 @MainActor
@@ -72,10 +94,25 @@ public protocol TerminalSurfaceDelegate: AnyObject {
     /// modifiers) — a strong signal the agent is now working (Item E). Default
     /// no-op so existing conformers need not implement it.
     func surfaceDidSubmitInput(_ surface: TerminalSurface)
+
+    // Search, as seen from the terminal's side. All default to no-ops.
+    /// The terminal itself asked for a search (a keybind inside it, e.g. ⌘E
+    /// "use selection for find"); `needle` is what it wants searched, if any.
+    func surface(_ surface: TerminalSurface, didStartSearch needle: String?)
+    /// The terminal ended the search on its own (Esc in a focused terminal).
+    func surfaceDidEndSearch(_ surface: TerminalSurface)
+    /// Number of matches for the current needle; `nil` while unknown.
+    func surface(_ surface: TerminalSurface, didUpdateSearchTotal total: Int?)
+    /// Zero-based index of the highlighted match; `nil` when none is selected.
+    func surface(_ surface: TerminalSurface, didUpdateSearchSelected selected: Int?)
 }
 
 public extension TerminalSurfaceDelegate {
     func surfaceDidSubmitInput(_ surface: TerminalSurface) {}
+    func surface(_ surface: TerminalSurface, didStartSearch needle: String?) {}
+    func surfaceDidEndSearch(_ surface: TerminalSurface) {}
+    func surface(_ surface: TerminalSurface, didUpdateSearchTotal total: Int?) {}
+    func surface(_ surface: TerminalSurface, didUpdateSearchSelected selected: Int?) {}
 }
 
 @MainActor

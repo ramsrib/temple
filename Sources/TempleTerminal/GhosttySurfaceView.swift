@@ -27,6 +27,11 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
     var onChildExited: ((Int32) -> Void)?
     /// libghostty asks the host to close the surface (e.g. process gone).
     var onCloseRequest: ((_ processAlive: Bool) -> Void)?
+    // Search (see TerminalSurface.search): libghostty reporting back.
+    var onSearchStarted: ((_ needle: String?) -> Void)?
+    var onSearchEnded: (() -> Void)?
+    var onSearchTotal: ((Int?) -> Void)?
+    var onSearchSelected: ((Int?) -> Void)?
 
     private weak var app: GhosttyApp?
     private var terminalAppearance: TerminalAppearance
@@ -233,6 +238,28 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
 
     func handleCloseRequest(processAlive: Bool) {
         onCloseRequest?(processAlive)
+    }
+
+    func handleSearchStarted(needle: String?) { onSearchStarted?(needle) }
+    func handleSearchEnded() { onSearchEnded?() }
+    func handleSearchTotal(_ total: Int?) { onSearchTotal?(total) }
+    func handleSearchSelected(_ selected: Int?) { onSearchSelected?(selected) }
+
+    // MARK: Binding actions
+
+    /// Run a keybind action by name (`search:foo`, `navigate_search:next`,
+    /// `end_search`, …) — the same strings a user could put in a Ghostty
+    /// config, and how Ghostty's own macOS app drives search.
+    @discardableResult
+    func performBindingAction(_ action: String) -> Bool {
+        guard let surface else { return false }
+        let ok = ghostty_surface_binding_action(surface, action, UInt(action.utf8.count))
+        // "Performable" actions report false when there was nothing to do
+        // (end_search with no search) — routine, so not a warning.
+        if !ok {
+            GhosttyApp.logger.debug("binding action not performed: \(action, privacy: .public)")
+        }
+        return ok
     }
 
     // MARK: Keyboard

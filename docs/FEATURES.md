@@ -118,6 +118,10 @@ The active libghostty terminal fills the main content area. Temple launches the
 agent directly in the session's working directory and sends keyboard input to
 the terminal; there is no bottom composer and no intervening shell.
 
+- `⌘F` opens a find bar over the terminal's top-right corner; libghostty
+  matches and highlights in the scrollback and the bar counts them ("3/12"). Return
+  / `⌘G` walks forward, ⇧Return / `⌘⇧G` back; Esc closes it and returns the
+  keyboard to the terminal. The search stays with its tab across tab switches.
 - Files and images dropped onto a terminal are typed into it as shell-escaped
   paths, which is how an agent is handed a screenshot or a log. An image dragged
   from a browser or Preview carries no file, so Temple writes one and passes that.
@@ -198,7 +202,7 @@ prompt composer.
 ## Command palette, history & search
 
 - Sidebar search filters session titles in place. It does not auto-focus at
-  launch; `⌘F` reveals the sidebar when necessary and focuses the field.
+  launch and has no shortcut (`⌘F` is find-in-terminal); click the field.
 - `⌘K` opens a top-anchored command palette. With an empty query it is a
   switcher over the **open** sessions only, most recent activity first (live
   recency, unlike the launch-frozen sidebar). Browsing everything is `⌘Y`'s
@@ -280,7 +284,9 @@ render, never an error.
 The native menu bar mirrors Temple's commands instead of WindowGroup's
 defaults: **File** carries the session lifecycle (New Session, New Session in
 Project…, the other-agent variant, Reopen Closed Tab, Close Tab) in place of
-New Window; **View** owns Toggle Sidebar at `⌘B` plus the palette, history,
+New Window; **Edit** replaces the system Find submenu with Find in Terminal
+(`⌘F`), Find Next and Find Previous, disabled when no terminal is showing;
+**View** owns Toggle Sidebar at `⌘B` plus the palette, history,
 home, and shortcuts card; a **Project** menu mirrors the switcher and project
 cycling; **Settings…** sits in the app menu. Menu items call the same actions
 as the shortcuts below — the in-app key monitor remains the keyboard's source
@@ -300,13 +306,14 @@ of truth.
 | **⌘⇧[ / ⌘⇧]** | Previous / next project; returns to the session last used there. |
 | **⌘Q** | Quit, draining every agent first; closing the window does the same. Asks first if an agent is mid-task. |
 | **⌘P** | Project switcher (hold ⌘, tap P to walk, release to land). |
-| **⌘F** | Reveal the sidebar if needed and focus sidebar search. |
+| **⌘F** | Find in the active terminal (bar over the top-right corner). |
+| **⌘G / ⌘⇧G** | Next / previous match while the find bar is open. |
 | **⌘K** | Command palette: open sessions by recency when empty; ranked search over everything when typed. |
 | **⌘Y** | Session history: every session, newest first, grouped by day. |
 | **⌘/** | Open the Keyboard Shortcuts reference overlay. |
 | **⌘B** | Toggle the sidebar. |
 | **⌘,** | Open Settings as a tab. |
-| **Esc** | Dismiss the palette, history, or shortcuts overlay from anywhere; cancel busy-close confirmation. |
+| **Esc** | Dismiss the palette, history, or shortcuts overlay from anywhere; close the find bar from its field; cancel busy-close confirmation. |
 
 ## Platform & packaging
 
@@ -329,7 +336,7 @@ appearance.
 | Activity | Replace or strengthen the 15-second settle-timer heuristic; per-session and per-project mute; Do Not Disturb; Dock and sidebar badge counts. |
 | Sidebar & discovery | Project pinning; agent, time-range, and active-only filters; richer project/agent/content search; configurable scan roots and excluded paths; rich metadata such as message count, model, and git branch in the sidebar. A flat recents view shipped as the `⌘Y` history. |
 | Session management | Archive and delete; duplicate/fork; grouping by git repository. Rename, pin/unpin, color marks, and context menus are already shipped. |
-| Terminal & tabs | Split panes; scrollback search and copy mode; terminal cursor controls; tab-bar overflow handling. `⌘⇧T` reopen-closed-tab shipped. |
+| Terminal & tabs | Split panes; copy mode; terminal cursor controls; tab-bar overflow handling. `⌘⇧T` reopen-closed-tab shipped. |
 | Windowing | Multi-window support. |
 | Agents | Third-agent adapters such as Gemini CLI and aider; surface agent-specific capabilities such as models and permission modes. |
 | Proxied backends | Opt-in launch through a local [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) endpoint, so a session can run on a pooled or non-Anthropic backend (`claude --model gpt-5.6-sol`) without touching the direct-login path. Per-session and per-project, never a global default: Claude takes `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` in `TerminalCommand.env`, Codex ignores `OPENAI_BASE_URL` and needs `-c model_providers.…` flags instead. Endpoint URL is a settings key; the token is not, and belongs in the Keychain or an env lookup rather than `UserDefaults`. Model list comes from the endpoint's `/v1/models`, and a proxied session wants a visible mark in the tab and sidebar, because API-key auth makes Claude Code ignore the claude.ai login and disable its connectors. |

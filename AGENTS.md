@@ -28,6 +28,14 @@ Three traps, each hit for real:
   `tell application "System Events" to tell (first process whose unix id is <pid>) …`
   Never kill the `/Applications` one — he has live agent sessions in it.
 
+- **`make install` / `make stage` break `screencapture` for any shell running inside
+  Temple — including this one.** Both run `tccutil reset ScreenCapture` for Temple's
+  bundle id (see the Makefile for why). A Claude Code or Codex session hosted in a
+  Temple tab is, to TCC, Temple: every `screencapture` after that fails with
+  "could not create image" until Sri re-grants Screen Recording in System Settings
+  and relaunches Temple. Take the screenshots you need *before* installing, or
+  tell him a re-grant is coming.
+
 - **`make demo` isolates the stores and state dir, but NOT `UserDefaults`.**
   `TEMPLE_CLAUDE_ROOT` / `TEMPLE_CODEX_ROOT` / `TEMPLE_STATE_DIR` are redirected;
   the settings domain is not. Anything that writes a setting — including a

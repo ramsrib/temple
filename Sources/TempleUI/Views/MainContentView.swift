@@ -65,6 +65,12 @@ private struct SessionTerminalView: View {
             }
             if let surface = tab.surface {
                 TerminalSurfaceHost(surface: surface)
+                    // ⌘F. Floats over the terminal's top-right corner, so the
+                    // surface keeps its size and the agent's prompt line, at
+                    // the bottom, stays clear of it.
+                    .overlay(alignment: .topTrailing) {
+                        TerminalFindOverlay(find: tab.find)
+                    }
             }
         }
     }

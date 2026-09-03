@@ -50,6 +50,10 @@ public final class SessionTab: ObservableObject, Identifiable {
     /// Live terminal; `nil` for an inert restored chip or the Settings tab.
     @Published public private(set) var surface: TerminalSurface?
 
+    /// Find-in-terminal (⌘F) state, kept with the tab so a search survives a
+    /// tab switch. Wired to the surface on attach.
+    public let find = TerminalFindModel()
+
     /// Retains the per-tab delegate so the surface's `weak delegate` stays alive.
     var coordinator: AnyObject?
 
@@ -89,5 +93,6 @@ public final class SessionTab: ObservableObject, Identifiable {
     func attach(surface: TerminalSurface) {
         self.surface = surface
         self.spawnedAt = Date()
+        find.surface = surface
     }
 }

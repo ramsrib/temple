@@ -19,13 +19,14 @@ struct ShortcutsView: View {
         .init(keys: "⌘1–9", action: "Switch to tab 1–9 in the active project"),
         .init(keys: "⌃⇥ / ⌃⇧⇥", action: "Last visited tab — hold ⌃ to walk the list, ⇧ reverses"),
         .init(keys: "⌘⇧[ / ⌘⇧]", action: "Previous / next project (returns to its last session)"),
+        .init(keys: "⌘F", action: "Find in the terminal"),
+        .init(keys: "⌘G / ⌘⇧G", action: "Next / previous match (Return / ⇧Return in the find field)"),
     ]
 
     private static let navigation: [Shortcut] = [
         .init(keys: "⌘P", action: "Switch project — hold ⌘ and tap P to walk, release to land"),
         .init(keys: "⌘K", action: "Command palette (recent sessions + search)"),
         .init(keys: "⌘Y", action: "Session history"),
-        .init(keys: "⌘F", action: "Focus sidebar search"),
         .init(keys: "↑ ↓ / Return", action: "Browse the sidebar / open the highlighted session"),
         .init(keys: "⌘B", action: "Toggle the sidebar"),
     ]
@@ -33,7 +34,7 @@ struct ShortcutsView: View {
     private static let app: [Shortcut] = [
         .init(keys: "⌘,", action: "Settings"),
         .init(keys: "⌘/", action: "This panel"),
-        .init(keys: "Esc", action: "Dismiss palette / dialogs"),
+        .init(keys: "Esc", action: "Dismiss palette / dialogs / find bar"),
         .init(keys: "⌘Q", action: "Quit — closing the window does the same; asks if an agent is working"),
     ]
 

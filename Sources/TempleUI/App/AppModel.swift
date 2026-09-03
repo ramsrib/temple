@@ -103,8 +103,31 @@ public final class AppModel: ObservableObject {
     /// Same arming rule as the ⌘P switcher, for ⌃.
     private var tabSwitcherArmedByControl = false
     @Published public var shortcutsPresented = false
-    /// Pulsed to move keyboard focus into the sidebar search field (⌘F).
-    @Published public var focusSearchToken = 0
+
+    /// The find bar of the terminal on screen, if a terminal is showing
+    /// (⌘F / ⌘G). Sidebar search has no shortcut — it is a click away.
+    public var activeTerminalFind: TerminalFindModel? {
+        guard let tab = openSessions.activeTab, tab.kind == .session, tab.hasSurface else { return nil }
+        return tab.find
+    }
+
+    /// A floating panel is up (⌘K / ⌘Y / ⌘N / ⌘/): it owns the keyboard, so
+    /// find must not open — or claim focus — underneath it.
+    public var panelPresented: Bool {
+        commandPalettePresented || historyPresented || newSessionPickerPresented || shortcutsPresented
+    }
+
+    public func findInActiveTerminal() {
+        guard !panelPresented else { return }
+        activeTerminalFind?.open()
+    }
+
+    /// Menu mirror of ⌘G / ⌘⇧G: acts only while the bar is open, exactly like
+    /// the key handler, so the two paths never disagree.
+    public func navigateActiveTerminalFind(_ direction: TerminalSearchDirection) {
+        guard let find = activeTerminalFind, find.isPresented else { return }
+        direction == .next ? find.next() : find.previous()
+    }
 
     // Sub-models
     public let settings: SettingsStore

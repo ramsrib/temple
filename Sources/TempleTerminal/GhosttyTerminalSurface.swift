@@ -56,6 +56,22 @@ public final class GhosttyTerminalSurface: TerminalSurface {
             // either way the surface's lifecycle is over: report exit.
             self?.markExited(status: 0)
         }
+        ghosttyView.onSearchStarted = { [weak self] needle in
+            guard let self else { return }
+            self.delegate?.surface(self, didStartSearch: needle)
+        }
+        ghosttyView.onSearchEnded = { [weak self] in
+            guard let self else { return }
+            self.delegate?.surfaceDidEndSearch(self)
+        }
+        ghosttyView.onSearchTotal = { [weak self] total in
+            guard let self else { return }
+            self.delegate?.surface(self, didUpdateSearchTotal: total)
+        }
+        ghosttyView.onSearchSelected = { [weak self] selected in
+            guard let self else { return }
+            self.delegate?.surface(self, didUpdateSearchSelected: selected)
+        }
     }
 
     private func markExited(status: Int32) {
@@ -111,6 +127,24 @@ public final class GhosttyTerminalSurface: TerminalSurface {
         } else if case .notStarted = processState {
             processState = .exited(status: SIGKILL)
         }
+    }
+
+    // MARK: Search
+
+    /// `search:<needle>` — libghostty's own binding syntax. The needle rides in
+    /// the action string verbatim: the parser takes everything after the colon,
+    /// so spaces and punctuation search as typed.
+    public func search(_ needle: String) {
+        ghosttyView.performBindingAction("search:\(needle)")
+    }
+
+    public func navigateSearch(_ direction: TerminalSearchDirection) {
+        ghosttyView.performBindingAction(
+            direction == .next ? "navigate_search:next" : "navigate_search:previous")
+    }
+
+    public func endSearch() {
+        ghosttyView.performBindingAction("end_search")
     }
 
     /// Build a shell command line from argv, quoting each element so paths with

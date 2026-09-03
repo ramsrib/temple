@@ -52,7 +52,7 @@ public struct RootView: View {
         // the sidebar search — and can re-seat it while the window settles,
         // so a single async clear leaves a gap where fast launch typing
         // lands in the field. Sweep the first second instead, dropping any
-        // strays that got in; focus only reaches search via ⌘F or a click.
+        // strays that got in; focus only reaches search via a click.
         .onAppear {
             // Verify the agent CLIs (runs `claude --version` &c). Started from the UI,
             // not from AppModel.init, so building a model in a test doesn't shell out.
@@ -61,7 +61,6 @@ public struct RootView: View {
             model.toolchain.detect()
             model.usage.start()
 
-            let launchToken = model.focusSearchToken
             let sweep = LaunchFocusSweep()
             // A click is deliberate focus — the sweep must stand down for
             // good, or it would clear a field the user just chose (and any
@@ -74,12 +73,10 @@ public struct RootView: View {
             for delay in [0.0, 0.1, 0.25, 0.5, 1.0] {
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                     defer { if delay == 1.0 { sweep.cancel() } }  // last tick retires the monitor
-                    // ⌘F or an open palette means the focus is wanted.
+                    // An open palette or find bar means the focus is wanted.
                     guard !sweep.cancelled,
-                          model.focusSearchToken == launchToken,
-                          !model.commandPalettePresented,
-                          !model.historyPresented,
-                          !model.newSessionPickerPresented else { return }
+                          !model.panelPresented,
+                          !(model.activeTerminalFind?.isPresented ?? false) else { return }
                     let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first
                     if window?.firstResponder is NSTextView {  // field editor == a focused text field
                         window?.makeFirstResponder(nil)
@@ -537,8 +534,20 @@ private struct KeyCatcher: NSViewRepresentable {
                 guard shift else { return false }
                 model.openSessions.showHome(); return true
             case "f":
-                if model.sidebarVisibility.isSidebarHidden { model.sidebarVisibility = .all }
-                model.focusSearchToken += 1; return true
+                // Find in the terminal. With no terminal showing the key falls
+                // through to the (disabled) menu item; sidebar search is a click.
+                // Under a floating panel the key is swallowed: the panel owns
+                // the keyboard, and the bar must not take focus beneath it.
+                if model.panelPresented { return true }
+                guard let find = model.activeTerminalFind else { return false }
+                find.open(); return true
+            case "g", "G":
+                // Walk the matches from wherever the keyboard is — the find
+                // field or the terminal itself.
+                if model.panelPresented { return true }
+                guard let find = model.activeTerminalFind, find.isPresented else { return false }
+                if shift { find.previous() } else { find.next() }
+                return true
             case "k":
                 model.toggleCommandPalette(); return true
             case "y":

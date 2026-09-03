@@ -6,7 +6,6 @@ import TempleCore
 /// (click opens); arrow keys only highlight (select ≠ open).
 struct SidebarView: View {
     @EnvironmentObject var model: AppModel
-    @FocusState private var searchFocused: Bool
     @State private var showAllProjects = false
     @State private var headerHovering = false
 
@@ -19,7 +18,6 @@ struct SidebarView: View {
             footer
         }
         .background(.ultraThinMaterial)
-        .onChange(of: model.focusSearchToken) { FieldFocus.claim { searchFocused = true } }
     }
 
     // MARK: Header
@@ -42,7 +40,6 @@ struct SidebarView: View {
             TextField("Search", text: $model.searchText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
-                .focused($searchFocused)
             if !model.searchText.isEmpty {
                 Button(action: { model.searchText = "" }) {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)

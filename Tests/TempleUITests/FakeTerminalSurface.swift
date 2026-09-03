@@ -21,6 +21,10 @@ final class FakeTerminalSurface: TerminalSurface {
     private(set) var didRequestGracefulExit = false
     private(set) var didTerminate = false
     private(set) var appliedAppearances: [TerminalAppearance] = []
+    private(set) var focusCount = 0
+    private(set) var searches: [String] = []
+    private(set) var navigations: [TerminalSearchDirection] = []
+    private(set) var endSearchCount = 0
 
     private(set) var processState: TerminalProcessState = .notStarted {
         didSet {
@@ -33,7 +37,11 @@ final class FakeTerminalSurface: TerminalSurface {
         processState = .running(pid: 4242)
     }
 
-    func focus() {}
+    func focus() { focusCount += 1 }
+
+    func search(_ needle: String) { searches.append(needle) }
+    func navigateSearch(_ direction: TerminalSearchDirection) { navigations.append(direction) }
+    func endSearch() { endSearchCount += 1 }
 
     func apply(_ appearance: TerminalAppearance) {
         appliedAppearances.append(appearance)
@@ -67,6 +75,10 @@ final class FakeTerminalSurface: TerminalSurface {
     func simulateTitle(_ t: String) { delegate?.surface(self, didUpdateTitle: t) }
     func simulateSubmitInput() { delegate?.surfaceDidSubmitInput(self) }
     func simulateExit(status: Int32 = 0) { exitNow(status: status) }
+    func simulateSearchStarted(needle: String?) { delegate?.surface(self, didStartSearch: needle) }
+    func simulateSearchEnded() { delegate?.surfaceDidEndSearch(self) }
+    func simulateSearchTotal(_ total: Int?) { delegate?.surface(self, didUpdateSearchTotal: total) }
+    func simulateSearchSelected(_ selected: Int?) { delegate?.surface(self, didUpdateSearchSelected: selected) }
 
     private func exitNow(status: Int32) {
         guard case .running = processState else { return }

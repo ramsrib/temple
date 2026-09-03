@@ -1,5 +1,6 @@
 import SwiftUI
 import TempleCore
+import TempleTerminalAPI
 
 /// The native menu bar, shared by both app entry points.
 ///
@@ -49,6 +50,27 @@ public struct TempleCommands: Commands {
         CommandGroup(replacing: .saveItem) {
             Button("Close Tab") { model.openSessions.requestCloseActiveTab() }
                 .keyboardShortcut("w")
+        }
+
+        // Edit: find belongs to the terminal, so these replace the system Find
+        // submenu (whose ⌘F would otherwise sit beside ours). The placement is
+        // the whole text-editing group, so Spelling / Substitutions /
+        // Transformations / Speech go with it — none of which apply to a
+        // terminal. Like every item here they mirror KeyCatcher, which does
+        // the actual key handling.
+        CommandGroup(replacing: .textEditing) {
+            Button("Find in Terminal…") { model.findInActiveTerminal() }
+                .keyboardShortcut("f")
+                .disabled(model.activeTerminalFind == nil)
+            // Enabled state can only track the terminal (the bar's open/closed
+            // state is not observed here); the action itself refuses when the
+            // bar is closed, matching KeyCatcher.
+            Button("Find Next") { model.navigateActiveTerminalFind(.next) }
+                .keyboardShortcut("g")
+                .disabled(model.activeTerminalFind == nil)
+            Button("Find Previous") { model.navigateActiveTerminalFind(.previous) }
+                .keyboardShortcut("g", modifiers: [.command, .shift])
+                .disabled(model.activeTerminalFind == nil)
         }
 
         // App menu: Settings… (no Settings scene exists, so SwiftUI won't

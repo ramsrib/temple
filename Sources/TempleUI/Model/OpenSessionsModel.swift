@@ -803,6 +803,23 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
         scheduleSettle(for: tab)
     }
 
+    // Find in terminal: the surface counts, the tab's find model shows.
+    public func surface(_ surface: TerminalSurface, didStartSearch needle: String?) {
+        tab(for: surface)?.find.surfaceDidStart(needle: needle)
+    }
+
+    public func surfaceDidEndSearch(_ surface: TerminalSurface) {
+        tab(for: surface)?.find.surfaceDidEnd()
+    }
+
+    public func surface(_ surface: TerminalSurface, didUpdateSearchTotal total: Int?) {
+        tab(for: surface)?.find.surfaceDidUpdate(total: total)
+    }
+
+    public func surface(_ surface: TerminalSurface, didUpdateSearchSelected selected: Int?) {
+        tab(for: surface)?.find.surfaceDidUpdate(selected: selected)
+    }
+
     private func raiseAttention(_ surface: TerminalSurface, title: String, body: String) {
         guard let tab = tab(for: surface) else { return }
         // The signal fired → the agent is no longer working. Cancel any pending

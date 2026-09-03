@@ -352,3 +352,50 @@ records **which** tab was active (`open_tabs.active`), and restore reactivates
 exactly that one — resuming a single agent, not the whole set. Quitting from the
 launcher (`⌘⇧H`) still returns to the launcher: an empty active tab is a
 deliberate choice by the user, not missing state to be filled in.
+
+---
+
+## ADR-016 — Find in the terminal is libghostty's search; Temple draws the bar
+**Date:** 2026-09-02 · **Status:** Accepted
+
+`⌘F` finds text in the active terminal. Matching, highlighting and scrolling to
+a match are libghostty's own search (1.3+), driven through its binding actions
+(`search:<needle>`, `navigate_search:next|previous`, `end_search`) and reported
+back through the `start_search` / `end_search` / `search_total` /
+`search_selected` actions. Temple contributes only the bar over the terminal's
+top-right corner and the per-tab state behind it. Reimplementing search over
+the scrollback in Temple was never on the table: the terminal already has an
+indexed, thread-off-main search that tracks content as it scrolls, and a second
+one could only disagree with it.
+
+Consequences and choices:
+
+- **The bar is a view of `TerminalFindModel`, which lives on the `SessionTab`,
+  not in the view.** `MainContentView` rebuilds the terminal view on every tab
+  switch (`.id(tab.id)`), so view-owned state would close the search each time.
+  The bar claims the keyboard only when the model was asked to open (a focus
+  request consumed once), never on a plain rebuild — returning to a tab with a
+  search open leaves the keyboard with the terminal.
+- **The surface API stays optional.** `TerminalSurface` gained `search`,
+  `navigateSearch`, `endSearch` and four delegate callbacks, all with default
+  no-ops, so the stub and test doubles need nothing and the UI shows no count
+  for a surface that cannot search.
+- **`⌘F` moved off the sidebar.** Focusing sidebar search was the only thing
+  the key did before; the sidebar field is now click-only and has no shortcut.
+  `⌘F` with no terminal on screen does nothing (the Edit menu item is disabled).
+- **Keys stay with `KeyCatcher`.** `⌘F`, `⌘G`, `⌘⇧G` are handled by Temple's
+  event monitor so they work from the field and from the terminal alike; the
+  Edit menu's system Find submenu is replaced by items that mirror them, per the
+  menu-mirrors-KeyCatcher rule (the placement covers the whole text-editing
+  group — Spelling, Substitutions, Transformations, Speech go too; none applies
+  to a terminal). Find Next / Previous act only while the bar is open, as the
+  keys do. A floating panel (`⌘K` / `⌘Y` / `⌘N` / `⌘/`) swallows `⌘F` and `⌘G`:
+  it owns the keyboard and the bar must not take focus underneath it. libghostty's own `⌘E` (search the selection) and
+  `Esc` (end an active search) still fire when the terminal has focus, and the
+  bar follows them through the callbacks.
+- **Ghostty's defaults are kept where they matter.** Short needles (1–2 chars)
+  are debounced 300 ms; the count uses the compact `3/12` form inside the field
+  and is silent when nothing matches; `Esc` in a focused terminal during an
+  active search ends the search rather than reaching the agent (the next `Esc`
+  goes through). Navigation does not wrap at the last match — libghostty does
+  not, and a "select first" action does not exist to fake it with.
