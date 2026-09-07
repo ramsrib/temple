@@ -270,11 +270,15 @@ struct HistoryResultRow: View {
             }
             .contentShape(Rectangle())
             .onTapGesture(perform: open)
-            if let trailingAction, hovering {
+            if let trailingAction {
+                // Always laid out, shown on hover: inserting the button only
+                // then shoved the project/time column sideways under the
+                // pointer, and left it misaligned with rows that had no button.
                 Button(trailingAction.label, action: trailingAction.perform)
                     .buttonStyle(.plain)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                    .opacity(hovering ? 1 : 0)
             }
         }
         .padding(.horizontal, 14)

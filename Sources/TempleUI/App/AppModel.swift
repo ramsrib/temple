@@ -811,6 +811,55 @@ public final class AppModel: ObservableObject {
                            titleOverrides: overlay.displayTitleOverrides)
     }
 
+    /// One group per project in the archive browser, shaped like the sidebar.
+    /// `wholeProject` groups come first (the project itself is archived; its
+    /// sessions are listed so the count is something you can see), then groups
+    /// of sessions archived one by one, each under its project's name. Typing
+    /// keeps a whole project when its path matches (all sessions shown) or when
+    /// any session inside matches (those sessions shown).
+    public struct ArchiveGroup: Identifiable, Equatable {
+        public let project: Project
+        public let wholeProject: Bool
+        public var id: String { project.path }
+    }
+
+    public func archiveGroups(_ query: String) -> [ArchiveGroup] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        let overrides = overlay.displayTitleOverrides
+        // One rule for both kinds of group: a path match keeps every session,
+        // otherwise the sessions that match by title — and none means no group.
+        func matching(_ path: String, _ sessions: [AgentSession]) -> [AgentSession]? {
+            if q.isEmpty || path.localizedCaseInsensitiveContains(q) { return sessions }
+            let ranked = search.rank(sessions, query: q, titleOverrides: overrides)
+            return ranked.isEmpty ? nil : ranked
+        }
+        // The index can surface one session id under two project paths; a row
+        // id is the session id, so each session may appear once. First wins,
+        // as in every other list here.
+        var seen = Set<String>()
+        func unseen(_ sessions: [AgentSession]) -> [AgentSession] {
+            sessions.filter { seen.insert($0.id).inserted }
+        }
+        let whole: [ArchiveGroup] = archivedProjects.compactMap { project in
+            guard let sessions = matching(project.path, project.sessions) else { return nil }
+            return ArchiveGroup(project: Project(path: project.path, sessions: unseen(sessions)),
+                                wholeProject: true)
+        }
+        var byPath: [String: [AgentSession]] = [:]
+        var order: [String] = []
+        for session in archivedSessionResults("") {
+            if byPath[session.projectPath] == nil { order.append(session.projectPath) }
+            byPath[session.projectPath, default: []].append(session)
+        }
+        let partial: [ArchiveGroup] = order.compactMap { path in
+            guard let sessions = matching(path, byPath[path] ?? []) else { return nil }
+            let fresh = unseen(sessions)
+            return fresh.isEmpty ? nil
+                : ArchiveGroup(project: Project(path: path, sessions: fresh), wholeProject: false)
+        }
+        return whole + partial
+    }
+
     public func toggleArchive() {
         let presenting = !archivePresented
         archivePresented = presenting

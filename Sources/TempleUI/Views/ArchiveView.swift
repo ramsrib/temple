@@ -1,25 +1,31 @@
 import SwiftUI
 import TempleCore
 
-/// ⌘⇧Y: what has been put away. A browser, not a palette: the ⌘K/⌘Y panels are
-/// a search field with results hanging off it, which reads as "type to find
-/// one thing". Putting things back is browsing — you scan, you pick several —
-/// so this is a centred window with a title, the counts, a compact search, a
-/// tall list and the keys spelled out. Same chrome as the other panels; the
-/// sidebar deliberately carries no archive affordance, and this is the way back.
+/// ⌘⇧Y: what has been put away, laid out the way the sidebar lays out what is
+/// not — projects as groups, sessions inside them — because that is the shape
+/// the user already reads. An archived project is a group with every session it
+/// hides listed under it, so "5 sessions" is never a number you have to trust;
+/// a session archived on its own sits under its project's name. Every row has
+/// one explicit action, Restore, and a session can also be opened, which
+/// restores it on the way. Fixed size: a window, not a list that resizes under
+/// the pointer. Same chrome as the other panels; the sidebar deliberately
+/// carries no archive affordance, and this is the way back.
 struct ArchiveView: View {
     @EnvironmentObject var model: AppModel
-    /// Ceiling for the list, from the window: the panel must never outgrow it.
-    var maxListHeight: CGFloat = 520
+    /// The panel's height, from the window (RootView clamps it).
+    var height: CGFloat = 540
+
     @State private var query = ""
-    @State private var entries: [ArchiveEntry] = []
+    @State private var groups: [AppModel.ArchiveGroup] = []
+    @State private var entries: [Entry] = []
     @State private var indexByID: [String: Int] = [:]
     @State private var selection = 0
     @FocusState private var fieldFocused: Bool
 
-    /// One keyboard-selectable line. Projects and sessions share a single walk
-    /// (↑↓ crosses the section rule) so Return always acts on what is lit.
-    enum ArchiveEntry: Identifiable {
+    /// One keyboard-selectable line: a whole-project group's header, or a
+    /// session row. Headers of groups that merely contain archived sessions
+    /// are labels, not rows — there is nothing to restore on them.
+    enum Entry: Identifiable {
         case project(Project)
         case session(AgentSession)
 
@@ -31,28 +37,7 @@ struct ArchiveView: View {
         }
     }
 
-    private var projects: [ArchiveEntry] {
-        entries.filter { if case .project = $0 { return true } else { return false } }
-    }
-
-    private var sessions: [ArchiveEntry] {
-        entries.filter { if case .session = $0 { return true } else { return false } }
-    }
-
-    private var headerCount: Int {
-        (projects.isEmpty ? 0 : 1) + (sessions.isEmpty ? 0 : 1)
-    }
-
-    private static let panelWidth: CGFloat = 760
-    private static let listMinHeight: CGFloat = 260
-
-    /// Content-sized between a floor and the window's ceiling: one row must not
-    /// leave a cavern, fifty must not run off the screen.
-    private var listHeight: CGFloat {
-        let content = CGFloat(entries.count) * Self.rowHeight
-            + CGFloat(headerCount) * Self.headerHeight + 8
-        return min(max(content, Self.listMinHeight), max(Self.listMinHeight, maxListHeight))
-    }
+    private static let width: CGFloat = 640
 
     var body: some View {
         VStack(spacing: 0) {
@@ -66,7 +51,7 @@ struct ArchiveView: View {
             Divider()
             footer
         }
-        .frame(width: Self.panelWidth)
+        .frame(width: Self.width, height: height)
         .panelChrome()
         .onAppear {
             reload()
@@ -74,9 +59,8 @@ struct ArchiveView: View {
         }
         .onDisappear { model.openSessions.focusActiveTerminal() }
         .onChange(of: query) { _, _ in reload() }
-        // Same reason as HistoryView: the results are @State, so an index
-        // update — or an unarchive from this very panel — needs an explicit
-        // refresh. Selection sticks to its row's id across the reload.
+        // The rows are @State, so an index update — or a restore from this very
+        // panel — needs an explicit refresh. Selection sticks to its row's id.
         .onChange(of: model.index) { _, _ in reloadPreservingSelection() }
         .onReceive(model.overlay.objectWillChange
             .receive(on: DispatchQueue.main)) { _ in reloadPreservingSelection() }
@@ -85,26 +69,27 @@ struct ArchiveView: View {
         .onKeyPress(.escape) { model.archivePresented = false; return .handled }
     }
 
-    // MARK: Header — title, what is in here, and the search off to the side
+    // MARK: Header — title, what is in the box, then search (search-first, like the sidebar)
 
     private var header: some View {
-        HStack(spacing: 14) {
-            Image(systemName: "archivebox")
-                .font(.system(size: 20, weight: .regular))
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "archivebox")
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundStyle(.secondary)
                 Text("Archive")
                     .font(.system(size: 15, weight: .semibold))
                 Text(summary)
-                    .font(.system(size: 11))
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
+                    .padding(.leading, 4)
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 16)
             searchField
-                .frame(width: 260)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
     }
 
     /// The whole archive, not the filtered view — the header says what is in
@@ -112,7 +97,7 @@ struct ArchiveView: View {
     private var summary: String {
         let projects = model.archivedProjects.count
         let sessions = model.archivedSessionResults("").count
-        if projects == 0 && sessions == 0 { return "Nothing put away" }
+        if projects == 0 && sessions == 0 { return "" }
         var parts: [String] = []
         if projects > 0 { parts.append(projects == 1 ? "1 project" : "\(projects) projects") }
         if sessions > 0 { parts.append(sessions == 1 ? "1 session" : "\(sessions) sessions") }
@@ -124,7 +109,7 @@ struct ArchiveView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
-            TextField("Search archived…", text: $query)
+            TextField("Search archived projects and sessions", text: $query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .focused($fieldFocused)
@@ -146,7 +131,7 @@ struct ArchiveView: View {
         .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
     }
 
-    // MARK: List
+    // MARK: List — groups like the sidebar's
 
     private var list: some View {
         ScrollViewReader { proxy in
@@ -155,12 +140,17 @@ struct ArchiveView: View {
                 // leave a materialized row's selection fill stale while the
                 // keyboard highlight moves.
                 VStack(spacing: 0) {
-                    section("Projects", projects)
-                    section("Sessions", sessions)
+                    ForEach(groups) { group in
+                        groupHeader(group)
+                        ForEach(group.project.sessions) { session in
+                            sessionRow(session)
+                        }
+                        Spacer().frame(height: 8)
+                    }
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, 6)
             }
-            .frame(height: listHeight)
+            .frame(maxHeight: .infinity)
             .thinScrollers()
             .onChange(of: selection) {
                 if entries.indices.contains(selection) {
@@ -168,6 +158,96 @@ struct ArchiveView: View {
                 }
             }
         }
+    }
+
+    /// A whole-project group is a selectable row with its own Restore; a group
+    /// that only holds archived sessions is a plain label over them.
+    @ViewBuilder
+    private func groupHeader(_ group: AppModel.ArchiveGroup) -> some View {
+        if group.wholeProject {
+            let entry = Entry.project(group.project)
+            let index = indexByID[entry.id] ?? 0
+            ArchiveRow(
+                selected: index == selection,
+                restoreLabel: "Restore project",
+                restore: { restore(entry) },
+                act: { selection = index; restore(entry) }
+            ) {
+                Image(systemName: "folder")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                Text(group.project.name)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                Text(parentPath(group.project.path))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                Spacer(minLength: 12)
+                Text("Archived project")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Palette.surfaceFill, in: Capsule())
+            }
+            .id(entry.id)
+            .contextMenu { Button("Restore project") { restore(entry) } }
+        } else {
+            HStack(spacing: 8) {
+                Image(systemName: "folder")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                Text(group.project.name)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(parentPath(group.project.path))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 6)
+            .padding(.bottom, 4)
+        }
+    }
+
+    private func sessionRow(_ session: AgentSession) -> some View {
+        let entry = Entry.session(session)
+        let index = indexByID[entry.id] ?? 0
+        return ArchiveRow(
+            selected: index == selection,
+            restoreLabel: "Restore",
+            restore: { restore(entry) },
+            act: { selection = index; act(on: entry) }
+        ) {
+            AgentBadge(agent: session.agent, size: 13)
+                .frame(width: 16)
+            Text(model.displayTitle(session))
+                .font(.system(size: 13))
+                .lineLimit(1)
+            Spacer(minLength: 12)
+            Text(RelativeTime.string(from: session.updatedAt))
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+        }
+        .padding(.leading, 18)
+        .id(entry.id)
+        .contextMenu {
+            Button("Open") { act(on: entry) }
+            Button("Restore") { restore(entry) }
+        }
+    }
+
+    private func parentPath(_ path: String) -> String {
+        (path as NSString).deletingLastPathComponent
     }
 
     private var emptyState: some View {
@@ -182,9 +262,8 @@ struct ArchiveView: View {
                     .multilineTextAlignment(.center)
             }
         }
-        .frame(maxWidth: 420)
-        .frame(maxWidth: .infinity)
-        .frame(height: Self.listMinHeight)
+        .frame(maxWidth: 380)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: Footer — the keys, and what Return does to the lit row
@@ -196,17 +275,15 @@ struct ArchiveView: View {
             hint("esc", "close")
             Spacer()
         }
-        .padding(.horizontal, 18)
+        .padding(.horizontal, 16)
         .padding(.vertical, 9)
     }
 
-    /// Return means two different things here; the footer names the one that
-    /// applies to the row under the highlight.
     private var returnHint: String {
         guard entries.indices.contains(selection) else { return "open" }
         switch entries[selection] {
         case .project: return "restore project"
-        case .session: return "restore and open session"
+        case .session: return "open session (restores it)"
         }
     }
 
@@ -225,53 +302,15 @@ struct ArchiveView: View {
         }
     }
 
-    @ViewBuilder
-    private func section(_ title: String, _ rows: [ArchiveEntry]) -> some View {
-        if !rows.isEmpty {
-            HistoryHeader(title: title)
-                .frame(height: Self.headerHeight)
-            ForEach(rows) { entry in
-                row(entry)
-                    .frame(height: Self.rowHeight)
-                    .contextMenu {
-                        Button("Unarchive") { unarchive(entry) }
-                    }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func row(_ entry: ArchiveEntry) -> some View {
-        let index = indexByID[entry.id] ?? 0
-        switch entry {
-        case .project(let project):
-            ArchiveProjectRow(
-                project: project,
-                selected: index == selection,
-                unarchive: { unarchive(entry) }
-            ) {
-                selection = index
-                unarchive(entry)
-            }
-        case .session(let session):
-            HistoryResultRow(
-                session: session,
-                selected: index == selection,
-                trailingAction: ("Unarchive", { unarchive(entry) })
-            ) {
-                selection = index
-                act(on: entry)
-            }
-        }
-    }
-
-    private static let rowHeight: CGFloat = 52
-    private static let headerHeight: CGFloat = 27
+    // MARK: Data
 
     private func reload() {
-        let rows = Array((model.archivedProjectResults(query).map(ArchiveEntry.project)
-                          + model.archivedSessionResults(query).map(ArchiveEntry.session))
-                             .prefix(250))
+        groups = model.archiveGroups(query)
+        var rows: [Entry] = []
+        for group in groups {
+            if group.wholeProject { rows.append(.project(group.project)) }
+            rows.append(contentsOf: group.project.sessions.map(Entry.session))
+        }
         entries = rows
         // Uniquing defensively, as HistoryView does: a duplicate id would be a
         // hard crash with uniqueKeysWithValues.
@@ -287,9 +326,8 @@ struct ArchiveView: View {
         if let selectedID, let index = indexByID[selectedID] {
             selection = index
         } else if !entries.isEmpty {
-            // The selected row is gone — usually because it was just
-            // unarchived from here. Stay where the eye is rather than jumping
-            // back to the top.
+            // The selected row is gone — usually because it was just restored
+            // from here. Stay where the eye is rather than jumping to the top.
             selection = min(previous, entries.count - 1)
         }
     }
@@ -305,81 +343,62 @@ struct ArchiveView: View {
     }
 
     /// Return / click. A session comes back AND opens (opening is what you came
-    /// for); a project only comes back — its row disappears and the panel stays
-    /// up, because unarchiving a project is usually one of several.
-    private func act(on entry: ArchiveEntry) {
+    /// for); a project only comes back — its group disappears and the panel
+    /// stays up, because restoring a project is usually one of several.
+    private func act(on entry: Entry) {
         switch entry {
         case .project:
-            unarchive(entry)
+            restore(entry)
         case .session(let session):
-            model.overlay.setArchived(false, sessionID: session.id)
+            restore(entry)
             model.openSessions.openSession(session)
             model.archivePresented = false
         }
     }
 
-    private func unarchive(_ entry: ArchiveEntry) {
+    /// A session inside an archived project is restored by restoring the
+    /// project — it was never archived on its own, so there is no per-session
+    /// flag to clear, and leaving the project archived would hide it again.
+    private func restore(_ entry: Entry) {
         switch entry {
         case .project(let project):
             model.overlay.setProjectArchived(false, path: project.path)
         case .session(let session):
+            if model.overlay.isProjectArchived(session.projectPath) {
+                model.overlay.setProjectArchived(false, path: session.projectPath)
+            }
             model.overlay.setArchived(false, sessionID: session.id)
         }
     }
 }
 
-/// An archived project in the ⌘⇧Y browser: the folder, where it lives, and how
-/// much is inside it. Built to the same metrics as `HistoryResultRow` so the
-/// two sections read as one list.
-private struct ArchiveProjectRow: View {
-    @EnvironmentObject var model: AppModel
-    let project: Project
+/// One line of the archive: content on the left, a Restore button on the right
+/// that is always laid out and shown on hover or selection — inserting it only
+/// on hover shoved the content sideways under the pointer, and left rows
+/// misaligned with their neighbours. The content is its own hit target for
+/// `act`, the button its own for `restore`, so the two can never both fire.
+private struct ArchiveRow<Content: View>: View {
     let selected: Bool
-    let unarchive: () -> Void
+    let restoreLabel: String
+    let restore: () -> Void
     let act: () -> Void
+    @ViewBuilder let content: () -> Content
 
     @State private var hovering = false
 
-    private var parentPath: String {
-        (project.path as NSString).deletingLastPathComponent
-    }
-
     var body: some View {
         HStack(spacing: 10) {
-            // Content and the trailing button are sibling hit targets (see
-            // HistoryResultRow): the row's tap must not swallow the button.
-            HStack(spacing: 10) {
-                Image(systemName: "folder")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 14)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(project.name)
-                        .font(.system(size: 13))
-                        .lineLimit(1)
-                    Text(parentPath)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                }
-                Spacer(minLength: 12)
-                Text(project.sessions.count == 1 ? "1 session" : "\(project.sessions.count) sessions")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-            }
-            .contentShape(Rectangle())
-            .onTapGesture(perform: act)
-            if hovering {
-                Button("Unarchive", action: unarchive)
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
+            HStack(spacing: 8, content: content)
+                .contentShape(Rectangle())
+                .onTapGesture(perform: act)
+            Button(restoreLabel, action: restore)
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .opacity(hovering || selected ? 1 : 0)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 7)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
         .background(selected ? Palette.selectionFill
                              : (hovering ? Palette.hoverFill : Color.clear))
         .contentShape(Rectangle())

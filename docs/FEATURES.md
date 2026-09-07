@@ -235,11 +235,14 @@ prompt composer.
   grouped under Today / Yesterday / date headers, each row carrying its agent,
   displayed title, last-message preview, project, and relative time. Typing
   switches to a flat ranked search; Enter or a click resumes the session.
-- `⌘⇧Y` (View ▸ Archive Browser) opens the archive browser — a centred window,
-  not a palette: a header with what is in it ("2 projects · 5 sessions"), a
-  compact search, a tall list of archived projects then individually archived
-  sessions, and the keys spelled out along the bottom. Enter or a click
-  unarchives a project in place, and unarchives and resumes a session.
+- `⌘⇧Y` (View ▸ Archive Browser) opens the archive browser — a centred window
+  shaped like the sidebar: archived projects first, each a group with every
+  session it hides listed under an "Archived project" tag, then sessions
+  archived on their own, grouped under their project's name. A header says what
+  is in the box ("2 projects · 5 sessions"), search filters by folder or by
+  session title, and every row carries a Restore action (shown on hover or
+  selection). Enter or a click on a session restores and opens it; on a project
+  it restores it in place. The keys are spelled out along the bottom.
   Searching matches a project by its path or by any session inside it. Opening an
   archived session anywhere else unarchives it too; a session resumed
   outside Temple stays archived, because activity on disk is not a decision.

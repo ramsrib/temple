@@ -225,9 +225,8 @@ public struct RootView: View {
                 OverlayBackdrop { model.archivePresented = false }
                     .ignoresSafeArea()
                 PanelHost {
-                    // Header + footer take ~110pt; keep the whole panel inside
-                    // the window with room to breathe.
-                    ArchiveView(maxListHeight: max(300, geo.size.height - 220))
+                    // A fixed window that fits: most of the height, never all.
+                    ArchiveView(height: min(540, max(360, geo.size.height - 120)))
                         .environmentObject(model)
                         .tint(Palette.accent)
                 }

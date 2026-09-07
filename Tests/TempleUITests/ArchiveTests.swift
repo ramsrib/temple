@@ -145,6 +145,47 @@ final class ArchiveTests: XCTestCase {
         XCTAssertEqual(model.archivedSessionResults("").map(\.id), ["a1"])
     }
 
+    /// The browser is shaped like the sidebar: whole archived projects first,
+    /// with every session inside listed; then sessions archived on their own,
+    /// grouped under their project. Search keeps a whole project by path, or by
+    /// the sessions inside it that match.
+    func testArchiveGroupsMirrorTheSidebarShape() {
+        let (model, overlay) = makeModel(twoProjects())
+        overlay.setProjectArchived(true, path: "/p/a")
+        overlay.setArchived(true, sessionID: "b1")
+
+        let groups = model.archiveGroups("")
+        XCTAssertEqual(groups.map(\.id), ["/p/a", "/p/b"])
+        XCTAssertEqual(groups.map(\.wholeProject), [true, false])
+        XCTAssertEqual(groups[0].project.sessions.map(\.id), ["a1", "a2"])
+        XCTAssertEqual(groups[1].project.sessions.map(\.id), ["b1"])
+
+        XCTAssertEqual(model.archiveGroups("alpha two").map(\.id), ["/p/a"])
+        XCTAssertEqual(model.archiveGroups("alpha two")[0].project.sessions.map(\.id), ["a2"])
+        XCTAssertEqual(model.archiveGroups("/p/a")[0].project.sessions.count, 2)
+        XCTAssertEqual(model.archiveGroups("beta").map(\.id), ["/p/b"])
+        // A path match keeps a partial group's sessions too, not only a title match.
+        XCTAssertEqual(model.archiveGroups("/p/b").map(\.id), ["/p/b"])
+        XCTAssertEqual(model.archiveGroups("p/").map(\.id), ["/p/a", "/p/b"])
+        XCTAssertTrue(model.archiveGroups("zzz").isEmpty)
+    }
+
+    /// The index can list one session id under two projects; the browser's
+    /// rows are keyed by session id, so each session appears once.
+    func testArchiveGroupsListEachSessionOnce() {
+        let shared = Fixture.session("dup", project: "/p/a", title: "Shared", updated: 10)
+        let twin = Fixture.session("dup", project: "/p/b", title: "Shared", updated: 10)
+        let (model, overlay) = makeModel(SessionIndex(projects: [
+            Project(path: "/p/a", sessions: [shared]),
+            Project(path: "/p/b", sessions: [twin]),
+        ]))
+        overlay.setProjectArchived(true, path: "/p/a")
+        overlay.setProjectArchived(true, path: "/p/b")
+
+        let groups = model.archiveGroups("")
+        XCTAssertEqual(groups.flatMap(\.project.sessions).map(\.id), ["dup"])
+    }
+
     // MARK: Persistence
 
     func testArchiveStateAndProjectOrderSurviveANewOverlayOnTheSameDatabase() {
