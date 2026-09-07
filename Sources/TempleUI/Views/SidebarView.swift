@@ -467,12 +467,17 @@ private struct ProjectDisclosure: View {
 
     private var hasFooterRow: Bool { hiddenCount > 0 || limit > Self.collapsedLimit }
 
+    /// This project is the one being dragged: the whole group fades, not just
+    /// its header — the thing in hand is the project.
+    private var inHand: Bool { model.draggedProjectPath == project.path }
+
     var body: some View {
         header
         if expanded {
             ForEach(Array(shownSessions.enumerated()), id: \.element.id) { offset, session in
                 SessionRow(session: session)
                     .padding(.leading, Self.childInset)
+                    .opacity(inHand ? 0.4 : 1)
                     .listRowInsets(EdgeInsets(top: 1, leading: -10, bottom: 1, trailing: 8))
                     .listRowBackground(Color.clear)
                     .onDrop(of: [Self.dragType], delegate: dropDelegate(row: session.id, edge: .bottom))
@@ -505,6 +510,7 @@ private struct ProjectDisclosure: View {
                 .padding(.leading, Self.childInset + 26)
                 .padding(.trailing, 8)
                 .padding(.vertical, 2)
+                .opacity(inHand ? 0.4 : 1)
                 .listRowInsets(EdgeInsets(top: 1, leading: -10, bottom: 1, trailing: 8))
                 .listRowBackground(Color.clear)
                 .onDrop(of: [Self.dragType], delegate: dropDelegate(row: "footer", edge: .bottom))
@@ -576,9 +582,9 @@ private struct ProjectDisclosure: View {
 
     private var header: some View {
         headerLabel
-        // The row in hand fades: the chip under the pointer is the project
+        // The group in hand fades: the chip under the pointer is the project
         // now, and the gap it leaves is where it came from.
-        .opacity(model.draggedProjectPath == project.path ? 0.4 : 1)
+        .opacity(inHand ? 0.4 : 1)
         .padding(.vertical, 3)
         .padding(.horizontal, 6)
         // Item C: hover highlight on the project header row too.

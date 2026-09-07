@@ -233,9 +233,6 @@ struct HistoryResultRow: View {
     @EnvironmentObject var model: AppModel
     let session: AgentSession
     let selected: Bool
-    /// A quiet secondary action revealed on hover (the archive browser's
-    /// Unarchive). The row's own tap stays "open this session".
-    var trailingAction: (label: String, perform: () -> Void)?
     let open: () -> Void
 
     @State private var hovering = false
@@ -270,16 +267,6 @@ struct HistoryResultRow: View {
             }
             .contentShape(Rectangle())
             .onTapGesture(perform: open)
-            if let trailingAction {
-                // Always laid out, shown on hover: inserting the button only
-                // then shoved the project/time column sideways under the
-                // pointer, and left it misaligned with rows that had no button.
-                Button(trailingAction.label, action: trailingAction.perform)
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .opacity(hovering ? 1 : 0)
-            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 7)

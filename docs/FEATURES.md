@@ -52,7 +52,7 @@ back to the first human prompt
   app run so activity cannot move a row under the pointer. Newly discovered
   entries prepend without reshuffling existing entries.
 - Projects reorder by drag: the header is the handle. A chip with the folder
-  name follows the pointer and the row in hand dims. Dropping on another
+  name follows the pointer and the whole group in hand dims. Dropping on another
   project's header lands above it; dropping anywhere in its body lands below it,
   and an insertion line shows where. A collapsed project has no body, so the
   lower half of its header means below it. The order persists. A manual order
@@ -211,9 +211,9 @@ row uses the default agent.
 
 **Recent Projects** shows the sidebar's first five projects — the same manual
 order if one has been set (the heading then reads **Projects**), launch-frozen
-recency otherwise — with relative activity time on hover. Once anything is
-archived, **Get started** gains an **Archive** row (`⌘⇧Y`): the sidebar carries
-no archive affordance, so this is the visible way back. Choosing one starts a brand-new
+recency otherwise — with relative activity time on hover. **Get started** also
+carries **Archived items** (`⌘⇧Y`): the sidebar has no archive affordance, so
+this is the visible way back, and it is always there. Choosing one starts a brand-new
 session there with the default agent; it does not reopen an existing session.
 The home page is the general creation surface—there is no new-session modal or
 prompt composer.
@@ -235,14 +235,17 @@ prompt composer.
   grouped under Today / Yesterday / date headers, each row carrying its agent,
   displayed title, last-message preview, project, and relative time. Typing
   switches to a flat ranked search; Enter or a click resumes the session.
-- `⌘⇧Y` (View ▸ Archive Browser) opens the archive browser — a centred window
-  shaped like the sidebar: archived projects first, each a group with every
-  session it hides listed under an "Archived project" tag, then sessions
-  archived on their own, grouped under their project's name. A header says what
-  is in the box ("2 projects · 5 sessions"), search filters by folder or by
-  session title, and every row carries a Restore action (shown on hover or
-  selection). Enter or a click on a session restores and opens it; on a project
-  it restores it in place. The keys are spelled out along the bottom.
+- `⌘⇧Y` (View ▸ Archived Items) opens the archive browser — a centred window
+  shaped like the sidebar: archived projects first, each a restorable header
+  with every session it hides listed beneath, then sessions archived on their
+  own under a plain label of their project's name. A header says what is in the
+  box ("2 projects · 5 sessions") and search filters by folder or by session
+  title. Rows carry a visible Restore, strongest on the one highlighted row —
+  the pointer and the arrow keys move the same highlight — except sessions
+  inside an archived project, whose only way back is the project's own Restore;
+  opening one restores the project. Enter or a click on a loose session
+  restores and opens it; on a project it restores it in place. Restore undoes
+  with `⌘Z` like archive does. The keys are spelled out along the bottom.
   Searching matches a project by its path or by any session inside it. Opening an
   archived session anywhere else unarchives it too; a session resumed
   outside Temple stays archived, because activity on disk is not a decision.

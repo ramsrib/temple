@@ -103,16 +103,24 @@ final class ArchiveTests: XCTestCase {
         XCTAssertFalse(overlay.isProjectArchived("/p/b"))
     }
 
-    func testHomePageArchiveRowAppearsOnlyWhenSomethingIsArchived() {
+    func testRestoringIsUndoableToo() {
         let (model, overlay) = makeModel(twoProjects())
-        XCTAssertFalse(model.hasArchivedItems)
+        let undo = UndoManager()
+        undo.groupsByEvent = false
         overlay.setArchived(true, sessionID: "a1")
-        XCTAssertTrue(model.hasArchivedItems)
-        overlay.setArchived(false, sessionID: "a1")
         overlay.setProjectArchived(true, path: "/p/b")
-        XCTAssertTrue(model.hasArchivedItems)
-        overlay.setProjectArchived(false, path: "/p/b")
-        XCTAssertFalse(model.hasArchivedItems)
+
+        undo.beginUndoGrouping(); model.restoreSession("a1", undoManager: undo); undo.endUndoGrouping()
+        XCTAssertFalse(overlay.isArchived("a1"))
+        XCTAssertEqual(undo.undoActionName, "Restore Session")
+        undo.undo()
+        XCTAssertTrue(overlay.isArchived("a1"))
+
+        undo.beginUndoGrouping(); model.restoreProject("/p/b", undoManager: undo); undo.endUndoGrouping()
+        XCTAssertFalse(overlay.isProjectArchived("/p/b"))
+        XCTAssertEqual(undo.undoActionName, "Restore Project")
+        undo.undo()
+        XCTAssertTrue(overlay.isProjectArchived("/p/b"))
     }
 
     // MARK: Projects

@@ -106,7 +106,7 @@ public struct TempleCommands: Commands {
             }
             .keyboardShortcut("y")
             Button { model.toggleArchive() } label: {
-                Label("Archive Browser", systemImage: "archivebox")
+                Label("Archived Items", systemImage: "archivebox")
             }
             .keyboardShortcut("y", modifiers: [.command, .shift])
             Button { model.openSessions.showHome() } label: {

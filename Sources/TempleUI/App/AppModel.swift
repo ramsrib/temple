@@ -716,12 +716,6 @@ public final class AppModel: ObservableObject {
 
     // MARK: Archive browser (⌘⇧Y)
 
-    /// Whether the archive browser has anything to show — the home page offers
-    /// its row only then.
-    public var hasArchivedItems: Bool {
-        !archivedProjects.isEmpty || !archivedSessionResults("").isEmpty
-    }
-
     /// Whether the user has ever arranged the sidebar by hand.
     public var hasManualProjectOrder: Bool { !overlay.projectOrder.isEmpty }
 
@@ -746,6 +740,26 @@ public final class AppModel: ObservableObject {
             overlay.setProjectArchived(false, path: path)
         } redo: { [overlay] in
             overlay.setProjectArchived(true, path: path)
+        }
+    }
+
+    /// Restore is one click too, from a panel whose first row is lit on open —
+    /// so it undoes the same way archive does.
+    public func restoreSession(_ id: String, undoManager: UndoManager?) {
+        overlay.setArchived(false, sessionID: id)
+        registerUndo(undoManager, name: "Restore Session") { [overlay] in
+            overlay.setArchived(true, sessionID: id)
+        } redo: { [overlay] in
+            overlay.setArchived(false, sessionID: id)
+        }
+    }
+
+    public func restoreProject(_ path: String, undoManager: UndoManager?) {
+        overlay.setProjectArchived(false, path: path)
+        registerUndo(undoManager, name: "Restore Project") { [overlay] in
+            overlay.setProjectArchived(true, path: path)
+        } redo: { [overlay] in
+            overlay.setProjectArchived(false, path: path)
         }
     }
 

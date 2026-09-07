@@ -122,14 +122,11 @@ struct LauncherView: View {
                 model.toggleHistory()
             }
             // The sidebar deliberately carries no archive affordance, so this is
-            // the one visible way back. It appears with the first thing archived
-            // — an always-present row whose panel says "Nothing archived" is
-            // dead weight, and turning up right after a right-click archive is
-            // the teaching moment.
-            if model.hasArchivedItems {
-                LauncherRow(icon: .symbol("archivebox"), title: "Archive", shortcut: "⌘⇧Y") {
-                    model.toggleArchive()
-                }
+            // the one visible way back — always here, so the list is the same
+            // list every launch (a row that comes and goes is a row you can't
+            // learn), and the panel's empty state does the teaching.
+            LauncherRow(icon: .symbol("archivebox"), title: "Archived items", shortcut: "⌘⇧Y") {
+                model.toggleArchive()
             }
             // Only when there is somewhere to switch TO: with fewer than two
             // projects open the switcher has nothing to show, and a row that does
