@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import TempleCore
 
 /// The left rail: search-first, Pinned, project
@@ -429,6 +430,7 @@ private struct FooterGearMenu: NSViewRepresentable {
 /// per-project "Show more".
 private struct ProjectDisclosure: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.undoManager) private var undoManager
     let project: Project
     @State private var expanded = true
     @State private var headerHovering = false
@@ -455,16 +457,32 @@ private struct ProjectDisclosure: View {
     /// and much deeper.
     private static let childInset: CGFloat = 8
 
+    /// Where a project dragged over THIS one would land: a line above the
+    /// header (before) or under the last visible row (after). Read from the
+    /// model's single slot so only one line exists in the whole rail.
+    private var dropIndicator: Edge? {
+        model.projectDropSlot?.path == project.path ? model.projectDropSlot?.edge : nil
+    }
+    @State private var headerHeight: CGFloat = 22
+
+    private var hasFooterRow: Bool { hiddenCount > 0 || limit > Self.collapsedLimit }
+
     var body: some View {
         header
         if expanded {
-            ForEach(shownSessions) { session in
+            ForEach(Array(shownSessions.enumerated()), id: \.element.id) { offset, session in
                 SessionRow(session: session)
                     .padding(.leading, Self.childInset)
                     .listRowInsets(EdgeInsets(top: 1, leading: -10, bottom: 1, trailing: 8))
                     .listRowBackground(Color.clear)
+                    .onDrop(of: [Self.dragType], delegate: dropDelegate(row: session.id, edge: .bottom))
+                    .overlay(alignment: .bottom) {
+                        if dropIndicator == .bottom, !hasFooterRow, offset == shownSessions.count - 1 {
+                            dropLine
+                        }
+                    }
             }
-            if hiddenCount > 0 || limit > Self.collapsedLimit {
+            if hasFooterRow {
                 HStack(spacing: 10) {
                     if hiddenCount > 0 {
                         // The remaining count is the point: without it, one click
@@ -489,8 +507,64 @@ private struct ProjectDisclosure: View {
                 .padding(.vertical, 2)
                 .listRowInsets(EdgeInsets(top: 1, leading: -10, bottom: 1, trailing: 8))
                 .listRowBackground(Color.clear)
+                .onDrop(of: [Self.dragType], delegate: dropDelegate(row: "footer", edge: .bottom))
+                .overlay(alignment: .bottom) {
+                    if dropIndicator == .bottom { dropLine }
+                }
             }
         }
+    }
+
+    // MARK: Drag to reorder
+
+    /// The drag payload is a private, in-process type — never plain text — so a
+    /// drop that misses the rail cannot paste a path into a live terminal.
+    static let dragType = UTType(exportedAs: "com.sriramb.temple.project-order")
+
+    /// The insertion line: where the dragged project will land if released now.
+    private var dropLine: some View {
+        Capsule()
+            .fill(Palette.accent)
+            .frame(height: 2)
+            .padding(.horizontal, 6)
+    }
+
+    /// `edge` is where a drop on this row lands the project: `.top` = before
+    /// this project, `.bottom` = after it. nil lets the header decide by which
+    /// half the pointer is in — the collapsed case, where the header is the
+    /// only row this project has.
+    private func dropDelegate(row: String, edge: Edge?) -> ProjectDropDelegate {
+        ProjectDropDelegate(model: model, target: project.path, row: "\(project.path)#\(row)") { point in
+            edge ?? (point.y < headerHeight / 2 ? .top : .bottom)
+        }
+    }
+
+    /// Right-click a project header: the folder itself (the session row has its
+    /// copies/reveal group; this is the project's), then put it away. Reordering
+    /// is a drag — the header is the handle — so there are no Move items.
+    @ViewBuilder
+    private var headerContextMenu: some View {
+        Button("Reveal in Finder") {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: project.path)])
+        }
+        Button("Copy path") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(project.path, forType: .string)
+        }
+        Divider()
+        if hasOpenTabs {
+            // Named rather than merely greyed out, like the session row's item.
+            Button("Close tabs to archive") {}
+                .disabled(true)
+        } else {
+            Button("Archive project") {
+                model.archiveProject(project.path, undoManager: undoManager)
+            }
+        }
+    }
+
+    private var hasOpenTabs: Bool {
+        model.openSessions.tabs.contains { $0.kind == .session && $0.projectPath == project.path }
     }
 
     private func expandButton(_ title: String, action: @escaping () -> Void) -> some View {
@@ -501,6 +575,58 @@ private struct ProjectDisclosure: View {
     }
 
     private var header: some View {
+        headerLabel
+        .padding(.vertical, 3)
+        .padding(.horizontal, 6)
+        // Item C: hover highlight on the project header row too.
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(headerHovering ? Palette.hoverFill : Color.clear))
+        // Whole row toggles the disclosure (name, icon, empty space) —
+        // matching the chevron. The `+` overlay keeps its own action.
+        .contentShape(Rectangle())
+        .onHover { headerHovering = $0 }
+        .onTapGesture { withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() } }
+        .contextMenu { headerContextMenu }
+        .overlay(alignment: .trailing) {
+            NewSessionMenu(projectPath: project.path)
+        }
+        // The header is the drag handle. Dropping on a header lands the
+        // dragged project above it; when this project is collapsed, the lower
+        // half of the header means below it instead (it has no body to drop on).
+        .background(GeometryReader { geo in
+            Color.clear.onAppear { headerHeight = geo.size.height }
+                .onChange(of: geo.size.height) { _, height in headerHeight = height }
+        })
+        .onDrag {
+            model.beginProjectDrag(project.path)
+            let provider = NSItemProvider()
+            provider.registerDataRepresentation(
+                forTypeIdentifier: Self.dragType.identifier, visibility: .ownProcess
+            ) { completion in
+                completion(Data(project.path.utf8), nil)
+                return nil
+            }
+            return provider
+        } preview: {
+            // The label alone: the default preview snapshots the whole row,
+            // hover fill and `+` included, and drags a button along.
+            headerLabel.padding(.vertical, 3).padding(.horizontal, 6)
+        }
+        .onDrop(of: [Self.dragType], delegate: dropDelegate(row: "header", edge: expanded ? .top : nil))
+        .overlay(alignment: .top) {
+            if dropIndicator == .top { dropLine }
+        }
+        .overlay(alignment: .bottom) {
+            if dropIndicator == .bottom, !expanded { dropLine }
+        }
+        // Negative leading inset cancels List's sidebar-section indent so the
+        // chevron column lines up with the "Projects" header.
+        .listRowInsets(EdgeInsets(top: 1, leading: -10, bottom: 1, trailing: 8))
+        .listRowBackground(Color.clear)
+    }
+
+    private var headerLabel: some View {
         HStack(spacing: 6) {
             Image(systemName: "chevron.right")
                 .font(.system(size: 9, weight: .semibold))
@@ -521,24 +647,63 @@ private struct ProjectDisclosure: View {
                 .lineLimit(1)
             Spacer(minLength: 4)
         }
-        .padding(.vertical, 3)
-        .padding(.horizontal, 6)
-        // Item C: hover highlight on the project header row too.
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(headerHovering ? Palette.hoverFill : Color.clear))
-        // Whole row toggles the disclosure (name, icon, empty space) —
-        // matching the chevron. The `+` overlay keeps its own action.
-        .contentShape(Rectangle())
-        .onHover { headerHovering = $0 }
-        .onTapGesture { withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() } }
-        .overlay(alignment: .trailing) {
-            NewSessionMenu(projectPath: project.path)
+    }
+}
+
+/// One row of a project, as a drop target for another project's header. Every
+/// row writes the model's single drop slot, so the insertion line appears
+/// exactly once, on the edge the drop would use.
+private struct ProjectDropDelegate: DropDelegate {
+    let model: AppModel
+    let target: String
+    /// This row's identity, distinct from every other row of the same project.
+    let row: String
+    /// Which edge a pointer at this location (row coordinates) means.
+    let edge: (CGPoint) -> Edge
+
+    /// Called on every pointer move; the whole rail re-renders on a publish,
+    /// so write only when the slot actually changes.
+    private func show(_ info: DropInfo) {
+        // No drag in flight (the drop already landed) — a straggling update
+        // must not resurrect the line the drop just cleared.
+        guard model.draggedProjectPath != nil else { return }
+        let slot = AppModel.ProjectDropSlot(path: target, edge: edge(info.location))
+        model.projectDropOwner = row
+        if model.projectDropSlot != slot { model.projectDropSlot = slot }
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [ProjectDisclosure.dragType])
+            && model.draggedProjectPath != nil
+            && model.draggedProjectPath != target
+    }
+
+    func dropEntered(info: DropInfo) { show(info) }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        show(info)
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        // Only clear our own line: entering the next row — including another
+        // row of this same project — may already have claimed the slot, and
+        // the exit for this one can arrive after that.
+        guard model.projectDropOwner == row else { return }
+        model.projectDropOwner = nil
+        model.projectDropSlot = nil
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let path = model.draggedProjectPath else { return false }
+        model.endProjectDrag()
+        // Updates queued before the mouse-up can land after this returns.
+        DispatchQueue.main.async { model.endProjectDrag() }
+        switch edge(info.location) {
+        case .top: model.moveProject(path, before: target)
+        default: model.moveProject(path, after: target)
         }
-        // Negative leading inset cancels List's sidebar-section indent so the
-        // chevron column lines up with the "Projects" header.
-        .listRowInsets(EdgeInsets(top: 1, leading: -10, bottom: 1, trailing: 8))
-        .listRowBackground(Color.clear)
+        return true
     }
 }
 

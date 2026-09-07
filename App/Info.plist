@@ -38,5 +38,18 @@
 	<false/>
 	<key>NSUserNotificationAlertStyle</key>
 	<string>alert</string>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.sriramb.temple.project-order</string>
+			<key>UTTypeDescription</key>
+			<string>Temple sidebar project (drag to reorder)</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

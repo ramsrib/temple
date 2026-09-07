@@ -21,8 +21,9 @@ final class DBTests: XCTestCase {
 
     func testSessionStateRoundTrip() throws {
         let (db, _) = try database()
-        try db.setPinned(true, sessionID: "s")
+        // Archive first: archiving clears the pin (see the test below).
         try db.setArchived(true, sessionID: "s")
+        try db.setPinned(true, sessionID: "s")
         try db.setCustomName("My session", sessionID: "s")
         try db.recordOpened(sessionID: "s", at: Date(timeIntervalSince1970: 123))
         let state = try XCTUnwrap(db.sessionState("s"))
@@ -31,6 +32,25 @@ final class DBTests: XCTestCase {
         XCTAssertEqual(state.customName, "My session")
         try db.setPinned(false, sessionID: "s")
         XCTAssertFalse(try XCTUnwrap(db.sessionState("s")).pinned)
+    }
+
+    /// One statement, not two: a pin dropped by a separate write could survive
+    /// a failure of the archive write (or vice versa) and come back as a
+    /// session that is both pinned and put away.
+    func testArchivingClearsThePinInTheSameWriteAndUnarchivingLeavesIt() throws {
+        let (db, _) = try database()
+        try db.setPinned(true, sessionID: "s")
+
+        try db.setArchived(true, sessionID: "s")
+        var state = try XCTUnwrap(db.sessionState("s"))
+        XCTAssertTrue(state.archived)
+        XCTAssertFalse(state.pinned)
+
+        try db.setPinned(true, sessionID: "s")
+        try db.setArchived(false, sessionID: "s")
+        state = try XCTUnwrap(db.sessionState("s"))
+        XCTAssertFalse(state.archived)
+        XCTAssertTrue(state.pinned, "unarchiving must not touch the pin column")
     }
 
     func testSessionColorRoundTripClearAndAutoCreate() throws {
@@ -88,36 +108,46 @@ final class DBTests: XCTestCase {
         XCTAssertTrue(try db.uiState().isEmpty)
     }
 
-    /// The v6 table has to appear on a database written before it existed —
-    /// every real user's file is one of those.
+    /// The v6 and v7 tables have to appear on a database written before they
+    /// existed — every real user's file is one of those.
     ///
-    /// The pre-v6 schema is rebuilt here by hand rather than by opening a
+    /// The older schemas are rebuilt here by hand rather than by opening a
     /// `TempleDB`: the production initializer runs the CURRENT migrator, so a
-    /// database made that way already has `ui_state` and reopening it migrates
+    /// database made that way already has every table and reopening it migrates
     /// nothing. This is the same trick as pinning a decoder with a fixture of
     /// the OLD JSON — the test has to start from data that predates the change
     /// or it proves nothing about it.
-    func testUIStateTableIsAddedFromEveryEarlierSchemaVersion() throws {
-        // Not just v5: a user who skipped a few releases upgrades from whichever
-        // version they stopped at, and every one of those runs v6 last.
-        for (index, start) in Self.preV6Versions.enumerated() {
+    func testNewTablesAreAddedFromEveryEarlierSchemaVersion() throws {
+        // Not just the newest-but-one: a user who skipped a few releases
+        // upgrades from whichever version they stopped at.
+        for (index, start) in Self.legacyVersions.enumerated() {
             let directory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("temple-db-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let path = directory.appendingPathComponent("temple.sqlite")
             paths.append(path)
 
-            try Self.writePreV6Database(at: path, upTo: start)
+            try Self.writeLegacyDatabase(at: path, upTo: start)
             // Sanity: the fixture really is missing the table, so the assertions
             // below are about the migration rather than a table already there.
             let legacy = try DatabaseQueue(path: path.path)
-            let hadTable = try legacy.read { try $0.tableExists("ui_state") }
-            XCTAssertFalse(hadTable, "fixture at \(start) already had ui_state")
+            let hadTable = try legacy.read { try $0.tableExists("project_state") }
+            XCTAssertFalse(hadTable, "fixture at \(start) already had project_state")
             try legacy.close()
 
             let migrated = try TempleDB(path: path)
+            if index >= 5 {
+                XCTAssertEqual(try migrated.uiState("sidebarVisibility"), "all", "from \(start)")
+            }
             try migrated.setUIState("detailOnly", for: "sidebarVisibility")
             XCTAssertEqual(try migrated.uiState("sidebarVisibility"), "detailOnly", "from \(start)")
+
+            try migrated.setProjectArchived(true, path: "/p")
+            try migrated.setProjectOrder(["/p"])
+            let projectState = try XCTUnwrap(migrated.projectStates().first, "from \(start)")
+            XCTAssertEqual(projectState.path, "/p", "from \(start)")
+            XCTAssertTrue(projectState.archived, "from \(start)")
+            XCTAssertEqual(projectState.position, 0, "from \(start)")
 
             // Everything the old schema could hold has to come through
             // untouched — every column that existed at THIS starting version,
@@ -154,17 +184,17 @@ final class DBTests: XCTestCase {
     private static let seededDate = Date(timeIntervalSince1970: 1_704_164_645)
     private static let seededDateLiteral = "2024-01-02 03:04:05.000"
 
-    /// The migration identifiers before v6, oldest first.
-    private static let preV6Versions = [
+    /// Every migration identifier that predates the newest one, oldest first.
+    private static let legacyVersions = [
         "v1", "v2-open-tab-metadata", "v3-generated-title",
-        "v4-session-color", "v5-open-tab-active",
+        "v4-session-color", "v5-open-tab-active", "v6-ui-state",
     ]
 
-    /// A database stopped at `target`: the v1–v5 migrations registered as
+    /// A database stopped at `target`: the v1–v6 migrations registered as
     /// production spells them, applied only up to that identifier, with GRDB's own
     /// bookkeeping and a row in each table so the migration has something to
     /// preserve.
-    private static func writePreV6Database(at path: URL, upTo target: String) throws {
+    private static func writeLegacyDatabase(at path: URL, upTo target: String) throws {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1") { database in
             try database.create(table: "session_state") { table in
@@ -208,13 +238,19 @@ final class DBTests: XCTestCase {
                 table.add(column: "active", .boolean).notNull().defaults(to: false)
             }
         }
+        migrator.registerMigration("v6-ui-state") { database in
+            try database.create(table: "ui_state") { table in
+                table.column("key", .text).primaryKey()
+                table.column("value", .text).notNull()
+            }
+        }
 
         let queue = try DatabaseQueue(path: path.path)
         try migrator.migrate(queue, upTo: target)
         // Seed every column that exists at this starting version, each with a
         // value distinguishable from its default — otherwise a v6 that dropped
         // populated rows would slip past a fixture full of zeroes and "".
-        let reached = preV6Versions.prefix(through: preV6Versions.firstIndex(of: target)!)
+        let reached = legacyVersions.prefix(through: legacyVersions.firstIndex(of: target)!)
         var sessionColumns = ["id": "'s'", "pinned": "1", "archived": "1",
                               "custom_name": "'Existing state'",
                               "last_opened_at": "'\(seededDateLiteral)'"]
@@ -233,10 +269,15 @@ final class DBTests: XCTestCase {
         let processColumns = ["pid": "4242", "session_id": "'s'",
                               "started_at": "'\(seededDateLiteral)'"]
 
+        var tables = [("session_state", sessionColumns),
+                      ("open_tabs", tabColumns),
+                      ("process_registry", processColumns)]
+        if reached.contains("v6-ui-state") {
+            tables.append(("ui_state", ["key": "'sidebarVisibility'", "value": "'all'"]))
+        }
+
         try queue.write { database in
-            for (table, columns) in [("session_state", sessionColumns),
-                                     ("open_tabs", tabColumns),
-                                     ("process_registry", processColumns)] {
+            for (table, columns) in tables {
                 let names = columns.keys.sorted()
                 try database.execute(sql: """
                     INSERT INTO \(table) (\(names.joined(separator: ", ")))
@@ -245,6 +286,39 @@ final class DBTests: XCTestCase {
             }
         }
         try queue.close()
+    }
+
+    func testProjectStateRoundTripsArchivedAndOrder() throws {
+        let (db, path) = try database()
+        try db.setProjectArchived(true, path: "/p/a")
+        try db.setProjectOrder(["/p/b", "/p/a", "/p/c"])
+
+        let reopened = try TempleDB(path: path)
+        let states = try reopened.projectStates()
+        XCTAssertEqual(states.first { $0.path == "/p/a" }?.archived, true)
+        XCTAssertEqual(states.first { $0.path == "/p/b" }?.archived, false)
+        XCTAssertEqual(
+            states.compactMap { state in state.position.map { ($0, state.path) } }
+                .sorted { $0.0 < $1.0 }.map(\.1),
+            ["/p/b", "/p/a", "/p/c"])
+    }
+
+    /// A path dropped from the order goes back to UNPLACED, not to the end:
+    /// keeping a stale position would leave two projects claiming one slot the
+    /// next time anything is written.
+    func testSetProjectOrderClearsPositionsOfPathsNoLongerListed() throws {
+        let (db, _) = try database()
+        try db.setProjectArchived(true, path: "/p/a")
+        try db.setProjectOrder(["/p/a", "/p/b"])
+        try db.setProjectOrder(["/p/b"])
+
+        let states = try db.projectStates()
+        let a = try XCTUnwrap(states.first { $0.path == "/p/a" })
+        XCTAssertNil(a.position)
+        // Order is a separate axis from archived — clearing one must not
+        // disturb the other.
+        XCTAssertTrue(a.archived)
+        XCTAssertEqual(states.first { $0.path == "/p/b" }?.position, 0)
     }
 
     func testOpenTabsPreserveOrder() throws {

@@ -5,6 +5,7 @@ import TempleCore
 /// One browsable session row. Click opens/focuses (spawns); arrow-key highlight
 /// is a separate state that follows the active tab (UX "Select vs. open").
 struct SessionRow: View {
+    @Environment(\.undoManager) private var undoManager
     @EnvironmentObject var model: AppModel
     let session: AgentSession
 
@@ -95,7 +96,9 @@ struct SessionRow: View {
     @ViewBuilder
     private var contextMenu: some View {
         // Same shape as the tab chip's menu (rename/pin → copies/reveal →
-        // close → color row), so the two right-clicks read as one menu.
+        // close → color row), so the two right-clicks read as one menu. Only
+        // archive is exclusive to this one: a chip is by definition open, and
+        // an open session is not something you have put away.
         Button(openTab != nil ? "Focus" : "Open") { open() }
         Divider()
         Button("Rename session") {
@@ -103,6 +106,14 @@ struct SessionRow: View {
             renaming = true
         }
         Button(isPinned ? "Unpin" : "Pin") { model.overlay.togglePin(session.id) }
+        if openTab != nil {
+            // Named rather than merely greyed out, so the menu says what to do
+            // about it — the row would otherwise vanish from under its own tab.
+            Button("Close tab to archive") {}
+                .disabled(true)
+        } else {
+            Button("Archive session") { model.archiveSession(session.id, undoManager: undoManager) }
+        }
         Divider()
         Button("Copy resume command") {
             copyToPasteboard(session.resume.argv.joined(separator: " "))

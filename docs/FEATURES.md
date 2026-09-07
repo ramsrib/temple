@@ -51,6 +51,12 @@ back to the first human prompt
 - Projects and sessions are ordered by recency at launch, then frozen for that
   app run so activity cannot move a row under the pointer. Newly discovered
   entries prepend without reshuffling existing entries.
+- Projects reorder by drag: the header is the handle. Dropping on another
+  project's header lands above it; dropping anywhere in its body lands below it,
+  and an insertion line shows where. A collapsed project has no body, so the
+  lower half of its header means below it. The order persists. A manual order
+  wins over recency; projects nobody has placed stay above the placed ones, so a
+  new project still surfaces at the top rather than under the eight-project cap.
 - The initial view shows up to eight projects and six sessions per project.
   **Show all projects** reveals the rest of the projects; within a project,
   **Show more** reveals ten further sessions at a time and reports how many
@@ -65,7 +71,16 @@ back to the first human prompt
   leading capsule.
 - A session-row context menu can open or focus the session, copy its resume
   command or ID, reveal its source file in Finder, rename it, pin or unpin it,
-  and close its tab when open.
+  archive it, and close its tab when open. A session with an open tab cannot be
+  archived until the tab is closed. A project header's menu reveals the folder in
+  Finder, copies its path, and archives the project. Archiving from either menu is
+  one click and one `⌘Z` (Edit ▸ Undo Archive Session / Project) to take back; undo
+  also returns the pin the archive dropped.
+- Archiving hides a session everywhere the index is browsed; archiving a project
+  from its header context menu hides the project and every session in it.
+  Archiving a session clears its pin; archiving a project only hides the pins
+  inside it, and they return with the project. Nothing archived appears in the
+  sidebar — `⌘⇧Y` is the way back.
 - The native sidebar can be shown or hidden. When hidden, the working surface
   expands to the window edge.
 
@@ -193,8 +208,11 @@ session in folder…, Command palette, Keyboard shortcuts, and Settings. An agen
 row uses the last-used project, or asks for a folder if none exists; the folder
 row uses the default agent.
 
-**Recent Projects** shows up to five noise-filtered projects in launch-frozen
-order, with relative activity time on hover. Choosing one starts a brand-new
+**Recent Projects** shows the sidebar's first five projects — the same manual
+order if one has been set (the heading then reads **Projects**), launch-frozen
+recency otherwise — with relative activity time on hover. Once anything is
+archived, **Get started** gains an **Archive** row (`⌘⇧Y`): the sidebar carries
+no archive affordance, so this is the visible way back. Choosing one starts a brand-new
 session there with the default agent; it does not reopen an existing session.
 The home page is the general creation surface—there is no new-session modal or
 prompt composer.
@@ -216,9 +234,15 @@ prompt composer.
   grouped under Today / Yesterday / date headers, each row carrying its agent,
   displayed title, last-message preview, project, and relative time. Typing
   switches to a flat ranked search; Enter or a click resumes the session.
-- The palette and history fields include a `×` clear control. Esc dismisses
-  either from anywhere. `⌘K`, `⌘Y`, `⌘P`, and `⌘/` are mutually exclusive —
-  presenting one dismisses the others.
+- `⌘⇧Y` (View ▸ Archive Browser) opens the archive browser, the history panel's sibling: archived
+  projects first, then individually archived sessions, both searchable. Enter or
+  a click unarchives a project in place, and unarchives and resumes a session.
+  Searching matches a project by its path or by any session inside it. Opening an
+  archived session anywhere else unarchives it too; a session resumed
+  outside Temple stays archived, because activity on disk is not a decision.
+- The palette, history, and archive fields include a `×` clear control. Esc
+  dismisses any of them from anywhere. `⌘K`, `⌘Y`, `⌘⇧Y`, `⌘P`, and `⌘/` are
+  mutually exclusive — presenting one dismisses the others.
 
 ## Notifications & activity
 
@@ -286,7 +310,7 @@ defaults: **File** carries the session lifecycle (New Session, New Session in
 Project…, the other-agent variant, Reopen Closed Tab, Close Tab) in place of
 New Window; **Edit** replaces the system Find submenu with Find in Terminal
 (`⌘F`), Find Next and Find Previous, disabled when no terminal is showing;
-**View** owns Toggle Sidebar at `⌘B` plus the palette, history,
+**View** owns Toggle Sidebar at `⌘B` plus the palette, history, archive,
 home, and shortcuts card; a **Project** menu mirrors the switcher and project
 cycling; **Settings…** sits in the app menu. Menu items call the same actions
 as the shortcuts below — the in-app key monitor remains the keyboard's source
@@ -310,10 +334,11 @@ of truth.
 | **⌘G / ⌘⇧G** | Next / previous match while the find bar is open. |
 | **⌘K** | Command palette: open sessions by recency when empty; ranked search over everything when typed. |
 | **⌘Y** | Session history: every session, newest first, grouped by day. |
+| **⌘⇧Y** | Archive: archived projects and sessions; unarchive or reopen from here. |
 | **⌘/** | Open the Keyboard Shortcuts reference overlay. |
 | **⌘B** | Toggle the sidebar. |
 | **⌘,** | Open Settings as a tab. |
-| **Esc** | Dismiss the palette, history, or shortcuts overlay from anywhere; close the find bar from its field; cancel busy-close confirmation. |
+| **Esc** | Dismiss the palette, history, archive, or shortcuts overlay from anywhere; close the find bar from its field; cancel busy-close confirmation. |
 
 ## Platform & packaging
 

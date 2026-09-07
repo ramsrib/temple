@@ -40,6 +40,7 @@ public final class TempleAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        WindowSnapshot.installIfRequested()
         // Re-checked on every activation rather than installed once: SwiftUI owns
         // the delegate and may re-seat it, and a latch that lost the race would
         // silently restore the close-then-ask behavior this exists to prevent.

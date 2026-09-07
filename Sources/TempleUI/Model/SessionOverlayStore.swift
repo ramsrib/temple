@@ -2,7 +2,8 @@ import Foundation
 import Combine
 import TempleCore
 
-/// App-state overlay the CLIs don't track: pins, custom names, and color marks (ADR-009).
+/// App-state overlay the CLIs don't track: pins, custom names, color marks,
+/// archive state, and the manual project order (ADR-009).
 ///
 /// Values are cached in memory for synchronous SwiftUI reads and written
 /// through to TempleDB on mutation.
@@ -16,13 +17,28 @@ public final class SessionOverlayStore: ObservableObject {
     /// Temple remembers it, and a session keeps the name it earned even after it
     /// is closed and the app restarts.
     @Published public private(set) var generatedTitles: [String: String]
+    /// Archived sessions and projects: hidden from every browse surface, found
+    /// again only in the ⌘⇧Y archive browser.
+    @Published public private(set) var archivedSessions: Set<String>
+    @Published public private(set) var archivedProjects: Set<String>
+    /// The sidebar order the user arranged, outermost first. Only projects the
+    /// user has actually placed appear here; everything else stays on the
+    /// launch-frozen recency order.
+    @Published public private(set) var projectOrder: [String]
 
     private let db: TempleDB
 
     public init(db: TempleDB) {
         self.db = db
         let states = (try? db.sessionStates()) ?? []
+        let projects = (try? db.projectStates()) ?? []
         self.pinned = Set(states.lazy.filter(\.pinned).map(\.id))
+        self.archivedSessions = Set(states.lazy.filter(\.archived).map(\.id))
+        self.archivedProjects = Set(projects.lazy.filter(\.archived).map(\.path))
+        self.projectOrder = projects
+            .compactMap { state in state.position.map { ($0, state.path) } }
+            .sorted { $0.0 < $1.0 }
+            .map(\.1)
         self.customNames = Dictionary(
             uniqueKeysWithValues: states.compactMap { state in
                 state.customName.map { (state.id, $0) }
@@ -49,6 +65,37 @@ public final class SessionOverlayStore: ObservableObject {
     public func togglePin(_ id: String) {
         if pinned.contains(id) { pinned.remove(id) } else { pinned.insert(id) }
         try? db.setPinned(pinned.contains(id), sessionID: id)
+    }
+
+    public func isArchived(_ id: String) -> Bool { archivedSessions.contains(id) }
+
+    /// Archiving drops the pin: a session cannot be both the one you always
+    /// want in front of you and one you have put away. Unarchiving does not
+    /// bring it back — the pin was a separate decision, and re-pinning is a
+    /// click. The DB write clears the pin in the same statement.
+    public func setArchived(_ archived: Bool, sessionID id: String) {
+        if archived {
+            archivedSessions.insert(id)
+            pinned.remove(id)
+        } else {
+            archivedSessions.remove(id)
+        }
+        try? db.setArchived(archived, sessionID: id)
+    }
+
+    public func isProjectArchived(_ path: String) -> Bool { archivedProjects.contains(path) }
+
+    public func setProjectArchived(_ archived: Bool, path: String) {
+        if archived { archivedProjects.insert(path) } else { archivedProjects.remove(path) }
+        try? db.setProjectArchived(archived, path: path)
+    }
+
+    /// The whole manual order, not a delta: the caller hands over the full
+    /// list it wants the sidebar to show, so a reorder can never leave two
+    /// projects sharing a slot.
+    public func setProjectOrder(_ paths: [String]) {
+        projectOrder = paths
+        try? db.setProjectOrder(paths)
     }
 
     public func customName(for id: String) -> String? { customNames[id] }

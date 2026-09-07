@@ -34,6 +34,9 @@ public struct RootView: View {
             if model.historyPresented {
                 historyOverlay
             }
+            if model.archivePresented {
+                archiveOverlay
+            }
             if model.newSessionPickerPresented {
                 newSessionPickerOverlay
             }
@@ -99,10 +102,11 @@ public struct RootView: View {
         }
     }
 
-    /// Any floating panel (⌘K / ⌘Y / ⌘P / ⌘/) currently over the window.
+    /// Any floating panel (⌘K / ⌘Y / ⌘⇧Y / ⌘P / ⌘/) currently over the window.
     private var overlayPresented: Bool {
         model.commandPalettePresented
             || model.historyPresented
+            || model.archivePresented
             || model.newSessionPickerPresented
             || model.projectSwitcherPresented
             || model.tabSwitcherPresented
@@ -202,6 +206,25 @@ public struct RootView: View {
                     .ignoresSafeArea()
                 PanelHost {
                     HistoryView()
+                        .environmentObject(model)
+                        .tint(Palette.accent)
+                }
+                .fixedSize()
+                .frame(maxWidth: .infinity)
+                .padding(.top, geo.size.height * 0.35)
+            }
+        }
+        .transition(.opacity)
+    }
+
+    /// ⌘⇧Y — the archive browser, presented exactly like its ⌘Y sibling.
+    private var archiveOverlay: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .top) {
+                OverlayBackdrop { model.archivePresented = false }
+                    .ignoresSafeArea()
+                PanelHost {
+                    ArchiveView()
                         .environmentObject(model)
                         .tint(Palette.accent)
                 }
@@ -490,9 +513,11 @@ private struct KeyCatcher: NSViewRepresentable {
             // own .onKeyPress only fires while its field is focused).
             if event.keyCode == 53,
                model.commandPalettePresented || model.historyPresented
+                || model.archivePresented
                 || model.newSessionPickerPresented || model.shortcutsPresented {
                 model.commandPalettePresented = false
                 model.historyPresented = false
+                model.archivePresented = false
                 model.newSessionPickerPresented = false
                 model.shortcutsPresented = false
                 return true
@@ -504,6 +529,7 @@ private struct KeyCatcher: NSViewRepresentable {
             let browsing = model.openSessions.activeTab == nil
                 && !model.commandPalettePresented
                 && !model.historyPresented
+                && !model.archivePresented
                 && !model.newSessionPickerPresented
                 && !model.shortcutsPresented
             if browsing && !cmd && !ctrl {
@@ -550,8 +576,9 @@ private struct KeyCatcher: NSViewRepresentable {
                 return true
             case "k":
                 model.toggleCommandPalette(); return true
-            case "y":
-                model.toggleHistory(); return true
+            case "y", "Y":   // ⌘⇧Y — the archive browser; ⌘Y (caps lock too) stays history
+                if shift { model.toggleArchive() } else { model.toggleHistory() }
+                return true
             case "p":
                 model.advanceProjectSwitcher(by: shift ? -1 : 1); return true
             case "/":

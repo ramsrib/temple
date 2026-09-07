@@ -105,6 +105,10 @@ public struct TempleCommands: Commands {
                 Label("Session History", systemImage: "clock.arrow.circlepath")
             }
             .keyboardShortcut("y")
+            Button { model.toggleArchive() } label: {
+                Label("Archive Browser", systemImage: "archivebox")
+            }
+            .keyboardShortcut("y", modifiers: [.command, .shift])
             Button { model.openSessions.showHome() } label: {
                 Label("Home", systemImage: "house")
             }

@@ -77,6 +77,7 @@ public final class AppModel: ObservableObject {
 
     @Published public var commandPalettePresented = false
     @Published public var historyPresented = false
+    @Published public var archivePresented = false
     @Published public var newSessionPickerPresented = false
 
     // ⌘P project switcher (ProjectSwitcherHUD) — modelled on ⌘⇥, not on ⌘K:
@@ -111,10 +112,11 @@ public final class AppModel: ObservableObject {
         return tab.find
     }
 
-    /// A floating panel is up (⌘K / ⌘Y / ⌘N / ⌘/): it owns the keyboard, so
-    /// find must not open — or claim focus — underneath it.
+    /// A floating panel is up (⌘K / ⌘Y / ⌘⇧Y / ⌘N / ⌘/): it owns the keyboard,
+    /// so find must not open — or claim focus — underneath it.
     public var panelPresented: Bool {
-        commandPalettePresented || historyPresented || newSessionPickerPresented || shortcutsPresented
+        commandPalettePresented || historyPresented || archivePresented
+            || newSessionPickerPresented || shortcutsPresented
     }
 
     public func findInActiveTerminal() {
@@ -271,10 +273,25 @@ public final class AppModel: ObservableObject {
         // Sidebar highlight follows the active tab (UX "Select vs. open").
         openSessions.$activeTabID
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                guard let self else { return }
-                if let sid = self.openSessions.activeTab?.sessionID {
+            .sink { [weak self] tabID in
+                // Resolve the EMITTED id, not `activeTab`: delivery is a run-loop
+                // turn late, and two activations in one turn (open A, land on B)
+                // would both see B — leaving A archived and B untouched.
+                guard let self, let tabID,
+                      let tab = self.openSessions.tabs.first(where: { $0.id == tabID })
+                else { return }
+                if let sid = tab.sessionID {
                     self.highlightedID = sid
+                    // Opening is the one thing that un-hides: you went looking
+                    // for it, so it belongs back in the rail. Disk activity
+                    // does NOT — a session resumed in another terminal must
+                    // stay put away.
+                    if self.overlay.isArchived(sid) {
+                        self.overlay.setArchived(false, sessionID: sid)
+                    }
+                }
+                if self.overlay.isProjectArchived(tab.projectPath) {
+                    self.overlay.setProjectArchived(false, path: tab.projectPath)
                 }
             }
             .store(in: &cancellables)
@@ -438,20 +455,154 @@ public final class AppModel: ObservableObject {
         objectWillChange.send()
     }
 
+    /// What every browse surface sees: the cached non-noise set minus anything
+    /// archived. Set lookups only — no disk — so it is safe to recompute per
+    /// access like the stages built on it.
+    public var visibleProjects: [Project] {
+        let archivedProjectPaths = overlay.archivedProjects
+        let archivedSessions = overlay.archivedSessions
+        guard !archivedProjectPaths.isEmpty || !archivedSessions.isEmpty else {
+            return noiseFilteredProjects
+        }
+        return noiseFilteredProjects.compactMap { project -> Project? in
+            guard !archivedProjectPaths.contains(project.path) else { return nil }
+            guard !archivedSessions.isEmpty else { return project }
+            let sessions = project.sessions.filter { !archivedSessions.contains($0.id) }
+            return sessions.isEmpty ? nil : Project(path: project.path, sessions: sessions)
+        }
+    }
+
+    /// Sidebar order: projects the user has never placed come FIRST, in the
+    /// launch-frozen recency order, then the placed ones in the order they
+    /// were placed in. A brand-new project therefore surfaces at the top
+    /// rather than sinking under the 8-project cap the moment anyone reorders
+    /// anything. With no manual order this is exactly the frozen order.
+    private func sortedByManualOrder(_ projects: [Project]) -> [Project] {
+        let placement = Dictionary(overlay.projectOrder.enumerated().map { ($0.element, $0.offset) },
+                                   uniquingKeysWith: { first, _ in first })
+        guard !placement.isEmpty else {
+            return projects.sorted {
+                (frozenProjectRank[$0.path] ?? .max) < (frozenProjectRank[$1.path] ?? .max)
+            }
+        }
+        return projects.sorted { lhs, rhs in
+            switch (placement[lhs.path], placement[rhs.path]) {
+            case (nil, nil):
+                return (frozenProjectRank[lhs.path] ?? .max) < (frozenProjectRank[rhs.path] ?? .max)
+            case (nil, .some): return true
+            case (.some, nil): return false
+            case (.some(let left), .some(let right)): return left < right
+            }
+        }
+    }
+
     /// Projects for the sidebar (in-memory search over the cached non-noise
-    /// set), projects AND their sessions in the launch-frozen order — not
-    /// live recency.
+    /// set), sessions in the launch-frozen order — not live recency.
     public var displayProjects: [Project] {
-        noiseFilteredProjects.compactMap { project -> Project? in
+        sortedByManualOrder(visibleProjects.compactMap { project -> Project? in
             var sessions = project.sessions.filter(matches)
             if let ranks = frozenSessionRank[project.path] {
                 sessions.sort { (ranks[$0.id] ?? .max) < (ranks[$1.id] ?? .max) }
             }
             return sessions.isEmpty ? nil : Project(path: project.path, sessions: sessions)
+        })
+    }
+
+    /// The sidebar's project order ignoring the search field — what the Move
+    /// items in a project's context menu act on. Reordering while a search
+    /// hides half the rail must not persist an order derived from that
+    /// half-list.
+    public var orderedVisibleProjectPaths: [String] {
+        sortedByManualOrder(visibleProjects).map(\.path)
+    }
+
+    /// The project header being dragged, from grab to drop. Not published: the
+    /// drop targets read it to refuse a project dropped onto itself, nothing
+    /// renders from it.
+    public private(set) var draggedProjectPath: String?
+    private var projectDragWatch: Timer?
+
+    /// A header drag begins. SwiftUI's drop delegates report enters, moves and
+    /// drops — but nothing for a drag that ENDS elsewhere: released over the
+    /// terminal, or cancelled with Escape. Left alone, the insertion line and
+    /// the "a drag is in flight" flag outlive the drag. So the drag is watched
+    /// from the source side: the button coming up, wherever that happens, ends
+    /// it. Common modes, because AppKit runs a drag in the event-tracking mode.
+    public func beginProjectDrag(_ path: String) {
+        endProjectDrag()
+        draggedProjectPath = path
+        let watch = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, NSEvent.pressedMouseButtons == 0 else { return }
+                self.endProjectDrag()
+            }
         }
-        .sorted {
-            (frozenProjectRank[$0.path] ?? .max) < (frozenProjectRank[$1.path] ?? .max)
-        }
+        RunLoop.main.add(watch, forMode: .common)
+        projectDragWatch = watch
+    }
+
+    /// Drop landed, drag cancelled, or button released off any target: all
+    /// three come here, so no state can survive the gesture.
+    public func endProjectDrag() {
+        projectDragWatch?.invalidate()
+        projectDragWatch = nil
+        draggedProjectPath = nil
+        projectDropOwner = nil
+        if projectDropSlot != nil { projectDropSlot = nil }
+    }
+
+    /// Where the dragged project would land if released now — ONE slot for the
+    /// whole rail, not a flag per project. Per-row state left lines behind: a
+    /// row that never got its exit callback (rows re-created under the pointer
+    /// as the drop reorders them) kept drawing its line after the drop.
+    public struct ProjectDropSlot: Equatable {
+        public let path: String
+        public let edge: Edge
+    }
+    @Published public var projectDropSlot: ProjectDropSlot?
+    /// Which drop target row last wrote the slot. Every row of a project shares
+    /// the project's path, and a row's exit callback can arrive AFTER the next
+    /// row's enter — so exits clear the slot only if they still own it.
+    public var projectDropOwner: String?
+
+    /// Drop on a project's header: the dragged project lands just above it.
+    public func moveProject(_ path: String, before target: String) {
+        place(path) { $0.firstIndex(of: target) }
+    }
+
+    /// Drop anywhere in a project's body (its sessions, its Show more row):
+    /// the dragged project lands just below it, under its last row.
+    public func moveProject(_ path: String, after target: String) {
+        place(path) { $0.firstIndex(of: target).map { $0 + 1 } }
+    }
+
+    /// `slot` picks the insertion index in the visible order WITH the moving
+    /// project already removed, so "before X" and "after X" need no fix-up for
+    /// where the project came from.
+    private func place(_ path: String, slot: ([String]) -> Int?) {
+        var paths = orderedVisibleProjectPaths
+        guard let from = paths.firstIndex(of: path) else { return }
+        paths.remove(at: from)
+        guard let to = slot(paths), to != from else { return }
+        paths.insert(path, at: to)
+        overlay.setProjectOrder(Self.merge(visibleOrder: paths, into: overlay.projectOrder))
+    }
+
+    /// Persist the WHOLE visible list — a move is a statement about where this
+    /// project sits relative to all the others, and leaving half of them
+    /// unplaced would let the frozen order pull them back past it — but never
+    /// at the expense of projects the user can't see right now. An archived or
+    /// noise-hidden project keeps the slot it was placed in: the visible paths
+    /// are rewritten in their new order through the slots they already hold,
+    /// hidden paths stay where they are, and visible paths placed for the first
+    /// time go on the end. Otherwise archiving a project and moving any other
+    /// would silently un-place it, and it would come back "new", on top.
+    static func merge(visibleOrder: [String], into stored: [String]) -> [String] {
+        let visible = Set(visibleOrder)
+        var next = visibleOrder.makeIterator()
+        var merged = stored.map { visible.contains($0) ? next.next()! : $0 }
+        while let remaining = next.next() { merged.append(remaining) }
+        return merged
     }
 
     /// Projects rendered in the collapsed sidebar. Search bypasses the cap, and
@@ -485,7 +636,7 @@ public final class AppModel: ObservableObject {
 
     /// Pinned section: user-pinned sessions, search filtered (pins are in-memory).
     public var pinnedSessions: [AgentSession] {
-        noiseFilteredProjects
+        visibleProjects
             .flatMap(\.sessions)
             .filter { overlay.isPinned($0.id) && matches($0) }
             .sorted { $0.updatedAt > $1.updatedAt }
@@ -522,7 +673,7 @@ public final class AppModel: ObservableObject {
     /// Browsing everything is ⌘Y's job — putting the full index here too
     /// made the two panels near-duplicates. Typing still searches all.
     public func paletteResults(_ query: String) -> [AgentSession] {
-        let sessions = Self.dedupedByID(noiseFilteredProjects.flatMap(\.sessions))
+        let sessions = Self.dedupedByID(visibleProjects.flatMap(\.sessions))
         let openIDs = openSessions.openSessionIDsInTabOrder
         guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
             let open = Set(openIDs)
@@ -553,7 +704,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func historyResults(_ query: String) -> [AgentSession] {
-        let sessions = Self.dedupedByID(noiseFilteredProjects.flatMap(\.sessions))
+        let sessions = Self.dedupedByID(visibleProjects.flatMap(\.sessions))
         guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
             return sessions.sorted { lhs, rhs in
                 if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
@@ -564,6 +715,115 @@ public final class AppModel: ObservableObject {
                            titleOverrides: overlay.displayTitleOverrides)
     }
 
+    // MARK: Archive browser (⌘⇧Y)
+
+    /// Whether the archive browser has anything to show — the home page offers
+    /// its row only then.
+    public var hasArchivedItems: Bool {
+        !archivedProjects.isEmpty || !archivedSessionResults("").isEmpty
+    }
+
+    /// Whether the user has ever arranged the sidebar by hand.
+    public var hasManualProjectOrder: Bool { !overlay.projectOrder.isEmpty }
+
+    /// Archive from the sidebar is one click with no confirmation, so it must be
+    /// one keystroke to take back: ⌘Z through the window's undo manager (Edit ▸
+    /// Undo Archive Session), with redo registered as the undo runs. The pin the
+    /// archive dropped comes back with the session.
+    public func archiveSession(_ id: String, undoManager: UndoManager?) {
+        let wasPinned = overlay.isPinned(id)
+        overlay.setArchived(true, sessionID: id)
+        registerUndo(undoManager, name: "Archive Session") { [overlay] in
+            overlay.setArchived(false, sessionID: id)
+            if wasPinned, !overlay.isPinned(id) { overlay.togglePin(id) }
+        } redo: { [overlay] in
+            overlay.setArchived(true, sessionID: id)
+        }
+    }
+
+    public func archiveProject(_ path: String, undoManager: UndoManager?) {
+        overlay.setProjectArchived(true, path: path)
+        registerUndo(undoManager, name: "Archive Project") { [overlay] in
+            overlay.setProjectArchived(false, path: path)
+        } redo: { [overlay] in
+            overlay.setProjectArchived(true, path: path)
+        }
+    }
+
+    /// Undo and redo as a pair that re-register each other, so ⌘Z / ⌘⇧Z can
+    /// bounce as many times as the user likes.
+    private func registerUndo(_ undoManager: UndoManager?, name: String,
+                              undo: @escaping @MainActor () -> Void,
+                              redo: @escaping @MainActor () -> Void) {
+        guard let undoManager else { return }
+        // Weak: the manager retains this handler, so a strong capture of the
+        // manager here would keep it — and the overlay — alive for good.
+        undoManager.registerUndo(withTarget: self) { [weak undoManager] model in
+            MainActor.assumeIsolated {
+                undo()
+                guard let undoManager else { return }
+                model.registerUndo(undoManager, name: name, undo: redo, redo: undo)
+            }
+        }
+        undoManager.setActionName(name)
+    }
+
+    /// Archived projects, newest activity first. Nothing archive-related lives
+    /// in the sidebar, so this panel is the only way back.
+    public var archivedProjects: [Project] {
+        visibleArchivedProjects.sorted { $0.lastActivity > $1.lastActivity }
+    }
+
+    private var visibleArchivedProjects: [Project] {
+        noiseFilteredProjects.filter { overlay.isProjectArchived($0.path) }
+    }
+
+    /// Typing matches the folder name or any path component, like the ⌘N
+    /// project picker — or any session INSIDE the project, by the same titles
+    /// session search uses. The project row stands in for its sessions in this
+    /// panel, so it has to be findable by what is remembered about them: the
+    /// task, not the folder it happened to run in.
+    public func archivedProjectResults(_ query: String) -> [Project] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return archivedProjects }
+        let overrides = overlay.displayTitleOverrides
+        return archivedProjects.filter { project in
+            project.path.localizedCaseInsensitiveContains(q)
+                || !search.rank(project.sessions, query: q, titleOverrides: overrides).isEmpty
+        }
+    }
+
+    /// Sessions archived one by one. A session inside an ARCHIVED project is
+    /// left out: the project row already represents it, and listing both would
+    /// offer two different unarchives for the same disappearance.
+    public func archivedSessionResults(_ query: String) -> [AgentSession] {
+        let sessions = Self.dedupedByID(
+            noiseFilteredProjects
+                .filter { !overlay.isProjectArchived($0.path) }
+                .flatMap(\.sessions)
+                .filter { overlay.isArchived($0.id) })
+        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return sessions.sorted { lhs, rhs in
+                if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+                return lhs.id < rhs.id
+            }
+        }
+        return search.rank(sessions, query: query,
+                           titleOverrides: overlay.displayTitleOverrides)
+    }
+
+    public func toggleArchive() {
+        let presenting = !archivePresented
+        archivePresented = presenting
+        guard presenting else { return }
+        commandPalettePresented = false
+        historyPresented = false
+        newSessionPickerPresented = false
+        shortcutsPresented = false
+        cancelProjectSwitcher()
+        cancelTabSwitcher()
+    }
+
     public func toggleHistory() {
         let presenting = !historyPresented
         historyPresented = presenting
@@ -571,6 +831,7 @@ public final class AppModel: ObservableObject {
         commandPalettePresented = false
         newSessionPickerPresented = false
         shortcutsPresented = false
+        archivePresented = false
         cancelProjectSwitcher()
         cancelTabSwitcher()
     }
@@ -582,6 +843,7 @@ public final class AppModel: ObservableObject {
         historyPresented = false
         newSessionPickerPresented = false
         shortcutsPresented = false
+        archivePresented = false
         cancelProjectSwitcher()
         cancelTabSwitcher()
     }
@@ -600,6 +862,7 @@ public final class AppModel: ObservableObject {
         commandPalettePresented = false
         historyPresented = false
         newSessionPickerPresented = false
+        archivePresented = false
         cancelProjectSwitcher()
         cancelTabSwitcher()
     }
@@ -622,6 +885,7 @@ public final class AppModel: ObservableObject {
         commandPalettePresented = false
         historyPresented = false
         shortcutsPresented = false
+        archivePresented = false
         cancelProjectSwitcher()
         cancelTabSwitcher()
     }
@@ -630,7 +894,7 @@ public final class AppModel: ObservableObject {
     /// activity first (live recency, like the palettes); typing filters on
     /// the folder name or any path component.
     public func projectPickerResults(_ query: String) -> [Project] {
-        let projects = noiseFilteredProjects.sorted { $0.lastActivity > $1.lastActivity }
+        let projects = visibleProjects.sorted { $0.lastActivity > $1.lastActivity }
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return projects }
         return projects.filter { $0.path.localizedCaseInsensitiveContains(q) }
@@ -659,6 +923,7 @@ public final class AppModel: ObservableObject {
             // HUD must not stack over an open palette or history panel.
             commandPalettePresented = false
             historyPresented = false
+            archivePresented = false
             newSessionPickerPresented = false
             shortcutsPresented = false
             cancelTabSwitcher()
@@ -759,6 +1024,7 @@ public final class AppModel: ObservableObject {
             // Panels are mutually exclusive (same rule as ⌘K/⌘Y/⌘N/⌘/).
             commandPalettePresented = false
             historyPresented = false
+            archivePresented = false
             newSessionPickerPresented = false
             shortcutsPresented = false
             cancelProjectSwitcher()

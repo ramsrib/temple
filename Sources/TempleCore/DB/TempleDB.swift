@@ -14,6 +14,15 @@ public struct SessionState: Codable, Equatable, Sendable {
     public let lastOpenedAt: Date?
 }
 
+/// Per-project state: archived, and where the user placed it in the sidebar.
+/// A nil `position` is not "position zero" — it means the project has never
+/// been placed, and still sorts by the launch-frozen recency order.
+public struct ProjectState: Codable, Equatable, Sendable {
+    public let path: String
+    public let archived: Bool
+    public let position: Int?
+}
+
 public struct ProcessRecord: Codable, Equatable, Sendable {
     public let pid: Int32
     public let sessionID: String
@@ -74,10 +83,20 @@ public final class TempleDB: @unchecked Sendable {
         }
     }
 
+    /// Archiving also clears the pin, in the same statement: two writes could
+    /// land one without the other and leave a session both put away and pinned
+    /// after a restart. Unarchiving leaves the pin column alone.
     public func setArchived(_ archived: Bool, sessionID: String) throws {
         try ensureState(sessionID)
         try db.write { database in
-            try database.execute(sql: "UPDATE session_state SET archived = ? WHERE id = ?", arguments: [archived, sessionID])
+            try database.execute(
+                sql: """
+                    UPDATE session_state
+                    SET archived = ?, pinned = CASE WHEN ? THEN 0 ELSE pinned END
+                    WHERE id = ?
+                    """,
+                arguments: [archived, archived, sessionID]
+            )
         }
     }
 
@@ -137,6 +156,41 @@ public final class TempleDB: @unchecked Sendable {
                     color: row["color"],
                     generatedTitle: row["generated_title"],
                     lastOpenedAt: row["last_opened_at"]
+                )
+            }
+        }
+    }
+
+    public func projectStates() throws -> [ProjectState] {
+        try db.read { database in
+            try Row.fetchAll(database, sql: "SELECT * FROM project_state ORDER BY path").map { row in
+                ProjectState(path: row["path"], archived: row["archived"], position: row["position"])
+            }
+        }
+    }
+
+    public func setProjectArchived(_ archived: Bool, path: String) throws {
+        try ensureProjectState(path)
+        try db.write { database in
+            try database.execute(sql: "UPDATE project_state SET archived = ? WHERE path = ?",
+                                 arguments: [archived, path])
+        }
+    }
+
+    /// Replaces the manual sidebar order wholesale. One transaction, because a
+    /// half-applied order is a sidebar with two projects claiming slot 3: every
+    /// existing position is cleared first, then the listed paths are numbered.
+    /// A path absent from `paths` goes back to unplaced, not to the end.
+    public func setProjectOrder(_ paths: [String]) throws {
+        try db.write { database in
+            try database.execute(sql: "UPDATE project_state SET position = NULL")
+            for (position, path) in paths.enumerated() {
+                try database.execute(
+                    sql: """
+                        INSERT INTO project_state (path, position) VALUES (?, ?)
+                        ON CONFLICT(path) DO UPDATE SET position = excluded.position
+                        """,
+                    arguments: [path, position]
                 )
             }
         }
@@ -285,6 +339,15 @@ public final class TempleDB: @unchecked Sendable {
         }
     }
 
+    private func ensureProjectState(_ path: String) throws {
+        try db.write { database in
+            try database.execute(
+                sql: "INSERT OR IGNORE INTO project_state (path) VALUES (?)",
+                arguments: [path]
+            )
+        }
+    }
+
     private static var migrator: DatabaseMigrator {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1") { database in
@@ -333,6 +396,13 @@ public final class TempleDB: @unchecked Sendable {
             try database.create(table: "ui_state") { table in
                 table.column("key", .text).primaryKey()
                 table.column("value", .text).notNull()
+            }
+        }
+        migrator.registerMigration("v7-project-state") { database in
+            try database.create(table: "project_state") { table in
+                table.column("path", .text).primaryKey()
+                table.column("archived", .boolean).notNull().defaults(to: false)
+                table.column("position", .integer)
             }
         }
         return migrator

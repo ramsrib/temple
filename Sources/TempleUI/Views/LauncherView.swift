@@ -121,6 +121,16 @@ struct LauncherView: View {
             LauncherRow(icon: .symbol("clock.arrow.circlepath"), title: "Session history", shortcut: "⌘Y") {
                 model.toggleHistory()
             }
+            // The sidebar deliberately carries no archive affordance, so this is
+            // the one visible way back. It appears with the first thing archived
+            // — an always-present row whose panel says "Nothing archived" is
+            // dead weight, and turning up right after a right-click archive is
+            // the teaching moment.
+            if model.hasArchivedItems {
+                LauncherRow(icon: .symbol("archivebox"), title: "Archive", shortcut: "⌘⇧Y") {
+                    model.toggleArchive()
+                }
+            }
             // Only when there is somewhere to switch TO: with fewer than two
             // projects open the switcher has nothing to show, and a row that does
             // nothing when clicked is worse than no row.
@@ -142,7 +152,9 @@ struct LauncherView: View {
 
     private var recent: some View {
         VStack(alignment: .leading, spacing: 2) {
-            SectionRule("Recent projects")
+            // The list follows the sidebar — one order, two surfaces — so once
+            // the user has arranged that order, "Recent" would be a lie.
+            SectionRule(model.hasManualProjectOrder ? "Projects" : "Recent projects")
 
             ForEach(recentProjects) { project in
                 LauncherRow(icon: .symbol("folder"),

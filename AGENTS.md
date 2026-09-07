@@ -34,7 +34,17 @@ Three traps, each hit for real:
   Temple tab is, to TCC, Temple: every `screencapture` after that fails with
   "could not create image" until Sri re-grants Screen Recording in System Settings
   and relaunches Temple. Take the screenshots you need *before* installing, or
-  tell him a re-grant is coming.
+  tell him a re-grant is coming. **The way around it** — also for a shell whose
+  terminal was never granted Screen Recording — is the app's own snapshot hook:
+  launch with `TEMPLE_SNAPSHOT_DIR=<dir>` and send `kill -USR1 <pid>`; the app
+  renders its window in-process to `<dir>/snapshot-NN.png` (`WindowSnapshot.swift`).
+  Drive the UI with AppleScript (`tell application "System Events" to tell
+  process "Temple" …` — the *bundled* `dist/Temple.app` binary, not the bare
+  SwiftPM one, which has no windows System Events can see). The shot is a real
+  pixel capture of the window's screen rect: sidebar, terminal, panels and
+  context menus all appear as on screen; other apps' windows do not. For clicks,
+  right-clicks, drags and key chords that AppleScript can't post, compile
+  `Scripts/uiclick.swift` (usage in its header).
 
 - **`make demo` isolates the stores and state dir, but NOT `UserDefaults`.**
   `TEMPLE_CLAUDE_ROOT` / `TEMPLE_CODEX_ROOT` / `TEMPLE_STATE_DIR` are redirected;

@@ -211,7 +211,8 @@ struct HistoryView: View {
     }
 }
 
-private struct HistoryHeader: View {
+/// Section rule shared by the ⌘Y history and the ⌘⇧Y archive browser.
+struct HistoryHeader: View {
     let title: String
 
     var body: some View {
@@ -227,36 +228,53 @@ private struct HistoryHeader: View {
     }
 }
 
-private struct HistoryResultRow: View {
+/// One session line, shared by the ⌘Y history and the ⌘⇧Y archive browser.
+struct HistoryResultRow: View {
     @EnvironmentObject var model: AppModel
     let session: AgentSession
     let selected: Bool
+    /// A quiet secondary action revealed on hover (the archive browser's
+    /// Unarchive). The row's own tap stays "open this session".
+    var trailingAction: (label: String, perform: () -> Void)?
     let open: () -> Void
 
     @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 10) {
-            AgentBadge(agent: session.agent, size: 14)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.displayTitle(session))
-                    .font(.system(size: 13))
-                    .lineLimit(1)
-                Text(session.lastMessagePreview ?? "")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+            // The open tap lives on the content, not the row, so the trailing
+            // button beside it is a sibling hit target rather than a child of
+            // the gesture that opens the session — the two can never both fire.
+            HStack(spacing: 10) {
+                AgentBadge(agent: session.agent, size: 14)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.displayTitle(session))
+                        .font(.system(size: 13))
+                        .lineLimit(1)
+                    Text(session.lastMessagePreview ?? "")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 12)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(model.projectName(session.projectPath))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Text(RelativeTime.string(from: session.updatedAt))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
-            Spacer(minLength: 12)
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(model.projectName(session.projectPath))
+            .contentShape(Rectangle())
+            .onTapGesture(perform: open)
+            if let trailingAction, hovering {
+                Button(trailingAction.label, action: trailingAction.perform)
+                    .buttonStyle(.plain)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(RelativeTime.string(from: session.updatedAt))
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
             }
         }
         .padding(.horizontal, 14)
@@ -265,6 +283,5 @@ private struct HistoryResultRow: View {
                              : (hovering ? Palette.hoverFill : Color.clear))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .onTapGesture(perform: open)
     }
 }

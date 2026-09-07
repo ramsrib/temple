@@ -399,3 +399,45 @@ Consequences and choices:
   active search ends the search rather than reaching the agent (the next `Esc`
   goes through). Navigation does not wrap at the last match — libghostty does
   not, and a "select first" action does not exist to fake it with.
+
+---
+
+## ADR-017 — Archive is a visibility mask Temple owns; manual project order sits above recency
+**Date:** 2026-09-06 · **Status:** Accepted
+
+The sidebar had grown past the point where "grouped by project, newest first"
+found anything: too many finished sessions, too many projects in an order nobody
+chose. Two additions, both Temple-side state in the session DB (ADR-009), neither
+touching a session file (ADR-007).
+
+- **Archiving hides; it never deletes or moves.** A session or a whole project
+  can be archived. Archived things leave every browse surface — sidebar, `⌘K`,
+  `⌘Y`, launcher recents, the `⌘N` picker — and live only in the `⌘⇧Y` archive
+  browser, a sibling of `⌘Y`. The sidebar carries **no** archive section: the
+  point was a tidier rail, and an "Archived" group at the bottom would grow
+  without bound and undo it. A project is a visibility mask over its sessions:
+  archiving one hides the pins inside it, unarchiving brings them back; archiving
+  a single session clears its pin, because pinned-and-put-away is a
+  contradiction.
+- **Opening is the only implicit unarchive.** Resuming an archived session from
+  the browser, or starting a session in an archived project, brings it back — you
+  went looking for it. Activity on disk does not: a session resumed in some other
+  terminal updates its file and stays archived, because a file changing is not a
+  decision. Archive is refused while the session (or any session in the project)
+  has an open tab; the alternative — closing through the busy-agent prompt and
+  archiving on completion — made a menu item asynchronous.
+- **Manual project order wins over recency, and unplaced projects float above
+  it.** A project header is a drag handle: drop it on another header to land
+  above that project, or anywhere in that project's body to land below it (a
+  collapsed project has no body, so the lower half of its header means below),
+  with an insertion line marking the slot. The launcher's Recent Projects are
+  the sidebar's first five, so they follow the same order. The whole visible order persists; projects
+  the user has never placed — every newly discovered one — sort above the placed
+  block in the launch-frozen recency order, so new work surfaces at the top
+  instead of falling under the eight-project cap. Hidden (archived, noise)
+  projects keep the slot they held; a move rewrites the visible slots through
+  them. The drag payload is a private in-process type, never text, so a drop that
+  misses the rail cannot paste a path into a live terminal. Move Up/Down menu
+  items were tried first and rejected as too clumsy for a list this long. "Move
+  to Top" by drag is therefore not a permanent top — a new project will still
+  appear above it until placed. Accepted on purpose.
