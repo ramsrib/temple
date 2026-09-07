@@ -576,6 +576,9 @@ private struct ProjectDisclosure: View {
 
     private var header: some View {
         headerLabel
+        // The row in hand fades: the chip under the pointer is the project
+        // now, and the gap it leaves is where it came from.
+        .opacity(model.draggedProjectPath == project.path ? 0.4 : 1)
         .padding(.vertical, 3)
         .padding(.horizontal, 6)
         // Item C: hover highlight on the project header row too.
@@ -609,9 +612,21 @@ private struct ProjectDisclosure: View {
             }
             return provider
         } preview: {
-            // The label alone: the default preview snapshots the whole row,
-            // hover fill and `+` included, and drags a button along.
-            headerLabel.padding(.vertical, 3).padding(.horizontal, 6)
+            // What follows the pointer. The default preview snapshots the whole
+            // row — and with a Spacer inside, sizes to nothing, so the drag
+            // was invisible. A chip of its own: folder, name, fixed size.
+            HStack(spacing: 6) {
+                Image(systemName: "folder")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text(project.name)
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Palette.panelBackground, in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Palette.hairline))
+            .fixedSize()
         }
         .onDrop(of: [Self.dragType], delegate: dropDelegate(row: "header", edge: expanded ? .top : nil))
         .overlay(alignment: .top) {

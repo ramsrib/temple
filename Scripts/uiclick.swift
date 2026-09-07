@@ -14,7 +14,7 @@
 import CoreGraphics
 import Foundation
 
-// uiclick move X Y | click X Y | rclick X Y | dblclick X Y | drag X1 Y1 X2 Y2 [steps] [hold] [esc]
+// uiclick move X Y | click X Y | rclick X Y | dblclick X Y | drag X1 Y1 X2 Y2 [steps] [hold] [esc] [fast]
 //         | scroll X Y LINES | scrollpx X Y PX | key CODE [cmd] [shift] [ctrl] [alt]
 // Coordinates are screen points, top-left origin (CG space).
 let args = Array(CommandLine.arguments.dropFirst())
@@ -40,7 +40,7 @@ case "rclick":
 case "drag":
     let a = pt(1), b = pt(3); let steps = args.count > 5 ? Int(args[5])! : 30
     post(.mouseMoved, a); sleepMs(120)
-    post(.leftMouseDown, a); sleepMs(250)                 // hold: lets a drag session start
+    post(.leftMouseDown, a); sleepMs(args.contains("fast") ? 0 : 250)   // hold lets a drag session start; `fast` skips it
     for i in 1...steps {
         let t = Double(i) / Double(steps)
         post(.leftMouseDragged, CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t))
@@ -82,5 +82,5 @@ case "key":
         e.flags = flags; e.post(tap: .cghidEventTap); sleepMs(40)
     }
 default:
-    print("usage: uiclick move|click|rclick|dblclick X Y | drag X1 Y1 X2 Y2 [steps] [hold] [esc] | key CODE [cmd] [shift] [ctrl] [alt]")
+    print("usage: uiclick move|click|rclick|dblclick X Y | drag X1 Y1 X2 Y2 [steps] [hold] [esc] [fast] | key CODE [cmd] [shift] [ctrl] [alt]")
 }

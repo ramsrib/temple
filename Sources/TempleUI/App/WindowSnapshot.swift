@@ -18,6 +18,23 @@ enum WindowSnapshot {
     private static var source: DispatchSourceSignal?
     private static var counter = 0
 
+    /// `CGWindowListCreateImage` is deprecated in favour of ScreenCaptureKit —
+    /// which needs the very grant this hook exists to do without. Resolved at
+    /// run time so a dev-only file does not add a warning to every build.
+    private typealias CreateImage = @convention(c)
+        (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+    private static let createImage: CreateImage? = {
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2),   // RTLD_DEFAULT
+                                 "CGWindowListCreateImage") else { return nil }
+        return unsafeBitCast(symbol, to: CreateImage.self)
+    }()
+
+    private static func captureWindow(_ number: CGWindowID) -> CGImage? {
+        createImage?(.null, CGWindowListOption.optionIncludingWindow.rawValue, number,
+                     CGWindowImageOption([.boundsIgnoreFraming, .bestResolution]).rawValue)?
+            .takeRetainedValue()
+    }
+
     static func installIfRequested() {
         guard let dir = ProcessInfo.processInfo.environment["TEMPLE_SNAPSHOT_DIR"],
               !dir.isEmpty else { return }
@@ -75,8 +92,7 @@ enum WindowSnapshot {
                   let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
                   let bounds = CGRect(dictionaryRepresentation: boundsDict),
                   bounds.intersects(rect),
-                  let image = CGWindowListCreateImage(
-                    .null, .optionIncludingWindow, number, [.boundsIgnoreFraming, .bestResolution])
+                  let image = Self.captureWindow(number)
             else { continue }
             // kCGWindowBounds is top-left-origin screen space; the context draws
             // bottom-up, so flip within the canvas.

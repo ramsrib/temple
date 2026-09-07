@@ -51,7 +51,8 @@ back to the first human prompt
 - Projects and sessions are ordered by recency at launch, then frozen for that
   app run so activity cannot move a row under the pointer. Newly discovered
   entries prepend without reshuffling existing entries.
-- Projects reorder by drag: the header is the handle. Dropping on another
+- Projects reorder by drag: the header is the handle. A chip with the folder
+  name follows the pointer and the row in hand dims. Dropping on another
   project's header lands above it; dropping anywhere in its body lands below it,
   and an insertion line shows where. A collapsed project has no body, so the
   lower half of its header means below it. The order persists. A manual order
@@ -234,9 +235,11 @@ prompt composer.
   grouped under Today / Yesterday / date headers, each row carrying its agent,
   displayed title, last-message preview, project, and relative time. Typing
   switches to a flat ranked search; Enter or a click resumes the session.
-- `⌘⇧Y` (View ▸ Archive Browser) opens the archive browser, the history panel's sibling: archived
-  projects first, then individually archived sessions, both searchable. Enter or
-  a click unarchives a project in place, and unarchives and resumes a session.
+- `⌘⇧Y` (View ▸ Archive Browser) opens the archive browser — a centred window,
+  not a palette: a header with what is in it ("2 projects · 5 sessions"), a
+  compact search, a tall list of archived projects then individually archived
+  sessions, and the keys spelled out along the bottom. Enter or a click
+  unarchives a project in place, and unarchives and resumes a session.
   Searching matches a project by its path or by any session inside it. Opening an
   archived session anywhere else unarchives it too; a session resumed
   outside Temple stays archived, because activity on disk is not a decision.

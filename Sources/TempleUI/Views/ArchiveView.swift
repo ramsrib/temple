@@ -1,11 +1,16 @@
 import SwiftUI
 import TempleCore
 
-/// ⌘⇧Y: what has been put away. A sibling of the ⌘Y history — same width, same
-/// chrome, same keys — because the sidebar deliberately carries no archive
-/// affordance of its own, and this panel is the whole way back.
+/// ⌘⇧Y: what has been put away. A browser, not a palette: the ⌘K/⌘Y panels are
+/// a search field with results hanging off it, which reads as "type to find
+/// one thing". Putting things back is browsing — you scan, you pick several —
+/// so this is a centred window with a title, the counts, a compact search, a
+/// tall list and the keys spelled out. Same chrome as the other panels; the
+/// sidebar deliberately carries no archive affordance, and this is the way back.
 struct ArchiveView: View {
     @EnvironmentObject var model: AppModel
+    /// Ceiling for the list, from the window: the panel must never outgrow it.
+    var maxListHeight: CGFloat = 520
     @State private var query = ""
     @State private var entries: [ArchiveEntry] = []
     @State private var indexByID: [String: Int] = [:]
@@ -38,65 +43,30 @@ struct ArchiveView: View {
         (projects.isEmpty ? 0 : 1) + (sessions.isEmpty ? 0 : 1)
     }
 
+    private static let panelWidth: CGFloat = 760
+    private static let listMinHeight: CGFloat = 260
+
+    /// Content-sized between a floor and the window's ceiling: one row must not
+    /// leave a cavern, fifty must not run off the screen.
     private var listHeight: CGFloat {
-        min(CGFloat(entries.count) * Self.rowHeight
-            + CGFloat(headerCount) * Self.headerHeight, 340)
+        let content = CGFloat(entries.count) * Self.rowHeight
+            + CGFloat(headerCount) * Self.headerHeight + 8
+        return min(max(content, Self.listMinHeight), max(Self.listMinHeight, maxListHeight))
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Search archived…", text: $query)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 16))
-                    .focused($fieldFocused)
-                    .onSubmit(actOnSelection)
-                if !query.isEmpty {
-                    Button {
-                        query = ""
-                        fieldFocused = true
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(14)
-
+            header
             Divider()
-
             if entries.isEmpty {
-                Text(query.trimmingCharacters(in: .whitespaces).isEmpty
-                     ? "Nothing archived" : "No matches")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(14)
+                emptyState
             } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        // Eager, like the history and palette lists: a lazy
-                        // stack can leave a materialized row's selection fill
-                        // stale while the keyboard highlight moves.
-                        VStack(spacing: 0) {
-                            section("Projects", projects)
-                            section("Sessions", sessions)
-                        }
-                    }
-                    .frame(height: listHeight)
-                    .thinScrollers()
-                    .onChange(of: selection) {
-                        if entries.indices.contains(selection) {
-                            proxy.scrollTo(entries[selection].id, anchor: .center)
-                        }
-                    }
-                }
+                list
             }
+            Divider()
+            footer
         }
-        .frame(width: 560)   // matches HistoryView — visual siblings
+        .frame(width: Self.panelWidth)
         .panelChrome()
         .onAppear {
             reload()
@@ -113,6 +83,146 @@ struct ArchiveView: View {
         .onKeyPress(.downArrow) { move(1); return .handled }
         .onKeyPress(.upArrow) { move(-1); return .handled }
         .onKeyPress(.escape) { model.archivePresented = false; return .handled }
+    }
+
+    // MARK: Header — title, what is in here, and the search off to the side
+
+    private var header: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "archivebox")
+                .font(.system(size: 20, weight: .regular))
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Archive")
+                    .font(.system(size: 15, weight: .semibold))
+                Text(summary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 16)
+            searchField
+                .frame(width: 260)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+    }
+
+    /// The whole archive, not the filtered view — the header says what is in
+    /// the box, the list says what matches.
+    private var summary: String {
+        let projects = model.archivedProjects.count
+        let sessions = model.archivedSessionResults("").count
+        if projects == 0 && sessions == 0 { return "Nothing put away" }
+        var parts: [String] = []
+        if projects > 0 { parts.append(projects == 1 ? "1 project" : "\(projects) projects") }
+        if sessions > 0 { parts.append(sessions == 1 ? "1 session" : "\(sessions) sessions") }
+        return parts.joined(separator: " · ")
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            TextField("Search archived…", text: $query)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .focused($fieldFocused)
+                .onSubmit(actOnSelection)
+            if !query.isEmpty {
+                Button {
+                    query = ""
+                    fieldFocused = true
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 5)
+        .padding(.horizontal, 8)
+        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+    }
+
+    // MARK: List
+
+    private var list: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                // Eager, like the history and palette lists: a lazy stack can
+                // leave a materialized row's selection fill stale while the
+                // keyboard highlight moves.
+                VStack(spacing: 0) {
+                    section("Projects", projects)
+                    section("Sessions", sessions)
+                }
+                .padding(.vertical, 4)
+            }
+            .frame(height: listHeight)
+            .thinScrollers()
+            .onChange(of: selection) {
+                if entries.indices.contains(selection) {
+                    proxy.scrollTo(entries[selection].id, anchor: .center)
+                }
+            }
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 6) {
+            Text(query.trimmingCharacters(in: .whitespaces).isEmpty ? "Nothing archived" : "No matches")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+            if query.trimmingCharacters(in: .whitespaces).isEmpty {
+                Text("Archive a session from its row menu, or a project from its header menu, and it waits here.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .frame(maxWidth: 420)
+        .frame(maxWidth: .infinity)
+        .frame(height: Self.listMinHeight)
+    }
+
+    // MARK: Footer — the keys, and what Return does to the lit row
+
+    private var footer: some View {
+        HStack(spacing: 18) {
+            hint("↑↓", "select")
+            hint("↩", returnHint)
+            hint("esc", "close")
+            Spacer()
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 9)
+    }
+
+    /// Return means two different things here; the footer names the one that
+    /// applies to the row under the highlight.
+    private var returnHint: String {
+        guard entries.indices.contains(selection) else { return "open" }
+        switch entries[selection] {
+        case .project: return "restore project"
+        case .session: return "restore and open session"
+        }
+    }
+
+    private func hint(_ key: String, _ label: String) -> some View {
+        HStack(spacing: 6) {
+            Text(key)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1.5)
+                .background(Palette.surfaceFill, in: RoundedRectangle(cornerRadius: 4))
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Palette.hairline))
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
     }
 
     @ViewBuilder

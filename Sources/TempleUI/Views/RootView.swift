@@ -217,21 +217,23 @@ public struct RootView: View {
         .transition(.opacity)
     }
 
-    /// ⌘⇧Y — the archive browser, presented exactly like its ⌘Y sibling.
+    /// ⌘⇧Y — the archive browser. Centred, not top-anchored like ⌘K/⌘Y: those
+    /// are palettes you type into; this is a window you look through.
     private var archiveOverlay: some View {
         GeometryReader { geo in
-            ZStack(alignment: .top) {
+            ZStack {
                 OverlayBackdrop { model.archivePresented = false }
                     .ignoresSafeArea()
                 PanelHost {
-                    ArchiveView()
+                    // Header + footer take ~110pt; keep the whole panel inside
+                    // the window with room to breathe.
+                    ArchiveView(maxListHeight: max(300, geo.size.height - 220))
                         .environmentObject(model)
                         .tint(Palette.accent)
                 }
                 .fixedSize()
-                .frame(maxWidth: .infinity)
-                .padding(.top, geo.size.height * 0.35)
             }
+            .frame(width: geo.size.width, height: geo.size.height)
         }
         .transition(.opacity)
     }
@@ -376,22 +378,26 @@ private struct KeyCatcher: NSViewRepresentable {
         private var pendingKeyUps = Set<UInt16>()
 
         func install() {
+            // The closure hands back a Bool, not the event: an NSEvent is not
+            // Sendable, and returning it through `assumeIsolated` warned on
+            // every build.
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
-                MainActor.assumeIsolated {
-                    guard let self, let model = self.model else { return event }
+                let passThrough: Bool = MainActor.assumeIsolated {
+                    guard let self, let model = self.model else { return true }
                     if event.type == .keyUp {
-                        return self.pendingKeyUps.remove(event.keyCode) != nil ? nil : event
+                        return self.pendingKeyUps.remove(event.keyCode) == nil
                     }
                     if self.handle(event, model) {
                         self.pendingKeyUps.insert(event.keyCode)
-                        return nil
+                        return false
                     }
-                    return event
+                    return true
                 }
+                return passThrough ? event : nil
             }
             flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
                 MainActor.assumeIsolated {
-                    guard let self, let model = self.model else { return event }
+                    guard let self, let model = self.model else { return }
                     // Commit AFTER this release event reaches the focused
                     // surface: committing here would move focus synchronously,
                     // and the surface that saw the modifier press would never
@@ -409,8 +415,8 @@ private struct KeyCatcher: NSViewRepresentable {
                     // the focused surface.
                     let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
                     DispatchQueue.main.async { model.flagsChangedForDeferredLanding(flags) }
-                    return event
                 }
+                return event   // always passed through; see the key monitor above
             }
             // A modifier released while another app is frontmost never reaches our
             // monitor, and the switcher would still be up when Temple came back.

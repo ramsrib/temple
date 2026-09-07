@@ -516,10 +516,9 @@ public final class AppModel: ObservableObject {
         sortedByManualOrder(visibleProjects).map(\.path)
     }
 
-    /// The project header being dragged, from grab to drop. Not published: the
-    /// drop targets read it to refuse a project dropped onto itself, nothing
-    /// renders from it.
-    public private(set) var draggedProjectPath: String?
+    /// The project header being dragged, from grab to drop. Drop targets read
+    /// it to refuse a project dropped onto itself; the header in hand dims.
+    @Published public private(set) var draggedProjectPath: String?
     private var projectDragWatch: Timer?
 
     /// A header drag begins. SwiftUI's drop delegates report enters, moves and
