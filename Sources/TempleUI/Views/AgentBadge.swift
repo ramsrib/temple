@@ -48,3 +48,24 @@ struct AgentBadge: View {
         }
     }
 }
+
+extension AgentIcon {
+    private static var menuCache: [Agent: NSImage] = [:]
+
+    /// Menu-item sized copy of the mark. `NSMenu` draws an item's image at the
+    /// `NSImage`'s own `size` and ignores the SwiftUI frame modifiers that
+    /// `AgentBadge` relies on, and the bundled marks arrive at their 24pt
+    /// viewBox — a head taller than the menu's text.
+    ///
+    /// One size, cached by agent alone: a `side` parameter over a cache keyed
+    /// without it would hand the second caller the first one's size.
+    @MainActor
+    static func menuImage(for agent: Agent) -> NSImage? {
+        if let cached = menuCache[agent] { return cached }
+        guard let copy = image(for: agent)?.copy() as? NSImage else { return nil }
+        copy.size = NSSize(width: 14, height: 14)
+        copy.isTemplate = (agent == .codex)
+        menuCache[agent] = copy
+        return copy
+    }
+}

@@ -728,9 +728,10 @@ private struct ProjectDropDelegate: DropDelegate {
     }
 }
 
-/// The right-aligned `+` on a project row → New Claude / New Codex in THAT
-/// project (UX §New session, per-project entry). Quiet until hover; monochrome.
-/// Its own click target so it never toggles the disclosure.
+/// The right-aligned `+` on a project row → an agent picker for THAT project
+/// (UX §New session, per-project entry; rows in `NewSessionMenuItems`). Quiet
+/// until hover; monochrome. Its own click target so it never toggles the
+/// disclosure.
 private struct NewSessionMenu: View {
     @EnvironmentObject var model: AppModel
     let projectPath: String
@@ -738,12 +739,7 @@ private struct NewSessionMenu: View {
 
     var body: some View {
         Menu {
-            Button {
-                model.openSessions.newSession(agent: .claude, projectPath: projectPath)
-            } label: { Label("New Claude Session", systemImage: "plus") }
-            Button {
-                model.openSessions.newSession(agent: .codex, projectPath: projectPath)
-            } label: { Label("New Codex Session", systemImage: "plus") }
+            NewSessionMenuItems(projectPath: projectPath)
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 11, weight: .semibold))

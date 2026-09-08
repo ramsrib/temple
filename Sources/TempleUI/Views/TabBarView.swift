@@ -79,18 +79,13 @@ struct TabStripTrailingCluster: View {
     @State private var hovering = false
 
     var body: some View {
-        if !model.openSessions.visibleTabs.isEmpty {
+        // Needs somewhere to start: the strip also shows for a lone Settings tab,
+        // which belongs to no project, and a `+` whose every row is a dead row is
+        // worse than no `+`.
+        if !model.openSessions.visibleTabs.isEmpty,
+           let projectPath = model.openSessions.activeProjectPath {
             Menu {
-                Button {
-                    if let path = model.openSessions.activeProjectPath {
-                        model.openSessions.newSession(agent: .claude, projectPath: path)
-                    }
-                } label: { Label("New Claude Session", systemImage: "plus") }
-                Button {
-                    if let path = model.openSessions.activeProjectPath {
-                        model.openSessions.newSession(agent: .codex, projectPath: path)
-                    }
-                } label: { Label("New Codex Session", systemImage: "plus") }
+                NewSessionMenuItems(projectPath: projectPath)
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .medium))

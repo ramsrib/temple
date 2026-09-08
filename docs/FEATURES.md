@@ -194,7 +194,12 @@ Settings tab is the one agent-less exception.
 
 New sessions are empty agent sessions, ready for terminal input. Temple can
 start one from the launcher, a project-header `+` menu, the tab-bar `+` menu, or
-`⌘T`. **Choose folder…** starts in a directory that is not yet indexed. Claude
+`⌘T`. Both `+` menus name only the choice they offer — the agent, under a **New
+session** heading, each row carrying that agent's own mark. The default agent
+leads and shows `⌘T` where that is true (the active project only). An agent
+Temple has proof it cannot launch is disabled there and says which kind of
+proof; there is no tick for one that looks fine. **Choose folder…** starts in a
+directory that is not yet indexed. Claude
 sessions receive a Temple-generated session ID; Codex creates its own ID, which
 Temple adopts when the new rollout file appears
 ([ADR-008](./DECISIONS.md#adr-008--session-identity-id--cli-id-asymmetric-minting)).
