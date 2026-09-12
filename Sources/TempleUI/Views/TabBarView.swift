@@ -526,7 +526,7 @@ private struct TabChip: View {
     /// that derives from the text turns title updates into row-wide layout
     /// shifts. Sized so ~20 characters of title survive after the badge and
     /// close button take their share.
-    static let sessionWidth: CGFloat = 183
+    static let sessionWidth: CGFloat = 181
 
     private var isActive: Bool { model.openSessions.activeTabID == tab.id }
     private var colorMark: TabColorMark? {
@@ -559,55 +559,66 @@ private struct TabChip: View {
                             .offset(x: 2, y: 2)
                     }
             }
-            if tab.kind == .settings {
-                // Fixed natural width — "Settings" must never truncate or
-                // stretch with its neighbors. And CONSTANT weight: this chip
-                // is its text's size, so the active medium weight the session
-                // chips get would widen the row ~2pt on activation — the very
-                // state-dependent width 5134ecb removed. Ink, fill, and seat
-                // carry its active state instead.
-                Text(displayTitle)
-                    .font(.system(size: 12))
-                    .foregroundStyle(isActive ? AnyShapeStyle(.primary)
-                                              : AnyShapeStyle(.secondary))
-                    .fixedSize()
-            } else {
-                // Active reads first: weight + full-strength ink against the
-                // secondary ink of resting tabs. The fill alone was the only
-                // difference, and a flat gray slab is a weak signal.
-                if editing {
-                    TextField("", text: $draft)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12, weight: isActive ? .medium : .regular))
-                        .focused($editFocused)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .onSubmit(commitRename)
-                        .onExitCommand(perform: cancelRename)
-                        .onChange(of: editFocused) { _, focused in
-                            if !focused { commitRename() }
-                        }
-                } else {
+            // Title and ✕ are one unit, set tighter than the row: a truncated
+            // title already ends short of its frame by up to a glyph (the
+            // ellipsis lands on a character boundary), so the row's spacing
+            // on top of that read as a hole before the ✕. 1pt: the 18pt hover
+            // ring reaches 1pt into the title frame, which the slack covers
+            // in all but the zero-slack case. Settings keeps the row spacing —
+            // its title never truncates, so nothing pads it.
+            HStack(spacing: tab.kind == .settings ? 5 : 1) {
+                if tab.kind == .settings {
+                    // Fixed natural width — "Settings" must never truncate or
+                    // stretch with its neighbors. And CONSTANT weight: this chip
+                    // is its text's size, so the active medium weight the session
+                    // chips get would widen the row ~2pt on activation — the very
+                    // state-dependent width 5134ecb removed. Ink, fill, and seat
+                    // carry its active state instead.
                     Text(displayTitle)
-                        // In hand keeps its resting weight (a jump to .medium
-                        // reads as blur mid-motion) but takes primary ink —
-                        // secondary gray over the lifted skin made the title
-                        // recede exactly when it matters.
-                        .font(.system(size: 12, weight: isActive ? .medium : .regular))
-                        .foregroundStyle(isActive || dragged ? AnyShapeStyle(.primary)
-                                                             : AnyShapeStyle(.secondary))
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .font(.system(size: 12))
+                        .foregroundStyle(isActive ? AnyShapeStyle(.primary)
+                                                  : AnyShapeStyle(.secondary))
+                        .fixedSize()
+                } else {
+                    // Active reads first: weight + full-strength ink against the
+                    // secondary ink of resting tabs. The fill alone was the only
+                    // difference, and a flat gray slab is a weak signal.
+                    if editing {
+                        TextField("", text: $draft)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12, weight: isActive ? .medium : .regular))
+                            .focused($editFocused)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .onSubmit(commitRename)
+                            .onExitCommand(perform: cancelRename)
+                            .onChange(of: editFocused) { _, focused in
+                                if !focused { commitRename() }
+                            }
+                    } else {
+                        Text(displayTitle)
+                            // In hand keeps its resting weight (a jump to .medium
+                            // reads as blur mid-motion) but takes primary ink —
+                            // secondary gray over the lifted skin made the title
+                            // recede exactly when it matters.
+                            .font(.system(size: 12, weight: isActive ? .medium : .regular))
+                            .foregroundStyle(isActive || dragged ? AnyShapeStyle(.primary)
+                                                                 : AnyShapeStyle(.secondary))
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
-            }
-            if !editing {
-                closeButton
-                    .opacity(hovering || isActive ? 1 : 0)
+                if !editing {
+                    closeButton
+                        .opacity(hovering || isActive ? 1 : 0)
+                }
             }
         }
         // Trailing side is tighter: the ✕'s 14pt hit box already carries 3pt
-        // of air around its glyph, so the chip edge needs less of its own.
+        // of air around its glyph, so the chip edge needs less of its own —
+        // but the 18pt hover ring reaches 2pt past that box, and it wants
+        // clear air before the chip's border (5pt here).
         .padding(.leading, 9)
-        .padding(.trailing, 5)
+        .padding(.trailing, 7)
         // Constant width for session chips: inside a fixed box a title change
         // repaints text but can never move the strip. Settings keeps its
         // natural size — its title is a constant.
