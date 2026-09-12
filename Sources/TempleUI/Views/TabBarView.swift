@@ -134,8 +134,8 @@ struct TabStripChipsRow: View {
     /// measured frames lags a preference tick behind layout and the chip
     /// visibly shook around the cursor at every swap.
     @State private var dragSlotMinX: CGFloat = 0
-    /// Inter-chip gap (spacing + separator), captured at grab.
-    @State private var dragGap: CGFloat = 5
+    /// Inter-chip gap (the hairline tick), captured at grab.
+    @State private var dragGap: CGFloat = 1
     @State private var frames: [SessionTab.ID: CGRect] = [:]
     @State private var pendingReveal: SessionTab.ID?
 
@@ -149,7 +149,8 @@ struct TabStripChipsRow: View {
         // close or reorder lands mid-reconciliation.
         let visible = model.openSessions.visibleTabs
         let activeID = model.openSessions.activeTabID
-        HStack(spacing: 2) {
+        // Chips abut (browser-style): the tick between them is the whole gap.
+        HStack(spacing: 0) {
             ForEach(Array(visible.enumerated()),
                     id: \.element.id) { index, tab in
                 // A hairline tick marks the boundary between adjacent tabs —
@@ -510,6 +511,7 @@ private struct TabChip: View {
     /// True while this chip rides the drag gesture (set by the row).
     var dragged = false
     @State private var hovering = false
+    @State private var closeHovering = false
     @State private var editing = false
     @State private var draft = ""
     @FocusState private var editFocused: Bool
@@ -517,9 +519,9 @@ private struct TabChip: View {
     /// Every session chip is exactly this wide (browser-style). The title is
     /// live — Claude rewrites it continuously while working — so any width
     /// that derives from the text turns title updates into row-wide layout
-    /// shifts. Sized so ~20 characters of title survive after the badge, dot
-    /// slot, and close button take their share.
-    static let sessionWidth: CGFloat = 200
+    /// shifts. Sized so ~20 characters of title survive after the badge and
+    /// close button take their share.
+    static let sessionWidth: CGFloat = 183
 
     private var isActive: Bool { model.openSessions.activeTabID == tab.id }
     private var colorMark: TabColorMark? {
@@ -529,7 +531,7 @@ private struct TabChip: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
             if tab.kind == .settings {
                 Image(systemName: "gearshape")
                     .font(.system(size: 11))
@@ -539,14 +541,18 @@ private struct TabChip: View {
                 // Quieter when the tab is at rest: a row of tabs repeats this
                 // mark once per chip, and at full strength the repetition is
                 // louder than the titles it sits beside.
+                // Activity rides the badge as a corner dot (an overlay, so no
+                // state can resize the chip — any width change moves every
+                // chip to the right of it). Being open is what a chip already
+                // means, so idle paints nothing; an exited agent greys its mark.
                 AgentBadge(agent: tab.agent, size: 12)
                     .opacity(isActive || hovering ? 1 : 0.75)
-                // Being open is what a chip already means — the dot paints only
-                // when it has something to say (running / attention). Its slot is
-                // permanent: inserting it on state change resized the chip, and
-                // any width change moves every chip to the right of it.
-                ActivityDot(state: tab.activity, size: 5)
-                    .opacity(tab.activity == .idle ? 0 : 1)
+                    .grayscale(tab.activity.isExited ? 1 : 0)
+                    .overlay(alignment: .bottomTrailing) {
+                        ActivityDot(state: tab.activity, size: 5)
+                            .opacity(tab.activity == .idle ? 0 : 1)
+                            .offset(x: 2, y: 2)
+                    }
             }
             if tab.kind == .settings {
                 // Fixed natural width — "Settings" must never truncate or
@@ -593,7 +599,10 @@ private struct TabChip: View {
                     .opacity(hovering || isActive ? 1 : 0)
             }
         }
-        .padding(.horizontal, 9)
+        // Trailing side is tighter: the ✕'s 14pt hit box already carries 3pt
+        // of air around its glyph, so the chip edge needs less of its own.
+        .padding(.leading, 9)
+        .padding(.trailing, 5)
         // Constant width for session chips: inside a fixed box a title change
         // repaints text but can never move the strip. Settings keeps its
         // natural size — its title is a constant.
@@ -642,10 +651,26 @@ private struct TabChip: View {
         Button(action: { model.openSessions.requestClose(tabID: tab.id) }) {
             Image(systemName: "xmark")
                 .font(.system(size: 8, weight: .bold))
+                // Same ink as the title beside it: a resting tab's ✕ must not
+                // outshine the tab's own name.
+                .foregroundStyle(isActive ? AnyShapeStyle(.primary)
+                                          : AnyShapeStyle(.secondary))
+                // 14pt hit box; the ring lights only under the pointer itself,
+                // not whenever the chip is hovered. Drawn larger than the box
+                // (a background overflows without taking layout) so the
+                // highlight reads as a button, not a halo on the glyph.
                 .frame(width: 14, height: 14)
-                .background(Color.primary.opacity(hovering ? 0.1 : 0), in: Circle())
+                .background {
+                    Circle()
+                        .fill(Color.primary.opacity(closeHovering ? 0.12 : 0))
+                        .frame(width: 18, height: 18)
+                }
+                // The drawn ring would otherwise widen the hit area: a plain
+                // button hit-tests its label's pixels, background included.
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { closeHovering = $0 }
         .help("Close tab (⌘W)")
     }
 

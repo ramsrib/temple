@@ -32,6 +32,11 @@ public enum ActivityState: Sendable, Equatable {
         }
     }
 
+    var isExited: Bool {
+        if case .exited = self { return true }
+        return false
+    }
+
     /// Every state draws a dot now — `.idle` marks an open-but-resting tab
     /// (distinct from *no* dot, which means the session has no open tab).
     var showsDot: Bool { true }
