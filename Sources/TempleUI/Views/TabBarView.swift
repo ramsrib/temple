@@ -115,8 +115,10 @@ struct TabStripChipsRow: View {
     /// Asks the AppKit container to scroll this rect (row coords) into view.
     let reveal: (CGRect) -> Void
     /// Hands the container every chip frame (row coords, left-to-right) so
-    /// the overflow cues can step exactly one tab per click.
-    let framesChanged: ([CGRect]) -> Void
+    /// the overflow cues can step exactly one tab per click — tagged with the
+    /// project the row was rendered for, so a per-project scroll restore can
+    /// tell the incoming project's geometry from a late report of the old.
+    let framesChanged: ([CGRect], _ project: String?) -> Void
 
     @State private var dragging: SessionTab.ID?
     private let dragWatchdog = MonitorBox()
@@ -149,6 +151,9 @@ struct TabStripChipsRow: View {
         // close or reorder lands mid-reconciliation.
         let visible = model.openSessions.visibleTabs
         let activeID = model.openSessions.activeTabID
+        // Captured with `visible`: the frames this body produces belong to
+        // THIS project, whatever the model says by the time the report fires.
+        let project = model.openSessions.activeProjectPath
         // Chips abut (browser-style): the tick between them is the whole gap.
         HStack(spacing: 0) {
             ForEach(Array(visible.enumerated()),
@@ -201,7 +206,7 @@ struct TabStripChipsRow: View {
         .coordinateSpace(name: "temple.chipsRow")
         .onPreferenceChange(ChipFramesKey.self) { new in
             frames = new
-            framesChanged(new.values.sorted { $0.minX < $1.minX })
+            framesChanged(new.values.sorted { $0.minX < $1.minX }, project)
             flushReveal()
         }
         .onChange(of: model.openSessions.activeTabID) { _, id in

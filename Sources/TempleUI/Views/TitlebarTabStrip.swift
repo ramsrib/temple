@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// Mounts the tab strip into the native title-bar band as a titlebar accessory,
@@ -179,8 +180,30 @@ final class TabStripContainerView: NSView {
     /// (reported by TabStripChipsRow); what the cue clicks step across, and
     /// half of `effectiveContentWidth`.
     var chipFrames: [CGRect] = [] {
-        didSet { clampOffsetAndRefreshCues() }
+        didSet {
+            applyPendingRestore()
+            clampOffsetAndRefreshCues()
+        }
     }
+    /// The project `chipFrames` was rendered for (reported alongside it).
+    private var framesProject: String?
+
+    func reportFrames(_ rects: [CGRect], project: String?) {
+        framesProject = project
+        chipFrames = rects
+    }
+
+    /// Where each project's row was scrolled when you left it. One `offset`
+    /// serves every project, and a switch swaps the chips under it: the clamp
+    /// then drags it to the OTHER project's extent, and the return trip's
+    /// reveal only does the minimum to show the active chip — parking it at
+    /// the right edge, wherever you had left the row. Saved on the way out,
+    /// restored before that reveal measures.
+    private var savedOffsets: [String: CGFloat] = [:]
+    /// The incoming project and its remembered offset, applied once the row
+    /// reports that project's geometry (see `applyPendingRestore`).
+    private var pendingRestore: (project: String?, offset: CGFloat)?
+    private var projectSwitch: AnyCancellable?
 
     /// Detail pane's leading edge in window coordinates (set by the installer).
     var detailMinX: CGFloat = 0 {
@@ -202,7 +225,9 @@ final class TabStripContainerView: NSView {
         chipsHost.rootView = AnyView(
             TabStripChipsRow(
                 reveal: { [weak self] rect in self?.reveal(rect) },
-                framesChanged: { [weak self] rects in self?.chipFrames = rects })
+                framesChanged: { [weak self] rects, project in
+                    self?.reportFrames(rects, project: project)
+                })
             .environmentObject(model))
         leftCue.rootView = AnyView(
             StripOverflowCue(edge: .leading) { [weak self] in self?.step(.left) })
@@ -261,6 +286,31 @@ final class TabStripContainerView: NSView {
             chipsHost.bottomAnchor.constraint(equalTo: scrollClip.bottomAnchor,
                                               constant: -Self.chipVerticalInset),
         ])
+
+        // `@Published` emits in willSet: `activeProjectPath` still names the
+        // project being left, and `offset` is still its scroll position.
+        let sessions = model.openSessions
+        projectSwitch = sessions.$activeProjectPath.sink { [weak self, weak sessions] next in
+            guard let self, let sessions else { return }
+            let leaving = sessions.activeProjectPath
+            guard next != leaving else { return }
+            // A second switch before the first one's row has rendered:
+            // `offset` still describes the project before THAT, so it is
+            // nobody's to save, and the unconsumed destination keeps the
+            // offset it had.
+            if self.pendingRestore == nil, let leaving {
+                self.savedOffsets[leaving] = self.offset
+            }
+            // A coalesced round trip (A → B → A inside one render) comes back
+            // to the row already on screen: nothing will re-report, and
+            // `offset` is already A's live position — nothing to restore, and
+            // a restore left pending would block A's next save for good.
+            if next == self.framesProject {
+                self.pendingRestore = nil
+            } else {
+                self.pendingRestore = (next, next.flatMap { self.savedOffsets[$0] } ?? 0)
+            }
+        }
 
         // Closing tabs shrinks the content; never leave a stale over-scroll.
         chipsHost.postsFrameChangedNotifications = true
@@ -518,8 +568,21 @@ final class TabStripContainerView: NSView {
         rightCue.isHidden = !(isScrollable && offset < maxOffset - 0.5)
     }
 
+    /// Only against the incoming project's own geometry. A report for the
+    /// row being left (a close in flight, a reorder settling) or a reveal
+    /// that fires before the new report would otherwise consume the restore
+    /// and clamp it against the wrong extent — and once reduced, the saved
+    /// position is gone. Callers clamp right after, against frames that are
+    /// now known to match.
+    private func applyPendingRestore() {
+        guard let pending = pendingRestore, pending.project == framesProject else { return }
+        pendingRestore = nil
+        offset = max(0, pending.offset)
+    }
+
     /// Scroll a chip (rect in the chips row's own coordinate space) into view.
     func reveal(_ rect: CGRect) {
+        applyPendingRestore()
         // Settle any pending band/clip layout before measuring. This does NOT
         // freshen the content width — the hosted frame lags SwiftUI by a tick
         // no matter what, which is why `effectiveContentWidth` reads the chip
