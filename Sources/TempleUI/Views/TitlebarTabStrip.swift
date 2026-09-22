@@ -125,9 +125,10 @@ final class TabStripContainerView: NSView {
     private var leftCueWidth: NSLayoutConstraint!
     private var rightCueWidth: NSLayoutConstraint!
 
-    /// Traffic lights PLUS the sidebar-toggle toolbar button, which joins
-    /// them in the band while the sidebar is collapsed — the strip must
-    /// start past both or the toggle renders over the project switcher.
+    /// Fallback for the band's leading obstruction when no toolbar item can
+    /// be measured: traffic lights plus the sidebar-toggle button, which joins
+    /// them in the band while the sidebar is collapsed. Normally the
+    /// obstruction is measured — see `leadingObstruction()`.
     private static let windowButtonsInset: CGFloat = 144
     /// Breathing room between the divider/window-buttons and the switcher.
     private static let leadingGap: CGFloat = 4
@@ -209,8 +210,41 @@ final class TabStripContainerView: NSView {
     var detailMinX: CGFloat = 0 {
         didSet {
             guard detailMinX != oldValue else { return }
-            bandLeft?.constant = max(detailMinX, Self.windowButtonsInset) + Self.leadingGap
+            bandLeft?.constant = leadingConstant()
         }
+    }
+
+    /// Where the strip may start: past the sidebar divider, and past whatever
+    /// AppKit has parked at the band's leading edge.
+    private func leadingConstant() -> CGFloat {
+        max(detailMinX, leadingObstruction()) + Self.leadingGap
+    }
+
+    /// The right edge of the toolbar items sitting at the band's leading side,
+    /// in band coordinates. With the sidebar collapsed, AppKit moves the
+    /// sidebar's toolbar items — the toggle, and since the rail's actions
+    /// moved into the title bar, add-project and search too — in next to the
+    /// traffic lights, where a fixed budget for one button had the project
+    /// switcher rendering under the other two. Measured on each layout, so
+    /// the set of items and their widths are never assumed.
+    private func leadingObstruction() -> CGFloat {
+        guard let band = anchoredBand else { return Self.windowButtonsInset }
+        var maxX: CGFloat = 0
+        func walk(_ view: NSView) {
+            for sub in view.subviews {
+                if sub === anchoredClipView || sub === self || sub.isHidden { continue }
+                if sub.className.contains("ToolbarItemViewer") {
+                    let frame = sub.convert(sub.bounds, to: band)
+                    // Only items on the leading side count; the `+` and any
+                    // trailing item are on the other side of the chips.
+                    if frame.minX < band.bounds.midX { maxX = max(maxX, frame.maxX) }
+                    continue
+                }
+                walk(sub)
+            }
+        }
+        walk(band)
+        return maxX > 0 ? maxX : Self.windowButtonsInset
     }
 
     init(model: AppModel) {
@@ -448,6 +482,8 @@ final class TabStripContainerView: NSView {
         clipView.translatesAutoresizingMaskIntoConstraints = false
         translatesAutoresizingMaskIntoConstraints = false
 
+        // The obstruction is measured against `anchoredBand`, which is set
+        // below; seed with the sidebar edge and let `layout()` correct it.
         let left = clipView.leftAnchor.constraint(
             equalTo: band.leftAnchor,
             constant: max(detailMinX, Self.windowButtonsInset) + Self.leadingGap)
@@ -521,6 +557,11 @@ final class TabStripContainerView: NSView {
         // Self-heal: if AppKit rebuilt the titlebar and dropped our span, this
         // re-claims; if the claim is intact it's a cheap guard check and no-op.
         claimTitlebarBand()
+        // The toolbar items shift when the sidebar collapses or expands, and
+        // they land after the divider has already been reported — so the
+        // leading edge is re-measured here, on the band's own layout pass.
+        let leading = leadingConstant()
+        if let bandLeft, bandLeft.constant != leading { bandLeft.constant = leading }
         clampOffsetAndRefreshCues()
     }
 

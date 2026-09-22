@@ -53,14 +53,27 @@ enum FieldFocus {
     }
 }
 
-/// A small colored activity dot (running / needs-attention). Hidden when idle.
+/// A small colored activity dot: running / idle / needs-attention / exited.
+/// A running agent's dot breathes — a slow, small pulse — so "working" is
+/// visible in motion, not only in hue.
 struct ActivityDot: View {
     let state: ActivityState
     var size: CGFloat = 6
+    @State private var breathing = false
+
+    private var isRunning: Bool { state == .running }
+
     var body: some View {
         Circle()
             .fill(state.dotColor)
             .frame(width: size, height: size)
-            .opacity(state.showsDot ? 1 : 0)
+            .opacity(state.showsDot ? (isRunning && breathing ? 0.45 : 1) : 0)
+            .scaleEffect(isRunning && breathing ? 0.8 : 1)
+            .animation(isRunning
+                       ? .easeInOut(duration: 1.1).repeatForever(autoreverses: true)
+                       : .default,
+                       value: breathing)
+            .onAppear { breathing = isRunning }
+            .onChange(of: isRunning) { _, running in breathing = running }
     }
 }

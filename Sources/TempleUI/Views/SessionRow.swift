@@ -31,19 +31,23 @@ struct SessionRow: View {
     var body: some View {
         Button(action: open) {
             HStack(spacing: 8) {
-                // Same volume rule as the tab strip: the mark repeats once per
-                // row, so it speaks at full strength only where the session is
-                // open (or under the pointer) — a rail of full-orange badges
-                // outshouts the titles it's meant to label.
-                AgentBadge(agent: session.agent)
-                    .opacity(openTab != nil || hovering ? 1 : 0.75)
+                // The mark stays on every row, in colour: it is often the only
+                // thing that says which agent a session ran under, and the
+                // colour is what gives a dense list its rhythm (Finder's
+                // sidebar works the same way). Full strength only where the
+                // session is open or under the pointer, so open tabs stand out.
+                AgentBadge(agent: session.agent, size: 13)
+                    .opacity(openTab != nil || hovering ? 1 : 0.55)
                 Text(model.displayTitle(session))
                     // Medium on the highlighted row — the same "you are here"
                     // weight the active tab chip carries.
-                    .font(.system(size: 12.5, weight: isHighlighted ? .medium : .regular))
+                    .font(.system(size: 13, weight: isHighlighted ? .medium : .regular))
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .foregroundStyle(openTab != nil ? Color.primary : Color.primary.opacity(0.85))
+                    // Two tones, not one: the sessions you have open are the
+                    // ones you are working in, and they read at full strength;
+                    // the browsable history behind them steps back.
+                    .foregroundStyle(openTab != nil || hovering ? Color.primary : Color.primary.opacity(0.72))
                 if isPinned {
                     Image(systemName: "pin.fill")
                         .font(.system(size: 8))
@@ -55,17 +59,27 @@ struct SessionRow: View {
                     ActivityDot(state: activity)
                 }
             }
-            .padding(.vertical, 4)
-            .padding(.horizontal, 8)
+            // The 30pt frame below sets the pitch; the pill runs the row's
+            // full height so hover and selection read as one soft shape.
+            .padding(.horizontal, 10)
+            .frame(maxHeight: .infinity)
             // Item C: selection stays distinct; hover adds a subtle fill. The
             // hairline seat matches the active tab chip — one selection
             // language across the strip and the rail.
+            // Open tabs sit on a faint surface at rest, so "what is open" is
+            // one glance down the rail; the highlighted row gets the stronger
+            // selection wash and its hairline seat.
             .background(
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(isHighlighted ? Palette.selectionFill
-                                        : (hovering ? Palette.hoverFill : Color.clear))
-                    .overlay(RoundedRectangle(cornerRadius: 6)
+                          : hovering ? Palette.hoverFill
+                          : openTab != nil ? Palette.surfaceFill
+                          : Color.clear)
+                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .strokeBorder(Palette.hairline.opacity(isHighlighted ? 1 : 0))))
+            // The pill fades in and out rather than snapping: hover across a
+            // dense list should feel like light passing over it.
+            .animation(.easeOut(duration: 0.12), value: hovering)
             .overlay(alignment: .leading) {
                 if let colorMark {
                     Capsule()
@@ -78,8 +92,7 @@ struct SessionRow: View {
         }
         .buttonStyle(.plain)
         .onHover { rawHovering = $0 }
-        .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8))
-        .listRowBackground(Color.clear)
+        .frame(height: 32)
         .contextMenu { contextMenu }
         .alert("Rename session", isPresented: $renaming) {
             TextField("Name", text: $draftName)

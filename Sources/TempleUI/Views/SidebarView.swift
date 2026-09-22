@@ -8,101 +8,142 @@ import TempleCore
 struct SidebarView: View {
     @EnvironmentObject var model: AppModel
     @State private var showAllProjects = false
-    @State private var headerHovering = false
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider().opacity(0.4)
+            if searchOpen {
+                header
+            }
             sessionList
             Divider().opacity(0.4)
             footer
         }
         .background(.ultraThinMaterial)
+        // The rail's actions live in the title bar with the sidebar toggle,
+        // where a Mac app keeps them (Finder, Mail, Notes) — not in a row of
+        // their own over the list. The magnifier unfolds the search field
+        // under the band; the folder opens a project Temple has never seen
+        // (a different act from a project row's `+`, which starts a session).
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    chooseProjectFolder { path in
+                        model.openSessions.newSessionDefaultAgent(projectPath: path)
+                    }
+                } label: {
+                    Image(systemName: "folder.badge.plus")
+                }
+                .help("Open a project folder…")
+            }
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    searchOpen ? closeSearch() : openSearch()
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .help("Search sessions")
+            }
+        }
     }
 
     // MARK: Header
 
+    /// One slim row under the native toolbar band: the search field, and the
+    /// way to add a project. No wordmark, no "Projects" label — the list
+    /// below is self-evidently that.
+    @State private var searchOpen = false
+    @FocusState private var searchFocused: Bool
+
+    /// The search field, shown under the title-bar band while search is open.
+    /// It folds away when the field is empty and loses focus — nothing typed
+    /// means nothing to keep.
     private var header: some View {
-        // Search is the first element — no wordmark. It sits just below the
-        // native unified-toolbar band (which carries the traffic lights +
-        // sidebar toggle and is itself the window drag area — Item A/F/G).
         searchField
-            .padding(.horizontal, 14)
-            .padding(.top, 10)
-            .padding(.bottom, 10)
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+            .onChange(of: searchFocused) { _, focused in
+                if !focused && model.searchText.isEmpty { closeSearch() }
+            }
+            .onChange(of: model.searchText) { _, text in
+                // The palette (and the launch focus sweep) clear the query from
+                // outside; the field should not stay unfolded over an empty
+                // query it isn't editing.
+                if text.isEmpty && !searchFocused { closeSearch() }
+            }
+    }
+
+    private func openSearch() {
+        withAnimation(.easeOut(duration: 0.15)) { searchOpen = true }
+        // Focus lands after the field exists; same-turn focus on a view that
+        // is only now being inserted is dropped.
+        DispatchQueue.main.async { searchFocused = true }
+    }
+
+    private func closeSearch() {
+        model.searchText = ""
+        searchFocused = false
+        withAnimation(.easeInOut(duration: 0.15)) { searchOpen = false }
     }
 
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 12))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
             TextField("Search", text: $model.searchText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
-            if !model.searchText.isEmpty {
-                Button(action: { model.searchText = "" }) {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
+                .focused($searchFocused)
+                .onExitCommand { closeSearch() }
+            Button(action: closeSearch) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
             }
+            .buttonStyle(.plain)
+            .help("Clear and close search")
         }
-        .padding(.vertical, 5)
-        .padding(.horizontal, 8)
-        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+        .padding(.horizontal, 9)
+        .frame(height: 28)
+        .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
     // MARK: List
 
-    /// "Projects" + the way to add one. A folder-with-plus, not the bare `+` the
-    /// project rows carry: that one starts a session inside a project you already
-    /// have, and opening a project Temple has never seen is a different act.
-    private var projectsHeader: some View {
-        HStack(spacing: 4) {
-            Text("Projects")
-            Spacer(minLength: 4)
-            Button {
-                chooseProjectFolder { path in
-                    model.openSessions.newSessionDefaultAgent(projectPath: path)
-                }
-            } label: {
-                Image(systemName: "folder.badge.plus")
-                    .font(.system(size: 11))
-                    .foregroundStyle(headerHovering ? .secondary : .tertiary)
-                    .frame(width: 18, height: 16)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Open a project folder…")
-            // Centred on the same column as each project's `+`. A List section
-            // header carries a different trailing inset from its rows, so this is
-            // measured against the rendered `+` (their ink centres line up at
-            // 242.5pt), not derived from the paddings.
-            .padding(.trailing, 24.5)
-        }
-        .onHover { headerHovering = $0 }
-    }
-
+    /// A plain scroll of rows, not a `List`. The `.sidebar` List is an AppKit
+    /// source list whose row height comes from the system "Sidebar icon size"
+    /// through SwiftUI's own delegate — `defaultMinListRowHeight`,
+    /// `controlSize` and the table's `rowHeight` were each tried and none
+    /// moved a row off 32pt. Owning the layout gives the compact pitch, and
+    /// retires the negative row insets that used to fight the List's indent.
     private var sessionList: some View {
-        List {
-            if !model.pinnedSessions.isEmpty {
-                Section("Pinned") {
+        ScrollView(.vertical) {
+            // A plain VStack, not Lazy: under `withAnimation`, a LazyVStack
+            // animates children it re-creates from its own origin, so a
+            // collapsing project's rows flew up over the header to the top
+            // edge before they vanished. The rail is capped (projects and
+            // rows per project), so laying every row out is cheap.
+            VStack(alignment: .leading, spacing: 0) {
+                if !model.pinnedSessions.isEmpty {
+                    groupLabel("Pinned")
                     ForEach(model.pinnedSessions) { session in
                         SessionRow(session: session)
+                            .padding(.leading, ProjectDisclosure.childInset)
                     }
                 }
-            }
 
-            // ONE displayProjects pass per body: every access refilters and
-            // resorts all sessions, and this body re-runs on every publish.
-            let allProjects = model.displayProjects
-            let hidden = model.hiddenCount(allProjects)
-            Section(header: projectsHeader) {
+                // ONE displayProjects pass per body: every access refilters and
+                // resorts all sessions, and this body re-runs on every publish.
+                let allProjects = model.displayProjects
+                let hidden = model.hiddenCount(allProjects)
                 if allProjects.isEmpty && !model.isLoading {
                     Text(model.searchText.isEmpty ? "No sessions yet" : "No matches")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
                 }
                 ForEach(showAllProjects ? allProjects : model.capped(allProjects)) { project in
                     ProjectDisclosure(project: project)
@@ -113,22 +154,41 @@ struct SidebarView: View {
                            : "Show all projects (\(hidden) more)") {
                         showAllProjects.toggle()
                     }
-                    .font(.system(size: 11))
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .buttonStyle(.plain)
+                    .padding(.horizontal, 8)
+                    .frame(height: 28)
                 }
             }
+            .padding(.horizontal, 6)
+            .padding(.bottom, 8)
         }
-        .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
-        // With "Show scroll bars: Always" set in System Settings, AppKit gives the
-        // List a legacy scroller: a permanent ~15pt bar with a track, running the
-        // full height beside every row. Setting scrollerStyle on the NSScrollView
-        // does not stick (AppKit re-applies the system style on layout), so the
-        // indicator is removed outright — the sidebar is a short list you can see
-        // the extent of, not a document you navigate by scroll position.
+        // With "Show scroll bars: Always" set in System Settings, AppKit gives
+        // the scroll view a legacy scroller: a permanent ~15pt bar with a
+        // track, running the full height beside every row. Setting
+        // scrollerStyle on the NSScrollView does not stick (AppKit re-applies
+        // the system style on layout), so the indicator is removed outright —
+        // the sidebar is a short list you can see the extent of, not a
+        // document you navigate by scroll position.
         .scrollIndicators(.never)
+        .clipped()
         .background(SidebarScrollers())
+    }
+
+    /// A group heading without a disclosure, in the project headers' language.
+    private func groupLabel(_ title: String) -> some View {
+        HStack(spacing: 10) {
+            Text(title.uppercased())
+                .font(.system(size: 11, weight: .medium))
+                .tracking(1.4)
+                .foregroundStyle(.secondary)
+            Rectangle().fill(Palette.hairline).frame(height: 1)
+        }
+        .padding(.leading, 4 + 12 + 6)   // the project label's column
+        .padding(.trailing, 4)
+        .frame(height: 28)
+        .padding(.top, 12)
     }
 
     // MARK: Footer
@@ -138,21 +198,20 @@ struct SidebarView: View {
     /// UPWARD, right-aligned over the window: the gear sits in the window's
     /// bottom corner, and a default drop-down spilled outside the window.
     private var footer: some View {
+        // One line. The bar earns its place as the edge the list stops at —
+        // content scrolling clean off the window's bottom feels unfinished —
+        // so it holds only what has to be always visible: the meters and the
+        // gear. (A single-user app has nothing to say with an avatar.)
         HStack {
-            Image(systemName: "person.crop.circle.fill")
-                .font(.system(size: 18))
-                .foregroundStyle(.secondary)
-            Text(NSFullUserName().isEmpty ? "You" : NSFullUserName())
-                .font(.system(size: 12))
-                .lineLimit(1)
-            Spacer()
             UsageMeterView(usage: model.usage)
+            Spacer()
             FooterGearMenu(model: model)
                 .frame(width: 22, height: 22)
                 .help("Settings and more")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .frame(height: 36)
     }
 }
 
@@ -194,7 +253,6 @@ private struct UsageMeterView: View {
             .popover(isPresented: $showingCard, arrowEdge: .bottom) {
                 UsageCard(usage: usage)
             }
-            .padding(.trailing, 8)
         }
     }
 
@@ -451,11 +509,12 @@ private struct ProjectDisclosure: View {
         max(0, project.sessions.count - limit)
     }
 
-    /// Session rows indent one shallow step (ChatGPT-style density): the agent
-    /// badge sits under the folder icon, not under the project name. Manual
-    /// header + rows because DisclosureGroup's child outline indent is fixed
-    /// and much deeper.
-    private static let childInset: CGFloat = 8
+    /// Session rows indent one shallow step: the badge starts under the
+    /// project label's first letter (header: 4pt padding + 12pt chevron column
+    /// + 6pt gap = 22; row: this inset + its own 10pt padding), so the title
+    /// sits one badge width inside the heading. Manual header + rows because
+    /// DisclosureGroup's child outline indent is fixed and much deeper.
+    static let childInset: CGFloat = 12
 
     /// Where a project dragged over THIS one would land: a line above the
     /// header (before) or under the last visible row (after). Read from the
@@ -471,15 +530,37 @@ private struct ProjectDisclosure: View {
     /// its header — the thing in hand is the project.
     private var inHand: Bool { model.draggedProjectPath == project.path }
 
+    /// The rows' natural height, so the disclosure can animate the group's
+    /// frame between it and zero. A `.frame` animation clips: the rows are
+    /// revealed or hidden inside the group's own box, under its header. An
+    /// insert/remove transition did not — departing rows kept moving toward
+    /// the collapsed layout while fading, and were drawn up over the title
+    /// bar before they vanished.
+    @State private var rowsHeight: CGFloat = 0
+
     var body: some View {
         header
-        if expanded {
+        VStack(alignment: .leading, spacing: 0) {
+            rows
+        }
+        .background(GeometryReader { geo in
+            Color.clear
+                .onAppear { rowsHeight = geo.size.height }
+                .onChange(of: geo.size.height) { _, height in rowsHeight = height }
+        })
+        .frame(height: expanded ? rowsHeight : 0, alignment: .top)
+        .clipped()
+        // A collapsed group's rows are still laid out (at zero height) so the
+        // measurement holds; they must not catch the pointer through the clip.
+        .allowsHitTesting(expanded)
+    }
+
+    @ViewBuilder
+    private var rows: some View {
             ForEach(Array(shownSessions.enumerated()), id: \.element.id) { offset, session in
                 SessionRow(session: session)
                     .padding(.leading, Self.childInset)
                     .opacity(inHand ? 0.4 : 1)
-                    .listRowInsets(EdgeInsets(top: 1, leading: -10, bottom: 1, trailing: 8))
-                    .listRowBackground(Color.clear)
                     .onDrop(of: [Self.dragType], delegate: dropDelegate(row: session.id, edge: .bottom))
                     .overlay(alignment: .bottom) {
                         if dropIndicator == .bottom, !hasFooterRow, offset == shownSessions.count - 1 {
@@ -490,35 +571,24 @@ private struct ProjectDisclosure: View {
             if hasFooterRow {
                 HStack(spacing: 10) {
                     if hiddenCount > 0 {
-                        // The remaining count is the point: without it, one click
-                        // on a 53-session project is a surprise. It is only worth
-                        // showing when this batch won't finish the list.
-                        let next = min(Self.batch, hiddenCount)
-                        let title = next < hiddenCount
-                            ? "Show \(next) more (\(hiddenCount))"
-                            : "Show \(next) more"
-                        expandButton(title) { limit += Self.batch }
+                        // The count is the whole label: it says how deep the
+                        // project goes, so a click on a 53-session project is
+                        // no surprise. Each click reveals one batch.
+                        expandButton("Show \(hiddenCount) more") { limit += Self.batch }
                     }
                     if limit > Self.collapsedLimit {
                         expandButton("Show fewer") { limit = Self.collapsedLimit }
                     }
                 }
-                // Starts on the agent-badge column (both inks begin at 48.5pt).
-                // A plain Button's label sits further left in a List row than
-                // SessionRow's own content, so this inset is measured against the
-                // rendered badge, not derived from SessionRow's paddings.
-                .padding(.leading, Self.childInset + 26)
-                .padding(.trailing, 8)
-                .padding(.vertical, 2)
+                // Starts on the session title column, under the row text — a
+                // continuation of the list, not a control of its own.
+                .padding(.leading, Self.childInset + 31)
                 .opacity(inHand ? 0.4 : 1)
-                .listRowInsets(EdgeInsets(top: 1, leading: -10, bottom: 1, trailing: 8))
-                .listRowBackground(Color.clear)
                 .onDrop(of: [Self.dragType], delegate: dropDelegate(row: "footer", edge: .bottom))
                 .overlay(alignment: .bottom) {
                     if dropIndicator == .bottom { dropLine }
                 }
             }
-        }
     }
 
     // MARK: Drag to reorder
@@ -575,9 +645,10 @@ private struct ProjectDisclosure: View {
 
     private func expandButton(_ title: String, action: @escaping () -> Void) -> some View {
         Button(title, action: action)
-            .font(.system(size: 10.5))
-            .foregroundStyle(.tertiary)
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
             .buttonStyle(.plain)
+            .frame(height: 26)
     }
 
     private var header: some View {
@@ -585,20 +656,21 @@ private struct ProjectDisclosure: View {
         // The group in hand fades: the chip under the pointer is the project
         // now, and the gap it leaves is where it came from.
         .opacity(inHand ? 0.4 : 1)
-        .padding(.vertical, 3)
-        .padding(.horizontal, 6)
-        // Item C: hover highlight on the project header row too.
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(headerHovering ? Palette.hoverFill : Color.clear))
+        .padding(.horizontal, 4)
+        // No hover pill: a filled pill under a rule-style heading fought the
+        // rule. Hover shows the `+`; the label's tone lifts a step instead.
+        .animation(.easeOut(duration: 0.12), value: headerHovering)
         // Whole row toggles the disclosure (name, icon, empty space) —
         // matching the chevron. The `+` overlay keeps its own action.
         .contentShape(Rectangle())
         .onHover { headerHovering = $0 }
-        .onTapGesture { withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() } }
+        .onTapGesture { withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() } }
         .contextMenu { headerContextMenu }
         .overlay(alignment: .trailing) {
+            // Quiet until the pointer is on the row, like Finder's "Hide".
             NewSessionMenu(projectPath: project.path)
+                .opacity(headerHovering ? 1 : 0)
+                .animation(.easeOut(duration: 0.12), value: headerHovering)
         }
         // The header is the drag handle. Dropping on a header lands the
         // dragged project above it; when this project is collapsed, the lower
@@ -641,33 +713,39 @@ private struct ProjectDisclosure: View {
         .overlay(alignment: .bottom) {
             if dropIndicator == .bottom, !expanded { dropLine }
         }
-        // Negative leading inset cancels List's sidebar-section indent so the
-        // chevron column lines up with the "Projects" header.
-        .listRowInsets(EdgeInsets(top: 1, leading: -10, bottom: 1, trailing: 8))
-        .listRowBackground(Color.clear)
+        // The gap between groups: enough that the heading reads as a heading
+        // over its rows, not as the last row of the group above.
+        .padding(.top, 12)
     }
 
+    /// The group heading, in the launcher's section language: an uppercase,
+    /// letter-spaced label trailed by a hairline rule — one vocabulary across
+    /// the rail and the home pane. A small chevron leads it and rotates with
+    /// the disclosure. No folder glyph: every entry here is a folder.
     private var headerLabel: some View {
         HStack(spacing: 6) {
             Image(systemName: "chevron.right")
                 .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.tertiary)
                 .rotationEffect(.degrees(expanded ? 90 : 0))
                 .frame(width: 12)
-            // Hand-rolled, not Label(_, systemImage:): in a .sidebar List a
-            // Label picks up the sidebar label style, which dims with window
-            // key-state — making project titles the ONLY thing in the app
-            // that reacts to focus changes. Plain Image+Text render like the
-            // session rows below and hold steady.
-            Image(systemName: "folder")
-                .font(.system(size: 12, weight: .medium))
+            // Hand-rolled, not Label(_, systemImage:): a Label picks up the
+            // sidebar label style, which dims with window key-state — making
+            // project titles the ONLY thing in the app that reacts to focus
+            // changes. Plain Text renders like the session rows and holds.
+            Text(project.name.uppercased())
+                .font(.system(size: 11, weight: .medium))
+                .tracking(1.4)
                 .foregroundStyle(.secondary)
-            Text(project.name)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.primary)
                 .lineLimit(1)
-            Spacer(minLength: 4)
+            Rectangle()
+                .fill(Palette.hairline)
+                .frame(height: 1)
+                .padding(.leading, 4)
+                // The `+` lands over the rule's end on hover; leave it room.
+                .padding(.trailing, headerHovering ? 22 : 0)
         }
+        .frame(height: 28)
     }
 }
 
