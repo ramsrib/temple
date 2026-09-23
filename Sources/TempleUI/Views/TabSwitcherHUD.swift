@@ -82,7 +82,9 @@ struct TabSwitcherHUD: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(selected ? Palette.selectionFill : Color.clear)
+        .background(TabColorMark.rowFill(
+            TabColorMark.color(for: tab.sessionID, in: model),
+            selected: selected, hovering: false))
         .contentShape(Rectangle())
         .onTapGesture {
             model.tabSwitcherSelection = tab.id

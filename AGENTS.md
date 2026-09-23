@@ -42,6 +42,8 @@ Three traps, each hit for real:
   animation nothing outside the process can trigger without input injection:
   `kill -USR2 <pid>` toggles the sidebar (⌘B), `kill -INFO <pid>` folds/unfolds
   the first project. Fire USR1 in a 50ms loop right after either to get frames.
+  `TEMPLE_SNAPSHOT_PRESENT=palette|history|archive` opens that panel two seconds
+  after launch, for snapshots of rows no key chord can be posted to reach.
   Drive the UI with AppleScript (`tell application "System Events" to tell
   process "Temple" …` — the *bundled* `dist/Temple.app` binary, not the bare
   SwiftPM one, which has no windows System Events can see). The shot is a real

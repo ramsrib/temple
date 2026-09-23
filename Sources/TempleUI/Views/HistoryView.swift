@@ -270,8 +270,9 @@ struct HistoryResultRow: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
-        .background(selected ? Palette.selectionFill
-                             : (hovering ? Palette.hoverFill : Color.clear))
+        .background(TabColorMark.rowFill(
+            TabColorMark.color(for: session.id, in: model),
+            selected: selected, hovering: hovering))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
     }

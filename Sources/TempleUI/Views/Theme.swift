@@ -22,6 +22,26 @@ enum TabColorMark: String, CaseIterable, Identifiable {
     var color: Color { Color(nsColor: nsColor) }
 }
 
+extension TabColorMark {
+    /// The colour a session was marked with, if any.
+    @MainActor
+    static func color(for sessionID: String?, in model: AppModel) -> Color? {
+        sessionID
+            .flatMap { model.overlay.color(for: $0) }
+            .flatMap(TabColorMark.init(rawValue:))?
+            .color
+    }
+
+    /// A list row's fill in the chips' grammar: a marked row is a quiet wash
+    /// of its colour, deeper when selected or under the pointer, so the mark
+    /// you gave a tab is what you scan for in ⌘K, ⌘P and ⌘Y as well as in
+    /// the strip. Unmarked rows keep the neutral selection and hover fills.
+    static func rowFill(_ mark: Color?, selected: Bool, hovering: Bool) -> Color {
+        if let mark { return mark.opacity(selected ? 0.24 : hovering ? 0.12 : 0.08) }
+        return selected ? Palette.selectionFill : hovering ? Palette.hoverFill : .clear
+    }
+}
+
 // MARK: - Adaptive color helper
 
 extension Color {
