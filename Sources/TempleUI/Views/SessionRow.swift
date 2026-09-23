@@ -46,8 +46,11 @@ struct SessionRow: View {
                     .truncationMode(.tail)
                     // Two tones, not one: the sessions you have open are the
                     // ones you are working in, and they read at full strength;
-                    // the browsable history behind them steps back.
-                    .foregroundStyle(openTab != nil || hovering ? Color.primary : Color.primary.opacity(0.72))
+                    // the browsable history behind them steps back — but only
+                    // a step. Closed rows are most of the rail, and at 72% they
+                    // went mid-grey in dark mode; the open rows' surface pill
+                    // carries the rest of the distinction.
+                    .foregroundStyle(openTab != nil || hovering ? Color.primary : Color.primary.opacity(0.82))
                 if isPinned {
                     Image(systemName: "pin.fill")
                         .font(.system(size: 8))
