@@ -69,14 +69,14 @@ struct SessionRow: View {
             // Item C: selection stays distinct; hover adds a subtle fill. The
             // hairline seat matches the active tab chip — one selection
             // language across the strip and the rail.
-            // Open tabs sit on a faint surface at rest, so "what is open" is
-            // one glance down the rail; the highlighted row gets the stronger
-            // selection wash and its hairline seat.
+            // Only the highlighted row gets a fill at rest. Open tabs used to
+            // sit on a faint surface too, and in dark mode four open sessions
+            // read as four selections; their full-strength title and activity
+            // dot already say "open".
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(isHighlighted ? Palette.selectionFill
                           : hovering ? Palette.hoverFill
-                          : openTab != nil ? Palette.surfaceFill
                           : Color.clear)
                     .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .strokeBorder(Palette.hairline.opacity(isHighlighted ? 1 : 0))))
