@@ -24,22 +24,43 @@ struct SidebarView: View {
         // their own over the list. The magnifier unfolds the search field
         // under the band; the folder opens a project Temple has never seen
         // (a different act from a project row's `+`, which starts a session).
+        // The system sidebar toggle is replaced by our own: it is the one
+        // item whose glass capsule we cannot switch off, and one capsuled
+        // button beside two bare ones read as a mistake. Ours is the same
+        // glyph and the same action (⌘B), and travels with the other two.
+        .toolbar(removing: .sidebarToggle)
         .toolbar { toolbarItems }
     }
 
-    /// The two rail actions as toolbar items. On macOS 26 they opt out of the
-    /// shared glass capsule: when the sidebar collapses, AppKit slides the
-    /// items into the band and THEN regroups them into one capsule with the
-    /// toggle, pulling each about 10pt closer in a single unanimated step —
-    /// the jerk after the slide. Outside the capsule they only slide.
+    /// The rail's three toolbar items, ours including the sidebar toggle.
+    /// All of them sit in the sidebar's section of the band, beside the
+    /// traffic lights (Finder's placement), so toggling the sidebar moves
+    /// none of them — the material slides away behind. On macOS 26 they opt
+    /// out of the shared glass capsule: AppKit never draws it over the
+    /// sidebar material, only once the items are in the bare band, and
+    /// forming it compacts their spacing in one unanimated step. Measured
+    /// frame by frame; a capsule in both states is not on offer.
     @ToolbarContentBuilder
     private var toolbarItems: some ToolbarContent {
         if #available(macOS 26, *) {
             addProjectItem.sharedBackgroundVisibility(.hidden)
             searchItem.sharedBackgroundVisibility(.hidden)
+            sidebarToggleItem.sharedBackgroundVisibility(.hidden)
         } else {
             addProjectItem
             searchItem
+            sidebarToggleItem
+        }
+    }
+
+    private var sidebarToggleItem: some ToolbarContent {
+        ToolbarItem(placement: .automatic) {
+            Button {
+                withAnimation { model.toggleSidebar() }
+            } label: {
+                Image(systemName: "sidebar.leading")
+            }
+            .help(model.sidebarVisibility.isSidebarHidden ? "Show Sidebar" : "Hide Sidebar")
         }
     }
 
