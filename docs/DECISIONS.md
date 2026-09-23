@@ -441,3 +441,54 @@ touching a session file (ADR-007).
   items were tried first and rejected as too clumsy for a list this long. "Move
   to Top" by drag is therefore not a permanent top — a new project will still
   appear above it until placed. Accepted on purpose.
+
+## ADR-018 — The sidebar owns its layout; its actions live in the title bar
+**Date:** 2026-09-22 · **Status:** Accepted
+
+A redesign pass on the rail, aimed at readability and structure, not density
+(a first attempt that shrank rows was rejected: "compaction is not the goal").
+Four decisions came out of it.
+
+- **The rail is a plain `ScrollView { VStack }`, not a `.sidebar` List.** The
+  List is an AppKit source list whose row height comes from the system "Sidebar
+  icon size" through SwiftUI's own delegate — `defaultMinListRowHeight`,
+  `controlSize` and the table's `rowHeight` were each tried and none moved a
+  row — and a `LazyVStack` animated children it re-created from its own origin,
+  so a collapsing project's rows flew up over the header. Owning the layout
+  made the pitch ours and retired the negative row insets that fought the
+  List's indent. The disclosure is `if expanded { rows }` inside a clipped
+  stack: rows leave the tree when folded and are swallowed inside the group's
+  box while they fade. Cost accepted: nothing is lazy; the rail is capped, and
+  "Show all projects" is the one path that could make that felt.
+- **Project headers speak the launcher's section language.** Uppercase,
+  letter-spaced, a hairline rule, a chevron — one vocabulary across the rail
+  and the home pane, and the rows become the primary items, which is what you
+  click. Known cost, kept on purpose: caps and tracking cost long kebab-case
+  names width and case. Sessions are two-tone (open at full strength, history a
+  step back) with badges faded until open or hovered; a resting fill on open
+  rows was tried and removed — in dark mode it read as selection. The dot that
+  pulses is the one asking for you (needs attention), never running.
+- **The rail's actions are title-bar items, and the sidebar toggle is ours.**
+  Open-folder, search and the toggle sit as one `ToolbarItem` at the trailing
+  edge of the sidebar's section, opted out of macOS 26's shared glass capsule:
+  AppKit only forms the capsule once the items have slid into the bare band on
+  collapse, and forming it compacts their spacing in one unanimated step. The
+  system toggle cannot opt out, so it is removed (`.toolbar(removing:)`) and
+  replaced by a button with the same glyph and ⌘B's action. Consequence: the
+  title-bar tab strip measures the items parked beside the traffic lights
+  instead of budgeting a fixed inset for one toggle. Search unfolds from the
+  magnifier and folds when empty and unfocused; a permanent field was the
+  strongest element at the top and its removal was asked for.
+- **Colour tokens adapt, including the colour-mark wash.** A mark's wash over
+  a panel row is a `Palette` token with light and dark alphas, because a fixed
+  alpha of a saturated colour is a strong pastel on white next to the grey
+  selection and a faint band on the dark panel. The sidebar row keeps a 3pt
+  capsule as its density-appropriate rendering.
+
+Verification changed with it. Snapshots come from the in-process hook; the same
+gate installs `USR2` (toggle sidebar), `INFO` (fold the first project),
+`TEMPLE_SNAPSHOT_PRESENT` (open a panel through its real toggle) and
+`TEMPLE_SNAPSHOT_APPEARANCE` (force a theme through `AppModel.effectiveTheme`,
+never the persisted setting), because two of the day's bugs — rows drawn over
+the title bar, a fill that read as selection only in dark mode — were invisible
+to code review and to a light-mode, one-tab snapshot.

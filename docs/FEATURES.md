@@ -51,8 +51,16 @@ back to the first human prompt
 - Projects and sessions are ordered by recency at launch, then frozen for that
   app run so activity cannot move a row under the pointer. Newly discovered
   entries prepend without reshuffling existing entries.
-- Projects reorder by drag: the header is the handle. A chip with the folder
-  name follows the pointer and the whole group in hand dims. Dropping on another
+- Each project is a section: an uppercase, letter-spaced label trailed by a
+  hairline rule — the launcher's own section language — led by a chevron that
+  folds the group. A folded group hides its rows inside its own box; nothing
+  crosses the header. The `+` that starts a session in that project appears on
+  hover at the rule's end. Session rows sit under the label at 32pt: agent
+  badge, title, and the activity dot when the session has an open tab. Open
+  sessions read at full strength; the browsable history behind them steps
+  back a tone, and its badges are faded until hovered.
+- Projects reorder by drag: the header is the handle. A label set like the
+  header follows the pointer and the whole group in hand dims. Dropping on another
   project's header lands above it; dropping anywhere in its body lands below it,
   and an insertion line shows where. A collapsed project has no body, so the
   lower half of its header means below it. The order persists. A manual order
@@ -60,8 +68,8 @@ back to the first human prompt
   new project still surfaces at the top rather than under the eight-project cap.
 - The initial view shows up to eight projects and six sessions per project.
   **Show all projects** reveals the rest of the projects; within a project,
-  **Show more** reveals ten further sessions at a time and reports how many
-  remain, and **Show fewer** folds the list back.
+  **Show N more** names how many are folded away and reveals ten at a time,
+  and **Show fewer** folds the list back.
 - Filesystem watching, an index cache, and retries for files caught mid-write
   keep the index current without blocking launch.
 - Agent badges distinguish Claude Code and Codex. Ambient and automation noise
@@ -69,7 +77,8 @@ back to the first human prompt
 - Sessions can be renamed, pinned, and color-marked. Pinned sessions appear in a
   dedicated section and custom names become their displayed and searchable
   titles. A color mark set on a session's tab shows in the sidebar as a slim
-  leading capsule.
+  leading capsule, and as a wash over the session's row in the `⌘K` palette,
+  the `⌃⇥` tab switcher, and the `⌘Y` / `⌘⇧Y` browsers.
 - A session-row context menu can open or focus the session, copy its resume
   command or ID, reveal its source file in Finder, rename it, pin or unpin it,
   archive it, and close its tab when open. A session with an open tab cannot be
@@ -82,8 +91,14 @@ back to the first human prompt
   Archiving a session clears its pin; archiving a project only hides the pins
   inside it, and they return with the project. Nothing archived appears in the
   sidebar — `⌘⇧Y` is the way back.
-- The native sidebar can be shown or hidden. When hidden, the working surface
-  expands to the window edge.
+- The sidebar's actions live in the title bar, at the trailing edge of its
+  section: open a project folder, search, and the sidebar toggle — Temple's own
+  button, in place of the system one, so the three behave as one group. When
+  the sidebar is hidden they slide in beside the traffic lights and the
+  working surface expands to the window edge; the tab strip measures where
+  they end and starts after them.
+- The footer is one line: the subscription meters on the left, the settings
+  gear on the right. It is the edge the list stops at.
 
 ### Select versus open
 
@@ -108,7 +123,8 @@ The sidebar and tab bar form a two-part navigation model:
   dot when an agent there is running or waiting. Choosing one returns to the
   session last used in it.
 - A project Temple has never seen is opened by choosing its folder, from the
-  switcher, from the sidebar's Projects header, or from the home page. That
+  switcher, from the folder button in the sidebar's title bar, or from the home
+  page. That
   control is a folder, never the `+` that starts a session inside a project you
   already have.
 - `⌘P` is the keyboard route between projects, shaped like the macOS app switcher
@@ -146,8 +162,9 @@ the terminal; there is no bottom composer and no intervening shell.
   cancels, and an emptied field reverts to the automatic title.
 - A chip can carry one of seven fixed color marks (context menu → Color),
   Warp-style: the chip's fill and hairline take the tint, as does its drag
-  preview and sidebar row. Marks are keyed to the session, so they survive
-  closing the tab and relaunching Temple.
+  preview; the sidebar row carries it as a leading capsule and the palette,
+  switcher and history rows as a wash. Marks are keyed to the session, so they
+  survive closing the tab and relaunching Temple.
 - The trailing `+` menu starts a new Claude or Codex session in the active
   project. `⌘T` takes the default-agent fast path.
 - Tabs are drag-reorderable within their project. Temple persists each
@@ -225,8 +242,11 @@ prompt composer.
 
 ## Command palette, history & search
 
-- Sidebar search filters session titles in place. It does not auto-focus at
-  launch and has no shortcut (`⌘F` is find-in-terminal); click the field.
+- Sidebar search filters session titles in place. The magnifier in the
+  sidebar's title bar unfolds the field under the band and focuses it, revealing
+  the sidebar first if it was hidden; the field folds away when it is empty and
+  loses focus, on Esc, or from its ✕. It has no shortcut (`⌘F` is
+  find-in-terminal).
 - `⌘K` opens a top-anchored command palette. With an empty query it is a
   switcher over the **open** sessions only, most recent activity first (live
   recency, unlike the launch-frozen sidebar). Browsing everything is `⌘Y`'s
@@ -266,7 +286,7 @@ Every open session has an activity dot in both its tab chip and sidebar row:
 |---|---|
 | Green | The agent is running. |
 | Gray | The tab is open and idle. |
-| Orange | A background session needs attention. |
+| Orange, pulsing | A background session needs attention — the one dot that moves. |
 | Red | The process exited during the retained launch-failure window. |
 
 Temple derives these states from signals available through the terminal. A
@@ -364,8 +384,8 @@ provides the local installation path. The bundle identifier is
 The app adopts the login-shell `PATH` so GUI-launched sessions can find the
 agent CLIs, raises its file-descriptor limit for large session stores, and uses a
 Temple-owned terminal configuration. Its single main window uses a native
-unified toolbar, standard macOS sidebar behavior, and System / Light / Dark
-appearance.
+unified toolbar, a standard macOS split view with Temple's own sidebar toggle,
+and System / Light / Dark appearance.
 
 ## Roadmap / TODO
 
