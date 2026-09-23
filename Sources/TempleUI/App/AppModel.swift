@@ -389,8 +389,26 @@ public final class AppModel: ObservableObject {
     }
 
     /// Push theme to AppKit chrome + every open terminal surface.
+    /// The theme in force: the user's setting, unless a dev-only snapshot run
+    /// forces one. `TEMPLE_SNAPSHOT_APPEARANCE=dark|light` is read once and
+    /// never persisted — the setting would write the real UserDefaults domain
+    /// (AGENTS.md). Every appearance path resolves through here, so the
+    /// override cannot be undone by the next `applyAppearance()` or by
+    /// RootView's `preferredColorScheme`, both of which read the setting.
+    public var effectiveTheme: ThemePreference { Self.forcedTheme ?? settings.theme }
+
+    private static let forcedTheme: ThemePreference? = {
+        let env = ProcessInfo.processInfo.environment
+        guard env["TEMPLE_SNAPSHOT_DIR"] != nil else { return nil }
+        switch env["TEMPLE_SNAPSHOT_APPEARANCE"] {
+        case "dark": return .dark
+        case "light": return .light
+        default: return nil
+        }
+    }()
+
     public func applyAppearance() {
-        NSApplication.shared.appearance = settings.theme.nsAppearance
+        NSApplication.shared.appearance = effectiveTheme.nsAppearance
         let appearance = currentAppearance()
         for surface in openSessions.allSurfaces {
             surface.apply(appearance)

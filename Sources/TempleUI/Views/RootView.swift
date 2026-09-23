@@ -26,7 +26,7 @@ public struct RootView: View {
             // The project control belongs at the FAR end of the title bar, not
             // among the tabs: the tabs are the sessions inside this project, so a
             // project control sitting among them reads as one of them.
-            .preferredColorScheme(model.settings.theme.colorScheme)
+            .preferredColorScheme(model.effectiveTheme.colorScheme)
 
             if model.commandPalettePresented {
                 paletteOverlay
@@ -62,11 +62,14 @@ public struct RootView: View {
         .onAppear {
             let env = ProcessInfo.processInfo.environment
             guard env["TEMPLE_SNAPSHOT_DIR"] != nil, let panel = env["TEMPLE_SNAPSHOT_PRESENT"] else { return }
+            // Through the same toggles ⌘K/⌘Y/⌘⇧Y use, so the snapshot shows
+            // the real presentation path — panel exclusivity, switcher
+            // cancellation — not a bare flag flip.
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 switch panel {
-                case "palette": model.commandPalettePresented = true
-                case "history": model.historyPresented = true
-                case "archive": model.archivePresented = true
+                case "palette": if !model.commandPalettePresented { model.toggleCommandPalette() }
+                case "history": if !model.historyPresented { model.toggleHistory() }
+                case "archive": if !model.archivePresented { model.toggleArchive() }
                 default: break
                 }
             }
