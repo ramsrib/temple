@@ -19,15 +19,16 @@ struct SidebarView: View {
             footer
         }
         .background(.ultraThinMaterial)
-        // The rail's actions live in the title bar with the sidebar toggle,
-        // where a Mac app keeps them (Finder, Mail, Notes) — not in a row of
-        // their own over the list. The magnifier unfolds the search field
-        // under the band; the folder opens a project Temple has never seen
-        // (a different act from a project row's `+`, which starts a session).
-        // The system sidebar toggle is replaced by our own: it is the one
-        // item whose glass capsule we cannot switch off, and one capsuled
-        // button beside two bare ones read as a mistake. Ours is the same
-        // glyph and the same action (⌘B), and travels with the other two.
+        // The rail's actions live in the title bar, where a Mac app keeps
+        // them (Finder, Mail, Notes) — not in a row of their own over the
+        // list. The magnifier unfolds the search field under the band; the
+        // folder opens a project Temple has never seen (a different act from
+        // a project row's `+`, which starts a session). The system sidebar
+        // toggle is replaced by our own: it is the one item whose glass
+        // capsule we cannot switch off, and one capsuled button beside two
+        // bare ones read as a mistake. Ours is the same glyph and the same
+        // action as the View menu's own Toggle Sidebar (⌘B, `TempleCommands`
+        // already replaces the system menu item), so nothing is lost.
         .toolbar(removing: .sidebarToggle)
         .toolbar { toolbarItems }
     }
@@ -80,8 +81,6 @@ struct SidebarView: View {
                 }
                 .help(model.sidebarVisibility.isSidebarHidden ? "Show Sidebar" : "Hide Sidebar")
             }
-            // Toolbar-style hover pills on each button, without item padding;
-            // regular control size for the pitch, toolbar-size glyphs kept.
             // Toolbar-style hover pills on each button, without item padding:
             // ~36pt pitch against the ~44pt of separate items. The small
             // control size gets nearer Xcode's switcher but pins the glyphs
@@ -93,9 +92,6 @@ struct SidebarView: View {
 
     // MARK: Header
 
-    /// One slim row under the native toolbar band: the search field, and the
-    /// way to add a project. No wordmark, no "Projects" label — the list
-    /// below is self-evidently that.
     @State private var searchOpen = false
     @FocusState private var searchFocused: Bool
 
@@ -171,7 +167,7 @@ struct SidebarView: View {
     /// source list whose row height comes from the system "Sidebar icon size"
     /// through SwiftUI's own delegate — `defaultMinListRowHeight`,
     /// `controlSize` and the table's `rowHeight` were each tried and none
-    /// moved a row off 32pt. Owning the layout gives the compact pitch, and
+    /// moved a row. Owning the layout makes the row pitch ours to set, and
     /// retires the negative row insets that used to fight the List's indent.
     private var sessionList: some View {
         ScrollView(.vertical) {

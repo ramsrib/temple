@@ -59,7 +59,7 @@ struct SessionRow: View {
                     ActivityDot(state: activity)
                 }
             }
-            // The 30pt frame below sets the pitch; the pill runs the row's
+            // The 32pt frame below sets the pitch; the pill runs the row's
             // full height so hover and selection read as one soft shape.
             .padding(.horizontal, 10)
             .frame(maxHeight: .infinity)
