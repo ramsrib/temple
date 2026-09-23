@@ -39,6 +39,18 @@ enum WindowSnapshot {
         guard let dir = ProcessInfo.processInfo.environment["TEMPLE_SNAPSHOT_DIR"],
               !dir.isEmpty else { return }
         let directory = URL(fileURLWithPath: dir)
+
+        // TEMPLE_SNAPSHOT_APPEARANCE=dark|light forces the app appearance for
+        // this process only. The theme *setting* would do the same, but it is
+        // persisted to the real UserDefaults domain (see AGENTS.md); this
+        // touches nothing on disk. A fill that is fine in light mode can be a
+        // shade off the selection wash in dark — that shipped once.
+        switch ProcessInfo.processInfo.environment["TEMPLE_SNAPSHOT_APPEARANCE"] {
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        default: break
+        }
+
         signal(SIGUSR1, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
         source.setEventHandler {
