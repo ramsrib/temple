@@ -54,26 +54,20 @@ enum FieldFocus {
 }
 
 /// A small colored activity dot: running / idle / needs-attention / exited.
-/// A running agent's dot breathes — a slow, small pulse — so "working" is
-/// visible in motion, not only in hue.
+/// A running agent's dot pulses so "working" is visible in motion, not only
+/// in hue. The pulse is the system symbol effect, not a repeatForever
+/// animation: that one is a single transaction any ancestor's `withAnimation`
+/// (a disclosure toggle, ⌘B) could interrupt and leave parked mid-breath.
 struct ActivityDot: View {
     let state: ActivityState
     var size: CGFloat = 6
-    @State private var breathing = false
-
-    private var isRunning: Bool { state == .running }
 
     var body: some View {
-        Circle()
-            .fill(state.dotColor)
+        Image(systemName: "circle.fill")
+            .resizable()
             .frame(width: size, height: size)
-            .opacity(state.showsDot ? (isRunning && breathing ? 0.45 : 1) : 0)
-            .scaleEffect(isRunning && breathing ? 0.8 : 1)
-            .animation(isRunning
-                       ? .easeInOut(duration: 1.1).repeatForever(autoreverses: true)
-                       : .default,
-                       value: breathing)
-            .onAppear { breathing = isRunning }
-            .onChange(of: isRunning) { _, running in breathing = running }
+            .foregroundStyle(state.dotColor)
+            .symbolEffect(.pulse, options: .repeating, isActive: state == .running)
+            .opacity(state.showsDot ? 1 : 0)
     }
 }

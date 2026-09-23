@@ -38,6 +38,10 @@ Three traps, each hit for real:
   terminal was never granted Screen Recording — is the app's own snapshot hook:
   launch with `TEMPLE_SNAPSHOT_DIR=<dir>` and send `kill -USR1 <pid>`; the app
   renders its window in-process to `<dir>/snapshot-NN.png` (`WindowSnapshot.swift`).
+  The same gate installs two gesture hooks for frame-by-frame checks of an
+  animation nothing outside the process can trigger without input injection:
+  `kill -USR2 <pid>` toggles the sidebar (⌘B), `kill -INFO <pid>` folds/unfolds
+  the first project. Fire USR1 in a 50ms loop right after either to get frames.
   Drive the UI with AppleScript (`tell application "System Events" to tell
   process "Temple" …` — the *bundled* `dist/Temple.app` binary, not the bare
   SwiftPM one, which has no windows System Events can see). The shot is a real

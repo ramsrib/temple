@@ -46,7 +46,31 @@ enum WindowSnapshot {
         }
         source.resume()
         self.source = source
+
+        // USR2 toggles the sidebar (⌘B) — the one gesture a frame-by-frame
+        // check of the collapse needs and nothing outside the process can post
+        // without global input injection (see the no-injection rule). Same
+        // gate as the snapshots: inert unless TEMPLE_SNAPSHOT_DIR is set.
+        signal(SIGUSR2, SIG_IGN)
+        let toggle = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
+        toggle.setEventHandler {
+            NotificationCenter.default.post(name: .templeDebugToggleSidebar, object: nil)
+        }
+        toggle.resume()
+        self.toggleSource = toggle
+
+        // INFO folds/unfolds the first project in the rail, for the same
+        // reason: the collapse animation is what needs watching.
+        signal(SIGINFO, SIG_IGN)
+        let fold = DispatchSource.makeSignalSource(signal: SIGINFO, queue: .main)
+        fold.setEventHandler {
+            NotificationCenter.default.post(name: .templeDebugToggleFirstProject, object: nil)
+        }
+        fold.resume()
+        self.foldSource = fold
     }
+    private static var toggleSource: DispatchSourceSignal?
+    private static var foldSource: DispatchSourceSignal?
 
     /// The frontmost visible window's screen rectangle, chrome included (the
     /// titlebar and traffic lights are exactly what the sidebar-inset checks in
@@ -106,4 +130,11 @@ enum WindowSnapshot {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try? png.write(to: file)
     }
+}
+
+extension Notification.Name {
+    /// Posted by the dev-only USR2 hook; RootView answers it with ⌘B's action.
+    static let templeDebugToggleSidebar = Notification.Name("temple.debug.toggleSidebar")
+    /// Posted by the dev-only INFO hook; the first project's disclosure toggles.
+    static let templeDebugToggleFirstProject = Notification.Name("temple.debug.toggleFirstProject")
 }

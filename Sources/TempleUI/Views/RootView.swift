@@ -51,6 +51,11 @@ public struct RootView: View {
             }
         }
         .tint(Palette.accent)              // neutral accent everywhere (no blue)
+        // Dev-only: `kill -USR2 <pid>` toggles the sidebar exactly as ⌘B does
+        // (WindowSnapshot installs the hook; inert without TEMPLE_SNAPSHOT_DIR).
+        .onReceive(NotificationCenter.default.publisher(for: .templeDebugToggleSidebar)) { _ in
+            withAnimation { model.toggleSidebar() }
+        }
         // AppKit hands initial key focus to the first text field it finds —
         // the sidebar search — and can re-seat it while the window settles,
         // so a single async clear leaves a gap where fast launch typing

@@ -126,10 +126,12 @@ final class TabStripContainerView: NSView {
     private var rightCueWidth: NSLayoutConstraint!
 
     /// Fallback for the band's leading obstruction when no toolbar item can
-    /// be measured: traffic lights plus the sidebar-toggle button, which joins
-    /// them in the band while the sidebar is collapsed. Normally the
-    /// obstruction is measured — see `leadingObstruction()`.
-    private static let windowButtonsInset: CGFloat = 144
+    /// be measured: traffic lights plus the three buttons that park beside
+    /// them while the sidebar is collapsed (add-project, search, toggle),
+    /// measured at ~180pt on macOS 26. Normally the obstruction is measured
+    /// — see `leadingObstruction()` — and this is only reached when the
+    /// toolbar's private view hierarchy stops matching, which is logged.
+    private static let windowButtonsInset: CGFloat = 190
     /// Breathing room between the divider/window-buttons and the switcher.
     private static let leadingGap: CGFloat = 4
     /// Gap between the last visible chip pixel and the pinned `+`, and between
@@ -244,8 +246,18 @@ final class TabStripContainerView: NSView {
             }
         }
         walk(band)
-        return maxX > 0 ? maxX : Self.windowButtonsInset
+        if maxX == 0 {
+            // Once, not per layout pass: the failure is a wrong inset that
+            // someone will see, and the log should say why.
+            if !Self.warnedNoToolbarItems {
+                Self.warnedNoToolbarItems = true
+                TempleUILog.launch.warning("titlebar strip: no toolbar item views found in the band; using the fixed leading inset")
+            }
+            return Self.windowButtonsInset
+        }
+        return maxX
     }
+    private static var warnedNoToolbarItems = false
 
     init(model: AppModel) {
         pinnedHost = StripHostingView(rootView: AnyView(

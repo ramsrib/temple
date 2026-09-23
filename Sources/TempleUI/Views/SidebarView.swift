@@ -24,25 +24,51 @@ struct SidebarView: View {
         // their own over the list. The magnifier unfolds the search field
         // under the band; the folder opens a project Temple has never seen
         // (a different act from a project row's `+`, which starts a session).
-        .toolbar {
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    chooseProjectFolder { path in
-                        model.openSessions.newSessionDefaultAgent(projectPath: path)
-                    }
-                } label: {
-                    Image(systemName: "folder.badge.plus")
+        .toolbar { toolbarItems }
+    }
+
+    /// The two rail actions as toolbar items. On macOS 26 they opt out of the
+    /// shared glass capsule: when the sidebar collapses, AppKit slides the
+    /// items into the band and THEN regroups them into one capsule with the
+    /// toggle, pulling each about 10pt closer in a single unanimated step —
+    /// the jerk after the slide. Outside the capsule they only slide.
+    @ToolbarContentBuilder
+    private var toolbarItems: some ToolbarContent {
+        if #available(macOS 26, *) {
+            addProjectItem.sharedBackgroundVisibility(.hidden)
+            searchItem.sharedBackgroundVisibility(.hidden)
+        } else {
+            addProjectItem
+            searchItem
+        }
+    }
+
+    private var addProjectItem: some ToolbarContent {
+        // `.automatic`, deliberately: declared on the sidebar column it means
+        // "the sidebar's section of the band", which is what AppKit parks
+        // beside the traffic lights when the sidebar collapses — and what
+        // the title-bar strip measures around. `.navigation` was tried and
+        // AppKit swept both items into an overflow chevron in the detail area.
+        ToolbarItem(placement: .automatic) {
+            Button {
+                chooseProjectFolder { path in
+                    model.openSessions.newSessionDefaultAgent(projectPath: path)
                 }
-                .help("Open a project folder…")
+            } label: {
+                Image(systemName: "folder.badge.plus")
             }
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    searchOpen ? closeSearch() : openSearch()
-                } label: {
-                    Image(systemName: "magnifyingglass")
-                }
-                .help("Search sessions")
+            .help("Open a project folder…")
+        }
+    }
+
+    private var searchItem: some ToolbarContent {
+        ToolbarItem(placement: .automatic) {
+            Button {
+                searchOpen ? closeSearch() : openSearch()
+            } label: {
+                Image(systemName: "magnifyingglass")
             }
+            .help("Search sessions")
         }
     }
 
@@ -74,10 +100,18 @@ struct SidebarView: View {
     }
 
     private func openSearch() {
-        withAnimation(.easeOut(duration: 0.15)) { searchOpen = true }
-        // Focus lands after the field exists; same-turn focus on a view that
-        // is only now being inserted is dropped.
-        DispatchQueue.main.async { searchFocused = true }
+        withAnimation(.easeOut(duration: 0.15)) {
+            searchOpen = true
+            // The magnifier survives in the band when the sidebar is
+            // collapsed; a search you cannot see is not open. Bring the
+            // rail back with the field.
+            if model.sidebarVisibility.isSidebarHidden { model.sidebarVisibility = .all }
+        }
+        // Take focus from a live terminal the same way every other field
+        // does (FieldFocus): a plain focus assignment leaves the terminal
+        // as first responder, and typing keeps reaching the agent. The
+        // focus itself lands a turn later, once the field exists.
+        FieldFocus.claim { searchFocused = true }
     }
 
     private func closeSearch() {
@@ -107,7 +141,9 @@ struct SidebarView: View {
         .padding(.horizontal, 9)
         .frame(height: 28)
         .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .transition(.opacity.combined(with: .move(edge: .top)))
+        // A fade only: a slide from the top edge would draw over the title
+        // bar band, the very artifact the disclosure fix removed.
+        .transition(.opacity)
     }
 
     // MARK: List
@@ -145,8 +181,9 @@ struct SidebarView: View {
                         .padding(.horizontal, 6)
                         .padding(.vertical, 4)
                 }
-                ForEach(showAllProjects ? allProjects : model.capped(allProjects)) { project in
-                    ProjectDisclosure(project: project)
+                let shown = showAllProjects ? allProjects : model.capped(allProjects)
+                ForEach(shown) { project in
+                    ProjectDisclosure(project: project, isFirst: project.id == shown.first?.id)
                 }
                 if model.searchText.isEmpty && hidden > 0 {
                     Button(showAllProjects
@@ -174,6 +211,8 @@ struct SidebarView: View {
         .scrollIndicators(.never)
         .clipped()
         .background(SidebarScrollers())
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Sessions")
     }
 
     /// A group heading without a disclosure, in the project headers' language.
@@ -189,6 +228,9 @@ struct SidebarView: View {
         .padding(.trailing, 4)
         .frame(height: 28)
         .padding(.top, 12)
+        // The List's Section used to announce this as a heading; the
+        // stack has to say so itself.
+        .accessibilityAddTraits(.isHeader)
     }
 
     // MARK: Footer
@@ -490,6 +532,8 @@ private struct ProjectDisclosure: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.undoManager) private var undoManager
     let project: Project
+    /// Only the dev-only fold hook reads this.
+    var isFirst = false
     @State private var expanded = true
     @State private var headerHovering = false
 
@@ -530,29 +574,27 @@ private struct ProjectDisclosure: View {
     /// its header — the thing in hand is the project.
     private var inHand: Bool { model.draggedProjectPath == project.path }
 
-    /// The rows' natural height, so the disclosure can animate the group's
-    /// frame between it and zero. A `.frame` animation clips: the rows are
-    /// revealed or hidden inside the group's own box, under its header. An
-    /// insert/remove transition did not — departing rows kept moving toward
-    /// the collapsed layout while fading, and were drawn up over the title
-    /// bar before they vanished.
-    @State private var rowsHeight: CGFloat = 0
-
     var body: some View {
         header
+        // The disclosure: rows leave the tree when collapsed — nothing is
+        // built or laid out for a folded project — and the group clips, so
+        // the reveal and the fold both happen inside the group's own box,
+        // under its header. Departing rows keep their last frame while they
+        // fade, and the shrinking clip swallows them from the bottom. (The
+        // previous measure-then-frame approach kept collapsed rows alive at
+        // zero height and painted one stale frame on every height change.)
         VStack(alignment: .leading, spacing: 0) {
-            rows
+            if expanded {
+                rows
+            }
         }
-        .background(GeometryReader { geo in
-            Color.clear
-                .onAppear { rowsHeight = geo.size.height }
-                .onChange(of: geo.size.height) { _, height in rowsHeight = height }
-        })
-        .frame(height: expanded ? rowsHeight : 0, alignment: .top)
         .clipped()
-        // A collapsed group's rows are still laid out (at zero height) so the
-        // measurement holds; they must not catch the pointer through the clip.
-        .allowsHitTesting(expanded)
+        .onReceive(NotificationCenter.default.publisher(for: .templeDebugToggleFirstProject)) { _ in
+            // Dev-only (WindowSnapshot): fold/unfold the first project so the
+            // animation can be captured frame by frame without a click.
+            guard isFirst else { return }
+            withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
+        }
     }
 
     @ViewBuilder
@@ -561,6 +603,7 @@ private struct ProjectDisclosure: View {
                 SessionRow(session: session)
                     .padding(.leading, Self.childInset)
                     .opacity(inHand ? 0.4 : 1)
+                    .transition(.opacity)
                     .onDrop(of: [Self.dragType], delegate: dropDelegate(row: session.id, edge: .bottom))
                     .overlay(alignment: .bottom) {
                         if dropIndicator == .bottom, !hasFooterRow, offset == shownSessions.count - 1 {
@@ -581,9 +624,13 @@ private struct ProjectDisclosure: View {
                     }
                 }
                 // Starts on the session title column, under the row text — a
-                // continuation of the list, not a control of its own.
+                // continuation of the list, not a control of its own. Spans
+                // the row so it drops (and draws its insertion line) across
+                // the same width as a session row, not just under the button.
                 .padding(.leading, Self.childInset + 31)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .opacity(inHand ? 0.4 : 1)
+                .transition(.opacity)
                 .onDrop(of: [Self.dragType], delegate: dropDelegate(row: "footer", edge: .bottom))
                 .overlay(alignment: .bottom) {
                     if dropIndicator == .bottom { dropLine }
@@ -657,6 +704,12 @@ private struct ProjectDisclosure: View {
         // now, and the gap it leaves is where it came from.
         .opacity(inHand ? 0.4 : 1)
         .padding(.horizontal, 4)
+        // The gap between groups belongs to the header — inside its hit
+        // shape, its drop target and its measured height — so a project
+        // dragged down the rail never crosses a dead band where the
+        // insertion line blinks off. It also puts the "before this project"
+        // line in the gap, where an insertion between groups reads right.
+        .padding(.top, 12)
         // No hover pill: a filled pill under a rule-style heading fought the
         // rule. Hover shows the `+`; the label's tone lifts a step instead.
         .animation(.easeOut(duration: 0.12), value: headerHovering)
@@ -713,9 +766,6 @@ private struct ProjectDisclosure: View {
         .overlay(alignment: .bottom) {
             if dropIndicator == .bottom, !expanded { dropLine }
         }
-        // The gap between groups: enough that the heading reads as a heading
-        // over its rows, not as the last row of the group above.
-        .padding(.top, 12)
     }
 
     /// The group heading, in the launcher's section language: an uppercase,
@@ -746,6 +796,10 @@ private struct ProjectDisclosure: View {
                 .padding(.trailing, headerHovering ? 22 : 0)
         }
         .frame(height: 28)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(project.name)
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityValue(expanded ? "expanded" : "collapsed")
     }
 }
 
