@@ -54,10 +54,12 @@ enum FieldFocus {
 }
 
 /// A small colored activity dot: running / idle / needs-attention / exited.
-/// A running agent's dot pulses so "working" is visible in motion, not only
-/// in hue. The pulse is the system symbol effect, not a repeatForever
-/// animation: that one is a single transaction any ancestor's `withAnimation`
-/// (a disclosure toggle, ⌘B) could interrupt and leave parked mid-breath.
+/// The dot that pulses is the one asking for you: an agent waiting on input
+/// in a tab you are not looking at. Running needs nothing from you, so it
+/// holds still — six working agents should not mean twelve breathing dots.
+/// The pulse is the system symbol effect, not a repeatForever animation:
+/// that one is a single transaction any ancestor's `withAnimation` (a
+/// disclosure toggle, ⌘B) could interrupt and leave parked mid-breath.
 struct ActivityDot: View {
     let state: ActivityState
     var size: CGFloat = 6
@@ -67,7 +69,7 @@ struct ActivityDot: View {
             .resizable()
             .frame(width: size, height: size)
             .foregroundStyle(state.dotColor)
-            .symbolEffect(.pulse, options: .repeating, isActive: state == .running)
+            .symbolEffect(.pulse, options: .repeating, isActive: state == .needsAttention)
             .opacity(state.showsDot ? 1 : 0)
     }
 }
