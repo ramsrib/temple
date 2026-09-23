@@ -41,58 +41,53 @@ struct SidebarView: View {
     /// both states is not on offer.
     @ToolbarContentBuilder
     private var toolbarItems: some ToolbarContent {
-        // Flexible space first: the items sit at the trailing edge of the
+        // Flexible space first: the group sits at the trailing edge of the
         // sidebar's section, by the divider, where Notes and Mail keep the
         // toggle. Without it they hugged the traffic lights.
         ToolbarItem(placement: .automatic) { Spacer() }
+        // One item holding all three, not three items: separate items — and
+        // a ToolbarItemGroup with the capsule off — lay out at the standard
+        // ~44pt pitch and read as unrelated. Related actions on the Mac pack
+        // into one control (Xcode's navigator switcher); this is that.
         if #available(macOS 26, *) {
-            addProjectItem.sharedBackgroundVisibility(.hidden)
-            searchItem.sharedBackgroundVisibility(.hidden)
-            sidebarToggleItem.sharedBackgroundVisibility(.hidden)
+            railActions.sharedBackgroundVisibility(.hidden)
         } else {
-            addProjectItem
-            searchItem
-            sidebarToggleItem
+            railActions
         }
     }
 
-    private var sidebarToggleItem: some ToolbarContent {
+    private var railActions: some ToolbarContent {
         ToolbarItem(placement: .automatic) {
-            Button {
-                withAnimation { model.toggleSidebar() }
-            } label: {
-                Image(systemName: "sidebar.leading")
-            }
-            .help(model.sidebarVisibility.isSidebarHidden ? "Show Sidebar" : "Hide Sidebar")
-        }
-    }
-
-    private var addProjectItem: some ToolbarContent {
-        // `.automatic`, deliberately: declared on the sidebar column it means
-        // "the sidebar's section of the band", which is what AppKit parks
-        // beside the traffic lights when the sidebar collapses — and what
-        // the title-bar strip measures around. `.navigation` was tried and
-        // AppKit swept both items into an overflow chevron in the detail area.
-        ToolbarItem(placement: .automatic) {
-            Button {
-                chooseProjectFolder { path in
-                    model.openSessions.newSessionDefaultAgent(projectPath: path)
+            HStack(spacing: 0) {
+                Button {
+                    chooseProjectFolder { path in
+                        model.openSessions.newSessionDefaultAgent(projectPath: path)
+                    }
+                } label: {
+                    Image(systemName: "folder.badge.plus")
                 }
-            } label: {
-                Image(systemName: "folder.badge.plus")
+                .help("Open a project folder…")
+                Button {
+                    searchOpen ? closeSearch() : openSearch()
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .help("Search sessions")
+                Button {
+                    withAnimation { model.toggleSidebar() }
+                } label: {
+                    Image(systemName: "sidebar.leading")
+                }
+                .help(model.sidebarVisibility.isSidebarHidden ? "Show Sidebar" : "Hide Sidebar")
             }
-            .help("Open a project folder…")
-        }
-    }
-
-    private var searchItem: some ToolbarContent {
-        ToolbarItem(placement: .automatic) {
-            Button {
-                searchOpen ? closeSearch() : openSearch()
-            } label: {
-                Image(systemName: "magnifyingglass")
-            }
-            .help("Search sessions")
+            // Toolbar-style hover pills on each button, without item padding;
+            // regular control size for the pitch, toolbar-size glyphs kept.
+            // Toolbar-style hover pills on each button, without item padding:
+            // ~36pt pitch against the ~44pt of separate items. The small
+            // control size gets nearer Xcode's switcher but pins the glyphs
+            // at 11pt and ignores an explicit font, so regular it is.
+            .buttonStyle(.accessoryBar)
+            .imageScale(.large)
         }
     }
 
