@@ -32,16 +32,19 @@ struct SidebarView: View {
         .toolbar { toolbarItems }
     }
 
-    /// The rail's three toolbar items, ours including the sidebar toggle.
-    /// All of them sit in the sidebar's section of the band, beside the
-    /// traffic lights (Finder's placement), so toggling the sidebar moves
-    /// none of them — the material slides away behind. On macOS 26 they opt
-    /// out of the shared glass capsule: AppKit never draws it over the
-    /// sidebar material, only once the items are in the bare band, and
-    /// forming it compacts their spacing in one unanimated step. Measured
-    /// frame by frame; a capsule in both states is not on offer.
+    /// The rail's three toolbar items, ours including the sidebar toggle,
+    /// at the trailing edge of the sidebar's section of the band. On macOS
+    /// 26 they opt out of the shared glass capsule: AppKit never draws it
+    /// over the sidebar material, only once the items have slid into the
+    /// bare band, and forming it compacts their spacing in one unanimated
+    /// step — a jolt after the slide. Measured frame by frame; a capsule in
+    /// both states is not on offer.
     @ToolbarContentBuilder
     private var toolbarItems: some ToolbarContent {
+        // Flexible space first: the items sit at the trailing edge of the
+        // sidebar's section, by the divider, where Notes and Mail keep the
+        // toggle. Without it they hugged the traffic lights.
+        ToolbarItem(placement: .automatic) { Spacer() }
         if #available(macOS 26, *) {
             addProjectItem.sharedBackgroundVisibility(.hidden)
             searchItem.sharedBackgroundVisibility(.hidden)
