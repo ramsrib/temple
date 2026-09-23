@@ -53,7 +53,7 @@ public struct RootView: View {
         .tint(Palette.accent)              // neutral accent everywhere (no blue)
         // Dev-only: `kill -USR2 <pid>` toggles the sidebar exactly as ⌘B does
         // (WindowSnapshot installs the hook; inert without TEMPLE_SNAPSHOT_DIR).
-        .onReceive(NotificationCenter.default.publisher(for: .templeDebugToggleSidebar)) { _ in
+        .onReceive(WindowSnapshot.debugPublisher(for: .templeDebugToggleSidebar)) { _ in
             withAnimation { model.toggleSidebar() }
         }
         // Dev-only, same gate: TEMPLE_SNAPSHOT_PRESENT=palette|history|archive
@@ -74,11 +74,13 @@ public struct RootView: View {
                 }
             }
         }
-        // AppKit hands initial key focus to the first text field it finds —
-        // the sidebar search — and can re-seat it while the window settles,
-        // so a single async clear leaves a gap where fast launch typing
-        // lands in the field. Sweep the first second instead, dropping any
-        // strays that got in; focus only reaches search via a click.
+        // AppKit hands initial key focus to the first text field it finds
+        // and can re-seat it while the window settles, so a single async
+        // clear leaves a gap where fast launch typing lands in a field.
+        // Sweep the first second instead, dropping any strays that got in.
+        // (The sidebar search field this was written for is no longer in the
+        // tree at launch; the sweep stays for whatever field is first now,
+        // and costs nothing when none is.)
         .onAppear {
             // Verify the agent CLIs (runs `claude --version` &c). Started from the UI,
             // not from AppModel.init, so building a model in a test doesn't shell out.

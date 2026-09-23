@@ -47,9 +47,10 @@ struct SessionRow: View {
                     // Two tones, not one: the sessions you have open are the
                     // ones you are working in, and they read at full strength;
                     // the browsable history behind them steps back — but only
-                    // a step. Closed rows are most of the rail, and at 72% they
-                    // went mid-grey in dark mode; the open rows' surface pill
-                    // carries the rest of the distinction.
+                    // a step. Closed rows are most of the rail, and lower they
+                    // went mid-grey in dark mode. The step is weak near white
+                    // in dark mode by nature; there the activity dot and the
+                    // badge at full colour are what say "open".
                     .foregroundStyle(openTab != nil || hovering ? Color.primary : Color.primary.opacity(0.82))
                 if isPinned {
                     Image(systemName: "pin.fill")

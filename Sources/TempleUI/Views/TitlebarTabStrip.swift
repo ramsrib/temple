@@ -15,7 +15,9 @@ import SwiftUI
 ///
 /// Placed as the detail pane's background so its own AppKit frame IS the
 /// detail pane's frame: the strip's leading edge tracks the sidebar divider
-/// live, with no estimated widths anywhere.
+/// live, and the toolbar items parked beside the traffic lights are measured
+/// (`leadingObstruction`); the only estimate left is that measurement's
+/// logged fallback.
 struct TitlebarTabStripInstaller: NSViewRepresentable {
     @EnvironmentObject var model: AppModel
 
@@ -236,6 +238,10 @@ final class TabStripContainerView: NSView {
             for sub in view.subviews {
                 if sub === anchoredClipView || sub === self || sub.isHidden { continue }
                 if sub.className.contains("ToolbarItemViewer") {
+                    // A space item's viewer has no content; the flexible
+                    // space ahead of the rail's buttons can span to the
+                    // midpoint in a wide window and must not count.
+                    guard !sub.subviews.isEmpty else { continue }
                     let frame = sub.convert(sub.bounds, to: band)
                     // Only items on the leading side count; the `+` and any
                     // trailing item are on the other side of the chips.

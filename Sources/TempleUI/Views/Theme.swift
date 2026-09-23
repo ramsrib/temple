@@ -32,12 +32,14 @@ extension TabColorMark {
             .color
     }
 
-    /// A list row's fill in the chips' grammar: a marked row is a quiet wash
-    /// of its colour, deeper when selected or under the pointer, so the mark
-    /// you gave a tab is what you scan for in ⌘K, ⌘P and ⌘Y as well as in
-    /// the strip. Unmarked rows keep the neutral selection and hover fills.
+    /// A list row's fill: a marked row is a quiet wash of its colour, deeper
+    /// when selected or under the pointer, so the mark you gave a tab is what
+    /// you scan for in ⌘K, the ⌃⇥ switcher and ⌘Y as well as in the strip.
+    /// Unmarked rows keep the neutral selection and hover fills. The sidebar
+    /// row is the deliberate exception: at its density a 3pt leading bar
+    /// says the same thing without tinting the whole line (`SessionRow`).
     static func rowFill(_ mark: Color?, selected: Bool, hovering: Bool) -> Color {
-        if let mark { return mark.opacity(selected ? 0.24 : hovering ? 0.12 : 0.08) }
+        if let mark { return Palette.markWash(mark, selected: selected, hovering: hovering) }
         return selected ? Palette.selectionFill : hovering ? Palette.hoverFill : .clear
     }
 }
@@ -81,6 +83,18 @@ enum Palette {
     /// A faint grouped-surface fill for cards / panels (Settings sections).
     /// Quieter than `controlFill` so nested controls read as distinct.
     static let surfaceFill = mono(light: 0.0, 0.035, dark: 1.0, 0.05)
+
+    /// A colour mark's wash over a row, at the strength of the neutral fills
+    /// it stands in for. Alphas adapt like every other token here: a fixed
+    /// 24% of a saturated colour is a strong pastel on white next to the
+    /// 8.5% grey selection, so a marked row read as MORE selected than the
+    /// selection in light mode — the mirror of the dark-mode bug that shipped.
+    static func markWash(_ mark: Color, selected: Bool, hovering: Bool) -> Color {
+        let alpha: (light: Double, dark: Double) =
+            selected ? (0.16, 0.26) : hovering ? (0.10, 0.15) : (0.06, 0.10)
+        return Color(light: NSColor(mark).withAlphaComponent(alpha.light),
+                     dark: NSColor(mark).withAlphaComponent(alpha.dark))
+    }
 
     /// Floating-panel surface (⌘K palette, ⌘P switcher, ⌘/ shortcuts).
     /// Opaque window background: the translucent material read as a muddy

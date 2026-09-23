@@ -138,6 +138,24 @@ enum WindowSnapshot {
     }
 }
 
+import Combine
+
+extension WindowSnapshot {
+    /// True when the dev hooks are armed (TEMPLE_SNAPSHOT_DIR set).
+    static let hooksEnabled: Bool = {
+        !(ProcessInfo.processInfo.environment["TEMPLE_SNAPSHOT_DIR"] ?? "").isEmpty
+    }()
+
+    /// The publisher a view subscribes to for a dev hook: the real
+    /// notification when hooks are armed (and `enabled`), an empty publisher
+    /// otherwise — so production view trees carry no live subscriptions for
+    /// signals nothing will post.
+    static func debugPublisher(for name: Notification.Name, enabled: Bool = true) -> AnyPublisher<Notification, Never> {
+        guard hooksEnabled, enabled else { return Empty().eraseToAnyPublisher() }
+        return NotificationCenter.default.publisher(for: name).eraseToAnyPublisher()
+    }
+}
+
 extension Notification.Name {
     /// Posted by the dev-only USR2 hook; RootView answers it with ⌘B's action.
     static let templeDebugToggleSidebar = Notification.Name("temple.debug.toggleSidebar")

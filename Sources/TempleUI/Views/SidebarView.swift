@@ -2,9 +2,10 @@ import SwiftUI
 import UniformTypeIdentifiers
 import TempleCore
 
-/// The left rail: search-first, Pinned, project
-/// disclosure groups, footer. The full browse index — a row here is browsable
-/// (click opens); arrow keys only highlight (select ≠ open).
+/// The left rail: Pinned, project disclosure groups, footer; search unfolds
+/// under the band from the title-bar magnifier. The full browse index — a
+/// row here is browsable (click opens); arrow keys only highlight (select ≠
+/// open).
 struct SidebarView: View {
     @EnvironmentObject var model: AppModel
     @State private var showAllProjects = false
@@ -69,7 +70,14 @@ struct SidebarView: View {
                 }
                 .help("Open a project folder…")
                 Button {
-                    searchOpen ? closeSearch() : openSearch()
+                    // A hidden rail with search still open: the magnifier
+                    // must reveal, not toggle — toggling closed the search the
+                    // user was trying to reach and wiped their query.
+                    if model.sidebarVisibility.isSidebarHidden || !searchOpen {
+                        openSearch()
+                    } else {
+                        closeSearch()
+                    }
                 } label: {
                     Image(systemName: "magnifyingglass")
                 }
@@ -115,18 +123,29 @@ struct SidebarView: View {
     }
 
     private func openSearch() {
+        let revealing = model.sidebarVisibility.isSidebarHidden
         withAnimation(.easeOut(duration: 0.15)) {
             searchOpen = true
             // The magnifier survives in the band when the sidebar is
             // collapsed; a search you cannot see is not open. Bring the
             // rail back with the field.
-            if model.sidebarVisibility.isSidebarHidden { model.sidebarVisibility = .all }
+            if revealing { model.sidebarVisibility = .all }
         }
         // Take focus from a live terminal the same way every other field
         // does (FieldFocus): a plain focus assignment leaves the terminal
         // as first responder, and typing keeps reaching the agent. The
-        // focus itself lands a turn later, once the field exists.
-        FieldFocus.claim { searchFocused = true }
+        // focus itself lands a turn later, once the field exists — or, when
+        // the column is still sliding in, after it has: a claim on a field
+        // inside a hidden split pane does not take, and an unfocused empty
+        // field never triggers its own fold.
+        if revealing {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                guard searchOpen else { return }
+                FieldFocus.claim { searchFocused = true }
+            }
+        } else {
+            FieldFocus.claim { searchFocused = true }
+        }
     }
 
     private func closeSearch() {
@@ -604,10 +623,11 @@ private struct ProjectDisclosure: View {
             }
         }
         .clipped()
-        .onReceive(NotificationCenter.default.publisher(for: .templeDebugToggleFirstProject)) { _ in
-            // Dev-only (WindowSnapshot): fold/unfold the first project so the
-            // animation can be captured frame by frame without a click.
-            guard isFirst else { return }
+        // Dev-only (WindowSnapshot): fold/unfold the first project so the
+        // animation can be captured frame by frame without a click. Only the
+        // first disclosure of a snapshot run subscribes; every other one gets
+        // an empty publisher, so production pays nothing per project.
+        .onReceive(WindowSnapshot.debugPublisher(for: .templeDebugToggleFirstProject, enabled: isFirst)) { _ in
             withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
         }
     }
@@ -759,15 +779,13 @@ private struct ProjectDisclosure: View {
             return provider
         } preview: {
             // What follows the pointer. The default preview snapshots the whole
-            // row — and with a Spacer inside, sizes to nothing, so the drag
-            // was invisible. A chip of its own: folder, name, fixed size.
-            HStack(spacing: 6) {
-                Image(systemName: "folder")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Text(project.name)
-                    .font(.system(size: 12, weight: .medium))
-            }
+            // row — and with a flexible rule inside, sizes to nothing, so the
+            // drag was invisible. A chip of its own, set like the header it
+            // was lifted from, so the thing in hand looks like what you picked up.
+            Text(project.name.uppercased())
+                .font(.system(size: 11, weight: .medium))
+                .tracking(1.4)
+                .foregroundStyle(.secondary)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(Palette.panelBackground, in: RoundedRectangle(cornerRadius: 7))

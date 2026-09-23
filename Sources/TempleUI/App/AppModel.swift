@@ -375,7 +375,7 @@ public final class AppModel: ObservableObject {
 
     /// Resolve the effective light/dark scheme (System → the live macOS value).
     public func resolvedScheme() -> TerminalAppearance.ColorScheme {
-        switch settings.theme {
+        switch effectiveTheme {
         case .light: return .light
         case .dark: return .dark
         case .system:
@@ -388,7 +388,6 @@ public final class AppModel: ObservableObject {
         settings.appearance(scheme: resolvedScheme())
     }
 
-    /// Push theme to AppKit chrome + every open terminal surface.
     /// The theme in force: the user's setting, unless a dev-only snapshot run
     /// forces one. `TEMPLE_SNAPSHOT_APPEARANCE=dark|light` is read once and
     /// never persisted — the setting would write the real UserDefaults domain
@@ -407,6 +406,7 @@ public final class AppModel: ObservableObject {
         }
     }()
 
+    /// Push the theme to AppKit chrome + every open terminal surface.
     public func applyAppearance() {
         NSApplication.shared.appearance = effectiveTheme.nsAppearance
         let appearance = currentAppearance()
