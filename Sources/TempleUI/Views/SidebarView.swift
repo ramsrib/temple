@@ -259,17 +259,12 @@ struct SidebarView: View {
         // content scrolling clean off the window's bottom feels unfinished —
         // so it holds only what has to be always visible: the meters and the
         // gear. (A single-user app has nothing to say with an avatar.)
-        // Meters centred on the bar's full width, Finder-status-bar style;
-        // the gear rides the trailing edge as a separate layer so it never
-        // pulls the centre.
-        ZStack {
+        HStack {
             UsageMeterView(usage: model.usage)
-            HStack {
-                Spacer()
-                FooterGearMenu(model: model)
-                    .frame(width: 22, height: 22)
-                    .help("Settings and more")
-            }
+            Spacer()
+            FooterGearMenu(model: model)
+                .frame(width: 22, height: 22)
+                .help("Settings and more")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
