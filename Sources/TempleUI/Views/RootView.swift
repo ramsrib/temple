@@ -19,6 +19,10 @@ public struct RootView: View {
             }
             .navigationSplitViewStyle(.balanced)
             .background(KeyCatcher())
+            // AppKit spring-loads sidebar items: a drag hovering the collapsed
+            // edge, or a force click on it, pops the sidebar open behind the
+            // model's back. See SidebarSpringLoading.swift.
+            .background(SidebarSpringLoadingDisabler())
             // See OverlayActiveKey: hover fills below a panel must stand down
             // (an environment value, unlike allowsHitTesting, doesn't make
             // SwiftUI rewrap the split view and break its titlebar inset).

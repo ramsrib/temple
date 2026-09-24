@@ -492,3 +492,52 @@ gate installs `USR2` (toggle sidebar), `INFO` (fold the first project),
 never the persisted setting), because two of the day's bugs — rows drawn over
 the title bar, a fill that read as selection only in dark mode — were invisible
 to code review and to a light-mode, one-tab snapshot.
+
+## ADR-019 — The sidebar is not spring-loaded
+**Date:** 2026-09-24 · **Status:** Accepted
+
+Reported as the collapsed sidebar opening by itself, at random, while working.
+The one clue that survived was a screenshot: the sidebar fully open while the
+rail's title-bar buttons still sat beside the traffic lights, where they belong
+only when it is collapsed — an open the toolbar had not been told about.
+
+`NavigationSplitView` builds the sidebar as an `NSSplitViewItem` with sidebar
+behavior, and AppKit ships those spring-loaded (`NSSplitViewItem.h`: the item
+"can be temporarily uncollapsed during a drag by hovering or deep clicking on
+its neighboring divider"). Measured in a scratch app and pinned by a test: the
+SwiftUI item has `behavior == .sidebar`, `isSpringLoaded == true`. So a drag —
+a file into the terminal, a chip, a row — that hovers the left edge expands
+the sidebar through spring-loading. Inference from the screenshot, not
+instrumented: that path leaves the item's collapsed flag and the toolbar alone,
+and never writes `sidebarVisibility` — which is why the persisted state still
+said hidden, why the didSet trace behind ADR-015's follow-up (which found only
+the relaunch) saw nothing, and why the next ⌘B visibly does nothing (it assigns
+shown to a sidebar the model already believes is hidden).
+
+Ruled out on the way, so nobody re-walks them: dragging the collapsed divider
+(hit-testing at the edge lands on the detail pane; a simulated drag leaves it
+collapsed), Ghostty keybinds (Temple loads only its own generated config), a
+stray ⌘B (one toggle, no hotkey tool or script sends it), and relaunch
+(persistence was already installed). Not covered by this flag, and not seen:
+AppKit's own size-driven collapse/expand and the full-screen overlay sidebar.
+
+**Decision:** clear `isSpringLoaded` on the sidebar item. SwiftUI's
+`.springLoadingBehavior(.disabled)` was measured first, on the split view and
+on the sidebar column: neither reaches the item, the flag stays on. So
+`SidebarSpringLoadingDisabler` reaches the `NSSplitViewController` through the
+split view's delegate, from a background view of the split view (the sidebar
+column may not be loaded while collapsed; the split view always is). It
+re-applies rather than latches — on `viewDidMoveToWindow`, on layout, on every
+SwiftUI update, and on `NSSplitView.didResizeSubviewsNotification` for its
+window — because SwiftUI can rebuild the controller (a detail-pane layout
+change rewraps the split view; see AGENTS.md) and a rebuilt item is
+spring-loaded again. The split view is cached weakly, so a re-apply is a
+delegate cast and a short loop; the window is walked only when the cache is
+stale. The tests pin the premise, the fix through the static walk and through
+the mounted representable, and the re-apply and its teardown; the walk reports
+how many items it changed so a version that misses the split view fails
+instead of passing quietly.
+
+Cost accepted: a drag can no longer reveal the hidden sidebar to drop on it.
+Nothing in Temple accepts a drop there from outside the sidebar, and the
+sidebar's own reorder drags start from rows that are visible.

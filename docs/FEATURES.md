@@ -96,7 +96,8 @@ back to the first human prompt
   button, in place of the system one, so the three behave as one group. When
   the sidebar is hidden they slide in beside the traffic lights and the
   working surface expands to the window edge; the tab strip measures where
-  they end and starts after them.
+  they end and starts after them. The macOS spring-loading that pops a
+  collapsed sidebar open when a drag hovers its edge is turned off.
 - The footer is one line: the subscription meters on the left, the settings
   gear on the right. It is the edge the list stops at.
 
