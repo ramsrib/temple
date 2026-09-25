@@ -21,7 +21,7 @@ final class UsageMeterTests: XCTestCase {
         let model = UsageMeterModel()
         let claudeReading = claude(fiveHour: 48, weekly: 38,
                                    scoped: [ScopedUsage(label: "Fable", pct: 54)])
-        model.claudeFetch = { .usage(claudeReading) }
+        model.claudeFetch = { _ in .usage(claudeReading) }
         model.codexFetch = {
             CodexUsage(plan: "pro", capturedAt: nil,
                        fiveHour: UsageWindow(pct: 31), weekly: UsageWindow(pct: 17))
@@ -38,7 +38,7 @@ final class UsageMeterTests: XCTestCase {
 
     func testNoReadersMeansNoMeter() async {
         let model = UsageMeterModel()
-        model.claudeFetch = { .noCredentials }
+        model.claudeFetch = { _ in .noCredentials }
         model.codexFetch = { nil }
         await model.refreshNow()
 
@@ -53,7 +53,7 @@ final class UsageMeterTests: XCTestCase {
         // automatic poll must never ask again on its own.
         let model = UsageMeterModel()
         let calls = Counter()
-        model.claudeFetch = { await calls.bump(); return .noCredentials }
+        model.claudeFetch = { _ in await calls.bump(); return .noCredentials }
         model.codexFetch = { nil }
         await model.refreshNow()
         await model.refreshNow()
@@ -78,7 +78,7 @@ final class UsageMeterTests: XCTestCase {
         let model = UsageMeterModel()
         model.manualFloor = -1                       // no floor between clicks
         let calls = Counter()
-        model.claudeFetch = { await calls.bump(); return .noCredentials }
+        model.claudeFetch = { _ in await calls.bump(); return .noCredentials }
         model.codexFetch = { nil }
         await model.refreshNow()
         await model.refreshNow()                     // automatic: still silenced
@@ -94,7 +94,7 @@ final class UsageMeterTests: XCTestCase {
         XCTAssertEqual(total, 1, "opening the card must not re-ask for credentials")
 
         let reading = claude(fiveHour: 61)
-        model.claudeFetch = { await calls.bump(); return .usage(reading) }
+        model.claudeFetch = { _ in await calls.bump(); return .usage(reading) }
         model.manualRefresh(retryingCredentials: true)
         // No direct refreshNow() here: the click alone has to do the work, or
         // this passes on an implementation whose button fetches nothing.
@@ -107,14 +107,14 @@ final class UsageMeterTests: XCTestCase {
     func testStalenessIsOnlyReportedOnceTheReaderHasActuallyStopped() async {
         let model = UsageMeterModel()
         let reading = claude(fiveHour: 12)
-        model.claudeFetch = { .usage(reading) }
+        model.claudeFetch = { _ in .usage(reading) }
         model.codexFetch = { nil }
         await model.refreshNow()
         XCTAssertNil(model.claudeStaleSince)         // fresh: the card says nothing
 
         // Every later refresh comes back empty. The numbers on screen stop
         // being true, and nothing in the card used to admit it.
-        model.claudeFetch = { .endpointFailure }
+        model.claudeFetch = { _ in .endpointFailure(status: nil) }
         for missed in 1..<UsageMeterModel.staleAfterMissedRefreshes {
             await model.refreshNow()
             XCTAssertNil(model.claudeStaleSince, "\(missed) miss(es) is still a hiccup")
@@ -123,7 +123,7 @@ final class UsageMeterTests: XCTestCase {
         XCTAssertEqual(model.claudeHeadlinePct, 12)  // last good reading stands
         XCTAssertEqual(model.claudeStaleSince, model.claudeUpdatedAt)
 
-        model.claudeFetch = { .usage(reading) }      // recovers, and shuts up again
+        model.claudeFetch = { _ in .usage(reading) }      // recovers, and shuts up again
         await model.refreshNow()
         XCTAssertNil(model.claudeStaleSince)
     }
@@ -135,15 +135,15 @@ final class UsageMeterTests: XCTestCase {
         // for eight days.
         let model = UsageMeterModel()
         let reading = claude(fiveHour: 12)
-        model.claudeFetch = { .usage(reading) }
+        model.claudeFetch = { _ in .usage(reading) }
         model.codexFetch = { CodexUsage(plan: "pro", capturedAt: nil,
                                         fiveHour: nil, weekly: UsageWindow(pct: 9)) }
         await model.refreshNow()
-        model.claudeFetch = { .noCredentials }
+        model.claudeFetch = { _ in .noCredentials }
         await model.refreshNow()                     // trips it; the only failure
 
         let calls = Counter()
-        model.claudeFetch = { await calls.bump(); return .noCredentials }
+        model.claudeFetch = { _ in await calls.bump(); return .noCredentials }
         for _ in 0..<UsageMeterModel.staleAfterMissedRefreshes { await model.refreshNow() }
         let attempts = await calls.value
         XCTAssertEqual(attempts, 0, "the breaker means these polls never asked")
@@ -156,13 +156,13 @@ final class UsageMeterTests: XCTestCase {
         // Codex read makes stale Claude figures look current.
         let model = UsageMeterModel()
         let reading = claude(fiveHour: 12)
-        model.claudeFetch = { .usage(reading) }
+        model.claudeFetch = { _ in .usage(reading) }
         model.codexFetch = { CodexUsage(plan: "pro", capturedAt: nil,
                                         fiveHour: nil, weekly: UsageWindow(pct: 9)) }
         await model.refreshNow()
         let claudeRead = model.claudeUpdatedAt
 
-        model.claudeFetch = { .endpointFailure }
+        model.claudeFetch = { _ in .endpointFailure(status: nil) }
         for _ in 0..<UsageMeterModel.staleAfterMissedRefreshes { await model.refreshNow() }
         XCTAssertEqual(model.claudeUpdatedAt, claudeRead)   // did not move
         XCTAssertNotEqual(model.updatedAt, claudeRead)      // but the card did refresh
@@ -175,7 +175,7 @@ final class UsageMeterTests: XCTestCase {
         // `lastAttempt` neither had moved yet.
         let model = UsageMeterModel()
         let calls = Counter()
-        model.claudeFetch = { await calls.bump(); return .endpointFailure }
+        model.claudeFetch = { _ in await calls.bump(); return .endpointFailure(status: nil) }
         model.codexFetch = { nil }
         model.start()
         model.start()
@@ -188,7 +188,7 @@ final class UsageMeterTests: XCTestCase {
         let model = UsageMeterModel()
         model.rateLimitBackoff = 3600
         let calls = Counter()
-        model.claudeFetch = { await calls.bump(); return .rateLimited }
+        model.claudeFetch = { _ in await calls.bump(); return .rateLimited }
         model.codexFetch = { nil }
         await model.refreshNow()
         await model.refreshNow()   // inside the backoff window — no fetch
@@ -204,7 +204,7 @@ final class UsageMeterTests: XCTestCase {
     func testEndpointFailureKeepsRetrying() async {
         let model = UsageMeterModel()
         let calls = Counter()
-        model.claudeFetch = { await calls.bump(); return .endpointFailure }
+        model.claudeFetch = { _ in await calls.bump(); return .endpointFailure(status: nil) }
         model.codexFetch = { nil }
         await model.refreshNow()
         await model.refreshNow()
@@ -215,19 +215,19 @@ final class UsageMeterTests: XCTestCase {
     func testTransientFailureKeepsTheLastGoodReading() async {
         let model = UsageMeterModel()
         let claudeReading = claude(fiveHour: 48)
-        model.claudeFetch = { .usage(claudeReading) }
+        model.claudeFetch = { _ in .usage(claudeReading) }
         model.codexFetch = { nil }
         await model.refreshNow()
         XCTAssertEqual(model.claudeHeadlinePct, 48)
 
-        model.claudeFetch = { .endpointFailure }   // hiccup on the next poll
+        model.claudeFetch = { _ in .endpointFailure(status: nil) }   // hiccup on the next poll
         await model.refreshNow()
         XCTAssertEqual(model.claudeHeadlinePct, 48)
     }
 
     func testOneProviderAloneStillShows() async {
         let model = UsageMeterModel()
-        model.claudeFetch = { .endpointFailure }
+        model.claudeFetch = { _ in .endpointFailure(status: nil) }
         model.codexFetch = {
             CodexUsage(plan: "pro", capturedAt: nil, fiveHour: nil,
                        weekly: UsageWindow(pct: 17))
@@ -239,5 +239,115 @@ final class UsageMeterTests: XCTestCase {
         XCTAssertNil(model.claudeBreakdown)
         XCTAssertTrue((model.codexBreakdown ?? "").contains("Codex (pro)"))
         XCTAssertTrue((model.codexBreakdown ?? "").contains("Weekly: 17%"))
+    }
+
+    func testARefusedTokenSaysSoAtOnceAndKeepsTheLastReading() async {
+        let model = UsageMeterModel()
+        let reading = claude(fiveHour: 48)
+        model.claudeFetch = { _ in .usage(reading) }
+        model.codexFetch = { nil }
+        await model.refreshNow()
+        XCTAssertFalse(model.claudeSignInStale)
+
+        let calls = Counter()
+        model.claudeFetch = { _ in await calls.bump(); return .unauthorized }
+        await model.refreshNow()
+        XCTAssertTrue(model.claudeSignInStale, "a 401 is definitive — no three-strike wait")
+        XCTAssertEqual(model.claudeHeadlinePct, 48, "the old figures stay, labelled")
+        // Not a breaker: a new sign-in lands in the Keychain without any
+        // click here, so polling must keep going to notice it.
+        await model.refreshNow()
+        let total = await calls.value
+        XCTAssertEqual(total, 2)
+
+        model.claudeFetch = { _ in .usage(reading) }   // signed in again
+        await model.refreshNow()
+        XCTAssertFalse(model.claudeSignInStale)
+    }
+
+    func testARefusedTokenOnTheFirstFetchIsStillReported() async {
+        // Started with a dead token: no figures to show, but the state must
+        // exist for the footer to hang the card on.
+        let model = UsageMeterModel()
+        model.claudeFetch = { _ in .unauthorized }
+        model.codexFetch = { nil }
+        await model.refreshNow()
+        XCTAssertNil(model.claudeHeadlinePct)
+        XCTAssertTrue(model.claudeSignInStale)
+    }
+
+    func testOnlyTheExplicitControlMayRaiseTheKeychainPrompt() async {
+        // Production floors: opening the card refreshes on the way in, and
+        // the permission click comes seconds later. It must still ask.
+        let model = UsageMeterModel()
+        let reading = claude(fiveHour: 20)
+        var interactiveAsks: [Bool] = []
+        model.claudeFetch = { interactive in
+            interactiveAsks.append(interactive)
+            return interactive ? .usage(reading) : .needsPermission
+        }
+        model.codexFetch = { nil }
+
+        await model.refreshNow()                       // an unattended poll
+        XCTAssertEqual(interactiveAsks, [false])
+        XCTAssertTrue(model.claudeNeedsPermission)
+        XCTAssertNil(model.claudeHeadlinePct)
+
+        await model.refreshNow()                       // breaker: no second ask
+        XCTAssertEqual(interactiveAsks, [false])
+
+        model.manualRefresh()                          // opening the card
+        await settle(model)
+        XCTAssertEqual(interactiveAsks, [false], "the card's own refresh is floored and never asks")
+
+        model.manualRefresh(retryingCredentials: true) // the refresh control, seconds later
+        await settle(model)
+        XCTAssertEqual(interactiveAsks, [false, true])
+        XCTAssertFalse(model.claudeNeedsPermission)
+        XCTAssertEqual(model.claudeHeadlinePct, 20)
+    }
+
+    func testAnyAnswerFromTheEndpointClearsThePermissionState() async {
+        // Permission granted, token then rejected: the card must move on to
+        // the sign-in line, not keep saying permission is the problem.
+        let model = UsageMeterModel()
+        model.claudeFetch = { interactive in interactive ? .unauthorized : .needsPermission }
+        model.codexFetch = { nil }
+        await model.refreshNow()
+        XCTAssertTrue(model.claudeNeedsPermission)
+
+        model.manualRefresh(retryingCredentials: true)
+        await settle(model)
+        XCTAssertFalse(model.claudeNeedsPermission)
+        XCTAssertTrue(model.claudeSignInStale)
+
+        // Likewise for a 429 and a plain endpoint failure.
+        for outcome in [ClaudeUsageReader.Outcome.rateLimited, .endpointFailure(status: 503)] {
+            let m = UsageMeterModel()
+            m.claudeFetch = { interactive in interactive ? outcome : .needsPermission }
+            m.codexFetch = { nil }
+            await m.refreshNow()
+            XCTAssertTrue(m.claudeNeedsPermission)
+            m.manualRefresh(retryingCredentials: true)
+            await settle(m)
+            XCTAssertFalse(m.claudeNeedsPermission, "\(outcome)")
+        }
+    }
+
+    func testRefreshNowIsExclusiveOnceItStarts() async {
+        let model = UsageMeterModel()
+        let calls = Counter()
+        model.claudeFetch = { _ in await calls.bump(); try? await Task.sleep(nanoseconds: 50_000_000); return .noCredentials }
+        model.codexFetch = { nil }
+        async let a: Void = model.refreshNow()
+        async let b: Void = model.refreshNow()
+        _ = await (a, b)
+        let total = await calls.value
+        XCTAssertEqual(total, 1, "the second call found the first in flight and did nothing")
+    }
+
+    /// A manual refresh runs in its own Task; give it the turns it needs.
+    private func settle(_ model: UsageMeterModel) async {
+        for _ in 0..<50 { await Task.yield() }
     }
 }

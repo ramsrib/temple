@@ -108,4 +108,129 @@ final class UsageTests: XCTestCase {
         let usage = CodexUsageReader.read(sessionsRoot: dir.deletingLastPathComponent().deletingLastPathComponent())
         XCTAssertEqual(usage?.fiveHour?.pct, 77)
     }
+
+    // The credential log line's expiry phrase: Claude Code writes epoch
+    // milliseconds, older stores wrote seconds, and both must read right.
+    func testExpiryDescriptionReadsMillisecondsAndSecondsAlike() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let inThreeHours = (now.timeIntervalSince1970 + 3 * 3600 + 12 * 60)
+        XCTAssertEqual(ClaudeUsageReader.expiryDescription(inThreeHours * 1000, now: now), "expires in 3h 12m")
+        XCTAssertEqual(ClaudeUsageReader.expiryDescription(inThreeHours, now: now), "expires in 3h 12m")
+        let twoDaysAgo = now.timeIntervalSince1970 - (2 * 86_400 + 4 * 3600)
+        XCTAssertEqual(ClaudeUsageReader.expiryDescription(twoDaysAgo * 1000, now: now), "expired 2d 4h ago")
+        XCTAssertEqual(ClaudeUsageReader.expiryDescription(now.timeIntervalSince1970 - 90, now: now), "expired 1m ago")
+        XCTAssertEqual(ClaudeUsageReader.expiryDescription(nil, now: now), "no expiry recorded")
+    }
+
+    // MARK: The lookup through injected Security calls
+
+    private struct FakeKeychain {
+        var previous: Bool? = true
+        var setStatus: OSStatus = errSecSuccess
+        var sets: [Bool] = []
+        var queries = 0
+        var items: [(service: String, account: String, data: Data?)] = []   // nil data = needs a prompt
+    }
+
+    private func install(_ fake: FakeKeychain, credentialsFile: URL = URL(fileURLWithPath: "/nonexistent/credentials.json"),
+                         body: (inout FakeKeychain) -> Void) {
+        let saved = ClaudeUsageReader.keychain
+        defer { ClaudeUsageReader.keychain = saved }
+        var state = fake
+        let box = UnsafeMutablePointer<FakeKeychain>.allocate(capacity: 1)
+        box.initialize(to: state)
+        defer { box.deinitialize(count: 1); box.deallocate() }
+        ClaudeUsageReader.keychain = .init(
+            setInteractionAllowed: { allowed in box.pointee.sets.append(allowed); return box.pointee.setStatus },
+            interactionAllowed: { box.pointee.previous },
+            copyMatching: { query in
+                box.pointee.queries += 1
+                let q = query as NSDictionary
+                if q[kSecReturnAttributes as String] as? Bool == true {
+                    let attrs = box.pointee.items.map { [kSecAttrService as String: $0.service, kSecAttrAccount as String: $0.account] as [String: Any] }
+                    return (errSecSuccess, attrs as CFTypeRef)
+                }
+                let service = q[kSecAttrService as String] as? String
+                let account = q[kSecAttrAccount as String] as? String ?? ""
+                guard let item = box.pointee.items.first(where: { $0.service == service && $0.account == account }) else {
+                    return (errSecItemNotFound, nil)
+                }
+                guard let data = item.data else { return (errSecInteractionNotAllowed, nil) }
+                return (errSecSuccess, data as CFTypeRef)
+            },
+            credentialsFile: credentialsFile)
+        body(&box.pointee)
+        state = box.pointee
+    }
+
+    private func token(expiresAt: Double) -> Data {
+        Data(#"{"claudeAiOauth":{"accessToken":"tok-\#(Int(expiresAt))","expiresAt":\#(expiresAt),"subscriptionType":"max"}}"#.utf8)
+    }
+
+    private func lookup(interactive: Bool) -> ClaudeUsageReader.CredentialLookup {
+        let done = DispatchSemaphore(value: 0)
+        var result: ClaudeUsageReader.CredentialLookup = .none
+        Task.detached { result = await ClaudeUsageReader.loadCredentials(interactive: interactive); done.signal() }
+        done.wait()
+        return result
+    }
+
+    func testUnattendedLookupDisablesPromptsThenRestoresTheSetting() throws {
+        install(FakeKeychain(previous: false, items: [("Claude Code-credentials", "me", token(expiresAt: 2e12))])) { fake in
+            guard case .found(let creds) = lookup(interactive: false) else { return XCTFail("expected a token") }
+            XCTAssertEqual(creds.token, "tok-2000000000000")
+            XCTAssertEqual(fake.sets, [false, false], "set to no-prompts for the read, then back to what it was (false)")
+            XCTAssertEqual(fake.queries, 2, "one listing, one read")
+        }
+    }
+
+    func testTheFreshestTokenWinsAndStubsAreSkipped() {
+        let items: [(String, String, Data?)] = [
+            ("Claude Code-credentials", "unknown", Data(#"{"claudeAiOauth":{"accessToken":""}}"#.utf8)),
+            ("Claude Code-credentials", "me", token(expiresAt: 1e12)),
+            ("Claude Code-credentials-3f232086", "me", token(expiresAt: 3e12)),
+            ("Something else", "x", nil),
+        ]
+        install(FakeKeychain(items: items)) { _ in
+            guard case .found(let creds) = lookup(interactive: false) else { return XCTFail("expected a token") }
+            XCTAssertEqual(creds.token, "tok-3000000000000")
+        }
+    }
+
+    func testAnItemNeedingAPromptReportsPermissionAndSkipsTheFile() throws {
+        // A perfectly good credentials file is on disk; the lookup must not
+        // fall through to it, because the Keychain may hold newer credentials.
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("temple-usage-\(UUID().uuidString).json")
+        try token(expiresAt: 2e12).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        install(FakeKeychain(items: [("Claude Code-credentials", "me", nil)]), credentialsFile: file) { fake in
+            guard case .needsPermission = lookup(interactive: false) else { return XCTFail("expected needsPermission") }
+            XCTAssertEqual(fake.sets, [false, true])
+        }
+        // And with nothing in the Keychain at all, that same file IS used.
+        install(FakeKeychain(items: []), credentialsFile: file) { _ in
+            guard case .found(let creds) = lookup(interactive: false) else { return XCTFail("expected the file") }
+            XCTAssertEqual(creds.token, "tok-2000000000000")
+        }
+    }
+
+    func testUnattendedLookupDoesNotReadWhenPromptsCannotBeDisabled() {
+        install(FakeKeychain(setStatus: errSecParam, items: [("Claude Code-credentials", "me", token(expiresAt: 2e12))])) { fake in
+            guard case .needsPermission = lookup(interactive: false) else { return XCTFail("must not read") }
+            XCTAssertEqual(fake.queries, 0, "no Keychain query may follow a switch that could not be set")
+        }
+        install(FakeKeychain(previous: nil, items: [("Claude Code-credentials", "me", token(expiresAt: 2e12))])) { fake in
+            guard case .needsPermission = lookup(interactive: false) else { return XCTFail("must not read") }
+            XCTAssertEqual(fake.queries, 0, "nor when the previous setting is unknown")
+            XCTAssertEqual(fake.sets, [], "and nothing was changed")
+        }
+    }
+
+    func testTheUsersOwnClickReadsEvenWhenThePreviousSettingIsUnknown() {
+        install(FakeKeychain(previous: nil, items: [("Claude Code-credentials", "me", token(expiresAt: 2e12))])) { fake in
+            guard case .found = lookup(interactive: true) else { return XCTFail("expected a token") }
+            XCTAssertEqual(fake.sets, [true, true], "allowed for the click, then the system default")
+        }
+    }
 }

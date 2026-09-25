@@ -302,15 +302,26 @@ private struct UsageMeterView: View {
     var body: some View {
         let claude = usage.claudeHeadlinePct
         let codex = usage.codexHeadlinePct
-        if claude != nil || codex != nil {
+        // A rejected sign-in with no figures yet (the app was started with a
+        // dead token) still needs a place in the footer, or the card that
+        // says what to do is unreachable.
+        let claudeNeedsSignIn = claude == nil && (usage.claudeSignInStale || usage.claudeNeedsPermission)
+        if claude != nil || codex != nil || claudeNeedsSignIn {
             HStack(spacing: 5) {
                 if let claude {
                     HStack(spacing: 3) {
                         AgentBadge(agent: .claude, size: 10)
                         percent(claude)
                     }
+                } else if claudeNeedsSignIn {
+                    HStack(spacing: 3) {
+                        AgentBadge(agent: .claude, size: 10)
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.orange)
+                    }
                 }
-                if claude != nil && codex != nil {
+                if (claude != nil || claudeNeedsSignIn) && codex != nil {
                     Text("·").font(.system(size: 10)).foregroundStyle(.tertiary)
                 }
                 if let codex {
@@ -356,20 +367,33 @@ private struct UsageCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            // Silence means live. A line appears only once the reader has
+            // missed enough polls that the numbers can't be trusted —
+            // otherwise a card you open every hour would carry a "2m ago"
+            // that never says anything. A rejected token is not a hiccup:
+            // say so at once, and say what fixes it — the refresh control
+            // beside the line cannot.
+            // Two definitive states, each named with its remedy. Permission is
+            // one click away — the refresh control is the one that may ask.
+            let attention: String? = usage.claudeNeedsPermission
+                ? "Temple needs permission to read the Claude Code sign-in. Refresh to allow."
+                : usage.claudeSignInStale ? "Sign-in rejected. Run claude auth login." : nil
             if let claude = usage.claude {
-                // Silence means live. A line appears only once the reader has
-                // missed enough polls that the numbers can't be trusted —
-                // otherwise a card you open every hour would carry a "2m ago"
-                // that never says anything.
                 section(agent: .claude, name: "Claude", plan: claude.plan,
                         rows: claudeRows(claude),
-                        footnote: usage.claudeStaleSince.map {
-                            "Couldn't refresh. Read \(RelativeTime.string(from: $0))."
-                        },
+                        footnote: attention.map { $0 + (usage.claudeUpdatedAt.map { " Read \(RelativeTime.string(from: $0))." } ?? "") }
+                            ?? usage.claudeStaleSince.map {
+                                "Couldn't refresh. Read \(RelativeTime.string(from: $0))."
+                            },
                         showsRefresh: true,
-                        footnoteWarns: usage.claudeStaleSince != nil)
+                        footnoteWarns: attention != nil || usage.claudeStaleSince != nil)
+            } else if let attention {
+                // Started without figures: nothing to chart, still something to say.
+                section(agent: .claude, name: "Claude", plan: nil, rows: [],
+                        footnote: attention, showsRefresh: true, footnoteWarns: true)
             }
-            if usage.claude != nil && usage.codex != nil {
+            let claudeShown = usage.claude != nil || attention != nil
+            if claudeShown && usage.codex != nil {
                 Divider()
             }
             if let codex = usage.codex {
@@ -378,7 +402,7 @@ private struct UsageCard: View {
                         footnote: codex.capturedAt.map {
                             "As of the last Codex turn, \(RelativeTime.string(from: $0))"
                         },
-                        showsRefresh: usage.claude == nil)
+                        showsRefresh: !claudeShown)
             }
         }
         .padding(16)

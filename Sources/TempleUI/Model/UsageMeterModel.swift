@@ -21,7 +21,7 @@ public final class UsageMeterModel: ObservableObject {
     @Published private(set) var refreshing = false
 
     /// Seams for tests.
-    var claudeFetch: @Sendable () async -> ClaudeUsageReader.Outcome = { await ClaudeUsageReader.read() }
+    var claudeFetch: @Sendable (_ interactive: Bool) async -> ClaudeUsageReader.Outcome = { await ClaudeUsageReader.read(interactive: $0) }
     var codexFetch: @Sendable () async -> CodexUsage? = { CodexUsageReader.read() }
 
     /// Tripped by a no-credentials read, and it silences every AUTOMATIC poll
@@ -41,6 +41,15 @@ public final class UsageMeterModel: ObservableObject {
     private var claudeCredentialsMissing = false
     /// Set by a 429: no Claude reads until it passes.
     private var claudeBackoffUntil: Date = .distantPast
+    /// The endpoint refused the token (401). Polling continues — it costs
+    /// nothing and a new sign-in clears it — but the card must say what is
+    /// actually wrong, or "Couldn't refresh" sends the user clicking a
+    /// refresh control that cannot help. Cleared by the next success.
+    @Published private(set) var claudeSignInStale = false
+    /// A token is there but Temple may not read it without a Keychain
+    /// prompt, and unattended polls never raise one. Only the explicit
+    /// refresh control does, so the card must send the user there.
+    @Published private(set) var claudeNeedsPermission = false
 
     /// The Claude number is a live endpoint hit against an API Anthropic
     /// rate-limits — poll politely: a timer plus app activation and manual
@@ -92,7 +101,7 @@ public final class UsageMeterModel: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self, !self.refreshing,
                   Date().timeIntervalSince(self.lastAttempt) > floor else { return }
-            await self.refreshNow()
+            await self.refreshNow(interactive: false)
         }
     }
 
@@ -114,31 +123,74 @@ public final class UsageMeterModel: ObservableObject {
         // Re-arm before the floor check: the click re-arms the reader even on
         // the clicks that are too soon to spend a request on.
         if retryingCredentials { claudeCredentialsMissing = false }
-        guard !refreshing, Date().timeIntervalSince(lastAttempt) > manualFloor else { return }
-        Task { await refreshNow() }
+        // The floor keeps a click from hammering the endpoint. It must not
+        // keep the one click that can ask for Keychain permission from
+        // asking: opening the card refreshes on the way in, and the button
+        // is right there — a click seconds later that silently did nothing
+        // would read as the button being broken. In-flight exclusion and
+        // the 429 backoff still apply.
+        guard Date().timeIntervalSince(lastAttempt) > manualFloor || retryingCredentials else { return }
+        Task { await refreshNow(interactive: retryingCredentials) }
     }
 
-    func refreshNow() async {
+    /// `interactive`: the Keychain prompt may be raised. Only the explicit
+    /// refresh control passes true (see `manualRefresh`).
+    func refreshNow(interactive: Bool = false) async {
+        // The guard lives where the work starts, not where it was queued:
+        // two calls in one turn would otherwise both pass a check against
+        // state neither has moved yet.
+        guard !refreshing else { return }
         lastAttempt = Date()
         refreshing = true
         defer { refreshing = false }
         async let codexReading = codexFetch()
         var newClaude: ClaudeUsage?
         if !claudeCredentialsMissing, Date() >= claudeBackoffUntil {
-            switch await claudeFetch() {
-            case .usage(let usage): newClaude = usage
+            let outcome = await claudeFetch(interactive)
+            // Any answer from the endpoint proves the credentials were read:
+            // permission is no longer the problem, whatever the answer was.
+            if claudeNeedsPermission, outcome.credentialsWereRead {
+                claudeNeedsPermission = false
+                TempleUILog.usage.notice("claude usage: keychain access granted")
+            }
+            switch outcome {
+            case .usage(let usage):
+                newClaude = usage
+                if claudeSignInStale {
+                    claudeSignInStale = false
+                    TempleUILog.usage.notice("claude usage: sign-in accepted again")
+                }
+            case .unauthorized:
+                // Transitions log at notice — the persisted level — so the
+                // first refusal is still on disk days later; a repeat is info.
+                if claudeSignInStale {
+                    TempleUILog.usage.info("claude usage: 401 again; still waiting for a new sign-in")
+                } else {
+                    claudeSignInStale = true
+                    TempleUILog.usage.notice("claude usage: 401 — the token was rejected; a new Claude Code sign-in is needed")
+                }
+            case .needsPermission:
+                // Same breaker as no credentials — unattended polls must not
+                // keep asking — but a different line on the card, because
+                // the fix is one click away rather than a sign-in.
+                claudeCredentialsMissing = true
+                if !claudeNeedsPermission {
+                    claudeNeedsPermission = true
+                    TempleUILog.usage.notice("claude usage: the keychain item needs a prompt; automatic polls suspended until the refresh control asks")
+                }
             case .noCredentials:
                 claudeCredentialsMissing = true
                 // Every one of these paths leaves stale numbers on screen, and
                 // without a log the only symptom is a percentage that quietly
                 // stops moving — which is exactly how this went unnoticed for
                 // eight days. One line each makes it a `log show` away.
-                TempleUILog.usage.info("claude usage: no credentials; automatic polls suspended until a manual refresh")
+                TempleUILog.usage.notice("claude usage: no credentials; automatic polls suspended until a manual refresh")
             case .rateLimited:
                 claudeBackoffUntil = Date().addingTimeInterval(rateLimitBackoff)
                 TempleUILog.usage.info("claude usage: rate limited; backing off \(self.rateLimitBackoff, privacy: .public)s")
-            case .endpointFailure:
-                TempleUILog.usage.info("claude usage: endpoint did not answer; keeping the last reading")
+            case .endpointFailure(let status):
+                let what = status.map { "HTTP \($0)" + ($0 == 200 ? " (body did not parse)" : "") } ?? "no answer"
+                TempleUILog.usage.info("claude usage: \(what, privacy: .public); keeping the last reading")
             }
         }
         let newCodex = await codexReading

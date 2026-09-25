@@ -654,3 +654,80 @@ callbacks could spawn at the freed address, and the render layer outlived
 the renderer — all in `GhosttyApp.release`/`closeSurface`. Each is a rule or
 consequence above; the tests pin the ordering of free, drain and spawn and
 the owner's lifetime through the runtime's injectable seams.
+
+## ADR-022 — A dead usage meter says why, and never prompts on its own
+**Date:** 2026-09-24 · **Status:** Accepted
+
+A Claude meter stuck on "Couldn't refresh" for days on one machine, with the
+refresh control doing nothing, while `ccmeter` — the tool the reader was
+ported from — read the same Keychain and the same endpoint fine. Nothing
+Temple recorded could say which failure it was: the reader collapsed every
+non-200 into one outcome, which Keychain item it chose and whether that
+token was past its expiry went unrecorded, and the credential lookup ran
+`/usr/bin/security` as a child process — whose Keychain prompts are
+attributed to `security`, so "Always Allow" never stuck to Temple, and
+which, blocked on a prompt nobody answered, blocked the whole refresh: the
+model's in-flight guard then skipped every later poll and every click, with
+nothing logged. That last shape matches the report; it has not been
+reproduced.
+
+**Decisions.**
+
+- **The Keychain is read in-process** with the Security framework:
+  attributes of every generic password are listed (no secret, no prompt),
+  the Claude Code service variants are read one by one, the freshest token
+  wins, and the credentials file is the fallback — ccmeter's selection, with
+  one deliberate difference: an item that needs a prompt stops the fallback,
+  because the Keychain may hold newer credentials than the file and reading
+  the file instead would hide that; the fallback is withheld on purpose. No child process, so nothing to time out,
+  signal or reap. The lookup runs on one serial queue, and the interaction
+  switch is saved and put back rather than assumed.
+- **Unattended polls never prompt.** `SecKeychainSetUserInteractionAllowed`
+  is switched off around every lookup except the one the refresh control
+  starts. It has been deprecated since macOS 10.10 and is still the only
+  switch that governs login-keychain items — the per-query `kSecUseAuthenticationUI`
+  covers the data-protection keychain alone (SecItem.h says so). It is
+  process-wide; one lookup runs at a time, its previous value is read and
+  put back, and an unattended lookup that cannot establish "no prompts" —
+  the switch cannot be set, or its previous value cannot be read — does not
+  read at all and reports the permission state instead. An item Temple may
+  not read fails with `errSecInteractionNotAllowed`,
+  which is a new outcome, `needsPermission`: it trips the same breaker as
+  no credentials, and the card says "Temple needs permission to read the
+  Claude Code sign-in. Refresh to allow." The refresh control is the one
+  place a prompt may appear, attributed to Temple — one prompt per item that
+  needs it — where "Always Allow" makes every later poll silent, and it
+  bypasses the click floor so a click seconds after opening the card still
+  asks. Any answer from the endpoint, a 401 included, clears the permission
+  state: the token was read, whatever it was worth. Consequence on first
+  launch after this change: the meter shows the badge with a warning glyph
+  until that click, because Temple itself was never in the items' access
+  lists.
+- **The HTTP status rides in the reader's outcome**, and the model's
+  per-outcome log line prints it; a 401 is its own outcome. The model keeps
+  polling on a 401 (a new sign-in lands in the Keychain without any action
+  in Temple) but the card says "Sign-in rejected. Run claude auth login." at
+  once — a refused token is definitive, not a hiccup.
+- **The reader logs its credential choice**: which item, how many carried a
+  token, how many were enumerated, how many needed a prompt, and the token's
+  expiry relative to now (Claude Code writes epoch milliseconds; seconds are
+  read as such). The service name is public — a fixed label plus an opaque
+  suffix — the account is not. Never the token.
+- **Transitions persist, polls don't.** Permission needed or granted, a
+  first rejection and its recovery, no credentials at all: notice level, the
+  one the unified log keeps on disk. The per-poll credential line and
+  per-fetch status: info, visible live with `log stream --info`.
+
+Not changed: which credential wins. The reader takes the latest `expiresAt`,
+so "skip expired items" would be a no-op — if the winner is expired, every
+item is (assuming one unit; Claude Code has only ever written milliseconds).
+
+Review ledger (gpt-6-astra): round 1 — copy, first-fetch visibility, log
+privacy and levels, and that each poll could prompt; rounds 2–4 — a
+subprocess runner for `security` with a deadline, then its unbounded read
+after exit and cleanup on timeout, then its non-throwing read racing the
+close and a stale pid on SIGKILL. Three rounds of findings in one function
+was the signal to ask whether the mechanism was right. The first answer
+(keep the child: it can be killed, and the SDK has no interaction switch)
+rested on a wrong reading of the SDK; round 4 corrected it, and the runner
+went away with the reason for it.

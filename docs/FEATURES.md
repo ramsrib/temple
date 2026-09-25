@@ -348,6 +348,22 @@ The endpoint is undocumented, so every reader treats any surprise as absence —
 no login, no subscription, or a changed API means the meter simply doesn't
 render, never an error.
 
+The Claude figures are live only while Temple can read the Claude Code
+sign-in and the sign-in is accepted. The Keychain is read in-process, and an
+unattended poll never raises the macOS Keychain prompt: an item Temple has
+not been allowed to read fails closed, the card says "Temple needs permission
+to read the Claude Code sign-in. Refresh to allow." and the refresh control
+is the one place the prompt may appear — "Always Allow" there makes every
+later poll silent. A token the endpoint refuses shows "Sign-in rejected. Run
+claude auth login." at once; three polls that failed for any other reason
+show "Couldn't refresh". All three keep the last figures and when they were
+read, and a warning glyph stands in for the percentage when there were never
+any. Transitions (permission needed or granted, a rejection and its recovery,
+no credentials at all) log at notice level and persist; each read's
+credential choice and expiry, and each failed fetch's failure details, log at
+info level and are only there live (`log stream --info`, categories `usage`
+under `com.sriramb.temple.core` and `com.sriramb.temple.app`).
+
 ## Menu bar
 
 The native menu bar mirrors Temple's commands instead of WindowGroup's

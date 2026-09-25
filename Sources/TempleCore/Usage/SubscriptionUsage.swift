@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 // Subscription usage for Claude and Codex, read the way ccmeter reads it
 // (https://github.com/ramsrib — dotfiles CLI; the mechanics are ported 1:1):
@@ -76,17 +77,46 @@ public enum ClaudeUsageReader {
         /// must stop asking for the rest of the run, or the poll re-prompts
         /// the user every cycle.
         case noCredentials
+        /// A token exists but Temple may not read it without a Keychain
+        /// prompt, and this read was not allowed to raise one. Only an
+        /// explicit refresh (interactive) can clear it; the card says so.
+        case needsPermission
         /// Had a token, endpoint didn't answer usefully — retry later, this
-        /// path never prompts anyone.
-        case endpointFailure
+        /// path never prompts anyone. `status` is the HTTP status, nil when
+        /// the request never got an answer; 200 means the body did not parse.
+        case endpointFailure(status: Int?)
+        /// The endpoint said 401: the token is expired or revoked, and only a
+        /// new Claude Code sign-in will change that. Retrying is free but
+        /// pointless, and the user needs to be told which.
+        case unauthorized
         /// The endpoint said 429: it is rate-limited server-side, so the
         /// caller should back off well past the normal poll interval.
         case rateLimited
         case usage(ClaudeUsage)
+
+        /// True for every outcome that came back from the endpoint — the
+        /// token was found and sent, whatever the answer.
+        public var credentialsWereRead: Bool {
+            switch self {
+            case .usage, .unauthorized, .rateLimited, .endpointFailure: return true
+            case .noCredentials, .needsPermission: return false
+            }
+        }
     }
 
-    public static func read() async -> Outcome {
-        guard let creds = await loadCredentials() else { return .noCredentials }
+    /// `interactive` allows the Keychain prompt. Unattended polls pass false:
+    /// an item Temple may not read then fails instead of prompting, and the
+    /// prompt is raised only by the explicit refresh control, where the
+    /// user is looking and "Always Allow" makes every later poll silent.
+    public static func read(interactive: Bool) async -> Outcome {
+        switch await loadCredentials(interactive: interactive) {
+        case .found(let creds): return await fetch(with: creds)
+        case .needsPermission: return .needsPermission
+        case .none: return .noCredentials
+        }
+    }
+
+    private static func fetch(with creds: Credentials) async -> Outcome {
         var request = URLRequest(url: usageURL, timeoutInterval: 15)
         request.setValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
@@ -94,12 +124,18 @@ public enum ClaudeUsageReader {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               let status = (response as? HTTPURLResponse)?.statusCode
-        else { return .endpointFailure }
-        if status == 429 { return .rateLimited }
-        guard status == 200, let usage = parse(data, plan: creds.plan) else {
-            return .endpointFailure
+        else { return .endpointFailure(status: nil) }
+        switch status {
+        case 200:
+            guard let usage = parse(data, plan: creds.plan) else {
+                TempleCoreLog.usage.info("claude usage: 200 but the body did not parse (\(data.count, privacy: .public) bytes)")
+                return .endpointFailure(status: 200)
+            }
+            return .usage(usage)
+        case 401: return .unauthorized
+        case 429: return .rateLimited
+        default: return .endpointFailure(status: status)
         }
-        return .usage(usage)
     }
 
     /// Pure mapping of the endpoint's JSON — tolerant: absent fields drop out.
@@ -143,43 +179,181 @@ public enum ClaudeUsageReader {
         let plan: String?
     }
 
+    enum CredentialLookup {
+        case found(Credentials)
+        /// At least one item carries a token but reading it needs a prompt
+        /// this lookup was not allowed to raise.
+        case needsPermission
+        case none
+    }
+
     /// The Claude Code OAuth token: Keychain first (the CLI refreshes it in
     /// place there), file fallback. Claude Code leaves token-less STUB items
     /// behind under the same service name, and a plain service lookup can
     /// return a stub — so enumerate the service variants and keep the
     /// freshest item that actually carries a token (ccmeter's logic).
-    static func loadCredentials() async -> Credentials? {
-        await Task.detached(priority: .utility) { () -> Credentials? in
+    ///
+    /// In-process through the Security framework, not the `security` CLI:
+    /// the CLI's Keychain prompts are attributed to `security`, so "Always
+    /// Allow" never sticks to Temple, and a child blocked on an unanswered
+    /// prompt needed a runner with deadlines, signals and pid races to keep
+    /// it from freezing the meter for the life of the process. Here the
+    /// prompt is Temple's own, and unattended polls disable it outright.
+    /// The Security framework calls the lookup makes, as one replaceable
+    /// unit: tests inject failures (a switch that cannot be set, a getter
+    /// that fails) and prove no Keychain query follows.
+    struct KeychainAccess {
+        var setInteractionAllowed: (Bool) -> OSStatus
+        var interactionAllowed: () -> Bool?
+        var copyMatching: (CFDictionary) -> (status: OSStatus, result: CFTypeRef?)
+        var credentialsFile: URL
+
+        static let live = KeychainAccess(
+            setInteractionAllowed: { setKeychainInteractionAllowed($0) },
+            interactionAllowed: { keychainInteractionAllowed() },
+            copyMatching: { query in
+                var result: CFTypeRef?
+                let status = SecItemCopyMatching(query, &result)
+                return (status, result)
+            },
+            credentialsFile: FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".claude/.credentials.json"))
+    }
+    static var keychain = KeychainAccess.live
+
+    /// Every lookup runs here, one at a time: the interaction switch below
+    /// is process-wide, and two lookups with different policies interleaved
+    /// would set each other's. The model's in-flight guard is not relied on.
+    private static let lookupQueue = DispatchQueue(label: "com.sriramb.temple.claude-credentials", qos: .utility)
+
+    static func loadCredentials(interactive: Bool) async -> CredentialLookup {
+        await withCheckedContinuation { continuation in
+            lookupQueue.async { continuation.resume(returning: lookupCredentials(interactive: interactive)) }
+        }
+    }
+
+    private static func lookupCredentials(interactive: Bool) -> CredentialLookup {
+        do {
+            // Process-wide, so it is set for exactly this lookup and put back
+            // the way it was. Deprecated, and the only switch that applies to
+            // login-keychain items — the per-query kSecUseAuthenticationUI
+            // covers the data-protection keychain alone (SecItem.h).
+            //
+            // An unattended lookup that cannot establish "no prompts" does
+            // not read at all: a read that might prompt is the failure this
+            // whole path exists to prevent. It reports the same state a
+            // denied item does, so the card sends the user to the one control
+            // that may ask. The interactive lookup is the user's own click;
+            // it proceeds, and puts the switch back to the system default if
+            // the previous value could not be read.
+            let previous = keychain.interactionAllowed()
+            if previous == nil, !interactive {
+                TempleCoreLog.usage.notice("claude credentials: could not read the keychain interaction setting; not reading unattended")
+                return .needsPermission
+            }
+            let set = keychain.setInteractionAllowed(interactive)
+            if set != errSecSuccess {
+                TempleCoreLog.usage.notice("claude credentials: could not set keychain interaction to \(interactive, privacy: .public) (OSStatus \(set, privacy: .public))\(interactive ? "" : "; not reading unattended", privacy: .public)")
+                if !interactive { return .needsPermission }
+            }
+            defer { _ = keychain.setInteractionAllowed(previous ?? true) }
+
+            // Attributes only — never touches a secret, never prompts.
+            let listQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecMatchLimit as String: kSecMatchLimitAll,
+                kSecReturnAttributes as String: true,
+            ]
             var candidates: [(service: String, account: String)] = []
-            if let dump = runForStdout("/usr/bin/security", ["dump-keychain"]) {
-                for block in dump.components(separatedBy: "\nkeychain: ") {
-                    guard let service = firstMatch(#""svce"<blob>="([^"]*)""#, in: block),
+            let listing = keychain.copyMatching(listQuery as CFDictionary)
+            if listing.status == errSecSuccess, let items = listing.result as? [[String: Any]] {
+                for item in items {
+                    guard let service = item[kSecAttrService as String] as? String,
                           service.hasPrefix(keychainService) else { continue }
-                    let account = firstMatch(#""acct"<blob>="([^"]*)""#, in: block) ?? ""
-                    candidates.append((service, account))
+                    candidates.append((service, item[kSecAttrAccount as String] as? String ?? ""))
                 }
             }
             if candidates.isEmpty { candidates.append((keychainService, "")) }
 
-            var found: [Credentials] = []
+            var found: [(creds: Credentials, service: String, account: String)] = []
+            var needPrompt = 0
             for (service, account) in candidates {
-                var args = ["find-generic-password", "-s", service]
-                if !account.isEmpty { args += ["-a", account] }
-                args.append("-w")
-                guard let out = runForStdout("/usr/bin/security", args),
-                      let creds = parseCredentials(Data(out.utf8)) else { continue }
-                found.append(creds)
+                var query: [String: Any] = [
+                    kSecClass as String: kSecClassGenericPassword,
+                    kSecAttrService as String: service,
+                    kSecMatchLimit as String: kSecMatchLimitOne,
+                    kSecReturnData as String: true,
+                ]
+                if !account.isEmpty { query[kSecAttrAccount as String] = account }
+                let answer = keychain.copyMatching(query as CFDictionary)
+                switch answer.status {
+                case errSecSuccess:
+                    if let data = answer.result as? Data, let creds = parseCredentials(data) {
+                        found.append((creds, service, account))
+                    }
+                case errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled:
+                    needPrompt += 1
+                default:
+                    break
+                }
             }
-            if let best = found.max(by: { ($0.expiresAt ?? 0) < ($1.expiresAt ?? 0) }) {
-                return best
+            // Which item won, and whether its token is already past its own
+            // expiry, is the fact a dead meter turns on — and the model never
+            // sees it. One line per read; never the token. The service name
+            // is a fixed label plus an opaque suffix; the account can be a
+            // username or address, so it stays private.
+            if let best = found.max(by: { ($0.creds.expiresAt ?? 0) < ($1.creds.expiresAt ?? 0) }) {
+                TempleCoreLog.usage.info("claude credentials: keychain item \(best.service, privacy: .public) / \(best.account, privacy: .private) chosen of \(found.count, privacy: .public) with a token (\(candidates.count, privacy: .public) enumerated, \(needPrompt, privacy: .public) unreadable without a prompt); \(expiryDescription(best.creds.expiresAt), privacy: .public)")
+                return .found(best.creds)
+            }
+            if needPrompt > 0 {
+                // A transition worth keeping: notice level persists, info does not.
+                TempleCoreLog.usage.notice("claude credentials: \(needPrompt, privacy: .public) of \(candidates.count, privacy: .public) keychain item(s) need a prompt Temple was \(interactive ? "denied" : "not allowed to raise", privacy: .public); the explicit refresh control asks")
+                return .needsPermission
             }
 
             // ~/.claude/.credentials.json — the canonical store off-macOS.
-            let file = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".claude/.credentials.json")
-            guard let data = try? Data(contentsOf: file) else { return nil }
-            return parseCredentials(data)
-        }.value
+            guard let data = try? Data(contentsOf: keychain.credentialsFile), let creds = parseCredentials(data) else {
+                TempleCoreLog.usage.notice("claude credentials: none — \(candidates.count, privacy: .public) keychain item(s) enumerated, none with a token, and no credentials file")
+                return .none
+            }
+            TempleCoreLog.usage.info("claude credentials: from ~/.claude/.credentials.json; \(expiryDescription(creds.expiresAt), privacy: .public)")
+            return .found(creds)
+        }
+    }
+
+    /// Long deprecated (the header says 10.10) and still the only switch that
+    /// governs prompts for login-keychain items. Wrapped so the one
+    /// deprecation lives here, with the reason. The status is returned, not
+    /// swallowed: a set that failed means an unattended poll could prompt.
+    @available(macOS, deprecated: 10.10, message: "the only interaction switch that applies to login-keychain items")
+    private static func setKeychainInteractionAllowed(_ allowed: Bool) -> OSStatus {
+        SecKeychainSetUserInteractionAllowed(allowed)
+    }
+
+    /// nil when the setting could not be read; the caller decides what that
+    /// means for the lookup at hand.
+    @available(macOS, deprecated: 10.10, message: "paired with the setter above")
+    private static func keychainInteractionAllowed() -> Bool? {
+        var allowed: DarwinBoolean = true
+        return SecKeychainGetUserInteractionAllowed(&allowed) == errSecSuccess ? allowed.boolValue : nil
+    }
+
+    /// "expires in 3h 12m" / "expired 2d 4h ago" / "no expiry recorded".
+    /// Claude Code writes `expiresAt` in epoch milliseconds; a value small
+    /// enough to be seconds is read as seconds.
+    static func expiryDescription(_ expiresAt: Double?, now: Date = Date()) -> String {
+        guard let expiresAt else { return "no expiry recorded" }
+        let seconds = expiresAt > 1e11 ? expiresAt / 1000 : expiresAt
+        let delta = seconds - now.timeIntervalSince1970
+        let magnitude = abs(delta)
+        let text: String
+        switch magnitude {
+        case ..<3600: text = "\(Int(magnitude / 60))m"
+        case ..<86_400: text = "\(Int(magnitude / 3600))h \(Int(magnitude.truncatingRemainder(dividingBy: 3600) / 60))m"
+        default: text = "\(Int(magnitude / 86_400))d \(Int(magnitude.truncatingRemainder(dividingBy: 86_400) / 3600))h"
+        }
+        return delta >= 0 ? "expires in \(text)" : "expired \(text) ago"
     }
 
     /// Pure: the `claudeAiOauth` payload both credential stores carry.
@@ -199,21 +373,6 @@ public enum ClaudeUsageReader {
               let range = Range(match.range(at: 1), in: text)
         else { return nil }
         return String(text[range])
-    }
-
-    /// stdout of a command, or nil on failure. Arguments never touch a shell.
-    private static func runForStdout(_ path: String, _ args: [String]) -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = args
-        let out = Pipe()
-        process.standardOutput = out
-        process.standardError = Pipe()
-        do { try process.run() } catch { return nil }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return nil }
-        return String(data: data, encoding: .utf8)
     }
 }
 
