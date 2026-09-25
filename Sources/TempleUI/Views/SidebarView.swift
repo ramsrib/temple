@@ -302,26 +302,20 @@ private struct UsageMeterView: View {
     var body: some View {
         let claude = usage.claudeHeadlinePct
         let codex = usage.codexHeadlinePct
-        // A rejected sign-in with no figures yet (the app was started with a
-        // dead token) still needs a place in the footer, or the card that
-        // says what to do is unreachable.
-        let claudeNeedsSignIn = claude == nil && (usage.claudeSignInStale || usage.claudeNeedsPermission)
-        if claude != nil || codex != nil || claudeNeedsSignIn {
+        // Numbers, or nothing. The footer is glanced at all day: a stale
+        // number is easy to ignore, and anything that pulls the eye — a
+        // glyph, a color — is not, least of all for something the user may
+        // not be able to fix. What went wrong is in the card, opened on
+        // purpose, and in the usage log file (UsageLog) for later.
+        if claude != nil || codex != nil {
             HStack(spacing: 5) {
                 if let claude {
                     HStack(spacing: 3) {
                         AgentBadge(agent: .claude, size: 10)
                         percent(claude)
                     }
-                } else if claudeNeedsSignIn {
-                    HStack(spacing: 3) {
-                        AgentBadge(agent: .claude, size: 10)
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.orange)
-                    }
                 }
-                if (claude != nil || claudeNeedsSignIn) && codex != nil {
+                if claude != nil && codex != nil {
                     Text("·").font(.system(size: 10)).foregroundStyle(.tertiary)
                 }
                 if let codex {

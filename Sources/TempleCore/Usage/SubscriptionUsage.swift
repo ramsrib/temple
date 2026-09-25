@@ -128,7 +128,7 @@ public enum ClaudeUsageReader {
         switch status {
         case 200:
             guard let usage = parse(data, plan: creds.plan) else {
-                TempleCoreLog.usage.info("claude usage: 200 but the body did not parse (\(data.count, privacy: .public) bytes)")
+                UsageLog.info("claude usage: 200 but the body did not parse (\(data.count) bytes)")
                 return .endpointFailure(status: 200)
             }
             return .usage(usage)
@@ -248,12 +248,12 @@ public enum ClaudeUsageReader {
             // the previous value could not be read.
             let previous = keychain.interactionAllowed()
             if previous == nil, !interactive {
-                TempleCoreLog.usage.notice("claude credentials: could not read the keychain interaction setting; not reading unattended")
+                UsageLog.notice("claude credentials: could not read the keychain interaction setting; not reading unattended")
                 return .needsPermission
             }
             let set = keychain.setInteractionAllowed(interactive)
             if set != errSecSuccess {
-                TempleCoreLog.usage.notice("claude credentials: could not set keychain interaction to \(interactive, privacy: .public) (OSStatus \(set, privacy: .public))\(interactive ? "" : "; not reading unattended", privacy: .public)")
+                UsageLog.notice("claude credentials: could not set keychain interaction to \(interactive) (OSStatus \(set))\(interactive ? "" : "; not reading unattended")")
                 if !interactive { return .needsPermission }
             }
             defer { _ = keychain.setInteractionAllowed(previous ?? true) }
@@ -299,25 +299,25 @@ public enum ClaudeUsageReader {
             }
             // Which item won, and whether its token is already past its own
             // expiry, is the fact a dead meter turns on — and the model never
-            // sees it. One line per read; never the token. The service name
-            // is a fixed label plus an opaque suffix; the account can be a
-            // username or address, so it stays private.
+            // sees it. One line per read; never the token, never the account
+            // (a username or address). The service name is a fixed label
+            // plus an opaque suffix.
             if let best = found.max(by: { ($0.creds.expiresAt ?? 0) < ($1.creds.expiresAt ?? 0) }) {
-                TempleCoreLog.usage.info("claude credentials: keychain item \(best.service, privacy: .public) / \(best.account, privacy: .private) chosen of \(found.count, privacy: .public) with a token (\(candidates.count, privacy: .public) enumerated, \(needPrompt, privacy: .public) unreadable without a prompt); \(expiryDescription(best.creds.expiresAt), privacy: .public)")
+                UsageLog.info("claude credentials: keychain item \(best.service) chosen of \(found.count) with a token (\(candidates.count) enumerated, \(needPrompt) unreadable without a prompt); \(expiryDescription(best.creds.expiresAt))")
                 return .found(best.creds)
             }
             if needPrompt > 0 {
                 // A transition worth keeping: notice level persists, info does not.
-                TempleCoreLog.usage.notice("claude credentials: \(needPrompt, privacy: .public) of \(candidates.count, privacy: .public) keychain item(s) need a prompt Temple was \(interactive ? "denied" : "not allowed to raise", privacy: .public); the explicit refresh control asks")
+                UsageLog.notice("claude credentials: \(needPrompt) of \(candidates.count) keychain item(s) need a prompt Temple was \(interactive ? "denied" : "not allowed to raise"); the explicit refresh control asks")
                 return .needsPermission
             }
 
             // ~/.claude/.credentials.json — the canonical store off-macOS.
             guard let data = try? Data(contentsOf: keychain.credentialsFile), let creds = parseCredentials(data) else {
-                TempleCoreLog.usage.notice("claude credentials: none — \(candidates.count, privacy: .public) keychain item(s) enumerated, none with a token, and no credentials file")
+                UsageLog.notice("claude credentials: none — \(candidates.count) keychain item(s) enumerated, none with a token, and no credentials file")
                 return .none
             }
-            TempleCoreLog.usage.info("claude credentials: from ~/.claude/.credentials.json; \(expiryDescription(creds.expiresAt), privacy: .public)")
+            UsageLog.info("claude credentials: from ~/.claude/.credentials.json; \(expiryDescription(creds.expiresAt))")
             return .found(creds)
         }
     }

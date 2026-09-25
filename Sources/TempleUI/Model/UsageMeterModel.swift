@@ -151,23 +151,24 @@ public final class UsageMeterModel: ObservableObject {
             // permission is no longer the problem, whatever the answer was.
             if claudeNeedsPermission, outcome.credentialsWereRead {
                 claudeNeedsPermission = false
-                TempleUILog.usage.notice("claude usage: keychain access granted")
+                UsageLog.notice("claude usage: keychain access granted")
             }
             switch outcome {
             case .usage(let usage):
                 newClaude = usage
+                UsageLog.info("claude usage: ok — \(Self.summary(usage))")
                 if claudeSignInStale {
                     claudeSignInStale = false
-                    TempleUILog.usage.notice("claude usage: sign-in accepted again")
+                    UsageLog.notice("claude usage: sign-in accepted again")
                 }
             case .unauthorized:
                 // Transitions log at notice — the persisted level — so the
                 // first refusal is still on disk days later; a repeat is info.
                 if claudeSignInStale {
-                    TempleUILog.usage.info("claude usage: 401 again; still waiting for a new sign-in")
+                    UsageLog.info("claude usage: 401 again; still waiting for a new sign-in")
                 } else {
                     claudeSignInStale = true
-                    TempleUILog.usage.notice("claude usage: 401 — the token was rejected; a new Claude Code sign-in is needed")
+                    UsageLog.notice("claude usage: 401 — the token was rejected; a new Claude Code sign-in is needed")
                 }
             case .needsPermission:
                 // Same breaker as no credentials — unattended polls must not
@@ -176,7 +177,7 @@ public final class UsageMeterModel: ObservableObject {
                 claudeCredentialsMissing = true
                 if !claudeNeedsPermission {
                     claudeNeedsPermission = true
-                    TempleUILog.usage.notice("claude usage: the keychain item needs a prompt; automatic polls suspended until the refresh control asks")
+                    UsageLog.notice("claude usage: the keychain item needs a prompt; automatic polls suspended until the refresh control asks")
                 }
             case .noCredentials:
                 claudeCredentialsMissing = true
@@ -184,13 +185,13 @@ public final class UsageMeterModel: ObservableObject {
                 // without a log the only symptom is a percentage that quietly
                 // stops moving — which is exactly how this went unnoticed for
                 // eight days. One line each makes it a `log show` away.
-                TempleUILog.usage.notice("claude usage: no credentials; automatic polls suspended until a manual refresh")
+                UsageLog.notice("claude usage: no credentials; automatic polls suspended until a manual refresh")
             case .rateLimited:
                 claudeBackoffUntil = Date().addingTimeInterval(rateLimitBackoff)
-                TempleUILog.usage.info("claude usage: rate limited; backing off \(self.rateLimitBackoff, privacy: .public)s")
+                UsageLog.info("claude usage: rate limited; backing off \(self.rateLimitBackoff)s")
             case .endpointFailure(let status):
                 let what = status.map { "HTTP \($0)" + ($0 == 200 ? " (body did not parse)" : "") } ?? "no answer"
-                TempleUILog.usage.info("claude usage: \(what, privacy: .public); keeping the last reading")
+                UsageLog.info("claude usage: \(what); keeping the last reading")
             }
         }
         let newCodex = await codexReading
@@ -238,6 +239,18 @@ public final class UsageMeterModel: ObservableObject {
         guard claude != nil,
               claudeMissedRefreshes >= Self.staleAfterMissedRefreshes else { return nil }
         return claudeUpdatedAt
+    }
+
+    /// One line's worth of a reading, for the log: every fetch leaves a
+    /// record, successes included, or a trail with only failures in it
+    /// cannot say when the meter last worked.
+    static func summary(_ usage: ClaudeUsage) -> String {
+        var parts: [String] = []
+        if let w = usage.fiveHour { parts.append("5h \(Int(w.pct.rounded()))%") }
+        if let w = usage.weekly { parts.append("weekly \(Int(w.pct.rounded()))%") }
+        for s in usage.scoped { parts.append("\(s.label) \(Int(s.pct.rounded()))%") }
+        if let c = usage.creditsPct { parts.append("credits \(Int(c.rounded()))%") }
+        return parts.isEmpty ? "no windows in the reply" : parts.joined(separator: ", ")
     }
 
     // MARK: What the footer shows

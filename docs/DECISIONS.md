@@ -700,9 +700,27 @@ reproduced.
   bypasses the click floor so a click seconds after opening the card still
   asks. Any answer from the endpoint, a 401 included, clears the permission
   state: the token was read, whatever it was worth. Consequence on first
-  launch after this change: the meter shows the badge with a warning glyph
-  until that click, because Temple itself was never in the items' access
-  lists.
+  launch after this change: no Claude number until that click, because
+  Temple itself was never in the items' access lists; the card, reached
+  through the Codex figure, carries the line.
+- **The footer never alarms.** A first version put an orange warning
+  triangle in the footer for the two states that need the user; Sri
+  rejected it outright — the footer is glanced at all day, a stale number
+  is easy to ignore and a colored symbol is not, and pulling attention to
+  something the user may not be able to fix is the worst trade the sidebar
+  can make. The footer shows numbers or nothing. Explanations live in the
+  card, opened on purpose, and the record lives in a file.
+- **A log file, not just the unified log.** `UsageLog` writes every lookup
+  and every fetch outcome — successes included, as one line of figures —
+  timestamped, to `<state dir>/logs/usage.log` (trimmed to its newer half
+  past 512 KB) as well as to the unified log. Only the app turns the file
+  on, at launch; the test suite drives the same model and must not write
+  one. A file that cannot be written is reported once through the unified
+  log rather than failing silently.
+  Info-level unified-log lines are gone within hours and the persisted ones
+  take a predicate to find; "it happened last week on my other Mac" needs a
+  file a person can open and hand over. Never the token, never the Keychain
+  account. Under the state directory, so a demo run writes its own.
 - **The HTTP status rides in the reader's outcome**, and the model's
   per-outcome log line prints it; a 401 is its own outcome. The model keeps
   polling on a 401 (a new sign-in lands in the Keychain without any action
@@ -713,10 +731,8 @@ reproduced.
   expiry relative to now (Claude Code writes epoch milliseconds; seconds are
   read as such). The service name is public — a fixed label plus an opaque
   suffix — the account is not. Never the token.
-- **Transitions persist, polls don't.** Permission needed or granted, a
-  first rejection and its recovery, no credentials at all: notice level, the
-  one the unified log keeps on disk. The per-poll credential line and
-  per-fetch status: info, visible live with `log stream --info`.
+- **Transitions at notice, polls at info** in the unified log — notice is
+  the level it keeps on disk — and everything in the file.
 
 Not changed: which credential wins. The reader takes the latest `expiresAt`,
 so "skip expired items" would be a no-op — if the winner is expired, every

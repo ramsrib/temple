@@ -351,18 +351,18 @@ render, never an error.
 The Claude figures are live only while Temple can read the Claude Code
 sign-in and the sign-in is accepted. The Keychain is read in-process, and an
 unattended poll never raises the macOS Keychain prompt: an item Temple has
-not been allowed to read fails closed, the card says "Temple needs permission
-to read the Claude Code sign-in. Refresh to allow." and the refresh control
-is the one place the prompt may appear — "Always Allow" there makes every
-later poll silent. A token the endpoint refuses shows "Sign-in rejected. Run
-claude auth login." at once; three polls that failed for any other reason
-show "Couldn't refresh". All three keep the last figures and when they were
-read, and a warning glyph stands in for the percentage when there were never
-any. Transitions (permission needed or granted, a rejection and its recovery,
-no credentials at all) log at notice level and persist; each read's
-credential choice and expiry, and each failed fetch's failure details, log at
-info level and are only there live (`log stream --info`, categories `usage`
-under `com.sriramb.temple.core` and `com.sriramb.temple.app`).
+not been allowed to read fails closed and the card says "Temple needs
+permission to read the Claude Code sign-in. Refresh to allow." — the refresh
+control is the one place the prompt may appear, and "Always Allow" there
+makes every later poll silent. A token the endpoint refuses shows "Sign-in
+rejected. Run claude auth login."; three polls that failed for any other
+reason show "Couldn't refresh". All three keep the last figures and when they
+were read, and none of them changes the footer: it shows numbers or nothing,
+never a warning. What the meter did is written, one timestamped line per
+lookup and per fetch, to `~/Library/Application Support/Temple/logs/usage.log`
+(size-capped; never the token or the Keychain account) and to the unified log
+(`com.sriramb.temple.core`, category `usage`). The file is the one to hand
+over when the meter goes quiet.
 
 ## Menu bar
 
