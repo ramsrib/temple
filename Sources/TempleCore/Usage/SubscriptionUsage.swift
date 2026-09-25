@@ -73,9 +73,10 @@ public enum ClaudeUsageReader {
     static let keychainService = "Claude Code-credentials"
 
     public enum Outcome: Sendable {
-        /// No token anywhere — including a DENIED Keychain prompt. The caller
-        /// must stop asking for the rest of the run, or the poll re-prompts
-        /// the user every cycle.
+        /// No token anywhere: no Keychain item carries one and there is no
+        /// credentials file. The caller stops asking for the rest of the run
+        /// (a sign-in lands in the Keychain without any action here, and the
+        /// refresh control re-arms it).
         case noCredentials
         /// A token exists but Temple may not read it without a Keychain
         /// prompt, and this read was not allowed to raise one. Only an
@@ -219,7 +220,7 @@ public enum ClaudeUsageReader {
             credentialsFile: FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".claude/.credentials.json"))
     }
-    static var keychain = KeychainAccess.live
+    nonisolated(unsafe) static var keychain = KeychainAccess.live
 
     /// Every lookup runs here, one at a time: the interaction switch below
     /// is process-wide, and two lookups with different policies interleaved
@@ -233,93 +234,91 @@ public enum ClaudeUsageReader {
     }
 
     private static func lookupCredentials(interactive: Bool) -> CredentialLookup {
-        do {
-            // Process-wide, so it is set for exactly this lookup and put back
-            // the way it was. Deprecated, and the only switch that applies to
-            // login-keychain items — the per-query kSecUseAuthenticationUI
-            // covers the data-protection keychain alone (SecItem.h).
-            //
-            // An unattended lookup that cannot establish "no prompts" does
-            // not read at all: a read that might prompt is the failure this
-            // whole path exists to prevent. It reports the same state a
-            // denied item does, so the card sends the user to the one control
-            // that may ask. The interactive lookup is the user's own click;
-            // it proceeds, and puts the switch back to the system default if
-            // the previous value could not be read.
-            let previous = keychain.interactionAllowed()
-            if previous == nil, !interactive {
-                UsageLog.notice("claude credentials: could not read the keychain interaction setting; not reading unattended")
-                return .needsPermission
-            }
-            let set = keychain.setInteractionAllowed(interactive)
-            if set != errSecSuccess {
-                UsageLog.notice("claude credentials: could not set keychain interaction to \(interactive) (OSStatus \(set))\(interactive ? "" : "; not reading unattended")")
-                if !interactive { return .needsPermission }
-            }
-            defer { _ = keychain.setInteractionAllowed(previous ?? true) }
-
-            // Attributes only — never touches a secret, never prompts.
-            let listQuery: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecMatchLimit as String: kSecMatchLimitAll,
-                kSecReturnAttributes as String: true,
-            ]
-            var candidates: [(service: String, account: String)] = []
-            let listing = keychain.copyMatching(listQuery as CFDictionary)
-            if listing.status == errSecSuccess, let items = listing.result as? [[String: Any]] {
-                for item in items {
-                    guard let service = item[kSecAttrService as String] as? String,
-                          service.hasPrefix(keychainService) else { continue }
-                    candidates.append((service, item[kSecAttrAccount as String] as? String ?? ""))
-                }
-            }
-            if candidates.isEmpty { candidates.append((keychainService, "")) }
-
-            var found: [(creds: Credentials, service: String, account: String)] = []
-            var needPrompt = 0
-            for (service, account) in candidates {
-                var query: [String: Any] = [
-                    kSecClass as String: kSecClassGenericPassword,
-                    kSecAttrService as String: service,
-                    kSecMatchLimit as String: kSecMatchLimitOne,
-                    kSecReturnData as String: true,
-                ]
-                if !account.isEmpty { query[kSecAttrAccount as String] = account }
-                let answer = keychain.copyMatching(query as CFDictionary)
-                switch answer.status {
-                case errSecSuccess:
-                    if let data = answer.result as? Data, let creds = parseCredentials(data) {
-                        found.append((creds, service, account))
-                    }
-                case errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled:
-                    needPrompt += 1
-                default:
-                    break
-                }
-            }
-            // Which item won, and whether its token is already past its own
-            // expiry, is the fact a dead meter turns on — and the model never
-            // sees it. One line per read; never the token, never the account
-            // (a username or address). The service name is a fixed label
-            // plus an opaque suffix.
-            if let best = found.max(by: { ($0.creds.expiresAt ?? 0) < ($1.creds.expiresAt ?? 0) }) {
-                UsageLog.info("claude credentials: keychain item \(best.service) chosen of \(found.count) with a token (\(candidates.count) enumerated, \(needPrompt) unreadable without a prompt); \(expiryDescription(best.creds.expiresAt))")
-                return .found(best.creds)
-            }
-            if needPrompt > 0 {
-                // A transition worth keeping: notice level persists, info does not.
-                UsageLog.notice("claude credentials: \(needPrompt) of \(candidates.count) keychain item(s) need a prompt Temple was \(interactive ? "denied" : "not allowed to raise"); the explicit refresh control asks")
-                return .needsPermission
-            }
-
-            // ~/.claude/.credentials.json — the canonical store off-macOS.
-            guard let data = try? Data(contentsOf: keychain.credentialsFile), let creds = parseCredentials(data) else {
-                UsageLog.notice("claude credentials: none — \(candidates.count) keychain item(s) enumerated, none with a token, and no credentials file")
-                return .none
-            }
-            UsageLog.info("claude credentials: from ~/.claude/.credentials.json; \(expiryDescription(creds.expiresAt))")
-            return .found(creds)
+        // Process-wide, so it is set for exactly this lookup and put back
+        // the way it was. Deprecated, and the only switch that applies to
+        // login-keychain items — the per-query kSecUseAuthenticationUI
+        // covers the data-protection keychain alone (SecItem.h).
+        //
+        // An unattended lookup that cannot establish "no prompts" does
+        // not read at all: a read that might prompt is the failure this
+        // whole path exists to prevent. It reports the same state a
+        // denied item does, so the card sends the user to the one control
+        // that may ask. The interactive lookup is the user's own click;
+        // it proceeds, and puts the switch back to the system default if
+        // the previous value could not be read.
+        let previous = keychain.interactionAllowed()
+        if previous == nil, !interactive {
+            UsageLog.notice("claude credentials: could not read the keychain interaction setting; not reading unattended")
+            return .needsPermission
         }
+        let set = keychain.setInteractionAllowed(interactive)
+        if set != errSecSuccess {
+            UsageLog.notice("claude credentials: could not set keychain interaction to \(interactive) (OSStatus \(set))\(interactive ? "" : "; not reading unattended")")
+            if !interactive { return .needsPermission }
+        }
+        defer { _ = keychain.setInteractionAllowed(previous ?? true) }
+
+        // Attributes only — never touches a secret, never prompts.
+        let listQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+            kSecReturnAttributes as String: true,
+        ]
+        var candidates: [(service: String, account: String)] = []
+        let listing = keychain.copyMatching(listQuery as CFDictionary)
+        if listing.status == errSecSuccess, let items = listing.result as? [[String: Any]] {
+            for item in items {
+                guard let service = item[kSecAttrService as String] as? String,
+                      service.hasPrefix(keychainService) else { continue }
+                candidates.append((service, item[kSecAttrAccount as String] as? String ?? ""))
+            }
+        }
+        if candidates.isEmpty { candidates.append((keychainService, "")) }
+
+        var found: [(creds: Credentials, service: String, account: String)] = []
+        var needPrompt = 0
+        for (service, account) in candidates {
+            var query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecMatchLimit as String: kSecMatchLimitOne,
+                kSecReturnData as String: true,
+            ]
+            if !account.isEmpty { query[kSecAttrAccount as String] = account }
+            let answer = keychain.copyMatching(query as CFDictionary)
+            switch answer.status {
+            case errSecSuccess:
+                if let data = answer.result as? Data, let creds = parseCredentials(data) {
+                    found.append((creds, service, account))
+                }
+            case errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled:
+                needPrompt += 1
+            default:
+                break
+            }
+        }
+        // Which item won, and whether its token is already past its own
+        // expiry, is the fact a dead meter turns on — and the model never
+        // sees it. One line per read; never the token, never the account
+        // (a username or address). The service name is a fixed label
+        // plus an opaque suffix.
+        if let best = found.max(by: { ($0.creds.expiresAt ?? 0) < ($1.creds.expiresAt ?? 0) }) {
+            UsageLog.info("claude credentials: keychain item \(best.service) chosen of \(found.count) with a token (\(candidates.count) enumerated, \(needPrompt) unreadable without a prompt); \(expiryDescription(best.creds.expiresAt))")
+            return .found(best.creds)
+        }
+        if needPrompt > 0 {
+            // A transition worth keeping: notice level persists, info does not.
+            UsageLog.notice("claude credentials: \(needPrompt) of \(candidates.count) keychain item(s) need a prompt Temple was \(interactive ? "denied" : "not allowed to raise"); the explicit refresh control asks")
+            return .needsPermission
+        }
+
+        // ~/.claude/.credentials.json — the canonical store off-macOS.
+        guard let data = try? Data(contentsOf: keychain.credentialsFile), let creds = parseCredentials(data) else {
+            UsageLog.notice("claude credentials: none — \(candidates.count) keychain item(s) enumerated, none with a token, and no credentials file")
+            return .none
+        }
+        UsageLog.info("claude credentials: from ~/.claude/.credentials.json; \(expiryDescription(creds.expiresAt))")
+        return .found(creds)
     }
 
     /// Long deprecated (the header says 10.10) and still the only switch that
@@ -367,13 +366,6 @@ public enum ClaudeUsageReader {
                            plan: oauth["subscriptionType"] as? String)
     }
 
-    private static func firstMatch(_ pattern: String, in text: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-              let range = Range(match.range(at: 1), in: text)
-        else { return nil }
-        return String(text[range])
-    }
 }
 
 // MARK: - Codex (rollout-log snapshot)

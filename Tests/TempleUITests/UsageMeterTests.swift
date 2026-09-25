@@ -7,6 +7,12 @@ private actor Counter {
     func bump() { value += 1 }
 }
 
+/// Records what each fetch was asked (interactive or not), across tasks.
+private actor AskRecorder {
+    private(set) var asks: [Bool] = []
+    func record(_ interactive: Bool) { asks.append(interactive) }
+}
+
 @MainActor
 final class UsageMeterTests: XCTestCase {
     private func claude(fiveHour: Double? = nil, weekly: Double? = nil,
@@ -281,30 +287,69 @@ final class UsageMeterTests: XCTestCase {
         // the permission click comes seconds later. It must still ask.
         let model = UsageMeterModel()
         let reading = claude(fiveHour: 20)
-        var interactiveAsks: [Bool] = []
+        let asks = AskRecorder()
         model.claudeFetch = { interactive in
-            interactiveAsks.append(interactive)
+            await asks.record(interactive)
             return interactive ? .usage(reading) : .needsPermission
         }
         model.codexFetch = { nil }
 
         await model.refreshNow()                       // an unattended poll
-        XCTAssertEqual(interactiveAsks, [false])
+        var seen = await asks.asks
+        XCTAssertEqual(seen, [false])
         XCTAssertTrue(model.claudeNeedsPermission)
         XCTAssertNil(model.claudeHeadlinePct)
 
         await model.refreshNow()                       // breaker: no second ask
-        XCTAssertEqual(interactiveAsks, [false])
+        seen = await asks.asks
+        XCTAssertEqual(seen, [false])
 
         model.manualRefresh()                          // opening the card
         await settle(model)
-        XCTAssertEqual(interactiveAsks, [false], "the card's own refresh is floored and never asks")
+        seen = await asks.asks
+        XCTAssertEqual(seen, [false], "the card's own refresh is floored and never asks")
 
         model.manualRefresh(retryingCredentials: true) // the refresh control, seconds later
         await settle(model)
-        XCTAssertEqual(interactiveAsks, [false, true])
+        seen = await asks.asks
+        XCTAssertEqual(seen, [false, true])
         XCTAssertFalse(model.claudeNeedsPermission)
         XCTAssertEqual(model.claudeHeadlinePct, 20)
+    }
+
+    func testAPermissionClickDuringAPollRunsOnceThePollEnds() async {
+        let model = UsageMeterModel()
+        let reading = claude(fiveHour: 20)
+        let asks = AskRecorder()
+        model.claudeFetch = { interactive in
+            await asks.record(interactive)
+            try? await Task.sleep(nanoseconds: 30_000_000)   // a poll long enough to click into
+            return interactive ? .usage(reading) : .needsPermission
+        }
+        model.codexFetch = { nil }
+
+        async let poll: Void = model.refreshNow()
+        // Click only once the poll is genuinely in flight.
+        for _ in 0..<200 where await asks.asks.isEmpty { await Task.yield(); try? await Task.sleep(nanoseconds: 1_000_000) }
+        model.manualRefresh(retryingCredentials: true)   // lands mid-poll
+        await poll
+        for _ in 0..<200 where model.claudeHeadlinePct == nil { await Task.yield(); try? await Task.sleep(nanoseconds: 2_000_000) }
+        let seen = await asks.asks
+        XCTAssertEqual(seen, [false, true], "the click was held and then asked interactively")
+        XCTAssertEqual(model.claudeHeadlinePct, 20)
+        XCTAssertFalse(model.claudeNeedsPermission)
+    }
+
+    func testSigningOutClearsThePermissionState() async {
+        let model = UsageMeterModel()
+        model.claudeFetch = { _ in .needsPermission }
+        model.codexFetch = { nil }
+        await model.refreshNow()
+        XCTAssertTrue(model.claudeNeedsPermission)
+        model.claudeFetch = { _ in .noCredentials }
+        model.manualRefresh(retryingCredentials: true)
+        await settle(model)
+        XCTAssertFalse(model.claudeNeedsPermission, "nothing left to grant permission for")
     }
 
     func testAnyAnswerFromTheEndpointClearsThePermissionState() async {
@@ -349,5 +394,24 @@ final class UsageMeterTests: XCTestCase {
     /// A manual refresh runs in its own Task; give it the turns it needs.
     private func settle(_ model: UsageMeterModel) async {
         for _ in 0..<50 { await Task.yield() }
+    }
+
+    func testASecondClickWhileThePromptIsUpDoesNotQueueASecondPrompt() async {
+        let model = UsageMeterModel()
+        let reading = claude(fiveHour: 20)
+        let asks = AskRecorder()
+        model.claudeFetch = { interactive in
+            await asks.record(interactive)
+            try? await Task.sleep(nanoseconds: 30_000_000)   // the prompt is "up"
+            return interactive ? .usage(reading) : .needsPermission
+        }
+        model.codexFetch = { nil }
+        async let first: Void = model.refreshNow(interactive: true)
+        for _ in 0..<200 where await asks.asks.isEmpty { await Task.yield(); try? await Task.sleep(nanoseconds: 1_000_000) }
+        model.manualRefresh(retryingCredentials: true)   // impatient second click
+        await first
+        await settle(model)
+        let seen = await asks.asks
+        XCTAssertEqual(seen, [true], "one prompt, not two")
     }
 }

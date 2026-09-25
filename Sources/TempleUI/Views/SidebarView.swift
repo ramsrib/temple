@@ -361,14 +361,11 @@ private struct UsageCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            // Silence means live. A line appears only once the reader has
-            // missed enough polls that the numbers can't be trusted —
-            // otherwise a card you open every hour would carry a "2m ago"
-            // that never says anything. A rejected token is not a hiccup:
-            // say so at once, and say what fixes it — the refresh control
-            // beside the line cannot.
-            // Two definitive states, each named with its remedy. Permission is
-            // one click away — the refresh control is the one that may ask.
+            // Silence means live: the stale line appears only once the
+            // reader has missed enough polls that the numbers can't be
+            // trusted. Two definitive states are named at once, each with
+            // its remedy: permission is one click away — the refresh control
+            // is the one that may ask — and a rejected token needs a sign-in.
             let attention: String? = usage.claudeNeedsPermission
                 ? "Temple needs permission to read the Claude Code sign-in. Refresh to allow."
                 : usage.claudeSignInStale ? "Sign-in rejected. Run claude auth login." : nil

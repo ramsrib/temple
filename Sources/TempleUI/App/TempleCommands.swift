@@ -114,6 +114,12 @@ public struct TempleCommands: Commands {
             }
             .keyboardShortcut("h", modifiers: [.command, .shift])
             Divider()
+            // The footer shows numbers or nothing, so a Claude-only user whose
+            // meter has never appeared needs a route to the one refresh that
+            // may raise the Keychain prompt. This is it.
+            Button { model.usage.manualRefresh(retryingCredentials: true) } label: {
+                Label("Refresh Usage", systemImage: "gauge.with.needle")
+            }
             Button { model.toggleShortcuts() } label: {
                 Label("Keyboard Shortcuts", systemImage: "keyboard")
             }

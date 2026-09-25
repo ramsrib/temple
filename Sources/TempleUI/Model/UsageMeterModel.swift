@@ -129,9 +129,20 @@ public final class UsageMeterModel: ObservableObject {
         // is right there — a click seconds later that silently did nothing
         // would read as the button being broken. In-flight exclusion and
         // the 429 backoff still apply.
-        guard Date().timeIntervalSince(lastAttempt) > manualFloor || retryingCredentials else { return }
+        let since = Date().timeIntervalSince(lastAttempt)
+        guard since > manualFloor || retryingCredentials else {
+            // Every dropped click is a line: a meter that "does nothing
+            // when I click" has to be explicable from the file.
+            UsageLog.info("manual refresh: floored, \(Int(since))s since the last attempt")
+            return
+        }
         Task { await refreshNow(interactive: retryingCredentials) }
     }
+
+    /// A permission click that arrived mid-refresh, to run once it ends.
+    private var pendingInteractiveRefresh = false
+    /// Whether the refresh in flight may itself raise the prompt.
+    private var refreshingInteractively = false
 
     /// `interactive`: the Keychain prompt may be raised. Only the explicit
     /// refresh control passes true (see `manualRefresh`).
@@ -139,13 +150,43 @@ public final class UsageMeterModel: ObservableObject {
         // The guard lives where the work starts, not where it was queued:
         // two calls in one turn would otherwise both pass a check against
         // state neither has moved yet.
-        guard !refreshing else { return }
+        guard !refreshing else {
+            // The one click that may ask for permission must not be lost to
+            // a poll that happens to be in flight: it runs when that ends.
+            // Decided here, not where the click was queued, so the outcome
+            // does not depend on which task the scheduler ran first.
+            if interactive, !refreshingInteractively {
+                pendingInteractiveRefresh = true
+                UsageLog.info("manual refresh: a refresh is in flight; the interactive one runs after it")
+            } else {
+                // A second click while the prompt is already up is not a
+                // request for a second prompt.
+                UsageLog.info("refresh: another is in flight; dropped")
+            }
+            return
+        }
+        // An interactive refresh IS the retry of credentials: it re-arms the
+        // breaker itself, because a poll that ran between the click and now
+        // may have tripped it again.
+        if interactive { claudeCredentialsMissing = false }
         lastAttempt = Date()
         refreshing = true
-        defer { refreshing = false }
+        refreshingInteractively = interactive
+        defer {
+            refreshing = false
+            refreshingInteractively = false
+            if pendingInteractiveRefresh {
+                pendingInteractiveRefresh = false
+                Task { await self.refreshNow(interactive: true) }
+            }
+        }
         async let codexReading = codexFetch()
         var newClaude: ClaudeUsage?
-        if !claudeCredentialsMissing, Date() >= claudeBackoffUntil {
+        if claudeCredentialsMissing {
+            UsageLog.info("claude: skipped, waiting for the refresh control (no credentials or no permission)")
+        } else if Date() < claudeBackoffUntil {
+            UsageLog.info("claude: skipped, rate-limit backoff until \(self.claudeBackoffUntil)")
+        } else {
             let outcome = await claudeFetch(interactive)
             // Any answer from the endpoint proves the credentials were read:
             // permission is no longer the problem, whatever the answer was.
@@ -181,6 +222,8 @@ public final class UsageMeterModel: ObservableObject {
                 }
             case .noCredentials:
                 claudeCredentialsMissing = true
+                // Nothing to grant permission for any more (signed out).
+                claudeNeedsPermission = false
                 // Every one of these paths leaves stale numbers on screen, and
                 // without a log the only symptom is a percentage that quietly
                 // stops moving — which is exactly how this went unnoticed for

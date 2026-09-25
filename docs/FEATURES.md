@@ -361,8 +361,12 @@ were read, and none of them changes the footer: it shows numbers or nothing,
 never a warning. What the meter did is written, one timestamped line per
 lookup and per fetch, to `~/Library/Application Support/Temple/logs/usage.log`
 (size-capped; never the token or the Keychain account) and to the unified log
-(`com.sriramb.temple.core`, category `usage`). The file is the one to hand
-over when the meter goes quiet.
+(`com.sriramb.temple.core`, category `usage`) — including every skipped
+poll and every dropped click, so "it does nothing when I click" is
+explicable from the file. The file is the one to hand over when the meter
+goes quiet. View → Refresh Usage runs the same interactive refresh as the
+card's control, for a meter that has never shown a number and so has no
+footer to click.
 
 ## Menu bar
 

@@ -666,10 +666,13 @@ non-200 into one outcome, which Keychain item it chose and whether that
 token was past its expiry went unrecorded, and the credential lookup ran
 `/usr/bin/security` as a child process — whose Keychain prompts are
 attributed to `security`, so "Always Allow" never stuck to Temple, and
-which, blocked on a prompt nobody answered, blocked the whole refresh: the
-model's in-flight guard then skipped every later poll and every click, with
-nothing logged. That last shape matches the report; it has not been
-reproduced.
+which, blocked on a prompt nobody answered, would have blocked the whole
+refresh with nothing logged. A read-only look at the stuck instance found
+no such child, no pending prompt, no thread parked in the usage path, and a
+freshly rotated token; the best remaining explanation is the old breaker,
+tripped by one failed read, with the refresh click dropped by its
+five-second floor — unproven, because nothing was persisted. Both of those
+are changed below, and the file exists so the next time is not a guess.
 
 **Decisions.**
 
@@ -702,14 +705,15 @@ reproduced.
   state: the token was read, whatever it was worth. Consequence on first
   launch after this change: no Claude number until that click, because
   Temple itself was never in the items' access lists; the card, reached
-  through the Codex figure, carries the line.
-- **The footer never alarms.** A first version put an orange warning
-  triangle in the footer for the two states that need the user; Sri
-  rejected it outright — the footer is glanced at all day, a stale number
-  is easy to ignore and a colored symbol is not, and pulling attention to
-  something the user may not be able to fix is the worst trade the sidebar
-  can make. The footer shows numbers or nothing. Explanations live in the
-  card, opened on purpose, and the record lives in a file.
+  through the Codex figure or View → Refresh Usage, carries the line.
+- **The footer never alarms.** It shows numbers or nothing: the footer is
+  glanced at all day, a stale number is easy to ignore and a colored symbol
+  is not, and pulling attention to something the user may not be able to
+  fix is the worst trade the sidebar can make. Explanations live in the
+  card, opened on purpose, and the record lives in a file. Because a meter
+  that has never shown a number has no footer to click, the View menu
+  carries "Refresh Usage", the same interactive refresh as the card's
+  control — the route to the Keychain prompt for a Claude-only user.
 - **A log file, not just the unified log.** `UsageLog` writes every lookup
   and every fetch outcome — successes included, as one line of figures —
   timestamped, to `<state dir>/logs/usage.log` (trimmed to its newer half
@@ -738,12 +742,8 @@ Not changed: which credential wins. The reader takes the latest `expiresAt`,
 so "skip expired items" would be a no-op — if the winner is expired, every
 item is (assuming one unit; Claude Code has only ever written milliseconds).
 
-Review ledger (gpt-6-astra): round 1 — copy, first-fetch visibility, log
-privacy and levels, and that each poll could prompt; rounds 2–4 — a
-subprocess runner for `security` with a deadline, then its unbounded read
-after exit and cleanup on timeout, then its non-throwing read racing the
-close and a stale pid on SIGKILL. Three rounds of findings in one function
-was the signal to ask whether the mechanism was right. The first answer
-(keep the child: it can be killed, and the SDK has no interaction switch)
-rested on a wrong reading of the SDK; round 4 corrected it, and the runner
-went away with the reason for it.
+Reviewed by gpt-6-astra over nine rounds and then, as one diff, by Claude
+Fable. The mechanism changed twice on the way — a subprocess runner with
+deadlines and signals, then the framework — because findings kept landing in
+the same function, which is the signal that the mechanism, not the patch,
+is wrong (`dotfiles/docs/review-escalation.md`).

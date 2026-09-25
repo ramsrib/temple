@@ -124,43 +124,44 @@ final class UsageTests: XCTestCase {
 
     // MARK: The lookup through injected Security calls
 
-    private struct FakeKeychain {
-        var previous: Bool? = true
-        var setStatus: OSStatus = errSecSuccess
+    private final class FakeKeychain {
+        var previous: Bool?
+        var setStatus: OSStatus
         var sets: [Bool] = []
         var queries = 0
-        var items: [(service: String, account: String, data: Data?)] = []   // nil data = needs a prompt
+        /// nil data = needs a prompt; `denied` = the prompt was shown and refused
+        var items: [(service: String, account: String, data: Data?)]
+        var denied = false
+        init(previous: Bool? = true, setStatus: OSStatus = errSecSuccess,
+             items: [(service: String, account: String, data: Data?)] = []) {
+            self.previous = previous; self.setStatus = setStatus; self.items = items
+        }
     }
 
     private func install(_ fake: FakeKeychain, credentialsFile: URL = URL(fileURLWithPath: "/nonexistent/credentials.json"),
-                         body: (inout FakeKeychain) -> Void) {
+                         body: (FakeKeychain) -> Void) {
         let saved = ClaudeUsageReader.keychain
         defer { ClaudeUsageReader.keychain = saved }
-        var state = fake
-        let box = UnsafeMutablePointer<FakeKeychain>.allocate(capacity: 1)
-        box.initialize(to: state)
-        defer { box.deinitialize(count: 1); box.deallocate() }
         ClaudeUsageReader.keychain = .init(
-            setInteractionAllowed: { allowed in box.pointee.sets.append(allowed); return box.pointee.setStatus },
-            interactionAllowed: { box.pointee.previous },
+            setInteractionAllowed: { allowed in fake.sets.append(allowed); return fake.setStatus },
+            interactionAllowed: { fake.previous },
             copyMatching: { query in
-                box.pointee.queries += 1
+                fake.queries += 1
                 let q = query as NSDictionary
                 if q[kSecReturnAttributes as String] as? Bool == true {
-                    let attrs = box.pointee.items.map { [kSecAttrService as String: $0.service, kSecAttrAccount as String: $0.account] as [String: Any] }
+                    let attrs = fake.items.map { [kSecAttrService as String: $0.service, kSecAttrAccount as String: $0.account] as [String: Any] }
                     return (errSecSuccess, attrs as CFTypeRef)
                 }
                 let service = q[kSecAttrService as String] as? String
                 let account = q[kSecAttrAccount as String] as? String ?? ""
-                guard let item = box.pointee.items.first(where: { $0.service == service && $0.account == account }) else {
+                guard let item = fake.items.first(where: { $0.service == service && $0.account == account }) else {
                     return (errSecItemNotFound, nil)
                 }
-                guard let data = item.data else { return (errSecInteractionNotAllowed, nil) }
+                guard let data = item.data else { return (fake.denied ? errSecUserCanceled : errSecInteractionNotAllowed, nil) }
                 return (errSecSuccess, data as CFTypeRef)
             },
             credentialsFile: credentialsFile)
-        body(&box.pointee)
-        state = box.pointee
+        body(fake)
     }
 
     private func token(expiresAt: Double) -> Data {
@@ -231,6 +232,17 @@ final class UsageTests: XCTestCase {
         install(FakeKeychain(previous: nil, items: [("Claude Code-credentials", "me", token(expiresAt: 2e12))])) { fake in
             guard case .found = lookup(interactive: true) else { return XCTFail("expected a token") }
             XCTAssertEqual(fake.sets, [true, true], "allowed for the click, then the system default")
+        }
+    }
+
+    func testAPromptTheUserRefusedIsPermissionTooNotNoCredentials() {
+        // Interactive read, the user hits Deny: still "needs permission" —
+        // the item is there, only the grant is missing.
+        let fake = FakeKeychain(items: [("Claude Code-credentials", "me", nil)])
+        fake.denied = true
+        install(fake) { fake in
+            guard case .needsPermission = lookup(interactive: true) else { return XCTFail("expected needsPermission") }
+            XCTAssertEqual(fake.sets, [true, true])
         }
     }
 }

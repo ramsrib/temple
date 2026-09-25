@@ -16,10 +16,9 @@ import os
 /// `TempleState.directory`, so a `make demo` run writes its own copy.
 public enum UsageLog {
     /// Where the file goes — nil until the APP sets it at launch
-    /// (`TempleApp.init`), so nothing else that happens to log through here
-    /// writes a file: the test suite drove the model through these lines
-    /// and left 39 lines of fake outcomes in the real state directory
-    /// before this was nil by default. Tests that want the file set it.
+    /// (`TempleApp.init`). Nothing else that logs through here writes a
+    /// file: the test suite drives the same model. Tests that want the
+    /// file set this themselves.
     public nonisolated(unsafe) static var fileURL: URL?
     /// The app's location: beside the SQLite store, so a demo run writes its own.
     public static var defaultFileURL: URL {
