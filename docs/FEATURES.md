@@ -198,6 +198,16 @@ Settings tab is the one agent-less exception.
 
 - Closing a live tab gracefully ends its process. Temple asks the CLI to exit,
   terminates and reaps it, and force-kills only after a bounded timeout.
+- A spawned shell reports `TERM_PROGRAM=Temple` and `TERM_PROGRAM_VERSION`,
+  not the terminal library underneath, so tools that ask which terminal they
+  are in name the right app. The Ghostty resource variables and
+  `TERM=xterm-ghostty` stay: shell integration and the terminfo depend on them.
+- When a tab goes, its terminal surface is freed at a known point, the
+  runtime's message queue is drained right after, and no new surface is
+  created until that drain has finished — so, for a drain that runs to
+  completion, a title queued by a closing terminal does not land on the tab
+  spawned next
+  ([ADR-021](./DECISIONS.md#adr-021--a-freed-surface-does-not-hand-its-messages-to-its-successor)).
 - When a process exits on its own, Temple normally closes its tab. The session
   persists on disk and remains in the sidebar.
 - Closing a tab asks for confirmation only while its agent is running. Return

@@ -55,6 +55,11 @@ public protocol TerminalSurface: AnyObject {
     func requestGracefulExit()
     /// Escalation: SIGKILL + reap.
     func terminate()
+    /// Free the native surface now. Called when the tab that owns it is
+    /// removed, so teardown happens at a known point on the main actor rather
+    /// than whenever ARC gets to it. A released surface is inert;
+    /// `processState` is unchanged.
+    func release()
 
     // Find in the terminal (⌘F). The surface owns matching and highlighting;
     // the host draws the bar and reports the count.
@@ -74,6 +79,8 @@ public enum TerminalSearchDirection: Sendable, Equatable {
 /// Searching is optional: a surface that can't (the stub, test doubles) simply
 /// does nothing, and the host's bar shows no count.
 public extension TerminalSurface {
+    /// Surfaces with nothing native to free (the stub, test doubles).
+    func release() {}
     func search(_ needle: String) {}
     func navigateSearch(_ direction: TerminalSearchDirection) {}
     func endSearch() {}

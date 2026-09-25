@@ -269,8 +269,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         let surface = surfaceFactory.makeSurface(appearance: appearanceProvider())
         surface.delegate = self
         tab.attach(surface: surface)
+        // The shell should know it is in Temple, not in the library that
+        // drives its PTY. A command's own variables still win.
         do {
-            try surface.start(command)
+            try surface.start(TerminalIdentity.apply(to: command))
         } catch {
             TempleUILog.launch.error("spawn failed: agent=\(tab.agent.rawValue, privacy: .public) argv0=\(command.argv.first ?? "?", privacy: .public) cwd=\(command.cwd, privacy: .public) error=\(String(describing: error), privacy: .public)")
             // A surface that won't even start is always the command's problem.
@@ -477,6 +479,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         if let sid = tab.sessionID { registry.unregister(sessionID: sid) }
         let wasActive = activeTabID == tabID
         tabs.remove(at: index)
+        // Free the native surface here, at a known point, not when ARC gets to
+        // the tab: the runtime orders the free against its own drain so a
+        // queued title cannot reach the surface spawned next (GhosttyApp.release).
+        tab.surface?.release()
         // A gone tab must not be anyone's "go back here" target — least of
         // all its own successor's.
         activationHistory.removeAll { $0 == tabID }

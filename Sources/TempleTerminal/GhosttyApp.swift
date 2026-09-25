@@ -146,6 +146,11 @@ public final class GhosttyApp {
     /// Free the runtime. After this the app must not be used. Idempotent.
     public func shutdown() {
         surfaces.removeAll()
+        // A free held for the end of a tick must not outlive the app it
+        // belongs to; nothing can be spawned after this, so no drain is needed.
+        for entry in pendingReleases { freeSurface(entry.surface) }
+        pendingReleases.removeAll()
+        pendingSpawns.removeAll()
         if let app {
             ghostty_app_free(app)
             self.app = nil
@@ -159,10 +164,110 @@ public final class GhosttyApp {
 
     // MARK: Tick loop
 
+    /// True while libghostty's mailbox is draining (inside `ghostty_app_tick`,
+    /// or the drain that follows a free). Its callbacks — child exited, close
+    /// surface, set title — run on that stack, and so does everything the host
+    /// does in response, including closing tabs and spawning their neighbours.
+    private(set) var isTicking = false
+    /// Surfaces whose free is waiting for the current drain to end, each with
+    /// the object libghostty will still call back into until then (the view
+    /// its `userdata` points at: close-surface and clipboard callbacks reach it
+    /// directly, not through the registry).
+    private var pendingReleases: [(surface: ghostty_surface_t, owner: AnyObject?)] = []
+    /// Surface creations requested while draining; run once every freed
+    /// address has had its leftover messages dropped.
+    private var pendingSpawns: [(Bool) -> Void] = []
+    /// What creates a native surface. Test seam; production calls libghostty.
+    /// The config is passed by value: the struct only carries pointers the
+    /// caller keeps alive for the call, and handing `&cfg` through a
+    /// closure-typed property did not deliver the same bytes (measured — the
+    /// surface came back nil until the call was made on a local copy).
+    var newSurface: (ghostty_app_t, ghostty_surface_config_s) -> ghostty_surface_t? = { app, cfg in
+        var cfg = cfg
+        return ghostty_surface_new(app, &cfg)
+    }
+    /// What "free" and "drain" do. Test seams; production frees and ticks.
+    var freeSurface: (ghostty_surface_t) -> Void = { ghostty_surface_free($0) }
+    lazy var drainMailbox: () -> Void = { [weak self] in
+        guard let self, let app = self.app else { return }
+        ghostty_app_tick(app)
+    }
+
     /// Pump libghostty. Called on the main thread in response to `wakeup_cb`.
     func tick() {
-        guard let app else { return }
-        ghostty_app_tick(app)
+        guard !isTicking else { return }   // the drain itself no-ops without an app
+        runTick(drainMailbox)
+    }
+
+    /// Run `body` as a tick: surfaces released inside it are held until it
+    /// returns, then freed and drained; creations requested inside it run
+    /// after that. All before this returns.
+    func runTick(_ body: () -> Void) {
+        isTicking = true
+        body()
+        isTicking = false
+        flushReleases()
+    }
+
+    /// Free a surface without letting its queued messages reach a successor.
+    ///
+    /// libghostty queues surface messages (a title, say) tagged with the raw
+    /// surface pointer and validates them on drain by pointer equality against
+    /// the live list. A message queued by surface A, drained after A was freed
+    /// and B allocated at the same address, is delivered to B. The sequence
+    /// that made it happen here: a child-exited callback (inside a tick) closes
+    /// the tab, which frees A and selects a neighbour, which spawns B — all
+    /// before the drain reaches A's message.
+    ///
+    /// Three rules close the window, together (ADR-021):
+    /// - A free never happens inside a drain: while A is alive its address
+    ///   cannot be reused.
+    /// - Every free is followed by a drain. Once `ghostty_surface_free`
+    ///   returns, A's IO thread is joined and can queue nothing more, so the
+    ///   drain finds A gone from the live list and drops what was left.
+    /// - Nothing is created while a drain is on the stack (`spawn`): the
+    ///   drain's own callbacks close tabs and spawn neighbours, and a spawn in
+    ///   there could take A's address before A's leftovers were popped.
+    ///
+    /// `owner` is retained until the free: libghostty calls back into it
+    /// through the surface's userdata until the surface is gone.
+    func release(_ surface: ghostty_surface_t, keeping owner: AnyObject?) {
+        pendingReleases.append((surface, owner))
+        if !isTicking { flushReleases() }
+    }
+
+    /// Create a surface now, or once the current drain has finished and every
+    /// release it triggered has been freed and drained. `create` is told which
+    /// happened: a failure now can be thrown to the caller, a failure later
+    /// has no caller left and must be reported another way. Returns whether
+    /// it ran now.
+    @discardableResult
+    func spawn(_ create: @escaping (_ deferred: Bool) -> Void) -> Bool {
+        if isTicking {
+            pendingSpawns.append(create)
+            return false
+        }
+        create(false)
+        return true
+    }
+
+    private func flushReleases() {
+        guard !isTicking else { return }
+        while !pendingReleases.isEmpty {
+            let batch = pendingReleases
+            pendingReleases.removeAll()
+            for entry in batch { freeSurface(entry.surface) }
+            // The drain's own callbacks may release more; the loop picks
+            // those up, and each round frees before it drains.
+            isTicking = true
+            drainMailbox()
+            isTicking = false
+        }
+        // Only now may anything be created: every freed address has had its
+        // leftovers dropped, and the owners above are released with `batch`.
+        let spawns = pendingSpawns
+        pendingSpawns.removeAll()
+        for create in spawns { create(true) }
     }
 
     func setFocus(_ focused: Bool) {

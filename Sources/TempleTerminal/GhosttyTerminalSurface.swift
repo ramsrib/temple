@@ -93,6 +93,10 @@ public final class GhosttyTerminalSurface: TerminalSurface {
         processState = .running(pid: 0)
     }
 
+    public func release() {
+        ghosttyView.closeSurface()
+    }
+
     public func focus() {
         // Deferred + retried on mount: a surface spawned by this very click is not
         // in a window yet, and AppKit hands the responder to whatever was clicked

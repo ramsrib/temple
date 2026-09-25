@@ -25,6 +25,8 @@ final class FakeTerminalSurface: TerminalSurface {
     private(set) var searches: [String] = []
     private(set) var navigations: [TerminalSearchDirection] = []
     private(set) var endSearchCount = 0
+    private(set) var startedCommand: TerminalCommand?
+    private(set) var releaseCount = 0
 
     private(set) var processState: TerminalProcessState = .notStarted {
         didSet {
@@ -34,8 +36,11 @@ final class FakeTerminalSurface: TerminalSurface {
     }
 
     func start(_ command: TerminalCommand) throws {
+        startedCommand = command
         processState = .running(pid: 4242)
     }
+
+    func release() { releaseCount += 1 }
 
     func focus() { focusCount += 1 }
 

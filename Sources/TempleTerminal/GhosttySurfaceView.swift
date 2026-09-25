@@ -63,10 +63,40 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
     /// ADR-003 validation, expressed as production preconditions: libghostty must
     /// hand back a drivable native surface for the `NSView` we provide. If it
     /// cannot, we fail loudly rather than silently degrade.
+    ///
+    /// Creation goes through `GhosttyApp.spawn`: immediate normally, deferred
+    /// to the end of the drain when asked from inside one (a tab closed by a
+    /// child-exited callback spawns its neighbour from that stack). A
+    /// `ghostty_surface_new` that returns nil is thrown when creation ran
+    /// now; deferred, there is no caller left to throw to, so it is reported
+    /// the way any dead child is — through `onChildExited` — and the tab shows
+    /// its launch-failure header.
     func startSurface(command: String?, workingDirectory: String?, env: [String: String]) throws {
-        precondition(surface == nil, "startSurface called twice")
-        guard let app = app?.app else {
+        precondition(surface == nil && spawnToken == nil, "startSurface called twice")
+        guard let app, app.app != nil else {
             throw GhosttyError.runtimeNotReady
+        }
+        let token = UUID()
+        spawnToken = token
+        var failedNow = false
+        app.spawn { [weak self] deferred in
+            guard let self, self.spawnToken == token else { return }   // closed meanwhile
+            self.spawnToken = nil
+            if self.createSurface(command: command, workingDirectory: workingDirectory, env: env) { return }
+            if deferred { self.handleChildExited(code: -1) } else { failedNow = true }
+        }
+        if failedNow { throw GhosttyError.surfaceCreationFailed }
+    }
+
+    /// Set while a creation is queued in the runtime; cleared when it runs or
+    /// when `closeSurface` cancels it.
+    private var spawnToken: UUID?
+
+    /// Returns whether libghostty handed back a surface.
+    private func createSurface(command: String?, workingDirectory: String?, env: [String: String]) -> Bool {
+        guard let runtime = self.app, let app = runtime.app else {
+            GhosttyApp.logger.critical("runtime went away before the surface was created")
+            return false
         }
 
         var cfg = ghostty_surface_config_new()
@@ -74,7 +104,8 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         cfg.platform = ghostty_platform_u(
             macos: ghostty_platform_macos_s(nsview: Unmanaged.passUnretained(self).toOpaque()))
         // Per-surface userdata: unretained pointer to self, used by libghostty's
-        // clipboard + close-surface callbacks to find this view.
+        // clipboard + close-surface callbacks to find this view. `closeSurface`
+        // keeps self alive until the surface is actually freed for that reason.
         cfg.userdata = Unmanaged.passUnretained(self).toOpaque()
         cfg.scale_factor = Double(window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0)
         cfg.font_size = Float(terminalAppearance.fontSize)
@@ -93,12 +124,12 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
             return withOptionalCString(workingDirectory) { cwd in
                 cfg.working_directory = cwd
                 if envVars.isEmpty {
-                    return ghostty_surface_new(app, &cfg)
+                    return runtime.newSurface(app, cfg)
                 }
                 return envVars.withUnsafeMutableBufferPointer { buf in
                     cfg.env_vars = buf.baseAddress
                     cfg.env_var_count = buf.count
-                    return ghostty_surface_new(app, &cfg)
+                    return runtime.newSurface(app, cfg)
                 }
             }
         }
@@ -107,10 +138,10 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         // drivable native surface — the whole architecture rests on this.
         guard let created else {
             GhosttyApp.logger.critical("ghostty_surface_new returned nil — ADR-003 violated")
-            throw GhosttyError.surfaceCreationFailed
+            return false
         }
         self.surface = created
-        self.app?.register(self, for: created)
+        runtime.register(self, for: created)
 
         // Prime size + scale from the current geometry, and resolve the
         // config's light:/dark: theme pair for the current app appearance.
@@ -119,17 +150,35 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         pushContentScale()
         apply(terminalAppearance)
         GhosttyApp.logger.info("ghostty surface created and process spawned")
+        return true
     }
 
+    /// The normal teardown: the tab is gone, free the surface. The runtime
+    /// decides WHEN (see `GhosttyApp.release`) — freeing inside one of its own
+    /// callbacks, then spawning, is how a freed surface's queued title landed
+    /// on the next surface allocated at the same address.
     func closeSurface() {
+        spawnToken = nil   // a creation still queued in the runtime is cancelled
         guard let surface else { return }
-        app?.unregister(surface: surface)
-        ghostty_surface_free(surface)
         self.surface = nil
+        // Detach libghostty's layer before the renderer behind it goes. The
+        // layer's display callback holds a raw pointer to that renderer, and
+        // SwiftUI can keep this view — and so the layer — in the tree for a
+        // render pass after the tab is gone; a display in that gap would call
+        // into freed memory. Out of the tree, nothing displays it.
+        layer = CALayer()
+        guard let app else {
+            ghostty_surface_free(surface)
+            return
+        }
+        app.unregister(surface: surface)
+        app.release(surface, keeping: self)
     }
 
     deinit {
-        // deinit is nonisolated; free directly (registry holds a weak ref).
+        // Fallback only: tabs release through closeSurface(). deinit is
+        // nonisolated, so it cannot ask the runtime to drain — a surface that
+        // reaches here still carries the address-reuse race.
         if let surface {
             ghostty_surface_free(surface)
         }

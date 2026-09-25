@@ -541,3 +541,116 @@ instead of passing quietly.
 Cost accepted: a drag can no longer reveal the hidden sidebar to drop on it.
 Nothing in Temple accepts a drop there from outside the sidebar, and the
 sidebar's own reorder drags start from rows that are visible.
+
+## ADR-020 — Spawned shells identify as Temple
+**Date:** 2026-09-24 · **Status:** Accepted
+
+An agent running in a Temple tab read `TERM_PROGRAM=ghostty` and told Sri to
+grant Full Disk Access to Ghostty. The grant belonged to Temple: the process
+tree was Temple → login → claude → zsh. Nothing was inherited — Temple is
+launched by launchd — libghostty itself sets `TERM_PROGRAM` and
+`TERM_PROGRAM_VERSION` for every PTY it spawns.
+
+**Decision:** Temple overrides both, in one place, for every spawn.
+`TerminalIdentity` supplies `TERM_PROGRAM=Temple` and the bundle's marketing
+version (`0.0.0` for a bare SwiftPM binary, matching the app build script's
+fallback), and `OpenSessionsModel.ensureSurface` merges it into the command's
+environment with the command's own values winning. libghostty applies the
+surface config's environment after its defaults — the block is commented
+"override any others" — which is what makes a config-level override enough.
+
+Deliberately not done: clearing `GHOSTTY_*`. `GHOSTTY_RESOURCES_DIR` is where
+the shell integration scripts live (and `TERMINFO`, set beside it, is what
+resolves `xterm-ghostty`); `GHOSTTY_BIN_DIR` feeds the PATH and helper
+integration. Removing them breaks cursor, title and path features in every
+tab. Nothing in the shell integration or the config tests for the value
+`ghostty`; the one check in `Config.zig` asks only whether `TERM_PROGRAM` is
+non-empty. Foreign identity variables (`ITERM_*`, `TERM_SESSION_ID`) only
+appear when Temple is started from another terminal, and the surface config
+can add variables but never remove one — if that case ever matters, the place
+is an `unsetenv` at app startup, since libghostty copies Temple's own process
+environment.
+
+## ADR-021 — A freed surface does not hand its messages to its successor
+**Date:** 2026-09-24 · **Status:** Accepted
+
+Live terminal titles occasionally appeared on the wrong tab, across projects
+and within one. Temple's attribution was checked and correct; the cross was
+at runtime. Root cause, confirmed in the vendored libghostty and unchanged on
+upstream main as of today: a surface's queued messages (`set_title` is a
+256-byte copy) are tagged with the raw surface pointer, and the app-thread
+drain validates them by pointer equality against the live surface list.
+Surface A queues a title; A is freed before the drain; B is allocated at A's
+address; the drain accepts A's message for B. Upstream has since added a
+64-bit `Surface.id`, but the message and its validation still use the pointer,
+so there was no fix to pull.
+
+The sequence that produced it here ran entirely inside one tick: libghostty's
+child-exited callback → the tab's `.exited` → the tab is removed → its surface
+freed by ARC → the neighbour is selected → a new surface spawned, all before
+the drain reached A's message.
+
+**Decision:** Temple orders frees, drains and creations in `GhosttyApp`, and
+tabs release their surface explicitly. Three rules, and all three are needed.
+
+- **Never free inside a drain.** A release requested while the mailbox is
+  draining is held until `ghostty_app_tick` returns. While A is alive its
+  address cannot be reused, so nothing spawned by the drain's callbacks can
+  inherit it.
+- **Drain after every free, before returning.** Once `ghostty_surface_free`
+  returns, A's IO, renderer and search threads are joined and can queue
+  nothing more; the drain then finds A gone from the live list and drops
+  what was left. The drain's own callbacks may release more; each round
+  frees before it drains again.
+- **Create nothing while a drain is on the stack.** The first two rules are
+  not enough on their own: a drain that pops another tab's child-exited
+  message closes that tab and spawns its neighbour from inside the drain,
+  and that spawn could take A's freed address before A's leftovers were
+  popped. So `GhosttySurfaceView.startSurface` goes through
+  `GhosttyApp.spawn`, which runs the creation at once normally and, from
+  inside a drain, only after every release the drain triggered has been
+  freed and drained. A `ghostty_surface_new` that returns nil is still
+  thrown to the caller when creation ran at once; deferred, there is no
+  caller left (it was told "running", as it always was — the pid was
+  never real), so the failure is reported through the child-exited path and
+  the tab keeps its terminal with the launch-failure header, the way any
+  early death does.
+
+Two lifetime consequences of freeing early, both found in review:
+
+- libghostty calls back into the view through the surface's `userdata`
+  (close-surface, clipboard) until the surface is gone, not through Temple's
+  registry. A held release retains its owning view until the free.
+- libghostty installs its render layer as the view's layer, with a display
+  callback holding a raw pointer to the renderer. SwiftUI can keep the view
+  in the tree for a render pass after the tab is gone, so `closeSurface`
+  swaps in a plain layer before the free. That removes the view-tree
+  display path; the raw callback inside the detached layer is not cleared
+  (only libghostty could), and no other path that would invoke it has been
+  identified.
+
+`removeTab` calls `TerminalSurface.release()`, so teardown happens at a known
+point on the main actor; `GhosttySurfaceView.deinit` still frees as a
+fallback but cannot drain and is documented as still carrying the race.
+`closeSurface` now unregisters on every path, closing the older
+deinit/unregister asymmetry. Ticks are non-re-entrant (`tick()` ignores a
+nested call): a wakeup landing mid-drain is not lost, its `wakeup_cb` has
+already queued the next tick on the main queue.
+
+Not covered, and documented rather than claimed: libghostty's drain stops
+early on an error or a quit message, so leftovers can survive one drain and
+be delivered by the next; a surface freed through `deinit` rather than
+`release()` (model destruction, never a continuing session) keeps the race.
+The categorical fix is in the library — validate queued messages by a
+monotonic surface id rather than the address, which upstream's `Surface.id`
+now makes a small patch — and is the next step if these rules prove fragile.
+It was not taken now because the vendored tree is untracked and rebuilt by
+`Scripts/build-ghostty.sh`, so it needs patch plumbing and a toolchain this
+change did not want to add.
+
+Review ledger for this change (gpt-6-astra): round 1 found three defects in
+the release path — the held release did not retain the view, the drain's
+callbacks could spawn at the freed address, and the render layer outlived
+the renderer — all in `GhosttyApp.release`/`closeSurface`. Each is a rule or
+consequence above; the tests pin the ordering of free, drain and spawn and
+the owner's lifetime through the runtime's injectable seams.
