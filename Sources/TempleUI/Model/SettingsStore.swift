@@ -31,6 +31,20 @@ public enum ThemePreference: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Which sessions Temple browses. `.temple` is Temple's own — every session it
+/// started, opened, or had imported (see `JoinedVia`); `.all` is everything
+/// the CLIs have written to disk, wherever it was run.
+public enum SessionScope: String, CaseIterable, Identifiable, Sendable {
+    case temple, all
+    public var id: String { rawValue }
+    public var label: String {
+        switch self {
+        case .temple: return "Temple sessions"
+        case .all: return "All on disk"
+        }
+    }
+}
+
 /// User settings, surfaced in the Settings tab (U9) and persisted to
 /// `UserDefaults`.
 ///
@@ -54,6 +68,7 @@ public final class SettingsStore: ObservableObject {
     @Published public var fontFamily: String { didSet { write(fontFamily, Key.fontFamily) } }
     @Published public var defaultAgent: Agent { didSet { write(defaultAgent.rawValue, Key.defaultAgent) } }
     @Published public var theme: ThemePreference { didSet { write(theme.rawValue, Key.theme) } }
+    @Published public var sessionScope: SessionScope { didSet { write(sessionScope.rawValue, Key.sessionScope) } }
     /// Empty = "detect it" (see `ToolchainModel`). Only ever set by the user.
     @Published public var claudePath: String { didSet { write(claudePath, Key.claudePath) } }
     @Published public var codexPath: String { didSet { write(codexPath, Key.codexPath) } }
@@ -71,6 +86,7 @@ public final class SettingsStore: ObservableObject {
         fontFamily = defaults.string(forKey: Key.fontFamily) ?? "SF Mono"
         defaultAgent = Agent(rawValue: defaults.string(forKey: Key.defaultAgent) ?? "") ?? .claude
         theme = ThemePreference(rawValue: defaults.string(forKey: Key.theme) ?? "") ?? .system
+        sessionScope = SessionScope(rawValue: defaults.string(forKey: Key.sessionScope) ?? "") ?? .temple
         claudePath = defaults.string(forKey: Key.claudePath) ?? ""
         codexPath = defaults.string(forKey: Key.codexPath) ?? ""
         claudeExtraArgs = defaults.string(forKey: Key.claudeExtraArgs) ?? "--dangerously-skip-permissions"
@@ -131,6 +147,7 @@ public final class SettingsStore: ObservableObject {
         static let fontFamily = "temple.settings.fontFamily"
         static let defaultAgent = "temple.settings.defaultAgent"
         static let theme = "temple.settings.theme"
+        static let sessionScope = "temple.settings.sessionScope"
         static let claudePath = "temple.settings.claudePath"
         static let codexPath = "temple.settings.codexPath"
         static let claudeExtraArgs = "temple.settings.claudeExtraArgs"

@@ -260,6 +260,11 @@ public final class AppModel: ObservableObject {
         openSessions.titleHandler = { [weak self] sessionID, title in
             self?.overlay.recordGeneratedTitle(title, for: sessionID)
         }
+        // Whatever a tab runs is a Temple session from then on — including one
+        // resumed from elsewhere, which is how it joins the sidebar.
+        openSessions.openedHandler = { [weak self] sessionID, via in
+            self?.overlay.join(sessionID, via: via)
+        }
         // A dead-on-arrival resume gets its verdict annotated from the index.
         // The RAW index (pre noise-filter) is the right set: existence is the
         // question, visibility is not. nil while still loading OR while only
@@ -424,7 +429,7 @@ public final class AppModel: ObservableObject {
 
     /// The project the launcher should default to (last active, else first indexed).
     public var launcherDefaultProject: String? {
-        openSessions.activeProjectPath ?? index.projects.first?.path
+        openSessions.activeProjectPath ?? orderedVisibleProjectPaths.first
     }
 
     // MARK: Sidebar data (U1)
@@ -473,16 +478,33 @@ public final class AppModel: ObservableObject {
         objectWillChange.send()
     }
 
-    /// What every browse surface sees: the cached non-noise set minus anything
+    /// The non-noise set narrowed to the session scope: by default only
+    /// Temple's sessions (the ones with a row in its DB, however they joined). A project
+    /// is the sessions in it, so one with none of Temple's goes with them.
+    /// "All on disk" is the in-memory index as it stands — switching to it
+    /// writes nothing. Everything downstream — the browse
+    /// surfaces and the archive browser alike — starts here, so a session from
+    /// outside is nowhere until the setting says otherwise.
+    private var scopedProjects: [Project] {
+        guard settings.sessionScope == .temple else { return noiseFilteredProjects }
+        let temple = overlay.templeSessions
+        return noiseFilteredProjects.compactMap { project -> Project? in
+            let sessions = project.sessions.filter { temple.contains($0.id) }
+            return sessions.isEmpty ? nil : Project(path: project.path, sessions: sessions)
+        }
+    }
+
+    /// What every browse surface sees: the scoped non-noise set minus anything
     /// archived. Set lookups only — no disk — so it is safe to recompute per
     /// access like the stages built on it.
     public var visibleProjects: [Project] {
+        let scoped = scopedProjects
         let archivedProjectPaths = overlay.archivedProjects
         let archivedSessions = overlay.archivedSessions
         guard !archivedProjectPaths.isEmpty || !archivedSessions.isEmpty else {
-            return noiseFilteredProjects
+            return scoped
         }
-        return noiseFilteredProjects.compactMap { project -> Project? in
+        return scoped.compactMap { project -> Project? in
             guard !archivedProjectPaths.contains(project.path) else { return nil }
             guard !archivedSessions.isEmpty else { return project }
             let sessions = project.sessions.filter { !archivedSessions.contains($0.id) }
@@ -806,7 +828,7 @@ public final class AppModel: ObservableObject {
     }
 
     private var visibleArchivedProjects: [Project] {
-        noiseFilteredProjects.filter { overlay.isProjectArchived($0.path) }
+        scopedProjects.filter { overlay.isProjectArchived($0.path) }
     }
 
     /// Typing matches the folder name or any path component, like the ⌘N
@@ -829,7 +851,7 @@ public final class AppModel: ObservableObject {
     /// offer two different unarchives for the same disappearance.
     public func archivedSessionResults(_ query: String) -> [AgentSession] {
         let sessions = Self.dedupedByID(
-            noiseFilteredProjects
+            scopedProjects
                 .filter { !overlay.isProjectArchived($0.path) }
                 .flatMap(\.sessions)
                 .filter { overlay.isArchived($0.id) })
@@ -970,7 +992,7 @@ public final class AppModel: ObservableObject {
         cancelTabSwitcher()
     }
 
-    /// Projects for the ⌘N picker: every non-noise project, most recent
+    /// Projects for the ⌘N picker: every non-noise project in scope, most recent
     /// activity first (live recency, like the palettes); typing filters on
     /// the folder name or any path component.
     public func projectPickerResults(_ query: String) -> [Project] {

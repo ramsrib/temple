@@ -41,6 +41,19 @@ struct SettingsView: View {
                     }
                 }
 
+                card("Sessions") {
+                    settingRow("Show",
+                               hint: "In the sidebar, search and history.") {
+                        Picker("", selection: Binding(get: { settings.sessionScope },
+                                                      set: { settings.sessionScope = $0 })) {
+                            ForEach(SessionScope.allCases) { Text($0.label).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: 260)
+                    }
+                }
+
                 card("Agents") {
                     settingRow("Default agent",
                                hint: "Used by ⌘T and new-session rows.") {

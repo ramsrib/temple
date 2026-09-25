@@ -27,7 +27,7 @@ final class StartupIndexTests: XCTestCase {
             indexSource: source,
             noiseFilter: NoNoiseFilter(),
             database: database,
-            settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+            settings: Fixture.settingsBrowsingAll(),
             overlay: SessionOverlayStore(db: database),
             cacheURL: cacheURL
         )

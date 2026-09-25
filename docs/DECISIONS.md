@@ -124,6 +124,10 @@ The sidebar (projects → recent sessions) is driven by **reading the agents' ow
 session files**, not by scraping terminal scrollback. This decouples the nice UI
 from any terminal-parsing fragility and is most of the app's value.
 
+> **Since ADR-023 (2026-09-25):** the on-disk index is still the source of what
+> sessions *exist*, but which of them Temple *shows* is Temple's own record —
+> the rows in its DB — not the index.
+
 - **Claude Code** → `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`. One file per
   session; filename stem = session id; the *true* `cwd` is a field inside the
   file (the dir-name encoding is lossy — collides on paths with `-`/spaces —
@@ -183,6 +187,12 @@ A **filesystem watcher** (FSEvents/`DispatchSource`) keeps the DB/index in sync 
 session files appear/change. The DB is a cache + app-state layer, never the
 authority — it can be rebuilt from disk at any time.
 
+> **No longer wholly true (ADR-023, 2026-09-25):** which sessions are Temple's —
+> the `session_state` rows, and how each joined — is authoritative and cannot be
+> rebuilt from disk: nothing the CLIs write says Temple touched a session. Losing
+> the DB now empties the default sidebar until sessions are opened again. The
+> rest of this ADR stands.
+
 > v0 note: `TempleCore` currently derives everything directly from disk with no
 > DB. The DB lands when we add pins/tab-restore/process-registry (Phase 2–3).
 
@@ -228,6 +238,13 @@ sampled). So the working rule:
 
 Optionally, Temple may set a name at launch (`claude --name` / Codex session
 names) to influence the CLI's own display.
+
+> **Re-checked 2026-09-25 (Claude Code 2.1.282):** Claude now writes
+> `{"type":"ai-title"}` lines, but in only 5 of ~1,900 transcripts — 4 of them
+> background sessions, the fifth with an agent name — and `{"type":"custom-title"}`
+> in one, after a rename.
+> The rule above still holds for what Temple launches. Codex keeps titles in its
+> private `state_5.sqlite` `threads` table; see SESSION-FORMATS.md.
 
 ---
 
@@ -747,3 +764,104 @@ Fable. The mechanism changed twice on the way — a subprocess runner with
 deadlines and signals, then the framework — because findings kept landing in
 the same function, which is the signal that the mechanism, not the patch,
 is wrong (`dotfiles/docs/review-escalation.md`).
+
+## ADR-023 — Temple browses its own sessions by default
+**Date:** 2026-09-25 · **Status:** Accepted
+
+ADR-007 built the sidebar from everything the CLIs write to disk. On a machine
+that runs agents from other terminals, scripts and editors, that is most of
+the rail: 1,976 sessions in 42 projects on Sri's, most of them work that
+happened elsewhere and was browsed, never opened.
+
+- **A Temple session is one with a row in `session_state`.** Temple writes a
+  row the first time it touches a session: starts it, resumes or restores it
+  in a tab, or pins, renames, colors or archives it. That is the whole rule —
+  no flag beside the row saying "but was it really Temple's". A project is
+  shown when it holds a Temple session. Membership follows the row, never
+  the attempt: if the join's write fails, the session stays out and the
+  action that asked for it does nothing; whatever touches it next joins it.
+  A failed write is not retried, like every other write in the overlay — a
+  retry ledger was tried and grew a new edge case each review round, for
+  local SQLite writes that fail essentially never. Failure may lose a record;
+  it never shows the wrong sessions.
+- **Every row records how it joined, once.** `joined_via` is `created`
+  (Temple started it: a minted Claude id, or the Codex id adopted for a
+  session it launched), `opened` (an existing session first resumed here) or
+  `imported` (brought in without running it — acted on while browsing all
+  sessions). `joined_at` is when. The first join is the one kept (`ON
+  CONFLICT DO NOTHING`). Rows from before this ADR stay `NULL`: nothing Temple
+  kept says whether it started those or resumed them, and a later open does
+  not get to claim them. It never decides visibility; it is there because it
+  can never be reconstructed later.
+- **How a session joined is not where it came from.** Lineage — continued or
+  forked from another session — is a separate fact and gets its own columns
+  or table (`parent_id`, `relation`) when it lands, never a `JoinedVia` value.
+  The case that forces the split: `←` in a Temple tab continues the session
+  under a new id *and* that new id was created in Temple's tab — both true at
+  once. And the link on disk runs parent → child, so the row that changes when
+  a session is continued is the parent's ("superseded; show my child"); the
+  sidebar shows the tip of a continued chain.
+- **Built to grow in one place.** A continued or forked session, a background
+  agent's session, and an explicit "Import" / "Open in Temple" on a session
+  from elsewhere all become Temple's through the same `join`, not a new flag,
+  and none of them may change the visibility rule above. The on-disk hooks
+  each needs are in SESSION-FORMATS.md; the load-bearing ones:
+  - **Claude `←` / `/bg`** forks the conversation to a **new id** run by a
+    background worker. The link runs parent → child only: the old transcript
+    ends with `{"type":"continued-in","continuedInSessionId":…}`. Until this is
+    followed, the tab and its `open_tabs` row keep pointing at the frozen
+    parent, and a relaunch resumes that copy rather than the live agent.
+  - **A live Claude background session** opens in a tab with `claude attach
+    <short-id>`, which keeps the id; `--resume` would start a copy.
+  - **Which session a tab's process is on now** is in
+    `~/.claude/sessions/<pid>.json` — the way to rebind a tab after `←`.
+  - **Codex** records lineage itself: `forked_from_id`, and
+    `source.subagent.thread_spawn.parent_thread_id` (also
+    `thread_spawn_edges` in its `state_5.sqlite`). Background threads on its
+    daemon keep their id.
+  Subagents are not sessions for either CLI (ADR-024) and never join.
+- **Outside sessions are nowhere, not demoted.** The scope is a stage between
+  the noise filter and the archive mask (`AppModel.scopedProjects`), so the
+  sidebar, `⌘K`, `⌘Y`, the launcher, the `⌘N` picker and the `⌘⇧Y` archive all
+  agree. Archiving a whole project writes a project row, not one per session,
+  so it does not import the project's sessions.
+- **"All on disk" writes nothing.** Settings ▸ Sessions ▸ Show: *Temple
+  sessions* (the shipped default) / *All on disk*. The full index already lives
+  in memory (and the launch cache file); switching scope only changes which of
+  it is listed, so toggling the setting cannot bloat the table however many
+  sessions are on disk. Only acting on a session imports it. Like every
+  setting, only the user's choice is persisted (`temple.settings.sessionScope`).
+- **Upgrading shows only what Temple already has a row for.** No migration
+  guesses at the past (ADR-009's rule; `recordOpened` was never called, so
+  `last_opened_at` holds nothing). A session has a row from before only if it
+  was pinned, renamed, colored, archived, or retitled itself in a Temple tab;
+  open tabs join when they are restored. On Sri's machine that is 180 sessions
+  in 8 projects. A session Temple started that left none of those behind is
+  not shown until it is opened again — and then it joins as `opened`, not
+  `created`. That is the rule working, not data lost.
+- **`make demo` imports its seeded sessions** with `templectl --import-all`,
+  which refuses unless `TEMPLE_STATE_DIR` names a directory other than the
+  real one (an empty value, or the real path spelled differently, is refused):
+  a row for every session on the real disk would erase the line the sidebar
+  draws, and could not be told apart from the rows the user made.
+
+## ADR-024 — Subagent transcripts are not sessions
+**Date:** 2026-09-25 · **Status:** Accepted
+
+Both CLIs keep a transcript for every subagent, and neither is a session a
+person opens: it runs inside its parent, for its parent, and ends with it.
+
+- **Claude** files them under `<session>/subagents/agent-<id>.jsonl`, below the
+  level the index reads. Already excluded, now on purpose.
+- **Codex** writes each as a top-level rollout with
+  `source.subagent.thread_spawn.parent_thread_id`. `CodexSessionStore` now skips
+  those (`isSubagentThread`). It also reads the thread's id from `payload.id`,
+  not `payload.session_id`: `session_id` is the *root* thread's, so for a
+  subagent it is the parent's, and reading it first filed each of the 42
+  subagent rollouts on Sri's machine as a second copy of its parent — the
+  duplicate ids `AppModel` had been deduping in the palettes, and that the
+  sidebar did not. Resume, reveal-in-Finder and titles could each land on the
+  subagent's file instead of the parent's.
+
+Showing subagents under their parent is a possible later feature; if it comes,
+they are rows *of* a session, never sessions of their own.

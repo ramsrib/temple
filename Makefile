@@ -19,6 +19,10 @@ demo: build ## Run against a fake session store (screenshots, demos — no real 
 	@TEMPLE_CLAUDE_ROOT=/private/tmp/temple-demo/claude-store \
 	 TEMPLE_CODEX_ROOT=/private/tmp/temple-demo/codex-store \
 	 TEMPLE_STATE_DIR=/private/tmp/temple-demo/state \
+	 .build/debug/templectl --import-all
+	@TEMPLE_CLAUDE_ROOT=/private/tmp/temple-demo/claude-store \
+	 TEMPLE_CODEX_ROOT=/private/tmp/temple-demo/codex-store \
+	 TEMPLE_STATE_DIR=/private/tmp/temple-demo/state \
 	 .build/debug/temple
 
 demo-clean: ## Remove the demo store, demo state, and any sessions it created

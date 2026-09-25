@@ -77,7 +77,7 @@ final class SearchFilterTests: XCTestCase {
         -> (AppModel, SessionOverlayStore) {
         let database = try! TempleDB.inMemory()
         let overlay = SessionOverlayStore(db: database)
-        let settings = SettingsStore(defaults: Fixture.uniqueDefaults())
+        let settings = Fixture.settingsBrowsingAll()
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
                              indexSource: FakeIndexSource(index),
                              noiseFilter: noise,

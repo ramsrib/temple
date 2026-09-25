@@ -25,7 +25,7 @@ final class CoreWiringTests: XCTestCase {
             surfaceFactory: FakeTerminalSurfaceFactory(),
             indexSource: source,
             database: database,
-            settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+            settings: Fixture.settingsBrowsingAll(),
             overlay: SessionOverlayStore(db: database),
             cacheURL: cacheURL
         )

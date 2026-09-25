@@ -13,7 +13,7 @@ final class UIStateTests: XCTestCase {
         AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
                  indexSource: FakeIndexSource(SessionIndex(projects: [])),
                  database: db,
-                 settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+                 settings: Fixture.settingsBrowsingAll(),
                  overlay: SessionOverlayStore(db: db))
     }
 

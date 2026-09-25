@@ -20,7 +20,7 @@ final class NewSessionPickerTests: XCTestCase {
             indexSource: FakeIndexSource(index),
             noiseFilter: noise,
             database: database,
-            settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+            settings: Fixture.settingsBrowsingAll(),
             overlay: SessionOverlayStore(db: database)
         )
         model.index = index

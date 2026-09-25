@@ -11,7 +11,23 @@ let limit = CommandLine.arguments.contains("--all") ? Int.max : 8
 let includeNoise = CommandLine.arguments.contains("--all")
 
 if CommandLine.arguments.contains("--help") {
-    print("Usage: templectl [--watch] [--all] [--search <term>]\n  --all  include noise sessions and do not cap sessions per project")
+    print("Usage: templectl [--watch] [--all] [--search <term>] [--import-all]\n  --all  include noise sessions and do not cap sessions per project\n  --import-all  make every indexed session a Temple session (demo state dirs only)")
+    exit(0)
+}
+
+// `make demo` seeds sessions Temple never saw; this imports each one so the
+// demo sidebar has something in it. Refused against the real state dir:
+// a row for every session on disk would erase the line the sidebar draws,
+// and there is no telling those rows from the ones the user made.
+if CommandLine.arguments.contains("--import-all") {
+    guard TempleState.isRedirected else {
+        FileHandle.standardError.write(Data("templectl: --import-all needs TEMPLE_STATE_DIR set to a directory other than the real state dir\n".utf8))
+        exit(1)
+    }
+    let db = try TempleDB(path: TempleDB.defaultPath())
+    let sessions = SessionIndex.buildDefault().allSessions
+    for session in sessions { try db.join(sessionID: session.id, via: .imported) }
+    print("imported \(sessions.count) sessions")
     exit(0)
 }
 

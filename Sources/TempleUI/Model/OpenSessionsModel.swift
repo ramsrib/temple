@@ -52,6 +52,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// The agent retitled itself (sessionID, title) — AppModel persists it so the
     /// sidebar/palette show it, live and after the session closes.
     public var titleHandler: ((_ sessionID: String, _ title: String) -> Void)?
+    /// A tab now runs this session: `.created` for one started here (a minted
+    /// Claude id, or the Codex id adopted for a session this model launched),
+    /// `.opened` for one resumed or restored. AppModel makes it a Temple session.
+    public var openedHandler: ((_ sessionID: String, _ via: JoinedVia) -> Void)?
     /// Does any transcript on disk carry this session id? Answered from the
     /// index (AppModel wires it); nil means "can't say yet" — the index is
     /// still loading — and no verdict is recorded. Only a provable absence
@@ -166,6 +170,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             command: command,
             isResume: true)
         tabs.append(tab)
+        openedHandler?(session.id, .opened)
         activate(tab)
         persist()
     }
@@ -192,6 +197,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             command: spec.command,
             isProvisional: spec.isProvisional)
         tabs.append(tab)
+        if let sid = spec.sessionID { openedHandler?(sid, .created) }
         activate(tab)
         if spec.isProvisional {
             // Codex: adopt the real id once its rollout file appears (ADR-008).
@@ -217,6 +223,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
         tab.sessionID = sessionID
         tab.isProvisional = false
+        openedHandler?(sessionID, .created)
         if case .running(let pid) = tab.surface?.processState ?? .notStarted {
             registry.register(pid: pid, sessionID: sessionID)
         }
@@ -707,6 +714,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                               projectPath: p.projectPath, title: p.title, command: command,
                               isResume: true)
         }
+        for p in saved { openedHandler?(p.sessionID, .opened) }
         // Restore active project context without spawning anything.
         activeProjectPath = tabs.first?.projectPath
         // Every other chip stays inert until clicked (lazy restore). The one the

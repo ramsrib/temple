@@ -128,11 +128,16 @@ final class DBTests: XCTestCase {
             paths.append(path)
 
             try Self.writeLegacyDatabase(at: path, upTo: start)
-            // Sanity: the fixture really is missing the table, so the assertions
-            // below are about the migration rather than a table already there.
+            // Sanity: the fixture really is missing what later migrations add,
+            // so the assertions below are about the migration rather than a
+            // table or column already there.
             let legacy = try DatabaseQueue(path: path.path)
             let hadTable = try legacy.read { try $0.tableExists("project_state") }
-            XCTAssertFalse(hadTable, "fixture at \(start) already had project_state")
+            if index < 6 { XCTAssertFalse(hadTable, "fixture at \(start) already had project_state") }
+            let hadJoinedVia = try legacy.read { database in
+                try database.columns(in: "session_state").contains { $0.name == "joined_via" }
+            }
+            XCTAssertFalse(hadJoinedVia, "fixture at \(start) already had session_state.joined_via")
             try legacy.close()
 
             let migrated = try TempleDB(path: path)
@@ -142,6 +147,11 @@ final class DBTests: XCTestCase {
             try migrated.setUIState("detailOnly", for: "sidebarVisibility")
             XCTAssertEqual(try migrated.uiState("sidebarVisibility"), "detailOnly", "from \(start)")
 
+            if index >= 6 {
+                let seeded = try XCTUnwrap(migrated.projectStates().first, "from \(start)")
+                XCTAssertEqual(seeded.path, "/p", "from \(start)")
+                XCTAssertEqual(seeded.position, 7, "from \(start)")
+            }
             try migrated.setProjectArchived(true, path: "/p")
             try migrated.setProjectOrder(["/p"])
             let projectState = try XCTUnwrap(migrated.projectStates().first, "from \(start)")
@@ -160,6 +170,12 @@ final class DBTests: XCTestCase {
             XCTAssertTrue(state.archived, "from \(start)")
             if index >= 2 { XCTAssertEqual(state.generatedTitle, "Agent title", "from \(start)") }
             if index >= 3 { XCTAssertEqual(state.color, "blue", "from \(start)") }
+            // Unknown, not guessed: nothing older says who started a session.
+            XCTAssertNil(state.joinedVia, "from \(start)")
+            XCTAssertNil(state.joinedAt, "from \(start)")
+            // ...and a later join does not rewrite that history.
+            try migrated.join(sessionID: "s", via: .opened)
+            XCTAssertNil(try migrated.sessionState("s")?.joinedVia, "from \(start)")
 
             let tab = try XCTUnwrap(migrated.openTabRecords().first, "from \(start)")
             XCTAssertEqual(tab.sessionID, "s", "from \(start)")
@@ -188,9 +204,10 @@ final class DBTests: XCTestCase {
     private static let legacyVersions = [
         "v1", "v2-open-tab-metadata", "v3-generated-title",
         "v4-session-color", "v5-open-tab-active", "v6-ui-state",
+        "v7-project-state",
     ]
 
-    /// A database stopped at `target`: the v1–v6 migrations registered as
+    /// A database stopped at `target`: the v1–v7 migrations registered as
     /// production spells them, applied only up to that identifier, with GRDB's own
     /// bookkeeping and a row in each table so the migration has something to
     /// preserve.
@@ -245,6 +262,14 @@ final class DBTests: XCTestCase {
             }
         }
 
+        migrator.registerMigration("v7-project-state") { database in
+            try database.create(table: "project_state") { table in
+                table.column("path", .text).primaryKey()
+                table.column("archived", .boolean).notNull().defaults(to: false)
+                table.column("position", .integer)
+            }
+        }
+
         let queue = try DatabaseQueue(path: path.path)
         try migrator.migrate(queue, upTo: target)
         // Seed every column that exists at this starting version, each with a
@@ -275,6 +300,9 @@ final class DBTests: XCTestCase {
         if reached.contains("v6-ui-state") {
             tables.append(("ui_state", ["key": "'sidebarVisibility'", "value": "'all'"]))
         }
+        if reached.contains("v7-project-state") {
+            tables.append(("project_state", ["path": "'/p'", "archived": "0", "position": "7"]))
+        }
 
         try queue.write { database in
             for (table, columns) in tables {
@@ -286,6 +314,30 @@ final class DBTests: XCTestCase {
             }
         }
         try queue.close()
+    }
+
+    /// The first join is the one recorded: how, and when.
+    func testJoinRecordsTheFirstJoinOnlyAndSurvivesReopen() throws {
+        let (db, path) = try database()
+        try db.join(sessionID: "s", via: .created, at: Self.seededDate)
+        try db.join(sessionID: "s", via: .opened, at: Self.seededDate.addingTimeInterval(60))
+        try db.setCustomName("Named", sessionID: "s")
+
+        let reopened = try TempleDB(path: path)
+        let state = try XCTUnwrap(reopened.sessionState("s"))
+        XCTAssertEqual(state.joinedVia, .created)
+        XCTAssertEqual(state.joinedAt, Self.seededDate)
+        XCTAssertEqual(state.customName, "Named")
+    }
+
+    /// A row written by a setter alone says nothing about how it joined, and a
+    /// later join does not fill that in.
+    func testJoinLeavesARowWrittenWithoutOneAlone() throws {
+        let (db, _) = try database()
+        try db.setPinned(true, sessionID: "s")
+        try db.join(sessionID: "s", via: .imported)
+        XCTAssertNil(try db.sessionState("s")?.joinedVia)
+        XCTAssertEqual(try db.sessionState("s")?.pinned, true)
     }
 
     func testProjectStateRoundTripsArchivedAndOrder() throws {

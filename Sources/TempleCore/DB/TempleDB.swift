@@ -1,6 +1,26 @@
 import Foundation
 import GRDB
 
+/// How a session joined Temple — recorded once, when its row is first written,
+/// and never changed. Having a row is what makes a session Temple's; this only
+/// says how it got one, and never decides what is shown.
+///
+/// It answers "how did Temple come to have it", never "where did it come
+/// from". Lineage — continued or forked from another session, spawned by one —
+/// is a separate fact with its own columns when it lands (ADR-023): Claude's
+/// `←` both continues a session under a new id AND creates it in the Temple
+/// tab it ran in, and one value cannot say both.
+public enum JoinedVia: String, Codable, Sendable {
+    /// Temple started it: minted its Claude id, or adopted the Codex id of a
+    /// session it launched.
+    case created
+    /// An existing session, first run in Temple by resuming it.
+    case opened
+    /// Brought in without being run — pinned, renamed, colored or archived
+    /// while browsing every session on disk.
+    case imported
+}
+
 public struct SessionState: Codable, Equatable, Sendable {
     public let id: String
     public let pinned: Bool
@@ -12,6 +32,9 @@ public struct SessionState: Codable, Equatable, Sendable {
     /// remember it here it is lost the moment the session closes.
     public let generatedTitle: String?
     public let lastOpenedAt: Date?
+    /// Nil for rows written before Temple recorded this: unknown, not "none".
+    public let joinedVia: JoinedVia?
+    public let joinedAt: Date?
 }
 
 /// Per-project state: archived, and where the user placed it in the sidebar.
@@ -61,6 +84,15 @@ public final class TempleDB: @unchecked Sendable {
         )
         db = try DatabaseQueue(path: path.path)
         try Self.migrator.migrate(db)
+    }
+
+    /// Opens an existing, already-migrated database without write access: for
+    /// tools that must only look, and for tests of what happens when a write
+    /// fails — every write here throws.
+    public init(readOnlyPath path: URL) throws {
+        var configuration = Configuration()
+        configuration.readonly = true
+        db = try DatabaseQueue(path: path.path, configuration: configuration)
     }
 
     private init(database: DatabaseQueue) throws {
@@ -121,6 +153,22 @@ public final class TempleDB: @unchecked Sendable {
         }
     }
 
+    /// The session becomes Temple's. Only the first join is recorded: a
+    /// session that already has a row keeps the way it came in, and one from
+    /// before that was recorded stays unknown rather than being
+    /// credited to whatever touched it next.
+    public func join(sessionID: String, via: JoinedVia, at: Date = Date()) throws {
+        try db.write { database in
+            try database.execute(
+                sql: """
+                    INSERT INTO session_state (id, joined_via, joined_at) VALUES (?, ?, ?)
+                    ON CONFLICT(id) DO NOTHING
+                    """,
+                arguments: [sessionID, via.rawValue, at]
+            )
+        }
+    }
+
     public func recordOpened(sessionID: String, at: Date = Date()) throws {
         try ensureState(sessionID)
         try db.write { database in
@@ -140,7 +188,9 @@ public final class TempleDB: @unchecked Sendable {
                 customName: row["custom_name"],
                 color: row["color"],
                 generatedTitle: row["generated_title"],
-                lastOpenedAt: row["last_opened_at"]
+                lastOpenedAt: row["last_opened_at"],
+                joinedVia: (row["joined_via"] as String?).flatMap(JoinedVia.init(rawValue:)),
+                joinedAt: row["joined_at"]
             )
         }
     }
@@ -155,7 +205,9 @@ public final class TempleDB: @unchecked Sendable {
                     customName: row["custom_name"],
                     color: row["color"],
                     generatedTitle: row["generated_title"],
-                    lastOpenedAt: row["last_opened_at"]
+                    lastOpenedAt: row["last_opened_at"],
+                    joinedVia: (row["joined_via"] as String?).flatMap(JoinedVia.init(rawValue:)),
+                    joinedAt: row["joined_at"]
                 )
             }
         }
@@ -403,6 +455,14 @@ public final class TempleDB: @unchecked Sendable {
                 table.column("path", .text).primaryKey()
                 table.column("archived", .boolean).notNull().defaults(to: false)
                 table.column("position", .integer)
+            }
+        }
+        // No backfill: nothing Temple kept before says whether it started a
+        // session or resumed one, so existing rows stay unknown.
+        migrator.registerMigration("v8-session-join") { database in
+            try database.alter(table: "session_state") { table in
+                table.add(column: "joined_via", .text)
+                table.add(column: "joined_at", .datetime)
             }
         }
         return migrator

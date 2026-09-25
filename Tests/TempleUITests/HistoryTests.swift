@@ -21,7 +21,7 @@ final class HistoryTests: XCTestCase {
             indexSource: FakeIndexSource(index),
             noiseFilter: noise,
             database: database,
-            settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+            settings: Fixture.settingsBrowsingAll(),
             overlay: overlay
         )
         model.index = index

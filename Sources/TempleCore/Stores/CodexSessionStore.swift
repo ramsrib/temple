@@ -57,6 +57,15 @@ public struct CodexSessionStore: IncrementalSessionStore {
         return files
     }
 
+    /// A thread spawned by another agent (`source.subagent.thread_spawn`, with
+    /// the parent in `parent_thread_id`) has a rollout of its own, but it is
+    /// not a session anyone opens: like Claude's `<session>/subagents/`
+    /// transcripts, it belongs to its parent and is left out of the index.
+    static func isSubagentThread(_ payload: [String: Any]) -> Bool {
+        if let source = payload["source"] as? [String: Any], source["subagent"] != nil { return true }
+        return (payload["thread_source"] as? String) == "subagent"
+    }
+
     public func loadSession(at fileURL: URL) -> AgentSession? {
         parse(file: fileURL, titles: loadTitles())
     }
@@ -69,7 +78,11 @@ public struct CodexSessionStore: IncrementalSessionStore {
               let firstObject = StoreIO.jsonObject(firstLine),
               (firstObject["type"] as? String) == "session_meta",
               let payload = firstObject["payload"] as? [String: Any],
-              let id = (payload["session_id"] as? String) ?? (payload["id"] as? String),
+              !Self.isSubagentThread(payload),
+              // The thread's own id. `session_id` is the ROOT thread's: equal to
+              // `id` for a thread a person started, but a subagent's names its
+              // parent — reading it first filed every subagent under its parent.
+              let id = (payload["id"] as? String) ?? (payload["session_id"] as? String),
               !id.isEmpty
         else { return nil }
 

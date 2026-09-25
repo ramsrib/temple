@@ -48,6 +48,19 @@ back to the first human prompt
 ([ADR-007](./DECISIONS.md#adr-007--session-index-is-built-from-the-clis-on-disk-stores),
 [ADR-011](./DECISIONS.md#adr-011--title-source-first-human-prompt-cli-summaries-unreliable)).
 
+By default Temple browses only **its own sessions**: every session it has
+started, opened in a tab, or that you have pinned, renamed, colored or
+archived. A project appears when it holds one. Sessions run anywhere else are
+on no surface at all: not the sidebar, `⌘K`, `⌘Y`, the launcher, the `⌘N`
+picker, or the `⌘⇧Y` archive. **Settings ▸ Sessions ▸ Show ▸ All on disk**
+lists everything the CLIs have written, without storing any of it; opening or
+acting on one of those makes it a Temple session for good. Temple records how
+each session joined (started here, opened, or imported), for features that
+will need to know. On upgrade, the sidebar starts with the sessions Temple had
+already pinned, renamed, colored, archived or seen retitle in a tab, plus the
+open tabs; any other session returns the next time it is opened
+([ADR-023](./DECISIONS.md#adr-023--temple-browses-its-own-sessions-by-default)).
+
 - Projects and sessions are ordered by recency at launch, then frozen for that
   app run so activity cannot move a row under the pointer. Newly discovered
   entries prepend without reshuffling existing entries.
@@ -73,7 +86,9 @@ back to the first human prompt
 - Filesystem watching, an index cache, and retries for files caught mid-write
   keep the index current without blocking launch.
 - Agent badges distinguish Claude Code and Codex. Ambient and automation noise
-  is hidden by the default noise filter.
+  is hidden by the default noise filter. Subagent transcripts of either CLI are
+  never listed: they belong to the session that spawned them
+  ([ADR-024](./DECISIONS.md#adr-024--subagent-transcripts-are-not-sessions)).
 - Sessions can be renamed, pinned, and color-marked. Pinned sessions appear in a
   dedicated section and custom names become their displayed and searchable
   titles. A color mark set on a session's tab shows in the sidebar as a slim
@@ -263,11 +278,11 @@ prompt composer.
   recency, unlike the launch-frozen sidebar). Browsing everything is `⌘Y`'s
   job — the two panels render as visual siblings but split switcher vs.
   history.
-- Typing searches all indexed sessions and weights open matches above closed
+- Typing searches every session in scope (Settings ▸ Sessions) and weights open matches above closed
   ones. Search matches the *displayed* title — a rename or the agent's own
   title — as well as the original first-prompt title, whichever scores better.
   Choosing a result opens or focuses it and switches project context as needed.
-- `⌘Y` opens the session history: every non-noise session, newest first,
+- `⌘Y` opens the session history: every non-noise session in scope, newest first,
   grouped under Today / Yesterday / date headers, each row carrying its agent,
   displayed title, last-message preview, project, and relative time. Typing
   switches to a flat ranked search; Enter or a click resumes the session.
@@ -316,6 +331,8 @@ Settings opens as a singleton, card-grouped tab rather than a separate window.
 Changes apply live where applicable.
 
 - **Terminal:** font size and font family.
+- **Sessions:** show **Temple sessions** (the default) or **All on disk**.
+  Applies to every surface that lists sessions.
 - **Agents:** default agent used by `⌘T`, folder launches, and recent-project
   launches.
 - **Claude:** configurable Command and Arguments fields. The shipped default
@@ -425,7 +442,8 @@ and System / Light / Dark appearance.
 | Distribution | Notarized `.dmg` releases; auto-update; additional menu-bar and Dock integration. |
 | Activity | Replace or strengthen the 15-second settle-timer heuristic; per-session and per-project mute; Do Not Disturb; Dock and sidebar badge counts. |
 | Sidebar & discovery | Project pinning; agent, time-range, and active-only filters; richer project/agent/content search; configurable scan roots and excluded paths; rich metadata such as message count, model, and git branch in the sidebar. A flat recents view shipped as the `⌘Y` history. |
-| Session management | Archive and delete; duplicate/fork; grouping by git repository. Rename, pin/unpin, color marks, and context menus are already shipped. |
+| Session management | Delete; duplicate/fork; grouping by git repository. Archive, rename, pin/unpin, color marks, and context menus are already shipped. |
+| Session lineage | Follow a Temple session that Claude continues under a new id (`←` / `/bg` writes `continued-in` into the old transcript) and hand its row and tab to the child; open live background sessions with `claude attach`; an "Add to Temple" action for sessions browsed under All on disk; optionally show subagents under their parent. Each becomes Temple's through the same `join`, with lineage kept apart from how it joined (ADR-023); a ⌘Y scope toggle beside the Settings default once "Add to Temple" exists; on-disk hooks in [SESSION-FORMATS](./SESSION-FORMATS.md). |
 | Terminal & tabs | Split panes; copy mode; terminal cursor controls; tab-bar overflow handling. `⌘⇧T` reopen-closed-tab shipped. |
 | Windowing | Multi-window support. |
 | Agents | Third-agent adapters such as Gemini CLI and aider; surface agent-specific capabilities such as models and permission modes. |

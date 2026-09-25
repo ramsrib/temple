@@ -18,7 +18,7 @@ final class TabSwitcherTests: XCTestCase {
             indexSource: FakeIndexSource(index),
             noiseFilter: NoNoise(),
             database: database,
-            settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+            settings: Fixture.settingsBrowsingAll(),
             overlay: overlay
         )
         model.index = index

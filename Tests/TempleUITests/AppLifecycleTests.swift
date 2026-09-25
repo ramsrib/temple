@@ -11,7 +11,7 @@ final class AppLifecycleTests: XCTestCase {
         AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
                  indexSource: FakeIndexSource(SessionIndex(projects: [])),
                  database: try! TempleDB.inMemory(),
-                 settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
+                 settings: Fixture.settingsBrowsingAll())
     }
 
     func testClosingTheLastWindowQuits() {

@@ -57,6 +57,27 @@ final class MetadataTests: XCTestCase {
         XCTAssertNil(plain.lastMessagePreview)
     }
 
+    /// Shapes copied from Codex 0.156 rollouts: a person's thread carries its
+    /// id in both `id` and `session_id`; a subagent's `session_id` names the
+    /// parent. The subagent is not a session, and must not surface as a second
+    /// copy of its parent either.
+    func testCodexSubagentThreadsAreNotSessionsAndIdIsTheThreadsOwn() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = root.appendingPathComponent("sessions")
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        try #"{"type":"session_meta","payload":{"id":"parent","session_id":"parent","cwd":"/work/project","source":"cli","thread_source":"user"}}"#
+            .write(to: sessions.appendingPathComponent("rollout-a-parent.jsonl"), atomically: true, encoding: .utf8)
+        try #"{"type":"session_meta","payload":{"id":"child","session_id":"parent","forked_from_id":"parent","cwd":"/work/project","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent","depth":1,"agent_path":"/root/review","agent_nickname":"Kant","agent_role":null}}},"thread_source":"subagent"}}"#
+            .write(to: sessions.appendingPathComponent("rollout-b-child.jsonl"), atomically: true, encoding: .utf8)
+        try #"{"type":"session_meta","payload":{"id":"own","session_id":"root","cwd":"/work/project"}}"#
+            .write(to: sessions.appendingPathComponent("rollout-c-own.jsonl"), atomically: true, encoding: .utf8)
+
+        let store = CodexSessionStore(root: root)
+        XCTAssertEqual(Set(store.loadSessions().map(\.id)), ["parent", "own"])
+        XCTAssertNil(store.loadSession(at: sessions.appendingPathComponent("rollout-b-child.jsonl")))
+    }
+
     func testCodexTitleFallbackChain() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

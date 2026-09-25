@@ -162,6 +162,15 @@ enum Fixture {
     /// An isolated defaults object that never reaches the disk.
     static func uniqueDefaults() -> UserDefaults { InMemoryDefaults() }
 
+    /// Settings for a test about the index itself, not about whose sessions it
+    /// holds: every session on disk is browsable, as if each had been opened
+    /// in Temple. The scope has its own tests (`SessionScopeTests`).
+    static func settingsBrowsingAll() -> SettingsStore {
+        let settings = SettingsStore(defaults: uniqueDefaults())
+        settings.sessionScope = .all
+        return settings
+    }
+
     /// A fresh OpenSessionsModel wired to a fake factory (isolated persistence).
     static func openModel(factory: FakeTerminalSurfaceFactory,
                           timeout: TimeInterval = 3,

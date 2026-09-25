@@ -17,7 +17,7 @@ final class ArchiveTests: XCTestCase {
             indexSource: FakeIndexSource(index),
             noiseFilter: ArchiveNoNoiseFilter(),
             database: database,
-            settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+            settings: Fixture.settingsBrowsingAll(),
             overlay: overlay
         )
         model.index = index
