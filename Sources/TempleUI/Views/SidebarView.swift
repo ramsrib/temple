@@ -278,9 +278,13 @@ struct SidebarView: View {
         // content scrolling clean off the window's bottom feels unfinished —
         // so it holds only what has to be always visible: the meters and the
         // gear. (A single-user app has nothing to say with an avatar.)
+        // Meters on the right beside the gear, where they were before the
+        // Sep 22 redesign put them on the left: the footer's left edge sits
+        // under the project headers and reads as part of the list, and the
+        // meters are status, not content — they belong with the gear.
         HStack {
-            UsageMeterView(usage: model.usage)
             Spacer()
+            UsageMeterView(usage: model.usage)
             FooterGearMenu(model: model)
                 .frame(width: 22, height: 22)
                 .help("Settings and more")
