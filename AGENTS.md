@@ -78,6 +78,24 @@ because the demo runs the other binary; check with
 remembering that Swift keeps strings of 15 bytes or fewer inline, where
 `strings` cannot see them.
 
+## A probe that fails once is not a verdict — macOS evaluates fresh binaries on first exec
+
+`AgentToolchain` decides which `claude`/`codex` Temple launches by running each
+candidate's `--version`. Seen 2026-09-26: Temple 0.3.0's first launch probed
+claude 2.1.283 one second after install, got a launch error (the likely cause,
+from the system log's timestamps, is macOS evaluating the freshly downloaded
+binary — Gatekeeper scan, provenance — on its first exec by a freshly
+installed app; the probe threw the error away, so it is not established),
+chose the 2025 npm relic behind it on the PATH, and — detection ran once and
+never again — every new session for the next ten hours launched a CLI that
+rejects `--session-id`. Opening Settings happened to re-detect and "fixed" it. So: a verdict that came
+from a probe that failed to run, or timed out, is retried on a short schedule
+(`ToolchainModel.retryDelays`), the launch error is kept in the verdict rather
+than flattened to "can't be launched", and every verdict is logged at notice
+(`com.sriramb.temple.app`, category `launch`). Don't add a probe path that
+records a failure without a reason, and don't cache a detection result past
+the retry schedule without a way back.
+
 ## The split view's titlebar inset is fragile — the detail pane can break the sidebar
 
 `NavigationSplitView` gives the sidebar an automatic titlebar inset. Certain layout

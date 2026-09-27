@@ -190,8 +190,17 @@ public enum AgentToolchain {
         // the user's PATH in it, so the binary resolves whatever it depends on exactly
         // as it will at launch. Probing under a different environment than we launch
         // under would make this test worthless.
-        guard let result = CommandCapture.run(path, arguments + ["--version"], timeout: probeTimeout) else {
-            return (nil, "can't be launched", nil)
+        let result: CommandCapture.Result
+        do {
+            result = try CommandCapture.launch(path, arguments + ["--version"], timeout: probeTimeout)
+        } catch {
+            // The reason matters: the first exec of a freshly downloaded binary
+            // by a freshly installed app can fail while macOS evaluates it, and
+            // "can't be launched" alone reads as a broken install. The
+            // localized text goes in the verdict; domain and code, which the
+            // text can omit, go in the details for the next forensic look.
+            let ns = ((error as? CommandCapture.LaunchFailure)?.underlying ?? error) as NSError
+            return (nil, "can't be launched: \(error)", "\(ns.domain) \(ns.code)")
         }
         let text = result.output
         if result.timedOut {

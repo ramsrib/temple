@@ -52,7 +52,27 @@ public final class ToolchainModel: ObservableObject {
     private var detectGeneration = 0
     private var userGeneration = 0
 
+    /// A verdict that came from a probe that failed to run, or timed out, is
+    /// retried on this schedule, then left alone. The first exec of a freshly
+    /// downloaded binary by a freshly installed app can fail while macOS
+    /// evaluates it (Gatekeeper, provenance); measured 2026-09-26: Temple
+    /// 0.3.0's first launch probed claude 2.1.283 one second after install,
+    /// got a launch error, and — with detection run once and never again —
+    /// launched a 2025 npm relic for every new session until Settings was
+    /// opened. A verdict must not outlive the moment that produced it.
+    var retryDelays: [TimeInterval] = [10, 30, 60]
+    private var retriesUsed = 0
+    private var retryTask: Task<Void, Never>?
+
+    /// Detect from scratch; a caller's request also restarts the retry budget.
     public func detect() {
+        retriesUsed = 0
+        retryTask?.cancel()
+        retryTask = nil
+        runDetection()
+    }
+
+    private func runDetection() {
         guard !isDetecting else { return }
         isDetecting = true
         detectGeneration += 1
@@ -83,6 +103,8 @@ public final class ToolchainModel: ObservableObject {
                 if detectGen == self.detectGeneration {
                     self.resolutions = found
                     self.isDetecting = false
+                    self.logVerdicts(found)
+                    self.retryIfFlawed(found)
                 }
                 guard userGen == self.userGeneration else {
                     // The user edited a field while we were probing, so their verdict
@@ -102,6 +124,39 @@ public final class ToolchainModel: ObservableObject {
     /// Serial: two detections at once would only make the machine slower, and their
     /// results are ordered by generation anyway.
     private static let work = DispatchQueue(label: "com.sriramb.temple.toolchain", qos: .userInitiated)
+
+    /// One persisted line per verdict, so the next "why did it launch THAT"
+    /// is answerable from `log show` days later.
+    private func logVerdicts(_ found: [Agent: ToolchainResolution]) {
+        for agent in Agent.allCases {
+            guard let resolution = found[agent], !resolution.installs.isEmpty else { continue }
+            if let chosen = resolution.chosen {
+                TempleUILog.launch.notice("toolchain: \(agent.rawValue, privacy: .public) → \(chosen.path, privacy: .public) (\(chosen.version ?? "?", privacy: .public))")
+            } else {
+                TempleUILog.launch.notice("toolchain: \(agent.rawValue, privacy: .public) — nothing runs")
+            }
+            for install in resolution.installs where install.failure != nil {
+                TempleUILog.launch.notice("toolchain: \(agent.rawValue, privacy: .public) skipped \(install.path, privacy: .public): \(install.failure ?? "", privacy: .public)")
+            }
+        }
+    }
+
+    /// Flawed: something on the PATH was skipped ahead of what was chosen, or
+    /// installs exist and none ran. Both are what a failed probe looks like.
+    private func retryIfFlawed(_ found: [Agent: ToolchainResolution]) {
+        let flawed = found.values.contains {
+            !$0.shadowedFailures.isEmpty || ($0.chosen == nil && !$0.installs.isEmpty)
+        }
+        guard flawed, retriesUsed < retryDelays.count else { return }
+        let delay = retryDelays[retriesUsed]
+        retriesUsed += 1
+        TempleUILog.launch.notice("toolchain: a probe failed; detecting again in \(Int(delay), privacy: .public)s")
+        retryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            self.runDetection()
+        }
+    }
 
     private func currentOverrides() -> [Agent: String] {
         Agent.allCases.reduce(into: [Agent: String]()) { acc, agent in

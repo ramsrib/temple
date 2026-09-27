@@ -230,4 +230,14 @@ final class AgentToolchainTests: XCTestCase {
         try script.write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
     }
+
+    /// A launch that fails must say why — "can't be launched" alone sent a
+    /// real incident past its cause.
+    func testProbeKeepsTheLaunchError() {
+        let result = AgentToolchain.probe("/nonexistent/claude-\(UUID().uuidString)")
+        XCTAssertNil(result.version)
+        let failure = result.failure ?? ""
+        XCTAssertTrue(failure.hasPrefix("can't be launched: "), failure)
+        XCTAssertGreaterThan(failure.count, "can't be launched: ".count, "the OS's reason follows")
+    }
 }

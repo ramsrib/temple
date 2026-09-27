@@ -345,6 +345,16 @@ Agent arguments apply to both new and resumed sessions. Command paths are
 auto-detected and overridable; argument fields are clearable to launch without
 extra flags.
 
+Detection runs each candidate's `--version` and launches the first that
+answers, in the PATH's own order. A verdict in which a failed probe decided
+the winner — something ahead on the PATH skipped, or nothing running at all —
+is retried a few times over the next couple of minutes rather than held for
+the life of the process (the likely cause seen in the wild: macOS refusing the
+first exec of a freshly downloaded binary while it evaluates it). Each
+automatic resolution, with the reason anything was skipped, is logged at
+notice level under `com.sriramb.temple.app`, category `launch`. Settings shows
+the same reasons beside "Also found".
+
 System theme follows macOS live. Light and Dark override it. The embedded
 terminal follows the resolved appearance with Temple-owned Adwaita / Adwaita
 Dark palettes and never reads or modifies the user's Ghostty configuration.

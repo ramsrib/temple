@@ -313,4 +313,110 @@ final class ToolchainModelTests: XCTestCase {
         XCTAssertEqual(warnings.map(\.agent), [.codex])
         XCTAssertTrue(warnings[0].isFatal)
     }
+
+    // MARK: A failed probe is not a verdict for life
+
+    /// The shape measured on 2026-09-26: the first probe of the current CLI
+    /// failed to launch (macOS evaluating a fresh binary), a 2025 relic on
+    /// the PATH behind it was chosen, and nothing ever looked again.
+    func testAVerdictFromAFailedProbeIsRetriedUntilClean() {
+        let good = install("/Users/x/.local/bin/claude", rank: 0)
+        let relic = install("/opt/homebrew/bin/claude", rank: 1)
+        let flawed = ToolchainResolution(
+            agent: .claude,
+            installs: [install("/Users/x/.local/bin/claude", rank: 0, failure: "can't be launched: Input/output error"), relic],
+            chosen: relic)
+        let clean = ToolchainResolution(agent: .claude, installs: [good, relic], chosen: good)
+        let calls = CallCounter()
+        let model = ToolchainModel(
+            resolve: { agent in
+                guard agent == .claude else { return ToolchainResolution(agent: agent, installs: [], chosen: nil) }
+                return calls.bump() == 1 ? flawed : clean
+            },
+            probe: { _, _ in (version: "1.2.3", failure: nil, details: nil) })
+        model.retryDelays = [0.05, 0.05, 0.05]   // budget to spare: recovery must stop the schedule
+        model.detect()
+        let deadline = Date().addingTimeInterval(5)
+        while model.launchPath(for: .claude) != good.path && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertEqual(model.launchPath(for: .claude), good.path, "the retry replaced the relic")
+        let settle = Date().addingTimeInterval(0.3)
+        while Date() < settle { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+        XCTAssertEqual(calls.value, 2, "a clean verdict ends the schedule with retries left")
+    }
+
+    func testAManualDetectionCancelsASleepingRetry() {
+        let relic = install("/opt/homebrew/bin/claude", rank: 1)
+        let flawed = ToolchainResolution(
+            agent: .claude,
+            installs: [install("/Users/x/.local/bin/claude", rank: 0, failure: "didn't respond"), relic],
+            chosen: relic)
+        let calls = CallCounter()
+        let model = ToolchainModel(
+            resolve: { agent in
+                guard agent == .claude else { return ToolchainResolution(agent: agent, installs: [], chosen: nil) }
+                _ = calls.bump(); return flawed
+            },
+            probe: { _, _ in (version: "1.2.3", failure: nil, details: nil) })
+        model.retryDelays = [0.3]
+        model.detect()
+        var deadline = Date().addingTimeInterval(2)
+        while model.isDetecting && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+        XCTAssertEqual(calls.value, 1)
+        // The retry is asleep. A user-initiated detection replaces it: one
+        // detection now, and a NEW schedule — not the old sleeper on top.
+        model.detect()
+        deadline = Date().addingTimeInterval(2)
+        while model.isDetecting && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+        XCTAssertEqual(calls.value, 2)
+        let settle = Date().addingTimeInterval(0.6)   // past the old sleeper's wake and the new one's
+        while Date() < settle { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+        XCTAssertEqual(calls.value, 3, "the cancelled sleeper never fired; the new schedule's one retry did")
+    }
+
+    func testRetriesStopOnceTheScheduleIsSpent() {
+        let relic = install("/opt/homebrew/bin/claude", rank: 1)
+        let flawed = ToolchainResolution(
+            agent: .claude,
+            installs: [install("/Users/x/.local/bin/claude", rank: 0, failure: "didn't respond"), relic],
+            chosen: relic)
+        let calls = CallCounter()
+        let model = ToolchainModel(
+            resolve: { agent in
+                guard agent == .claude else { return ToolchainResolution(agent: agent, installs: [], chosen: nil) }
+                _ = calls.bump(); return flawed
+            },
+            probe: { _, _ in (version: "1.2.3", failure: nil, details: nil) })
+        model.retryDelays = [0.02, 0.02]
+        model.detect()
+        let deadline = Date().addingTimeInterval(1)
+        while Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+        XCTAssertEqual(calls.value, 3, "one detection plus the two scheduled retries, then silence")
+        XCTAssertEqual(model.launchPath(for: .claude), relic.path, "still the best that runs")
+    }
+
+    func testACleanVerdictIsNotRetried() {
+        let good = install("/Users/x/.local/bin/claude", rank: 0)
+        let calls = CallCounter()
+        let model = ToolchainModel(
+            resolve: { agent in
+                _ = calls.bump()
+                return ToolchainResolution(agent: agent, installs: agent == .claude ? [good] : [], chosen: agent == .claude ? good : nil)
+            },
+            probe: { _, _ in (version: "1.2.3", failure: nil, details: nil) })
+        model.retryDelays = [0.02]
+        model.detect()
+        let deadline = Date().addingTimeInterval(0.3)
+        while Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+        XCTAssertEqual(calls.value, Agent.allCases.count, "resolved once per agent, no retry")
+    }
+}
+
+/// Thread-safe call counter for resolve seams, which run off the main actor.
+private final class CallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    @discardableResult func bump() -> Int { lock.lock(); defer { lock.unlock() }; count += 1; return count }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
 }

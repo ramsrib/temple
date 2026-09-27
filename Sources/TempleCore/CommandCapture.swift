@@ -30,10 +30,27 @@ enum CommandCapture {
     }
 
     /// `nil` only when the command could not be launched at all.
+    /// Why a launch failed — the OS's own words. A launch that fails is a
+    /// verdict the user will read in Settings, and "can't be launched" with
+    /// no reason sent one straight past the real cause (macOS evaluating a
+    /// freshly downloaded binary on its first exec by a freshly installed app).
+    struct LaunchFailure: Error, CustomStringConvertible {
+        let underlying: Error
+        var description: String { underlying.localizedDescription }
+    }
+
+    /// nil when the process could not be started; `launch` says why.
     static func run(_ executable: String,
                     _ arguments: [String],
                     timeout: TimeInterval,
                     limit: Int = 64 * 1024) -> Result? {
+        try? launch(executable, arguments, timeout: timeout, limit: limit)
+    }
+
+    static func launch(_ executable: String,
+                       _ arguments: [String],
+                       timeout: TimeInterval,
+                       limit: Int = 64 * 1024) throws -> Result {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -63,7 +80,7 @@ enum CommandCapture {
         do {
             try process.run()
         } catch {
-            return nil
+            throw LaunchFailure(underlying: error)
         }
 
         var timedOut = false

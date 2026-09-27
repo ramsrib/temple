@@ -865,3 +865,46 @@ person opens: it runs inside its parent, for its parent, and ends with it.
 
 Showing subagents under their parent is a possible later feature; if it comes,
 they are rows *of* a session, never sessions of their own.
+
+## ADR-025 — A failed probe is retried, and says why it failed
+**Date:** 2026-09-27 · **Status:** Accepted
+
+Temple 0.3.0, installed through Homebrew at 22:44, launched a June 2025 npm
+Claude Code for every new session the next morning ("unknown option
+--session-id"), while six sessions restored at launch ran the current
+2.1.283. Settings showed why: "Also found ~/.local/bin/claude — can't be
+launched." The system log around that second, as observed: at 22:44:25
+Apple's system policy daemon logged that it could not apply a provenance
+sandbox to a child of Temple; at 22:44:26 syspolicyd logged a Gatekeeper
+scan result for com.anthropic.claude-code and the creation of its provenance
+record. The likely explanation — not established, since the probe threw the
+error away — is that the first exec of a freshly downloaded binary by a
+freshly installed app failed while macOS evaluated it. What is established:
+the probe recorded the failure without the reason, detection ran once, and
+the verdict stood until opening Settings happened to re-run it. Both binaries
+probed fine the next morning.
+
+**Decisions.**
+
+- **The launch error is kept.** `CommandCapture.launch` throws the OS error;
+  the probe's verdict reads "can't be launched: <reason>", in Settings and in
+  the log. "Can't be launched" alone read as a broken install and sent the
+  first look past the real cause.
+- **A flawed verdict is retried.** When something on the PATH was skipped
+  ahead of what was chosen, or installs exist and none ran, `ToolchainModel`
+  detects again — successive waits of 10, 30 and 60 seconds after each
+  detection completes — then stops; a user-initiated detection restarts the
+  schedule. A clean verdict is never retried, and a failed install *behind*
+  a healthy winner does not count as flawed: it cannot change what launches.
+  A permanently broken earlier install costs three extra detections per
+  launch, which is accepted. The schedule covers the observed gap (the log
+  events above are two seconds apart) without turning detection into a poll.
+- **The automatic resolution is logged** at notice level — for each agent
+  with any install found, the chosen path and version (or that nothing runs)
+  and each skipped install with its reason — so "why did it launch that" is
+  answerable from `log show` days later. Override checks are shown in
+  Settings and not logged.
+
+Not changed: which install wins (PATH order, first that runs), and that a
+user override is taken as-is.
+
