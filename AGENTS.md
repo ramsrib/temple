@@ -61,6 +61,23 @@ Three traps, each hit for real:
   first-launch defaults migration — hits his real preferences. Say so before you
   run it.
 
+## Two entry points: the shipped app is not the binary `make demo` runs
+
+`make demo` and `swift run` build the SwiftPM executable, whose `@main` is
+`Sources/Temple/TempleApp.swift`. The `.app` — `make app`, `make install`, the
+Homebrew release — is built by xcodebuild from `project.yml`, whose `@main` is
+**`App/TempleApp.swift`**. They are two files with the same `init()` shape and
+neither includes the other. Anything done at launch (a store path, a flag, a
+resource lookup) must be done in **both**, or it works in every demo and every
+test and is silently absent from what users run. Shipped for real: the usage
+meter's log file was enabled in the SwiftPM entry point only; the released app
+never wrote it, and the first report of the meter failing came with no file to
+hand over — the exact case the file existed for. The demo cannot catch this,
+because the demo runs the other binary; check with
+`strings dist/Temple.app/Contents/MacOS/Temple | grep '<a string only the .app path would carry>'`,
+remembering that Swift keeps strings of 15 bytes or fewer inline, where
+`strings` cannot see them.
+
 ## The split view's titlebar inset is fragile — the detail pane can break the sidebar
 
 `NavigationSplitView` gives the sidebar an automatic titlebar inset. Certain layout

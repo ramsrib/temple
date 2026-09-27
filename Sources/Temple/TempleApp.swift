@@ -22,7 +22,9 @@ struct TempleApp: App {
         // and tools break under launchd's minimal GUI environment).
         LoginShellEnvironment.adoptLoginShellPATH()
         // The usage meter's file trail (ADR-022). Only the app turns it on:
-        // tests and tools that reuse the model must never write one.
+        // tests and tools that reuse the model must never write one. The
+        // bundled app's entry point (App/TempleApp.swift) has the same line —
+        // see AGENTS.md, "Two entry points".
         UsageLog.fileURL = UsageLog.defaultFileURL
         _model = StateObject(wrappedValue: AppModel(surfaceFactory: GhosttyTerminalSurfaceFactory()))
 
