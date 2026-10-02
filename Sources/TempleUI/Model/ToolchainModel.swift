@@ -315,7 +315,9 @@ public final class ToolchainModel: ObservableObject {
             case .checking:
                 return ToolchainSummaryPart(agent: agent, text: "\(name): checking…", state: .checking)
             case .runs(let version):
-                return ToolchainSummaryPart(agent: agent, text: [name, version].compactMap { $0 }.joined(separator: " "),
+                return ToolchainSummaryPart(agent: agent,
+                                            text: [name, AgentInstall.versionNumber(in: version)].compactMap { $0 }
+                                                .joined(separator: " "),
                                             state: .runs)
             case .doesNotRun, .couldNotLaunch:
                 return ToolchainSummaryPart(agent: agent, text: "\(name): doesn't run", state: .broken)
@@ -325,7 +327,7 @@ public final class ToolchainModel: ObservableObject {
             return ToolchainSummaryPart(agent: agent, text: "\(name): checking…", state: .checking)
         }
         if let chosen = resolution.chosen {
-            return ToolchainSummaryPart(agent: agent, text: [name, chosen.version].compactMap { $0 }.joined(separator: " "),
+            return ToolchainSummaryPart(agent: agent, text: [name, chosen.versionNumber].compactMap { $0 }.joined(separator: " "),
                                         state: .runs)
         }
         if resolution.installs.isEmpty {
@@ -430,7 +432,9 @@ public enum OverrideVerdict: Equatable, Sendable {
     }
 }
 
-/// One agent's fragment of the Settings subtitle ("Claude Code 2.1.287").
+/// One agent's fragment of the Settings subtitle ("Claude Code 2.1.287"): the
+/// version number only, since the agent's name is already there — the raw
+/// `--version` line is the Detected row's tooltip.
 public struct ToolchainSummaryPart: Equatable, Sendable {
     public enum State: Equatable, Sendable { case checking, runs, missing, broken }
     public let agent: Agent

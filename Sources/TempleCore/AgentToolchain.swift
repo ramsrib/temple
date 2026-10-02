@@ -26,6 +26,22 @@ public struct AgentInstall: Equatable, Sendable, Identifiable {
 
     public var id: String { path }
     public var isUsable: Bool { failure == nil }
+
+    /// The version number inside `version` ("2.1.288 (Claude Code)" →
+    /// "2.1.288", "codex-cli 0.160.0" → "0.160.0"), for the places that name
+    /// the agent already. Still no presumed format: when there is no number in
+    /// it, the raw string comes back unchanged.
+    public var versionNumber: String? { Self.versionNumber(in: version) }
+
+    /// `versionNumber` for any `--version` output (an override's verdict
+    /// carries only the string).
+    public static func versionNumber(in version: String?) -> String? {
+        guard let version else { return nil }
+        guard let match = version.range(of: #"\d+\.\d+(\.\d+)?"#, options: .regularExpression) else {
+            return version
+        }
+        return String(version[match])
+    }
     public var isOnPATH: Bool { if case .path = origin { return true }; return false }
 
     public init(path: String, origin: Origin, version: String? = nil,

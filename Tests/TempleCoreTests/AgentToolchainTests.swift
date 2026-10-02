@@ -16,6 +16,18 @@ final class AgentToolchainTests: XCTestCase {
         { paths.contains($0) }
     }
 
+    func testVersionNumberIsTheNumberInsideTheVersionLine() {
+        func number(_ version: String?) -> String? {
+            AgentInstall(path: "/bin/x", origin: .path(rank: 0), version: version).versionNumber
+        }
+        XCTAssertEqual(number("2.1.288 (Claude Code)"), "2.1.288")
+        XCTAssertEqual(number("codex-cli 0.160.0"), "0.160.0")
+        XCTAssertEqual(number("v1.2"), "1.2")
+        XCTAssertEqual(number("nightly"), "nightly", "no number: the raw string, never a guess")
+        XCTAssertNil(number(nil))
+        XCTAssertEqual(AgentInstall.versionNumber(in: "tool 10.20.30-beta"), "10.20.30")
+    }
+
     func testPrefersShellPATHOrder() {
         let resolution = AgentToolchain.resolve(
             .claude,
