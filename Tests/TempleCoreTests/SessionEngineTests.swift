@@ -107,6 +107,43 @@ final class SessionEngineTests: XCTestCase {
         XCTAssertEqual(Set(recorder.latest.map(\.id)), ["pinned"])
     }
 
+    func testDelayedLeaveAfterReimportKeepsMembershipAndEventRouting() async throws {
+        let root = try root()
+        let file = try claude(root, id: "reimported")
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "reimported", via: .imported, agent: .claude, transcriptPath: file)
+        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db, debounceInterval: 0.02)
+        let recorder = try await start(watcher)
+        defer { recorder.stop() }
+        XCTAssertTrue(try db.leave(sessionID: "reimported"))
+        try db.join(sessionID: "reimported", via: .imported, agent: .claude, transcriptPath: file)
+        // Force the callback order: resolution of the new commit, then the
+        // delayed invalidation from the old leave, irrespective of DB delivery.
+        watcher.requestResolution("reimported")
+        watcher.forgetMember("reimported")
+        try claude(root, id: "reimported", text: "after reimport")
+        watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
+        try await eventually { recorder.latest.first?.title == "after reimport" }
+        XCTAssertNotNil(try db.sessionState("reimported"))
+        XCTAssertEqual(watcher.resolution(for: "reimported"), .loaded(file))
+    }
+
+    func testLeaveDatabaseReadFailureKeepsMember() async throws {
+        let root = try root()
+        let file = try claude(root, id: "kept")
+        let queue = try DatabaseQueue()
+        let db = try TempleDB(database: queue)
+        try db.join(sessionID: "kept", via: .imported, agent: .claude, transcriptPath: file)
+        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db, debounceInterval: 0.02)
+        let recorder = try await start(watcher)
+        defer { recorder.stop() }
+        try queue.close()
+        watcher.forgetMember("kept")
+        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertEqual(recorder.latest.map(\.id), ["kept"])
+        XCTAssertEqual(watcher.resolution(for: "kept"), .loaded(file))
+    }
+
     func testPrestartJoinWaitsForClaudeCreationAndDeletionKeepsMembership() async throws {
         let root = try root()
         let db = try TempleDB.inMemory()
@@ -195,6 +232,28 @@ final class SessionEngineTests: XCTestCase {
         XCTAssertEqual(watcher.resolution(for: "unknown"), .confirmedAbsent)
     }
 
+    func testSuccessfulSubtreeCannotClearFailedFullEnumeration() async throws {
+        let root = try root()
+        let outside = try claude(root, id: "outside")
+        let store = EngineCountingStore(ClaudeSessionStore(root: root))
+        store.failEnumeration = true
+        let watcher = SessionWatcher(stores: [store], members: ["missing"], debounceInterval: 0.02)
+        let recorder = try await start(watcher)
+        defer { recorder.stop() }
+        XCTAssertEqual(watcher.resolution(for: "missing"), .resolving)
+        let scans = store.enumerations
+        watcher.reconcileEvent(path: outside.deletingLastPathComponent().path,
+            flags: UInt32(kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagMustScanSubDirs))
+        try await eventually { store.enumerations > scans }
+        // Serial resolution after the subtree scan acts as a queue barrier.
+        watcher.requestResolution("missing")
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(watcher.resolution(for: "missing"), .resolving)
+        store.failEnumeration = false
+        watcher.reconcileEvent(path: root.path, flags: UInt32(kFSEventStreamEventFlagKernelDropped))
+        try await eventually { watcher.resolution(for: "missing") == .confirmedAbsent }
+    }
+
     func testValidatedPathHintLoadsMismatchedFilenameAndRejectsWrongIdentity() async throws {
         let root = try root()
         let id = UUID().uuidString.lowercased()
@@ -260,6 +319,62 @@ final class SessionEngineTests: XCTestCase {
         watcher.registerAdoption(projectPath: "/private/tmp", startedAt: time, window: 0.35) { candidate in
             XCTAssertNil(candidate); decided.fulfill()
         }
+        await fulfillment(of: [decided], timeout: 2)
+    }
+
+    func testStaggeredCandidateInsideWholeWindowRefusesAdoption() async throws {
+        let root = try root()
+        let time = Date()
+        try rollout(root, id: UUID().uuidString.lowercased(), at: time)
+        let watcher = SessionWatcher(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02)
+        let recorder = try await start(watcher)
+        defer { recorder.stop() }
+        let decided = expectation(description: "whole window remains ambiguous")
+        watcher.registerAdoption(projectPath: "/private/tmp", startedAt: time, window: 5) { candidate in
+            XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(time), 5)
+            XCTAssertNil(candidate)
+            decided.fulfill()
+        }
+        try await Task.sleep(for: .seconds(2))
+        let second = try rollout(root, id: UUID().uuidString.lowercased(), at: time.addingTimeInterval(2))
+        watcher.reconcileEvent(path: second.path, flags: UInt32(kFSEventStreamEventFlagItemCreated))
+        await fulfillment(of: [decided], timeout: 5)
+        XCTAssertTrue(recorder.latest.isEmpty)
+    }
+
+    func testCandidateSeenThenRemovedStillBlocksUniqueAdoption() async throws {
+        let root = try root()
+        let time = Date()
+        let first = try rollout(root, id: UUID().uuidString.lowercased(), at: time)
+        let store = EngineCountingStore(CodexSessionStore(root: root))
+        let watcher = SessionWatcher(stores: [store], debounceInterval: 0.02)
+        let recorder = try await start(watcher)
+        defer { recorder.stop() }
+        let decided = expectation(description: "previously seen competitor remains ambiguous")
+        watcher.registerAdoption(projectPath: "/private/tmp", startedAt: time, window: 0.4) { candidate in
+            XCTAssertNil(candidate); decided.fulfill()
+        }
+        try await eventually { store.headerReads == 1 }
+        try FileManager.default.removeItem(at: first)
+        let second = try rollout(root, id: UUID().uuidString.lowercased(), at: time)
+        watcher.reconcileEvent(path: second.path, flags: UInt32(kFSEventStreamEventFlagItemCreated))
+        await fulfillment(of: [decided], timeout: 2)
+    }
+
+    func testRemovedOnlyCandidateCannotBeAdoptedAtDeadline() async throws {
+        let root = try root()
+        let time = Date()
+        let file = try rollout(root, id: UUID().uuidString.lowercased(), at: time)
+        let store = EngineCountingStore(CodexSessionStore(root: root))
+        let watcher = SessionWatcher(stores: [store], debounceInterval: 0.02)
+        let recorder = try await start(watcher)
+        defer { recorder.stop() }
+        let decided = expectation(description: "removed candidate cannot bind")
+        watcher.registerAdoption(projectPath: "/private/tmp", startedAt: time, window: 0.3) { candidate in
+            XCTAssertNil(candidate); decided.fulfill()
+        }
+        try await eventually { store.headerReads == 1 }
+        try FileManager.default.removeItem(at: file)
         await fulfillment(of: [decided], timeout: 2)
     }
 
@@ -441,11 +556,11 @@ final class SessionEngineTests: XCTestCase {
         let watcher = SessionWatcher(stores: [store], debounceInterval: 0.02)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
-        let first = expectation(description: "early adoption")
-        watcher.registerAdoption(projectPath: "/private/tmp", startedAt: now, window: 5) { result in
+        let first = expectation(description: "deadline adoption")
+        watcher.registerAdoption(projectPath: "/private/tmp", startedAt: now, window: 0.2) { result in
             XCTAssertEqual(result?.sessionID, id); first.fulfill()
         }
-        await fulfillment(of: [first], timeout: 0.5)
+        await fulfillment(of: [first], timeout: 1)
         XCTAssertEqual(store.headerReads, 1)
         let second = expectation(description: "same cached candidate already claimed")
         watcher.registerAdoption(projectPath: "/private/tmp", startedAt: now, window: 0.2) { result in
@@ -880,6 +995,10 @@ private final class EngineCountingStore: IncrementalSessionStore, @unchecked Sen
         let listed = try inner.enumerateSessionFiles()
         let callback = afterListing; afterListing = nil; callback?()
         return listed
+    }
+    func enumerateSessionFiles(in subtree: URL) throws -> [URL] {
+        lock.lock(); listingCount += 1; lock.unlock()
+        return try inner.enumerateSessionFiles(in: subtree)
     }
     func acceptsTranscript(_ url: URL) -> Bool { inner.acceptsTranscript(url) }
     func filenameID(at url: URL) -> String? { inner.filenameID(at: url) }

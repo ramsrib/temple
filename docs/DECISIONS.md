@@ -1021,12 +1021,14 @@ in memory, and a 2.2 MB `index-cache.json` was rewritten every five seconds.
   committed join goes through one path that loads the session at once (an
   import has no file activity to wait for). Joins committed by another process
   (`templectl --import-all`) are seen at the next launch.
-- **Codex adoption is registered before the process spawns** and sweeps only
-  rollouts whose time falls in its ±5s window. It adopts as soon as exactly one
-  readable candidate exists with nothing eligible still unreadable and no
-  other request overlapping; otherwise it waits for the window to close. A
-  rollout whose header can't be read yet blocks the decision rather than
-  counting as "not a candidate". One candidate per request, ambiguity refused.
+- **Codex adoption is registered before the process spawns,** sweeps only
+  rollouts whose time falls in its ±5s window, and is decided when that window
+  closes, over every candidate seen: one candidate per request, ambiguity
+  refused. A rollout whose header can't be read yet blocks the decision rather
+  than counting as "not a candidate". Adopting at the first unique match was
+  tried and dropped: a second session started in the same folder moments
+  later could then no longer prevent a wrong match, and a wrong match is saved
+  as the id the tab resumes. The cost is a tab without its id for ~5 s.
   Candidates never reach the index.
 - **The launch cache holds members** (schema 3, filtered by membership on
   load), and AppModel compares index content, so a title-only change reaches

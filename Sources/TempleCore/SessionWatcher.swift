@@ -52,6 +52,9 @@ public final class SessionWatcher: @unchecked Sendable {
     private var lastIndex: SessionIndex?
     private var requests: [UUID: AdoptionRequest] = [:]
     private var candidates: [String: CodexRolloutCandidate] = [:]
+    // Keep competitors seen anywhere in an active window, even if a later
+    // sweep no longer finds their files. Overflow refuses the decision.
+    private var seenCandidates: [String: CodexRolloutCandidate] = [:]
     private var candidateSignatures: [String: FileSignature] = [:]
     private var claimed: [String: Date] = [:]
     private static let candidateCacheLimit = 512
@@ -157,7 +160,7 @@ public final class SessionWatcher: @unchecked Sendable {
                 self.publishLocked()
                 if !self.requests.isEmpty {
                     for requestID in self.requests.keys { self.scheduleAdoptionDeadlineLocked(requestID) }
-                    self.sweepCandidatesLocked(); self.tryEarlyAdoptionLocked()
+                    self.sweepCandidatesLocked()
                 }
             }
         }
@@ -168,7 +171,7 @@ public final class SessionWatcher: @unchecked Sendable {
     private func stopLocked(preservePrestart: Bool = false) {
         if !preservePrestart {
             adoptionTimers.values.forEach { $0.cancel() }; adoptionTimers.removeAll()
-            requests.removeAll(); candidates.removeAll(); candidateSignatures.removeAll()
+            requests.removeAll(); candidates.removeAll(); seenCandidates.removeAll(); candidateSignatures.removeAll()
             unresolvedCandidates.removeAll(); claimed.removeAll(); awaiting.removeAll()
         }
         running = false
@@ -191,12 +194,19 @@ public final class SessionWatcher: @unchecked Sendable {
     // Membership is observed only through this process's committed joins.
     // External-process joins (including templectl imports) are seen next launch;
     // there is no engine-only refresh that could leave the overlay out of sync.
-    /// A committed leave (History's undo of an import): the session is no
-    /// longer a member, so it leaves the index, its resolution state and its
-    /// cached parse. The filename map is disk state and stays.
+    /// A leave invalidates membership. Recheck the row because callbacks can
+    /// arrive after a newer re-import. The filename map is disk state and stays.
     public func forgetMember(_ id: String) {
         queue.async { [weak self] in
             guard let self, self.members.contains(id) else { return }
+            if let database = self.database {
+                do {
+                    guard try database.sessionState(id) == nil else { return }
+                } catch {
+                    TempleCoreLog.watcher.error("leave membership check failed: \(String(describing: error), privacy: .public)")
+                    return
+                }
+            }
             self.members.remove(id)
             self.awaiting.remove(id)
             self.sessions.removeValue(forKey: id)
@@ -389,7 +399,9 @@ public final class SessionWatcher: @unchecked Sendable {
             }) { continue }
             do {
                 let listed = try subtree.map { try store.enumerateSessionFiles(in: URL(fileURLWithPath: $0)) } ?? store.enumerateSessionFiles()
-                enumerationByAgent[store.agent] = true
+                // A subtree proves only its own coverage, never recovery of
+                // an earlier failed full-store filename lookup.
+                if subtree == nil { enumerationByAgent[store.agent] = true }
                 for file in listed {
                     let url = URL(fileURLWithPath: logicalPath(file.path) ?? RootMapping.alias(file.path))
                     next[url.path] = (url, store.agent)
@@ -572,7 +584,7 @@ public final class SessionWatcher: @unchecked Sendable {
             if old != sessions[id] { changed = true }
         }
         if store.agent == .codex, !requests.isEmpty {
-            if readCandidateLocked(url, store: store) { tryEarlyAdoptionLocked() }
+            _ = readCandidateLocked(url, store: store)
         }
         if !ids.isEmpty { snapshotLocked() }
         return changed
@@ -610,7 +622,7 @@ public final class SessionWatcher: @unchecked Sendable {
             self.requests[id] = AdoptionRequest(cwd: projectPath, start: startedAt, window: window, completion: completion)
             let earliest = self.requests.values.map { $0.start.addingTimeInterval(-$0.window) }.min() ?? startedAt
             self.claimed = self.claimed.filter { $0.value >= earliest }
-            if self.running { self.sweepCandidatesLocked(); self.tryEarlyAdoptionLocked() }
+            if self.running { self.sweepCandidatesLocked() }
             if self.running, self.requests[id]?.decided == false { self.scheduleAdoptionDeadlineLocked(id) }
         }
     }
@@ -675,7 +687,10 @@ public final class SessionWatcher: @unchecked Sendable {
             unresolvedCandidates.remove(url.path)
             return false
         }
-        if candidateSignatures[url.path] == signature { return false }
+        if candidateSignatures[url.path] == signature {
+            if let candidate = candidates[url.path] { rememberCandidateLocked(candidate) }
+            return false
+        }
         guard candidateSignatures[url.path] != nil || unresolvedCandidates.contains(url.path) || candidateSignatures.count + unresolvedCandidates.count < Self.candidateCacheLimit else {
             failAdoptionSweepLocked(); return false
         }
@@ -691,6 +706,7 @@ public final class SessionWatcher: @unchecked Sendable {
             }
             candidateSignatures[url.path] = signature
             candidates[url.path] = candidate
+            rememberCandidateLocked(candidate)
             unresolvedCandidates.remove(url.path)
         } catch {
             candidates.removeValue(forKey: url.path)
@@ -698,6 +714,15 @@ public final class SessionWatcher: @unchecked Sendable {
             unresolvedCandidates.insert(url.path)
         }
         return true
+    }
+
+    private func rememberCandidateLocked(_ candidate: CodexRolloutCandidate) {
+        guard requests.values.contains(where: { !$0.decided && $0.matches(candidate) }) else { return }
+        guard seenCandidates[candidate.sessionID] != nil || seenCandidates.count < Self.candidateCacheLimit else {
+            for id in requests.keys { requests[id]?.observationOverflow = true }
+            return
+        }
+        seenCandidates[candidate.sessionID] = candidate
     }
 
     private func failAdoptionSweepLocked() {
@@ -716,30 +741,24 @@ public final class SessionWatcher: @unchecked Sendable {
         }
     }
 
-    private func tryEarlyAdoptionLocked() {
-        for id in Array(requests.keys) where requests[id]?.decided == false {
-            decideAdoptionLocked(id, deadline: false)
-        }
-    }
-
-    private func decideAdoptionLocked(_ id: UUID, deadline: Bool = true) {
+    private func decideAdoptionLocked(_ id: UUID) {
         guard running, requests[id]?.decided == false else { return }
-        if deadline { sweepCandidatesLocked() }
+        sweepCandidatesLocked()
         guard let request = requests[id] else { return }
-        let eligible = Dictionary(candidates.values.filter { request.matches($0) }.map { ($0.sessionID, $0) },
-                                  uniquingKeysWith: { first, _ in first }).values
+        let eligible = seenCandidates.values.filter { request.matches($0) }
         var result: CodexRolloutCandidate?
         let overlapping = requests.filter { $0.key != id && $0.value.cwd == request.cwd &&
             abs($0.value.start.timeIntervalSince(request.start)) <= $0.value.window + request.window }.count > 0
-        if !request.failedSweep, unresolvedCandidates.isEmpty, !overlapping,
-           eligible.count == 1, let candidate = eligible.first, claimed[candidate.sessionID] == nil, claimed.count < Self.candidateCacheLimit {
+        if !request.failedSweep, !request.observationOverflow, unresolvedCandidates.isEmpty, !overlapping,
+           eligible.count == 1, let seen = eligible.first,
+           let candidate = candidates.values.first(where: { $0.sessionID == seen.sessionID && request.matches($0) }),
+           claimed[candidate.sessionID] == nil, claimed.count < Self.candidateCacheLimit {
             claimed[candidate.sessionID] = candidate.createdAt; result = candidate
         }
-        guard deadline || result != nil else { return }
         requests[id]?.decided = true
         adoptionTimers.removeValue(forKey: id)?.cancel()
         request.completion(result)
-        if requests.values.allSatisfy(\.decided) { requests.removeAll(); trimCandidateCacheLocked() }
+        if requests.values.allSatisfy(\.decided) { requests.removeAll(); seenCandidates.removeAll(); trimCandidateCacheLocked() }
     }
 
     private static func isMissing(_ error: Error) -> Bool {
@@ -762,6 +781,7 @@ private struct AdoptionRequest {
     let window: TimeInterval
     let completion: @Sendable (CodexRolloutCandidate?) -> Void
     var failedSweep = false
+    var observationOverflow = false
     var decided = false
     func matches(_ candidate: CodexRolloutCandidate) -> Bool {
         candidate.cwd == cwd && abs(candidate.createdAt.timeIntervalSince(start)) <= window
