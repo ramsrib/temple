@@ -1,4 +1,5 @@
 import Combine
+import SwiftUI
 import XCTest
 @testable import TempleUI
 import TempleCore
@@ -71,13 +72,19 @@ final class SettingsResponsivenessTests: XCTestCase {
     func testDraftsTouchNothingUntilCommittedAndThenApplyOnce() async {
         let editor = SettingsEditor(store: model.settings, toolchain: model.toolchain)
         var drafts = SettingsDrafts()
+        // The bindings the page's fields are given: a keystroke is a set.
+        let state = Binding(get: { drafts }, set: { drafts = $0 })
+        let family = editor.binding(.fontFamily, drafts: state)
+        let command = editor.binding(.command(.claude), drafts: state)
+        let arguments = editor.binding(.arguments(.codex), drafts: state)
         let before = (applied, republished)
         for prefix in ["M", "Me", "Men", "Menl", "Menlo"] {
-            drafts.edit(.fontFamily, to: prefix, committed: editor.committed(.fontFamily))
-            drafts.edit(.command(.claude), to: "/nonexistent/" + prefix, committed: editor.committed(.command(.claude)))
-            drafts.edit(.arguments(.codex), to: "--" + prefix, committed: editor.committed(.arguments(.codex)))
+            family.wrappedValue = prefix
+            command.wrappedValue = "/nonexistent/" + prefix
+            arguments.wrappedValue = "--" + prefix
             await settle(30)
         }
+        XCTAssertEqual(family.wrappedValue, "Menlo", "the field shows the draft")
         await settle(600)
         XCTAssertEqual(applied, before.0, "a draft keystroke reached the terminals")
         XCTAssertEqual(republished, before.1, "a draft keystroke re-rendered the window")

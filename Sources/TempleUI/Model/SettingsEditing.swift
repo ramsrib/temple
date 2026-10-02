@@ -1,5 +1,6 @@
 import CoreText
 import Foundation
+import SwiftUI
 import TempleCore
 
 /// A Settings text field. Each one edits a draft and writes the store only on
@@ -58,6 +59,15 @@ struct SettingsEditor {
         case .fontFamily: return store.fontFamily
         case .fontSize: return String(Int(store.fontSize.rounded()))
         }
+    }
+
+    /// The field's text: the draft, or the committed value when there is none.
+    /// Writing it edits the draft and nothing else — the store is written on
+    /// commit only. The view binds every field through here, so the tests that
+    /// type through this binding cover what a keystroke in the page does.
+    func binding(_ field: SettingsField, drafts: Binding<SettingsDrafts>) -> Binding<String> {
+        Binding(get: { drafts.wrappedValue.text(field, committed: committed(field)) },
+                set: { drafts.wrappedValue.edit(field, to: $0, committed: committed(field)) })
     }
 
     /// Commit the pending draft for `field`, if there is one. Returns whether

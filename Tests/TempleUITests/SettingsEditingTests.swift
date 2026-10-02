@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 import TempleCore
 @testable import TempleUI
@@ -80,11 +81,17 @@ final class SettingsEditingTests: XCTestCase {
         configure()
         let probesBefore = probes.count
         var drafts = SettingsDrafts()
+        // Typed through the bindings the page's fields are given.
+        let state = Binding(get: { drafts }, set: { drafts = $0 })
+        let command = editor.binding(.command(.claude), drafts: state)
+        let arguments = editor.binding(.arguments(.claude), drafts: state)
+        let family = editor.binding(.fontFamily, drafts: state)
         for prefix in ["/", "/o", "/opt", "/opt/claude"] {
-            drafts.edit(.command(.claude), to: prefix, committed: editor.committed(.command(.claude)))
-            drafts.edit(.arguments(.claude), to: "--model " + prefix, committed: editor.committed(.arguments(.claude)))
-            drafts.edit(.fontFamily, to: "Men" + prefix, committed: editor.committed(.fontFamily))
+            command.wrappedValue = prefix
+            arguments.wrappedValue = "--model " + prefix
+            family.wrappedValue = "Men" + prefix
         }
+        XCTAssertEqual(command.wrappedValue, "/opt/claude", "the field shows its draft")
         settle()
         XCTAssertEqual(store.claudePath, "", "a keystroke reached the store")
         XCTAssertEqual(store.claudeExtraArgs, SettingsStore.shippedExtraArgs(for: .claude))
