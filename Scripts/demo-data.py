@@ -64,6 +64,25 @@ CODEX_SESSIONS = [
     ("storefront", "convert the legacy sass to css modules", 1200),
 ]
 
+# The sidebar footer's Codex meter reads the newest rollout's last
+# `rate_limits` record (CodexUsageReader); without one the demo shows no meter.
+# Shaped like Codex's own token_count event: a 5-hour and a weekly window.
+# (The Claude meter reads the Keychain, which a demo must not fake.)
+CODEX_RATE_LIMITS = {
+    "primary": {"used_percent": 23.0, "window_minutes": 300, "resets_in_minutes": 170},
+    "secondary": {"used_percent": 41.0, "window_minutes": 10080, "resets_in_minutes": 3 * 24 * 60},
+}
+
+
+def rate_limits_record(when):
+    """One token_count event carrying CODEX_RATE_LIMITS, as of `when`."""
+    limits = {slot: {"used_percent": w["used_percent"], "window_minutes": w["window_minutes"],
+                     "resets_at": int((when + timedelta(minutes=w["resets_in_minutes"])).timestamp())}
+              for slot, w in CODEX_RATE_LIMITS.items()}
+    limits["plan_type"] = "pro"
+    return {"timestamp": when.isoformat().replace("+00:00", "Z"), "type": "event_msg",
+            "payload": {"type": "token_count", "info": None, "rate_limits": limits}}
+
 now = datetime.now(timezone.utc)
 
 
@@ -98,15 +117,19 @@ def main():
     day = f"{CODEX_STORE}/sessions/{now:%Y/%m/%d}"
     os.makedirs(day, exist_ok=True)
     history = []
+    newest = min(minutes for _, _, minutes in CODEX_SESSIONS)
     for name, title, minutes_ago in CODEX_SESSIONS:
         cwd = f"{PROJECTS}/{name}"
         sid = str(uuid.uuid4())
         when = now - timedelta(minutes=minutes_ago)
-        write(f"{day}/rollout-{when:%Y-%m-%dT%H-%M-%S}-{sid}.jsonl", [
+        lines = [
             {"type": "session_meta", "payload": {
                 "session_id": sid, "cwd": cwd, "originator": "codex-tui",
                 "timestamp": when.isoformat().replace("+00:00", "Z")}},
-        ], when)
+        ]
+        if minutes_ago == newest:
+            lines.append(rate_limits_record(when))
+        write(f"{day}/rollout-{when:%Y-%m-%dT%H-%M-%S}-{sid}.jsonl", lines, when)
         history.append({"session_id": sid, "ts": int(when.timestamp()), "text": title})
     with open(f"{CODEX_STORE}/history.jsonl", "w") as fh:
         for entry in history:
