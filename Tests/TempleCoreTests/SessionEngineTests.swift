@@ -232,23 +232,31 @@ final class SessionEngineTests: XCTestCase {
         XCTAssertEqual(watcher.resolution(for: "unknown"), .confirmedAbsent)
     }
 
+    /// The member's (stale) hint lies inside the subtree that is re-listed, so
+    /// the subtree reconcile does visit it: with the old bug, that successful
+    /// subtree listing certified the whole store and marked it absent, though
+    /// the full listing that would find it elsewhere never succeeded. No
+    /// further full scan is triggered before the assertion.
     func testSuccessfulSubtreeCannotClearFailedFullEnumeration() async throws {
         let root = try root()
         let outside = try claude(root, id: "outside")
+        let project = outside.deletingLastPathComponent()
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "missing", via: .opened, agent: .claude,
+                    transcriptPath: project.appendingPathComponent("missing.jsonl"))
         let store = EngineCountingStore(ClaudeSessionStore(root: root))
         store.failEnumeration = true
-        let watcher = SessionWatcher(stores: [store], members: ["missing"], debounceInterval: 0.02)
+        let watcher = SessionWatcher(stores: [store], database: db, debounceInterval: 0.02)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         XCTAssertEqual(watcher.resolution(for: "missing"), .resolving)
         let scans = store.enumerations
-        watcher.reconcileEvent(path: outside.deletingLastPathComponent().path,
+        watcher.reconcileEvent(path: project.path,
             flags: UInt32(kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagMustScanSubDirs))
         try await eventually { store.enumerations > scans }
-        // Serial resolution after the subtree scan acts as a queue barrier.
-        watcher.requestResolution("missing")
-        try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(watcher.resolution(for: "missing"), .resolving)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(watcher.resolution(for: "missing"), .resolving,
+                       "a subtree listing must not establish absence for the whole store")
         store.failEnumeration = false
         watcher.reconcileEvent(path: root.path, flags: UInt32(kFSEventStreamEventFlagKernelDropped))
         try await eventually { watcher.resolution(for: "missing") == .confirmedAbsent }
