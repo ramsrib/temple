@@ -237,6 +237,30 @@ final class SettingsEditingTests: XCTestCase {
         XCTAssertEqual(store.claudePath, "/good/claude")
     }
 
+    /// Committing one agent's field puts "Checking..." under that agent only:
+    /// the other's verdict is still about the path it shows.
+    func testACheckInFlightIsShownOnlyForTheAgentWhoseFieldChanged() {
+        configure()
+        editor.write(.command(.codex), "/good/codex")
+        waitUntil { !self.toolchain.isCheckingUserSettings }
+        XCTAssertEqual(toolchain.overrideVerdict(for: .codex), .runs(version: "9.9.9"))
+
+        editor.write(.command(.claude), "/good/claude")
+        XCTAssertTrue(toolchain.isCheckingUserSettings(for: .claude))
+        XCTAssertFalse(toolchain.isCheckingUserSettings(for: .codex))
+        XCTAssertEqual(toolchain.overrideVerdict(for: .claude), .checking)
+        XCTAssertEqual(toolchain.overrideVerdict(for: .codex), .runs(version: "9.9.9"), "Codex isn't being checked")
+        XCTAssertEqual(toolchain.summary()?.map(\.state), [.checking, .runs])
+
+        // A second commit replaces the first check; both stay marked until it lands.
+        editor.write(.arguments(.codex), "--fine")
+        XCTAssertTrue(toolchain.isCheckingUserSettings(for: .claude))
+        XCTAssertTrue(toolchain.isCheckingUserSettings(for: .codex))
+        waitUntil { !self.toolchain.isCheckingUserSettings }
+        XCTAssertEqual(toolchain.overrideVerdict(for: .claude), .runs(version: "9.9.9"))
+        XCTAssertEqual(toolchain.overrideVerdict(for: .codex), .runs(version: "9.9.9"))
+    }
+
     // MARK: No positive mark for arguments
 
     /// Arguments only ever get a complaint. With no objection there is nothing

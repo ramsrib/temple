@@ -78,11 +78,11 @@ struct SettingsEditor {
             let path = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard path != store.overridePath(for: agent) else { return false }
             store.setOverridePath(path, for: agent)
-            toolchain.recheckUserSettings()
+            toolchain.recheckUserSettings(for: agent)
         case .arguments(let agent):
             guard text != store.extraArgsText(for: agent) else { return false }
             store.setExtraArgsText(text, for: agent)
-            toolchain.recheckUserSettings()
+            toolchain.recheckUserSettings(for: agent)
         case .fontFamily:
             // A trailing space would make the family unfindable, silently.
             let family = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -105,7 +105,7 @@ struct SettingsEditor {
         drafts.revert(.arguments(agent))
         guard !store.extraArgsAreShipped(for: agent) else { return }
         store.resetExtraArgs(for: agent)
-        toolchain.recheckUserSettings()
+        toolchain.recheckUserSettings(for: agent)
     }
 }
 

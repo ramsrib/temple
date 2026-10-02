@@ -22,8 +22,14 @@ public final class ToolchainModel: ObservableObject {
     /// ever a complaint — see `AgentToolchain.check`, a silent pass proves nothing.
     @Published public private(set) var argumentComplaints: [Agent: ArgumentComplaint] = [:]
     @Published public private(set) var isDetecting = false
-    /// A re-check of the user's own settings (`recheckUserSettings`) is in flight.
-    @Published public private(set) var isCheckingUserSettings = false
+    /// The agents whose own settings are being re-checked (`recheckUserSettings`).
+    /// Per agent: committing Claude's Command must not put "Checking…" under
+    /// Codex, whose verdict is still about the path it shows.
+    @Published public private(set) var agentsBeingChecked: Set<Agent> = []
+    /// A re-check of the user's own settings is in flight, for any agent.
+    public var isCheckingUserSettings: Bool { !agentsBeingChecked.isEmpty }
+
+    public func isCheckingUserSettings(for agent: Agent) -> Bool { agentsBeingChecked.contains(agent) }
     /// When the last detection landed — what Settings' "Checked 2 min ago" reads.
     @Published public private(set) var lastChecked: Date?
     /// When the scheduled retry will run, while one is scheduled (`retryIfFlawed`).
@@ -126,7 +132,7 @@ public final class ToolchainModel: ObservableObject {
                 }
                 self.overrideChecks = checked
                 self.argumentComplaints = complaints
-                self.isCheckingUserSettings = false
+                self.agentsBeingChecked = []
             }
         }
     }
@@ -261,9 +267,15 @@ public final class ToolchainModel: ObservableObject {
 
     /// Re-run just the user's own settings (on commit of a Settings field) — no need
     /// to re-probe every install on the machine to answer "does this one work?".
-    public func recheckUserSettings() {
+    ///
+    /// `agent` is the one whose field changed, and the only one shown as
+    /// checking; nil (a detection that landed after an edit) checks them all.
+    /// Every agent is re-probed either way — it is cheap, and a newer check
+    /// replaces an older one wholesale (`userGeneration`), so the agents still
+    /// waiting on the dropped one stay marked until this one lands.
+    public func recheckUserSettings(for agent: Agent? = nil) {
         userGeneration += 1
-        isCheckingUserSettings = true
+        agentsBeingChecked.formUnion(agent.map { [$0] } ?? Set(Agent.allCases))
         let userGen = userGeneration
         let probe = self.probe
         let overrides = currentOverrides()
@@ -280,7 +292,7 @@ public final class ToolchainModel: ObservableObject {
                 guard let self, userGen == self.userGeneration else { return }
                 self.overrideChecks = checked
                 self.argumentComplaints = complaints
-                self.isCheckingUserSettings = false
+                self.agentsBeingChecked = []
             }
         }
     }
@@ -291,7 +303,7 @@ public final class ToolchainModel: ObservableObject {
     public func overrideVerdict(for agent: Agent) -> OverrideVerdict? {
         guard !override(agent).isEmpty else { return nil }
         // A check for this exact path is in flight, or has never landed (startup).
-        guard !isCheckingUserSettings, let check = overrideCheck(for: agent) else { return .checking }
+        guard !isCheckingUserSettings(for: agent), let check = overrideCheck(for: agent) else { return .checking }
         guard let failure = check.failure else { return .runs(version: check.version) }
         if failure.hasPrefix(AgentToolchain.launchFailurePrefix) {
             return .couldNotLaunch(reason: String(failure.dropFirst(AgentToolchain.launchFailurePrefix.count)),
