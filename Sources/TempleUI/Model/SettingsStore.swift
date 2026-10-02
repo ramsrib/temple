@@ -68,7 +68,11 @@ public final class SettingsStore: ObservableObject {
         self.defaults = defaults
         loading = true
         fontSize = defaults.object(forKey: Key.fontSize) as? Double ?? 14
-        fontFamily = defaults.string(forKey: Key.fontFamily) ?? "SF Mono"
+        // Empty = Ghostty's built-in font (JetBrains Mono). The old default,
+        // "SF Mono", is not an installed family on macOS (it lives inside
+        // Terminal.app), so Ghostty fell back to its built-in font anyway and
+        // Settings named a font no terminal used. A stored choice is kept.
+        fontFamily = defaults.string(forKey: Key.fontFamily) ?? ""
         defaultAgent = Agent(rawValue: defaults.string(forKey: Key.defaultAgent) ?? "") ?? .claude
         theme = ThemePreference(rawValue: defaults.string(forKey: Key.theme) ?? "") ?? .system
         claudePath = defaults.string(forKey: Key.claudePath) ?? ""

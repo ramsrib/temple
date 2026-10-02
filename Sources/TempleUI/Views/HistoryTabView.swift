@@ -210,14 +210,8 @@ struct HistoryTabView: View {
     }
 
     private var scopePicker: some View {
-        Picker("", selection: $history.scope) {
-            ForEach(HistoryScope.allCases) { scope in
-                Text(scope.label).tag(scope)
-            }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .frame(width: 290)
+        FlatSegmentedPicker(selection: $history.scope, options: Array(HistoryScope.allCases),
+                            label: { $0.label }, width: 290)
     }
 
     /// Counts are over the whole disk, not the filtered view.
@@ -486,7 +480,15 @@ struct HistoryTabView: View {
         content()
             .padding(.horizontal, 14)
             .frame(height: 44)
-            .background(Palette.panelBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            // On a page painted panelBackground the bar was page-on-page in
+            // dark, carried only by a shadow that 50-grey swallows: give it a
+            // surface of its own, under the content.
+            .background {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Palette.panelBackground)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Palette.surfaceFill)
+                }
+            }
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Palette.hairline))
             .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
     }

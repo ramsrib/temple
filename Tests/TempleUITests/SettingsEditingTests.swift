@@ -74,7 +74,7 @@ final class SettingsEditingTests: XCTestCase {
         settle()
         XCTAssertEqual(store.claudePath, "", "a keystroke reached the store")
         XCTAssertEqual(store.claudeExtraArgs, SettingsStore.shippedExtraArgs(for: .claude))
-        XCTAssertEqual(store.fontFamily, "SF Mono")
+        XCTAssertEqual(store.fontFamily, "", "a keystroke reached the store")
         XCTAssertNil(defaults.object(forKey: "temple.settings.claudePath"), "a keystroke was persisted")
         XCTAssertEqual(probes.count, probesBefore, "a keystroke ran a probe")
         XCTAssertEqual(drafts.text(.command(.claude), committed: ""), "/opt/claude")

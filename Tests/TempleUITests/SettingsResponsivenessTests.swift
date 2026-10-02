@@ -81,7 +81,7 @@ final class SettingsResponsivenessTests: XCTestCase {
         await settle(600)
         XCTAssertEqual(applied, before.0, "a draft keystroke reached the terminals")
         XCTAssertEqual(republished, before.1, "a draft keystroke re-rendered the window")
-        XCTAssertEqual(model.settings.fontFamily, "SF Mono")
+        XCTAssertEqual(model.settings.fontFamily, "", "a draft reached the store")
         XCTAssertEqual(model.settings.claudePath, "")
 
         editor.commit(.fontFamily, drafts: &drafts)

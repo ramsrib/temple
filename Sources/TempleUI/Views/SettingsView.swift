@@ -131,13 +131,9 @@ struct SettingsView: View {
             SectionRule("Agents")
         } rows: {
             row("Default agent") {
-                Picker("", selection: Binding(get: { settings.defaultAgent },
-                                              set: { settings.defaultAgent = $0 })) {
-                    ForEach(Agent.allCases, id: \.self) { Text($0.displayName).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 220)
+                FlatSegmentedPicker(selection: Binding(get: { settings.defaultAgent },
+                                                       set: { settings.defaultAgent = $0 }),
+                                    options: Agent.allCases, label: { $0.displayName }, width: 220)
                 hint("Started by ⌘T, folder launches and recent projects.")
             }
         }
@@ -343,13 +339,9 @@ struct SettingsView: View {
             SectionRule("Appearance")
         } rows: {
             row("Theme") {
-                Picker("", selection: Binding(get: { settings.theme },
-                                              set: { settings.theme = $0 })) {
-                    ForEach(ThemePreference.allCases) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 240)
+                FlatSegmentedPicker(selection: Binding(get: { settings.theme },
+                                                       set: { settings.theme = $0 }),
+                                    options: ThemePreference.allCases, label: { $0.label }, width: 240)
             }
             divider
             row("Terminal font") { fontControl }
@@ -359,7 +351,7 @@ struct SettingsView: View {
     @ViewBuilder
     private var fontControl: some View {
         HStack(spacing: 8) {
-            textField(.fontFamily, placeholder: "SF Mono", monospaced: false)
+            textField(.fontFamily, placeholder: "JetBrains Mono (built in)", monospaced: false)
                 .frame(maxWidth: 240, alignment: .leading)
             textField(.fontSize, placeholder: "14", monospaced: false, centered: true)
                 .frame(width: 44)

@@ -79,3 +79,41 @@ struct SectionRule<Leading: View>: View {
         .padding(.bottom, 8)
     }
 }
+
+/// The pages' segmented control, in the toolbar's flat vocabulary: a 28pt
+/// `controlFill` track, the selected segment filled with the accent. The native
+/// `.segmented` picker was the one bezeled control on a flat row, 22pt beside
+/// 28pt menus, and in dark it inverted: the bright track read as the
+/// selection and the selected knob as a hole.
+struct FlatSegmentedPicker<Value: Hashable>: View {
+    @Binding var selection: Value
+    let options: [Value]
+    let label: (Value) -> String
+    var width: CGFloat? = nil
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(options, id: \.self) { option in
+                let selected = option == selection
+                Button { selection = option } label: {
+                    Text(label(option))
+                        .font(.system(size: 12.5, weight: selected ? .medium : .regular))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 24)
+                        .foregroundStyle(selected ? (colorScheme == .dark ? Color.black : Color.white) : Color.secondary)
+                        .background(selected ? Palette.accent : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+        }
+        .padding(2)
+        .frame(width: width, height: 28)
+        .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+}
