@@ -27,6 +27,8 @@ struct SettingsView: View {
     /// The agent whose Command row is washed after a deep link.
     @State private var washed: Agent?
     @State private var fontVerdict: FontFamilyVerdict?
+    /// The page's width, for the column (`pageColumn`, shared with History).
+    @State private var width: CGFloat = 1000
 
     static let labelColumn: CGFloat = 168
     static let formWidth: CGFloat = 720
@@ -53,18 +55,17 @@ struct SettingsView: View {
                     appearanceSection
                 }
                 .frame(maxWidth: Self.formWidth, alignment: .leading)
-                .padding(.horizontal, PageChrome.gutter)
                 .padding(.bottom, 40)
-                // History's column: capped and centred beyond the cap, so the
+                // History's column, placed from the same page width, so the
                 // two sibling tabs put their titles at the same x.
-                .frame(maxWidth: PageChrome.pageWidth, alignment: .leading)
-                .frame(maxWidth: .infinity)
+                .pageColumn(pageWidth: width)
             }
             .thinScrollers()
             .onAppear { land(proxy) }
             .onChange(of: model.openSessions.settingsFocus) { land(proxy) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .measuringPageWidth($width)
         // Leaving a field (click elsewhere, Tab) commits it.
         .onChange(of: focused) { old, new in
             if let old, old != new { commit(old) }
@@ -194,7 +195,8 @@ struct SettingsView: View {
         case .checking:
             checking
         case .runs(let version):
-            hint(["Runs", version].compactMap { $0 }.joined(separator: " · "))
+            hint(["Runs", AgentInstall.versionNumber(in: version)].compactMap { $0 }.joined(separator: " · "))
+                .help(version ?? "")
         case .doesNotRun(let failure, let details):
             problem("Doesn't run · \(failure)", color: .red, outputTitle: path, output: details)
             hint("Temple will still launch it. Clear the field to use the detected one.", top: 3)
@@ -259,10 +261,12 @@ struct SettingsView: View {
                     .truncationMode(.head)
                     .help(install.path)
                 if install.isUsable, let version = install.version {
-                    Text(version)
+                    // The number; the CLI's whole line is the tooltip.
+                    Text(install.versionNumber ?? version)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .help(version)
                 }
                 Spacer(minLength: 8)
                 Text(status(of: install, chosen: chosen))
@@ -353,29 +357,62 @@ struct SettingsView: View {
         HStack(spacing: 8) {
             textField(.fontFamily, placeholder: "JetBrains Mono (built in)", monospaced: false)
                 .frame(maxWidth: 240, alignment: .leading)
-            textField(.fontSize, placeholder: "14", monospaced: false, centered: true)
+            textField(.fontSize, placeholder: String(Int(SettingsStore.shippedFontSize)), monospaced: false,
+                      centered: true)
                 .frame(width: 44)
+                // Up/down arrows step the size like the chevrons.
+                .onKeyPress(.upArrow) { stepFontSize(by: 1); return .handled }
+                .onKeyPress(.downArrow) { stepFontSize(by: -1); return .handled }
             Text("pt")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
-            // Applies per click, like the old slider's live drag, in 1pt steps.
-            Stepper("", value: Binding(get: { settings.fontSize },
-                                       set: { size in
-                                           drafts.revert(.fontSize)
-                                           settings.fontSize = size
-                                       }),
-                    in: SettingsEditor.fontSizeRange, step: 1)
-            .labelsHidden()
+            // Two bare chevrons, not a Stepper: the native one was the only
+            // bezeled control on a flat page. Applies per click, in 1pt steps.
+            VStack(spacing: 0) {
+                FontSizeChevron(systemName: "chevron.up", help: "Larger") { stepFontSize(by: 1) }
+                FontSizeChevron(systemName: "chevron.down", help: "Smaller") { stepFontSize(by: -1) }
+            }
         }
         if drafts.isEdited(.fontFamily) || drafts.isEdited(.fontSize) {
             quiet("Press Return to apply")
         } else if fontVerdict == .notInstalled {
-            // The detected layer applied to the font field: say what was
-            // found, never fix it. Ghostty renders with its built-in font.
-            problem("Not installed on this Mac. The terminal uses its default font.", color: .orange,
-                    outputTitle: nil, output: nil)
+            fontNotInstalled
+        } else if focused == .fontFamily || focused == .fontSize {
+            // Only while there is something to press Return in.
+            hint("Applies to open terminals when you press Return.", top: 6)
         }
-        hint("Applies to open terminals when you press Return.", top: 6)
+    }
+
+    /// The detected layer applied to the font field: say what was found, and
+    /// the terminal's fallback by name. A family typed this launch is flagged;
+    /// one carried over from before (the old "SF Mono" default) is stated,
+    /// quietly, with the way back: it is not something the user just did.
+    @ViewBuilder
+    private var fontNotInstalled: some View {
+        let family = settings.fontFamily.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sentence = "\(family) isn't installed, so the terminal uses JetBrains Mono (built in)."
+        if settings.fontFamilyChosenThisLaunch {
+            problem(sentence, color: .orange, outputTitle: nil, output: nil)
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(sentence)
+                    .foregroundStyle(.secondary)
+                linkButton("Use built in") {
+                    drafts.revert(.fontFamily)
+                    settings.resetFontFamily()
+                }
+            }
+            .font(.system(size: 11))
+            .padding(.top, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func stepFontSize(by delta: Double) {
+        drafts.revert(.fontSize)
+        let size = settings.fontSize + delta
+        guard SettingsEditor.fontSizeRange.contains(size) else { return }
+        settings.fontSize = size
     }
 
     // MARK: Fields
@@ -391,11 +428,25 @@ struct SettingsView: View {
         let binding = Binding(get: { text(field) },
                               set: { drafts.edit(field, to: $0, committed: editor.committed(field)) })
         return HStack(spacing: 6) {
-            TextField("", text: binding, prompt: Text(placeholder))
+            TextField("", text: binding, prompt: answersPlaceholder(field) ? nil : Text(placeholder))
                 .textFieldStyle(.plain)
+                .multilineTextAlignment(centered ? .center : .leading)
+                // A Command field's placeholder is the detected path, an
+                // answer rather than a hint, so it reads at secondary. A
+                // prompt's own color is not honoured by the plain field (it
+                // drew at the faint default either way), so the text sits
+                // behind the transparent field instead; clicks still land in
+                // the field.
+                .background(alignment: .leading) {
+                    if answersPlaceholder(field), binding.wrappedValue.isEmpty {
+                        Text(placeholder)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    }
+                }
                 .font(monospaced ? .system(size: 12, design: .monospaced)
                                  : .system(size: field == .fontSize ? 12 : 13).monospacedDigit())
-                .multilineTextAlignment(centered ? .center : .leading)
                 .focused($focused, equals: field)
                 .onSubmit { commit(field) }
                 .onExitCommand { drafts.revert(field) }
@@ -424,6 +475,13 @@ struct SettingsView: View {
                 .padding(-2)
                 .opacity(focused == field ? 1 : 0)
         }
+    }
+
+    /// Whether the field's placeholder is what Temple will use (the detected
+    /// path) rather than a hint, and so reads at secondary.
+    private func answersPlaceholder(_ field: SettingsField) -> Bool {
+        if case .command = field { return true }
+        return false
     }
 
     private func commit(_ field: SettingsField) {
@@ -618,5 +676,26 @@ private struct OutputPopover: View {
         }
         .padding(12)
         .frame(width: 460)
+    }
+}
+
+/// One of the font size's stacked chevrons: 9pt, tertiary, secondary on hover.
+private struct FontSizeChevron: View {
+    let systemName: String
+    let help: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(hovering ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
+                .frame(width: 16, height: 12)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(help)
     }
 }
