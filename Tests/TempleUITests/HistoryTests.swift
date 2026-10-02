@@ -754,6 +754,27 @@ final class HistoryTabTests: XCTestCase {
         XCTAssertEqual(model.history.scope, .all)
     }
 
+    /// ⌘Y over ⌘K or the archive, with History under it: the panel goes and
+    /// History stays — it does not also jump back to the previous tab.
+    func testCommandYOverAPanelOnHistoryClosesThePanelAndStays() {
+        let model = makeModel()
+        model.openSessions.openSession(Fixture.session("a", project: "/p/a"))
+        model.toggleHistory()
+
+        model.toggleCommandPalette()
+        model.toggleHistory()
+        XCTAssertFalse(model.commandPalettePresented)
+        XCTAssertTrue(model.historyActive, "the palette went; History stayed")
+
+        model.toggleArchive()
+        model.toggleHistory()
+        XCTAssertFalse(model.archivePresented)
+        XCTAssertTrue(model.historyActive, "the archive went; History stayed")
+
+        model.toggleHistory()
+        XCTAssertFalse(model.historyActive, "with nothing over it, ⌘Y still goes back")
+    }
+
     /// Import → open → close the tab (before any title arrives) → Undo: the
     /// session was used, so it stays. The open is recorded in the database,
     /// not inferred from a tab that is no longer there.

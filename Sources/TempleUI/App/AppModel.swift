@@ -1022,14 +1022,19 @@ public final class AppModel: ObservableObject {
 
     /// ⌘Y and View ▸ Session History: open or focus the History tab; pressed
     /// while it is the active tab, back to the tab before it (History stays
-    /// open). A floating panel is put away first, as every presenter does.
+    /// open). A floating panel is put away first, as every presenter does —
+    /// and when one was up over History, putting it away is all ⌘Y does:
+    /// the user is already where ⌘Y goes, and leaving too would be a second
+    /// act they did not ask for.
     public func toggleHistory() {
+        let panelWasUp = panelPresented || projectSwitcherPresented || tabSwitcherPresented
         commandPalettePresented = false
         newSessionPickerPresented = false
         shortcutsPresented = false
         archivePresented = false
         cancelProjectSwitcher()
         cancelTabSwitcher()
+        if panelWasUp, historyActive { return }
         openSessions.openOrLeaveHistory()
     }
 
