@@ -196,7 +196,7 @@ struct ArchiveView: View {
             .id(entry.id)
             .contextMenu { Button("Restore project") { restore(entry) } }
         } else {
-            // Not a row — a label, in the ⌘Y history's section style, so it
+            // Not a row — a label, in the History tab's day-header style, so it
             // can never be mistaken for the restorable project header above.
             HistoryHeader(title: group.project.name)
                 .frame(height: 27)
@@ -315,7 +315,7 @@ struct ArchiveView: View {
             rows.append(contentsOf: group.project.sessions.map(Entry.session))
         }
         entries = rows
-        // Uniquing defensively, as HistoryView does: a duplicate id would be a
+        // Uniquing defensively, as the History tab does: a duplicate id would be a
         // hard crash with uniqueKeysWithValues.
         indexByID = Dictionary(rows.enumerated().map { ($0.element.id, $0.offset) },
                                uniquingKeysWith: { first, _ in first })

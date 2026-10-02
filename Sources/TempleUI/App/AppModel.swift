@@ -1140,7 +1140,7 @@ public final class AppModel: ObservableObject {
             // Panels are mutually exclusive (same rule as ⌘K/⌘N/⌘/): the
             // HUD must not stack over an open palette.
             commandPalettePresented = false
-                archivePresented = false
+            archivePresented = false
             newSessionPickerPresented = false
             shortcutsPresented = false
             cancelTabSwitcher()
@@ -1240,7 +1240,7 @@ public final class AppModel: ObservableObject {
         } else {
             // Panels are mutually exclusive (same rule as ⌘K/⌘N/⌘/).
             commandPalettePresented = false
-                archivePresented = false
+            archivePresented = false
             newSessionPickerPresented = false
             shortcutsPresented = false
             cancelProjectSwitcher()

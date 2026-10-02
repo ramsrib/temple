@@ -58,14 +58,14 @@ public struct RootView: View {
             withAnimation { model.toggleSidebar() }
         }
         // Dev-only, same gate: TEMPLE_SNAPSHOT_PRESENT=palette|history|archive
-        // opens that panel (history: the History tab) once the window has
-        // settled, so it can be snapshotted without a key chord.
+        // opens the ⌘K palette, the History tab or the archive panel once the
+        // window has settled, so it can be snapshotted without a key chord.
         .onAppear {
             let env = ProcessInfo.processInfo.environment
             guard env["TEMPLE_SNAPSHOT_DIR"] != nil, let panel = env["TEMPLE_SNAPSHOT_PRESENT"] else { return }
-            // Through the same toggles ⌘K/⌘Y/⌘⇧Y use, so the snapshot shows
-            // the real presentation path — panel exclusivity, switcher
-            // cancellation — not a bare flag flip.
+            // Through the paths the keys use (⌘K and ⌘⇧Y toggle a panel, ⌘Y
+            // opens the tab), so the snapshot shows the real presentation —
+            // panel exclusivity, switcher cancellation — not a bare flag flip.
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 switch panel {
                 case "palette": if !model.commandPalettePresented { model.toggleCommandPalette() }

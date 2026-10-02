@@ -3,7 +3,7 @@ import TempleCore
 
 /// ⌘N — pick a project, get a new default-agent session in it. The keyboard
 /// sibling of the sidebar project-header `+`: ⌘T starts a session *here*,
-/// ⌘N starts one *somewhere you name*. Same overlay chrome as ⌘K/⌘Y.
+/// ⌘N starts one *somewhere you name*. Same overlay chrome as ⌘K.
 struct NewSessionPickerView: View {
     @EnvironmentObject var model: AppModel
     @State private var query = ""
