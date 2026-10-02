@@ -175,6 +175,45 @@ final class SettingsEditingTests: XCTestCase {
         XCTAssertEqual(editor.committed(.fontSize), "16")
     }
 
+    /// The size chevrons and up/down step from the stored size; one outside
+    /// the range (an older build, a hand-edited plist) is pulled into it,
+    /// rather than the chevrons doing nothing.
+    func testSizeStepsClampAStoredSizeOutsideTheRange() {
+        configure()
+        var drafts = SettingsDrafts()
+        store.fontSize = 30
+        XCTAssertTrue(editor.stepFontSize(by: -1, drafts: &drafts))
+        XCTAssertEqual(store.fontSize, 24)
+        store.fontSize = 5
+        XCTAssertTrue(editor.stepFontSize(by: 1, drafts: &drafts))
+        XCTAssertEqual(store.fontSize, 9)
+        XCTAssertFalse(editor.stepFontSize(by: -1, drafts: &drafts), "at the floor: nothing to write")
+        XCTAssertEqual(store.fontSize, 9)
+
+        drafts.edit(.fontSize, to: "1", committed: editor.committed(.fontSize))
+        XCTAssertTrue(editor.stepFontSize(by: 1, drafts: &drafts))
+        XCTAssertEqual(store.fontSize, 10)
+        XCTAssertFalse(drafts.isEdited(.fontSize), "a step discards the typed draft")
+    }
+
+    // MARK: Segmented pickers
+
+    /// Clicking the segment that is already selected writes nothing: the
+    /// setting stays absent rather than persisting a default never chosen.
+    func testReselectingTheSelectedSegmentPersistsNothing() {
+        configure()
+        let theme = Binding(get: { self.store.theme }, set: { self.store.theme = $0 })
+        FlatSegmentedPicker<ThemePreference>.select(.system, in: theme)
+        XCTAssertNil(defaults.object(forKey: "temple.settings.theme"), "an unchanged theme was written")
+        let agent = Binding(get: { self.store.defaultAgent }, set: { self.store.defaultAgent = $0 })
+        FlatSegmentedPicker<Agent>.select(.claude, in: agent)
+        XCTAssertNil(defaults.object(forKey: "temple.settings.defaultAgent"), "an unchanged agent was written")
+
+        FlatSegmentedPicker<ThemePreference>.select(.dark, in: theme)
+        XCTAssertEqual(store.theme, .dark)
+        XCTAssertEqual(defaults.string(forKey: "temple.settings.theme"), "dark")
+    }
+
     // MARK: Reset to default
 
     func testResetForgetsTheOverrideRatherThanWritingTheDefault() {

@@ -414,10 +414,7 @@ struct SettingsView: View {
     }
 
     private func stepFontSize(by delta: Double) {
-        drafts.revert(.fontSize)
-        let size = settings.fontSize + delta
-        guard SettingsEditor.fontSizeRange.contains(size) else { return }
-        settings.fontSize = size
+        editor.stepFontSize(by: delta, drafts: &drafts)
     }
 
     // MARK: Fields

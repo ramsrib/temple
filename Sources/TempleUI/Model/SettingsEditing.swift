@@ -102,10 +102,27 @@ struct SettingsEditor {
             // `Double("nan")` and `Double("inf")` parse; NaN survives the clamp
             // and, once stored, traps in every `Int(fontSize.rounded())`.
             guard let size = Double(text.trimmingCharacters(in: .whitespaces)), size.isFinite else { return false }
-            let clamped = min(max(size.rounded(), Self.fontSizeRange.lowerBound), Self.fontSizeRange.upperBound)
+            let clamped = Self.clampedFontSize(size)
             guard clamped != store.fontSize else { return false }
             store.fontSize = clamped
         }
+        return true
+    }
+
+    static func clampedFontSize(_ size: Double) -> Double {
+        min(max(size.rounded(), fontSizeRange.lowerBound), fontSizeRange.upperBound)
+    }
+
+    /// The size chevrons and the size field's ↑/↓: one point per step, applied
+    /// at once, discarding a typed draft. A stored size outside the range (an
+    /// older build, a hand-edited plist) is pulled into it rather than leaving
+    /// the chevrons dead. Returns whether the store was written.
+    @discardableResult
+    func stepFontSize(by delta: Double, drafts: inout SettingsDrafts) -> Bool {
+        drafts.revert(.fontSize)
+        let size = Self.clampedFontSize(store.fontSize + delta)
+        guard size != store.fontSize else { return false }
+        store.fontSize = size
         return true
     }
 
