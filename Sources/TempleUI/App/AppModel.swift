@@ -85,7 +85,6 @@ public final class AppModel: ObservableObject {
     }
 
     @Published public var commandPalettePresented = false
-    @Published public var historyPresented = false
     @Published public var archivePresented = false
     @Published public var newSessionPickerPresented = false
 
@@ -121,15 +120,26 @@ public final class AppModel: ObservableObject {
         return tab.find
     }
 
-    /// A floating panel is up (⌘K / ⌘Y / ⌘⇧Y / ⌘N / ⌘/): it owns the keyboard,
+    /// A floating panel is up (⌘K / ⌘⇧Y / ⌘N / ⌘/): it owns the keyboard,
     /// so find must not open — or claim focus — underneath it.
     public var panelPresented: Bool {
-        commandPalettePresented || historyPresented || archivePresented
+        commandPalettePresented || archivePresented
             || newSessionPickerPresented || shortcutsPresented
     }
 
+    /// The History tab is on screen: ⌘F, ⌘R, ⌘A, arrows and Esc are its.
+    public var historyActive: Bool {
+        openSessions.activeTab?.kind == .history
+    }
+
+    /// ⌘F: the terminal's find bar — or, on the History tab (no terminal to
+    /// find in), History's own search field.
     public func findInActiveTerminal() {
         guard !panelPresented else { return }
+        if historyActive {
+            history.requestSearchFocus()
+            return
+        }
         activeTerminalFind?.open()
     }
 
@@ -151,6 +161,8 @@ public final class AppModel: ObservableObject {
     public let usage = UsageMeterModel()
     /// Which `claude`/`codex` this machine actually has, and which of them run.
     public let toolchain: ToolchainModel
+    /// The History tab: every session on disk, read on demand (ADR-027).
+    public let history: HistoryModel
 
     // Seams (Track C)
     private let indexSource: IndexSource
@@ -196,6 +208,7 @@ public final class AppModel: ObservableObject {
         self.indexSource = resolvedIndexSource
         self.cacheURL = cacheURL
         self.notifications = NotificationController()
+        self.history = HistoryModel(overlay: overlay)
 
         let toolchain = ToolchainModel()
         toolchain.override = { [weak settings] in settings?.overridePath(for: $0) ?? "" }
@@ -223,6 +236,7 @@ public final class AppModel: ObservableObject {
             self?.currentAppearance() ?? .default
         }
         wire()
+        wireHistory(database: database)
         // NB: detection is NOT started here. It runs real binaries (`claude --version`),
         // and `AppModel` is constructed by tests — which must not shell out to whatever
         // CLIs happen to be on the machine. `RootView` starts it when the UI appears.
@@ -346,6 +360,47 @@ public final class AppModel: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+    }
+
+    /// The History tab's hands: how it opens a row, what it must not undo
+    /// out from under a tab, and who re-reads membership when an import is
+    /// taken back. Its view state lives as long as the tab does.
+    private func wireHistory(database: TempleDB) {
+        history.openSession = { [weak self] session in
+            self?.openSessions.openSession(session)
+        }
+        history.hasOpenTab = { [weak self] id in
+            self?.openSessions.openTab(forSessionID: id) != nil
+        }
+        history.memberStates = { (try? database.sessionStates()) ?? [] }
+        let watcher = (indexSource as? WatcherIndexSource)?.watcher
+        history.onMembershipShrunk = { watcher?.reloadMembership() }
+        $index
+            .sink { [weak self] index in self?.history.liveIndexChanged(index) }
+            .store(in: &cancellables)
+        var historyWasOpen = false
+        openSessions.$tabs
+            .sink { [weak self] tabs in
+                let open = tabs.contains { $0.kind == .history }
+                if historyWasOpen, !open { self?.history.reset() }
+                historyWasOpen = open
+            }
+            .store(in: &cancellables)
+    }
+
+    /// ⌘K's dead end points at the door: the palette's "Search history for
+    /// …" row opens History already narrowed to the query.
+    public func searchHistory(_ query: String) {
+        commandPalettePresented = false
+        history.query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        openSessions.openHistory()
+    }
+
+    /// History's "Show in Sidebar": light the row in the rail, opening the
+    /// rail if it is hidden. The user stays where they are.
+    public func showInSidebar(_ id: String) {
+        highlightedID = id
+        if sidebarVisibility.isSidebarHidden { sidebarVisibility = .all }
     }
 
     private func overlayTitle(tab: SessionTab) -> String {
@@ -502,7 +557,7 @@ public final class AppModel: ObservableObject {
     /// A tab's display title everywhere chrome shows one (chips, ⌃⇥ switcher):
     /// the user's custom name wins; provisional tabs say they are starting.
     public func tabDisplayTitle(_ tab: SessionTab) -> String {
-        if tab.kind == .settings { return "Settings" }
+        if let utility = tab.kind.utilityTitle { return utility }
         if let sid = tab.sessionID, let name = overlay.customName(for: sid) { return name }
         return tab.isProvisional ? "\(tab.title) (starting…)" : tab.title
     }
@@ -764,8 +819,8 @@ public final class AppModel: ObservableObject {
 
     /// Empty query = a switcher over the OPEN sessions only, most recent
     /// activity first (live recency, unlike the launch-frozen sidebar).
-    /// Browsing everything is ⌘Y's job — putting the full index here too
-    /// made the two panels near-duplicates. Typing still searches all.
+    /// Browsing everything on disk is the History tab's job (⌘Y). Typing
+    /// searches every Temple session.
     public func paletteResults(_ query: String) -> [AgentSession] {
         let sessions = Self.dedupedByID(visibleProjects.flatMap(\.sessions))
         let openIDs = openSessions.openSessionIDsInTabOrder
@@ -786,27 +841,13 @@ public final class AppModel: ObservableObject {
         return ranked.filter { open.contains($0.id) } + ranked.filter { !open.contains($0.id) }
     }
 
-    // MARK: Session history
-
     /// The index can surface the same session id under more than one project
     /// (the pre-recency palette silently uniqued through a Dictionary). Lists
     /// keyed by id — ForEach identity, selection maps — must never see a
-    /// duplicate, so both palettes dedupe up front, first occurrence wins.
+    /// duplicate, so they dedupe up front, first occurrence wins.
     private static func dedupedByID(_ sessions: [AgentSession]) -> [AgentSession] {
         var seen = Set<String>()
         return sessions.filter { seen.insert($0.id).inserted }
-    }
-
-    public func historyResults(_ query: String) -> [AgentSession] {
-        let sessions = Self.dedupedByID(visibleProjects.flatMap(\.sessions))
-        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
-            return sessions.sorted { lhs, rhs in
-                if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
-                return lhs.id < rhs.id
-            }
-        }
-        return search.rank(sessions, query: query,
-                           titleOverrides: overlay.displayTitleOverrides)
     }
 
     // MARK: Archive browser (⌘⇧Y)
@@ -974,30 +1015,29 @@ public final class AppModel: ObservableObject {
         archivePresented = presenting
         guard presenting else { return }
         commandPalettePresented = false
-        historyPresented = false
         newSessionPickerPresented = false
         shortcutsPresented = false
         cancelProjectSwitcher()
         cancelTabSwitcher()
     }
 
+    /// ⌘Y and View ▸ Session History: open or focus the History tab; pressed
+    /// while it is the active tab, back to the tab before it (History stays
+    /// open). A floating panel is put away first, as every presenter does.
     public func toggleHistory() {
-        let presenting = !historyPresented
-        historyPresented = presenting
-        guard presenting else { return }
         commandPalettePresented = false
         newSessionPickerPresented = false
         shortcutsPresented = false
         archivePresented = false
         cancelProjectSwitcher()
         cancelTabSwitcher()
+        openSessions.openOrLeaveHistory()
     }
 
     public func toggleCommandPalette() {
         let presenting = !commandPalettePresented
         commandPalettePresented = presenting
         guard presenting else { return }
-        historyPresented = false
         newSessionPickerPresented = false
         shortcutsPresented = false
         archivePresented = false
@@ -1017,7 +1057,6 @@ public final class AppModel: ObservableObject {
         shortcutsPresented = presenting
         guard presenting else { return }
         commandPalettePresented = false
-        historyPresented = false
         newSessionPickerPresented = false
         archivePresented = false
         cancelProjectSwitcher()
@@ -1040,7 +1079,6 @@ public final class AppModel: ObservableObject {
         newSessionPickerAgent = agent
         newSessionPickerPresented = true
         commandPalettePresented = false
-        historyPresented = false
         shortcutsPresented = false
         archivePresented = false
         cancelProjectSwitcher()
@@ -1076,11 +1114,10 @@ public final class AppModel: ObservableObject {
             let current = projectSwitcherSelection.flatMap { projects.firstIndex(of: $0) } ?? 0
             projectSwitcherSelection = projects[(current + delta + projects.count) % projects.count]
         } else {
-            // Panels are mutually exclusive (same rule as ⌘K/⌘Y/⌘N/⌘/): the
-            // HUD must not stack over an open palette or history panel.
+            // Panels are mutually exclusive (same rule as ⌘K/⌘N/⌘/): the
+            // HUD must not stack over an open palette.
             commandPalettePresented = false
-            historyPresented = false
-            archivePresented = false
+                archivePresented = false
             newSessionPickerPresented = false
             shortcutsPresented = false
             cancelTabSwitcher()
@@ -1178,10 +1215,9 @@ public final class AppModel: ObservableObject {
             let current = tabSwitcherSelection.flatMap { sel in list.firstIndex { $0.id == sel } } ?? 0
             tabSwitcherSelection = list[(current + delta + list.count) % list.count].id
         } else {
-            // Panels are mutually exclusive (same rule as ⌘K/⌘Y/⌘N/⌘/).
+            // Panels are mutually exclusive (same rule as ⌘K/⌘N/⌘/).
             commandPalettePresented = false
-            historyPresented = false
-            archivePresented = false
+                archivePresented = false
             newSessionPickerPresented = false
             shortcutsPresented = false
             cancelProjectSwitcher()

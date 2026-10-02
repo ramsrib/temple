@@ -48,8 +48,8 @@ struct TabSwitcherHUD: View {
     private func row(_ tab: SessionTab, selected: Bool) -> some View {
         let isCurrent = tab.id == current
         return HStack(spacing: 10) {
-            if tab.kind == .settings {
-                Image(systemName: "gearshape")
+            if let symbol = tab.kind.utilitySymbol {
+                Image(systemName: symbol)
                     .font(.system(size: 13))
                     .frame(width: 14)
                     .foregroundStyle(.secondary)

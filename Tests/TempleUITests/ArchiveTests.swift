@@ -48,10 +48,8 @@ final class ArchiveTests: XCTestCase {
 
         XCTAssertEqual(model.displayProjects.flatMap(\.sessions).map(\.id), ["a2", "b1"])
         XCTAssertTrue(model.pinnedSessions.isEmpty)
-        XCTAssertFalse(model.historyResults("").contains { $0.id == "a1" })
         XCTAssertFalse(model.paletteResults("").contains { $0.id == "a1" })
         XCTAssertFalse(model.paletteResults("alpha").contains { $0.id == "a1" })
-        XCTAssertFalse(model.historyResults("alpha").contains { $0.id == "a1" })
         XCTAssertEqual(model.archivedSessionResults("").map(\.id), ["a1"])
         XCTAssertEqual(model.archivedSessionResults("alpha").map(\.id), ["a1"])
 
@@ -133,7 +131,6 @@ final class ArchiveTests: XCTestCase {
 
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/b"])
         XCTAssertEqual(model.projectPickerResults("").map(\.path), ["/p/b"])
-        XCTAssertFalse(model.historyResults("").contains { $0.id == "a1" })
         XCTAssertEqual(model.archivedProjects.map(\.path), ["/p/a"])
         XCTAssertEqual(model.archivedProjectResults("/p/a").map(\.path), ["/p/a"])
         XCTAssertTrue(model.archivedProjectResults("beta").isEmpty)
@@ -399,7 +396,6 @@ final class ArchiveTests: XCTestCase {
         let (model, _) = makeModel(SessionIndex(projects: []))
         let others: [(String, KeyPath<AppModel, Bool>, () -> Void)] = [
             ("palette", \.commandPalettePresented, { model.toggleCommandPalette() }),
-            ("history", \.historyPresented, { model.toggleHistory() }),
             ("new session picker", \.newSessionPickerPresented, { model.toggleNewSessionPicker() }),
             ("shortcuts", \.shortcutsPresented, { model.toggleShortcuts() }),
         ]
@@ -424,5 +420,10 @@ final class ArchiveTests: XCTestCase {
         XCTAssertTrue(model.archivePresented)
         XCTAssertFalse(model.projectSwitcherPresented, "the archive should cancel the ⌘P switcher")
         XCTAssertFalse(model.tabSwitcherPresented, "the archive should cancel the ⌃⇥ switcher")
+
+        // History is a tab now, not a panel — but ⌘Y still puts the archive away.
+        model.toggleHistory()
+        XCTAssertFalse(model.archivePresented, "⌘Y should dismiss the archive")
+        XCTAssertTrue(model.historyActive)
     }
 }

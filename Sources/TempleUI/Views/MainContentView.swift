@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The right pane: the active tab's terminal (or Settings), or the launcher when
+/// The right pane: the active tab's terminal (or Settings, or History), or the launcher when
 /// nothing is open (UX §Main content). The per-project tab strip lives in the
 /// native title-bar band as a titlebar ACCESSORY, not a toolbar item — an item
 /// wider than the band overflows all-or-nothing into the `»` menu. The installer
@@ -29,6 +29,8 @@ struct MainContentView: View {
             switch active.kind {
             case .settings:
                 SettingsView(settings: model.settings)
+            case .history:
+                HistoryTabView(history: model.history)
             case .session:
                 terminal(for: active)
             }

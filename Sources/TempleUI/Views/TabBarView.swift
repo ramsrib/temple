@@ -535,8 +535,8 @@ private struct TabChip: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            if tab.kind == .settings {
-                Image(systemName: "gearshape")
+            if let symbol = tab.kind.utilitySymbol {
+                Image(systemName: symbol)
                     .font(.system(size: 11))
                     .foregroundStyle(isActive ? AnyShapeStyle(.primary)
                                               : AnyShapeStyle(.secondary))
@@ -564,8 +564,8 @@ private struct TabChip: View {
             // ring reaches 1pt into the title frame, which the slack covers
             // in all but the zero-slack case. Settings keeps the row spacing —
             // its title never truncates, so nothing pads it.
-            HStack(spacing: tab.kind == .settings ? 5 : 1) {
-                if tab.kind == .settings {
+            HStack(spacing: tab.isUtility ? 5 : 1) {
+                if tab.isUtility {
                     // Fixed natural width — "Settings" must never truncate or
                     // stretch with its neighbors. And CONSTANT weight: this chip
                     // is its text's size, so the active medium weight the session
@@ -620,7 +620,7 @@ private struct TabChip: View {
         // Constant width for session chips: inside a fixed box a title change
         // repaints text but can never move the strip. Settings keeps its
         // natural size — its title is a constant.
-        .frame(width: tab.kind == .settings ? nil : Self.sessionWidth)
+        .frame(width: tab.isUtility ? nil : Self.sessionWidth)
         // Full-height: the container stretches the chips row to the band (the
         // band's height is fixed by the sidebar header), so the chip claims
         // all of it instead of floating in dead air.

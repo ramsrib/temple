@@ -91,25 +91,37 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     public var settingsTab: SessionTab? { tabs.first { $0.kind == .settings } }
 
-    /// Visible-row index of the project-agnostic Settings chip (its ORDER is
-    /// user-controlled via drag). This is a single GLOBAL offset, not a
-    /// per-project one: dragging Settings sets where it sits in the row, and
-    /// switching projects keeps that offset, clamped to the new project's row
-    /// length (so a short row can't push it off the end). `.max` means
-    /// "trailing" — the default, matching the original append behavior.
-    /// Runtime-only; not persisted across restarts (the Settings tab itself is
-    /// never persisted — it's re-created on demand — so there's nothing to
+    public var historyTab: SessionTab? { tabs.first { $0.kind == .history } }
+
+    /// Visible-row index of each project-agnostic utility chip — Settings,
+    /// History (its ORDER is user-controlled via drag). A single GLOBAL offset
+    /// per kind, not a per-project one: dragging the chip sets where it sits
+    /// in the row, and switching projects keeps that offset, clamped to the
+    /// new project's row length (so a short row can't push it off the end).
+    /// Absent means "trailing" — the default, matching the original append
+    /// behavior. Runtime-only; not persisted across restarts (utility tabs are
+    /// never persisted — they're re-created on demand — so there's nothing to
     /// anchor a saved offset to).
-    private var settingsRowOffset: Int = .max
+    private var utilityRowOffsets: [TabKind: Int] = [:]
 
     /// The chips shown in the header strip: the active project's session tabs, in
-    /// order, with the project-agnostic Settings chip (if open) inserted at its
-    /// user-controlled `settingsRowOffset` (clamped to the row length).
+    /// order, with each open utility chip inserted at its user-controlled offset
+    /// (clamped to the row length). Lower offsets go in first, so two utility
+    /// chips land where they were dropped; ties keep the order they opened in.
     public var visibleTabs: [SessionTab] {
         let sessions = tabs.filter { $0.kind == .session && $0.projectPath == activeProjectPath }
-        guard let settings = settingsTab else { return sessions }
+        let utilities = tabs.filter(\.isUtility)
+        guard !utilities.isEmpty else { return sessions }
         var result = sessions
-        result.insert(settings, at: min(max(settingsRowOffset, 0), sessions.count))
+        let placed = utilities.enumerated().sorted { lhs, rhs in
+            let left = utilityRowOffsets[lhs.element.kind] ?? .max
+            let right = utilityRowOffsets[rhs.element.kind] ?? .max
+            return left == right ? lhs.offset < rhs.offset : left < right
+        }
+        for (_, utility) in placed {
+            let offset = utilityRowOffsets[utility.kind] ?? .max
+            result.insert(utility, at: min(max(offset, 0), result.count))
+        }
         return result
     }
 
@@ -348,15 +360,50 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         lastRing[tabID] = nil
     }
 
-    // MARK: Settings (U9) — singleton utility tab
+    // MARK: Settings (U9) and History — singleton utility tabs
 
     public func openSettings() {
-        if let settings = settingsTab {
-            activeTabID = settings.id
+        openUtility(.settings)
+    }
+
+    /// View ▸ Session History, the ⌘K bridge: open the History tab, or focus
+    /// it if it is already open.
+    public func openHistory() {
+        openUtility(.history)
+    }
+
+    /// ⌘Y. Opens or focuses History; pressed while History is already the
+    /// active tab, goes back to the tab you came from and leaves History open
+    /// (the old overlay was a toggle, and ⌘Y-look-⌘Y is muscle memory).
+    public func openOrLeaveHistory() {
+        if let history = historyTab, activeTabID == history.id {
+            returnToPreviousTab()
+        } else {
+            openHistory()
+        }
+    }
+
+    /// Back to the tab that was active before the current one, closing
+    /// nothing — the launcher if there is none.
+    public func returnToPreviousTab() {
+        let previous = activationHistory.dropLast().last { id in
+            id != activeTabID && tabs.contains { $0.id == id }
+        }
+        guard let previousID = previous,
+              let tab = tabs.first(where: { $0.id == previousID }) else {
+            showHome()
             return
         }
-        let tab = SessionTab(kind: .settings, sessionID: nil, agent: .claude,
-                             projectPath: "", title: "Settings", command: nil)
+        if tab.kind == .session { activate(tab) } else { activeTabID = tab.id }
+    }
+
+    private func openUtility(_ kind: TabKind) {
+        if let existing = tabs.first(where: { $0.kind == kind }) {
+            activeTabID = existing.id
+            return
+        }
+        let tab = SessionTab(kind: kind, sessionID: nil, agent: .claude,
+                             projectPath: "", title: kind.utilityTitle ?? "", command: nil)
         tabs.append(tab)
         activeTabID = tab.id
     }
@@ -519,8 +566,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             activate(next)
         } else if let anySession = tabs.first(where: { $0.kind == .session }) {
             activate(anySession)
-        } else if let settings = settingsTab {
-            activeTabID = settings.id
+        } else if let utility = tabs.first(where: \.isUtility) {
+            activeTabID = utility.id
         } else {
             activeTabID = nil
             // Keep activeProjectPath so the launcher defaults to the last project.
@@ -542,23 +589,22 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     // MARK: Drag reorder (per-project, persisted)
 
     /// Reorder the visible tab row by visible-row indices. The row is the active
-    /// project's session chips plus (if open) the Settings chip at its offset —
-    /// so both kinds are draggable. Dragging Settings just records its new global
-    /// `settingsRowOffset`; dragging a session chip reorders the sessions within
+    /// project's session chips plus any open utility chips at their offsets —
+    /// so every kind is draggable. Dragging a utility chip just records its new
+    /// global offset; dragging a session chip reorders the sessions within
     /// the active project (other projects' order is preserved).
     public func moveTab(fromOffsets: IndexSet, toOffset: Int) {
         let before = visibleTabs
         var row = before
         row.move(fromOffsets: fromOffsets, toOffset: toOffset)
-        // Settings' offset always follows the moved row — including when a
-        // SESSION was dragged across it. The drag gesture moves one slot per
-        // swap, so "session crosses Settings" arrives as an adjacent exchange;
-        // keeping Settings pinned made that exchange reconstruct the original
-        // row (a silent no-op the drag's slot arithmetic then drifted against),
-        // and no session could ever pass the Settings chip.
-        if let settings = settingsTab,
-           let offset = row.firstIndex(where: { $0.id == settings.id }) {
-            settingsRowOffset = offset
+        // A utility chip's offset always follows the moved row — including
+        // when a SESSION was dragged across it. The drag gesture moves one slot
+        // per swap, so "session crosses Settings" arrives as an adjacent
+        // exchange; keeping Settings pinned made that exchange reconstruct the
+        // original row (a silent no-op the drag's slot arithmetic then drifted
+        // against), and no session could ever pass the Settings chip.
+        for (offset, tab) in row.enumerated() where tab.isUtility {
+            utilityRowOffsets[tab.kind] = offset
         }
         // Write the reordered session chips back into the master list, preserving
         // other projects' relative order.

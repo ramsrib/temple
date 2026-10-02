@@ -35,9 +35,6 @@ public struct RootView: View {
             if model.commandPalettePresented {
                 paletteOverlay
             }
-            if model.historyPresented {
-                historyOverlay
-            }
             if model.archivePresented {
                 archiveOverlay
             }
@@ -61,8 +58,8 @@ public struct RootView: View {
             withAnimation { model.toggleSidebar() }
         }
         // Dev-only, same gate: TEMPLE_SNAPSHOT_PRESENT=palette|history|archive
-        // opens that panel once the window has settled, so it can be
-        // snapshotted without a key chord.
+        // opens that panel (history: the History tab) once the window has
+        // settled, so it can be snapshotted without a key chord.
         .onAppear {
             let env = ProcessInfo.processInfo.environment
             guard env["TEMPLE_SNAPSHOT_DIR"] != nil, let panel = env["TEMPLE_SNAPSHOT_PRESENT"] else { return }
@@ -72,7 +69,7 @@ public struct RootView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 switch panel {
                 case "palette": if !model.commandPalettePresented { model.toggleCommandPalette() }
-                case "history": if !model.historyPresented { model.toggleHistory() }
+                case "history": model.openSessions.openHistory()
                 case "archive": if !model.archivePresented { model.toggleArchive() }
                 default: break
                 }
@@ -131,10 +128,9 @@ public struct RootView: View {
         }
     }
 
-    /// Any floating panel (⌘K / ⌘Y / ⌘⇧Y / ⌘P / ⌘/) currently over the window.
+    /// Any floating panel (⌘K / ⌘⇧Y / ⌘P / ⌘/) currently over the window.
     private var overlayPresented: Bool {
         model.commandPalettePresented
-            || model.historyPresented
             || model.archivePresented
             || model.newSessionPickerPresented
             || model.projectSwitcherPresented
@@ -225,29 +221,8 @@ public struct RootView: View {
         .transition(.opacity)
     }
 
-    /// ⌘Y history sits exactly where ⌘K does — the two are siblings (same
-    /// width, same top anchor, same capped list), differing in content, not
-    /// chrome, so switching between them never feels like a mode change.
-    private var historyOverlay: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .top) {
-                OverlayBackdrop { model.historyPresented = false }
-                    .ignoresSafeArea()
-                PanelHost {
-                    HistoryView()
-                        .environmentObject(model)
-                        .tint(Palette.accent)
-                }
-                .fixedSize()
-                .frame(maxWidth: .infinity)
-                .padding(.top, geo.size.height * 0.35)
-            }
-        }
-        .transition(.opacity)
-    }
-
-    /// ⌘⇧Y — the archive browser. Centred, not top-anchored like ⌘K/⌘Y: those
-    /// are palettes you type into; this is a window you look through.
+    /// ⌘⇧Y — the archive browser. Centred, not top-anchored like ⌘K: that
+    /// is a palette you type into; this is a window you look through.
     private var archiveOverlay: some View {
         GeometryReader { geo in
             ZStack {
@@ -546,15 +521,20 @@ private struct KeyCatcher: NSViewRepresentable {
             // Esc always dismisses overlays, wherever focus is (the palette's
             // own .onKeyPress only fires while its field is focused).
             if event.keyCode == 53,
-               model.commandPalettePresented || model.historyPresented
+               model.commandPalettePresented
                 || model.archivePresented
                 || model.newSessionPickerPresented || model.shortcutsPresented {
                 model.commandPalettePresented = false
-                model.historyPresented = false
                 model.archivePresented = false
                 model.newSessionPickerPresented = false
                 model.shortcutsPresented = false
                 return true
+            }
+
+            // The History tab: its list owns arrows, Return and Esc, and a few
+            // ⌘ keys mean "this page" while it is the active tab.
+            if model.historyActive, let handled = handleHistory(event, model) {
+                return handled
             }
 
             // Sidebar browse (UX "Select vs. open"): arrow keys move the highlight,
@@ -562,7 +542,6 @@ private struct KeyCatcher: NSViewRepresentable {
             // agent still owns its arrow keys.
             let browsing = model.openSessions.activeTab == nil
                 && !model.commandPalettePresented
-                && !model.historyPresented
                 && !model.archivePresented
                 && !model.newSessionPickerPresented
                 && !model.shortcutsPresented
@@ -612,7 +591,7 @@ private struct KeyCatcher: NSViewRepresentable {
                 return true
             case "k":
                 model.toggleCommandPalette(); return true
-            case "y", "Y":   // ⌘⇧Y — the archive browser; ⌘Y (caps lock too) stays history
+            case "y", "Y":   // ⌘⇧Y — the archive browser; ⌘Y (caps lock too) the History tab
                 if shift { model.toggleArchive() } else { model.toggleHistory() }
                 return true
             case "p":
@@ -629,6 +608,71 @@ private struct KeyCatcher: NSViewRepresentable {
                 return true
             default:
                 return false
+            }
+        }
+
+        /// The History tab's keys. Nil means "not History's": the event goes
+        /// on to the general bindings (⌘W, ⌘Y, ⌘K …). They are taken here, not
+        /// by the view, so they work whether the search field has focus or
+        /// nothing does; arrows and Return drive the list even while typing a
+        /// query, as the old overlay's did. A confirmation sheet owns the
+        /// keyboard, and so does any floating panel.
+        @MainActor
+        private func handleHistory(_ event: NSEvent, _ model: AppModel) -> Bool? {
+            let history = model.history
+            guard !model.panelPresented,
+                  history.pendingImport == nil, history.importFailure == nil,
+                  event.window?.attachedSheet == nil, event.window?.sheetParent == nil
+            else { return nil }
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let cmd = flags.contains(.command)
+            let shift = flags.contains(.shift)
+            let option = flags.contains(.option)
+            if flags.contains(.control) { return nil }
+
+            switch event.keyCode {
+            case 125, 126:   // ↓ ↑ (⇧ extends, ⌥ jumps a day, ⌘ to the end)
+                let down = event.keyCode == 125
+                if cmd {
+                    history.moveCursorToEnd(top: !down, extend: shift)
+                } else if option {
+                    history.moveCursorByDay(forward: down, extend: shift)
+                } else {
+                    history.moveCursor(by: down ? 1 : -1, extend: shift)
+                }
+                return true
+            case 36, 76:     // return / enter
+                guard !cmd else { return nil }
+                history.openSelected()
+                return true
+            case 53:         // esc: clear search → clear selection → previous tab
+                if history.escape() == .leave { model.openSessions.returnToPreviousTab() }
+                return true
+            default:
+                break
+            }
+
+            guard cmd, !option else { return nil }
+            switch event.charactersIgnoringModifiers?.lowercased() ?? "" {
+            case "a":
+                history.selectAll(); return true
+            case "i":
+                history.requestImport(); return true
+            case "r":
+                history.refresh(); return true
+            case "f":
+                history.requestSearchFocus(); return true
+            case "c":
+                // Text selected in the search field copies as text.
+                if let editor = event.window?.firstResponder as? NSTextView,
+                   editor.selectedRange().length > 0 { return nil }
+                let rows = history.selectedRows
+                guard !rows.isEmpty else { return nil }
+                copyToPasteboard(rows.map { $0.resume.argv.joined(separator: " ") }
+                    .joined(separator: "\n"))
+                return true
+            default:
+                return nil
             }
         }
     }

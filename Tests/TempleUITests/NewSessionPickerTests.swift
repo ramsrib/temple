@@ -78,10 +78,10 @@ final class NewSessionPickerTests: XCTestCase {
         model.toggleNewSessionPicker(alternateAgent: true)
         XCTAssertFalse(model.newSessionPickerPresented)
 
-        // Presenting any sibling panel puts the picker away.
+        // Presenting any sibling panel — or the History tab — puts the picker away.
         model.toggleNewSessionPicker()
         model.toggleHistory()
         XCTAssertFalse(model.newSessionPickerPresented)
-        XCTAssertTrue(model.historyPresented)
+        XCTAssertTrue(model.historyActive)
     }
 }

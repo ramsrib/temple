@@ -42,9 +42,13 @@ struct CommandPaletteView: View {
 
             Divider()
 
-            if results.isEmpty {
-                Text(query.trimmingCharacters(in: .whitespaces).isEmpty
-                     ? "No open sessions — type to search all" : "No matches")
+            if results.isEmpty, !trimmedQuery.isEmpty {
+                // ⌘K only knows Temple's sessions. Its dead end points at the
+                // door: the one row opens History already searching for it.
+                SearchHistoryRow(query: trimmedQuery) { searchHistory() }
+                    .frame(height: Self.rowHeight)
+            } else if results.isEmpty {
+                Text("No open sessions — type to search all")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -100,10 +104,48 @@ struct CommandPaletteView: View {
         selection = max(0, min(results.count - 1, selection + delta))
     }
 
+    private var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func openSelected() {
+        let results = self.results
+        if results.isEmpty, !trimmedQuery.isEmpty {
+            searchHistory()
+            return
+        }
         guard results.indices.contains(selection) else { return }
         model.openSessions.openSession(results[selection])
         model.commandPalettePresented = false
+    }
+
+    private func searchHistory() {
+        model.searchHistory(trimmedQuery)
+    }
+}
+
+/// ⌘K's only row when nothing matches: "Search history for “x”". Lit like a
+/// selected result, so Return reads as what it does.
+private struct SearchHistoryRow: View {
+    let query: String
+    let action: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .frame(width: 14)
+            Text("Search history for “\(query)”")
+                .font(.system(size: 13))
+                .lineLimit(1)
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .frame(maxHeight: .infinity)
+        .background(Palette.selectionFill)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: action)
     }
 }
 

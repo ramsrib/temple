@@ -3,10 +3,30 @@ import TempleCore
 import TempleTerminalAPI
 
 /// What a tab represents. Session tabs run an agent process (ADR-010); the
-/// Settings tab is the deliberate project-agnostic, process-less exception.
-public enum TabKind: Equatable {
+/// Settings and History tabs are the deliberate project-agnostic, process-less
+/// exceptions ("utility" tabs): singletons, never persisted, shown in every
+/// project's strip.
+public enum TabKind: Hashable {
     case session
     case settings
+    case history
+
+    /// The chip's fixed title and symbol for a utility tab; nil for sessions.
+    var utilityTitle: String? {
+        switch self {
+        case .session: nil
+        case .settings: "Settings"
+        case .history: "History"
+        }
+    }
+
+    var utilitySymbol: String? {
+        switch self {
+        case .session: nil
+        case .settings: "gearshape"
+        case .history: "clock.arrow.circlepath"
+        }
+    }
 }
 
 /// One open tab = one open terminal (UX "A tab is its agent process").
@@ -44,10 +64,10 @@ public final class SessionTab: ObservableObject, Identifiable {
     @Published public var resumeTargetMissing = false
     @Published public var isProvisional: Bool
 
-    /// The command the surface spawns. `nil` for the Settings tab.
+    /// The command the surface spawns. `nil` for a utility tab.
     public let command: TerminalCommand?
 
-    /// Live terminal; `nil` for an inert restored chip or the Settings tab.
+    /// Live terminal; `nil` for an inert restored chip or a utility tab.
     @Published public private(set) var surface: TerminalSurface?
 
     /// Find-in-terminal (⌘F) state, kept with the tab so a search survives a

@@ -56,8 +56,6 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/temple"])
         XCTAssertEqual(model.displayProjects.flatMap(\.sessions).map(\.id), ["t1"])
         XCTAssertEqual(model.pinnedSessions.map(\.id), ["t1"])
-        XCTAssertEqual(model.historyResults("").map(\.id), ["t1"])
-        XCTAssertEqual(model.historyResults("one").map(\.id), ["t1"])
         XCTAssertEqual(model.paletteResults("one").map(\.id), ["t1"])
         XCTAssertEqual(model.projectPickerResults("").map(\.path), ["/p/temple"])
         XCTAssertEqual(model.launcherDefaultProject, "/p/temple")
@@ -126,7 +124,6 @@ final class SessionScopeTests: XCTestCase {
         let database = database(touching: ["t1"])
         let (model, _) = makeModel(mixedIndex(), database: database)
         _ = model.displayProjects
-        _ = model.historyResults("")
         XCTAssertEqual(try database.sessionStates().map(\.id), ["t1"])
     }
 

@@ -62,9 +62,13 @@ public struct TempleCommands: Commands {
         // terminal. Like every item here they mirror KeyCatcher, which does
         // the actual key handling.
         CommandGroup(replacing: .textEditing) {
-            Button("Find in Terminal…") { model.findInActiveTerminal() }
-                .keyboardShortcut("f")
-                .disabled(model.activeTerminalFind == nil)
+            // On the History tab there is no terminal to find in, so ⌘F is
+            // the page's search, retitled the way Undo retitles.
+            Button(model.historyActive ? "Find in History…" : "Find in Terminal…") {
+                model.findInActiveTerminal()
+            }
+            .keyboardShortcut("f")
+            .disabled(model.activeTerminalFind == nil && !model.historyActive)
             // Enabled state can only track the terminal (the bar's open/closed
             // state is not observed here); the action itself refuses when the
             // bar is closed, matching KeyCatcher.
@@ -108,6 +112,11 @@ public struct TempleCommands: Commands {
                 Label("Session History", systemImage: "clock.arrow.circlepath")
             }
             .keyboardShortcut("y")
+            Button { model.history.refresh() } label: {
+                Label("Refresh History", systemImage: "arrow.clockwise")
+            }
+            .keyboardShortcut("r")
+            .disabled(!model.historyActive)
             Button { model.toggleArchive() } label: {
                 Label("Archived Items", systemImage: "archivebox")
             }

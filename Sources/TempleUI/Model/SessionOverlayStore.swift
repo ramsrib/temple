@@ -101,6 +101,49 @@ public final class SessionOverlayStore: ObservableObject {
         }
     }
 
+    // MARK: Import (the History tab)
+
+    /// Bring sessions in without running them: one `.imported` join each,
+    /// with its transcript as the engine's hint, through the same committed
+    /// join every other way in uses — so each loads into the live index at
+    /// once. Membership publishes once for the whole batch, not per row. A
+    /// session that is already Temple's keeps its row as it is. Returns the
+    /// failures, keyed by id, with the error as thrown (ADR-023: not retried;
+    /// a failed session simply stays out).
+    public func importSessions(_ sessions: [AgentSession]) -> [String: Error] {
+        var joined: Set<String> = []
+        var failures: [String: Error] = [:]
+        for session in sessions where !templeSessions.contains(session.id) {
+            do {
+                try db.join(sessionID: session.id, via: .imported,
+                            agent: session.agent, transcriptPath: session.filePath)
+                joined.insert(session.id)
+            } catch {
+                TempleUILog.db.error("import failed for session \(session.id, privacy: .public): \(String(describing: error), privacy: .public)")
+                failures[session.id] = error
+            }
+        }
+        if !joined.isEmpty { templeSessions.formUnion(joined) }
+        return failures
+    }
+
+    /// Undo of an import (`TempleDB.leave`): each row goes only if it is
+    /// still an untouched import. Returns the ids that left; the rest stay
+    /// Temple's, holding whatever was decided about them since.
+    public func leave(_ ids: [String]) -> [String] {
+        let left = ids.filter { id in
+            guard templeSessions.contains(id) else { return false }
+            do {
+                return try db.leave(sessionID: id)
+            } catch {
+                TempleUILog.db.error("leave failed for session \(id, privacy: .public): \(String(describing: error), privacy: .public)")
+                return false
+            }
+        }
+        if !left.isEmpty { templeSessions.subtract(left) }
+        return left
+    }
+
     public func togglePin(_ id: String) {
         guard join(id, via: .imported) else { return }
         if pinned.contains(id) { pinned.remove(id) } else { pinned.insert(id) }
