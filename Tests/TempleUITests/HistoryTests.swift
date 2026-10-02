@@ -754,6 +754,48 @@ final class HistoryTabTests: XCTestCase {
         XCTAssertEqual(model.history.scope, .all)
     }
 
+    /// Import → open → close the tab (before any title arrives) → Undo: the
+    /// session was used, so it stays. The open is recorded in the database,
+    /// not inferred from a tab that is no longer there.
+    func testUndoKeepsAnImportThatWasOpenedSinceEvenOnceItsTabIsClosed() async throws {
+        let database = try TempleDB.inMemory()
+        let model = AppModel(
+            surfaceFactory: FakeTerminalSurfaceFactory(),
+            indexSource: FakeIndexSource(SessionIndex(projects: [])),
+            database: database,
+            settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+            overlay: SessionOverlayStore(db: database))
+        let row = AgentSession(id: "imp", agent: .claude, projectPath: NSTemporaryDirectory(),
+                               title: "Imported", createdAt: nil, updatedAt: Date(),
+                               filePath: URL(fileURLWithPath: "/tmp/imp.jsonl"))
+        model.history.catalog = { AsyncStream { $0.yield(.sessions([row], read: 1, total: 1)); $0.finish() } }
+        model.history.activate()
+        try await waitFor { model.history.readState == .done }
+        let manager = UndoManager()
+        manager.groupsByEvent = false
+
+        manager.beginUndoGrouping()
+        model.history.confirmImport(model.history.makeImportRequest(for: [row]), undoManager: manager)
+        manager.endUndoGrouping()
+        model.history.open(row)
+        XCTAssertNotNil(model.openSessions.openTab(forSessionID: "imp"))
+        XCTAssertNotNil(try database.sessionState("imp")?.lastOpenedAt, "the open is recorded")
+        model.openSessions.closeActiveTab()
+        try await waitFor { model.openSessions.openTab(forSessionID: "imp") == nil }
+
+        manager.undo()
+
+        XCTAssertTrue(model.overlay.isTempleSession("imp"))
+        XCTAssertEqual(try database.sessionState("imp")?.joinedVia, .imported)
+        XCTAssertEqual(model.history.notice?.text, "Import not undone · changed since")
+    }
+
+    private func waitFor(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let end = Date().addingTimeInterval(3)
+        while !condition(), Date() < end { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertTrue(condition(), "condition never held", file: file, line: line)
+    }
+
     func testUtilityChipsKeepTheirDraggedPlaces() {
         let model = makeModel()
         model.openSessions.openSession(Fixture.session("a", project: "/p/a"))

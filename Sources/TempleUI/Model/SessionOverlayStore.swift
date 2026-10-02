@@ -144,6 +144,18 @@ public final class SessionOverlayStore: ObservableObject {
         return left
     }
 
+    /// The session was opened in a tab. Written for members only (it never
+    /// joins one), so an import undone later can tell the session was used:
+    /// `TempleDB.leave` keeps a row opened since.
+    public func recordOpened(_ id: String, at date: Date = Date()) {
+        guard isTempleSession(id) else { return }
+        do {
+            try db.recordOpened(sessionID: id, at: date)
+        } catch {
+            TempleUILog.db.error("recording the open failed for session \(id, privacy: .public): \(String(describing: error), privacy: .public)")
+        }
+    }
+
     public func togglePin(_ id: String) {
         guard join(id, via: .imported) else { return }
         if pinned.contains(id) { pinned.remove(id) } else { pinned.insert(id) }

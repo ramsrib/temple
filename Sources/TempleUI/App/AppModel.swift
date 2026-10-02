@@ -276,6 +276,10 @@ public final class AppModel: ObservableObject {
         openSessions.openedHandler = { [weak self] sessionID, via, agent, path in
             guard let self else { return }
             self.overlay.join(sessionID, via: via, agent: agent, transcriptPath: path)
+            // Durably: History's Undo Import must keep a session that was
+            // opened since, even once its tab is closed (TempleDB.leave
+            // keeps a row with last_opened_at set).
+            if via == .opened { self.overlay.recordOpened(sessionID) }
             if let source = self.indexSource as? WatcherIndexSource,
                case .loaded = source.watcher.resolution(for: sessionID) { return }
             if let source = self.indexSource as? WatcherIndexSource {
