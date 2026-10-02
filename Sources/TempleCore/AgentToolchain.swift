@@ -185,6 +185,11 @@ public enum AgentToolchain {
     /// runtime it can't work with, a build too old for its own config. Temple has no
     /// opinion on any of that and shouldn't: it asks the only question it can answer
     /// honestly, "does this run?", and reports whatever the binary says back.
+    /// How a verdict starts when the binary never ran at all (the OS refused to
+    /// exec it), as opposed to running and failing. Settings tells the two apart
+    /// by this prefix — it is our own wording, not something parsed from a CLI.
+    public static let launchFailurePrefix = "can't be launched: "
+
     public static func probe(_ path: String, arguments: [String] = []) -> (version: String?, failure: String?, details: String?) {
         // The command inherits our environment: `adoptLoginShellPATH` has already put
         // the user's PATH in it, so the binary resolves whatever it depends on exactly
@@ -200,7 +205,7 @@ public enum AgentToolchain {
             // localized text goes in the verdict; domain and code, which the
             // text can omit, go in the details for the next forensic look.
             let ns = ((error as? CommandCapture.LaunchFailure)?.underlying ?? error) as NSError
-            return (nil, "can't be launched: \(error)", "\(ns.domain) \(ns.code)")
+            return (nil, launchFailurePrefix + "\(error)", "\(ns.domain) \(ns.code)")
         }
         let text = result.output
         if result.timedOut {

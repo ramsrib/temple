@@ -73,8 +73,8 @@ public final class SettingsStore: ObservableObject {
         theme = ThemePreference(rawValue: defaults.string(forKey: Key.theme) ?? "") ?? .system
         claudePath = defaults.string(forKey: Key.claudePath) ?? ""
         codexPath = defaults.string(forKey: Key.codexPath) ?? ""
-        claudeExtraArgs = defaults.string(forKey: Key.claudeExtraArgs) ?? "--dangerously-skip-permissions"
-        codexExtraArgs = defaults.string(forKey: Key.codexExtraArgs) ?? "--dangerously-bypass-approvals-and-sandbox"
+        claudeExtraArgs = defaults.string(forKey: Key.claudeExtraArgs) ?? Self.shippedExtraArgs(for: .claude)
+        codexExtraArgs = defaults.string(forKey: Key.codexExtraArgs) ?? Self.shippedExtraArgs(for: .codex)
         loading = false
     }
 
@@ -123,6 +123,31 @@ public final class SettingsStore: ObservableObject {
         case .claude: claudeExtraArgs = text
         case .codex: codexExtraArgs = text
         }
+    }
+
+    /// The arguments Temple ships with — the code layer, never persisted.
+    public nonisolated static func shippedExtraArgs(for agent: Agent) -> String {
+        switch agent {
+        case .claude: return "--dangerously-skip-permissions"
+        case .codex: return "--dangerously-bypass-approvals-and-sandbox"
+        }
+    }
+
+    /// Back to the shipped arguments by *forgetting* the override, not by
+    /// writing the default's text into the key: absent means "Temple's
+    /// default", so a later change to the shipped flags reaches this user too.
+    public func resetExtraArgs(for agent: Agent) {
+        let key = agent == .claude ? Key.claudeExtraArgs : Key.codexExtraArgs
+        loading = true
+        setExtraArgsText(Self.shippedExtraArgs(for: agent), for: agent)
+        loading = false
+        defaults.removeObject(forKey: key)
+    }
+
+    /// Whether this agent's arguments are the shipped ones (by text, which is
+    /// what the field shows).
+    public func extraArgsAreShipped(for agent: Agent) -> Bool {
+        extraArgsText(for: agent) == Self.shippedExtraArgs(for: agent)
     }
 
 

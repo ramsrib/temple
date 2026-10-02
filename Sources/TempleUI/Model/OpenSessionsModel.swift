@@ -366,6 +366,23 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         openUtility(.settings)
     }
 
+    /// Open Settings at the part a warning is about: `agent`'s section, or the
+    /// top of the page for a problem that is no one agent's (the shell). The
+    /// page consumes the request (`consumeSettingsFocus`) once it has scrolled.
+    public func openSettings(focusing agent: Agent?) {
+        settingsFocusSerial += 1
+        settingsFocus = SettingsFocusRequest(agent: agent, serial: settingsFocusSerial)
+        openUtility(.settings)
+    }
+
+    /// Where the Settings page should land next; nil once it has.
+    @Published public private(set) var settingsFocus: SettingsFocusRequest?
+    private var settingsFocusSerial = 0
+
+    public func consumeSettingsFocus(_ request: SettingsFocusRequest) {
+        if settingsFocus == request { settingsFocus = nil }
+    }
+
     /// View ▸ Session History, the ⌘K bridge: open the History tab, or focus
     /// it if it is already open.
     public func openHistory() {
@@ -894,4 +911,12 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
             attentionHandler?(tab, title, body)
         }
     }
+}
+
+/// A request to land the Settings page on one agent's section (or the top).
+/// `serial` makes two requests for the same agent distinct, so a second click
+/// on the same warning scrolls again.
+public struct SettingsFocusRequest: Equatable, Sendable {
+    public let agent: Agent?
+    public let serial: Int
 }

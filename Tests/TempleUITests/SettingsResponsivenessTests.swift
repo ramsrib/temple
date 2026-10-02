@@ -66,6 +66,40 @@ final class SettingsResponsivenessTests: XCTestCase {
         XCTAssertEqual(factory.created.last?.appliedAppearances.last?.fontFamily, "Menlo")
     }
 
+    /// The page's own fields hold a draft: typing in any of them reaches
+    /// neither the store nor the terminals; Return/blur commits once.
+    func testDraftsTouchNothingUntilCommittedAndThenApplyOnce() async {
+        let editor = SettingsEditor(store: model.settings, toolchain: model.toolchain)
+        var drafts = SettingsDrafts()
+        let before = (applied, republished)
+        for prefix in ["M", "Me", "Men", "Menl", "Menlo"] {
+            drafts.edit(.fontFamily, to: prefix, committed: editor.committed(.fontFamily))
+            drafts.edit(.command(.claude), to: "/nonexistent/" + prefix, committed: editor.committed(.command(.claude)))
+            drafts.edit(.arguments(.codex), to: "--" + prefix, committed: editor.committed(.arguments(.codex)))
+            await settle(30)
+        }
+        await settle(600)
+        XCTAssertEqual(applied, before.0, "a draft keystroke reached the terminals")
+        XCTAssertEqual(republished, before.1, "a draft keystroke re-rendered the window")
+        XCTAssertEqual(model.settings.fontFamily, "SF Mono")
+        XCTAssertEqual(model.settings.claudePath, "")
+
+        editor.commit(.fontFamily, drafts: &drafts)
+        await settle(600)
+        XCTAssertEqual(applied, before.0 + 2, "the committed family applies once per terminal")
+        XCTAssertEqual(factory.created.last?.appliedAppearances.last?.fontFamily, "Menlo")
+
+        // Committing a command or arguments re-checks the toolchain; it never
+        // re-applies the terminal appearance.
+        let afterFamily = applied
+        editor.commit(.command(.claude), drafts: &drafts)
+        editor.commit(.arguments(.codex), drafts: &drafts)
+        XCTAssertTrue(model.toolchain.isCheckingUserSettings)
+        await settle(500)
+        XCTAssertEqual(applied, afterFamily)
+        XCTAssertEqual(model.settings.claudePath, "/nonexistent/Menlo")
+    }
+
     func testDefaultAgentStillRepublishesForTheViewsThatShowIt() async {
         let before = republished
         model.settings.defaultAgent = model.settings.defaultAgent == .claude ? .codex : .claude

@@ -22,6 +22,13 @@ public final class ToolchainModel: ObservableObject {
     /// ever a complaint — see `AgentToolchain.check`, a silent pass proves nothing.
     @Published public private(set) var argumentComplaints: [Agent: ArgumentComplaint] = [:]
     @Published public private(set) var isDetecting = false
+    /// A re-check of the user's own settings (`recheckUserSettings`) is in flight.
+    @Published public private(set) var isCheckingUserSettings = false
+    /// When the last detection landed — what Settings' "Checked 2 min ago" reads.
+    @Published public private(set) var lastChecked: Date?
+    /// When the scheduled retry will run, while one is scheduled (`retryIfFlawed`).
+    /// Shown, so a verdict that changes by itself is seen to have been rechecked.
+    @Published public private(set) var nextRetryAt: Date?
 
     /// What the user typed in Settings, if anything.
     public var override: (Agent) -> String = { _ in "" }
@@ -69,6 +76,7 @@ public final class ToolchainModel: ObservableObject {
         retriesUsed = 0
         retryTask?.cancel()
         retryTask = nil
+        nextRetryAt = nil
         runDetection()
     }
 
@@ -103,6 +111,7 @@ public final class ToolchainModel: ObservableObject {
                 if detectGen == self.detectGeneration {
                     self.resolutions = found
                     self.isDetecting = false
+                    self.lastChecked = Date()
                     self.logVerdicts(found)
                     self.retryIfFlawed(found)
                 }
@@ -117,6 +126,7 @@ public final class ToolchainModel: ObservableObject {
                 }
                 self.overrideChecks = checked
                 self.argumentComplaints = complaints
+                self.isCheckingUserSettings = false
             }
         }
     }
@@ -151,9 +161,11 @@ public final class ToolchainModel: ObservableObject {
         let delay = retryDelays[retriesUsed]
         retriesUsed += 1
         TempleUILog.launch.notice("toolchain: a probe failed; detecting again in \(Int(delay), privacy: .public)s")
+        nextRetryAt = Date().addingTimeInterval(delay)
         retryTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled, let self else { return }
+            self.nextRetryAt = nil
             self.runDetection()
         }
     }
@@ -251,6 +263,7 @@ public final class ToolchainModel: ObservableObject {
     /// to re-probe every install on the machine to answer "does this one work?".
     public func recheckUserSettings() {
         userGeneration += 1
+        isCheckingUserSettings = true
         let userGen = userGeneration
         let probe = self.probe
         let overrides = currentOverrides()
@@ -267,8 +280,58 @@ public final class ToolchainModel: ObservableObject {
                 guard let self, userGen == self.userGeneration else { return }
                 self.overrideChecks = checked
                 self.argumentComplaints = complaints
+                self.isCheckingUserSettings = false
             }
         }
+    }
+
+    /// What Settings says beneath the Command field, or `nil` when no override is
+    /// set. Four states and no others — and none of them a judgment about *why*:
+    /// a failure is the CLI's (or the OS's) own words.
+    public func overrideVerdict(for agent: Agent) -> OverrideVerdict? {
+        guard !override(agent).isEmpty else { return nil }
+        // A check for this exact path is in flight, or has never landed (startup).
+        guard !isCheckingUserSettings, let check = overrideCheck(for: agent) else { return .checking }
+        guard let failure = check.failure else { return .runs(version: check.version) }
+        if failure.hasPrefix(AgentToolchain.launchFailurePrefix) {
+            return .couldNotLaunch(reason: String(failure.dropFirst(AgentToolchain.launchFailurePrefix.count)),
+                                   details: check.details)
+        }
+        return .doesNotRun(failure: failure, details: check.details)
+    }
+
+    /// What Temple will launch for each agent, one fragment per agent — the
+    /// Settings page's subtitle. `nil` while nothing at all has landed yet.
+    public func summary() -> [ToolchainSummaryPart]? {
+        let parts = Agent.allCases.map { summaryPart(for: $0) }
+        if parts.allSatisfy({ $0.state == .checking }) { return nil }
+        return parts
+    }
+
+    private func summaryPart(for agent: Agent) -> ToolchainSummaryPart {
+        let name = agent.displayName
+        if let verdict = overrideVerdict(for: agent) {
+            switch verdict {
+            case .checking:
+                return ToolchainSummaryPart(agent: agent, text: "\(name): checking…", state: .checking)
+            case .runs(let version):
+                return ToolchainSummaryPart(agent: agent, text: [name, version].compactMap { $0 }.joined(separator: " "),
+                                            state: .runs)
+            case .doesNotRun, .couldNotLaunch:
+                return ToolchainSummaryPart(agent: agent, text: "\(name): doesn't run", state: .broken)
+            }
+        }
+        guard let resolution = resolutions[agent] else {
+            return ToolchainSummaryPart(agent: agent, text: "\(name): checking…", state: .checking)
+        }
+        if let chosen = resolution.chosen {
+            return ToolchainSummaryPart(agent: agent, text: [name, chosen.version].compactMap { $0 }.joined(separator: " "),
+                                        state: .runs)
+        }
+        if resolution.installs.isEmpty {
+            return ToolchainSummaryPart(agent: agent, text: "\(name) not found", state: .missing)
+        }
+        return ToolchainSummaryPart(agent: agent, text: "\(name): doesn't run", state: .broken)
     }
 
     /// The binary to launch. The user's override outranks detection — including a
@@ -342,6 +405,37 @@ public final class ToolchainModel: ObservableObject {
         }
         return warnings
     }
+}
+
+/// The run check of the user's override, as Settings shows it.
+///
+/// There is no state between these and no hint of a cause: `doesNotRun` carries
+/// what the CLI printed, `couldNotLaunch` what the OS said when it refused to
+/// start the file at all.
+public enum OverrideVerdict: Equatable, Sendable {
+    /// Committed, probe in flight (or not landed yet).
+    case checking
+    /// It ran; `version` is the first line `--version` printed, verbatim.
+    case runs(version: String?)
+    /// It ran and failed.
+    case doesNotRun(failure: String, details: String?)
+    /// It never ran: the OS refused to exec it.
+    case couldNotLaunch(reason: String, details: String?)
+
+    public var isFailure: Bool {
+        switch self {
+        case .doesNotRun, .couldNotLaunch: return true
+        case .checking, .runs: return false
+        }
+    }
+}
+
+/// One agent's fragment of the Settings subtitle ("Claude Code 2.1.287").
+public struct ToolchainSummaryPart: Equatable, Sendable {
+    public enum State: Equatable, Sendable { case checking, runs, missing, broken }
+    public let agent: Agent
+    public let text: String
+    public let state: State
 }
 
 /// A CLI's own words about why it won't take the user's extra arguments.
