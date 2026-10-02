@@ -340,11 +340,9 @@ public final class AppModel: ObservableObject {
                 self?.objectWillChange.send()
             }
             .store(in: &cancellables)
-        Publishers.Merge(
-            settings.$defaultAgent.removeDuplicates().dropFirst().map { _ in () },
-            settings.$sessionScope.removeDuplicates().dropFirst().map { _ in () })
+        settings.$defaultAgent.removeDuplicates().dropFirst()
             .receive(on: RunLoop.main)
-            .sink { [weak self] in self?.objectWillChange.send() }
+            .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         // Pins / renames re-publish so the computed sidebar views refresh.
         overlay.objectWillChange
