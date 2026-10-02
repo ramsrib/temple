@@ -775,6 +775,17 @@ final class HistoryTabTests: XCTestCase {
         XCTAssertFalse(model.historyActive, "with nothing over it, ⌘Y still goes back")
     }
 
+    func testShowInSidebarHighlightsTheRowAndAsksTheRailToScroll() {
+        let model = makeModel()
+        model.showInSidebar("a")
+        XCTAssertEqual(model.highlightedID, "a")
+        let first = try? XCTUnwrap(model.sidebarReveal)
+        XCTAssertEqual(first?.sessionID, "a")
+
+        model.showInSidebar("a")
+        XCTAssertNotEqual(model.sidebarReveal, first, "asking again scrolls again")
+    }
+
     /// Import → open → close the tab (before any title arrives) → Undo: the
     /// session was used, so it stays. The open is recorded in the database,
     /// not inferred from a tab that is no longer there.

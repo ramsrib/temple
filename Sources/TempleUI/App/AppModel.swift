@@ -395,11 +395,30 @@ public final class AppModel: ObservableObject {
         openSessions.openHistory()
     }
 
-    /// History's "Show in Sidebar": light the row in the rail, opening the
-    /// rail if it is hidden. The user stays where they are.
+    /// Asks the sidebar to scroll a row into view. A serial, so asking for
+    /// the same row twice scrolls twice (the user may have scrolled away).
+    public struct SidebarReveal: Equatable {
+        public let sessionID: String
+        let serial: Int
+    }
+    @Published public private(set) var sidebarReveal: SidebarReveal?
+
+    /// History's "Show in Sidebar": light the row in the rail and scroll it
+    /// into view, opening the rail if it is hidden. The user stays where they
+    /// are.
     public func showInSidebar(_ id: String) {
         highlightedID = id
-        if sidebarVisibility.isSidebarHidden { sidebarVisibility = .all }
+        let request = SidebarReveal(sessionID: id, serial: (sidebarReveal?.serial ?? 0) + 1)
+        guard sidebarVisibility.isSidebarHidden else {
+            sidebarReveal = request
+            return
+        }
+        sidebarVisibility = .all
+        // A scroll inside a column still sliding in does not take; ask once
+        // it is there (the sidebar search's reveal waits the same way).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            self?.sidebarReveal = request
+        }
     }
 
     private func overlayTitle(tab: SessionTab) -> String {

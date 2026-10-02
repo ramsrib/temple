@@ -186,65 +186,82 @@ struct SidebarView: View {
     /// moved a row. Owning the layout makes the row pitch ours to set, and
     /// retires the negative row insets that used to fight the List's indent.
     private var sessionList: some View {
-        ScrollView(.vertical) {
-            // A plain VStack, not Lazy: under `withAnimation`, a LazyVStack
-            // animates children it re-creates from its own origin, so a
-            // collapsing project's rows flew up over the header to the top
-            // edge before they vanished. The rail is capped (projects and
-            // rows per project), so laying every row out is cheap.
-            VStack(alignment: .leading, spacing: 0) {
-                if !model.pinnedSessions.isEmpty {
-                    groupLabel("Pinned")
-                    ForEach(model.pinnedSessions) { session in
-                        SessionRow(session: session)
-                            .padding(.leading, ProjectDisclosure.childInset)
+        // The reader adds no layout of its own: the scroll view stays the
+        // column's content, as the titlebar inset needs (AGENTS.md).
+        ScrollViewReader { proxy in
+            ScrollView(.vertical) {
+                // A plain VStack, not Lazy: under `withAnimation`, a LazyVStack
+                // animates children it re-creates from its own origin, so a
+                // collapsing project's rows flew up over the header to the top
+                // edge before they vanished. The rail is capped (projects and
+                // rows per project), so laying every row out is cheap.
+                VStack(alignment: .leading, spacing: 0) {
+                    if !model.pinnedSessions.isEmpty {
+                        groupLabel("Pinned")
+                        ForEach(model.pinnedSessions) { session in
+                            SessionRow(session: session)
+                                .padding(.leading, ProjectDisclosure.childInset)
+                        }
                     }
-                }
 
-                // ONE displayProjects pass per body: every access refilters and
-                // resorts all sessions, and this body re-runs on every publish.
-                let allProjects = model.displayProjects
-                let hidden = model.hiddenCount(allProjects)
-                if allProjects.isEmpty && !model.isLoading {
-                    Text(model.searchText.isEmpty ? "No sessions yet" : "No matches")
+                    // ONE displayProjects pass per body: every access refilters and
+                    // resorts all sessions, and this body re-runs on every publish.
+                    let allProjects = model.displayProjects
+                    let hidden = model.hiddenCount(allProjects)
+                    if allProjects.isEmpty && !model.isLoading {
+                        Text(model.searchText.isEmpty ? "No sessions yet" : "No matches")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 4)
+                    }
+                    let shown = showAllProjects ? allProjects : model.capped(allProjects)
+                    ForEach(shown) { project in
+                        ProjectDisclosure(project: project, isFirst: project.id == shown.first?.id)
+                    }
+                    if model.searchText.isEmpty && hidden > 0 {
+                        Button(showAllProjects
+                               ? "Show fewer"
+                               : "Show all projects (\(hidden) more)") {
+                            showAllProjects.toggle()
+                        }
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 4)
-                }
-                let shown = showAllProjects ? allProjects : model.capped(allProjects)
-                ForEach(shown) { project in
-                    ProjectDisclosure(project: project, isFirst: project.id == shown.first?.id)
-                }
-                if model.searchText.isEmpty && hidden > 0 {
-                    Button(showAllProjects
-                           ? "Show fewer"
-                           : "Show all projects (\(hidden) more)") {
-                        showAllProjects.toggle()
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 8)
+                        .frame(height: 28)
                     }
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 8)
-                    .frame(height: 28)
+                }
+                .padding(.horizontal, 6)
+                .padding(.bottom, 8)
+            }
+            // With "Show scroll bars: Always" set in System Settings, AppKit gives
+            // the scroll view a legacy scroller: a permanent ~15pt bar with a
+            // track, running the full height beside every row. Setting
+            // scrollerStyle on the NSScrollView does not stick (AppKit re-applies
+            // the system style on layout), so the indicator is removed outright —
+            // the sidebar is a short list you can see the extent of, not a
+            // document you navigate by scroll position.
+            .scrollIndicators(.never)
+            .clipped()
+            .background(SidebarScrollers())
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Sessions")
+            // History's "Show in Sidebar". A row folded away (a collapsed
+            // project, past its Show more, or a project past the cap) has no
+            // view to scroll to; the highlight still marks it.
+            .onChange(of: model.sidebarReveal) { _, reveal in
+                guard let reveal else { return }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(Self.rowScrollID(reveal.sessionID), anchor: .center)
                 }
             }
-            .padding(.horizontal, 6)
-            .padding(.bottom, 8)
         }
-        // With "Show scroll bars: Always" set in System Settings, AppKit gives
-        // the scroll view a legacy scroller: a permanent ~15pt bar with a
-        // track, running the full height beside every row. Setting
-        // scrollerStyle on the NSScrollView does not stick (AppKit re-applies
-        // the system style on layout), so the indicator is removed outright —
-        // the sidebar is a short list you can see the extent of, not a
-        // document you navigate by scroll position.
-        .scrollIndicators(.never)
-        .clipped()
-        .background(SidebarScrollers())
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Sessions")
     }
+
+    /// A project row's scroll target. Pinned copies of a row carry none, so a
+    /// reveal lands on the row inside its project.
+    static func rowScrollID(_ sessionID: String) -> String { "sidebar-row:" + sessionID }
 
     /// A group heading without a disclosure, in the project headers' language.
     private func groupLabel(_ title: String) -> some View {
@@ -653,6 +670,7 @@ private struct ProjectDisclosure: View {
             ForEach(Array(shownSessions.enumerated()), id: \.element.id) { offset, session in
                 SessionRow(session: session)
                     .padding(.leading, Self.childInset)
+                    .background(Color.clear.id(SidebarView.rowScrollID(session.id)))
                     .opacity(inHand ? 0.4 : 1)
                     .transition(.opacity)
                     .onDrop(of: [Self.dragType], delegate: dropDelegate(row: session.id, edge: .bottom))
