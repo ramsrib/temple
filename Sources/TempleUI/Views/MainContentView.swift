@@ -135,7 +135,7 @@ private struct SessionTerminalView: View {
             }
             Spacer(minLength: 8)
             if blameCommand {
-                Button("Settings") { model.openSessions.openSettings() }
+                Button("Settings") { model.openSessions.openSettings(focusing: tab.agent) }
                     .buttonStyle(.link)
                     .font(.system(size: 12))
             }

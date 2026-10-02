@@ -68,7 +68,8 @@ struct LauncherView: View {
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        Button("Settings") { model.openSessions.openSettings() }
+                        // Lands on this agent's section (the top for a shell problem).
+                        Button("Settings") { model.openSessions.openSettings(focusing: warning.agent) }
                             .buttonStyle(.link)
                             .font(.system(size: 12))
                     }

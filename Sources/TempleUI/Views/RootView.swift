@@ -621,6 +621,9 @@ private struct KeyCatcher: NSViewRepresentable {
                 return true
             case ",":
                 model.openSessions.openSettings(); return true
+            case "r":   // ⌘R on the Settings tab: check the agents again (History's is above)
+                guard model.openSessions.activeTab?.kind == .settings else { return false }
+                model.toolchain.detect(); return true
             case "1", "2", "3", "4", "5", "6", "7", "8", "9":
                 if let n = Int(chars) { model.openSessions.selectTab(index: n) }
                 return true
