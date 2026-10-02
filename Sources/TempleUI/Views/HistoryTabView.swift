@@ -48,12 +48,7 @@ struct HistoryTabView: View {
         // the sticky day headers are painted in: in dark the headers showed as
         // a lighter band. Paint the page so the two agree by construction.
         .background(Palette.panelBackground)
-        .background(
-            GeometryReader { geo in
-                Color.clear
-                    .onAppear { width = geo.size.width }
-                    .onChange(of: geo.size.width) { _, new in width = new }
-            })
+        .measuringPageWidth($width)
         .onAppear {
             history.activate()
             FieldFocus.claim { searchFocused = true }
@@ -92,12 +87,10 @@ struct HistoryTabView: View {
         }
     }
 
-    /// One centred, capped column — the header's and the list's widths agree.
+    /// One centred, capped column — the header's and the list's widths agree,
+    /// and so does Settings' (PageChrome's `pageColumn`).
     private func column<V: View>(_ view: V, inset: CGFloat) -> some View {
-        view
-            .padding(.horizontal, inset)
-            .frame(maxWidth: Self.pageWidth, alignment: .leading)
-            .frame(maxWidth: .infinity)
+        view.pageColumn(pageWidth: width, inset: inset)
     }
 
     // MARK: Header & toolbar
@@ -336,9 +329,7 @@ struct HistoryTabView: View {
                     }
                 }
                 .padding(.bottom, 72)   // the bar never sits over the last row for good
-                .padding(.horizontal, Self.gutter - Self.rowInset)
-                .frame(maxWidth: Self.pageWidth)
-                .frame(maxWidth: .infinity)
+                .pageColumn(pageWidth: width, inset: Self.gutter - Self.rowInset)
             }
             .thinScrollers()
             .onChange(of: history.scrollRequest) {

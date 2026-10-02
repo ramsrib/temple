@@ -33,6 +33,12 @@ enum PageChrome {
     /// Space above the title.
     static let top: CGFloat = 36
 
+    /// Where the page column starts in a page `width` wide: the inset, plus
+    /// half of whatever the page is wider than the cap.
+    static func columnLeading(pageWidth width: CGFloat, inset: CGFloat = gutter) -> CGFloat {
+        inset + max(0, (width - pageWidth) / 2)
+    }
+
     /// "just now" under a minute, then "2 min. ago" — the trailing line's clock.
     static func relative(_ date: Date, now: Date) -> String {
         if now.timeIntervalSince(date) < 60 { return "just now" }
@@ -44,6 +50,33 @@ enum PageChrome {
         formatter.unitsStyle = .abbreviated
         return formatter
     }()
+}
+
+extension View {
+    /// The page column — capped at `PageChrome.pageWidth`, centred beyond it —
+    /// placed from the *page's* width (`measuringPageWidth`), not from the
+    /// width this view is offered. Inside a scroll view that offer is short by
+    /// the scroller, so a column centred in it sat a few points left of one
+    /// outside it: Settings' title (in its scroll view) was ~8pt left of
+    /// History's (above its list). Every page column goes through here, so
+    /// titles, rows and bars share one leading edge whatever scrolls.
+    func pageColumn(pageWidth width: CGFloat, inset: CGFloat = PageChrome.gutter) -> some View {
+        frame(maxWidth: PageChrome.pageWidth - 2 * inset, alignment: .leading)
+            .padding(.leading, PageChrome.columnLeading(pageWidth: width, inset: inset))
+            .padding(.trailing, inset)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Reports the page's width into `width`, for `pageColumn`. A background
+    /// reader, so it adds no layout of its own.
+    func measuringPageWidth(_ width: Binding<CGFloat>) -> some View {
+        background(
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { width.wrappedValue = geo.size.width }
+                    .onChange(of: geo.size.width) { _, new in width.wrappedValue = new }
+            })
+    }
 }
 
 /// An uppercase, letter-spaced section label trailed by a hairline rule — the
