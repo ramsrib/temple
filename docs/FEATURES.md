@@ -51,10 +51,11 @@ back to the first human prompt
 Temple browses only **its own sessions**: every session it has started,
 opened in a tab, or that you have pinned, renamed, colored or archived. A
 project appears when it holds one. Sessions run anywhere else are on no
-surface at all: not the sidebar, `⌘K`, `⌘Y`, the launcher, the `⌘N` picker,
-or the `⌘⇧Y` archive, and Temple does not read or watch them while it runs
-(ADR-027). Bringing one in is an explicit import from the History tab
-(planned); opening one makes it a Temple session for good. Temple records how
+surface but one: not the sidebar, `⌘K`, the launcher, the `⌘N` picker, or the
+`⌘⇧Y` archive, and Temple does not watch them while it runs (ADR-027). The
+History tab (`⌘Y`) reads the whole disk when it is shown, lists them beside
+Temple's own, and is the door in: Import brings one in without running it, and
+opening one makes it a Temple session for good. Temple records how
 each session joined (started here, opened, or imported), for features that
 will need to know. On upgrade, the sidebar starts with the sessions Temple had
 already pinned, renamed, colored, archived or seen retitle in a tab, plus the
@@ -276,17 +277,68 @@ prompt composer.
   find-in-terminal).
 - `⌘K` opens a top-anchored command palette. With an empty query it is a
   switcher over the **open** sessions only, most recent activity first (live
-  recency, unlike the launch-frozen sidebar). Browsing everything is `⌘Y`'s
-  job — the two panels render as visual siblings but split switcher vs.
-  history.
-- Typing searches every session in scope (Settings ▸ Sessions) and weights open matches above closed
+  recency, unlike the launch-frozen sidebar). `⌘K` jumps; `⌘Y` browses.
+- Typing searches every Temple session and weights open matches above closed
   ones. Search matches the *displayed* title — a rename or the agent's own
   title — as well as the original first-prompt title, whichever scores better.
   Choosing a result opens or focuses it and switches project context as needed.
-- `⌘Y` opens the session history: every non-noise session in scope, newest first,
-  grouped under Today / Yesterday / date headers, each row carrying its agent,
-  displayed title, last-message preview, project, and relative time. Typing
-  switches to a flat ranked search; Enter or a click resumes the session.
+  A query that matches nothing offers one row, **Search history for "…"**,
+  which opens the History tab already searching for it.
+
+### History tab (`⌘Y`)
+
+A tab, not a panel: a singleton utility tab beside Settings, opened or focused
+by `⌘Y` or View ▸ Session History. Pressed while History is the active tab,
+`⌘Y` goes back to the tab you came from and leaves History open. It lists
+**every session on disk** — Temple's and everyone else's — and is the one door
+through which the others join.
+
+- **A snapshot, read on demand.** The page reads both stores when it is shown
+  (opening it, or switching back to it) and on Refresh (`⌘R`, View ▸ Refresh
+  History). It is never watched. Rows stream in newest first under a
+  "Reading sessions on disk… 1,240 of 3,810" line; the header says what is in
+  the box ("3,810 sessions on disk · 340 in Temple") and when it was taken
+  ("Updated 2 min ago · Refresh"). Temple's own rows take the live index's
+  copy, so their titles are current. Noise (a folder that is gone, `/`, Codex
+  exec/SDK runs) stays hidden. A store that cannot be read is named in a
+  banner with its error as thrown, and the other store's sessions still show.
+- **Rows.** One line per session, grouped under sticky Today / Yesterday /
+  date headers: time, agent badge, displayed title, the activity dot when a
+  tab is open, project and git branch, and a status column. Temple's rows
+  read at full strength and end in the gate mark (its tooltip says how and
+  when it joined); the rest step back a tone and end in a quiet **Import**.
+  Archived sessions are listed, tagged **Archived**, under In Temple. The
+  last message, model, message count and file path are in the tooltip.
+- **Search and filters** narrow the page in place and keep the day grouping:
+  search matches the displayed and original titles, project, branch, the last
+  message, and a session-id prefix. A segmented **All / In Temple / Not in
+  Temple** control and agent and project popups (counts over the whole disk)
+  compose with it; "Showing 47 of 3,810" appears while anything narrows. Any
+  change clears the selection and puts it on the first row. Filters belong to
+  the tab and reset when it closes; nothing is persisted.
+- **Selection** is the native vocabulary: click, `⌘`-click, `⇧`-click, arrows
+  (`⇧` extends, `⌥` jumps a day, `⌘` to the ends), `⌘A` for everything in the
+  current view. Hover is a separate fill and never moves the selection. On
+  open the search field has focus and the first row is selected.
+- **Return or a double-click opens** the selected session — an outside one
+  joins as opened, like any resume. With two or more selected, Return does
+  nothing (a tab is a process); **Import** is the only bulk verb.
+- **Import** — a row's Import, its context menu, `⌘I`, or the selection bar
+  that appears with two or more rows ("12 selected · 3 already in Temple ·
+  Import 9…") — asks first, naming where the sessions will appear and saying
+  nothing runs and no file on disk changes. Imported rows join as *imported*,
+  appear in the sidebar at once, and read "Imported" for a moment; you stay
+  on History. `⌘Z` (Edit ▸ Undo Import, or Undo on the bar) takes the import
+  back, row by row, only while a row is still untouched — a session renamed,
+  pinned, colored, archived, retitled by its agent, or running in a tab since
+  stays in Temple. A failed write is reported with its error and titles; the
+  rest stay imported.
+- **Context menu:** Open/Focus, Import into Temple…, Copy resume command, Copy
+  session ID, Reveal session file in Finder, Show in sidebar (Temple rows),
+  Show only *project*. Rename, pin, color and archive stay in the sidebar.
+- **Keys** while History is active: `⌘F` focuses its search (Edit ▸ Find in
+  History), `⌘R` refreshes, `⌘C` copies the selection's resume commands, Esc
+  clears the search, then the selection, then goes back to the previous tab.
 - `⌘⇧Y` (View ▸ Archived Items) opens the archive browser — a centred window
   shaped like the sidebar: archived projects first, each a restorable header
   with every session it hides listed beneath, then sessions archived on their
@@ -301,9 +353,10 @@ prompt composer.
   Searching matches a project by its path or by any session inside it. Opening an
   archived session anywhere else unarchives it too; a session resumed
   outside Temple stays archived, because activity on disk is not a decision.
-- The palette, history, and archive fields include a `×` clear control. Esc
-  dismisses any of them from anywhere. `⌘K`, `⌘Y`, `⌘⇧Y`, `⌘P`, and `⌘/` are
-  mutually exclusive — presenting one dismisses the others.
+- The palette, History, and archive fields include a `×` clear control. Esc
+  dismisses any panel from anywhere. `⌘K`, `⌘⇧Y`, `⌘P`, and `⌘/` are mutually
+  exclusive — presenting one dismisses the others, and `⌘Y` puts them away
+  too.
 
 ## Notifications & activity
 
@@ -400,9 +453,10 @@ The native menu bar mirrors Temple's commands instead of WindowGroup's
 defaults: **File** carries the session lifecycle (New Session, New Session in
 Project…, the other-agent variant, Reopen Closed Tab, Close Tab) in place of
 New Window; **Edit** replaces the system Find submenu with Find in Terminal
-(`⌘F`), Find Next and Find Previous, disabled when no terminal is showing;
-**View** owns Toggle Sidebar at `⌘B` plus the palette, history, archive,
-home, and shortcuts card; a **Project** menu mirrors the switcher and project
+(`⌘F`, retitled Find in History on the History tab), Find Next and Find
+Previous, disabled when no terminal is showing; **View** owns Toggle Sidebar
+at `⌘B` plus the palette, Session History, Refresh History (`⌘R`, on the
+History tab), archive, home, and shortcuts card; a **Project** menu mirrors the switcher and project
 cycling; **Settings…** sits in the app menu. Menu items call the same actions
 as the shortcuts below — the in-app key monitor remains the keyboard's source
 of truth.
@@ -421,15 +475,16 @@ of truth.
 | **⌘⇧[ / ⌘⇧]** | Previous / next project; returns to the session last used there. |
 | **⌘Q** | Quit, draining every agent first; closing the window does the same. Asks first if an agent is mid-task. |
 | **⌘P** | Project switcher (hold ⌘, tap P to walk, release to land). |
-| **⌘F** | Find in the active terminal (bar over the top-right corner). |
+| **⌘F** | Find in the active terminal (bar over the top-right corner); on the History tab, its search. |
 | **⌘G / ⌘⇧G** | Next / previous match while the find bar is open. |
 | **⌘K** | Command palette: open sessions by recency when empty; ranked search over everything when typed. |
-| **⌘Y** | Session history: every session, newest first, grouped by day. |
+| **⌘Y** | History tab: every session on disk, by day; pressed on it, back to the previous tab. |
+| **⌘R / ⌘I / ⌘A** | On the History tab: refresh the snapshot / import the selection / select every row in view. |
 | **⌘⇧Y** | Archive: archived projects and sessions; unarchive or reopen from here. |
 | **⌘/** | Open the Keyboard Shortcuts reference overlay. |
 | **⌘B** | Toggle the sidebar. |
 | **⌘,** | Open Settings as a tab. |
-| **Esc** | Dismiss the palette, history, archive, or shortcuts overlay from anywhere; close the find bar from its field; cancel busy-close confirmation. |
+| **Esc** | Dismiss the palette, archive, or shortcuts overlay from anywhere; close the find bar from its field; cancel busy-close confirmation. On the History tab: clear the search, then the selection, then go back. |
 
 ## Platform & packaging
 
@@ -450,9 +505,9 @@ and System / Light / Dark appearance.
 |---|---|
 | Distribution | Notarized `.dmg` releases; auto-update; additional menu-bar and Dock integration. |
 | Activity | Replace or strengthen the 15-second settle-timer heuristic; per-session and per-project mute; Do Not Disturb; Dock and sidebar badge counts. |
-| Sidebar & discovery | Project pinning; agent, time-range, and active-only filters; richer project/agent/content search; configurable scan roots and excluded paths; rich metadata such as message count, model, and git branch in the sidebar. A flat recents view shipped as the `⌘Y` history. |
+| Sidebar & discovery | Project pinning; agent, time-range, and active-only filters; richer project/agent/content search; configurable scan roots and excluded paths; rich metadata such as message count, model, and git branch in the sidebar. A History tab over every session on disk shipped as `⌘Y`; a preview on Space is reserved there. |
 | Session management | Delete; duplicate/fork; grouping by git repository. Archive, rename, pin/unpin, color marks, and context menus are already shipped. |
-| Session lineage | Follow a Temple session that Claude continues under a new id (`←` / `/bg` writes `continued-in` into the old transcript) and hand its row and tab to the child; open live background sessions with `claude attach`; an "Add to Temple" import from the History tab (ADR-027); optionally show subagents under their parent. Each becomes Temple's through the same `join`, with lineage kept apart from how it joined (ADR-023); on-disk hooks in [SESSION-FORMATS](./SESSION-FORMATS.md). |
+| Session lineage | Follow a Temple session that Claude continues under a new id (`←` / `/bg` writes `continued-in` into the old transcript) and hand its row and tab to the child; open live background sessions with `claude attach`; optionally show subagents under their parent. Each becomes Temple's through the same `join`, with lineage kept apart from how it joined (ADR-023); on-disk hooks in [SESSION-FORMATS](./SESSION-FORMATS.md). |
 | Terminal & tabs | Split panes; copy mode; terminal cursor controls; tab-bar overflow handling. `⌘⇧T` reopen-closed-tab shipped. |
 | Windowing | Multi-window support. |
 | Agents | Third-agent adapters such as Gemini CLI and aider; surface agent-specific capabilities such as models and permission modes. |
