@@ -75,6 +75,15 @@ public final class AppModel: ObservableObject {
         sidebarVisibility = sidebarVisibility.isSidebarHidden ? .all : .detailOnly
     }
 
+    /// ⌘O: a folder Temple has never seen, opened as a new session with the
+    /// default agent. The menu item, the key handler and the project
+    /// switcher's "Open project…" all come through here.
+    public func openProjectFolder() {
+        chooseProjectFolder { path in
+            openSessions.newSessionDefaultAgent(projectPath: path)
+        }
+    }
+
     @Published public var commandPalettePresented = false
     @Published public var historyPresented = false
     @Published public var archivePresented = false

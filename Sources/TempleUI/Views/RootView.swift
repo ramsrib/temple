@@ -590,6 +590,8 @@ private struct KeyCatcher: NSViewRepresentable {
                 model.toggleNewSessionPicker(); return true
             case "N":   // ⇧ (or caps lock — treat as plain ⌘N then)
                 model.toggleNewSessionPicker(alternateAgent: shift); return true
+            case "o":
+                model.openProjectFolder(); return true
             case "H":   // ⌘⇧H — home; plain ⌘H stays the system Hide
                 guard shift else { return false }
                 model.openSessions.showHome(); return true

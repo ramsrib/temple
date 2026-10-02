@@ -389,9 +389,7 @@ private struct ProjectSwitcher: View {
                 // `+` that starts a session in a project you already have.
                 Button {
                     presented = false
-                    chooseProjectFolder { path in
-                        model.openSessions.newSessionDefaultAgent(projectPath: path)
-                    }
+                    model.openProjectFolder()
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "folder.badge.plus")

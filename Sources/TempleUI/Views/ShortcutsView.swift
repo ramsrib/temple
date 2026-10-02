@@ -15,6 +15,7 @@ struct ShortcutsView: View {
         .init(keys: "⌘⇧T", action: "Reopen the last closed tab"),
         .init(keys: "⌘N", action: "New session in a project you pick (default agent)"),
         .init(keys: "⌘⇧N", action: "Same picker, the other agent"),
+        .init(keys: "⌘O", action: "Open a project folder Temple hasn't seen yet"),
         .init(keys: "⌘⇧H", action: "Go to the home page"),
         .init(keys: "⌘1–9", action: "Switch to tab 1–9 in the active project"),
         .init(keys: "⌃⇥ / ⌃⇧⇥", action: "Last visited tab — hold ⌃ to walk the list, ⇧ reverses"),

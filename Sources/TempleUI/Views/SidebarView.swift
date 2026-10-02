@@ -47,7 +47,7 @@ struct SidebarView: View {
         // sidebar's section, by the divider, where Notes and Mail keep the
         // toggle. Without it they hugged the traffic lights.
         ToolbarItem(placement: .automatic) { Spacer() }
-        // One item holding all three, not three items: separate items — and
+        // One item holding both, not two items: separate items — and
         // a ToolbarItemGroup with the capsule off — lay out at the standard
         // ~44pt pitch and read as unrelated. Related actions on the Mac pack
         // into one control (Xcode's navigator switcher); this is that.
@@ -60,15 +60,12 @@ struct SidebarView: View {
 
     private var railActions: some ToolbarContent {
         ToolbarItem(placement: .automatic) {
+            // No "open a project folder" button here: it sat one slip from
+            // the toggle, and a rare action that opens a modal panel beside
+            // the most-clicked control in the window got hit by mistake
+            // (2026-10-02). It lives on ⌘O, the File menu, ⌘N's picker and
+            // the project switcher.
             HStack(spacing: 0) {
-                Button {
-                    chooseProjectFolder { path in
-                        model.openSessions.newSessionDefaultAgent(projectPath: path)
-                    }
-                } label: {
-                    Image(systemName: "folder.badge.plus")
-                }
-                .help("Open a project folder…")
                 Button {
                     // A hidden rail with search still open: the magnifier
                     // must reveal, not toggle — toggling closed the search the

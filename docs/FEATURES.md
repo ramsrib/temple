@@ -107,8 +107,8 @@ open tabs; any other session returns the next time it is opened
   inside it, and they return with the project. Nothing archived appears in the
   sidebar — `⌘⇧Y` is the way back.
 - The sidebar's actions live in the title bar, at the trailing edge of its
-  section: open a project folder, search, and the sidebar toggle — Temple's own
-  button, in place of the system one, so the three behave as one group. When
+  section: search and the sidebar toggle — Temple's own button, in place of
+  the system one, so the two behave as one group. When
   the sidebar is hidden they slide in beside the traffic lights and the
   working surface expands to the window edge; the tab strip measures where
   they end and starts after them. The macOS spring-loading that pops a
@@ -138,9 +138,10 @@ The sidebar and tab bar form a two-part navigation model:
   with sessions open, each with its containing folder, its session count, and a
   dot when an agent there is running or waiting. Choosing one returns to the
   session last used in it.
-- A project Temple has never seen is opened by choosing its folder, from the
-  switcher, from the folder button in the sidebar's title bar, or from the home
-  page. That
+- A project Temple has never seen is opened by choosing its folder: `⌘O`
+  (File → Open Project Folder…), the switcher, the `⌘N` picker, or the home
+  page. Not from the title bar: a folder button there sat one slip from the
+  sidebar toggle and was hit by mistake. The switcher's
   control is a folder, never the `+` that starts a session inside a project you
   already have.
 - `⌘P` is the keyboard route between projects, shaped like the macOS app switcher

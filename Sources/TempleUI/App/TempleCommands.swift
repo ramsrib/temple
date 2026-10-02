@@ -42,6 +42,9 @@ public struct TempleCommands: Commands {
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
 
+            Button("Open Project Folder…") { model.openProjectFolder() }
+                .keyboardShortcut("o")
+
             Button("Reopen Closed Tab") { model.openSessions.reopenLastClosedTab() }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
         }
