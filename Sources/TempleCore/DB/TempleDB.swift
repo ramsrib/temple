@@ -35,6 +35,32 @@ public struct SessionState: Codable, Equatable, Sendable {
     /// Nil for rows written before Temple recorded this: unknown, not "none".
     public let joinedVia: JoinedVia?
     public let joinedAt: Date?
+    public let agent: Agent?
+    public let transcriptPath: String?
+
+    public init(id: String, pinned: Bool, archived: Bool, customName: String?, color: String?,
+                generatedTitle: String?, lastOpenedAt: Date?, joinedVia: JoinedVia?, joinedAt: Date?,
+                agent: Agent? = nil, transcriptPath: String? = nil) {
+        self.id = id; self.pinned = pinned; self.archived = archived
+        self.customName = customName; self.color = color; self.generatedTitle = generatedTitle
+        self.lastOpenedAt = lastOpenedAt; self.joinedVia = joinedVia; self.joinedAt = joinedAt
+        self.agent = agent; self.transcriptPath = transcriptPath
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+        archived = try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false
+        customName = try c.decodeIfPresent(String.self, forKey: .customName)
+        color = try c.decodeIfPresent(String.self, forKey: .color)
+        generatedTitle = try c.decodeIfPresent(String.self, forKey: .generatedTitle)
+        lastOpenedAt = try c.decodeIfPresent(Date.self, forKey: .lastOpenedAt)
+        joinedVia = try c.decodeIfPresent(JoinedVia.self, forKey: .joinedVia)
+        joinedAt = try c.decodeIfPresent(Date.self, forKey: .joinedAt)
+        agent = try c.decodeIfPresent(Agent.self, forKey: .agent)
+        transcriptPath = try c.decodeIfPresent(String.self, forKey: .transcriptPath)
+    }
 }
 
 /// Per-project state: archived, and where the user placed it in the sidebar.
@@ -76,6 +102,26 @@ public struct OpenTabRecord: Codable, Equatable, Sendable {
 /// Temple-owned, rebuildable application state. CLI session content remains on disk.
 public final class TempleDB: @unchecked Sendable {
     private let db: DatabaseQueue
+    private let observerLock = NSLock()
+    private var joinObservers: [UUID: @Sendable (String, Bool) -> Void] = [:]
+
+    /// Delivered only after a committed write, including repeated opens. Observers
+    /// register before reading rows, so pre-start joins and concurrent joins survive.
+    public func observeJoins(_ observer: @escaping @Sendable (String, Bool) -> Void) -> UUID {
+        observerLock.lock(); defer { observerLock.unlock() }
+        let token = UUID(); joinObservers[token] = observer; return token
+    }
+
+    public func removeJoinObserver(_ token: UUID) {
+        observerLock.lock(); defer { observerLock.unlock() }
+        joinObservers.removeValue(forKey: token)
+    }
+
+    private func committedJoin(_ id: String, awaitingCreation: Bool = false) {
+        observerLock.lock(); let callbacks = Array(joinObservers.values); observerLock.unlock()
+        callbacks.forEach { $0(id, awaitingCreation) }
+    }
+
 
     public init(path: URL) throws {
         try FileManager.default.createDirectory(
@@ -157,7 +203,8 @@ public final class TempleDB: @unchecked Sendable {
     /// session that already has a row keeps the way it came in, and one from
     /// before that was recorded stays unknown rather than being
     /// credited to whatever touched it next.
-    public func join(sessionID: String, via: JoinedVia, at: Date = Date()) throws {
+    public func join(sessionID: String, via: JoinedVia, at: Date = Date(),
+                     agent: Agent? = nil, transcriptPath: URL? = nil) throws {
         try db.write { database in
             try database.execute(
                 sql: """
@@ -166,6 +213,20 @@ public final class TempleDB: @unchecked Sendable {
                     """,
                 arguments: [sessionID, via.rawValue, at]
             )
+            if agent != nil || transcriptPath != nil {
+                try database.execute(sql: "UPDATE session_state SET agent = COALESCE(?, agent), transcript_path = COALESCE(?, transcript_path) WHERE id = ?",
+                                     arguments: [agent?.rawValue, transcriptPath?.path, sessionID])
+            }
+        }
+        committedJoin(sessionID, awaitingCreation: via == .created && agent == .claude && transcriptPath == nil)
+    }
+
+    /// Hints never insert membership or change provenance, and do not trigger a
+    /// second resolution after the engine has already parsed this file.
+    public func updateTranscriptHint(sessionID: String, agent: Agent, path: URL) throws {
+        try db.write { database in
+            try database.execute(sql: "UPDATE session_state SET agent = ?, transcript_path = ? WHERE id = ?",
+                                 arguments: [agent.rawValue, path.path, sessionID])
         }
     }
 
@@ -190,7 +251,9 @@ public final class TempleDB: @unchecked Sendable {
                 generatedTitle: row["generated_title"],
                 lastOpenedAt: row["last_opened_at"],
                 joinedVia: (row["joined_via"] as String?).flatMap(JoinedVia.init(rawValue:)),
-                joinedAt: row["joined_at"]
+                joinedAt: row["joined_at"],
+                agent: (row["agent"] as String?).flatMap(Agent.init(rawValue:)),
+                transcriptPath: row["transcript_path"]
             )
         }
     }
@@ -207,7 +270,9 @@ public final class TempleDB: @unchecked Sendable {
                     generatedTitle: row["generated_title"],
                     lastOpenedAt: row["last_opened_at"],
                     joinedVia: (row["joined_via"] as String?).flatMap(JoinedVia.init(rawValue:)),
-                    joinedAt: row["joined_at"]
+                    joinedAt: row["joined_at"],
+                    agent: (row["agent"] as String?).flatMap(Agent.init(rawValue:)),
+                    transcriptPath: row["transcript_path"]
                 )
             }
         }
@@ -383,12 +448,14 @@ public final class TempleDB: @unchecked Sendable {
     }
 
     private func ensureState(_ sessionID: String) throws {
-        try db.write { database in
+        let inserted = try db.write { database in
             try database.execute(
                 sql: "INSERT OR IGNORE INTO session_state (id) VALUES (?)",
                 arguments: [sessionID]
             )
+            return database.changesCount > 0
         }
+        if inserted { committedJoin(sessionID) }
     }
 
     private func ensureProjectState(_ path: String) throws {
@@ -463,6 +530,12 @@ public final class TempleDB: @unchecked Sendable {
             try database.alter(table: "session_state") { table in
                 table.add(column: "joined_via", .text)
                 table.add(column: "joined_at", .datetime)
+            }
+        }
+        migrator.registerMigration("v9-session-transcript") { database in
+            try database.alter(table: "session_state") { table in
+                table.add(column: "agent", .text)
+                table.add(column: "transcript_path", .text)
             }
         }
         return migrator

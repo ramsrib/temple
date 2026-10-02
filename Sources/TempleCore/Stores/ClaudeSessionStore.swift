@@ -29,21 +29,40 @@ public struct ClaudeSessionStore: IncrementalSessionStore {
         return collector.result()
     }
 
-    public func sessionFileURLs() -> [URL] {
+    public func sessionFileURLs() -> [URL] { (try? enumerateSessionFiles()) ?? [] }
+
+    public func enumerateSessionFiles() throws -> [URL] {
         let fm = FileManager.default
-        guard let projectDirs = try? fm.contentsOfDirectory(
-            at: root, includingPropertiesForKeys: [.isDirectoryKey]) else { return [] }
-
+        let dirs: [URL]
+        do { dirs = try fm.contentsOfDirectory(at: root.resolvingSymlinksInPath(), includingPropertiesForKeys: [.isDirectoryKey]) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return [] }
         var files: [URL] = []
-        for dir in projectDirs {
-            guard (try? dir.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true,
-                  let directoryFiles = try? fm.contentsOfDirectory(
-                    at: dir, includingPropertiesForKeys: [.contentModificationDateKey])
-            else { continue }
-
-            files.append(contentsOf: directoryFiles.filter { $0.pathExtension == "jsonl" })
+        for dir in dirs {
+            guard try dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else { continue }
+            files += try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+                .filter { $0.pathExtension == "jsonl" }
         }
         return files
+    }
+
+    public func enumerateSessionFiles(in subtree: URL) throws -> [URL] {
+        let prefix = SessionPaths.normalized(root.path)
+        let path = SessionPaths.normalized(subtree.path)
+        if path == prefix || prefix.hasPrefix(path + "/") { return try enumerateSessionFiles() }
+        guard path.hasPrefix(prefix + "/") else { return [] }
+        let relative = path.dropFirst(prefix.count + 1).split(separator: "/")
+        guard relative.count == 1 else { return [] } // no Claude subagent trees
+        do {
+            return try FileManager.default.contentsOfDirectory(at: subtree.resolvingSymlinksInPath(), includingPropertiesForKeys: nil)
+                .filter { $0.pathExtension == "jsonl" }
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile { return [] }
+    }
+
+    public func acceptsTranscript(_ url: URL) -> Bool {
+        let path = SessionPaths.normalized(url.path)
+        let prefix = SessionPaths.normalized(root.path)
+        return url.pathExtension == "jsonl" && path.hasPrefix(prefix + "/") &&
+            path.split(separator: "/").count == prefix.split(separator: "/").count + 2
     }
 
     public func loadSession(at fileURL: URL) -> AgentSession? {

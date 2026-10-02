@@ -59,6 +59,11 @@ public protocol CodexAdopting: AnyObject {
     /// Begin watching for the rollout file of a Codex session just started in
     /// `projectPath`; call `adopt` with the discovered id when found.
     func reconcile(projectPath: String, startedAt: Date, adopt: @escaping (String) -> Void)
+    func transcriptPath(for sessionID: String) -> URL?
+}
+
+public extension CodexAdopting {
+    func transcriptPath(for sessionID: String) -> URL? { nil }
 }
 
 /// No-op implementation for tests that do not exercise adoption.

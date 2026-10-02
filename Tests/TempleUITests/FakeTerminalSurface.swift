@@ -162,13 +162,12 @@ enum Fixture {
     /// An isolated defaults object that never reaches the disk.
     static func uniqueDefaults() -> UserDefaults { InMemoryDefaults() }
 
-    /// Settings for a test about the index itself, not about whose sessions it
-    /// holds: every session on disk is browsable, as if each had been opened
-    /// in Temple. The scope has its own tests (`SessionScopeTests`).
-    static func settingsBrowsingAll() -> SettingsStore {
-        let settings = SettingsStore(defaults: uniqueDefaults())
-        settings.sessionScope = .all
-        return settings
+    /// Explicit membership for tests focused on browsing a supplied index.
+    static func join(_ index: SessionIndex, to database: TempleDB) {
+        for session in index.allSessions {
+            try! database.join(sessionID: session.id, via: .imported,
+                               agent: session.agent, transcriptPath: session.filePath)
+        }
     }
 
     /// A fresh OpenSessionsModel wired to a fake factory (isolated persistence).

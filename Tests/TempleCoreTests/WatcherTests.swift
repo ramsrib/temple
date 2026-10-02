@@ -1,8 +1,12 @@
 import XCTest
+import CoreServices
 @testable import TempleCore
 
 final class WatcherTests: XCTestCase {
-    func testWatcherYieldsUpdatedIndexAfterNewSessionFile() async throws {
+    func testWatcherYieldsUpdatedIndexAfterNewSessionFile() async throws { try await exercise0(injectEvents: false) }
+    func testWatcherYieldsUpdatedIndexAfterNewSessionFileWithInjectedEvents() async throws { try await exercise0(injectEvents: true) }
+
+    private func exercise0(injectEvents: Bool) async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("temple-watcher-\(UUID().uuidString)", isDirectory: true)
         let project = root.appendingPathComponent("-tmp-project", isDirectory: true)
@@ -10,18 +14,22 @@ final class WatcherTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let watcher = SessionWatcher(
-            stores: [ClaudeSessionStore(root: root)],
+            stores: [ClaudeSessionStore(root: root)], members: ["new-session"],
             debounceInterval: 0.1
         )
         let received = expectation(description: "updated index")
+        let stream = watcher.start()
+        defer { watcher.stop() }
+        try XCTSkipIf(!injectEvents && !watcher.isMonitoring, "FSEvents service unavailable in this execution environment")
         let task = Task {
             var isInitial = true
-            for await index in watcher.start() {
+            for await index in stream {
                 if isInitial {
                     isInitial = false
                     let file = project.appendingPathComponent("new-session.jsonl")
                     let json = #"{"type":"user","message":{"content":"hello"},"cwd":"/tmp/project","timestamp":"2026-01-01T00:00:00Z"}"#
                     try json.write(to: file, atomically: true, encoding: .utf8)
+                    if injectEvents { watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemCreated)) }
                 } else if index.allSessions.contains(where: { $0.id == "new-session" }) {
                     received.fulfill()
                     break
@@ -34,7 +42,10 @@ final class WatcherTests: XCTestCase {
         task.cancel()
     }
 
-    func testWatcherIncrementallyReloadsOneOfTwoHundredSessions() async throws {
+    func testWatcherIncrementallyReloadsOneOfTwoHundredSessions() async throws { try await exercise1(injectEvents: false) }
+    func testWatcherIncrementallyReloadsOneOfTwoHundredSessionsWithInjectedEvents() async throws { try await exercise1(injectEvents: true) }
+
+    private func exercise1(injectEvents: Bool) async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("temple-watcher-scale-\(UUID().uuidString)", isDirectory: true)
         let project = root.appendingPathComponent("-tmp-project", isDirectory: true)
@@ -51,14 +62,17 @@ final class WatcherTests: XCTestCase {
         }
 
         let watcher = SessionWatcher(
-            stores: [ClaudeSessionStore(root: root)],
+            stores: [ClaudeSessionStore(root: root)], members: Set((0..<200).map { "session-\($0)" }),
             debounceInterval: 0.05
         )
         let received = expectation(description: "incremental update")
         let target = project.appendingPathComponent("session-100.jsonl")
+        let stream = watcher.start()
+        defer { watcher.stop() }
+        try XCTSkipIf(!injectEvents && !watcher.isMonitoring, "FSEvents service unavailable in this execution environment")
         let task = Task {
             var mutationTime: Date?
-            for await index in watcher.start() {
+            for await index in stream {
                 if mutationTime == nil {
                     guard index.allSessions.count == 200 else { continue }
                     mutationTime = Date()
@@ -66,6 +80,7 @@ final class WatcherTests: XCTestCase {
                     defer { try? handle.close() }
                     try handle.seekToEnd()
                     try handle.write(contentsOf: Data(("\n" + #"{"type":"assistant","message":{"content":"updated"}}"#).utf8))
+                    if injectEvents { watcher.reconcileEvent(path: target.path, flags: UInt32(kFSEventStreamEventFlagItemModified)) }
                 } else if index.allSessions.first(where: { $0.id == "session-100" })?.messageCount == 2 {
                     if let mutationTime {
                         XCTAssertLessThan(Date().timeIntervalSince(mutationTime), 2.0)
@@ -81,7 +96,10 @@ final class WatcherTests: XCTestCase {
         task.cancel()
     }
 
-    func testWatcherDoesNotStarveUpdatesDuringSteadyEventStream() async throws {
+    func testWatcherDoesNotStarveUpdatesDuringSteadyEventStream() async throws { try await exercise2(injectEvents: false) }
+    func testWatcherDoesNotStarveUpdatesDuringSteadyEventStreamWithInjectedEvents() async throws { try await exercise2(injectEvents: true) }
+
+    private func exercise2(injectEvents: Bool) async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("temple-watcher-steady-\(UUID().uuidString)", isDirectory: true)
         let project = root.appendingPathComponent("-tmp-project", isDirectory: true)
@@ -93,14 +111,17 @@ final class WatcherTests: XCTestCase {
         try firstLine.write(to: session, atomically: true, encoding: .utf8)
 
         let watcher = SessionWatcher(
-            stores: [ClaudeSessionStore(root: root)],
+            stores: [ClaudeSessionStore(root: root)], members: ["streaming-session"],
             debounceInterval: 0.3
         )
         let initial = expectation(description: "initial index")
         let updatedWhileAppending = expectation(description: "update before steady appends stop")
+        let stream = watcher.start()
+        defer { watcher.stop() }
+        try XCTSkipIf(!injectEvents && !watcher.isMonitoring, "FSEvents service unavailable in this execution environment")
         let watchTask = Task {
             var receivedInitial = false
-            for await index in watcher.start() {
+            for await index in stream {
                 if !receivedInitial {
                     receivedInitial = true
                     initial.fulfill()
@@ -120,6 +141,7 @@ final class WatcherTests: XCTestCase {
                 let line = "\n" + #"{"type":"assistant","message":{"content":"update \#(index)"}}"#
                 try handle.write(contentsOf: Data(line.utf8))
                 try handle.close()
+                if injectEvents { watcher.reconcileEvent(path: session.path, flags: UInt32(kFSEventStreamEventFlagItemModified)) }
                 try await Task.sleep(for: .milliseconds(100))
             }
         }
@@ -136,7 +158,10 @@ final class WatcherTests: XCTestCase {
     /// gets cached against the file's FINAL signature, the session stays
     /// wrong/missing until app restart. This wrapper deterministically lands a
     /// write inside the parse window.
-    func testMidWriteParseIsRetriedNotPinned() async throws {
+    func testMidWriteParseIsRetriedNotPinned() async throws { try await exercise3(injectEvents: false) }
+    func testMidWriteParseIsRetriedNotPinnedWithInjectedEvents() async throws { try await exercise3(injectEvents: true) }
+
+    private func exercise3(injectEvents: Bool) async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("temple-watcher-race-\(UUID().uuidString)", isDirectory: true)
         // Dir name decodes lossily to "/tmp/tw/proj" — distinguishable from the
@@ -151,17 +176,21 @@ final class WatcherTests: XCTestCase {
             racingFile: file,
             lateLine: "\n" + #"{"type":"user","message":{"content":"hello"},"cwd":"/tmp/tw-proj","timestamp":"2026-01-01T00:00:01Z"}"#)
 
-        let watcher = SessionWatcher(stores: [store], debounceInterval: 0.05)
+        let watcher = SessionWatcher(stores: [store], members: ["racy-session"], debounceInterval: 0.05)
         let corrected = expectation(description: "re-parsed with real cwd after mid-write race")
+        let stream = watcher.start()
+        defer { watcher.stop() }
+        try XCTSkipIf(!injectEvents && !watcher.isMonitoring, "FSEvents service unavailable in this execution environment")
         let task = Task {
             var isInitial = true
-            for await index in watcher.start() {
+            for await index in stream {
                 if isInitial {
                     isInitial = false
                     // Preamble only — a typed line but no cwd (like a freshly
                     // created claude session).
                     let preamble = #"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-01-01T00:00:00Z","content":"hi"}"#
                     try preamble.write(to: file, atomically: true, encoding: .utf8)
+                    if injectEvents { watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemCreated)) }
                 } else if index.allSessions.contains(where: { $0.projectPath == "/tmp/tw-proj" }) {
                     corrected.fulfill()
                     break

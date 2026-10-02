@@ -772,7 +772,7 @@ the same function, which is the signal that the mechanism, not the patch,
 is wrong (`dotfiles/docs/review-escalation.md`).
 
 ## ADR-023 — Temple browses its own sessions by default
-**Date:** 2026-09-25 · **Status:** Accepted
+**Date:** 2026-09-25 · **Status:** Accepted; the *All on disk* setting is superseded by ADR-027
 
 ADR-007 built the sidebar from everything the CLIs write to disk. On a machine
 that runs agents from other terminals, scripts and editors, that is most of
@@ -964,3 +964,73 @@ Not taken yet: upstream `c4e16970a8` (2026-08-25), which frees a hidden
 surface's GPU memory (upstream measured 385 → 18 MiB at 1 visible + 20
 hidden tabs). It is a larger change across four files; it goes through the
 same door if it applies and measures.
+
+## ADR-027 — Temple indexes only its own sessions, and hears about them through FSEvents
+**Date:** 2026-10-02 · **Status:** Accepted
+
+Temple 0.3.3 after two hours: 5,220 open files, 4,106 of them session logs, one
+`O_EVTONLY` watch per `.jsonl` on disk (Claude 1,354 with subagents, Codex
+2,751), and the session-watcher thread at two thirds of the app's CPU. Every
+reload, at most every 0.4s while anything wrote, re-read the size and date of
+all ~4,100 logs and re-walked both trees; the event said which agent changed,
+never which file. All of it fed a sidebar that, since ADR-023, shows the 337
+sessions in `session_state`. The whole disk was also parsed at launch and kept
+in memory, and a 2.2 MB `index-cache.json` was rewritten every five seconds.
+
+**Decisions.**
+
+- **"All on disk" goes.** Every surface lists Temple sessions only. Outside
+  sessions are read in one place, on demand: `SessionCatalog`, used by
+  `templectl` and the History tab. Nothing outside Temple is watched.
+- **The live index holds members, nothing else.** Members are the
+  `session_state` rows, any `joined_via` including the legacy NULL ones, plus
+  runtime joins. AppModel's membership filter stays as a guard.
+- **Where a member's log is: a hint, then a map.** `session_state` gains
+  nullable `agent` and `transcript_path` (migration `v9-session-transcript`),
+  written when a session joins with a known file and after a legacy row first
+  resolves. A hint is validated by parsing; it never decides membership. Rows
+  without one fall back to a filename map built at launch from the real
+  directories (Claude's cwd encoding is lossy and is never reconstructed). A
+  legacy Codex row whose filename id disagrees with its `payload.id` is found
+  by reading rollout headers after the first index is published, in batches,
+  with a persisted header map (`rollout-headers.json`: path → signature + id)
+  so later launches read only new or changed rollouts. Headers are read as a
+  bounded prefix, never the whole file.
+- **One FSEvents stream replaces the watches.** File events over both roots,
+  started before the launch listing (Apple's required order) with events
+  buffered and reconciled after. An event means "reconcile this path": flags
+  are tested as bits, current existence decides. Paths are mapped through the
+  resolved roots (`/tmp`, `/var`, symlinks). Under `~/.codex`, anything that is
+  not a rollout or one of the two title files is dropped before any stat. A
+  member's write reparses that file; a non-member's costs nothing. Folder
+  moves, `MustScanSubDirs`, dropped events and a changed or missing root each
+  have a reconcile rule.
+- **Each member has a resolution state:** resolving, awaiting creation (a
+  Claude session Temple just launched), loaded, confirmed absent, unreadable.
+  Only a finished resolution establishes absence. A deleted log never removes
+  membership. Every committed join goes through one path that loads the
+  session at once (an import has no file activity to wait for).
+- **Codex adoption is registered before the process spawns,** sweeps rollouts
+  already in its ±5s window, and is decided when the window closes: one
+  candidate per request, ambiguity refused. Candidates never reach the index.
+- **The launch cache holds members** (schema 3, filtered by membership on
+  load), and AppModel compares index content, so a title-only change reaches
+  the UI.
+
+**Measured** with `templectl --watch` on APFS clones of the real stores (337
+members, 164 with a log on disk; 1,355 Claude and 2,761 Codex logs), one member
+written 4×/s and one outside Codex log 2×/s, over 60s:
+
+| | before | after |
+|---|---|---|
+| CPU | 50–53% of a core | 2.8% |
+| open files | 5,081 | 47 |
+| first index | 9.0–9.2 s | 1.5 s cold, 1.3 s warm |
+| memory | 326–505 MB | 36–38 MB |
+
+80 writes to the outside log produced no index publication.
+
+Launch still lists file names across the whole disk; everything after that
+scales with the sessions Temple manages. Not changed: the usage meter's own
+scan of recent Codex logs, and continuation following (`←` / `/bg`, ADR-023),
+which is still to be built; the event classifier is where it lands.

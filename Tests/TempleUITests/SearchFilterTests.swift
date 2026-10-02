@@ -76,8 +76,9 @@ final class SearchFilterTests: XCTestCase {
     private func makeAppModel(_ index: SessionIndex, noise: NoiseFilter = NoNoiseFilter())
         -> (AppModel, SessionOverlayStore) {
         let database = try! TempleDB.inMemory()
+        Fixture.join(index, to: database)
         let overlay = SessionOverlayStore(db: database)
-        let settings = Fixture.settingsBrowsingAll()
+        let settings = SettingsStore(defaults: Fixture.uniqueDefaults())
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
                              indexSource: FakeIndexSource(index),
                              noiseFilter: noise,
@@ -302,7 +303,7 @@ final class SearchFilterTests: XCTestCase {
     func testProjectOrderFrozenAtFirstPublishAndStableAcrossUpdates() {
         let a = Project(path: "/p/a", sessions: [Fixture.session("a1", project: "/p/a")])
         let b = Project(path: "/p/b", sessions: [Fixture.session("b1", project: "/p/b")])
-        let (model, _) = makeAppModel(SessionIndex(projects: [a, b]))
+        let (model, overlay) = makeAppModel(SessionIndex(projects: [a, b]))
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
 
         // New activity re-sorts the incoming index (b now first) — the sidebar
@@ -312,6 +313,7 @@ final class SearchFilterTests: XCTestCase {
 
         // A genuinely new project surfaces at the top; existing ones stay put.
         let c = Project(path: "/p/c", sessions: [Fixture.session("c1", project: "/p/c")])
+        overlay.join("c1", via: .created)
         model.index = SessionIndex(projects: [c, b, a])
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/c", "/p/a", "/p/b"])
     }
@@ -319,7 +321,7 @@ final class SearchFilterTests: XCTestCase {
     func testSessionOrderWithinProjectFrozenAndNewSessionsPrepend() {
         let s1 = Fixture.session("s1", project: "/p/a")
         let s2 = Fixture.session("s2", project: "/p/a")
-        let (model, _) = makeAppModel(SessionIndex(projects: [
+        let (model, overlay) = makeAppModel(SessionIndex(projects: [
             Project(path: "/p/a", sessions: [s1, s2]),
         ]))
         XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["s1", "s2"])
@@ -333,6 +335,7 @@ final class SearchFilterTests: XCTestCase {
 
         // A brand-new session prepends at the top (fresh), others stay put.
         let s3 = Fixture.session("s3", project: "/p/a")
+        overlay.join("s3", via: .created)
         model.index = SessionIndex(projects: [
             Project(path: "/p/a", sessions: [s3, s2, s1]),
         ])

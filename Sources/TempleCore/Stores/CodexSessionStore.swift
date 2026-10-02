@@ -20,7 +20,8 @@ public struct CodexSessionStore: IncrementalSessionStore {
         self.sessionIndexFile = base.appendingPathComponent("session_index.jsonl")
     }
 
-    public var watchedURLs: [URL] { [sessionsRoot, historyFile, sessionIndexFile] }
+    public var watchedURLs: [URL] { [sessionsRoot.deletingLastPathComponent()] }
+    public var titleURLs: [URL] { [historyFile, sessionIndexFile] }
 
     public var cacheInvalidationToken: String? {
         [historyFile, sessionIndexFile].map { url in
@@ -41,21 +42,76 @@ public struct CodexSessionStore: IncrementalSessionStore {
         return collector.result()
     }
 
-    public func sessionFileURLs() -> [URL] {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(
-            at: sessionsRoot,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]) else { return [] }
+    public func sessionFileURLs() -> [URL] { (try? enumerateSessionFiles()) ?? [] }
 
+    public func enumerateSessionFiles() throws -> [URL] { try enumerateRollouts(in: sessionsRoot) }
+
+    public func enumerateSessionFiles(in subtree: URL) throws -> [URL] {
+        let path = SessionPaths.normalized(subtree.path)
+        let prefix = SessionPaths.normalized(sessionsRoot.path)
+        if path == prefix || prefix.hasPrefix(path + "/") { return try enumerateSessionFiles() }
+        guard path.hasPrefix(prefix + "/") else { return [] }
+        return try enumerateRollouts(in: subtree)
+    }
+
+    private func enumerateRollouts(in directory: URL) throws -> [URL] {
+        let fm = FileManager.default
+        let physicalRoot = directory.resolvingSymlinksInPath()
+        do { _ = try fm.contentsOfDirectory(atPath: physicalRoot.path) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return [] }
+        var failure: Error?
+        guard let enumerator = fm.enumerator(at: physicalRoot, includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles], errorHandler: { _, error in failure = error; return false })
+        else { throw CocoaError(.fileReadUnknown) }
         var files: [URL] = []
-        for case let url as URL in enumerator {
-            guard url.pathExtension == "jsonl",
-                  url.lastPathComponent.hasPrefix("rollout-") else { continue }
-            files.append(url)
-        }
+        for case let url as URL in enumerator where url.pathExtension == "jsonl" && url.lastPathComponent.hasPrefix("rollout-") { files.append(url) }
+        if let failure { throw failure }
         return files
     }
+
+    public func acceptsTranscript(_ url: URL) -> Bool {
+        url.pathExtension == "jsonl" && url.lastPathComponent.hasPrefix("rollout-") &&
+            SessionPaths.normalized(url.path).hasPrefix(SessionPaths.normalized(sessionsRoot.path) + "/")
+    }
+
+    public func filenameID(at url: URL) -> String? {
+        let stem = url.deletingPathExtension().lastPathComponent
+        guard stem.count >= 36 else { return nil }
+        let id = String(stem.suffix(36))
+        return UUID(uuidString: id) == nil ? nil : id.lowercased()
+    }
+
+    private func metadataObject(at url: URL) throws -> [String: Any] {
+        let data = try StoreIO.readFirstLine(url)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return object
+    }
+
+    public func metadataSessionID(at url: URL) throws -> String? {
+        let object = try metadataObject(at: url)
+        guard object["type"] as? String == "session_meta",
+              let payload = object["payload"] as? [String: Any], !Self.isSubagentThread(payload) else { return nil }
+        guard let id = (payload["id"] as? String) ?? (payload["session_id"] as? String), !id.isEmpty else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return id
+    }
+
+    public func metadataHeader(at url: URL) -> CodexRolloutCandidate? {
+        guard let object = try? metadataObject(at: url), object["type"] as? String == "session_meta",
+              let payload = object["payload"] as? [String: Any], !Self.isSubagentThread(payload),
+              let id = (payload["id"] as? String) ?? (payload["session_id"] as? String), !id.isEmpty,
+              let cwd = payload["cwd"] as? String,
+              let date = StoreIO.parseDate((payload["timestamp"] as? String) ?? (object["timestamp"] as? String))
+        else { return nil }
+        return CodexRolloutCandidate(sessionID: id, cwd: cwd, createdAt: date, filePath: url)
+    }
+
+    /// The engine retains the rollout-derived title separately, so deleting a
+    /// shared title can restore it without reading the transcript again.
+    public func loadTranscript(at url: URL) -> AgentSession? { parse(file: url, titles: [:]) }
 
     /// A thread spawned by another agent (`source.subagent.thread_spawn`, with
     /// the parent in `parent_thread_id`) has a rollout of its own, but it is
@@ -195,7 +251,7 @@ public struct CodexSessionStore: IncrementalSessionStore {
     /// falls back to the prompt inside the rollout itself. Entries that clean
     /// to nothing (e.g. a lone-space prompt) are dropped so the next source
     /// gets its turn.
-    private func loadTitles() -> [String: String] {
+    public func loadTitles() -> [String: String] {
         var titles: [String: String] = [:]
         for source in [loadIndexThreadNames(), loadHistoryTitles()] {
             for (id, text) in source {

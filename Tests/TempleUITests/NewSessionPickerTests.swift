@@ -15,12 +15,13 @@ final class NewSessionPickerTests: XCTestCase {
     private func makeModel(_ index: SessionIndex,
                            noise: NoiseFilter = PickerNoNoiseFilter()) -> AppModel {
         let database = try! TempleDB.inMemory()
+        Fixture.join(index, to: database)
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
             indexSource: FakeIndexSource(index),
             noiseFilter: noise,
             database: database,
-            settings: Fixture.settingsBrowsingAll(),
+            settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: SessionOverlayStore(db: database)
         )
         model.index = index

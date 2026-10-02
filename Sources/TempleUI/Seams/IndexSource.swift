@@ -13,7 +13,7 @@ public protocol IndexSource: AnyObject {
 public final class WatcherIndexSource: IndexSource {
     private static let cacheSaveInterval = Duration.seconds(5)
 
-    private let watcher: SessionWatcher
+    let watcher: SessionWatcher
     private let cacheURL: URL
     private var task: Task<Void, Never>?
     private var cacheTask: Task<Void, Never>?
@@ -57,6 +57,8 @@ public final class WatcherIndexSource: IndexSource {
     func removeObserver(_ id: UUID) {
         observers.removeValue(forKey: id)
     }
+
+    func startEngineIfNeeded() { startIfNeeded() }
 
     private func startIfNeeded() {
         guard task == nil else { return }

@@ -1,10 +1,14 @@
 import XCTest
 @testable import TempleUI
-import TempleCore
+@testable import TempleCore
+import CoreServices
 
 @MainActor
 final class CoreWiringTests: XCTestCase {
-    func testWatcherIndexSourceDeliversFilesystemUpdateIntoAppModel() async throws {
+    func testWatcherIndexSourceDeliversFilesystemUpdateIntoAppModel() async throws { try await exerciseWiring(injectEvents: false) }
+    func testWatcherIndexSourceDeliversInjectedUpdateIntoAppModel() async throws { try await exerciseWiring(injectEvents: true) }
+
+    private func exerciseWiring(injectEvents: Bool) async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("temple-ui-watcher-\(UUID().uuidString)", isDirectory: true)
         let projectDirectory = root.appendingPathComponent("-tmp-project", isDirectory: true)
@@ -14,18 +18,19 @@ final class CoreWiringTests: XCTestCase {
         // Isolate the startup cache: never read or overwrite the developer's
         // real ~/Library/Application Support cache from a test.
         let cacheURL = root.appendingPathComponent("index-cache.json")
+        let database = try TempleDB.inMemory()
+        try database.join(sessionID: "wired-session", via: .created, agent: .claude)
         let watcher = SessionWatcher(
-            stores: [ClaudeSessionStore(root: root)],
+            stores: [ClaudeSessionStore(root: root)], database: database,
             debounceInterval: 0.05
         )
         let source = WatcherIndexSource(watcher: watcher, cacheURL: cacheURL)
         defer { source.stop() }
-        let database = try TempleDB.inMemory()
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
             indexSource: source,
             database: database,
-            settings: Fixture.settingsBrowsingAll(),
+            settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: SessionOverlayStore(db: database),
             cacheURL: cacheURL
         )
@@ -36,10 +41,13 @@ final class CoreWiringTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertFalse(model.isLoading)
+        try XCTSkipIf(!injectEvents && !watcher.isMonitoring, "FSEvents service unavailable in this execution environment")
 
+        if injectEvents { model.openSession(id: "wired-session") }
         let file = projectDirectory.appendingPathComponent("wired-session.jsonl")
         let json = #"{"type":"user","message":{"content":"hello"},"cwd":"/tmp/project","timestamp":"2026-01-01T00:00:00Z"}"#
         try json.write(to: file, atomically: true, encoding: .utf8)
+        if injectEvents { watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemCreated)) }
 
         let updateDeadline = Date().addingTimeInterval(5)
         while !model.index.allSessions.contains(where: { $0.id == "wired-session" }),
@@ -47,6 +55,7 @@ final class CoreWiringTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(25))
         }
         XCTAssertTrue(model.index.allSessions.contains(where: { $0.id == "wired-session" }))
+        if injectEvents { XCTAssertEqual(model.openSessions.activeTab?.sessionID, "wired-session") }
     }
 
     func testWatcherCodexReconcilerAdoptsFixtureRollout() async throws {

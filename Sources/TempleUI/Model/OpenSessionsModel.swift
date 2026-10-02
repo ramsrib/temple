@@ -55,7 +55,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// A tab now runs this session: `.created` for one started here (a minted
     /// Claude id, or the Codex id adopted for a session this model launched),
     /// `.opened` for one resumed or restored. AppModel makes it a Temple session.
-    public var openedHandler: ((_ sessionID: String, _ via: JoinedVia) -> Void)?
+    public var openedHandler: ((_ sessionID: String, _ via: JoinedVia, _ agent: Agent?, _ transcriptPath: URL?) -> Void)?
     /// Does any transcript on disk carry this session id? Answered from the
     /// index (AppModel wires it); nil means "can't say yet" — the index is
     /// still loading — and no verdict is recorded. Only a provable absence
@@ -113,7 +113,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         return result
     }
 
-    private func sessionTab(withSessionID id: String) -> SessionTab? {
+    func sessionTab(withSessionID id: String) -> SessionTab? {
         tabs.first { $0.kind == .session && $0.sessionID == id }
     }
 
@@ -147,6 +147,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Either way the session's project becomes active (UX "Open an existing
     /// session").
     public func openSession(_ session: AgentSession) {
+        openedHandler?(session.id, .opened, session.agent, session.filePath)
         if let existing = sessionTab(withSessionID: session.id) {
             activate(existing)
             return
@@ -170,7 +171,6 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             command: command,
             isResume: true)
         tabs.append(tab)
-        openedHandler?(session.id, .opened)
         activate(tab)
         persist()
     }
@@ -197,8 +197,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             command: spec.command,
             isProvisional: spec.isProvisional)
         tabs.append(tab)
-        if let sid = spec.sessionID { openedHandler?(sid, .created) }
-        activate(tab)
+        if let sid = spec.sessionID { openedHandler?(sid, .created, spec.agent, nil) }
         if spec.isProvisional {
             // Codex: adopt the real id once its rollout file appears (ADR-008).
             reconciler.reconcile(projectPath: projectPath, startedAt: Date()) { [weak self, weak tab] id in
@@ -206,6 +205,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                 self.adopt(sessionID: id, for: tab.id)
             }
         }
+        activate(tab)
         persist()
         return tab
     }
@@ -223,7 +223,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
         tab.sessionID = sessionID
         tab.isProvisional = false
-        openedHandler?(sessionID, .created)
+        openedHandler?(sessionID, .created, .codex, reconciler.transcriptPath(for: sessionID))
         if case .running(let pid) = tab.surface?.processState ?? .notStarted {
             registry.register(pid: pid, sessionID: sessionID)
         }
@@ -714,7 +714,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                               projectPath: p.projectPath, title: p.title, command: command,
                               isResume: true)
         }
-        for p in saved { openedHandler?(p.sessionID, .opened) }
+        for p in saved { openedHandler?(p.sessionID, .opened, Agent(rawValue: p.agent), nil) }
         // Restore active project context without spawning anything.
         activeProjectPath = tabs.first?.projectPath
         // Every other chip stays inert until clicked (lazy restore). The one the

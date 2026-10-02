@@ -48,13 +48,13 @@ back to the first human prompt
 ([ADR-007](./DECISIONS.md#adr-007--session-index-is-built-from-the-clis-on-disk-stores),
 [ADR-011](./DECISIONS.md#adr-011--title-source-first-human-prompt-cli-summaries-unreliable)).
 
-By default Temple browses only **its own sessions**: every session it has
-started, opened in a tab, or that you have pinned, renamed, colored or
-archived. A project appears when it holds one. Sessions run anywhere else are
-on no surface at all: not the sidebar, `⌘K`, `⌘Y`, the launcher, the `⌘N`
-picker, or the `⌘⇧Y` archive. **Settings ▸ Sessions ▸ Show ▸ All on disk**
-lists everything the CLIs have written, without storing any of it; opening or
-acting on one of those makes it a Temple session for good. Temple records how
+Temple browses only **its own sessions**: every session it has started,
+opened in a tab, or that you have pinned, renamed, colored or archived. A
+project appears when it holds one. Sessions run anywhere else are on no
+surface at all: not the sidebar, `⌘K`, `⌘Y`, the launcher, the `⌘N` picker,
+or the `⌘⇧Y` archive, and Temple does not read or watch them while it runs
+(ADR-027). Bringing one in is an explicit import from the History tab
+(planned); opening one makes it a Temple session for good. Temple records how
 each session joined (started here, opened, or imported), for features that
 will need to know. On upgrade, the sidebar starts with the sessions Temple had
 already pinned, renamed, colored, archived or seen retitle in a tab, plus the
@@ -332,8 +332,6 @@ Settings opens as a singleton, card-grouped tab rather than a separate window.
 Changes apply live where applicable.
 
 - **Terminal:** font size and font family.
-- **Sessions:** show **Temple sessions** (the default) or **All on disk**.
-  Applies to every surface that lists sessions.
 - **Agents:** default agent used by `⌘T`, folder launches, and recent-project
   launches.
 - **Claude:** configurable Command and Arguments fields. The shipped default
@@ -454,7 +452,7 @@ and System / Light / Dark appearance.
 | Activity | Replace or strengthen the 15-second settle-timer heuristic; per-session and per-project mute; Do Not Disturb; Dock and sidebar badge counts. |
 | Sidebar & discovery | Project pinning; agent, time-range, and active-only filters; richer project/agent/content search; configurable scan roots and excluded paths; rich metadata such as message count, model, and git branch in the sidebar. A flat recents view shipped as the `⌘Y` history. |
 | Session management | Delete; duplicate/fork; grouping by git repository. Archive, rename, pin/unpin, color marks, and context menus are already shipped. |
-| Session lineage | Follow a Temple session that Claude continues under a new id (`←` / `/bg` writes `continued-in` into the old transcript) and hand its row and tab to the child; open live background sessions with `claude attach`; an "Add to Temple" action for sessions browsed under All on disk; optionally show subagents under their parent. Each becomes Temple's through the same `join`, with lineage kept apart from how it joined (ADR-023); a ⌘Y scope toggle beside the Settings default once "Add to Temple" exists; on-disk hooks in [SESSION-FORMATS](./SESSION-FORMATS.md). |
+| Session lineage | Follow a Temple session that Claude continues under a new id (`←` / `/bg` writes `continued-in` into the old transcript) and hand its row and tab to the child; open live background sessions with `claude attach`; an "Add to Temple" import from the History tab (ADR-027); optionally show subagents under their parent. Each becomes Temple's through the same `join`, with lineage kept apart from how it joined (ADR-023); on-disk hooks in [SESSION-FORMATS](./SESSION-FORMATS.md). |
 | Terminal & tabs | Split panes; copy mode; terminal cursor controls; tab-bar overflow handling. `⌘⇧T` reopen-closed-tab shipped. |
 | Windowing | Multi-window support. |
 | Agents | Third-agent adapters such as Gemini CLI and aider; surface agent-specific capabilities such as models and permission modes. |

@@ -12,8 +12,8 @@ public extension SessionStore {
     var watchedURLs: [URL] { [] }
 }
 
-/// Optional capabilities used by `SessionWatcher` to update a store without
-/// reparsing every session after each filesystem event.
+/// Path-level capabilities required by the live engine. Full-disk catalogs
+/// continue to accept any SessionStore.
 public protocol IncrementalSessionStore: SessionStore {
     /// Session files currently owned by this store.
     func sessionFileURLs() -> [URL]
@@ -22,10 +22,49 @@ public protocol IncrementalSessionStore: SessionStore {
     /// Changes when non-session input (for example Codex history) invalidates
     /// cached sessions. `nil` means session files are the only input.
     var cacheInvalidationToken: String? { get }
+    /// Unlike the catalog's tolerant listing, resolution must distinguish errors
+    /// from a completed empty scan.
+    func enumerateSessionFiles() throws -> [URL]
+    func enumerateSessionFiles(in subtree: URL) throws -> [URL]
+    func filenameID(at url: URL) -> String?
+    func acceptsTranscript(_ url: URL) -> Bool
+    func metadataHeader(at url: URL) -> CodexRolloutCandidate?
+    /// Nil is a readable non-session/subagent; errors cannot establish absence.
+    func metadataSessionID(at url: URL) throws -> String?
+
 }
 
 public extension IncrementalSessionStore {
     var cacheInvalidationToken: String? { nil }
+    func enumerateSessionFiles() throws -> [URL] { sessionFileURLs() }
+    func enumerateSessionFiles(in subtree: URL) throws -> [URL] {
+        let prefix = SessionPaths.normalized(subtree.path)
+        return try enumerateSessionFiles().filter { SessionPaths.normalized($0.path).hasPrefix(prefix + "/") }
+    }
+    func filenameID(at url: URL) -> String? { url.deletingPathExtension().lastPathComponent }
+    func acceptsTranscript(_ url: URL) -> Bool {
+        url.pathExtension == "jsonl" && !url.pathComponents.contains("subagents")
+    }
+    func metadataHeader(at url: URL) -> CodexRolloutCandidate? { nil }
+    func metadataSessionID(at url: URL) throws -> String? { metadataHeader(at: url)?.sessionID }
+
+}
+
+/// Lexical aliases, preserving case and requiring no access to an event leaf.
+enum SessionPaths {
+    static func normalized(_ path: String) -> String {
+        var components: [Substring] = []
+        for component in path.split(separator: "/") {
+            if component == "." { continue }
+            if component == ".." { if !components.isEmpty { components.removeLast() }; continue }
+            components.append(component)
+        }
+        let p = "/" + components.joined(separator: "/")
+        for prefix in ["/tmp", "/var"] where p == prefix || p.hasPrefix(prefix + "/") {
+            return "/private" + p
+        }
+        return p
+    }
 }
 
 // MARK: - Shared file/JSON helpers
@@ -40,6 +79,25 @@ enum StoreIO {
         defer { try? fh.close() }
         let data = (try? fh.read(upToCount: maxBytes)) ?? Data()
         return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Read one JSONL header, never decoding the rest of the prefix or file.
+    /// A missing newline at EOF is valid; hitting the cap is incomplete input.
+    static func readFirstLine(_ url: URL, maxBytes: Int = readWindowBytes) throws -> Data {
+        guard maxBytes > 0 else { throw CocoaError(.fileReadCorruptFile) }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var line = Data()
+        while line.count < maxBytes {
+            let chunk = try handle.read(upToCount: min(4096, maxBytes - line.count)) ?? Data()
+            if chunk.isEmpty { return line }
+            if let newline = chunk.firstIndex(of: 0x0a) {
+                line.append(chunk.prefix(upTo: newline))
+                return line
+            }
+            line.append(chunk)
+        }
+        throw CocoaError(.fileReadCorruptFile)
     }
 
     /// Read at most the last `maxBytes`, keeping large logs memory-bounded.
@@ -95,10 +153,10 @@ enum StoreIO {
     }
 
     static func fileSignature(_ url: URL) -> (modificationDate: Date, fileSize: Int)? {
-        guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
-              let modificationDate = values.contentModificationDate,
-              let fileSize = values.fileSize else { return nil }
-        return (modificationDate, fileSize)
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let date = attrs[.modificationDate] as? Date,
+              let size = attrs[.size] as? Int else { return nil }
+        return (date, size)
     }
 
     /// Parse one JSONL line into a dictionary; nil on malformed input.

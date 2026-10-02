@@ -15,13 +15,14 @@ final class HistoryTests: XCTestCase {
     private func makeModel(_ index: SessionIndex,
                            noise: NoiseFilter = HistoryNoNoiseFilter()) -> (AppModel, SessionOverlayStore) {
         let database = try! TempleDB.inMemory()
+        Fixture.join(index, to: database)
         let overlay = SessionOverlayStore(db: database)
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
             indexSource: FakeIndexSource(index),
             noiseFilter: noise,
             database: database,
-            settings: Fixture.settingsBrowsingAll(),
+            settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: overlay
         )
         model.index = index

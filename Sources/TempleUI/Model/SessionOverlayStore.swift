@@ -85,10 +85,9 @@ public final class SessionOverlayStore: ObservableObject {
     /// never, and a retry ledger for them grew a new edge case per review
     /// round; what matters is that failure never shows the wrong sessions.
     @discardableResult
-    public func join(_ id: String, via: JoinedVia) -> Bool {
-        guard !templeSessions.contains(id) else { return true }
+    public func join(_ id: String, via: JoinedVia, agent: Agent? = nil, transcriptPath: URL? = nil) -> Bool {
         do {
-            try db.join(sessionID: id, via: via)
+            try db.join(sessionID: id, via: via, agent: agent, transcriptPath: transcriptPath)
             templeSessions.insert(id)
             return true
         } catch {

@@ -25,8 +25,8 @@ if CommandLine.arguments.contains("--import-all") {
         exit(1)
     }
     let db = try TempleDB(path: TempleDB.defaultPath())
-    let sessions = SessionIndex.buildDefault().allSessions
-    for session in sessions { try db.join(sessionID: session.id, via: .imported) }
+    let sessions = SessionCatalog().load().allSessions
+    for session in sessions { try db.join(sessionID: session.id, via: .imported, agent: session.agent, transcriptPath: session.filePath) }
     print("imported \(sessions.count) sessions")
     exit(0)
 }
@@ -66,7 +66,7 @@ if let searchQuery {
         print("\(badge)  \(project)  —  \(session.title)")
     }
 } else if CommandLine.arguments.contains("--watch") {
-    let watcher = SessionWatcher()
+    let watcher = SessionWatcher(database: try TempleDB(path: TempleDB.defaultPath()))
     var first = true
     for await index in watcher.start() {
         printIndex(index.filteringNoise(includeNoise: includeNoise), compact: !first)

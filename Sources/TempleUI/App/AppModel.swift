@@ -160,21 +160,9 @@ public final class AppModel: ObservableObject {
 
     private var cancellables: Set<AnyCancellable> = []
     private var themeObserver: NSObjectProtocol?
-    private var lastIndexSignature = ""
+    private var pendingSessionOpens: Set<String> = []
     /// A cached snapshot is replaced unconditionally by the first live index.
     private(set) var isIndexStale = false
-
-    /// Cheap change-detection so duplicate watcher events do not re-filter an
-    /// unchanged index.
-    private static func signature(of index: SessionIndex) -> String {
-        var count = 0
-        var latest: TimeInterval = 0
-        for project in index.projects {
-            count += project.sessions.count
-            if let m = project.sessions.map(\.updatedAt).max()?.timeIntervalSince1970, m > latest { latest = m }
-        }
-        return "\(index.projects.count)-\(count)-\(latest)"
-    }
 
     public init(surfaceFactory: TerminalSurfaceFactory = StubTerminalSurfaceFactory(),
                 indexSource: IndexSource? = nil,
@@ -195,7 +183,7 @@ public final class AppModel: ObservableObject {
         let uiState = UIStateStore(db: database)
         let registry = registry ?? DBProcessRegistry(db: database)
         let persistence = persistence ?? DBTabPersistence(db: database)
-        let resolvedIndexSource = indexSource ?? WatcherIndexSource(cacheURL: cacheURL)
+        let resolvedIndexSource = indexSource ?? WatcherIndexSource(watcher: SessionWatcher(database: database), cacheURL: cacheURL)
         let reconciler = reconciler ?? (resolvedIndexSource as? WatcherIndexSource).map {
             WatcherCodexReconciler(indexSource: $0)
         } ?? NoopCodexReconciler()
@@ -271,17 +259,21 @@ public final class AppModel: ObservableObject {
         }
         // Whatever a tab runs is a Temple session from then on — including one
         // resumed from elsewhere, which is how it joins the sidebar.
-        openSessions.openedHandler = { [weak self] sessionID, via in
-            self?.overlay.join(sessionID, via: via)
+        openSessions.openedHandler = { [weak self] sessionID, via, agent, path in
+            self?.overlay.join(sessionID, via: via, agent: agent, transcriptPath: path)
         }
-        // A dead-on-arrival resume gets its verdict annotated from the index.
-        // The RAW index (pre noise-filter) is the right set: existence is the
-        // question, visibility is not. nil while still loading OR while only
-        // the stale cached snapshot is up — a session created just before the
-        // relaunch is absent from that cache, and an unknown must never be
-        // recorded as a missing transcript.
+        // A resume failure uses this member's completed resolution. A newly
+        // launched or unreadable transcript never acquires a missing verdict.
         openSessions.sessionKnown = { [weak self] sessionID in
-            guard let self, !self.isLoading, !self.isIndexStale else { return nil }
+            guard let self else { return nil }
+            if let source = self.indexSource as? WatcherIndexSource {
+                switch source.watcher.resolution(for: sessionID) {
+                case .loaded: return true
+                case .confirmedAbsent: return false
+                default: return nil
+                }
+            }
+            guard !self.isLoading, !self.isIndexStale else { return nil }
             return self.index.allSessions.contains { $0.id == sessionID }
         }
         // Sidebar highlight follows the active tab (UX "Select vs. open").
@@ -360,7 +352,7 @@ public final class AppModel: ObservableObject {
     public func start() {
         applyAppearance()
         openSessions.restore()
-        if let cachedIndex = CachedIndexStore.load(from: cacheURL) {
+        if let cachedIndex = CachedIndexStore.load(from: cacheURL, members: overlay.templeSessions) {
             index = cachedIndex
             isLoading = false
             isIndexStale = true
@@ -378,10 +370,12 @@ public final class AppModel: ObservableObject {
                 isFirstLiveIndex = false
             }
             // Skip the recompute (disk-stat) storm when nothing actually changed.
-            let signature = Self.signature(of: index)
-            guard signature != self.lastIndexSignature else { return }
-            self.lastIndexSignature = signature
-            self.index = index
+            if index != self.index { self.index = index }
+            for id in self.pendingSessionOpens {
+                guard let session = index.allSessions.first(where: { $0.id == id }) else { continue }
+                self.pendingSessionOpens.remove(id)
+                self.openSessions.openSession(session)
+            }
         }
         // U10: follow macOS appearance live when theme == .system.
         themeObserver = DistributedNotificationCenter.default().addObserver(
@@ -446,11 +440,38 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    public func transcriptURL(for id: String) -> URL? {
+        if let source = indexSource as? WatcherIndexSource {
+            if case .loaded(let url) = source.watcher.resolution(for: id) { return url }
+            return nil
+        }
+        return index.allSessions.first { $0.id == id }?.filePath
+    }
+
     // MARK: Opening by id (palette / notifications)
 
     public func openSession(id: String) {
-        guard let session = index.allSessions.first(where: { $0.id == id }) else { return }
-        openSessions.openSession(session)
+        let engine = (indexSource as? WatcherIndexSource)?.watcher
+        if let tab = openSessions.sessionTab(withSessionID: id) {
+            engine?.requestResolution(id)
+            openSessions.activate(tab)
+            return
+        }
+        if let engine {
+            // Cached content is not proof of a usable resume target. An
+            // activation arriving during resolution is completed on publication.
+            guard case .loaded = engine.resolution(for: id) else {
+                if overlay.isTempleSession(id) { pendingSessionOpens.insert(id) }
+                engine.requestResolution(id)
+                return
+            }
+        }
+        if let session = index.allSessions.first(where: { $0.id == id }) {
+            openSessions.openSession(session)
+        } else if overlay.isTempleSession(id) {
+            pendingSessionOpens.insert(id)
+            engine?.requestResolution(id)
+        }
     }
 
     /// The project the launcher should default to (last active, else first indexed).
@@ -504,15 +525,9 @@ public final class AppModel: ObservableObject {
         objectWillChange.send()
     }
 
-    /// The non-noise set narrowed to the session scope: by default only
-    /// Temple's sessions (the ones with a row in its DB, however they joined). A project
-    /// is the sessions in it, so one with none of Temple's goes with them.
-    /// "All on disk" is the in-memory index as it stands — switching to it
-    /// writes nothing. Everything downstream — the browse
-    /// surfaces and the archive browser alike — starts here, so a session from
-    /// outside is nowhere until the setting says otherwise.
+    /// Membership remains a guard even when a test or cached source supplies
+    /// a broader snapshot. Every browsing surface starts from this set.
     private var scopedProjects: [Project] {
-        guard settings.sessionScope == .temple else { return noiseFilteredProjects }
         let temple = overlay.templeSessions
         return noiseFilteredProjects.compactMap { project -> Project? in
             let sessions = project.sessions.filter { temple.contains($0.id) }

@@ -709,8 +709,8 @@ private struct TabChip: View {
             Button("Copy session ID") { if let sid = tab.sessionID { copyToPasteboard(sid) } }
             Button("Reveal session file in Finder") {
                 if let sid = tab.sessionID,
-                   let session = model.index.allSessions.first(where: { $0.id == sid }) {
-                    NSWorkspace.shared.activateFileViewerSelecting([session.filePath])
+                   let url = model.transcriptURL(for: sid) {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
                 }
             }
             .disabled(tab.sessionID == nil)

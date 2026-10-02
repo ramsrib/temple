@@ -85,13 +85,13 @@ final class GhosttyRuntimeTests: XCTestCase {
 
     // Dropping a file/image onto an agent must type a path it can actually read.
     @MainActor
-    func testDroppedFileBecomesAQuotedPath() {
+    func testDroppedFileBecomesAQuotedPath() throws {
         let pasteboard = NSPasteboard(name: .init("temple-test-\(UUID().uuidString)"))
         pasteboard.clearContents()
-        pasteboard.writeObjects([
+        try XCTSkipUnless(pasteboard.writeObjects([
             URL(fileURLWithPath: "/tmp/my shots/shot 1.png") as NSURL,
             URL(fileURLWithPath: "/tmp/log.txt") as NSURL,
-        ])
+        ]), "Pasteboard service unavailable in this execution environment")
         // Spaces must not split one file into two arguments.
         XCTAssertEqual(GhosttySurfaceView.droppedText(from: pasteboard),
                        "'/tmp/my shots/shot 1.png' /tmp/log.txt")
@@ -106,7 +106,8 @@ final class GhosttyRuntimeTests: XCTestCase {
 
         let pasteboard = NSPasteboard(name: .init("temple-test-\(UUID().uuidString)"))
         pasteboard.clearContents()
-        pasteboard.setData(image.tiffRepresentation, forType: .tiff)   // no file URL: pixels only
+        try XCTSkipUnless(pasteboard.setData(image.tiffRepresentation, forType: .tiff),
+                          "Pasteboard service unavailable in this execution environment") // pixels only
 
         let dropped = try XCTUnwrap(GhosttySurfaceView.droppedText(from: pasteboard))
         let path = dropped.trimmingCharacters(in: CharacterSet(charactersIn: "'"))
@@ -116,10 +117,11 @@ final class GhosttyRuntimeTests: XCTestCase {
     }
 
     @MainActor
-    func testDroppedTextIsPassedThroughUnescaped() {
+    func testDroppedTextIsPassedThroughUnescaped() throws {
         let pasteboard = NSPasteboard(name: .init("temple-test-\(UUID().uuidString)"))
         pasteboard.clearContents()
-        pasteboard.setString("git status --short", forType: .string)
+        try XCTSkipUnless(pasteboard.setString("git status --short", forType: .string),
+                          "Pasteboard service unavailable in this execution environment")
         // Text may be a command the user means to run — quoting it would break it.
         XCTAssertEqual(GhosttySurfaceView.droppedText(from: pasteboard), "git status --short")
     }

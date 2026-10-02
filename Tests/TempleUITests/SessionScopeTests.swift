@@ -53,7 +53,6 @@ final class SessionScopeTests: XCTestCase {
         let (model, overlay) = makeModel(mixedIndex(), database: database(touching: ["t1"]))
         overlay.togglePin("t1")
 
-        XCTAssertEqual(model.settings.sessionScope, .temple)
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/temple"])
         XCTAssertEqual(model.displayProjects.flatMap(\.sessions).map(\.id), ["t1"])
         XCTAssertEqual(model.pinnedSessions.map(\.id), ["t1"])
@@ -122,26 +121,20 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertEqual(try database.sessionState("o1")?.joinedVia, .opened)
     }
 
-    /// Browsing everything is the in-memory index; toggling it on and off
-    /// writes no rows, however many sessions are on disk.
-    func testTogglingAllOnDiskWritesNothing() throws {
+    /// Browsing a supplied snapshot does not import its outside sessions.
+    func testBrowsingDoesNotJoinOutsideSessions() throws {
         let database = database(touching: ["t1"])
         let (model, _) = makeModel(mixedIndex(), database: database)
-        model.settings.sessionScope = .all
         _ = model.displayProjects
         _ = model.historyResults("")
-        model.settings.sessionScope = .temple
         XCTAssertEqual(try database.sessionStates().map(\.id), ["t1"])
     }
 
-    /// Anything done to a session makes it Temple's: pin an outside session
-    /// while browsing everything, and it stays when the scope goes back.
-    func testTouchingAnOutsideSessionWhileBrowsingAllMakesItTemples() {
+    /// An explicit touch imports an outside session through the same join.
+    func testExplicitImportMakesAnOutsideSessionTemples() {
         let database = database(touching: ["t1"])
         let (model, overlay) = makeModel(mixedIndex(), database: database)
-        model.settings.sessionScope = .all
         overlay.togglePin("o1")
-        model.settings.sessionScope = .temple
 
         XCTAssertEqual(model.pinnedSessions.map(\.id), ["o1"])
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/outside", "/p/temple"])
@@ -234,20 +227,13 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertEqual(try database.sessionState("s")?.joinedVia, .created)
     }
 
-    /// The default lives in code; only the user's choice is persisted.
-    func testAllOnDiskShowsEverythingAndOnlyTheChoiceIsWritten() {
+    func testRetiredScopeKeyIsIgnoredAndPreserved() {
         let defaults = Fixture.uniqueDefaults()
+        defaults.set("all", forKey: "temple.settings.sessionScope")
         let settings = SettingsStore(defaults: defaults)
-        let (model, _) = makeModel(mixedIndex(), database: database(touching: ["t1"]),
-                                   settings: settings)
-        XCTAssertNil(defaults.object(forKey: "temple.settings.sessionScope"))
-
-        settings.sessionScope = .all
-        XCTAssertEqual(Set(model.displayProjects.flatMap(\.sessions).map(\.id)), ["o1", "t1", "t2"])
-        XCTAssertEqual(defaults.string(forKey: "temple.settings.sessionScope"), "all")
-        XCTAssertEqual(SettingsStore(defaults: defaults).sessionScope, .all)
-
-        settings.sessionScope = .temple
+        let (model, _) = makeModel(mixedIndex(), database: database(touching: ["t1"]), settings: settings)
         XCTAssertEqual(model.displayProjects.flatMap(\.sessions).map(\.id), ["t1"])
+        settings.fontSize = 17
+        XCTAssertEqual(defaults.string(forKey: "temple.settings.sessionScope"), "all")
     }
 }

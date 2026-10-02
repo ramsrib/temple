@@ -22,12 +22,14 @@ final class StartupIndexTests: XCTestCase {
         try CachedIndexStore.save(cachedIndex, to: cacheURL)
         let source = DelayedIndexSource()
         let database = try TempleDB.inMemory()
+        Fixture.join(cachedIndex, to: database)
+        Fixture.join(liveIndex, to: database)
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
             indexSource: source,
             noiseFilter: NoNoiseFilter(),
             database: database,
-            settings: Fixture.settingsBrowsingAll(),
+            settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: SessionOverlayStore(db: database),
             cacheURL: cacheURL
         )
@@ -42,6 +44,24 @@ final class StartupIndexTests: XCTestCase {
         XCTAssertEqual(model.index, liveIndex)
         XCTAssertFalse(model.isIndexStale)
     }
+    func testTitleOnlyLiveUpdateReachesAppModel() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("temple-title-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = SessionIndex.grouping([Fixture.session("member", project: "/tmp", title: "Before", updated: 10)])
+        let second = SessionIndex.grouping([Fixture.session("member", project: "/tmp", title: "After", updated: 10)])
+        let db = try TempleDB.inMemory()
+        Fixture.join(first, to: db)
+        let source = DelayedIndexSource()
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
+                             noiseFilter: NoNoiseFilter(), database: db,
+                             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+                             cacheURL: directory.appendingPathComponent("cache.json"))
+        model.start()
+        source.emit(first)
+        source.emit(second)
+        XCTAssertEqual(model.index.allSessions.first?.title, "After")
+    }
+
 }
 
 @MainActor

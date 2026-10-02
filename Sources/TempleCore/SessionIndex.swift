@@ -28,7 +28,20 @@ public struct SessionIndex: Codable, Equatable, Sendable {
 
     /// The default: Claude Code + Codex from the user's home directory.
     public static func buildDefault() -> SessionIndex {
-        build(stores: [ClaudeSessionStore(), CodexSessionStore()])
+        SessionCatalog().load()
+    }
+
+    public static func grouping(_ sessions: [AgentSession]) -> SessionIndex {
+        let grouped = Dictionary(grouping: sessions, by: \.projectPath)
+        return SessionIndex(projects: grouped.map { path, sessions in
+            Project(path: path, sessions: sessions.sorted {
+                $0.updatedAt == $1.updatedAt ? $0.id < $1.id : $0.updatedAt > $1.updatedAt
+            })
+        }.sorted { $0.lastActivity == $1.lastActivity ? $0.path < $1.path : $0.lastActivity > $1.lastActivity })
+    }
+
+    public func membersOnly(_ ids: Set<String>) -> SessionIndex {
+        Self.grouping(allSessions.filter { ids.contains($0.id) })
     }
 
     /// Ranked, case-insensitive sidebar search. An empty query returns nothing.

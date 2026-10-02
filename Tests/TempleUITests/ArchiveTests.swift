@@ -11,13 +11,14 @@ final class ArchiveTests: XCTestCase {
     private func makeModel(_ index: SessionIndex,
                            database: TempleDB? = nil) -> (AppModel, SessionOverlayStore) {
         let database = database ?? (try! TempleDB.inMemory())
+        Fixture.join(index, to: database)
         let overlay = SessionOverlayStore(db: database)
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
             indexSource: FakeIndexSource(index),
             noiseFilter: ArchiveNoNoiseFilter(),
             database: database,
-            settings: Fixture.settingsBrowsingAll(),
+            settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: overlay
         )
         model.index = index
@@ -314,9 +315,10 @@ final class ArchiveTests: XCTestCase {
             Project(path: "/p/a", sessions: [Fixture.session("a1", project: "/p/a", updated: 30)]),
             Project(path: "/p/b", sessions: [Fixture.session("b1", project: "/p/b", updated: 20)]),
         ])
-        let (model, _) = makeModel(index)
+        let (model, overlay) = makeModel(index)
         model.moveProject("/p/b", before: "/p/a")
 
+        overlay.join("n1", via: .created)
         model.index = SessionIndex(projects: index.projects + [
             Project(path: "/p/new", sessions: [Fixture.session("n1", project: "/p/new", updated: 50)]),
         ])

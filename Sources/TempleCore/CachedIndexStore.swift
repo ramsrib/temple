@@ -2,10 +2,11 @@ import Foundation
 
 /// Versioned envelope for the rebuildable session-index startup cache.
 struct PersistedIndexCache: Codable {
+    /// 3: Member-only engine; reject older full-disk snapshots.
     /// 2: Codex sessions are keyed by the thread's own id and subagent rollouts
     /// are left out (ADR-024). A version-1 cache still holds each subagent under
     /// its parent's id, and would show it until the first live index lands.
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
 
     let schemaVersion: Int
     let savedAt: Date
@@ -67,7 +68,7 @@ public final class CachedIndexStore {
 
     /// Returns a compatible cached index, or `nil` for every unavailable or
     /// invalid-cache condition so startup always falls back to the filesystem.
-    public static func load(from url: URL = defaultURL) -> SessionIndex? {
+    public static func load(from url: URL = defaultURL, members: Set<String>? = nil) -> SessionIndex? {
         do {
             let data = try Data(contentsOf: url)
             let cache = try JSONDecoder().decode(PersistedIndexCache.self, from: data)
@@ -75,7 +76,7 @@ public final class CachedIndexStore {
                 TempleCoreLog.cache.error("cache schema mismatch at \(url.path, privacy: .public): found=\(cache.schemaVersion) expected=\(PersistedIndexCache.currentSchemaVersion)")
                 return nil
             }
-            return cache.index
+            return members.map { cache.index.membersOnly($0) } ?? cache.index
         } catch {
             if (error as? CocoaError)?.code != .fileReadNoSuchFile {
                 TempleCoreLog.cache.error("failed to load cache at \(url.path, privacy: .public): \(String(describing: error), privacy: .public)")

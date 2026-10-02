@@ -12,13 +12,14 @@ private struct NoNoise: NoiseFilter {
 final class TabSwitcherTests: XCTestCase {
     private func makeModel(_ index: SessionIndex) -> AppModel {
         let database = try! TempleDB.inMemory()
+        Fixture.join(index, to: database)
         let overlay = SessionOverlayStore(db: database)
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
             indexSource: FakeIndexSource(index),
             noiseFilter: NoNoise(),
             database: database,
-            settings: Fixture.settingsBrowsingAll(),
+            settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: overlay
         )
         model.index = index
