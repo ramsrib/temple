@@ -203,8 +203,8 @@ struct HistoryTabView: View {
     }
 
     private var scopePicker: some View {
-        FlatSegmentedPicker(selection: $history.scope, options: Array(HistoryScope.allCases),
-                            label: { $0.label }, width: 290)
+        FlatSegmentedPicker(label: "Show", selection: $history.scope, options: Array(HistoryScope.allCases),
+                            optionTitle: { $0.label }, width: 290)
     }
 
     /// Counts are over the whole disk, not the filtered view.

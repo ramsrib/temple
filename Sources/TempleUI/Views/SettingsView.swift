@@ -132,9 +132,10 @@ struct SettingsView: View {
             SectionRule("Agents")
         } rows: {
             row("Default agent") {
-                FlatSegmentedPicker(selection: Binding(get: { settings.defaultAgent },
+                FlatSegmentedPicker(label: "Default agent",
+                                    selection: Binding(get: { settings.defaultAgent },
                                                        set: { settings.defaultAgent = $0 }),
-                                    options: Agent.allCases, label: { $0.displayName }, width: 220)
+                                    options: Agent.allCases, optionTitle: { $0.displayName }, width: 220)
                 hint("Started by ⌘T, folder launches and recent projects.")
             }
         }
@@ -345,9 +346,10 @@ struct SettingsView: View {
             SectionRule("Appearance")
         } rows: {
             row("Theme") {
-                FlatSegmentedPicker(selection: Binding(get: { settings.theme },
+                FlatSegmentedPicker(label: "Theme",
+                                    selection: Binding(get: { settings.theme },
                                                        set: { settings.theme = $0 }),
-                                    options: ThemePreference.allCases, label: { $0.label }, width: 240)
+                                    options: ThemePreference.allCases, optionTitle: { $0.label }, width: 240)
             }
             divider
             row("Terminal font") { fontControl }

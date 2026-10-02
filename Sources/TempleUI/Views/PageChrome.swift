@@ -118,10 +118,16 @@ struct SectionRule<Leading: View>: View {
 /// `.segmented` picker was the one bezeled control on a flat row, 22pt beside
 /// 28pt menus, and in dark it inverted: the bright track read as the
 /// selection and the selected knob as a hole.
+///
+/// To VoiceOver and Full Keyboard Access it is that native picker all the
+/// same (`accessibilityRepresentation`): one control named `label`, its
+/// segments stepped with the arrow keys, rather than a row of unnamed buttons.
 struct FlatSegmentedPicker<Value: Hashable>: View {
+    /// The control's accessible name: the row label it sits beside.
+    let label: String
     @Binding var selection: Value
     let options: [Value]
-    let label: (Value) -> String
+    let optionTitle: (Value) -> String
     var width: CGFloat? = nil
 
     @Environment(\.colorScheme) private var colorScheme
@@ -130,8 +136,8 @@ struct FlatSegmentedPicker<Value: Hashable>: View {
         HStack(spacing: 2) {
             ForEach(options, id: \.self) { option in
                 let selected = option == selection
-                Button { selection = option } label: {
-                    Text(label(option))
+                Button { Self.select(option, in: $selection) } label: {
+                    Text(optionTitle(option))
                         .font(.system(size: 12.5, weight: selected ? .medium : .regular))
                         .lineLimit(1)
                         .frame(maxWidth: .infinity)
@@ -142,11 +148,28 @@ struct FlatSegmentedPicker<Value: Hashable>: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityAddTraits(selected ? .isSelected : [])
             }
         }
         .padding(2)
         .frame(width: width, height: 28)
         .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .accessibilityRepresentation {
+            Picker(label, selection: Binding(get: { selection },
+                                             set: { Self.select($0, in: $selection) })) {
+                ForEach(options, id: \.self) { option in
+                    Text(optionTitle(option)).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+
+    /// Choose `option`, if it is a change. Clicking the segment that is
+    /// already selected must write nothing: behind Settings' pickers is a
+    /// settings key, and re-writing the value it already reads would persist
+    /// a default ("system", "claude") the user never chose.
+    static func select(_ option: Value, in selection: Binding<Value>) {
+        guard option != selection.wrappedValue else { return }
+        selection.wrappedValue = option
     }
 }
