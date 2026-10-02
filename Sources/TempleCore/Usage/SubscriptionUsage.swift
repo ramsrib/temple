@@ -191,8 +191,17 @@ public enum ClaudeUsageReader {
     /// The Claude Code OAuth token: Keychain first (the CLI refreshes it in
     /// place there), file fallback. Claude Code leaves token-less STUB items
     /// behind under the same service name, and a plain service lookup can
-    /// return a stub — so enumerate the service variants and keep the
-    /// freshest item that actually carries a token (ccmeter's logic).
+    /// return a stub — so enumerate the service variants and take the most
+    /// recently written item that actually carries a token.
+    ///
+    /// Newest first, and the walk stops at the first token: every item read
+    /// can be its own Keychain prompt, and the stubs are long-lived. Seen
+    /// 2026-10-02: two July stubs ahead of the live item meant three prompts
+    /// per click, the user approved the two that held nothing, and the one
+    /// with the token was refused. An item that needs a prompt also stops
+    /// the walk: falling back to an older item would answer with a token
+    /// the CLI no longer refreshes, and after a Deny it would raise the next
+    /// dialog behind the one just refused.
     ///
     /// In-process through the Security framework, not the `security` CLI:
     /// the CLI's Keychain prompts are attributed to `security`, so "Always
@@ -264,20 +273,23 @@ public enum ClaudeUsageReader {
             kSecMatchLimit as String: kSecMatchLimitAll,
             kSecReturnAttributes as String: true,
         ]
-        var candidates: [(service: String, account: String)] = []
+        var candidates: [(service: String, account: String, modified: Date?)] = []
         let listing = keychain.copyMatching(listQuery as CFDictionary)
         if listing.status == errSecSuccess, let items = listing.result as? [[String: Any]] {
             for item in items {
                 guard let service = item[kSecAttrService as String] as? String,
                       service.hasPrefix(keychainService) else { continue }
-                candidates.append((service, item[kSecAttrAccount as String] as? String ?? ""))
+                candidates.append((service, item[kSecAttrAccount as String] as? String ?? "",
+                                   item[kSecAttrModificationDate as String] as? Date))
             }
         }
-        if candidates.isEmpty { candidates.append((keychainService, "")) }
+        // The CLI rewrites the live item in place on every token refresh;
+        // stubs keep the date they were left behind. Undated items go last.
+        candidates.sort { ($0.modified ?? .distantPast) > ($1.modified ?? .distantPast) }
+        if candidates.isEmpty { candidates.append((keychainService, "", nil)) }
 
-        var found: [(creds: Credentials, service: String, account: String)] = []
-        var needPrompt = 0
-        for (service, account) in candidates {
+        var tokenless = 0
+        for (service, account, _) in candidates {
             var query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: service,
@@ -288,28 +300,24 @@ public enum ClaudeUsageReader {
             let answer = keychain.copyMatching(query as CFDictionary)
             switch answer.status {
             case errSecSuccess:
-                if let data = answer.result as? Data, let creds = parseCredentials(data) {
-                    found.append((creds, service, account))
+                guard let data = answer.result as? Data, let creds = parseCredentials(data) else {
+                    tokenless += 1
+                    continue
                 }
+                // Which item won, and whether its token is already past its
+                // own expiry, is the fact a dead meter turns on — and the
+                // model never sees it. One line per read; never the token,
+                // never the account (a username or address). The service
+                // name is a fixed label plus an opaque suffix.
+                UsageLog.info("claude credentials: keychain item \(service) chosen, newest with a token (\(candidates.count) enumerated, \(tokenless) newer without one); \(expiryDescription(creds.expiresAt))")
+                return .found(creds)
             case errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled:
-                needPrompt += 1
+                // A transition worth keeping: notice level persists, info does not.
+                UsageLog.notice("claude credentials: keychain item \(service) needs a prompt Temple was \(interactive ? "denied (OSStatus \(answer.status))" : "not allowed to raise") (\(candidates.count) enumerated, \(tokenless) newer without a token); the explicit refresh control asks")
+                return .needsPermission
             default:
-                break
+                continue
             }
-        }
-        // Which item won, and whether its token is already past its own
-        // expiry, is the fact a dead meter turns on — and the model never
-        // sees it. One line per read; never the token, never the account
-        // (a username or address). The service name is a fixed label
-        // plus an opaque suffix.
-        if let best = found.max(by: { ($0.creds.expiresAt ?? 0) < ($1.creds.expiresAt ?? 0) }) {
-            UsageLog.info("claude credentials: keychain item \(best.service) chosen of \(found.count) with a token (\(candidates.count) enumerated, \(needPrompt) unreadable without a prompt); \(expiryDescription(best.creds.expiresAt))")
-            return .found(best.creds)
-        }
-        if needPrompt > 0 {
-            // A transition worth keeping: notice level persists, info does not.
-            UsageLog.notice("claude credentials: \(needPrompt) of \(candidates.count) keychain item(s) need a prompt Temple was \(interactive ? "denied" : "not allowed to raise"); the explicit refresh control asks")
-            return .needsPermission
         }
 
         // ~/.claude/.credentials.json — the canonical store off-macOS.

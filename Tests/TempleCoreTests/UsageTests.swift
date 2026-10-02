@@ -132,6 +132,9 @@ final class UsageTests: XCTestCase {
         /// nil data = needs a prompt; `denied` = the prompt was shown and refused
         var items: [(service: String, account: String, data: Data?)]
         var denied = false
+        /// Modification dates by "service|account"; an item without one is listed undated.
+        var modified: [String: Date] = [:]
+        var reads: [String] = []
         init(previous: Bool? = true, setStatus: OSStatus = errSecSuccess,
              items: [(service: String, account: String, data: Data?)] = []) {
             self.previous = previous; self.setStatus = setStatus; self.items = items
@@ -149,11 +152,16 @@ final class UsageTests: XCTestCase {
                 fake.queries += 1
                 let q = query as NSDictionary
                 if q[kSecReturnAttributes as String] as? Bool == true {
-                    let attrs = fake.items.map { [kSecAttrService as String: $0.service, kSecAttrAccount as String: $0.account] as [String: Any] }
+                    let attrs = fake.items.map { item -> [String: Any] in
+                        var attrs: [String: Any] = [kSecAttrService as String: item.service, kSecAttrAccount as String: item.account]
+                        attrs[kSecAttrModificationDate as String] = fake.modified["\(item.service)|\(item.account)"]
+                        return attrs
+                    }
                     return (errSecSuccess, attrs as CFTypeRef)
                 }
                 let service = q[kSecAttrService as String] as? String
                 let account = q[kSecAttrAccount as String] as? String ?? ""
+                fake.reads.append("\(service ?? "")|\(account)")
                 guard let item = fake.items.first(where: { $0.service == service && $0.account == account }) else {
                     return (errSecItemNotFound, nil)
                 }
@@ -185,16 +193,58 @@ final class UsageTests: XCTestCase {
         }
     }
 
-    func testTheFreshestTokenWinsAndStubsAreSkipped() {
+    private func day(_ n: Double) -> Date { Date(timeIntervalSince1970: 1_780_000_000 + n * 86_400) }
+
+    func testTheNewestItemWithATokenWinsAndStubsAreSkipped() {
         let items: [(String, String, Data?)] = [
             ("Claude Code-credentials", "unknown", Data(#"{"claudeAiOauth":{"accessToken":""}}"#.utf8)),
             ("Claude Code-credentials", "me", token(expiresAt: 1e12)),
             ("Claude Code-credentials-3f232086", "me", token(expiresAt: 3e12)),
             ("Something else", "x", nil),
         ]
-        install(FakeKeychain(items: items)) { _ in
+        let fake = FakeKeychain(items: items)
+        fake.modified = ["Claude Code-credentials|unknown": day(3),
+                         "Claude Code-credentials|me": day(1),
+                         "Claude Code-credentials-3f232086|me": day(2)]
+        install(fake) { fake in
             guard case .found(let creds) = lookup(interactive: false) else { return XCTFail("expected a token") }
             XCTAssertEqual(creds.token, "tok-3000000000000")
+            XCTAssertEqual(fake.reads, ["Claude Code-credentials|unknown", "Claude Code-credentials-3f232086|me"],
+                           "the newer stub is passed over, and nothing older than the winner is read")
+        }
+    }
+
+    // The layout seen 2026-10-02: two July stubs, each needing a prompt, and
+    // the live item the CLI rewrote that morning. One click is one dialog,
+    // for the item that holds the token — not three, stubs first.
+    func testOnlyTheNewestItemIsReadWhenItCarriesAToken() {
+        let fake = FakeKeychain(items: [
+            ("Claude Code-credentials-3f232086", "me", nil),
+            ("Claude Code-credentials", "unknown", nil),
+            ("Claude Code-credentials", "me", token(expiresAt: 2e12)),
+        ])
+        fake.modified = ["Claude Code-credentials-3f232086|me": day(0),
+                         "Claude Code-credentials|unknown": day(0.5),
+                         "Claude Code-credentials|me": day(83)]
+        install(fake) { fake in
+            guard case .found(let creds) = lookup(interactive: true) else { return XCTFail("expected a token") }
+            XCTAssertEqual(creds.token, "tok-2000000000000")
+            XCTAssertEqual(fake.reads, ["Claude Code-credentials|me"])
+        }
+    }
+
+    func testAPromptOnTheNewestItemStopsTheWalk() {
+        // Denied on the live item: no fallback to an older token the CLI no
+        // longer refreshes, and no second dialog behind the refused one.
+        let fake = FakeKeychain(items: [
+            ("Claude Code-credentials", "old", token(expiresAt: 1e12)),
+            ("Claude Code-credentials", "me", nil),
+        ])
+        fake.modified = ["Claude Code-credentials|old": day(0), "Claude Code-credentials|me": day(5)]
+        fake.denied = true
+        install(fake) { fake in
+            guard case .needsPermission = lookup(interactive: true) else { return XCTFail("expected needsPermission") }
+            XCTAssertEqual(fake.reads, ["Claude Code-credentials|me"])
         }
     }
 

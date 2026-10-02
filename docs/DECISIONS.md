@@ -695,11 +695,17 @@ are changed below, and the file exists so the next time is not a guess.
 
 - **The Keychain is read in-process** with the Security framework:
   attributes of every generic password are listed (no secret, no prompt),
-  the Claude Code service variants are read one by one, the freshest token
-  wins, and the credentials file is the fallback — ccmeter's selection, with
-  one deliberate difference: an item that needs a prompt stops the fallback,
-  because the Keychain may hold newer credentials than the file and reading
-  the file instead would hide that; the fallback is withheld on purpose. No child process, so nothing to time out,
+  the Claude Code service variants are read newest-modified first, the first
+  one carrying a token wins, and the credentials file is the fallback. Two
+  deliberate differences from ccmeter, which reads every variant and keeps
+  the latest expiry: the walk stops at the first token, because each read
+  can be its own prompt and the token-less stubs Claude Code leaves behind
+  are long-lived (2026-10-02: two July stubs ahead of the live item meant
+  three dialogs per click; the user approved the two that held nothing and
+  refused the third); and an item that needs a prompt stops the walk and
+  the fallback, because older items and the file may both hold credentials
+  the CLI no longer refreshes, and after a Deny the next read would raise a
+  second dialog behind the refused one. No child process, so nothing to time out,
   signal or reap. The lookup runs on one serial queue, and the interaction
   switch is saved and put back rather than assumed.
 - **Unattended polls never prompt.** `SecKeychainSetUserInteractionAllowed`
@@ -747,9 +753,9 @@ are changed below, and the file exists so the next time is not a guess.
   polling on a 401 (a new sign-in lands in the Keychain without any action
   in Temple) but the card says "Sign-in rejected. Run claude auth login." at
   once — a refused token is definitive, not a hiccup.
-- **The reader logs its credential choice**: which item, how many carried a
-  token, how many were enumerated, how many needed a prompt, and the token's
-  expiry relative to now (Claude Code writes epoch milliseconds; seconds are
+- **The reader logs its credential choice**: which item, how many were
+  enumerated, how many newer ones held no token, which item needed a prompt,
+  and the token's expiry relative to now (Claude Code writes epoch milliseconds; seconds are
   read as such). The service name is public — a fixed label plus an opaque
   suffix — the account is not. Never the token.
 - **Transitions at notice, polls at info** in the unified log — notice is
