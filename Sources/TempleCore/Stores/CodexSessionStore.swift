@@ -5,7 +5,7 @@ import Foundation
 /// from `~/.codex/history.jsonl`. See SESSION-FORMATS.md.
 public struct CodexSessionStore: IncrementalSessionStore {
     public let agent: Agent = .codex
-    private let sessionsRoot: URL
+    let sessionsRoot: URL
     private let historyFile: URL
     private let sessionIndexFile: URL
 
@@ -20,7 +20,9 @@ public struct CodexSessionStore: IncrementalSessionStore {
         self.sessionIndexFile = base.appendingPathComponent("session_index.jsonl")
     }
 
-    public var watchedURLs: [URL] { [sessionsRoot.deletingLastPathComponent()] }
+    public var watchedURLs: [URL] { [sessionsRoot.deletingLastPathComponent(), sessionsRoot] }
+    public var sharedTitleURLs: [URL] { titleURLs }
+    public func loadSharedTitles() -> [String: String] { loadTitles() }
     public var titleURLs: [URL] { [historyFile, sessionIndexFile] }
 
     public var cacheInvalidationToken: String? {
@@ -74,11 +76,31 @@ public struct CodexSessionStore: IncrementalSessionStore {
             SessionPaths.normalized(url.path).hasPrefix(SessionPaths.normalized(sessionsRoot.path) + "/")
     }
 
-    public func filenameID(at url: URL) -> String? {
-        let stem = url.deletingPathExtension().lastPathComponent
-        guard stem.count >= 36 else { return nil }
-        let id = String(stem.suffix(36))
-        return UUID(uuidString: id) == nil ? nil : id.lowercased()
+    public func filenameID(at url: URL) -> String? { Self.rolloutName(at: url)?.threadID }
+    public func rolloutSelectionKey(at url: URL) -> String? { Self.rolloutName(at: url)?.selectionKey }
+
+    private static func rolloutName(at url: URL) -> (threadID: String, selectionKey: String)? {
+        // Mirrors upstream rollout_file_name.rs: timestamp, stable thread ID,
+        // and an optional distinct rollout ID for thread/revert.
+        let name = url.lastPathComponent
+        guard name.hasPrefix("rollout-"), name.hasSuffix(".jsonl") else { return nil }
+        let core = name.dropFirst(8).dropLast(6)
+        guard core.count >= 20 else { return nil }
+        let stamp = Array(core.prefix(20).utf8)
+        guard stamp.count == 20, stamp[4] == 45, stamp[7] == 45, stamp[10] == 84,
+              stamp[13] == 45, stamp[16] == 45, stamp[19] == 45 else { return nil }
+        let digitOffsets = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18]
+        guard digitOffsets.allSatisfy({ (48...57).contains(stamp[$0]) }) else { return nil }
+        func number(_ range: Range<Int>) -> Int { range.reduce(0) { $0 * 10 + Int(stamp[$1] - 48) } }
+        let year = number(0..<4), month = number(5..<7), day = number(8..<10)
+        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+        let days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        guard (1...12).contains(month), (1...days[month - 1]).contains(day),
+              number(11..<13) < 24, number(14..<16) < 60, number(17..<19) < 60 else { return nil }
+        let ids = core.dropFirst(20).split(separator: "_", omittingEmptySubsequences: false)
+        guard (1...2).contains(ids.count), let thread = UUID(uuidString: String(ids[0])) else { return nil }
+        guard let rollout = ids.count == 2 ? UUID(uuidString: String(ids[1])) : thread else { return nil }
+        return (thread.uuidString.lowercased(), String(core.prefix(19)) + "-" + rollout.uuidString.lowercased())
     }
 
     private func metadataObject(at url: URL) throws -> [String: Any] {
@@ -89,23 +111,20 @@ public struct CodexSessionStore: IncrementalSessionStore {
         return object
     }
 
-    public func metadataSessionID(at url: URL) throws -> String? {
-        let object = try metadataObject(at: url)
-        guard object["type"] as? String == "session_meta",
-              let payload = object["payload"] as? [String: Any], !Self.isSubagentThread(payload) else { return nil }
-        guard let id = (payload["id"] as? String) ?? (payload["session_id"] as? String), !id.isEmpty else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        return id
-    }
+    public func metadataHeader(at url: URL) -> CodexRolloutCandidate? { try? adoptionHeader(at: url) }
 
-    public func metadataHeader(at url: URL) -> CodexRolloutCandidate? {
-        guard let object = try? metadataObject(at: url), object["type"] as? String == "session_meta",
-              let payload = object["payload"] as? [String: Any], !Self.isSubagentThread(payload),
-              let id = (payload["id"] as? String) ?? (payload["session_id"] as? String), !id.isEmpty,
+    /// Nil proves an exclusion. Invalid/partial eligible metadata throws, so
+    /// adoption cannot mistake a failed read for a noncompeting rollout.
+    public func adoptionHeader(at url: URL) throws -> CodexRolloutCandidate? {
+        let object = try metadataObject(at: url)
+        guard let type = object["type"] as? String else { throw CocoaError(.fileReadCorruptFile) }
+        guard type == "session_meta" else { return nil }
+        guard let payload = object["payload"] as? [String: Any] else { throw CocoaError(.fileReadCorruptFile) }
+        guard !Self.isSubagentThread(payload) else { return nil }
+        guard let id = (payload["id"] as? String) ?? (payload["session_id"] as? String), !id.isEmpty,
               let cwd = payload["cwd"] as? String,
               let date = StoreIO.parseDate((payload["timestamp"] as? String) ?? (object["timestamp"] as? String))
-        else { return nil }
+        else { throw CocoaError(.fileReadCorruptFile) }
         return CodexRolloutCandidate(sessionID: id, cwd: cwd, createdAt: date, filePath: url)
     }
 

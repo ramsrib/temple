@@ -7,7 +7,7 @@ public final class WatcherCodexReconciler: CodexAdopting {
     private let indexSource: WatcherIndexSource
     private let window: TimeInterval
     private var adoptedPaths: [String: URL] = [:]
-    public func transcriptPath(for sessionID: String) -> URL? { adoptedPaths[sessionID] }
+    public func transcriptPath(for sessionID: String) -> URL? { adoptedPaths.removeValue(forKey: sessionID) }
     public init(indexSource: WatcherIndexSource, window: TimeInterval = 5) {
         self.indexSource = indexSource; self.window = window
     }
@@ -20,6 +20,7 @@ public final class WatcherCodexReconciler: CodexAdopting {
                 guard let candidate, let self else { return }
                 self.adoptedPaths[candidate.sessionID] = candidate.filePath
                 adopt(candidate.sessionID)
+                self.adoptedPaths.removeValue(forKey: candidate.sessionID)
             }
         }
         // Starts the same stream if a new tab precedes AppModel.start().

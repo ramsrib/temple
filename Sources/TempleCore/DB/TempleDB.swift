@@ -102,11 +102,13 @@ public struct OpenTabRecord: Codable, Equatable, Sendable {
 /// Temple-owned, rebuildable application state. CLI session content remains on disk.
 public final class TempleDB: @unchecked Sendable {
     private let db: DatabaseQueue
+    public private(set) var isReadOnly = false
     private let observerLock = NSLock()
     private var joinObservers: [UUID: @Sendable (String, Bool) -> Void] = [:]
 
-    /// Delivered only after a committed write, including repeated opens. Observers
-    /// register before reading rows, so pre-start joins and concurrent joins survive.
+    /// Delivered after committed membership or hint changes. Unchanged existing
+    /// joins do not invalidate loaded members; explicit opens retry unresolved IDs.
+    /// Observers register before reading rows so concurrent joins survive.
     public func observeJoins(_ observer: @escaping @Sendable (String, Bool) -> Void) -> UUID {
         observerLock.lock(); defer { observerLock.unlock() }
         let token = UUID(); joinObservers[token] = observer; return token
@@ -138,10 +140,12 @@ public final class TempleDB: @unchecked Sendable {
     public init(readOnlyPath path: URL) throws {
         var configuration = Configuration()
         configuration.readonly = true
+        isReadOnly = true
         db = try DatabaseQueue(path: path.path, configuration: configuration)
     }
 
-    private init(database: DatabaseQueue) throws {
+    // Internal queue injection lets tests trace actual SQL without per-read hooks.
+    init(database: DatabaseQueue) throws {
         db = database
         try Self.migrator.migrate(db)
     }
@@ -205,20 +209,23 @@ public final class TempleDB: @unchecked Sendable {
     /// credited to whatever touched it next.
     public func join(sessionID: String, via: JoinedVia, at: Date = Date(),
                      agent: Agent? = nil, transcriptPath: URL? = nil) throws {
-        try db.write { database in
+        let changed = try db.write { database -> Bool in
+            let old = try Row.fetchOne(database, sql: "SELECT agent, transcript_path FROM session_state WHERE id = ?", arguments: [sessionID])
+            let inserted = old == nil
             try database.execute(
-                sql: """
-                    INSERT INTO session_state (id, joined_via, joined_at) VALUES (?, ?, ?)
-                    ON CONFLICT(id) DO NOTHING
-                    """,
-                arguments: [sessionID, via.rawValue, at]
-            )
-            if agent != nil || transcriptPath != nil {
+                sql: "INSERT INTO session_state (id, joined_via, joined_at) VALUES (?, ?, ?) ON CONFLICT(id) DO NOTHING",
+                arguments: [sessionID, via.rawValue, at])
+            let oldAgent: String? = old?["agent"]
+            let oldPath: String? = old?["transcript_path"]
+            let hintChanged = (agent != nil && agent?.rawValue != oldAgent) ||
+                (transcriptPath != nil && transcriptPath?.path != oldPath)
+            if hintChanged {
                 try database.execute(sql: "UPDATE session_state SET agent = COALESCE(?, agent), transcript_path = COALESCE(?, transcript_path) WHERE id = ?",
                                      arguments: [agent?.rawValue, transcriptPath?.path, sessionID])
             }
+            return inserted || hintChanged
         }
-        committedJoin(sessionID, awaitingCreation: via == .created && agent == .claude && transcriptPath == nil)
+        if changed { committedJoin(sessionID, awaitingCreation: via == .created && agent == .claude && transcriptPath == nil) }
     }
 
     /// Hints never insert membership or change provenance, and do not trigger a

@@ -16,6 +16,13 @@ public final class WatcherIndexSource: IndexSource {
     let watcher: SessionWatcher
     private let cacheURL: URL
     private var task: Task<Void, Never>?
+    private var stateTask: Task<Void, Never>?
+    private var latestResolutions: [String: MemberResolution]?
+    var onResolutionUpdate: (([String: MemberResolution]) -> Void)? {
+        didSet {
+            if let latestResolutions { onResolutionUpdate?(latestResolutions) }
+        }
+    }
     private var cacheTask: Task<Void, Never>?
     private var pendingCacheIndex: SessionIndex?
     private var onUpdate: ((SessionIndex) -> Void)?
@@ -32,6 +39,7 @@ public final class WatcherIndexSource: IndexSource {
 
     public func start(onUpdate: @escaping (SessionIndex) -> Void) {
         self.onUpdate = onUpdate
+        if let latestIndex { onUpdate(latestIndex) }
         startIfNeeded()
     }
 
@@ -41,6 +49,8 @@ public final class WatcherIndexSource: IndexSource {
         cacheTask?.cancel()
         cacheTask = nil
         pendingCacheIndex = nil
+        latestIndex = nil; latestResolutions = nil; onUpdate = nil
+        stateTask?.cancel(); stateTask = nil
         watcher.stop()
     }
 
@@ -62,6 +72,14 @@ public final class WatcherIndexSource: IndexSource {
 
     private func startIfNeeded() {
         guard task == nil else { return }
+        let states = watcher.resolutionUpdates()
+        stateTask = Task { [weak self] in
+            for await snapshot in states {
+                guard !Task.isCancelled else { break }
+                self?.latestResolutions = snapshot
+                self?.onResolutionUpdate?(snapshot)
+            }
+        }
         let stream = watcher.start()
         task = Task { [weak self] in
             for await index in stream {

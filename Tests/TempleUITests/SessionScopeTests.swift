@@ -130,7 +130,7 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertEqual(try database.sessionStates().map(\.id), ["t1"])
     }
 
-    /// An explicit touch imports an outside session through the same join.
+    /// Pins exercise the committed overlay.join path that History will use to import an outside session.
     func testExplicitImportMakesAnOutsideSessionTemples() {
         let database = database(touching: ["t1"])
         let (model, overlay) = makeModel(mixedIndex(), database: database)

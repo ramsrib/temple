@@ -3,6 +3,14 @@ import CoreServices
 @testable import TempleCore
 
 final class WatcherTests: XCTestCase {
+    private func waitForInitialPublication(_ watcher: SessionWatcher) async throws {
+        let deadline = Date().addingTimeInterval(3)
+        while watcher.publishedIndex == nil, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNotNil(watcher.publishedIndex)
+    }
+
     func testWatcherYieldsUpdatedIndexAfterNewSessionFile() async throws { try await exercise0(injectEvents: false) }
     func testWatcherYieldsUpdatedIndexAfterNewSessionFileWithInjectedEvents() async throws { try await exercise0(injectEvents: true) }
 
@@ -20,6 +28,7 @@ final class WatcherTests: XCTestCase {
         let received = expectation(description: "updated index")
         let stream = watcher.start()
         defer { watcher.stop() }
+        try await waitForInitialPublication(watcher)
         try XCTSkipIf(!injectEvents && !watcher.isMonitoring, "FSEvents service unavailable in this execution environment")
         let task = Task {
             var isInitial = true
@@ -69,6 +78,7 @@ final class WatcherTests: XCTestCase {
         let target = project.appendingPathComponent("session-100.jsonl")
         let stream = watcher.start()
         defer { watcher.stop() }
+        try await waitForInitialPublication(watcher)
         try XCTSkipIf(!injectEvents && !watcher.isMonitoring, "FSEvents service unavailable in this execution environment")
         let task = Task {
             var mutationTime: Date?
@@ -118,6 +128,7 @@ final class WatcherTests: XCTestCase {
         let updatedWhileAppending = expectation(description: "update before steady appends stop")
         let stream = watcher.start()
         defer { watcher.stop() }
+        try await waitForInitialPublication(watcher)
         try XCTSkipIf(!injectEvents && !watcher.isMonitoring, "FSEvents service unavailable in this execution environment")
         let watchTask = Task {
             var receivedInitial = false
@@ -180,6 +191,7 @@ final class WatcherTests: XCTestCase {
         let corrected = expectation(description: "re-parsed with real cwd after mid-write race")
         let stream = watcher.start()
         defer { watcher.stop() }
+        try await waitForInitialPublication(watcher)
         try XCTSkipIf(!injectEvents && !watcher.isMonitoring, "FSEvents service unavailable in this execution environment")
         let task = Task {
             var isInitial = true

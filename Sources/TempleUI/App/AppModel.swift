@@ -160,7 +160,7 @@ public final class AppModel: ObservableObject {
 
     private var cancellables: Set<AnyCancellable> = []
     private var themeObserver: NSObjectProtocol?
-    private var pendingSessionOpens: Set<String> = []
+    private(set) var pendingSessionOpens: Set<String> = []
     /// A cached snapshot is replaced unconditionally by the first live index.
     private(set) var isIndexStale = false
 
@@ -260,7 +260,13 @@ public final class AppModel: ObservableObject {
         // Whatever a tab runs is a Temple session from then on — including one
         // resumed from elsewhere, which is how it joins the sidebar.
         openSessions.openedHandler = { [weak self] sessionID, via, agent, path in
-            self?.overlay.join(sessionID, via: via, agent: agent, transcriptPath: path)
+            guard let self else { return }
+            self.overlay.join(sessionID, via: via, agent: agent, transcriptPath: path)
+            if let source = self.indexSource as? WatcherIndexSource,
+               case .loaded = source.watcher.resolution(for: sessionID) { return }
+            if let source = self.indexSource as? WatcherIndexSource {
+                source.watcher.requestResolution(sessionID)
+            }
         }
         // A resume failure uses this member's completed resolution. A newly
         // launched or unreadable transcript never acquires a missing verdict.
@@ -359,6 +365,14 @@ public final class AppModel: ObservableObject {
             // Startup breadcrumbs are greppable with:
             // log show --predicate 'eventMessage CONTAINS "index published"'
             TempleUILog.launch.info("cached index published")
+        }
+        if let source = indexSource as? WatcherIndexSource {
+            source.onResolutionUpdate = { [weak self] states in
+                guard let self else { return }
+                self.pendingSessionOpens = self.pendingSessionOpens.filter { id in
+                    states[id] != .confirmedAbsent && states[id] != .unreadable
+                }
+            }
         }
         var isFirstLiveIndex = true
         indexSource.start { [weak self] index in

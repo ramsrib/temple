@@ -980,8 +980,11 @@ in memory, and a 2.2 MB `index-cache.json` was rewritten every five seconds.
 **Decisions.**
 
 - **"All on disk" goes.** Every surface lists Temple sessions only. Outside
-  sessions are read in one place, on demand: `SessionCatalog`, used by
-  `templectl` and the History tab. Nothing outside Temple is watched.
+  sessions are read in one place, on demand: `SessionCatalog`, used today by
+  `templectl` and built for the History tab, which is how an outside session
+  is imported. The setting's removal does not ship in a release before that
+  tab does: without it, someone who browsed All on disk would lose those
+  sessions with no way to bring one in. Nothing outside Temple is watched.
 - **The live index holds members, nothing else.** Members are the
   `session_state` rows, any `joined_via` including the legacy NULL ones, plus
   runtime joins. AppModel's membership filter stays as a guard.
@@ -990,12 +993,16 @@ in memory, and a 2.2 MB `index-cache.json` was rewritten every five seconds.
   written when a session joins with a known file and after a legacy row first
   resolves. A hint is validated by parsing; it never decides membership. Rows
   without one fall back to a filename map built at launch from the real
-  directories (Claude's cwd encoding is lossy and is never reconstructed). A
-  legacy Codex row whose filename id disagrees with its `payload.id` is found
-  by reading rollout headers after the first index is published, in batches,
-  with a persisted header map (`rollout-headers.json`: path → signature + id)
-  so later launches read only new or changed rollouts. Headers are read as a
-  bounded prefix, never the whole file.
+  directories (Claude's cwd encoding is lossy and is never reconstructed;
+  Codex filenames give the thread id, including the `thread/revert` form, see
+  SESSION-FORMATS). A member found by neither is absent, rechecked when a file
+  with its id appears. There is no search of file contents for it: a first
+  version read every rollout's header to find rows whose filename id might
+  differ from the id inside, and it cost launch time, then steady CPU on every
+  outside write, while finding nothing. On the real stores, 0 of 2,761
+  rollouts had such a mismatch and 0 of the 173 unresolved rows were in any
+  file; they were deleted logs. Sessions joined from now on carry a path hint,
+  which covers a renamed file.
 - **One FSEvents stream replaces the watches.** File events over both roots,
   started before the launch listing (Apple's required order) with events
   buffered and reconciled after. An event means "reconcile this path": flags
@@ -1007,12 +1014,20 @@ in memory, and a 2.2 MB `index-cache.json` was rewritten every five seconds.
   have a reconcile rule.
 - **Each member has a resolution state:** resolving, awaiting creation (a
   Claude session Temple just launched), loaded, confirmed absent, unreadable.
-  Only a finished resolution establishes absence. A deleted log never removes
-  membership. Every committed join goes through one path that loads the
-  session at once (an import has no file activity to wait for).
-- **Codex adoption is registered before the process spawns,** sweeps rollouts
-  already in its ±5s window, and is decided when the window closes: one
-  candidate per request, ambiguity refused. Candidates never reach the index.
+  Only a finished resolution establishes absence. "Awaiting creation" exists
+  only for a join made in this launch for a file not written yet; a restored
+  row whose log is gone (Claude prunes old transcripts) is absent, so a failed
+  resume still says why. A deleted log never removes membership. Every
+  committed join goes through one path that loads the session at once (an
+  import has no file activity to wait for). Joins committed by another process
+  (`templectl --import-all`) are seen at the next launch.
+- **Codex adoption is registered before the process spawns** and sweeps only
+  rollouts whose time falls in its ±5s window. It adopts as soon as exactly one
+  readable candidate exists with nothing eligible still unreadable and no
+  other request overlapping; otherwise it waits for the window to close. A
+  rollout whose header can't be read yet blocks the decision rather than
+  counting as "not a candidate". One candidate per request, ambiguity refused.
+  Candidates never reach the index.
 - **The launch cache holds members** (schema 3, filtered by membership on
   load), and AppModel compares index content, so a title-only change reaches
   the UI.

@@ -69,7 +69,7 @@ let package = Package(
         // Dev harness executable (like templectl is for TempleCore).
         .executableTarget(name: "terminal-demo", dependencies: ["TempleTerminal", "TempleTerminalAPI"]),
 
-        .testTarget(name: "TempleCoreTests", dependencies: ["TempleCore"]),
+        .testTarget(name: "TempleCoreTests", dependencies: ["TempleCore"], exclude: ["Fixtures/session-state-v8.json"]),
         .testTarget(name: "TempleUITests", dependencies: ["TempleUI"]),
         .testTarget(name: "TempleTerminalTests", dependencies: ["TempleTerminal"]),
     ]

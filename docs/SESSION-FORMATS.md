@@ -133,6 +133,12 @@ changing its id** — the way to open one in a Temple tab, rather than
 ## Codex
 
 **Location:** `~/.codex/sessions/YYYY/MM/DD/rollout-<iso>-<uuid>.jsonl` **(read)**
+**Filename id:** the session (thread) id. A `thread/revert` writes another
+rollout for the same thread as `rollout-<iso>-<thread_id>_<rollout_id>.jsonl`,
+so the id is the uuid after the timestamp, not the last 36 characters
+(upstream `codex-rs/rollout/src/rollout_file_name.rs`). Across 2,761 rollouts
+on one machine (Oct 2026) no filename id differed from its `payload.id`;
+`payload.id` still decides identity when a file is parsed (ADR-027).
 **Legacy (also present):** flat `~/.codex/sessions/rollout-<date>-<uuid>.json`
 (a dozen, pre-2026; Temple does not parse them).
 **Archived by Codex:** `~/.codex/archived_sessions/` (`codex archive`); not read.

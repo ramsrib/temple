@@ -22,31 +22,39 @@ public protocol IncrementalSessionStore: SessionStore {
     /// Changes when non-session input (for example Codex history) invalidates
     /// cached sessions. `nil` means session files are the only input.
     var cacheInvalidationToken: String? { get }
+    var sharedTitleURLs: [URL] { get }
+    func loadSharedTitles() -> [String: String]
     /// Unlike the catalog's tolerant listing, resolution must distinguish errors
     /// from a completed empty scan.
     func enumerateSessionFiles() throws -> [URL]
     func enumerateSessionFiles(in subtree: URL) throws -> [URL]
     func filenameID(at url: URL) -> String?
+    /// Codex resume priority from the canonical filename (timestamp + rollout ID).
+    func rolloutSelectionKey(at url: URL) -> String?
     func acceptsTranscript(_ url: URL) -> Bool
+    func adoptionHeader(at url: URL) throws -> CodexRolloutCandidate?
     func metadataHeader(at url: URL) -> CodexRolloutCandidate?
-    /// Nil is a readable non-session/subagent; errors cannot establish absence.
-    func metadataSessionID(at url: URL) throws -> String?
 
 }
 
 public extension IncrementalSessionStore {
     var cacheInvalidationToken: String? { nil }
+    var sharedTitleURLs: [URL] { [] }
+    func loadSharedTitles() -> [String: String] { [:] }
     func enumerateSessionFiles() throws -> [URL] { sessionFileURLs() }
     func enumerateSessionFiles(in subtree: URL) throws -> [URL] {
         let prefix = SessionPaths.normalized(subtree.path)
         return try enumerateSessionFiles().filter { SessionPaths.normalized($0.path).hasPrefix(prefix + "/") }
     }
     func filenameID(at url: URL) -> String? { url.deletingPathExtension().lastPathComponent }
+    func rolloutSelectionKey(at url: URL) -> String? { nil }
     func acceptsTranscript(_ url: URL) -> Bool {
         url.pathExtension == "jsonl" && !url.pathComponents.contains("subagents")
     }
+    func adoptionHeader(at url: URL) throws -> CodexRolloutCandidate? {
+        metadataHeader(at: url)
+    }
     func metadataHeader(at url: URL) -> CodexRolloutCandidate? { nil }
-    func metadataSessionID(at url: URL) throws -> String? { metadataHeader(at: url)?.sessionID }
 
 }
 

@@ -66,7 +66,10 @@ if let searchQuery {
         print("\(badge)  \(project)  —  \(session.title)")
     }
 } else if CommandLine.arguments.contains("--watch") {
-    let watcher = SessionWatcher(database: try TempleDB(path: TempleDB.defaultPath()))
+    let database = try TempleState.isRedirected
+        ? TempleDB(path: TempleDB.defaultPath())
+        : TempleDB(readOnlyPath: TempleDB.defaultPath())
+    let watcher = SessionWatcher(database: database)
     var first = true
     for await index in watcher.start() {
         printIndex(index.filteringNoise(includeNoise: includeNoise), compact: !first)

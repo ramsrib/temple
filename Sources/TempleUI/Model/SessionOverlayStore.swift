@@ -86,6 +86,11 @@ public final class SessionOverlayStore: ObservableObject {
     /// round; what matters is that failure never shows the wrong sessions.
     @discardableResult
     public func join(_ id: String, via: JoinedVia, agent: Agent? = nil, transcriptPath: URL? = nil) -> Bool {
+        if templeSessions.contains(id) {
+            guard let transcriptPath else { return true }
+            if let row = try? db.sessionState(id), row.transcriptPath == transcriptPath.path,
+               agent == nil || row.agent == agent { return true }
+        }
         do {
             try db.join(sessionID: id, via: via, agent: agent, transcriptPath: transcriptPath)
             templeSessions.insert(id)
