@@ -186,25 +186,6 @@ struct LauncherView: View {
 
 // MARK: - Row & section building blocks
 
-/// An uppercase, letter-spaced section label trailed by a hairline rule.
-private struct SectionRule: View {
-    let title: String
-    init(_ title: String) { self.title = title }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Text(title.uppercased())
-                .font(.system(size: 11, weight: .medium))
-                .tracking(1.4)
-                .foregroundStyle(.secondary)
-            Rectangle()
-                .fill(Palette.hairline)
-                .frame(height: 1)
-        }
-        .padding(.bottom, 8)
-    }
-}
-
 /// One home-list row: leading icon + label, optional right-aligned shortcut /
 /// metadata, hover highlight. The whole row is the hit target.
 private struct LauncherRow: View {

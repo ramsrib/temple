@@ -26,8 +26,8 @@ struct HistoryTabView: View {
     @State private var width: CGFloat = 1000
 
     /// The page caps at this width and centres beyond it.
-    static let pageWidth: CGFloat = 1100
-    static let gutter: CGFloat = 28
+    static let pageWidth = PageChrome.pageWidth
+    static let gutter = PageChrome.gutter
     /// A row's own inset; the list column is this much wider than the header
     /// column so row text lines up with the title above it.
     static let rowInset: CGFloat = 12
@@ -105,7 +105,7 @@ struct HistoryTabView: View {
     private var top: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-                .padding(.top, 36)
+                .padding(.top, PageChrome.top)
                 .padding(.bottom, 18)
             toolbar
             if history.isNarrowed {
@@ -127,17 +127,7 @@ struct HistoryTabView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .lastTextBaseline, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("History")
-                    .font(.system(size: 24, weight: .bold))
-                Text(subtitle)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 12)
-            updatedLine
-        }
+        PageHeader(title: "History", subtitle: Text(subtitle)) { updatedLine }
     }
 
     /// What is in the box, not what is showing.
@@ -152,7 +142,7 @@ struct HistoryTabView: View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             HStack(spacing: 4) {
                 if let last = history.lastUpdated {
-                    Text("Updated \(Self.relative(last, now: context.date))")
+                    Text("Updated \(PageChrome.relative(last, now: context.date))")
                     Text("·")
                 }
                 Button("Refresh") { history.refresh() }
@@ -165,17 +155,6 @@ struct HistoryTabView: View {
             .foregroundStyle(.secondary)
         }
     }
-
-    private static func relative(_ date: Date, now: Date) -> String {
-        if now.timeIntervalSince(date) < 60 { return "just now" }
-        return relativeFormatter.localizedString(for: date, relativeTo: now)
-    }
-
-    private static let relativeFormatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter
-    }()
 
     @ViewBuilder
     private var toolbar: some View {
