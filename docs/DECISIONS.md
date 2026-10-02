@@ -1049,3 +1049,37 @@ Launch still lists file names across the whole disk; everything after that
 scales with the sessions Temple manages. Not changed: the usage meter's own
 scan of recent Codex logs, and continuation following (`←` / `/bg`, ADR-023),
 which is still to be built; the event classifier is where it lands.
+
+## ADR-028 — History is a tab over the whole disk, and the one way in
+**Date:** 2026-10-02 · **Status:** Accepted
+
+With *All on disk* gone (ADR-027), sessions run elsewhere are on no surface,
+and ADR-023's "imported" join had no way to happen. The ⌘Y overlay also read
+as a search box over Temple's own sessions, not as history.
+
+**Decisions.**
+
+- **History is a tab**, a singleton beside Settings: ⌘Y opens or focuses it,
+  ⌘Y on it goes back to the previous tab and leaves it open. The overlay is
+  gone. It lists **every session on disk**, newest first in day groups, one
+  line each; Temple's own rows at full strength with the gate mark, the rest a
+  step quieter with **Import**, archived ones tagged. Search and the All / In
+  Temple / Not in Temple, agent and project filters narrow the page in place.
+  Noise stays hidden.
+- **It reads the disk when shown and on ⌘R, never watches it.** Through
+  `SessionCatalog.stream`, newest first, cancelled when the tab goes. Temple's
+  own rows take the live index's copy. Watching the whole disk is exactly
+  what ADR-027 removed; a page you look at for a minute does not need it.
+- **Import is explicit and confirmed.** A row's Import, ⌘I or the selection
+  bar asks first ("Nothing runs until you open one, and the session files on
+  disk are not changed"), then joins as `imported` through the same committed
+  join path as every other join, so the session loads at once. Opening an
+  outside row (Return) joins it as `opened`, as anywhere else.
+- **Import can be undone, narrowly.** `TempleDB.leave` deletes a row only while
+  it still says nothing but "imported": not pinned, named, colored, retitled,
+  archived, opened since, or in a restorable tab. It is the only write that
+  removes membership; a committed leave tells the engine, which drops the
+  session. ADR-023's "first join is kept" is untouched: an undone row was
+  never kept.
+- **⌘K stays the quick switcher over Temple's sessions.** When it finds
+  nothing it offers "Search history for …", which opens the tab searching.
