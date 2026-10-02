@@ -149,6 +149,7 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         if bounds.size != .zero { pushSize(bounds.size) }
         pushContentScale()
         apply(terminalAppearance)
+        syncRendererState()
         GhosttyApp.logger.info("ghostty surface created and process spawned")
         return true
     }
@@ -161,6 +162,8 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         spawnToken = nil   // a creation still queued in the runtime is cancelled
         guard let surface else { return }
         self.surface = nil
+        pushedVisible = nil
+        pushedFocused = nil
         // Detach libghostty's layer before the renderer behind it goes. The
         // layer's display callback holds a raw pointer to that renderer, and
         // SwiftUI can keep this view — and so the layer — in the tree for a
@@ -226,6 +229,51 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         ghostty_surface_set_content_scale(surface, Double(fb.width), Double(fb.height))
     }
 
+    // MARK: Visibility
+
+    /// What libghostty was last told; `nil` until a surface has been told anything.
+    private var pushedVisible: Bool?
+    private var pushedFocused: Bool?
+    /// Whether this view holds the keyboard, as AppKit last told us.
+    private var isResponder = false
+    private var occlusionObserver: NSObjectProtocol?
+
+    /// Tell the renderer whether anyone can see this surface, and whether it
+    /// has focus.
+    ///
+    /// Only the active tab's view is in the window, but every tab's surface keeps
+    /// a renderer thread, and libghostty assumes a new surface is visible *and*
+    /// focused, so its display link runs at the screen's refresh rate. A tab
+    /// that never took the keyboard never says otherwise. Hidden, the renderer
+    /// stops drawing and stops the display link, and draws at once when shown.
+    ///
+    /// Focus goes through here too, because v1.3.1 restarts the display link on
+    /// focus without checking visibility: a tab that takes the keyboard while
+    /// its window is covered would tick again. So libghostty hears "focused"
+    /// only while the view is both first responder and visible.
+    ///
+    /// On Ghostty v1.3.1 this does NOT stop the CPU-heavy part: libghostty still
+    /// rebuilds its frame (shaping, link matching) on every output, visible or
+    /// not. Measured with 21 surfaces redrawing 4×/s: GPU submissions gone,
+    /// process CPU unchanged. Upstream `14d9e600ac` (after v1.3.1) skips that
+    /// rebuild for hidden surfaces — keyed off exactly this call.
+    ///
+    /// Visible = in a window, and that window is at least partly on screen
+    /// (not minimized, ⌘H-hidden, or fully covered).
+    private func syncRendererState() {
+        guard let surface else { return }
+        let visible = window?.occlusionState.contains(.visible) ?? false
+        let focused = isResponder && visible
+        if visible != pushedVisible {
+            pushedVisible = visible
+            ghostty_surface_set_occlusion(surface, visible)
+        }
+        if focused != pushedFocused {
+            pushedFocused = focused
+            ghostty_surface_set_focus(surface, focused)
+        }
+    }
+
     // MARK: Focus
 
     public override var acceptsFirstResponder: Bool { true }
@@ -255,21 +303,41 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         window.makeFirstResponder(self)
     }
 
+    public override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        // Out of its window a view can't hold the keyboard, and AppKit doesn't
+        // always say so (removing the first responder skips resign).
+        if newWindow !== window { isResponder = false }
+        if let occlusionObserver {
+            NotificationCenter.default.removeObserver(occlusionObserver)
+            self.occlusionObserver = nil
+        }
+        guard let newWindow else { return }
+        occlusionObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification, object: newWindow, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.syncRendererState() }
+        }
+    }
+
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        syncRendererState()
         guard wantsFocus else { return }
         DispatchQueue.main.async { [weak self] in self?.claimFocusIfWanted() }
     }
 
     public override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
-        if let surface { ghostty_surface_set_focus(surface, true) }
+        isResponder = true
+        syncRendererState()
         return ok
     }
 
     public override func resignFirstResponder() -> Bool {
         let ok = super.resignFirstResponder()
-        if let surface { ghostty_surface_set_focus(surface, false) }
+        isResponder = false
+        syncRendererState()
         return ok
     }
 
