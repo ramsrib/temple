@@ -42,7 +42,13 @@ struct TempleApp: App {
                 .task {
                     appDelegate.model = model
                     model.start()
-                    NSApplication.shared.activate()
+                    // A snapshot run (TEMPLE_SNAPSHOT_DIR) must not take focus:
+                    // the hook captures this window alone even when covered,
+                    // and an activated demo window caught keystrokes meant for
+                    // whatever the user was typing in (it opened a session).
+                    if ProcessInfo.processInfo.environment["TEMPLE_SNAPSHOT_DIR"] == nil {
+                        NSApplication.shared.activate()
+                    }
                 }
         }
         .commands { TempleCommands(model: model) }
