@@ -1,4 +1,6 @@
 import XCTest
+import AppKit
+import Combine
 @testable import TempleUI
 import TempleCore
 
@@ -181,11 +183,36 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(history.storeFailures, [.init(agent: .codex, message: "permission denied")])
         XCTAssertEqual(history.selection, ["a"], "the first row is selected as soon as there is one")
 
-        continuation.yield(.sessions([session("b", hoursAgo: 2)], read: 3, total: 3))
+        // A later batch can hold rows NEWER than the selected one (stores are
+        // read one after another): they land above it, and the selection stays.
+        continuation.yield(.sessions([session("newer", hoursAgo: 0.5), session("b", hoursAgo: 2)],
+                                     read: 3, total: 3))
         continuation.finish()
         await waitFor { history.readState == .done }
-        XCTAssertEqual(ids(history.allRows), ["a", "b"])
+        XCTAssertEqual(ids(history.allRows), ["newer", "a", "b"])
         XCTAssertEqual(history.selection, ["a"], "later batches never move the selection")
+        XCTAssertEqual(history.cursorID, "a")
+    }
+
+    /// The noise check stats a project directory per read: off the main
+    /// actor, and once per project however many sessions it holds.
+    func testTheNoiseCheckRunsOffTheMainThreadOncePerProject() async {
+        let probe = PathProbe()
+        let rows = [session("a", hoursAgo: 1), session("b", hoursAgo: 2),
+                    session("c", project: "/gone", hoursAgo: 3)]
+        let database = try! TempleDB.inMemory()
+        let history = HistoryModel(
+            overlay: SessionOverlayStore(db: database),
+            catalog: { Self.stream([.sessions(Array(rows.prefix(2)), read: 2, total: 3),
+                                    .sessions([rows[2]], read: 3, total: 3)]) },
+            pathExists: { path in probe.record(path); return path != "/gone" },
+            now: { [now] in now })
+
+        await load(history)
+
+        XCTAssertEqual(ids(history.allRows), ["a", "b"])
+        XCTAssertEqual(probe.paths, ["/p/a", "/gone"])
+        XCTAssertFalse(probe.sawMainThread, "no stat on the main thread")
     }
 
     /// The tab leaving the screen cancels its read; a later refresh replaces
@@ -378,6 +405,41 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(h.history.escape(), .leave)
     }
 
+    /// The field debounces into the query; Esc and Return act on what is
+    /// typed, not on what the list caught up to.
+    func testEscapeAndReturnFlushTheSearchDebounce() async {
+        let rows = [session("a", title: "Alpha", hoursAgo: 1), session("b", title: "Beta", hoursAgo: 2)]
+        let h = harness(rows)
+        h.history.queryDebounce = 10   // never fires on its own in this test
+        await load(h.history)
+        XCTAssertEqual(h.history.selection, ["a"])
+
+        h.history.draft = "Bet"
+        XCTAssertEqual(h.history.query, "", "still debouncing")
+        XCTAssertEqual(h.history.escape(), .clearedSearch, "Esc within the debounce clears the search…")
+        XCTAssertEqual(h.history.draft, "")
+        XCTAssertEqual(h.history.query, "")
+        XCTAssertEqual(h.history.selection, ["a"], "…and does not clear the selection")
+
+        h.history.draft = "Bet"
+        h.history.openSelected()
+        XCTAssertEqual(h.opened(), ["b"], "Return opens the first match of what was typed")
+    }
+
+    func testTheDebounceAppliesTheDraftOnItsOwn() async {
+        let h = harness([session("a", title: "Alpha", hoursAgo: 1), session("b", title: "Beta", hoursAgo: 2)])
+        h.history.queryDebounce = 0.01
+        await load(h.history)
+
+        h.history.draft = "Beta"
+        await waitFor { h.history.query == "Beta" }
+        XCTAssertEqual(ids(h.history.visibleRows), ["b"])
+
+        // Setting the query from outside (the ⌘K bridge) brings the field along.
+        h.history.query = "Alpha"
+        XCTAssertEqual(h.history.draft, "Alpha")
+    }
+
     // MARK: Import
 
     func testImportCopyNamesWhereRowsWillAppear() {
@@ -396,6 +458,39 @@ final class HistoryTests: XCTestCase {
 
         XCTAssertEqual(HistoryModel.projectList(["a", "b"]), "a and b")
         XCTAssertEqual(HistoryModel.projectList(["a", "b", "c", "d", "e"]), "a, b and 3 more projects")
+    }
+
+    /// An archived project lists its sessions in the archive, so the copy
+    /// must not promise a sidebar row.
+    func testImportCopyForAnArchivedProjectSaysTheArchive() {
+        let archived: (String) -> Bool = { $0 == "/x/raven" }
+        let one = HistoryModel.importRequest(
+            for: [session("a", project: "/x/raven", title: "Fix flaky test", hoursAgo: 1)],
+            isProjectArchived: archived)
+        XCTAssertEqual(one.message, "It will appear in the archive under raven, which is archived. Nothing runs until you open it, and the session file on disk is not changed.")
+
+        let mixed = HistoryModel.importRequest(
+            for: [session("a", project: "/x/raven", hoursAgo: 1), session("b", project: "/x/raven", hoursAgo: 2),
+                  session("c", project: "/x/dotfiles", hoursAgo: 3)],
+            isProjectArchived: archived)
+        XCTAssertEqual(mixed.message, "They will appear in the sidebar under dotfiles, and in the archive under raven, which is archived. Nothing runs until you open one, and the session files on disk are not changed.")
+    }
+
+    /// The sheet names a session the way its row does: custom name, then the
+    /// agent's own title, then the parsed one.
+    func testImportCopyUsesTheDisplayedTitle() async throws {
+        let rows = [session("a", project: "/p/raven", title: "first prompt", hoursAgo: 1)]
+        let h = harness(rows)
+        h.overlay.recordGeneratedTitle("Agent's title", for: "a")
+        h.overlay.flushPendingTitles()
+        h.overlay.setProjectArchived(true, path: "/p/raven")
+        await load(h.history)
+
+        h.history.requestImport(rows)
+
+        let request = try XCTUnwrap(h.history.pendingImport)
+        XCTAssertEqual(request.title, "Import “Agent's title” into Temple?")
+        XCTAssertTrue(request.message.hasPrefix("It will appear in the archive under raven"))
     }
 
     func testBulkImportSkipsTempleRowsJoinsTheRestAsImportedAndClearsSelection() async throws {
@@ -445,11 +540,13 @@ final class HistoryTests: XCTestCase {
                                    pathExists: { _ in true }, now: { [now] in now })
         await load(history)
 
+        overlay.recordGeneratedTitle("Renamed by the agent", for: "b")
+        overlay.flushPendingTitles()
         history.confirmImport(HistoryModel.importRequest(for: rows), undoManager: nil)
 
         let failure = try XCTUnwrap(history.importFailure)
         XCTAssertEqual(failure.title, "Couldn't import 2 of 2 sessions")
-        XCTAssertTrue(failure.message.contains("First · Second"))
+        XCTAssertTrue(failure.message.contains("First · Renamed by the agent"), "display titles, as the rows show")
         XCTAssertFalse(overlay.isTempleSession("a"))
     }
 
@@ -465,8 +562,6 @@ final class HistoryTests: XCTestCase {
         let rows = [session("keep-named", hoursAgo: 1), session("plain", hoursAgo: 2),
                     session("in-tab", hoursAgo: 3), session("was-in", hoursAgo: 4)]
         let h = harness(rows, members: ["was-in"])
-        var shrunk = 0
-        h.history.onMembershipShrunk = { shrunk += 1 }
         h.history.hasOpenTab = { $0 == "in-tab" }
         await load(h.history)
         let manager = undoManager()
@@ -485,13 +580,80 @@ final class HistoryTests: XCTestCase {
         XCTAssertNotNil(try h.database.sessionState("keep-named"), "a renamed row is kept")
         XCTAssertNotNil(try h.database.sessionState("in-tab"), "a row running in a tab is kept")
         XCTAssertEqual(try h.database.sessionState("was-in")?.joinedVia, .opened, "never imported, never undone")
-        XCTAssertEqual(shrunk, 1, "the engine re-reads membership once")
-        XCTAssertEqual(h.history.notice?.text, "1 of 3 imports undone · 2 changed since, kept")
+        XCTAssertEqual(h.history.notice?.text, "1 of 3 imports undone · 1 open in a tab, 1 changed since, kept",
+                       "each kept row for its own reason")
 
         XCTAssertTrue(manager.canRedo)
         manager.redo()
         XCTAssertEqual(try h.database.sessionState("plain")?.joinedVia, .imported)
         XCTAssertTrue(h.overlay.isTempleSession("plain"))
+    }
+
+    func testUndoNoticeGivesEachReason() {
+        XCTAssertEqual(HistoryModel.undoNotice(total: 1, left: 1, open: 0, changed: 0), "Import undone")
+        XCTAssertEqual(HistoryModel.undoNotice(total: 4, left: 4, open: 0, changed: 0), "4 imports undone")
+        XCTAssertEqual(HistoryModel.undoNotice(total: 1, left: 0, open: 1, changed: 0), "Import not undone · open in a tab")
+        XCTAssertEqual(HistoryModel.undoNotice(total: 1, left: 0, open: 0, changed: 1), "Import not undone · changed since")
+        XCTAssertEqual(HistoryModel.undoNotice(total: 3, left: 1, open: 2, changed: 0), "1 of 3 imports undone · 2 open in a tab, kept")
+        XCTAssertEqual(HistoryModel.undoNotice(total: 2, left: 0, open: 1, changed: 1), "No imports undone · 1 open in a tab, 1 changed since, kept")
+    }
+
+    // MARK: Bottom bar
+
+    /// Importing everything "Not in Temple" shows empties the view the import
+    /// was made from; the notice and its Undo must outlive the rows.
+    func testTheImportNoticeOutlivesAViewTheImportEmptied() async {
+        let rows = [session("o1", hoursAgo: 1), session("o2", hoursAgo: 2)]
+        let h = harness(rows)
+        await load(h.history)
+        h.history.scope = .notInTemple
+        h.history.selectAll()
+        XCTAssertEqual(h.history.bottomBar, .selection(count: 2))
+        let manager = undoManager()
+
+        manager.beginUndoGrouping()
+        h.history.confirmImport(h.history.makeImportRequest(for: rows), undoManager: manager)
+        manager.endUndoGrouping()
+
+        XCTAssertTrue(h.history.visibleRows.isEmpty, "everything left the Not in Temple view")
+        XCTAssertEqual(h.history.bottomBar, .notice(.init(text: "2 sessions imported", offersUndo: true)))
+    }
+
+    // MARK: Rebuild cost
+
+    /// Off screen, membership and live-index changes only mark the page
+    /// dirty; it catches up when it is shown again.
+    func testAnInactivePageDefersItsRebuildToActivation() async {
+        let rows = [session("a", title: "Disk title", hoursAgo: 1)]
+        let h = harness(rows)
+        await load(h.history)
+        h.history.deactivate()
+
+        _ = h.overlay.join("a", via: .opened)
+        h.history.liveIndexChanged(SessionIndex(projects: [
+            Project(path: "/p/a", sessions: [session("a", title: "Live title", hoursAgo: 1)])]))
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(h.history.inTempleCount, 0, "nothing rebuilt off screen")
+        XCTAssertEqual(h.history.allRows.map(\.title), ["Disk title"])
+
+        h.history.activate()
+        XCTAssertEqual(h.history.inTempleCount, 1, "caught up on activation, before the read")
+        XCTAssertEqual(h.history.allRows.map(\.title), ["Live title"])
+    }
+
+    /// A rebuild that changes nothing publishes nothing: an unrelated overlay
+    /// write must not re-render the page.
+    func testARebuildThatChangesNothingPublishesNothing() async {
+        let h = harness([session("a", hoursAgo: 1), session("b", hoursAgo: 2)])
+        await load(h.history)
+        var published = 0
+        let subscription = h.history.objectWillChange.sink { published += 1 }
+        defer { subscription.cancel() }
+
+        h.history.rebuild()
+        h.history.rebuild()
+
+        XCTAssertEqual(published, 0)
     }
 
     // MARK: Tab lifecycle
@@ -603,6 +765,144 @@ final class HistoryTabTests: XCTestCase {
         // Drag History to the front.
         model.openSessions.moveTab(fromOffsets: IndexSet(integer: 3), toOffset: 0)
         XCTAssertEqual(model.openSessions.visibleTabs.map(\.kind), [.history, .session, .session, .settings])
+    }
+}
+
+/// Which project paths the noise check stats, and from which thread.
+private final class PathProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+    private var onMain = false
+    func record(_ path: String) {
+        lock.lock(); recorded.append(path); if Thread.isMainThread { onMain = true }; lock.unlock()
+    }
+    var paths: [String] { lock.lock(); defer { lock.unlock() }; return recorded }
+    var sawMainThread: Bool { lock.lock(); defer { lock.unlock() }; return onMain }
+}
+
+/// Undo Import, end to end through the real engine: the committed leave
+/// takes the session out of the live index, with no filesystem event.
+@MainActor
+final class HistoryUndoEngineTests: XCTestCase {
+    func testUndoImportTakesTheSessionOutOfTheLiveIndex() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("temple-history-undo-\(UUID().uuidString)", isDirectory: true)
+        let project = root.appendingPathComponent("project", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = project.appendingPathComponent("imp.jsonl")
+        try #"{"type":"user","cwd":"/tmp/project","message":{"content":"from another terminal"}}"#
+            .write(to: file, atomically: true, encoding: .utf8)
+        let database = try TempleDB.inMemory()
+        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: database,
+                                     debounceInterval: 0.02)
+        let cache = root.appendingPathComponent("cache.json")
+        let source = WatcherIndexSource(watcher: watcher, cacheURL: cache)
+        defer { source.stop() }
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
+                             database: database, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+                             overlay: SessionOverlayStore(db: database), cacheURL: cache)
+        model.start()
+        try await waitFor { !model.isLoading }
+        let row = AgentSession(id: "imp", agent: .claude, projectPath: NSTemporaryDirectory(),
+                               title: "from another terminal", createdAt: nil, updatedAt: Date(),
+                               filePath: file)
+        model.history.catalog = { AsyncStream { $0.yield(.sessions([row], read: 1, total: 1)); $0.finish() } }
+        model.history.activate()
+        try await waitFor { model.history.readState == .done }
+        XCTAssertFalse(model.index.allSessions.contains { $0.id == "imp" })
+        let manager = UndoManager()
+        manager.groupsByEvent = false
+
+        manager.beginUndoGrouping()
+        model.history.confirmImport(model.history.makeImportRequest(for: [row]), undoManager: manager)
+        manager.endUndoGrouping()
+        try await waitFor { model.index.allSessions.contains { $0.id == "imp" } }
+
+        manager.undo()
+
+        try await waitFor { !model.index.allSessions.contains { $0.id == "imp" } }
+        XCTAssertFalse(model.overlay.isTempleSession("imp"))
+        XCTAssertNil(try database.sessionState("imp"))
+    }
+
+    private func waitFor(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let end = Date().addingTimeInterval(5)
+        while !condition(), Date() < end { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertTrue(condition(), "condition never held", file: file, line: line)
+    }
+}
+
+/// History's key map (RootView asks it on every keyDown while the tab is
+/// active): what it takes, and what it leaves to another field or a sheet.
+final class HistoryKeysTests: XCTestCase {
+    private func route(_ keyCode: UInt16, _ characters: String = "", _ modifiers: NSEvent.ModifierFlags = [],
+                       focus: HistoryKeyFocus = .none, sheet: Bool = false,
+                       searchSelection: Bool = false) -> HistoryKeyRoute {
+        HistoryKeys.route(keyCode: keyCode, characters: characters, modifiers: modifiers,
+                          focus: focus, sheetAttached: sheet, searchHasSelection: searchSelection)
+    }
+
+    private enum Key {
+        static let down: UInt16 = 125, up: UInt16 = 126, ret: UInt16 = 36, enter: UInt16 = 76, esc: UInt16 = 53
+        static let a: UInt16 = 0, c: UInt16 = 8, f: UInt16 = 3, i: UInt16 = 34, r: UInt16 = 15
+        static let k: UInt16 = 40, w: UInt16 = 13, y: UInt16 = 16
+    }
+
+    func testTheListTakesItsKeysWithNoFieldOrHistorysOwnSearchFocused() {
+        for focus in [HistoryKeyFocus.none, .historySearch] {
+            XCTAssertEqual(route(Key.down, focus: focus), .history(.moveCursor(by: 1, extend: false)))
+            XCTAssertEqual(route(Key.up, "", [.shift], focus: focus), .history(.moveCursor(by: -1, extend: true)))
+            XCTAssertEqual(route(Key.down, "", [.option], focus: focus), .history(.moveByDay(forward: true, extend: false)))
+            XCTAssertEqual(route(Key.up, "", [.command, .shift], focus: focus), .history(.moveToEnd(top: true, extend: true)))
+            XCTAssertEqual(route(Key.ret, focus: focus), .history(.open))
+            XCTAssertEqual(route(Key.enter, focus: focus), .history(.open))
+            XCTAssertEqual(route(Key.esc, focus: focus), .history(.escape))
+            XCTAssertEqual(route(Key.a, "a", [.command], focus: focus), .history(.selectAll))
+            XCTAssertEqual(route(Key.c, "c", [.command], focus: focus), .history(.copyResumeCommands))
+            XCTAssertEqual(route(Key.i, "i", [.command], focus: focus), .history(.importSelection))
+            XCTAssertEqual(route(Key.r, "r", [.command], focus: focus), .history(.refresh))
+            XCTAssertEqual(route(Key.f, "f", [.command], focus: focus), .history(.focusSearch))
+        }
+    }
+
+    /// Sidebar search, a chip rename: Return commits the field, Esc ends it,
+    /// arrows and ⌘A/⌘C edit it. None of it may open, select or leave.
+    func testAnotherFieldKeepsEveryKey() {
+        for (keyCode, characters, modifiers) in [
+            (Key.down, "", NSEvent.ModifierFlags()), (Key.up, "", [.shift]), (Key.ret, "", []),
+            (Key.enter, "", []), (Key.esc, "", []), (Key.a, "a", [.command]), (Key.c, "c", [.command]),
+            (Key.i, "i", [.command]), (Key.r, "r", [.command]), (Key.f, "f", [.command]),
+        ] {
+            XCTAssertEqual(route(keyCode, characters, modifiers, focus: .foreignField), .general,
+                           "key \(keyCode) \(modifiers)")
+        }
+    }
+
+    /// The import sheet and its failure alert: everything goes to the sheet,
+    /// including the ⌘ keys that would otherwise close or leave the page.
+    func testASheetTakesEverything() {
+        for focus in [HistoryKeyFocus.none, .historySearch, .foreignField] {
+            XCTAssertEqual(route(Key.ret, focus: focus, sheet: true), .toSheet)
+            XCTAssertEqual(route(Key.esc, focus: focus, sheet: true), .toSheet)
+            XCTAssertEqual(route(Key.w, "w", [.command], focus: focus, sheet: true), .toSheet)
+            XCTAssertEqual(route(Key.y, "y", [.command], focus: focus, sheet: true), .toSheet)
+            XCTAssertEqual(route(Key.k, "k", [.command], focus: focus, sheet: true), .toSheet)
+        }
+    }
+
+    func testTextSelectedInHistorysSearchCopiesAsText() {
+        XCTAssertEqual(route(Key.c, "c", [.command], focus: .historySearch, searchSelection: true), .general)
+        XCTAssertEqual(route(Key.a, "a", [.command], focus: .historySearch, searchSelection: true), .history(.selectAll))
+    }
+
+    func testOtherChordsAreNotHistorys() {
+        XCTAssertEqual(route(Key.down, "", [.control]), .general, "⌃ chords belong elsewhere")
+        XCTAssertEqual(route(Key.ret, "", [.command]), .general)
+        XCTAssertEqual(route(Key.a, "a", [.command, .option]), .general)
+        XCTAssertEqual(route(Key.a, "a"), .general, "plain typing")
+        XCTAssertEqual(route(Key.w, "w", [.command]), .general, "⌘W closes the tab")
+        XCTAssertEqual(route(Key.y, "y", [.command]), .general, "⌘Y goes back")
     }
 }
 

@@ -10,18 +10,18 @@ import TempleCore
 /// `MainContentView`, and a detail-pane view that makes SwiftUI rewrap the
 /// split view silently breaks the sidebar's titlebar inset (AGENTS.md). For
 /// the same reason nothing here uses `.fixedSize`, `.allowsHitTesting` or
-/// `layoutPriority`; the selection bar is an overlay, the banner a plain row.
+/// `layoutPriority`; the selection bar floats in a `ZStack` over the list,
+/// the banner is a plain row.
 ///
 /// Keys (arrows, Return, Esc, ⌘A/⌘I/⌘R/⌘C/⌘F) are handled by RootView's
-/// KeyCatcher while this tab is active, so they work whether the search field
-/// or nothing at all has focus.
+/// KeyCatcher while this tab is active (HistoryKeys), so they work whether
+/// the search field or nothing at all has focus — and stand aside when some
+/// other field (sidebar search, a chip rename) has it.
 struct HistoryTabView: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var history: HistoryModel
     @Environment(\.undoManager) private var undoManager
 
-    /// The search field's text; it debounces into `history.query`.
-    @State private var draft = ""
     @FocusState private var searchFocused: Bool
     @State private var width: CGFloat = 1000
 
@@ -31,6 +31,10 @@ struct HistoryTabView: View {
     /// A row's own inset; the list column is this much wider than the header
     /// column so row text lines up with the title above it.
     static let rowInset: CGFloat = 12
+    static let rowHeight: CGFloat = 34
+    /// The sticky day header. A row the keyboard moves to is scrolled clear
+    /// of it, not merely onto the screen underneath it.
+    static let dayHeaderHeight: CGFloat = 30
 
     private var compact: Bool { width < 720 }
 
@@ -47,21 +51,16 @@ struct HistoryTabView: View {
                     .onChange(of: geo.size.width) { _, new in width = new }
             })
         .onAppear {
-            draft = history.query
             history.activate()
             FieldFocus.claim { searchFocused = true }
         }
-        .onDisappear { history.deactivate() }
-        // Debounce: filtering is cheap, but a rebuild per keystroke resets
-        // the selection under fast typing for nothing.
-        .task(id: draft) {
-            guard draft != history.query else { return }
-            try? await Task.sleep(nanoseconds: 120_000_000)
-            guard !Task.isCancelled else { return }
-            history.query = draft
+        .onDisappear {
+            history.searchFieldFocused = false
+            history.deactivate()
         }
-        .onChange(of: history.query) { _, query in
-            if draft != query { draft = query }
+        // The key router tells this field from any other by this flag.
+        .onChange(of: searchFocused) { _, focused in
+            history.searchFieldFocused = focused
         }
         .onChange(of: history.focusSearchRequest) {
             FieldFocus.claim { searchFocused = true }
@@ -201,14 +200,16 @@ struct HistoryTabView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
-            TextField("Search history", text: $draft)
+            // Debounced into `history.query` by the model: filtering is
+            // cheap, but a rebuild per keystroke resets the selection under
+            // fast typing for nothing.
+            TextField("Search history", text: $history.draft)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .focused($searchFocused)
-            if !draft.isEmpty {
+            if !history.draft.isEmpty {
                 Button {
-                    draft = ""
-                    history.query = ""
+                    history.clearSearch()
                     searchFocused = true
                 } label: {
                     Image(systemName: "xmark.circle.fill")
@@ -315,13 +316,18 @@ struct HistoryTabView: View {
 
     // MARK: List
 
-    @ViewBuilder
+    /// The bar floats over whichever is showing, list or empty state: an
+    /// import can empty the view it was made from ("Not in Temple", all of it
+    /// imported), and its Undo must not go with the rows.
     private var content: some View {
-        if history.visibleRows.isEmpty {
-            column(emptyState, inset: Self.gutter)
-            Spacer(minLength: 0)
-        } else {
-            list
+        ZStack(alignment: .bottom) {
+            if history.visibleRows.isEmpty {
+                column(emptyState, inset: Self.gutter)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            } else {
+                list
+            }
+            bottomBar
         }
     }
 
@@ -332,13 +338,22 @@ struct HistoryTabView: View {
                     ForEach(history.groups) { group in
                         Section {
                             ForEach(group.sessions) { session in
-                                HistoryPageRow(history: history, session: session)
+                                row(session)
+                                    .equatable()
+                                    // A target reaching one header above the
+                                    // row: scrolling it into view clears the
+                                    // sticky header as well (see scrollRequest).
+                                    .background(alignment: .bottom) {
+                                        Color.clear
+                                            .frame(height: Self.rowHeight + Self.dayHeaderHeight)
+                                            .id(Self.headroomID(session.id))
+                                    }
                                     .id(session.id)
                             }
                         } header: {
                             HistoryHeader(title: group.title)
                                 .padding(.horizontal, Self.rowInset - 14)
-                                .frame(height: 30)
+                                .frame(height: Self.dayHeaderHeight)
                                 .background(Palette.panelBackground)
                         }
                     }
@@ -350,23 +365,76 @@ struct HistoryTabView: View {
             }
             .thinScrollers()
             .onChange(of: history.scrollRequest) {
-                if let id = history.cursorID { proxy.scrollTo(id) }
+                guard let id = history.cursorID else { return }
+                // The row itself first: it may be far off and not yet laid
+                // out (⌘↑, ⌥↓). Then its headroom target, a turn later once
+                // the row exists: moving up, the minimal scroll that shows the
+                // row leaves it under the sticky day header; showing the
+                // header's height above it as well puts it just below.
+                proxy.scrollTo(id)
+                DispatchQueue.main.async { proxy.scrollTo(Self.headroomID(id)) }
             }
-            .overlay(alignment: .bottom) { bottomBar }
         }
     }
+
+    static func headroomID(_ id: String) -> String { "headroom:" + id }
+
+    /// A row's inputs as plain values, so a row re-renders only when what it
+    /// shows changed — not on every arrow press, streamed batch, notice tick
+    /// or live-index publish that re-runs this body.
+    private func row(_ session: AgentSession) -> HistoryPageRow {
+        let inTemple = history.isInTemple(session.id)
+        let archived = history.isArchived(session)
+        let openTab = model.openSessions.openTab(forSessionID: session.id)
+        return HistoryPageRow(
+            session: session,
+            title: model.displayTitle(session),
+            selected: history.selection.contains(session.id),
+            inTemple: inTemple,
+            archived: archived,
+            justImported: history.justImported.contains(session.id),
+            activity: openTab?.activity,
+            colorMark: TabColorMark.color(for: session.id, in: model),
+            membershipTooltip: Self.membershipTooltip(history.joinedState(session.id)),
+            actions: HistoryRowActions(history: history, showInSidebar: { [weak model] id in
+                model?.showInSidebar(id)
+            }))
+    }
+
+    /// "In Temple · opened Sep 25" — how and when it joined, where known.
+    static func membershipTooltip(_ state: SessionState?) -> String {
+        guard let state, let date = state.joinedAt else { return "In Temple" }
+        let verb: String
+        switch state.joinedVia {
+        case .created: verb = "started"
+        case .opened: verb = "opened"
+        case .imported: verb = "imported"
+        case nil: return "In Temple"
+        }
+        return "In Temple · \(verb) \(dayFormatter.string(from: date))"
+    }
+
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MMM d"
+        return formatter
+    }()
 
     // MARK: Selection bar
 
     @ViewBuilder
     private var bottomBar: some View {
         Group {
-            if let notice = history.notice {
+            switch history.bottomBar {
+            case .notice(let notice)?:
                 noticeBar(notice)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
-            } else if history.selection.count >= 2 {
+            case .selection?:
                 selectionBar
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+            case nil:
+                EmptyView()
             }
         }
         .padding(.horizontal, Self.gutter - Self.rowInset)
@@ -492,7 +560,7 @@ struct HistoryTabView: View {
             let filters = activeFilterNames
             return EmptyCopy(
                 title: "No sessions match “\(query)”" + (filters.isEmpty ? "" : " in \(filters.joined(separator: " · "))"),
-                action: ("Clear search", { history.query = "" }))
+                action: ("Clear search", { history.clearSearch() }))
         }
         if history.allRows.isEmpty {
             return EmptyCopy(
@@ -529,15 +597,44 @@ struct HistoryTabView: View {
     }
 }
 
+/// What a row does. Held, never observed, and left out of the row's
+/// equality: the row re-renders for what it shows, not for who it calls.
+private struct HistoryRowActions {
+    let history: HistoryModel
+    let showInSidebar: (String) -> Void
+}
+
 /// One line per session, 34pt: time · badge · title (· activity) · project
 /// and branch · status. In Temple reads at full strength and ends in the gate
 /// mark; outside steps back a tone and ends in a quiet Import. The status
 /// column is a fixed width, so a row changing state never moves its
 /// neighbours.
-private struct HistoryPageRow: View {
-    @EnvironmentObject var model: AppModel
-    @ObservedObject var history: HistoryModel
+///
+/// Every input is a value and the view is `Equatable` (applied with
+/// `.equatable()`), so a body re-run of the page skips the rows whose inputs
+/// did not change. Nothing here observes the history or app model.
+private struct HistoryPageRow: View, Equatable {
     let session: AgentSession
+    let title: String
+    let selected: Bool
+    let inTemple: Bool
+    let archived: Bool
+    let justImported: Bool
+    /// The open tab's activity; nil when the session has no tab.
+    let activity: ActivityState?
+    let colorMark: Color?
+    let membershipTooltip: String
+    let actions: HistoryRowActions
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.session == rhs.session && lhs.title == rhs.title
+            && lhs.selected == rhs.selected && lhs.inTemple == rhs.inTemple
+            && lhs.archived == rhs.archived && lhs.justImported == rhs.justImported
+            && lhs.activity == rhs.activity && lhs.colorMark == rhs.colorMark
+            && lhs.membershipTooltip == rhs.membershipTooltip
+    }
+
+    private var history: HistoryModel { actions.history }
 
     @State private var rawHovering = false
     @Environment(\.overlayActive) private var overlayActive
@@ -545,9 +642,6 @@ private struct HistoryPageRow: View {
     private var hovering: Bool { rawHovering && !overlayActive }
 
     var body: some View {
-        let inTemple = history.isInTemple(session.id)
-        let selected = history.selection.contains(session.id)
-        let openTab = model.openSessions.openTab(forSessionID: session.id)
         HStack(spacing: 10) {
             HStack(spacing: 10) {
                 Text(Self.timeFormatter.string(from: session.updatedAt))
@@ -557,13 +651,13 @@ private struct HistoryPageRow: View {
                 AgentBadge(agent: session.agent, size: 13)
                     .opacity(inTemple ? 1 : 0.55)
                 HStack(spacing: 6) {
-                    Text(model.displayTitle(session))
+                    Text(title)
                         .font(.system(size: 13))
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .foregroundStyle(inTemple ? Color.primary : Color.primary.opacity(0.82))
-                    if let openTab {
-                        ActivityDot(state: openTab.activity)
+                    if let activity {
+                        ActivityDot(state: activity)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -572,22 +666,22 @@ private struct HistoryPageRow: View {
             .contentShape(Rectangle())
             .onTapGesture { history.click(session.id, modifier: Self.clickModifier()) }
             .simultaneousGesture(TapGesture(count: 2).onEnded { history.open(session) })
-            status(inTemple: inTemple, lit: selected || hovering)
+            status(lit: selected || hovering)
                 .frame(width: 84, alignment: .trailing)
         }
         .padding(.horizontal, HistoryTabView.rowInset)
-        .frame(height: 34)
+        .frame(height: HistoryTabView.rowHeight)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(selected ? Palette.selectionFill : hovering ? Palette.hoverFill : Color.clear))
         .overlay(alignment: .leading) {
-            if let mark = TabColorMark.color(for: session.id, in: model) {
-                Capsule().fill(mark).frame(width: 3).padding(.vertical, 6)
+            if let colorMark {
+                Capsule().fill(colorMark).frame(width: 3).padding(.vertical, 6)
             }
         }
         .onHover { rawHovering = $0 }
         .help(tooltip)
-        .contextMenu { contextMenu(inTemple: inTemple, openTab: openTab) }
+        .contextMenu { contextMenu }
     }
 
     private var meta: some View {
@@ -607,12 +701,12 @@ private struct HistoryPageRow: View {
     }
 
     @ViewBuilder
-    private func status(inTemple: Bool, lit: Bool) -> some View {
-        if history.justImported.contains(session.id) {
+    private func status(lit: Bool) -> some View {
+        if justImported {
             Text("Imported")
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
-        } else if history.isArchived(session) {
+        } else if archived {
             Text("Archived")
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
@@ -628,19 +722,6 @@ private struct HistoryPageRow: View {
         }
     }
 
-    /// "In Temple · opened Sep 25" — how and when it joined, where known.
-    private var membershipTooltip: String {
-        guard let state = history.joinedState(session.id), let date = state.joinedAt else { return "In Temple" }
-        let verb: String
-        switch state.joinedVia {
-        case .created: verb = "started"
-        case .opened: verb = "opened"
-        case .imported: verb = "imported"
-        case nil: return "In Temple"
-        }
-        return "In Temple · \(verb) \(Self.dayFormatter.string(from: date))"
-    }
-
     /// The last message (the overlay's old second line), then the details
     /// that are not reliable enough to sit in a column.
     private var tooltip: String {
@@ -654,11 +735,11 @@ private struct HistoryPageRow: View {
     }
 
     @ViewBuilder
-    private func contextMenu(inTemple: Bool, openTab: SessionTab?) -> some View {
+    private var contextMenu: some View {
         // Same words as the sidebar's menu where they overlap; no rename, pin,
         // color or archive — those belong to the rail. Keeping this short is
         // what keeps Import the obvious verb.
-        Button(openTab != nil ? "Focus" : "Open") { history.open(session) }
+        Button(activity != nil ? "Focus" : "Open") { history.open(session) }
         if !inTemple {
             Button("Import into Temple…") { history.requestImport([session]) }
         }
@@ -671,8 +752,8 @@ private struct HistoryPageRow: View {
             NSWorkspace.shared.activateFileViewerSelecting([session.filePath])
         }
         Divider()
-        if inTemple, !history.isArchived(session) {
-            Button("Show in sidebar") { model.showInSidebar(session.id) }
+        if inTemple, !archived {
+            Button("Show in sidebar") { actions.showInSidebar(session.id) }
         }
         Button("Show only \(HistoryModel.projectName(session.projectPath))") {
             history.showOnly(project: session.projectPath)
@@ -690,13 +771,6 @@ private struct HistoryPageRow: View {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "HH:mm"
-        return formatter
-    }()
-
-    private static let dayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "MMM d"
         return formatter
     }()
 }

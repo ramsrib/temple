@@ -370,9 +370,6 @@ public final class AppModel: ObservableObject {
             self?.openSessions.openTab(forSessionID: id) != nil
         }
         history.memberStates = { (try? database.sessionStates()) ?? [] }
-        // `TempleDB.leave` notifies the engine itself (observeLeaves), and the
-        // overlay has already dropped the ids: nothing to re-read here.
-        history.onMembershipShrunk = {}
         $index
             .sink { [weak self] index in self?.history.liveIndexChanged(index) }
             .store(in: &cancellables)

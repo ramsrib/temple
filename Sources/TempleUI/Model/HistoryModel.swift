@@ -68,10 +68,27 @@ public final class HistoryModel: ObservableObject {
         case clearedSearch, clearedSelection, leave
     }
 
+    /// What floats over the bottom of the page: the transient line after an
+    /// import or its undo, else the selection bar (two or more selected). It
+    /// is page chrome, not part of the list — an import can empty the view it
+    /// was made from ("Not in Temple", everything imported), and its Undo has
+    /// to survive that.
+    public enum BottomBar: Equatable {
+        case notice(Notice)
+        case selection(count: Int)
+    }
+
+    /// A project in the popup, with how many sessions on disk it holds.
+    public struct ProjectCount: Equatable, Sendable {
+        public let path: String
+        public let count: Int
+    }
+
     // MARK: Dependencies
 
     private let overlay: SessionOverlayStore
-    private let pathExists: (String) -> Bool
+    /// Runs off the main actor: the noise check stats each project once a read.
+    private let pathExists: @Sendable (String) -> Bool
     private let now: () -> Date
     /// The full-disk read. Replaceable so tests feed events by hand.
     var catalog: () -> AsyncStream<SessionCatalog.Event>
@@ -83,15 +100,14 @@ public final class HistoryModel: ObservableObject {
     /// Whether a session runs in an open tab: undoing its import must not
     /// pull it out from under that tab.
     var hasOpenTab: (String) -> Bool = { _ in false }
-    /// Membership shrank (an import was undone): the live engine re-reads it.
-    var onMembershipShrunk: () -> Void = {}
 
     // MARK: Snapshot
 
     /// The disk as last read: deduped by id, first (newest) file wins.
     private var diskByID: [String: AgentSession] = [:]
-    /// Temple's own copies from the live index — fresher titles and times.
-    private var liveByID: [String: AgentSession] = [:]
+    /// Temple's own copies come from the live index — fresher titles and
+    /// times. Kept as delivered; keyed by id only when a rebuild needs it.
+    private var liveIndex = SessionIndex(projects: [])
     private var joinedByID: [String: SessionState] = [:]
 
     @Published public private(set) var readState: ReadState = .idle
@@ -106,12 +122,22 @@ public final class HistoryModel: ObservableObject {
     @Published public private(set) var inTempleCount = 0
     @Published public private(set) var agentCounts: [Agent: Int] = [:]
     /// Projects for the popup, by session count, most first.
-    @Published public private(set) var projects: [(path: String, count: Int)] = []
+    @Published public private(set) var projects: [ProjectCount] = []
 
     // MARK: View state
 
-    /// The applied search (the field debounces into it).
-    @Published public var query = "" { didSet { if query != oldValue { filtersChanged() } } }
+    /// The search field's text, as typed. It reaches `query` — and the list —
+    /// `queryDebounce` after the last keystroke; Esc and Return flush it
+    /// first, so neither acts on the query from before the typing.
+    @Published public var draft = "" { didSet { if draft != oldValue { draftChanged() } } }
+    /// The applied search. Setting it (the ⌘K bridge) brings the field along.
+    @Published public var query = "" {
+        didSet {
+            guard query != oldValue else { return }
+            if draft != query { draft = query }
+            filtersChanged()
+        }
+    }
     @Published public var scope: HistoryScope = .all { didSet { if scope != oldValue { filtersChanged() } } }
     @Published public var agentFilter: Agent? { didSet { if agentFilter != oldValue { filtersChanged() } } }
     @Published public var projectFilter: String? { didSet { if projectFilter != oldValue { filtersChanged() } } }
@@ -125,6 +151,11 @@ public final class HistoryModel: ObservableObject {
     @Published public private(set) var scrollRequest = 0
     /// Bumped by ⌘F: the view moves keyboard focus into the search field.
     @Published public private(set) var focusSearchRequest = 0
+    /// History's own search field holds keyboard focus. The view keeps it
+    /// current; the key router reads it to tell this field from any other
+    /// (sidebar search, a chip being renamed), whose keys are not History's.
+    /// Not published: nothing on screen draws from it.
+    public var searchFieldFocused = false
 
     @Published public var pendingImport: ImportRequest?
     @Published public var importFailure: ImportFailure?
@@ -138,15 +169,22 @@ public final class HistoryModel: ObservableObject {
     private var readTask: Task<Void, Never>?
     private var noticeTask: Task<Void, Never>?
     private var importedTask: Task<Void, Never>?
+    private var debounceTask: Task<Void, Never>?
     private var rebuildScheduled = false
+    /// The tab is on screen. Off screen, a change only marks the page dirty:
+    /// re-sorting a few thousand rows for a page nobody is looking at, on
+    /// every membership or live-index change, is work for nothing.
+    private var isActive = false
+    private var needsRebuild = false
     private var cancellables: Set<AnyCancellable> = []
 
     var noticeDuration: TimeInterval = 4
     var importedDuration: TimeInterval = 2
+    var queryDebounce: TimeInterval = 0.12
 
     init(overlay: SessionOverlayStore,
          catalog: @escaping () -> AsyncStream<SessionCatalog.Event> = { SessionCatalog().stream() },
-         pathExists: @escaping (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
+         pathExists: @escaping @Sendable (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
          now: @escaping () -> Date = Date.init) {
         self.overlay = overlay
         self.catalog = catalog
@@ -161,22 +199,25 @@ public final class HistoryModel: ObservableObject {
 
     /// The live index changed: Temple's own rows take its copies.
     func liveIndexChanged(_ index: SessionIndex) {
-        liveByID = Dictionary(index.allSessions.map { ($0.id, $0) },
-                              uniquingKeysWith: { first, _ in first })
+        liveIndex = index
         scheduleRebuild()
     }
 
     // MARK: Lifecycle
 
-    /// The tab came on screen (opened, or switched back to): take a fresh
-    /// snapshot. Rows already on the page stay while it reads.
+    /// The tab came on screen (opened, or switched back to): catch up on what
+    /// changed while it was away, then take a fresh snapshot. Rows already on
+    /// the page stay while it reads.
     public func activate() {
+        isActive = true
         if selection.isEmpty { wantsInitialSelection = true }
+        if needsRebuild { rebuild() }
         refresh()
     }
 
-    /// The tab left the screen: stop reading for nobody.
+    /// The tab left the screen: stop reading for nobody, and stop rebuilding.
     public func deactivate() {
+        isActive = false
         guard readTask != nil else { return }
         readTask?.cancel()
         readTask = nil
@@ -199,7 +240,12 @@ public final class HistoryModel: ObservableObject {
         cursorID = nil
         anchorID = nil
         wantsInitialSelection = true
+        debounceTask?.cancel()
+        debounceTask = nil
+        draft = ""
         query = ""; scope = .all; agentFilter = nil; projectFilter = nil
+        // Directly, not through `invalidate()`: the tab is gone, and its page
+        // must open empty next time rather than flash the old snapshot.
         rebuild()
     }
 
@@ -208,6 +254,7 @@ public final class HistoryModel: ObservableObject {
         readTask?.cancel()
         readState = .reading(read: 0, total: nil)
         let stream = catalog()
+        let pathExists = pathExists
         readTask = Task { [weak self] in
             var seen: Set<String> = []
             var failures: [StoreFailure] = []
@@ -221,15 +268,18 @@ public final class HistoryModel: ObservableObject {
                     failures.append(StoreFailure(agent: agent, message: message))
                     self.storeFailures = failures
                 case .sessions(let batch, let read, let total):
-                    for session in batch where seen.insert(session.id).inserted {
-                        let isNoise = SessionFilter.isNoise(session) { path in
-                            if let hit = exists[path] { return hit }
-                            let result = self.pathExists(path)
-                            exists[path] = result
-                            return result
-                        }
-                        self.diskByID[session.id] = isNoise ? nil : session
-                    }
+                    // First (newest) file wins. The noise check — a stat per
+                    // project, memoised across the read — runs off the main
+                    // actor, a batch at a time so the order is kept.
+                    let fresh = batch.filter { seen.insert($0.id).inserted }
+                    let known = exists
+                    let sorted = await Task.detached(priority: .userInitiated) {
+                        Self.classify(fresh, exists: known, pathExists: pathExists)
+                    }.value
+                    guard !Task.isCancelled else { return }
+                    exists = sorted.exists
+                    for session in sorted.kept { self.diskByID[session.id] = session }
+                    for id in sorted.noise { self.diskByID[id] = nil }
                     self.readState = .reading(read: read, total: total)
                     self.rebuild()
                 }
@@ -245,6 +295,26 @@ public final class HistoryModel: ObservableObject {
             self.readTask = nil
             self.rebuild()
         }
+    }
+
+    /// Splits a batch into rows and noise (`SessionFilter.isNoise`), carrying
+    /// the per-project existence answers so far in and out.
+    nonisolated static func classify(_ sessions: [AgentSession], exists: [String: Bool],
+                                     pathExists: (String) -> Bool)
+        -> (kept: [AgentSession], noise: [String], exists: [String: Bool]) {
+        var exists = exists
+        var kept: [AgentSession] = []
+        var noise: [String] = []
+        for session in sessions {
+            let isNoise = SessionFilter.isNoise(session) { path in
+                if let hit = exists[path] { return hit }
+                let result = pathExists(path)
+                exists[path] = result
+                return result
+            }
+            if isNoise { noise.append(session.id) } else { kept.append(session) }
+        }
+        return (kept, noise, exists)
     }
 
     // MARK: Derived
@@ -269,9 +339,22 @@ public final class HistoryModel: ObservableObject {
         return false
     }
 
+    public var bottomBar: BottomBar? {
+        if let notice { return .notice(notice) }
+        if selection.count >= 2 { return .selection(count: selection.count) }
+        return nil
+    }
+
     private var normalizedQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
 
+    /// Something the page shows changed: rebuild now if it is on screen,
+    /// else when it next is.
+    private func invalidate() {
+        if isActive { rebuild() } else { needsRebuild = true }
+    }
+
     private func scheduleRebuild() {
+        guard isActive else { needsRebuild = true; return }
         guard !rebuildScheduled else { return }
         rebuildScheduled = true
         // objectWillChange fires BEFORE the change lands: rebuild a turn later.
@@ -279,31 +362,38 @@ public final class HistoryModel: ObservableObject {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.rebuildScheduled = false
-                self.rebuild()
+                self.invalidate()
             }
         }
     }
 
     /// Recompute every derived list from the snapshot. A few thousand structs:
-    /// cheap, and never run from a view body.
+    /// cheap, and never run from a view body. Each published value is
+    /// assigned only when it changed, so a write the page does not show (a
+    /// title arriving for some open tab) re-renders nothing.
     func rebuild() {
+        needsRebuild = false
         let temple = overlay.templeSessions
+        var liveByID: [String: AgentSession] = [:]
+        for session in liveIndex.allSessions where liveByID[session.id] == nil {
+            liveByID[session.id] = session
+        }
         var rows = diskByID.values.map { disk -> AgentSession in
             temple.contains(disk.id) ? (liveByID[disk.id] ?? disk) : disk
         }
         rows.sort { $0.updatedAt == $1.updatedAt ? $0.id < $1.id : $0.updatedAt > $1.updatedAt }
-        allRows = rows
-        inTempleCount = rows.reduce(0) { $0 + (temple.contains($1.id) ? 1 : 0) }
+        assign(\.allRows, rows)
+        assign(\.inTempleCount, rows.reduce(0) { $0 + (temple.contains($1.id) ? 1 : 0) })
         var agents: [Agent: Int] = [:]
         var projectCounts: [String: Int] = [:]
         for row in rows {
             agents[row.agent, default: 0] += 1
             projectCounts[row.projectPath, default: 0] += 1
         }
-        agentCounts = agents
-        projects = projectCounts
-            .map { (path: $0.key, count: $0.value) }
-            .sorted { $0.count == $1.count ? $0.path < $1.path : $0.count > $1.count }
+        assign(\.agentCounts, agents)
+        assign(\.projects, projectCounts
+            .map { ProjectCount(path: $0.key, count: $0.value) }
+            .sorted { $0.count == $1.count ? $0.path < $1.path : $0.count > $1.count })
 
         let needle = normalizedQuery
         let overrides = needle.isEmpty ? [:] : overlay.displayTitleOverrides
@@ -317,8 +407,8 @@ public final class HistoryModel: ObservableObject {
             if let projectFilter, session.projectPath != projectFilter { return false }
             return needle.isEmpty || Self.matches(session, needle, override: overrides[session.id])
         }
-        visibleRows = visible
-        groups = HistoryGrouping.groups(visible, now: now())
+        assign(\.visibleRows, visible)
+        assign(\.groups, HistoryGrouping.groups(visible, now: now()))
 
         // A selected row that left the view is not selected: nothing hidden
         // can be imported by a key press.
@@ -331,6 +421,11 @@ public final class HistoryModel: ObservableObject {
             wantsInitialSelection = false
             select(only: first.id)
         }
+    }
+
+    private func assign<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<HistoryModel, Value>,
+                                          _ value: Value) {
+        if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
     }
 
     /// Case-insensitive substring over everything the row shows or hides in
@@ -352,7 +447,32 @@ public final class HistoryModel: ObservableObject {
         cursorID = nil
         anchorID = nil
         wantsInitialSelection = true
-        rebuild()
+        invalidate()
+    }
+
+    private func draftChanged() {
+        debounceTask?.cancel()
+        debounceTask = nil
+        guard draft != query else { return }
+        let delay = queryDebounce
+        debounceTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.flushQuery()
+        }
+    }
+
+    /// Apply what is typed now, without waiting out the debounce.
+    public func flushQuery() {
+        debounceTask?.cancel()
+        debounceTask = nil
+        if query != draft { query = draft }
+    }
+
+    /// The field's ×, the empty state's Clear search, Esc's first rung.
+    public func clearSearch() {
+        draft = ""
+        flushQuery()
     }
 
     // MARK: Selection
@@ -464,8 +584,11 @@ public final class HistoryModel: ObservableObject {
     /// Esc: clear search → clear selection → leave (the caller goes back to
     /// the previous tab; History stays open).
     public func escape() -> EscapeOutcome {
+        // Esc straight after typing still clears the search: the ladder reads
+        // what is in the field, not what the list has caught up to.
+        flushQuery()
         if !query.isEmpty {
-            query = ""
+            clearSearch()
             return .clearedSearch
         }
         if !selection.isEmpty {
@@ -482,6 +605,9 @@ public final class HistoryModel: ObservableObject {
     /// Return / double-click. A tab is a process, so with two or more rows
     /// selected Return opens nothing — Import is the only bulk verb.
     public func openSelected() {
+        // Typing then Return at once opens the first match, not the row that
+        // was selected before the typing.
+        flushQuery()
         guard selection.count == 1, let id = selection.first,
               let session = visibleRows.first(where: { $0.id == id }) else { return }
         openSession(session)
@@ -503,27 +629,51 @@ public final class HistoryModel: ObservableObject {
     public func requestImport(_ sessions: [AgentSession]? = nil) {
         let candidates = (sessions ?? selectedRows).filter { !isInTemple($0.id) }
         guard !candidates.isEmpty else { return }
-        pendingImport = Self.importRequest(for: candidates)
+        pendingImport = makeImportRequest(for: candidates)
+    }
+
+    /// The copy in the words the page shows: display titles, and where each
+    /// project's rows will actually be listed.
+    func makeImportRequest(for sessions: [AgentSession]) -> ImportRequest {
+        Self.importRequest(for: sessions,
+                           title: { [overlay] in overlay.displayTitle(for: $0) },
+                           isProjectArchived: { [overlay] in overlay.isProjectArchived($0) })
     }
 
     public func cancelImport() { pendingImport = nil }
 
-    static func importRequest(for sessions: [AgentSession]) -> ImportRequest {
+    /// A project that is archived lists its sessions in the archive (⌘⇧Y),
+    /// not the sidebar — so the copy says so rather than promise a sidebar
+    /// row that never appears.
+    static func importRequest(for sessions: [AgentSession],
+                              title: (AgentSession) -> String = { $0.title },
+                              isProjectArchived: (String) -> Bool = { _ in false }) -> ImportRequest {
+        var counts: [String: Int] = [:]
+        for session in sessions { counts[session.projectPath, default: 0] += 1 }
+        let paths = counts.sorted { lhs, rhs in
+            if lhs.value != rhs.value { return lhs.value > rhs.value }
+            return projectName(lhs.key) == projectName(rhs.key) ? lhs.key < rhs.key
+                : projectName(lhs.key) < projectName(rhs.key)
+        }.map(\.key)
+        let sidebar = paths.filter { !isProjectArchived($0) }.map(projectName)
+        let archive = paths.filter(isProjectArchived).map(projectName)
+        var places: [String] = []
+        if !sidebar.isEmpty { places.append("in the sidebar under \(projectList(sidebar))") }
+        if !archive.isEmpty {
+            places.append("in the archive under \(projectList(archive)), which \(archive.count == 1 ? "is" : "are") archived")
+        }
+        let destination = places.joined(separator: ", and ")
         if sessions.count == 1, let session = sessions.first {
-            let name = projectName(session.projectPath)
             return ImportRequest(
                 sessions: sessions,
-                title: "Import “\(session.title)” into Temple?",
-                message: "It will appear in the sidebar under \(name). Nothing runs until you open it, and the session file on disk is not changed.",
+                title: "Import “\(title(session))” into Temple?",
+                message: "It will appear \(destination). Nothing runs until you open it, and the session file on disk is not changed.",
                 confirmLabel: "Import")
         }
-        var counts: [String: Int] = [:]
-        for session in sessions { counts[projectName(session.projectPath), default: 0] += 1 }
-        let names = counts.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.map(\.key)
         return ImportRequest(
             sessions: sessions,
             title: "Import \(sessions.count) sessions into Temple?",
-            message: "They will appear in the sidebar under \(projectList(names)). Nothing runs until you open one, and the session files on disk are not changed.",
+            message: "They will appear \(destination). Nothing runs until you open one, and the session files on disk are not changed.",
             confirmLabel: "Import \(sessions.count)")
     }
 
@@ -563,7 +713,7 @@ public final class HistoryModel: ObservableObject {
             registerUndo(undoManager, imported: imported, sessions: sessions)
         }
         if !failures.isEmpty {
-            let failedTitles = sessions.filter { failures[$0.id] != nil }.map(\.title)
+            let failedTitles = sessions.filter { failures[$0.id] != nil }.map(overlay.displayTitle(for:))
             let errors = Set(failures.values.map { $0.localizedDescription }).sorted()
             var lines = errors + [failedTitles.joined(separator: " · ")]
             if !imported.isEmpty {
@@ -573,7 +723,7 @@ public final class HistoryModel: ObservableObject {
                 title: "Couldn't import \(failures.count) of \(sessions.count) sessions",
                 message: lines.joined(separator: "\n"))
         }
-        rebuild()
+        invalidate()
     }
 
     /// Undo removes exactly the rows this import wrote, and only while each is
@@ -589,7 +739,7 @@ public final class HistoryModel: ObservableObject {
                 let back = sessions.filter { left.contains($0.id) }
                 undoManager.registerUndo(withTarget: model) { [weak undoManager] model in
                     MainActor.assumeIsolated {
-                        model.confirmImport(HistoryModel.importRequest(for: back), undoManager: undoManager)
+                        model.confirmImport(model.makeImportRequest(for: back), undoManager: undoManager)
                     }
                 }
                 undoManager.setActionName("Import")
@@ -598,24 +748,36 @@ public final class HistoryModel: ObservableObject {
         undoManager.setActionName("Import")
     }
 
-    /// Returns the ids that left Temple.
+    /// Returns the ids that left Temple. A committed leave tells the live
+    /// engine itself (`TempleDB.observeLeaves`); nothing to re-read here.
     @discardableResult
     func undoImport(_ ids: [String]) -> [String] {
-        let candidates = ids.filter { !hasOpenTab($0) }
+        let open = Set(ids.filter { hasOpenTab($0) })
+        let candidates = ids.filter { !open.contains($0) }
         let left = overlay.leave(candidates)
-        if !left.isEmpty { onMembershipShrunk() }
         refreshJoinedStates()
         justImported.subtract(left)
-        let kept = ids.count - left.count
-        let text: String
-        if kept == 0 {
-            text = left.count == 1 ? "Import undone" : "\(left.count) imports undone"
-        } else {
-            text = "\(left.count) of \(ids.count) imports undone · \(kept) changed since, kept"
-        }
-        showNotice(Notice(text: text, offersUndo: false))
-        rebuild()
+        showNotice(Notice(text: Self.undoNotice(total: ids.count, left: left.count,
+                                                open: open.count, changed: candidates.count - left.count),
+                          offersUndo: false))
+        invalidate()
         return left
+    }
+
+    /// What the undo did, and why anything it did not undo stayed: running in
+    /// a tab, or changed since (pinned, named, opened…).
+    static func undoNotice(total: Int, left: Int, open: Int, changed: Int) -> String {
+        guard open + changed > 0 else {
+            return left == 1 ? "Import undone" : "\(left) imports undone"
+        }
+        if total == 1 {
+            return open > 0 ? "Import not undone · open in a tab" : "Import not undone · changed since"
+        }
+        var reasons: [String] = []
+        if open > 0 { reasons.append("\(open) open in a tab") }
+        if changed > 0 { reasons.append("\(changed) changed since") }
+        let head = left == 0 ? "No imports undone" : "\(left) of \(total) imports undone"
+        return "\(head) · \(reasons.joined(separator: ", ")), kept"
     }
 
     private func refreshJoinedStates() {

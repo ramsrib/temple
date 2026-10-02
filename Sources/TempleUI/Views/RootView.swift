@@ -455,6 +455,12 @@ private struct KeyCatcher: NSViewRepresentable {
             // so Return/Esc reach the alert instead of our shortcuts.
             if model.openSessions.pendingCloseTabID != nil { return false }
 
+            // History's import sheet and its failure alert own the keyboard
+            // the same way. Asked first, so no binding below (⌘W, ⌘Y, ⌘K…)
+            // can act on the page under the sheet.
+            let historyRoute = model.historyActive ? self.historyRoute(event, model) : nil
+            if historyRoute == .toSheet { return false }
+
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let cmd = flags.contains(.command)
             let ctrl = flags.contains(.control)
@@ -532,9 +538,10 @@ private struct KeyCatcher: NSViewRepresentable {
             }
 
             // The History tab: its list owns arrows, Return and Esc, and a few
-            // ⌘ keys mean "this page" while it is the active tab.
-            if model.historyActive, let handled = handleHistory(event, model) {
-                return handled
+            // ⌘ keys mean "this page" while it is the active tab — unless
+            // another text field has the keyboard (HistoryKeys).
+            if case .history(let command)? = historyRoute, !model.panelPresented {
+                return performHistory(command, model)
             }
 
             // Sidebar browse (UX "Select vs. open"): arrow keys move the highlight,
@@ -611,69 +618,60 @@ private struct KeyCatcher: NSViewRepresentable {
             }
         }
 
-        /// The History tab's keys. Nil means "not History's": the event goes
-        /// on to the general bindings (⌘W, ⌘Y, ⌘K …). They are taken here, not
-        /// by the view, so they work whether the search field has focus or
-        /// nothing does; arrows and Return drive the list even while typing a
-        /// query, as the old overlay's did. A confirmation sheet owns the
-        /// keyboard, and so does any floating panel.
+        /// Where a key goes while History is the active tab (HistoryKeys).
+        /// Its keys are taken here, not by the view, so they work whether
+        /// History's search field has focus or nothing does: arrows and Return
+        /// drive the list even while typing a query, as the old overlay's did.
+        /// Any other field keeps its keys — a field editor that is not
+        /// History's search belongs to the sidebar search or a chip rename.
         @MainActor
-        private func handleHistory(_ event: NSEvent, _ model: AppModel) -> Bool? {
+        private func historyRoute(_ event: NSEvent, _ model: AppModel) -> HistoryKeyRoute {
             let history = model.history
-            guard !model.panelPresented,
-                  history.pendingImport == nil, history.importFailure == nil,
-                  event.window?.attachedSheet == nil, event.window?.sheetParent == nil
-            else { return nil }
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            let cmd = flags.contains(.command)
-            let shift = flags.contains(.shift)
-            let option = flags.contains(.option)
-            if flags.contains(.control) { return nil }
+            let window = event.window
+            let sheetAttached = history.pendingImport != nil || history.importFailure != nil
+                || window?.attachedSheet != nil || window?.sheetParent != nil
+            let editor = window?.firstResponder as? NSTextView
+            let focus: HistoryKeyFocus = editor == nil ? .none
+                : history.searchFieldFocused ? .historySearch : .foreignField
+            return HistoryKeys.route(
+                keyCode: event.keyCode,
+                characters: event.charactersIgnoringModifiers ?? "",
+                modifiers: event.modifierFlags,
+                focus: focus,
+                sheetAttached: sheetAttached,
+                searchHasSelection: focus == .historySearch && (editor?.selectedRange().length ?? 0) > 0)
+        }
 
-            switch event.keyCode {
-            case 125, 126:   // ↓ ↑ (⇧ extends, ⌥ jumps a day, ⌘ to the end)
-                let down = event.keyCode == 125
-                if cmd {
-                    history.moveCursorToEnd(top: !down, extend: shift)
-                } else if option {
-                    history.moveCursorByDay(forward: down, extend: shift)
-                } else {
-                    history.moveCursor(by: down ? 1 : -1, extend: shift)
-                }
-                return true
-            case 36, 76:     // return / enter
-                guard !cmd else { return nil }
+        /// Returns whether the key was used (a ⌘C with nothing selected is not).
+        @MainActor
+        private func performHistory(_ command: HistoryKeyCommand, _ model: AppModel) -> Bool {
+            let history = model.history
+            switch command {
+            case .moveCursor(let delta, let extend):
+                history.moveCursor(by: delta, extend: extend)
+            case .moveToEnd(let top, let extend):
+                history.moveCursorToEnd(top: top, extend: extend)
+            case .moveByDay(let forward, let extend):
+                history.moveCursorByDay(forward: forward, extend: extend)
+            case .open:
                 history.openSelected()
-                return true
-            case 53:         // esc: clear search → clear selection → previous tab
+            case .escape:
                 if history.escape() == .leave { model.openSessions.returnToPreviousTab() }
-                return true
-            default:
-                break
-            }
-
-            guard cmd, !option else { return nil }
-            switch event.charactersIgnoringModifiers?.lowercased() ?? "" {
-            case "a":
-                history.selectAll(); return true
-            case "i":
-                history.requestImport(); return true
-            case "r":
-                history.refresh(); return true
-            case "f":
-                history.requestSearchFocus(); return true
-            case "c":
-                // Text selected in the search field copies as text.
-                if let editor = event.window?.firstResponder as? NSTextView,
-                   editor.selectedRange().length > 0 { return nil }
+            case .selectAll:
+                history.selectAll()
+            case .importSelection:
+                history.requestImport()
+            case .refresh:
+                history.refresh()
+            case .focusSearch:
+                history.requestSearchFocus()
+            case .copyResumeCommands:
                 let rows = history.selectedRows
-                guard !rows.isEmpty else { return nil }
+                guard !rows.isEmpty else { return false }
                 copyToPasteboard(rows.map { $0.resume.argv.joined(separator: " ") }
                     .joined(separator: "\n"))
-                return true
-            default:
-                return nil
             }
+            return true
         }
     }
 }
