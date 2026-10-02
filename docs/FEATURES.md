@@ -289,7 +289,8 @@ prompt composer.
 
 A tab, not a panel: a singleton utility tab beside Settings, opened or focused
 by `⌘Y` or View ▸ Session History. Pressed while History is the active tab,
-`⌘Y` goes back to the tab you came from and leaves History open. It lists
+`⌘Y` goes back to the tab you came from and leaves History open; pressed while
+⌘K or the archive is open over History, it only puts the panel away. It lists
 **every session on disk** — Temple's and everyone else's — and is the one door
 through which the others join.
 
@@ -325,20 +326,32 @@ through which the others join.
   nothing (a tab is a process); **Import** is the only bulk verb.
 - **Import** — a row's Import, its context menu, `⌘I`, or the selection bar
   that appears with two or more rows ("12 selected · 3 already in Temple ·
-  Import 9…") — asks first, naming where the sessions will appear and saying
-  nothing runs and no file on disk changes. Imported rows join as *imported*,
-  appear in the sidebar at once, and read "Imported" for a moment; you stay
-  on History. `⌘Z` (Edit ▸ Undo Import, or Undo on the bar) takes the import
-  back, row by row, only while a row is still untouched — a session renamed,
-  pinned, colored, archived, retitled by its agent, or running in a tab since
-  stays in Temple. A failed write is reported with its error and titles; the
-  rest stay imported.
+  Import 9…") — asks first, naming each session by its displayed title and
+  where it will appear (the sidebar, or the archive for a project that is
+  archived), and saying nothing runs and no file on disk changes. Imported
+  rows join as *imported*, appear in the sidebar at once, and read "Imported"
+  for a moment; you stay on History, and the "9 sessions imported · Undo" line
+  stays even when the import empties the view (Not in Temple). `⌘Z` (Edit ▸
+  Undo Import, or Undo on the bar) takes the import back, row by row, only
+  while a row is still untouched — a session renamed, pinned, colored,
+  archived, retitled by its agent, or opened since (even if its tab has
+  closed again) stays in Temple, and so does one running in a tab; the line
+  says which reason kept which. An undone session leaves the live index at
+  once. A failed write is reported with its error and titles; the rest stay
+  imported.
 - **Context menu:** Open/Focus, Import into Temple…, Copy resume command, Copy
-  session ID, Reveal session file in Finder, Show in sidebar (Temple rows),
-  Show only *project*. Rename, pin, color and archive stay in the sidebar.
+  session ID, Reveal session file in Finder, Show in sidebar (Temple rows: lights
+  the row and scrolls the rail to it, unless it is folded away in a collapsed
+  project or past a Show more), Show only *project*. Rename, pin, color and
+  archive stay in the sidebar.
 - **Keys** while History is active: `⌘F` focuses its search (Edit ▸ Find in
   History), `⌘R` refreshes, `⌘C` copies the selection's resume commands, Esc
   clears the search, then the selection, then goes back to the previous tab.
+  Esc and Return act on what is typed, even within the search's debounce.
+  The list's keys (arrows, Return, Esc, `⌘A`, `⌘C`) are History's only while
+  its search field or no field has focus: in the sidebar search or a chip
+  being renamed they stay that field's. While the import sheet is up, every key
+  goes to it.
 - `⌘⇧Y` (View ▸ Archived Items) opens the archive browser — a centred window
   shaped like the sidebar: archived projects first, each a restorable header
   with every session it hides listed beneath, then sessions archived on their
