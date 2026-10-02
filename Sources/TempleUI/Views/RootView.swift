@@ -57,7 +57,7 @@ public struct RootView: View {
         .onReceive(WindowSnapshot.debugPublisher(for: .templeDebugToggleSidebar)) { _ in
             withAnimation { model.toggleSidebar() }
         }
-        // Dev-only, same gate: TEMPLE_SNAPSHOT_PRESENT=palette|history|archive
+        // Dev-only, same gate: TEMPLE_SNAPSHOT_PRESENT=palette|history|archive|…
         // opens the ⌘K palette, the History tab or the archive panel once the
         // window has settled, so it can be snapshotted without a key chord.
         .onAppear {
@@ -81,6 +81,9 @@ public struct RootView: View {
                         if panel == "history-import" { model.history.requestImport() }
                     }
                 case "settings": model.openSessions.openSettings()
+                // Keys pressed in Settings' fields, delivered in-process, to
+                // prove the page's own key handling fires (SettingsKeysProbe).
+                case "settings-keys": SettingsKeysProbe.run(model: model)
                 case "archive": if !model.archivePresented { model.toggleArchive() }
                 default: break
                 }

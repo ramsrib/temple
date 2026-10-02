@@ -75,6 +75,13 @@ enum WindowSnapshot {
         fold.resume()
         self.foldSource = fold
     }
+    /// Write a snapshot now, as USR1 does — for a dev hook that drives the
+    /// window itself and wants a frame at each step (`SettingsKeysProbe`).
+    static func captureNow() {
+        guard let dir = ProcessInfo.processInfo.environment["TEMPLE_SNAPSHOT_DIR"], !dir.isEmpty else { return }
+        write(to: URL(fileURLWithPath: dir))
+    }
+
     private static var toggleSource: DispatchSourceSignal?
     private static var foldSource: DispatchSourceSignal?
 

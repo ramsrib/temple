@@ -190,7 +190,7 @@ public final class AppModel: ObservableObject {
         // Defaults that touch @MainActor types are built here (not as default
         // arguments, which evaluate in a nonisolated context).
         let database = database ?? Self.openDefaultDatabase()
-        let settings = settings ?? SettingsStore()
+        let settings = settings ?? SettingsStore(defaults: SettingsKeysProbe.scratchDefaults() ?? .standard)
         let overlay = overlay ?? SessionOverlayStore(db: database)
         let uiState = UIStateStore(db: database)
         let registry = registry ?? DBProcessRegistry(db: database)
