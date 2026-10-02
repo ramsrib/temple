@@ -145,6 +145,14 @@ public struct CodexSessionStore: IncrementalSessionStore {
         parse(file: fileURL, titles: loadTitles())
     }
 
+    /// `loadSession(at:)` rereads both title files per call; a full-disk read
+    /// reads them once.
+    public func catalogParser() -> @Sendable (URL) -> AgentSession? {
+        let titles = loadTitles()
+        let store = self
+        return { store.parse(file: $0, titles: titles) }
+    }
+
     private func parse(file: URL, titles: [String: String]) -> AgentSession? {
         let signature = StoreIO.fileSignature(file)
         guard let segments = StoreIO.boundedSegments(file, fileSize: signature?.fileSize),

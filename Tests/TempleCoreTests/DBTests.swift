@@ -53,6 +53,39 @@ final class DBTests: XCTestCase {
         XCTAssertTrue(state.pinned, "unarchiving must not touch the pin column")
     }
 
+    /// Undo of an import deletes a row only while it says nothing but how the
+    /// session joined; any later decision about the session keeps it.
+    func testLeaveDeletesOnlyAnUntouchedImportedRow() throws {
+        let (db, _) = try database()
+        try db.join(sessionID: "fresh", via: .imported, agent: .claude,
+                    transcriptPath: URL(fileURLWithPath: "/tmp/fresh.jsonl"))
+        XCTAssertTrue(try db.leave(sessionID: "fresh"))
+        XCTAssertNil(try db.sessionState("fresh"))
+        XCTAssertFalse(try db.leave(sessionID: "fresh"), "nothing left to remove")
+
+        let touches: [(String, (TempleDB, String) throws -> Void)] = [
+            ("pinned", { try $0.setPinned(true, sessionID: $1) }),
+            ("archived", { try $0.setArchived(true, sessionID: $1) }),
+            ("named", { try $0.setCustomName("Mine", sessionID: $1) }),
+            ("colored", { try $0.setColor("red", sessionID: $1) }),
+            ("retitled", { try $0.setGeneratedTitle("Agent title", sessionID: $1) }),
+            ("opened", { try $0.recordOpened(sessionID: $1) }),
+            ("in a tab", { try $0.setOpenTabs(projectPath: "/p", sessionIDs: [$1]) }),
+        ]
+        for (name, touch) in touches {
+            let id = "touched-\(name)"
+            try db.join(sessionID: id, via: .imported)
+            try touch(db, id)
+            XCTAssertFalse(try db.leave(sessionID: id), name)
+            XCTAssertNotNil(try db.sessionState(id), "\(name): the row must stay")
+        }
+
+        // Only an import is undone: a session Temple started or resumed keeps its row.
+        try db.join(sessionID: "opened", via: .opened)
+        XCTAssertFalse(try db.leave(sessionID: "opened"))
+        XCTAssertNotNil(try db.sessionState("opened"))
+    }
+
     func testSessionColorRoundTripClearAndAutoCreate() throws {
         let (db, _) = try database()
 

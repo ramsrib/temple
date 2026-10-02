@@ -34,6 +34,9 @@ public protocol IncrementalSessionStore: SessionStore {
     func acceptsTranscript(_ url: URL) -> Bool
     func adoptionHeader(at url: URL) throws -> CodexRolloutCandidate?
     func metadataHeader(at url: URL) -> CodexRolloutCandidate?
+    /// A parser for many files in one read (`SessionCatalog.stream`): any
+    /// input shared by every file is read once, here, not once per file.
+    func catalogParser() -> @Sendable (URL) -> AgentSession?
 
 }
 
@@ -55,6 +58,10 @@ public extension IncrementalSessionStore {
         metadataHeader(at: url)
     }
     func metadataHeader(at url: URL) -> CodexRolloutCandidate? { nil }
+    func catalogParser() -> @Sendable (URL) -> AgentSession? {
+        let store = self
+        return { store.loadSession(at: $0) }
+    }
 
 }
 

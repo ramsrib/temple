@@ -228,6 +228,31 @@ public final class TempleDB: @unchecked Sendable {
         if changed { committedJoin(sessionID, awaitingCreation: via == .created && agent == .claude && transcriptPath == nil) }
     }
 
+    /// Undo of an import: the one write that removes membership. It deletes
+    /// the row only while the row still says nothing but how the session
+    /// joined — imported, never pinned, named, colored, retitled, archived or
+    /// opened since, and not in a restorable tab. Anything else and the row
+    /// stays: it holds a decision the undo knows nothing about. Returns
+    /// whether the row went. ADR-023's "first join is kept" is untouched; a
+    /// row that is undone was never kept.
+    @discardableResult
+    public func leave(sessionID: String) throws -> Bool {
+        try db.write { database in
+            try database.execute(
+                sql: """
+                    DELETE FROM session_state
+                    WHERE id = ? AND joined_via = ?
+                      AND pinned = 0 AND archived = 0
+                      AND custom_name IS NULL AND color IS NULL
+                      AND generated_title IS NULL AND last_opened_at IS NULL
+                      AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
+                    """,
+                arguments: [sessionID, JoinedVia.imported.rawValue, sessionID]
+            )
+            return database.changesCount > 0
+        }
+    }
+
     /// Hints never insert membership or change provenance, and do not trigger a
     /// second resolution after the engine has already parsed this file.
     public func updateTranscriptHint(sessionID: String, agent: Agent, path: URL) throws {
