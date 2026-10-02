@@ -51,7 +51,18 @@ public enum ThemePreference: String, CaseIterable, Identifiable, Sendable {
 @MainActor
 public final class SettingsStore: ObservableObject {
     @Published public var fontSize: Double { didSet { write(fontSize, Key.fontSize) } }
-    @Published public var fontFamily: String { didSet { write(fontFamily, Key.fontFamily) } }
+    @Published public var fontFamily: String {
+        didSet {
+            if !loading { fontFamilyChosenThisLaunch = true }
+            write(fontFamily, Key.fontFamily)
+        }
+    }
+    /// Whether the family was set while this process ran, rather than read
+    /// back from an earlier one. Settings words a missing font differently for
+    /// each: one just typed is a mistake to flag; one inherited (the old "SF
+    /// Mono" default, a font since removed) is a fact to state, with the way
+    /// back. Memory only — it describes this launch, not a setting.
+    @Published public private(set) var fontFamilyChosenThisLaunch = false
     @Published public var defaultAgent: Agent { didSet { write(defaultAgent.rawValue, Key.defaultAgent) } }
     @Published public var theme: ThemePreference { didSet { write(theme.rawValue, Key.theme) } }
     /// Empty = "detect it" (see `ToolchainModel`). Only ever set by the user.
@@ -67,7 +78,9 @@ public final class SettingsStore: ObservableObject {
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         loading = true
-        fontSize = defaults.object(forKey: Key.fontSize) as? Double ?? 14
+        // The terminal's own default (`TerminalAppearance`), so the field's
+        // placeholder, a fresh install and a reset terminal agree.
+        fontSize = defaults.object(forKey: Key.fontSize) as? Double ?? Self.shippedFontSize
         // Empty = Ghostty's built-in font (JetBrains Mono). The old default,
         // "SF Mono", is not an installed family on macOS (it lives inside
         // Terminal.app), so Ghostty fell back to its built-in font anyway and
@@ -147,6 +160,19 @@ public final class SettingsStore: ObservableObject {
         loading = false
         defaults.removeObject(forKey: key)
     }
+
+    /// Back to the terminal's built-in font by forgetting the family, as
+    /// `resetExtraArgs` does: no key means "Temple's default". Not a choice
+    /// made this launch, so it raises nothing.
+    public func resetFontFamily() {
+        loading = true
+        fontFamily = ""
+        loading = false
+        defaults.removeObject(forKey: Key.fontFamily)
+    }
+
+    /// The font size Temple ships with — the terminal's own default.
+    public nonisolated static let shippedFontSize = TerminalAppearance.default.fontSize
 
     /// Whether this agent's arguments are the shipped ones (by text, which is
     /// what the field shows).

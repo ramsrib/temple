@@ -251,6 +251,13 @@ final class SettingsEditingTests: XCTestCase {
         XCTAssertEqual(toolchain.summary()?.first, ToolchainSummaryPart(agent: .claude, text: "Claude Code: doesn't run", state: .broken))
     }
 
+    /// The subtitle already names the agent, so it carries the number alone:
+    /// "Claude Code 2.1.288 (Claude Code)" said Claude Code twice.
+    func testSummaryCarriesTheVersionNumberOnly() {
+        configure(installs: [AgentInstall(path: "/bin/claude", origin: .path(rank: 0), version: "2.1.288 (Claude Code)")])
+        XCTAssertEqual(toolchain.summary()?.first?.text, "Claude Code 2.1.288")
+    }
+
     func testSummaryIsNilBeforeAnythingLands() {
         let model = ToolchainModel(resolve: { ToolchainResolution(agent: $0, installs: [], chosen: nil) },
                                    probe: { _, _ in (nil, nil, nil) })
@@ -338,6 +345,34 @@ final class SettingsEditingTests: XCTestCase {
         XCTAssertNil(FontFamilyCheck.verdict(for: "", isInstalled: { _ in false }),
                      "empty is the terminal's own default, nothing to report")
         XCTAssertNil(FontFamilyCheck.verdict(for: " Menlo ", isInstalled: installed.contains))
+    }
+
+    /// An inherited family (stored by an earlier launch, like the old "SF
+    /// Mono" default) is not a choice made now; one committed here is.
+    func testAFamilyIsChosenThisLaunchOnlyWhenCommittedNow() {
+        configure()
+        defaults.set("SF Mono", forKey: "temple.settings.fontFamily")
+        let inherited = SettingsStore(defaults: defaults)
+        XCTAssertEqual(inherited.fontFamily, "SF Mono", "a stored family is kept as is, no migration")
+        XCTAssertFalse(inherited.fontFamilyChosenThisLaunch)
+
+        let typed = SettingsEditor(store: inherited, toolchain: toolchain)
+        typed.write(.fontFamily, "Menol")
+        XCTAssertTrue(inherited.fontFamilyChosenThisLaunch)
+    }
+
+    /// "Use built in" forgets the key, as Reset to default does for
+    /// arguments: absence is the shipped default.
+    func testResetFontFamilyForgetsTheKey() {
+        configure()
+        defaults.set("SF Mono", forKey: "temple.settings.fontFamily")
+        let inherited = SettingsStore(defaults: defaults)
+        inherited.resetFontFamily()
+        XCTAssertEqual(inherited.fontFamily, "")
+        XCTAssertNil(defaults.object(forKey: "temple.settings.fontFamily"))
+        XCTAssertFalse(inherited.fontFamilyChosenThisLaunch, "a reset is not a family the user typed")
+        XCTAssertNil(inherited.appearance(scheme: .dark).fontFamily, "the terminal gets its built-in font")
+        XCTAssertEqual(SettingsStore(defaults: defaults).fontFamily, "")
     }
 
     /// The real lookup: Menlo ships with every macOS; a nonsense name does not.

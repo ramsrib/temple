@@ -1,5 +1,6 @@
 import XCTest
 @testable import TempleUI
+import TempleTerminalAPI
 
 /// The shipped default is Ghostty's built-in font, named honestly and never
 /// warned about. It used to be "SF Mono", which is not an installed family on
@@ -13,6 +14,15 @@ final class FontDefaultTests: XCTestCase {
         XCTAssertEqual(fresh.fontFamily, "")
         XCTAssertNil(fresh.appearance(scheme: .dark).fontFamily, "empty must reach Ghostty as its default")
         XCTAssertNil(FontFamilyCheck.verdict(for: fresh.fontFamily, isInstalled: { _ in false }))
+    }
+
+    /// One default size: the store, the field's placeholder and the terminal
+    /// itself all say 13 (the store used to say 14).
+    func testTheShippedFontSizeIsTheTerminalsOwn() {
+        let fresh = SettingsStore(defaults: Fixture.uniqueDefaults())
+        XCTAssertEqual(fresh.fontSize, 13)
+        XCTAssertEqual(SettingsStore.shippedFontSize, TerminalAppearance.default.fontSize)
+        XCTAssertEqual(fresh.appearance(scheme: .dark).fontSize, TerminalAppearance.default.fontSize)
     }
 
     func testAStoredFontChoiceIsKept() {
