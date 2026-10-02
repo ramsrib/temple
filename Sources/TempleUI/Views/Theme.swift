@@ -34,10 +34,10 @@ extension TabColorMark {
 
     /// A list row's fill: a marked row is a quiet wash of its colour, deeper
     /// when selected or under the pointer, so the mark you gave a tab is what
-    /// you scan for in ⌘K, the ⌃⇥ switcher and ⌘Y as well as in the strip.
+    /// you scan for in ⌘K and the ⌃⇥ switcher as well as in the strip.
     /// Unmarked rows keep the neutral selection and hover fills. The sidebar
-    /// row is the deliberate exception: at its density a 3pt leading bar
-    /// says the same thing without tinting the whole line (`SessionRow`).
+    /// and History rows are the deliberate exceptions: at their density a 3pt
+    /// leading bar says the same thing without tinting the whole line.
     static func rowFill(_ mark: Color?, selected: Bool, hovering: Bool) -> Color {
         if let mark { return Palette.markWash(mark, selected: selected, hovering: hovering) }
         return selected ? Palette.selectionFill : hovering ? Palette.hoverFill : .clear

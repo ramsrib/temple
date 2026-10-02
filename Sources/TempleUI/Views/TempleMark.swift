@@ -35,7 +35,7 @@ struct TempleMark: View {
             caret.addLine(to: CGPoint(x: px + 10 * u, y: py))
             caret.addLine(to: CGPoint(x: px - 28 * u, y: py + 28 * u))
             context.stroke(caret, with: .color(.primary),
-                           style: StrokeStyle(lineWidth: 20 * u, lineCap: .round, lineJoin: .round))
+                           style: StrokeStyle(lineWidth: max(20 * u, 1), lineCap: .round, lineJoin: .round))
             context.fill(
                 Path(roundedRect: CGRect(x: px + 26 * u, y: py + 22 * u,
                                          width: 44 * u, height: 16 * u),

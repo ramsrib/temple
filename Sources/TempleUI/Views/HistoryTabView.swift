@@ -44,6 +44,10 @@ struct HistoryTabView: View {
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // The split view's own detail grey is not windowBackgroundColor, which
+        // the sticky day headers are painted in: in dark the headers showed as
+        // a lighter band. Paint the page so the two agree by construction.
+        .background(Palette.panelBackground)
         .background(
             GeometryReader { geo in
                 Color.clear
@@ -253,7 +257,7 @@ struct HistoryTabView: View {
             Text(history.agentFilter?.displayName ?? "Any agent")
         }
         .menuIndicator(.visible)
-        .frame(width: 130)
+        .modifier(FlatToolbarMenu(width: 130))
     }
 
     private var projectMenu: some View {
@@ -271,7 +275,7 @@ struct HistoryTabView: View {
             Text(history.projectFilter.map(HistoryModel.projectName) ?? "Any project")
         }
         .menuIndicator(.visible)
-        .frame(width: 150)
+        .modifier(FlatToolbarMenu(width: 150))
     }
 
     /// The folder a project sits in, home abbreviated: "~/Projects/active".
@@ -655,7 +659,7 @@ private struct HistoryPageRow: View, Equatable {
                         .font(.system(size: 13))
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .foregroundStyle(inTemple ? Color.primary : Color.primary.opacity(0.82))
+                        .foregroundStyle(inTemple ? Color.primary : Color.primary.opacity(0.72))
                     if let activity {
                         ActivityDot(state: activity)
                     }
@@ -691,13 +695,15 @@ private struct HistoryPageRow: View, Equatable {
                 .foregroundStyle(.secondary)
             if let branch = session.gitBranch, !branch.isEmpty {
                 Text(" · \(branch)")
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.system(size: 10.5, design: .monospaced))
                     .foregroundStyle(.tertiary)
             }
         }
         .lineLimit(1)
         .truncationMode(.middle)
-        .frame(maxWidth: 260, alignment: .trailing)
+        // No frame(maxWidth:) here: it is greedy, so the row's HStack handed
+        // this column half the leftover width and titles cut off at ~30
+        // characters beside empty space. A Text's max is its ideal width.
     }
 
     @ViewBuilder
@@ -711,8 +717,7 @@ private struct HistoryPageRow: View, Equatable {
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
         } else if inTemple {
-            TempleMark(size: 12, tint: .secondary)
-                .opacity(0.6)
+            TempleMark(size: 14, tint: lit ? .primary : .secondary)
                 .help(membershipTooltip)
         } else {
             Button("Import") { history.requestImport([session]) }
@@ -773,4 +778,18 @@ private struct HistoryPageRow: View, Equatable {
         formatter.dateFormat = "HH:mm"
         return formatter
     }()
+}
+
+/// The toolbar's pop-up menus in the same flat shape as its search field.
+private struct FlatToolbarMenu: ViewModifier {
+    let width: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .menuStyle(.borderlessButton)
+            .font(.system(size: 12.5))
+            .padding(.horizontal, 9)
+            .frame(width: width, height: 28)
+            .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
 }

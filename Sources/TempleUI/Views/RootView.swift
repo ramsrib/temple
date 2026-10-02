@@ -70,6 +70,17 @@ public struct RootView: View {
                 switch panel {
                 case "palette": if !model.commandPalettePresented { model.toggleCommandPalette() }
                 case "history": model.openSessions.openHistory()
+                // History states no key chord can be posted to reach: a
+                // selection deep in the list (pinned day header, lit rows and
+                // the bar), and the import confirmation over it.
+                case "history-selection", "history-import":
+                    model.openSessions.openHistory()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        model.history.moveCursorToEnd(top: false)
+                        model.history.moveCursor(by: -6, extend: true)
+                        if panel == "history-import" { model.history.requestImport() }
+                    }
+                case "settings": model.openSessions.openSettings()
                 case "archive": if !model.archivePresented { model.toggleArchive() }
                 default: break
                 }
