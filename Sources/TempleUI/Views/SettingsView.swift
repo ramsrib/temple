@@ -1,284 +1,630 @@
 import SwiftUI
 import TempleCore
 
-/// The Settings tab (U9): app-level, project-agnostic, no surface. Font/theme
-/// changes propagate live to open terminals via `AppModel.applyAppearance()`.
+/// The Settings tab: a page-style sibling of History, built from the same
+/// parts as the sidebar, launcher and History — section rules, plain rows,
+/// hairlines, agent badges, and the CLI's own words wherever something failed.
 ///
-/// Layout: a single centered column of grouped "cards" (macOS System Settings /
-/// Linear feel) — a section label above each card, hairline-divided rows inside,
-/// label + optional hint on the left, right-aligned control on the right.
+/// Agents first, because the two surfaces that send people here (the
+/// launcher's toolchain banner and a tab's launch-failure header) are about an
+/// agent; Appearance last.
+///
+/// Text fields edit a draft (`SettingsDrafts`) and commit on Return or when
+/// focus leaves them; Esc reverts. Nothing re-probes or re-applies the terminal
+/// appearance while typing.
+///
+/// Layout rules (AGENTS.md, the split view's titlebar inset): no `.fixedSize`,
+/// `.allowsHitTesting`, `layoutPriority`, `List` or `Form` anywhere here. Text
+/// wraps with an expanding frame.
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
-    /// Observed here, not through `AppModel`: a keystroke in a field re-renders
-    /// this page, not the window (see AppModel's settings subscriptions).
+    /// Observed here, not through `AppModel`: a committed field re-renders this
+    /// page, not the window (see AppModel's settings subscriptions).
     @ObservedObject var settings: SettingsStore
 
-    /// Fixed leading label column so every control lines up across cards.
-    private let labelColumn: CGFloat = 168
+    @State private var drafts = SettingsDrafts()
+    @FocusState private var focused: SettingsField?
+    /// The agent whose Command row is washed after a deep link.
+    @State private var washed: Agent?
+    @State private var fontVerdict: FontFamilyVerdict?
+
+    static let labelColumn: CGFloat = 168
+    static let formWidth: CGFloat = 720
+    static let fieldWidth: CGFloat = 420
+
+    private enum Anchor: Hashable {
+        case top
+        case agent(Agent)
+    }
+
+    private var toolchain: ToolchainModel { model.toolchain }
+    private var editor: SettingsEditor { SettingsEditor(store: settings, toolchain: model.toolchain) }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 26) {
-                header
-
-                card("Terminal") {
-                    settingRow("Font size") {
-                        HStack(spacing: 12) {
-                            Slider(value: Binding(get: { settings.fontSize },
-                                                  set: { settings.fontSize = $0 }),
-                                   in: 9...24, step: 1)
-                            .frame(maxWidth: 220)
-                            Text("\(Int(settings.fontSize)) pt")
-                                .font(.system(size: 12, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .frame(width: 42, alignment: .trailing)
-                        }
-                    }
-                    divider
-                    settingRow("Font family") {
-                        TextField("SF Mono", text: Binding(get: { settings.fontFamily },
-                                                           set: { settings.fontFamily = $0 }))
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 240)
-                    }
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    header
+                        .padding(.top, PageChrome.top)
+                        .id(Anchor.top)
+                    agentsSection
+                    agentSection(.claude)
+                    agentSection(.codex)
+                    appearanceSection
                 }
-
-                card("Agents") {
-                    settingRow("Default agent",
-                               hint: "Used by ⌘T and new-session rows.") {
-                        Picker("", selection: Binding(get: { settings.defaultAgent },
-                                                      set: { settings.defaultAgent = $0 })) {
-                            ForEach(Agent.allCases, id: \.self) { Text($0.displayName).tag($0) }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(width: 220)
-                    }
-                }
-
-                agentCard(.claude)
-                agentCard(.codex)
-
-                card("Appearance") {
-                    settingRow("Theme") {
-                        Picker("", selection: Binding(get: { settings.theme },
-                                                      set: { settings.theme = $0 })) {
-                            ForEach(ThemePreference.allCases) { Text($0.label).tag($0) }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(width: 240)
-                    }
-                }
+                .frame(maxWidth: Self.formWidth, alignment: .leading)
+                .padding(.horizontal, PageChrome.gutter)
+                .padding(.bottom, 40)
+                // History's column: capped and centred beyond the cap, so the
+                // two sibling tabs put their titles at the same x.
+                .frame(maxWidth: PageChrome.pageWidth, alignment: .leading)
+                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: 620)
-            .frame(maxWidth: .infinity, alignment: .center)   // center the column
-            .padding(.horizontal, 32)
-            .padding(.top, 44)
-            .padding(.bottom, 40)
+            .thinScrollers()
+            .onAppear { land(proxy) }
+            .onChange(of: model.openSessions.settingsFocus) { land(proxy) }
         }
-        .thinScrollers()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    // MARK: Agents
-
-    /// One agent's card: what Temple detected, everything else it found and why it
-    /// won't use it, and the override for when the user disagrees.
-    ///
-    /// Detection is shown rather than hidden on purpose. The failure that led here
-    /// — a stale `claude` from an old npm install, shadowing a current one — was
-    /// invisible precisely because Temple picked a binary silently and no screen
-    /// ever said which.
-    private func agentCard(_ agent: Agent) -> some View {
-        let resolution = model.toolchain.resolution(for: agent)
-        let override = settings.overridePath(for: agent)
-        let check = model.toolchain.overrideCheck(for: agent)
-        return card(agent.displayName) {
-            settingRow("Command",
-                       hint: "Leave blank to use the detected one.") {
-                VStack(alignment: .trailing, spacing: 4) {
-                    TextField(resolution?.chosen?.path ?? agent.binaryName,
-                              text: Binding(get: { settings.overridePath(for: agent) },
-                                            set: { settings.setOverridePath($0, for: agent) }))
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
-                    .onSubmit { model.toolchain.recheckUserSettings() }
-                    // Your override runs, or it doesn't — either way you hear it
-                    // from Settings, not from a tab that dies on launch.
-                    if let check {
-                        Label(check.failure ?? check.version ?? "runs",
-                              systemImage: check.isUsable ? "checkmark.circle" : "exclamationmark.triangle.fill")
-                        .font(.system(size: 10))
-                        .foregroundStyle(check.isUsable ? Color.secondary : Color.red)
-                        .lineLimit(2)
-                        .help(check.details ?? "")
-                    }
-                }
-                .frame(maxWidth: 300)
-            }
-            divider
-            settingRow("Detected",
-                       hint: override.isEmpty ? nil : "Overridden above — detection ignored.") {
-                detectionStatus(resolution)
-                    .opacity(override.isEmpty ? 1 : 0.45)
-            }
-            if let resolution, resolution.installs.count > 1 || resolution.installs.contains(where: { !$0.isUsable }) {
-                divider
-                settingRow("Also found") {
-                    VStack(alignment: .trailing, spacing: 6) {
-                        ForEach(resolution.installs.filter { $0.path != resolution.chosen?.path }) { install in
-                            installRow(install)
-                        }
-                    }
-                    .frame(maxWidth: 300, alignment: .trailing)
-                }
-            }
-            divider
-            settingRow("Arguments",
-                       hint: "Passed to every launch (new + resume). Clear to disable.") {
-                VStack(alignment: .trailing, spacing: 4) {
-                    TextField("", text: Binding(get: { settings.extraArgsText(for: agent) },
-                                                set: { settings.setExtraArgsText($0, for: agent) }))
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
-                    .onSubmit { model.toolchain.recheckUserSettings() }
-                    // Only ever shown when the CLI *objected*. Silence here is not
-                    // approval — `claude --version` ignores unknown flags entirely
-                    // — so there is deliberately no "arguments OK" tick to trust.
-                    if let complaint = model.toolchain.argumentComplaint(for: agent) {
-                        Label(complaint.failure, systemImage: "exclamationmark.triangle.fill")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Color.red)
-                            .lineLimit(2)
-                            .help(complaint.details ?? "")
-                    }
-                }
-                .frame(maxWidth: 300)
-            }
+        // Leaving a field (click elsewhere, Tab) commits it.
+        .onChange(of: focused) { old, new in
+            if let old, old != new { commit(old) }
         }
-    }
-
-    @ViewBuilder
-    private func detectionStatus(_ resolution: ToolchainResolution?) -> some View {
-        HStack(spacing: 8) {
-            if model.toolchain.isDetecting && resolution == nil {
-                ProgressView().controlSize(.small)
-                Text("Checking…").font(.system(size: 12)).foregroundStyle(.secondary)
-            } else if let chosen = resolution?.chosen {
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(chosen.path)
-                        .font(.system(size: 12, design: .monospaced))
-                        .lineLimit(1).truncationMode(.head)
-                    if let version = chosen.version {
-                        Text(version).font(.system(size: 11)).foregroundStyle(.secondary)
-                    }
-                }
-            } else {
-                Text(resolution?.problem ?? "Not found")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.red)
-                    .multilineTextAlignment(.trailing)
-            }
-            Button {
-                model.toolchain.detect()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.borderless)
-            .disabled(model.toolchain.isDetecting)
-            .help("Check again")
-        }
-        .frame(maxWidth: 300, alignment: .trailing)
-    }
-
-    /// A rejected (or merely unused) install — with the reason, because "we didn't
-    /// pick this one" is useless without it.
-    private func installRow(_ install: AgentInstall) -> some View {
-        VStack(alignment: .trailing, spacing: 1) {
-            HStack(spacing: 5) {
-                Image(systemName: install.isUsable ? "circle" : "exclamationmark.triangle.fill")
-                    .font(.system(size: 9))
-                    .foregroundStyle(install.isUsable ? Color.secondary : .orange)
-                Text(install.path)
-                    .font(.system(size: 11, design: .monospaced))
-                    .lineLimit(1).truncationMode(.head)
-            }
-            Text(install.failure ?? install.version ?? "")
-                .font(.system(size: 10))
-                .foregroundStyle(install.isUsable ? Color.secondary : Color.orange)
-                .lineLimit(2)
-                .multilineTextAlignment(.trailing)
-                .help(install.details ?? "")
+        // Leaving the page is leaving the field.
+        .onDisappear { commitAll() }
+        .task(id: settings.fontFamily) {
+            fontVerdict = FontFamilyCheck.verdict(for: settings.fontFamily)
         }
     }
 
     // MARK: Header
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Settings")
-                .font(.system(size: 24, weight: .bold))
-            Text("Preferences apply live to open terminals.")
+        PageHeader(title: "Settings", subtitle: subtitle) { checkedLine }
+    }
+
+    /// What Temple will launch for each agent: the page's answer in one line.
+    private var subtitle: Text {
+        guard let parts = toolchain.summary() else { return Text("Checking agents…") }
+        return parts.enumerated().reduce(Text("")) { text, entry in
+            let (index, part) = entry
+            let piece = part.state == .broken
+                ? Text(part.text).foregroundColor(.red)
+                : Text(part.text)
+            return index == 0 ? piece : text + Text(" · ") + piece
+        }
+    }
+
+    /// "Checked 2 min ago · Check again ⌘R", or the scheduled retry while one
+    /// is pending, so a verdict that changes by itself is seen to.
+    private var checkedLine: some View {
+        TimelineView(.periodic(from: .now, by: toolchain.nextRetryAt == nil ? 30 : 1)) { context in
+            HStack(spacing: 4) {
+                if toolchain.isDetecting {
+                    ProgressView().controlSize(.mini)
+                    Text("Checking…")
+                } else {
+                    if let last = toolchain.lastChecked {
+                        Text("Checked \(PageChrome.relative(last, now: context.date))")
+                        Text("·")
+                    }
+                    if let next = toolchain.nextRetryAt {
+                        Text("Checking again in \(max(1, Int(next.timeIntervalSince(context.date).rounded(.up))))s")
+                    } else {
+                        Button("Check again") { toolchain.detect() }
+                            .buttonStyle(.plain)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.primary)
+                        Text("⌘R").foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
+    }
+
+    // MARK: Agents
+
+    private var agentsSection: some View {
+        section {
+            SectionRule("Agents")
+        } rows: {
+            row("Default agent") {
+                Picker("", selection: Binding(get: { settings.defaultAgent },
+                                              set: { settings.defaultAgent = $0 })) {
+                    ForEach(Agent.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 220)
+                hint("Started by ⌘T, folder launches and recent projects.")
+            }
+        }
+    }
+
+    /// One agent: what Temple will launch, answered in three rows.
+    ///
+    /// Detection is shown rather than hidden on purpose. The failure that led
+    /// here — a stale `claude` from an old npm install, shadowing a current
+    /// one — was invisible precisely because Temple picked a binary silently
+    /// and no screen ever said which.
+    private func agentSection(_ agent: Agent) -> some View {
+        let overridden = !settings.overridePath(for: agent).isEmpty
+        return section {
+            SectionRule(agent.displayName) { AgentBadge(agent: agent, size: 12) }
+        } rows: {
+            row("Command") { commandControl(agent) }
+                .background(alignment: .center) {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Palette.selectionFill)
+                        .padding(.horizontal, -10)
+                        .opacity(washed == agent ? 1 : 0)
+                }
+            divider
+            row("Detected", note: overridden ? "Not used while a command is set." : nil) {
+                detected(agent)
+                    .opacity(overridden ? 0.45 : 1)
+            }
+            divider
+            row("Arguments") { argumentsControl(agent) }
+        }
+        .id(Anchor.agent(agent))
+    }
+
+    // MARK: Command
+
+    @ViewBuilder
+    private func commandControl(_ agent: Agent) -> some View {
+        let field = SettingsField.command(agent)
+        let placeholder = toolchain.resolution(for: agent)?.chosen.map { Self.tilde($0.path) } ?? agent.binaryName
+        textField(field, placeholder: placeholder, monospaced: true, clearable: true)
+            .frame(maxWidth: Self.fieldWidth, alignment: .leading)
+
+        if drafts.isEdited(field) {
+            // The model's own rule made visible: a verdict belongs to the path
+            // it was made about, so a draft gets none.
+            quiet(text(field).isEmpty ? "Press Return to use the detected one" : "Press Return to check")
+        } else if let verdict = toolchain.overrideVerdict(for: agent) {
+            overrideVerdict(verdict, path: settings.overridePath(for: agent))
+        } else {
+            hint("Leave empty to use the one Temple detects.")
+        }
+    }
+
+    @ViewBuilder
+    private func overrideVerdict(_ verdict: OverrideVerdict, path: String) -> some View {
+        switch verdict {
+        case .checking:
+            checking
+        case .runs(let version):
+            hint(["Runs", version].compactMap { $0 }.joined(separator: " · "))
+        case .doesNotRun(let failure, let details):
+            problem("Doesn't run · \(failure)", color: .red, outputTitle: path, output: details)
+            hint("Temple will still launch it. Clear the field to use the detected one.", top: 3)
+        case .couldNotLaunch(let reason, let details):
+            problem("Couldn't be launched · \(reason)", color: .red, outputTitle: path, output: details)
+            hint("Temple will still launch it. Clear the field to use the detected one.", top: 3)
+        }
+    }
+
+    // MARK: Detected
+
+    @ViewBuilder
+    private func detected(_ agent: Agent) -> some View {
+        if let resolution = toolchain.resolution(for: agent) {
+            VStack(alignment: .leading, spacing: 9) {
+                if resolution.installs.isEmpty {
+                    sectionLine("No \(agent.binaryName) on your PATH.")
+                    Text("Install \(agent.displayName), or set its path above.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    if resolution.chosen == nil {
+                        sectionLine("Every \(agent.binaryName) on this Mac fails to run.")
+                    }
+                    // The shell's order, the winner marked rather than moved:
+                    // the order *is* the information.
+                    ForEach(resolution.installs) { install in
+                        installLine(install, in: resolution)
+                    }
+                }
+            }
+            .padding(.top, 5)
+        } else {
+            // First launch: nothing landed yet. (A later Check again keeps the
+            // old list; the header's trailing line shows the spinner.)
+            checking.padding(.top, 0)
+        }
+    }
+
+    private func sectionLine(_ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            warningGlyph
+            Text(text)
+                .font(.system(size: 12))
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .foregroundStyle(Color.red)
+    }
+
+    private func installLine(_ install: AgentInstall, in resolution: ToolchainResolution) -> some View {
+        let chosen = install.path == resolution.chosen?.path
+        let shadowed = resolution.shadowedFailures.contains { $0.path == install.path }
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                if !install.isUsable {
+                    warningGlyph.foregroundStyle(Color.orange)
+                }
+                Text(Self.tilde(install.path))
+                    .font(.system(size: 12, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                    .help(install.path)
+                if install.isUsable, let version = install.version {
+                    Text(version)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                Text(status(of: install, chosen: chosen))
+                    .font(.system(size: 11, weight: chosen ? .medium : .regular))
+                    .foregroundStyle(chosen ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
+                    .lineLimit(1)
+            }
+            if let failure = install.failure {
+                VStack(alignment: .leading, spacing: 3) {
+                    problem(failure, color: .orange, glyph: false, outputTitle: install.path, output: install.details,
+                            top: 0)
+                    if shadowed {
+                        Text("Ahead on your PATH, so a plain terminal still gets this one.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(.leading, 21)
+            } else if chosen, !install.isOnPATH {
+                Text("Not on the PATH your shell gives Temple; found in a usual place.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private func status(of install: AgentInstall, chosen: Bool) -> String {
+        if chosen { return "Temple uses this" }
+        if !install.isUsable { return "Skipped" }
+        return install.isOnPATH ? "Later on PATH" : "Not on PATH"
+    }
+
+    // MARK: Arguments
+
+    @ViewBuilder
+    private func argumentsControl(_ agent: Agent) -> some View {
+        let field = SettingsField.arguments(agent)
+        textField(field, placeholder: "", monospaced: true)
+            .frame(maxWidth: Self.fieldWidth, alignment: .leading)
+
+        if drafts.isEdited(field) {
+            // A complaint is keyed to the exact arguments it was about, so a
+            // draft drops it rather than leaving it standing.
+            quiet("Press Return to apply")
+        } else {
+            // Only ever an objection. Silence is not approval — `claude
+            // --bogus --version` exits 0 — so there is deliberately no state
+            // here that could read as "arguments OK".
+            if let complaint = toolchain.argumentComplaint(for: agent) {
+                problem("\(agent.binaryName) rejects these · \(complaint.failure)", color: .red,
+                        outputTitle: complaint.binary, output: complaint.details)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(settings.extraArgsText(for: agent).trimmingCharacters(in: .whitespaces).isEmpty
+                     ? "No extra flags."
+                     : "Added to every launch, new and resumed.")
+                    .foregroundStyle(.secondary)
+                if !settings.extraArgsAreShipped(for: agent) {
+                    linkButton("Reset to default") { editor.resetArguments(agent, drafts: &drafts) }
+                        .help(SettingsStore.shippedExtraArgs(for: agent))
+                }
+            }
+            .font(.system(size: 11))
+            .padding(.top, 6)
+        }
+    }
+
+    // MARK: Appearance
+
+    private var appearanceSection: some View {
+        section {
+            SectionRule("Appearance")
+        } rows: {
+            row("Theme") {
+                Picker("", selection: Binding(get: { settings.theme },
+                                              set: { settings.theme = $0 })) {
+                    ForEach(ThemePreference.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 240)
+            }
+            divider
+            row("Terminal font") { fontControl }
+        }
+    }
+
+    @ViewBuilder
+    private var fontControl: some View {
+        HStack(spacing: 8) {
+            textField(.fontFamily, placeholder: "SF Mono", monospaced: false)
+                .frame(maxWidth: 240, alignment: .leading)
+            textField(.fontSize, placeholder: "14", monospaced: false, centered: true)
+                .frame(width: 44)
+            Text("pt")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
+            // Applies per click, like the old slider's live drag, in 1pt steps.
+            Stepper("", value: Binding(get: { settings.fontSize },
+                                       set: { size in
+                                           drafts.revert(.fontSize)
+                                           settings.fontSize = size
+                                       }),
+                    in: SettingsEditor.fontSizeRange, step: 1)
+            .labelsHidden()
         }
-        .padding(.bottom, 2)
+        if drafts.isEdited(.fontFamily) || drafts.isEdited(.fontSize) {
+            quiet("Press Return to apply")
+        } else if fontVerdict == .notInstalled {
+            // The detected layer applied to the font field: say what was
+            // found, never fix it. Ghostty renders with its built-in font.
+            problem("Not installed on this Mac. The terminal uses its default font.", color: .orange,
+                    outputTitle: nil, output: nil)
+        }
+        hint("Applies to open terminals when you press Return.", top: 6)
+    }
+
+    // MARK: Fields
+
+    private func text(_ field: SettingsField) -> String {
+        drafts.text(field, committed: editor.committed(field))
+    }
+
+    /// Temple's own field: the sidebar search field's shape, a graphite ring
+    /// when focused.
+    private func textField(_ field: SettingsField, placeholder: String, monospaced: Bool,
+                           clearable: Bool = false, centered: Bool = false) -> some View {
+        let binding = Binding(get: { text(field) },
+                              set: { drafts.edit(field, to: $0, committed: editor.committed(field)) })
+        return HStack(spacing: 6) {
+            TextField("", text: binding, prompt: Text(placeholder))
+                .textFieldStyle(.plain)
+                .font(monospaced ? .system(size: 12, design: .monospaced)
+                                 : .system(size: field == .fontSize ? 12 : 13).monospacedDigit())
+                .multilineTextAlignment(centered ? .center : .leading)
+                .focused($focused, equals: field)
+                .onSubmit { commit(field) }
+                .onExitCommand { drafts.revert(field) }
+            if clearable, !binding.wrappedValue.isEmpty {
+                Button {
+                    // Back to detection is the common exit: empty and commit
+                    // in one click.
+                    drafts.revert(field)
+                    editor.write(field, "")
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear — use the one Temple detects")
+            }
+        }
+        .padding(.leading, centered ? 6 : 9)
+        .padding(.trailing, centered ? 6 : 8)
+        .frame(height: 28)
+        .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(Palette.accent.opacity(0.5), lineWidth: 2)
+                .padding(-2)
+                .opacity(focused == field ? 1 : 0)
+        }
+    }
+
+    private func commit(_ field: SettingsField) {
+        editor.commit(field, drafts: &drafts)
+    }
+
+    private func commitAll() {
+        for field in [SettingsField.command(.claude), .arguments(.claude), .command(.codex), .arguments(.codex),
+                      .fontFamily, .fontSize] {
+            commit(field)
+        }
+    }
+
+    // MARK: Deep link
+
+    /// Land where the warning that sent us here points: that agent's section
+    /// at the top, its Command row washed for a moment.
+    private func land(_ proxy: ScrollViewProxy) {
+        guard let request = model.openSessions.settingsFocus else { return }
+        model.openSessions.consumeSettingsFocus(request)
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.25)) {
+                proxy.scrollTo(request.agent.map(Anchor.agent) ?? .top, anchor: .top)
+            }
+            guard let agent = request.agent else { return }
+            washed = agent
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                guard washed == agent else { return }
+                withAnimation(.easeOut(duration: 0.45)) { washed = nil }
+            }
+        }
     }
 
     // MARK: Building blocks
 
-    /// A titled card: uppercase section label above a hairline-bordered,
-    /// faint-filled group of rows.
-    private func card<Content: View>(_ title: String,
-                                     @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text(title.uppercased())
-                .font(.system(size: 11, weight: .semibold))
-                .tracking(1.2)
-                .foregroundStyle(.secondary)
-                .padding(.leading, 4)
-            VStack(spacing: 0) { content() }
-                .background(Palette.surfaceFill, in: RoundedRectangle(cornerRadius: 10))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .strokeBorder(Palette.hairline, lineWidth: 1)
-                )
+    private func section<Rule: View, Rows: View>(@ViewBuilder rule: () -> Rule,
+                                                 @ViewBuilder rows: () -> Rows) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            rule()
+            rows()
         }
+        .padding(.top, 26)
     }
 
-    /// A hairline divider between rows inside a card (inset from the edges).
+    /// One row: a 168pt label column, then the control column.
+    private func row<Control: View>(_ label: String, note: String? = nil,
+                                    @ViewBuilder control: () -> Control) -> some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(label)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.primary)
+                if let note {
+                    Text(note)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(.top, 5)
+            .frame(width: Self.labelColumn, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 0) {
+                control()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 12)
+    }
+
     private var divider: some View {
         Rectangle()
             .fill(Palette.hairline)
             .frame(height: 1)
-            .padding(.leading, 16)
     }
 
-    /// One settings row: fixed-width label (with optional hint below) on the
-    /// left, right-aligned control on the right, consistent vertical rhythm.
-    private func settingRow<Content: View>(_ label: String,
-                                           hint: String? = nil,
-                                           @ViewBuilder control: () -> Content) -> some View {
-        HStack(alignment: .center, spacing: 16) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                if let hint {
-                    Text(hint)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .frame(width: labelColumn, alignment: .leading)
+    private func hint(_ text: String, top: CGFloat = 6) -> some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .padding(.top, top)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
 
-            Spacer(minLength: 12)
+    /// The transient "Press Return to…" line.
+    private func quiet(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundStyle(.tertiary)
+            .padding(.top, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
 
-            control()
+    private var checking: some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.mini)
+            Text("Checking…")
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 13)
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .padding(.top, 6)
+    }
+
+    private var warningGlyph: some View {
+        Image(systemName: "exclamationmark.triangle.fill")
+            .font(.system(size: 10))
+    }
+
+    /// A failure in someone else's words — the CLI's or the OS's — with the
+    /// raw output one click away. Red when every launch fails, orange when
+    /// Temple worked around it (the launcher banner's rule).
+    private func problem(_ text: String, color: Color, glyph: Bool = true,
+                         outputTitle: String?, output: String?, top: CGFloat = 6) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            if glyph { warningGlyph }
+            Text(text)
+                .lineLimit(2)
+                .textSelection(.enabled)
+            if let output, !output.isEmpty {
+                ShowOutputLink(title: outputTitle, output: output)
+            }
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(color)
+        .padding(.top, top)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func linkButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(.primary)
+    }
+
+    static func tilde(_ path: String) -> String {
+        (path as NSString).abbreviatingWithTildeInPath
+    }
+}
+
+/// "Show output": the CLI's raw output in a popover — selectable and copyable,
+/// which a tooltip never was. Same popover for an override, a skipped install
+/// and an argument complaint.
+private struct ShowOutputLink: View {
+    let title: String?
+    let output: String
+    @State private var presented = false
+
+    var body: some View {
+        Button("Show output") { presented.toggle() }
+            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(.primary)
+            .popover(isPresented: $presented, arrowEdge: .bottom) {
+                OutputPopover(title: title, output: output)
+            }
+    }
+}
+
+private struct OutputPopover: View {
+    let title: String?
+    let output: String
+
+    /// ~12 lines, then it scrolls.
+    private var height: CGFloat {
+        let wrapped = output.split(separator: "\n", omittingEmptySubsequences: false)
+            .reduce(0) { $0 + max(1, Int((Double($1.count) / 64).rounded(.up))) }
+        return min(CGFloat(wrapped) * 15 + 4, 184)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                if let title {
+                    Text(SettingsView.tilde(title))
+                        .font(.system(size: 11, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                        .help(title)
+                }
+                Spacer(minLength: 8)
+                Button("Copy") { copyToPasteboard(output) }
+                    .controlSize(.small)
+            }
+            ScrollView {
+                Text(output)
+                    .font(.system(size: 11, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: height)
+        }
+        .padding(12)
+        .frame(width: 460)
     }
 }
