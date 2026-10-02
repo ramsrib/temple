@@ -30,7 +30,7 @@ public struct TerminalAppearance: Sendable, Equatable {
     public var fontFamily: String?
     public var colorScheme: ColorScheme
 
-    public init(fontSize: Double = 13, fontFamily: String? = nil, colorScheme: ColorScheme = .dark) {
+    public init(fontSize: Double = 14, fontFamily: String? = nil, colorScheme: ColorScheme = .dark) {
         self.fontSize = fontSize
         self.fontFamily = fontFamily
         self.colorScheme = colorScheme

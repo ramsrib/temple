@@ -17,10 +17,13 @@ final class FontDefaultTests: XCTestCase {
     }
 
     /// One default size: the store, the field's placeholder and the terminal
-    /// itself all say 13 (the store used to say 14).
+    /// itself all say 14. 14 is what anyone who never set a size has always
+    /// rendered (terminals take the store's value; `TerminalAppearance`'s old
+    /// 13 was only a fallback nothing showed), so unifying on 13 would have
+    /// shrunk their terminals on upgrade.
     func testTheShippedFontSizeIsTheTerminalsOwn() {
         let fresh = SettingsStore(defaults: Fixture.uniqueDefaults())
-        XCTAssertEqual(fresh.fontSize, 13)
+        XCTAssertEqual(fresh.fontSize, 14)
         XCTAssertEqual(SettingsStore.shippedFontSize, TerminalAppearance.default.fontSize)
         XCTAssertEqual(fresh.appearance(scheme: .dark).fontSize, TerminalAppearance.default.fontSize)
     }
