@@ -80,7 +80,10 @@ public final class SettingsStore: ObservableObject {
         loading = true
         // The terminal's own default (`TerminalAppearance`), so the field's
         // placeholder, a fresh install and a reset terminal agree.
-        fontSize = defaults.object(forKey: Key.fontSize) as? Double ?? Self.shippedFontSize
+        // A non-finite stored size (written by an older build that let "nan"
+        // through) is unreadable, not a choice: fall back without rewriting it.
+        fontSize = (defaults.object(forKey: Key.fontSize) as? Double).flatMap { $0.isFinite ? $0 : nil }
+            ?? Self.shippedFontSize
         // Empty = Ghostty's built-in font (JetBrains Mono). The old default,
         // "SF Mono", is not an installed family on macOS (it lives inside
         // Terminal.app), so Ghostty fell back to its built-in font anyway and

@@ -62,6 +62,20 @@ final class SettingsEditingTests: XCTestCase {
 
     // MARK: Draft vs commit
 
+    /// `Double("nan")` and `Double("inf")` parse; NaN survived the clamp into
+    /// the store and every later `Int(fontSize.rounded())` trapped, so typing
+    /// "nan" in the size field and pressing Return crashed Settings for good.
+    func testNonFiniteFontSizesAreRefusedAtCommit() {
+        configure()
+        let before = store.fontSize
+        for text in ["nan", "NaN", "inf", "-inf", "infinity"] {
+            XCTAssertFalse(editor.write(.fontSize, text), text)
+            XCTAssertEqual(store.fontSize, before, text)
+        }
+        XCTAssertTrue(editor.write(.fontSize, "18"))
+        XCTAssertEqual(store.fontSize, 18)
+    }
+
     func testTypingWritesNothingAndProbesNothing() {
         configure()
         let probesBefore = probes.count

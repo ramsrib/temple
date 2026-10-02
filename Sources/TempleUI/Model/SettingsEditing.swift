@@ -89,7 +89,9 @@ struct SettingsEditor {
             guard family != store.fontFamily else { return false }
             store.fontFamily = family      // AppModel applies it to the terminals
         case .fontSize:
-            guard let size = Double(text.trimmingCharacters(in: .whitespaces)) else { return false }
+            // `Double("nan")` and `Double("inf")` parse; NaN survives the clamp
+            // and, once stored, traps in every `Int(fontSize.rounded())`.
+            guard let size = Double(text.trimmingCharacters(in: .whitespaces)), size.isFinite else { return false }
             let clamped = min(max(size.rounded(), Self.fontSizeRange.lowerBound), Self.fontSizeRange.upperBound)
             guard clamped != store.fontSize else { return false }
             store.fontSize = clamped
