@@ -362,9 +362,8 @@ public final class AppModel: ObservableObject {
             .store(in: &cancellables)
     }
 
-    /// The History tab's hands: how it opens a row, what it must not undo
-    /// out from under a tab, and who re-reads membership when an import is
-    /// taken back. Its view state lives as long as the tab does.
+    /// The History tab's hands: how it opens a row and what it must not undo
+    /// out from under a tab. Its view state lives as long as the tab does.
     private func wireHistory(database: TempleDB) {
         history.openSession = { [weak self] session in
             self?.openSessions.openSession(session)
@@ -373,8 +372,9 @@ public final class AppModel: ObservableObject {
             self?.openSessions.openTab(forSessionID: id) != nil
         }
         history.memberStates = { (try? database.sessionStates()) ?? [] }
-        let watcher = (indexSource as? WatcherIndexSource)?.watcher
-        history.onMembershipShrunk = { watcher?.reloadMembership() }
+        // `TempleDB.leave` notifies the engine itself (observeLeaves), and the
+        // overlay has already dropped the ids: nothing to re-read here.
+        history.onMembershipShrunk = {}
         $index
             .sink { [weak self] index in self?.history.liveIndexChanged(index) }
             .store(in: &cancellables)

@@ -119,6 +119,24 @@ public final class TempleDB: @unchecked Sendable {
         joinObservers.removeValue(forKey: token)
     }
 
+    private var leaveObservers: [UUID: @Sendable (String) -> Void] = [:]
+
+    /// Delivered after a committed `leave`: the session is no longer Temple's.
+    public func observeLeaves(_ observer: @escaping @Sendable (String) -> Void) -> UUID {
+        observerLock.lock(); defer { observerLock.unlock() }
+        let token = UUID(); leaveObservers[token] = observer; return token
+    }
+
+    public func removeLeaveObserver(_ token: UUID) {
+        observerLock.lock(); defer { observerLock.unlock() }
+        leaveObservers.removeValue(forKey: token)
+    }
+
+    private func committedLeave(_ id: String) {
+        observerLock.lock(); let callbacks = Array(leaveObservers.values); observerLock.unlock()
+        callbacks.forEach { $0(id) }
+    }
+
     private func committedJoin(_ id: String, awaitingCreation: Bool = false) {
         observerLock.lock(); let callbacks = Array(joinObservers.values); observerLock.unlock()
         callbacks.forEach { $0(id, awaitingCreation) }
@@ -237,7 +255,7 @@ public final class TempleDB: @unchecked Sendable {
     /// row that is undone was never kept.
     @discardableResult
     public func leave(sessionID: String) throws -> Bool {
-        try db.write { database in
+        let left = try db.write { database in
             try database.execute(
                 sql: """
                     DELETE FROM session_state
@@ -251,6 +269,8 @@ public final class TempleDB: @unchecked Sendable {
             )
             return database.changesCount > 0
         }
+        if left { committedLeave(sessionID) }
+        return left
     }
 
     /// Hints never insert membership or change provenance, and do not trigger a

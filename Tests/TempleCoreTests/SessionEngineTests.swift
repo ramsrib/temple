@@ -82,6 +82,31 @@ final class SessionEngineTests: XCTestCase {
         XCTAssertEqual(store.parses["existing"], 1)
     }
 
+    /// History's undo of an import: a committed leave takes the session out of
+    /// the live index without a filesystem event, and a refused leave (the row
+    /// was touched since) changes nothing.
+    func testCommittedLeaveDropsTheSessionAndARefusedLeaveKeepsIt() async throws {
+        let root = try root()
+        let imported = try claude(root, id: "imported")
+        let pinned = try claude(root, id: "pinned")
+        let db = try TempleDB.inMemory()
+        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db, debounceInterval: 0.02)
+        let recorder = try await start(watcher)
+        defer { recorder.stop() }
+        try db.join(sessionID: "imported", via: .imported, agent: .claude, transcriptPath: imported)
+        try db.join(sessionID: "pinned", via: .imported, agent: .claude, transcriptPath: pinned)
+        try db.setPinned(true, sessionID: "pinned")
+        try await eventually { recorder.latest.count == 2 }
+
+        XCTAssertTrue(try db.leave(sessionID: "imported"))
+        try await eventually { Set(recorder.latest.map(\.id)) == ["pinned"] }
+        XCTAssertNil(watcher.resolution(for: "imported"))
+
+        XCTAssertFalse(try db.leave(sessionID: "pinned"))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(Set(recorder.latest.map(\.id)), ["pinned"])
+    }
+
     func testPrestartJoinWaitsForClaudeCreationAndDeletionKeepsMembership() async throws {
         let root = try root()
         let db = try TempleDB.inMemory()

@@ -20,6 +20,7 @@ public final class SessionWatcher: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.sriramb.temple.session-engine")
     private var stream: FSEventStreamRef?
     private var joinObserver: UUID?
+    private var leaveObserver: UUID?
     private var continuation: AsyncStream<SessionIndex>.Continuation?
     private var running = false
     private var roots: [RootMapping] = []
@@ -74,10 +75,14 @@ public final class SessionWatcher: @unchecked Sendable {
         joinObserver = database?.observeJoins { [weak self] id, awaiting in
             self?.requestResolution(id, awaitingCreation: awaiting)
         }
+        leaveObserver = database?.observeLeaves { [weak self] id in
+            self?.forgetMember(id)
+        }
     }
 
     deinit {
         if let joinObserver { database?.removeJoinObserver(joinObserver) }
+        if let leaveObserver { database?.removeLeaveObserver(leaveObserver) }
         if let stream {
             FSEventStreamStop(stream); FSEventStreamInvalidate(stream); FSEventStreamRelease(stream)
         }
@@ -186,6 +191,29 @@ public final class SessionWatcher: @unchecked Sendable {
     // Membership is observed only through this process's committed joins.
     // External-process joins (including templectl imports) are seen next launch;
     // there is no engine-only refresh that could leave the overlay out of sync.
+    /// A committed leave (History's undo of an import): the session is no
+    /// longer a member, so it leaves the index, its resolution state and its
+    /// cached parse. The filename map is disk state and stays.
+    public func forgetMember(_ id: String) {
+        queue.async { [weak self] in
+            guard let self, self.members.contains(id) else { return }
+            self.members.remove(id)
+            self.awaiting.remove(id)
+            self.sessions.removeValue(forKey: id)
+            self.signatures.removeValue(forKey: id)
+            self.hintPathsByID.removeValue(forKey: id)
+            for path in Array(self.memberIDsByPath.keys) {
+                self.memberIDsByPath[path]?.remove(id)
+                if self.memberIDsByPath[path]?.isEmpty == true { self.memberIDsByPath.removeValue(forKey: path) }
+            }
+            self.states.removeValue(forKey: id)
+            self.statesDirty = true
+            self.snapshotLocked()
+            guard self.running else { return }
+            self.publishLocked()
+        }
+    }
+
     public func requestResolution(_ id: String, awaitingCreation: Bool = false) {
         queue.async { [weak self] in
             guard let self else { return }
