@@ -37,6 +37,11 @@ public final class GhosttyApp {
     /// The libghostty app handle. `nil` until ready / after shutdown.
     private(set) var app: ghostty_app_t?
     private var config: ghostty_config_t?
+    /// What the runtime config was last built from. `update(appearance:)` is
+    /// called once per open surface on every appearance change; only the first
+    /// call may rebuild (a file write + `ghostty_app_update_config`, which every
+    /// surface then re-derives from).
+    private var appliedAppearance: TerminalAppearance?
 
     /// Routes surface-targeted C callbacks back to the owning view.
     /// Keyed by the raw `ghostty_surface_t` pointer.
@@ -90,7 +95,9 @@ public final class GhosttyApp {
     /// The light/dark palette itself is resolved per surface via
     /// `ghostty_surface_set_color_scheme`.
     public func update(appearance: TerminalAppearance) {
-        guard let app, let cfg = Self.makeConfig(appearance: appearance) else { return }
+        guard let app, appearance != appliedAppearance,
+              let cfg = Self.makeConfig(appearance: appearance) else { return }
+        appliedAppearance = appearance
         ghostty_app_update_config(app, cfg)
         ghostty_app_set_color_scheme(
             app,

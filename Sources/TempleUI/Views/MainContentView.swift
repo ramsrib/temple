@@ -28,7 +28,7 @@ struct MainContentView: View {
         if let active = model.openSessions.activeTab {
             switch active.kind {
             case .settings:
-                SettingsView()
+                SettingsView(settings: model.settings)
             case .session:
                 terminal(for: active)
             }

@@ -309,13 +309,30 @@ public final class AppModel: ObservableObject {
                 }
             }
             .store(in: &cancellables)
-        // Live appearance: any settings change re-tints app + open surfaces (U9/U10).
-        settings.objectWillChange
+        // Live appearance (U9/U10), from the settings that change it and nothing
+        // else. Re-applying is a config rewrite pushed to every terminal, and it
+        // used to run on *any* settings change, so each key typed in an agent's
+        // Command or Arguments field re-tinted every open terminal and
+        // re-rendered the whole window. The Settings page observes the store
+        // itself; the rest of the app hears only what it reads. The font family
+        // is a text field: apply it once typing pauses, not per letter.
+        // (`$x` fires on willSet; the main-loop hop reads the new value.)
+        Publishers.Merge3(
+            settings.$fontSize.removeDuplicates().dropFirst().map { _ in () },
+            settings.$theme.removeDuplicates().dropFirst().map { _ in () },
+            settings.$fontFamily.removeDuplicates().dropFirst()
+                .debounce(for: .milliseconds(400), scheduler: RunLoop.main).map { _ in () })
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
+            .sink { [weak self] in
                 self?.applyAppearance()
                 self?.objectWillChange.send()
             }
+            .store(in: &cancellables)
+        Publishers.Merge(
+            settings.$defaultAgent.removeDuplicates().dropFirst().map { _ in () },
+            settings.$sessionScope.removeDuplicates().dropFirst().map { _ in () })
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &cancellables)
         // Pins / renames re-publish so the computed sidebar views refresh.
         overlay.objectWillChange

@@ -9,7 +9,9 @@ import TempleCore
 /// label + optional hint on the left, right-aligned control on the right.
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
-    private var settings: SettingsStore { model.settings }
+    /// Observed here, not through `AppModel`: a keystroke in a field re-renders
+    /// this page, not the window (see AppModel's settings subscriptions).
+    @ObservedObject var settings: SettingsStore
 
     /// Fixed leading label column so every control lines up across cards.
     private let labelColumn: CGFloat = 168
