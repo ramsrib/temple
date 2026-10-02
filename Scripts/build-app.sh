@@ -26,6 +26,10 @@ SCHEME="Temple"
 DERIVED="$ROOT/.build/xcode-derived"
 DIST="$ROOT/dist"
 
+# The terminal engine is built separately and git-ignored; refuse one built from
+# a different tag or patch set than this checkout pins (ADR-026).
+"$ROOT/Scripts/ghostty-stamp.sh" check
+
 # 0. version -----------------------------------------------------------------
 # Info.plist takes these from the build settings ($(MARKETING_VERSION) /
 # $(CURRENT_PROJECT_VERSION)), so they are the single source of the version the

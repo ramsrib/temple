@@ -89,6 +89,47 @@ automatically. Documented here so the failure modes are recognizable.
    `ghostty_app_new` is present in the final archive (auto-clearing the zig
    cache and rebuilding once if a pre-shim broken output was cached).
 
+## Patches (ADR-026)
+
+`Patches/ghostty/*.patch` are temporary backports: commits ghostty has merged
+on `main` that Temple needs before a tagged release carries them. Each file is
+the upstream commit verbatim (`git format-patch` form), so its header says
+where it came from. Temple still owns checking that each one works on the
+pinned tag; upstream tested it on upstream's tree.
+
+`build-ghostty.sh` applies them in name order on top of the tag. A patch that
+already reverse-applies is taken as in and skipped, so re-running the script
+is safe; one that neither applies nor reverse-applies stops the build. It then
+checks that `Vendor/ghostty` is exactly the tag plus this series — no patch
+since removed from it, no local edit, no deleted or stray file — and refuses
+otherwise, without resetting anything (it may be someone's work). Files git
+ignores are outside that check; in a ghostty checkout those are build output
+(`zig-out`, `.zig-cache`), plus anything in your global excludes.
+
+| Patch | Upstream | Why |
+|---|---|---|
+| `0001-renderer-skip-updateFrame-when-surface-is-not-visible` | `14d9e600ac` | hidden tabs stopped costing CPU: ~39% → ~5% of a core with 21 busy surfaces, 1 visible |
+
+**Stale artifacts are refused.** `Vendor/` is git-ignored and nothing else
+rebuilds it, so a checkout that gains a patch would keep linking the old
+xcframework, and it would compile, sign and notarize without the fix.
+`build-ghostty.sh` therefore stamps the artifact it installs with the tag, Zig
+and each patch's digest (`Vendor/GhosttyKit.xcframework/.temple-build-stamp`),
+and `build-app.sh` (so `make app`/`install`/`release`) and `make build`/`test`/
+`run` refuse to build when `Scripts/ghostty-stamp.sh check` disagrees. The fix
+is to run `./Scripts/build-ghostty.sh` again (incremental, since zig caches);
+when the series *lost* a patch, that run refuses the leftover source, and the
+way out is a clean one: `rm -rf Vendor/ghostty Vendor/GhosttyKit.xcframework`
+first. A bare `swift build`, or building `Temple.xcodeproj` straight from
+Xcode, is not guarded.
+
+**The skip test assumes patches don't overlap.** If a later patch changes lines
+an earlier one introduced, the earlier one stops reverse-applying on the fully
+patched tree, and every re-run on that tree fails even though the checkout is
+right — a clean rebuild gets you one good build, not working re-runs. Before
+carrying such a pair, change the skip test (e.g. compare against the tree the
+source check computes) rather than living with it.
+
 ## How SwiftPM consumes it
 
 `Package.swift` declares:
@@ -135,7 +176,16 @@ T's scope; this section is the contract for whoever does U6/T7 integration.
 
 1. Edit `GHOSTTY_TAG` / `ZIG_VERSION` in `Scripts/build-ghostty.sh` and the pin
    table above.
-2. `rm -rf Vendor/ghostty Vendor/GhosttyKit.xcframework`
+2. `rm -rf Vendor/ghostty Vendor/GhosttyKit.xcframework`, and delete from
+   `Patches/ghostty/` every patch the new tag already contains.
+   A leftover one stops the build either way (it no longer applies, or the
+   source check finds the tree differs from tag + series), so the build
+   tells you if you missed one.
 3. `./Scripts/build-ghostty.sh`
-4. `swift build && swift test`
+4. `make build && make test`
 5. Re-check `ghostty.h` for C API changes against `Sources/TempleTerminal`.
+6. `make app`, and check the shipped path, not just SwiftPM: a hidden tab whose
+   output kept changing shows current output when shown again, and switching
+   tabs under load still drops CPU. Where a carried patch adds a distinctive
+   string, check it reached the `.app` (`strings dist/Temple.app/Contents/MacOS/Temple
+   | grep …`; 0001 adds "visibility regain").

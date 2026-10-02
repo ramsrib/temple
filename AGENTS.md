@@ -44,6 +44,10 @@ Three traps, each hit for real:
   the first project. Fire USR1 in a 50ms loop right after either to get frames.
   `TEMPLE_SNAPSHOT_PRESENT=palette|history|archive` opens that panel two seconds
   after launch, for snapshots of rows no key chord can be posted to reach.
+  **Keep the window at least partly uncovered while snapshotting:** a fully
+  covered window counts as occluded, its terminals are told they are hidden
+  (`GhosttySurfaceView.syncRendererState`), and they stop updating — the shot
+  shows terminal content from the moment the window was covered.
   `TEMPLE_SNAPSHOT_APPEARANCE=dark|light` forces the appearance for that process
   without touching the persisted theme setting — **check both**: a fill that
   reads fine in light mode was a shade off the selection wash in dark.

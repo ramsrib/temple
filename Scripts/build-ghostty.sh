@@ -11,11 +11,13 @@
 #   - Zig version:  0.15.2   (build.zig.zon `minimum_zig_version` for v1.3.1)
 #
 # It:
-#   1. Ensures Vendor/ghostty is checked out at the pinned tag (clones if absent).
+#   1. Ensures Vendor/ghostty is checked out at the pinned tag (clones if absent),
+#      then applies Patches/ghostty/*.patch (each once; see step 1b).
 #   2. Ensures the pinned zig is available (uses PATH zig if it already matches;
 #      otherwise ~/.local/zig-<ver>/zig, downloading it if missing).
-#   3. Runs `zig build -Demit-xcframework` and copies the result to
-#      Vendor/GhosttyKit.xcframework.
+#   3. Runs `zig build -Demit-xcframework`, copies the result to
+#      Vendor/GhosttyKit.xcframework, and stamps it with what it was built from
+#      (Scripts/ghostty-stamp.sh — the app build refuses a stale artifact).
 #
 # Env overrides:
 #   GHOSTTY_XCFRAMEWORK_TARGET=universal|native   (default: universal)
@@ -51,6 +53,78 @@ else
     current="$(git -C "$GHOSTTY_SRC" describe --tags --always 2>/dev/null || echo unknown)"
     log "ghostty already present at: $current (expected $GHOSTTY_TAG)"
 fi
+# The stamp written below vouches for the tag, so the checkout must be on it.
+head_commit="$(git -C "$GHOSTTY_SRC" rev-parse HEAD)"
+tag_commit="$(git -C "$GHOSTTY_SRC" rev-parse "$GHOSTTY_TAG^{commit}" 2>/dev/null || true)"
+if [ "$head_commit" != "$tag_commit" ]; then
+    echo "ERROR: $GHOSTTY_SRC is at $head_commit, not $GHOSTTY_TAG ($tag_commit)." >&2
+    echo "       For a bump: rm -rf Vendor/ghostty Vendor/GhosttyKit.xcframework (docs/BUILDING-GHOSTTY.md)." >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 1b. Temple's patches on top of the tag (Patches/ghostty, ADR-026).
+#
+# Upstream fixes Temple needs before a release carries them — each one a
+# commit from ghostty `main`, verbatim. Applied in name order, each exactly
+# once: a patch that already reverses cleanly is in, one that neither applies
+# nor reverses is a conflict and stops the build. Drop a patch when the pinned
+# tag contains it.
+# ---------------------------------------------------------------------------
+for patch in "$ROOT"/Patches/ghostty/*.patch; do
+    [ -e "$patch" ] || continue
+    name="$(basename "$patch")"
+    if git -C "$GHOSTTY_SRC" apply --reverse --check "$patch" 2>/dev/null; then
+        log "patch already applied: $name"
+    elif git -C "$GHOSTTY_SRC" apply --check "$patch" 2>/dev/null; then
+        git -C "$GHOSTTY_SRC" apply "$patch"
+        log "patch applied: $name"
+    else
+        printf 'ERROR: %s neither applies to nor is already in %s\n' "$name" "$GHOSTTY_SRC" >&2
+        exit 1
+    fi
+done
+
+# The stamp vouches for "tag + exactly these patches", so the source must be
+# that — not a patch since removed from the series, not a local edit, not a
+# stray file. Build the expected tree (the tag with the series applied) in a
+# throwaway index, then snapshot the working directory on top of it with
+# `add -A`: modified, deleted, patch-added and stray files all change the tree,
+# so one comparison covers them. Files git ignores (zig-out, .zig-cache — build
+# output) are outside it. The real index and working tree are not touched; on a
+# mismatch we refuse rather than reset, since whatever is there may be someone's
+# work. Called as an `if` condition, so `set -e` is off inside: every step
+# propagates its failure, and an empty or unequal tree fails closed.
+tree_with_series() {   # tree id of HEAD + Patches/ghostty, via index file $1
+    GIT_INDEX_FILE="$1" git -C "$GHOSTTY_SRC" read-tree HEAD || return 1
+    for patch in "$ROOT"/Patches/ghostty/*.patch; do
+        [ -e "$patch" ] || continue
+        GIT_INDEX_FILE="$1" git -C "$GHOSTTY_SRC" apply --cached "$patch" || return 1
+    done
+    GIT_INDEX_FILE="$1" git -C "$GHOSTTY_SRC" write-tree
+}
+tree_of_worktree() {   # tree id of the working directory as git sees it, via index file $1
+    GIT_INDEX_FILE="$1" git -C "$GHOSTTY_SRC" add -A -- . || return 1
+    GIT_INDEX_FILE="$1" git -C "$GHOSTTY_SRC" write-tree
+}
+source_tree_matches() {
+    local idx want have
+    idx="$(mktemp)" || return 1
+    case "$idx" in /*) ;; *) idx="$PWD/$idx" ;; esac   # git -C resolves a relative one elsewhere
+    want="$(tree_with_series "$idx")" || want=""
+    have="$(tree_of_worktree "$idx")" || have=""   # starts from the expected index
+    rm -f "$idx"
+    [ -n "$want" ] && [ -n "$have" ] && [ "$want" = "$have" ]
+}
+if ! source_tree_matches; then
+    echo "ERROR: $GHOSTTY_SRC is not exactly $GHOSTTY_TAG + Patches/ghostty:" >&2
+    git -C "$GHOSTTY_SRC" status --short --untracked-files=normal | sed 's/^/       /' >&2
+    echo "       (a patch removed from the series leaves its changes behind; so does a" >&2
+    echo "       local edit). Move aside anything you want to keep, then:" >&2
+    echo "       rm -rf Vendor/ghostty Vendor/GhosttyKit.xcframework && ./Scripts/build-ghostty.sh" >&2
+    exit 1
+fi
+log "source is $GHOSTTY_TAG + $(ls "$ROOT"/Patches/ghostty/*.patch 2>/dev/null | wc -l | tr -d ' ') patch(es), nothing else outside ignored files"
 
 # ---------------------------------------------------------------------------
 # 2. Zig toolchain at the pinned version.
@@ -266,6 +340,10 @@ log "Symbol check passed (ghostty_app_new present)"
 log "Installing artifact -> $OUT_XCFRAMEWORK"
 rm -rf "$OUT_XCFRAMEWORK"
 cp -R "$BUILT" "$OUT_XCFRAMEWORK"
+# What this artifact was built from; build-app.sh and `make build` refuse a
+# mismatch (Scripts/ghostty-stamp.sh, ADR-026).
+stamp="$("$SCRIPT_DIR/ghostty-stamp.sh" expected)"
+printf '%s\ntarget %s\n' "$stamp" "$XCFRAMEWORK_TARGET" > "$OUT_XCFRAMEWORK/.temple-build-stamp"
 
 log "Done. Slices:"
 ls -1 "$OUT_XCFRAMEWORK"

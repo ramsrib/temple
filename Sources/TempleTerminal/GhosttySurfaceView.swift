@@ -252,11 +252,10 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
     /// its window is covered would tick again. So libghostty hears "focused"
     /// only while the view is both first responder and visible.
     ///
-    /// On Ghostty v1.3.1 this does NOT stop the CPU-heavy part: libghostty still
-    /// rebuilds its frame (shaping, link matching) on every output, visible or
-    /// not. Measured with 21 surfaces redrawing 4×/s: GPU submissions gone,
-    /// process CPU unchanged. Upstream `14d9e600ac` (after v1.3.1) skips that
-    /// rebuild for hidden surfaces — keyed off exactly this call.
+    /// Stock v1.3.1 still rebuilds a hidden surface's frame (shaping, link
+    /// matching) on every output; `Patches/ghostty/0001` (upstream `14d9e600ac`,
+    /// ADR-026) skips that too, and it keys off exactly this call. With 21
+    /// surfaces redrawing 4×/s, 1 visible: ~39% of a core stock, ~5% patched.
     ///
     /// Visible = in a window, and that window is at least partly on screen
     /// (not minimized, ⌘H-hidden, or fully covered).

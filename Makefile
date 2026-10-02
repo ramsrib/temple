@@ -6,12 +6,15 @@ BUNDLE_ID := com.sriramb.temple
 .PHONY: build test run demo demo-clean ghostty app open install stage release version clean
 
 build: ## Compile the SwiftPM targets
+	@./Scripts/ghostty-stamp.sh check
 	swift build
 
 test: ## Run the full test suite
+	@./Scripts/ghostty-stamp.sh check
 	swift test
 
 run: ## Run the app straight from SwiftPM (dev loop; stub-free ghostty build required)
+	@./Scripts/ghostty-stamp.sh check
 	swift run temple
 
 demo: build ## Run against a fake session store (screenshots, demos — no real projects)

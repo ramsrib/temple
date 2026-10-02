@@ -908,3 +908,53 @@ probed fine the next morning.
 Not changed: which install wins (PATH order, first that runs), and that a
 user override is taken as-is.
 
+
+## ADR-026 — Upstream Ghostty fixes are carried as patches until a release has them
+**Date:** 2026-10-01 · **Status:** Accepted
+
+Temple 0.3.x, nine days up with 37 tabs open: 25–55% CPU in Temple itself.
+A sample put every background tab's renderer thread to work. Only the active
+tab's view is in the window, but nothing told libghostty, which assumes a
+surface is visible and focused; the host now sends occlusion (commit
+35d3a88). That stops drawing, not the cost: stock v1.3.1 still rebuilds a
+hidden surface's frame (shaping, link matching) on every output, and that is
+where the CPU went. Upstream fixed exactly this on 2026-05-21 (`14d9e600ac`,
+"renderer: skip updateFrame when surface is not visible"), after v1.3.1, and
+no release has shipped since. Measured with 21 surfaces redrawing 4×/s, one
+visible, occlusion on in both: ~39% of a core stock, ~5% patched; a tab
+hidden for 5s while its output changed showed current output 300ms after
+being shown again.
+
+**Decisions.**
+
+- **Carry the fix as a patch on the pinned tag**, not a bump to ghostty
+  `main`. `main` has moved to Zig 0.16 and much else; the fix is 14 lines
+  that apply cleanly to v1.3.1. `Patches/ghostty/` holds upstream commits
+  verbatim, and `build-ghostty.sh` applies them (BUILDING-GHOSTTY.md).
+- **Only upstream commits, as temporary backports.** This narrows ADR-003's
+  "a library, not a fork" rather than giving it up: every patch is code
+  Ghostty has already merged, and a change upstream hasn't taken is not a
+  patch here. Upstream merging it is not proof it works on our older base;
+  Temple checks each one on the pinned tag (BUILDING-GHOSTTY.md).
+- **Patches expire.** A bump drops every patch the new tag contains; the
+  build stops on one that neither applies nor reverse-applies.
+- **A stale artifact is a build error.** `Vendor/` is git-ignored and outlives
+  `make clean`, so a checkout gaining a patch would otherwise keep linking the
+  old xcframework and ship without it. The artifact carries a stamp of what it
+  was built from, written only after the build has checked its source is the
+  tag plus the series and nothing else; the app build and `make build` refuse
+  a mismatch. The build script itself is deliberately not in the stamp (a
+  comment edit would force a rebuild); if a build-flag change must invalidate
+  artifacts, add an explicit recipe revision to the stamp then.
+
+Accepted side effects, all shared with upstream `main` and bounded: on
+showing a tab, one frame can come from before it was hidden (Core Animation
+can redraw the layer before the renderer catches up), search highlights can
+sit at old positions until the next search refresh, and a tab shown in the
+middle of a synchronized-output frame keeps its hidden-time cells until that
+frame ends.
+
+Not taken yet: upstream `c4e16970a8` (2026-08-25), which frees a hidden
+surface's GPU memory (upstream measured 385 → 18 MiB at 1 visible + 20
+hidden tabs). It is a larger change across four files; it goes through the
+same door if it applies and measures.

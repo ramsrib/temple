@@ -18,6 +18,8 @@ publishes. Everything below is the setup it depends on — done once.
 ```sh
 brew install xcodegen create-dmg   # project generation + styled dmg
 ./Scripts/build-ghostty.sh         # the embedded terminal engine (10–30 min)
+                                   # re-run when its pins or Patches/ghostty change;
+                                   # the release refuses a stale one (ADR-026)
 ```
 
 Xcode 26+ and the GitHub CLI (`gh`, authenticated) are also required.
