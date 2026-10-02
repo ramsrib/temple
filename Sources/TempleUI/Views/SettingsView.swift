@@ -175,7 +175,9 @@ struct SettingsView: View {
     private func commandControl(_ agent: Agent) -> some View {
         let field = SettingsField.command(agent)
         let placeholder = toolchain.resolution(for: agent)?.chosen.map { Self.tilde($0.path) } ?? agent.binaryName
-        textField(field, placeholder: placeholder, monospaced: true, clearable: true)
+        textField(field, label: "\(agent.displayName) command", placeholder: placeholder, monospaced: true,
+                  clearable: true)
+            .accessibilityHint("Empty uses \(placeholder)")
             .frame(maxWidth: Self.fieldWidth, alignment: .leading)
 
         if drafts.isEdited(field) {
@@ -306,7 +308,7 @@ struct SettingsView: View {
     @ViewBuilder
     private func argumentsControl(_ agent: Agent) -> some View {
         let field = SettingsField.arguments(agent)
-        textField(field, placeholder: "", monospaced: true)
+        textField(field, label: "\(agent.displayName) arguments", placeholder: "", monospaced: true)
             .frame(maxWidth: Self.fieldWidth, alignment: .leading)
 
         if drafts.isEdited(field) {
@@ -355,10 +357,11 @@ struct SettingsView: View {
     @ViewBuilder
     private var fontControl: some View {
         HStack(spacing: 8) {
-            textField(.fontFamily, placeholder: "JetBrains Mono (built in)", monospaced: false)
+            textField(.fontFamily, label: "Terminal font family", placeholder: "JetBrains Mono (built in)",
+                      monospaced: false)
                 .frame(maxWidth: 240, alignment: .leading)
-            textField(.fontSize, placeholder: String(Int(SettingsStore.shippedFontSize)), monospaced: false,
-                      centered: true)
+            textField(.fontSize, label: "Terminal font size", placeholder: String(Int(SettingsStore.shippedFontSize)),
+                      monospaced: false, centered: true)
                 .frame(width: 44)
                 // Up/down arrows step the size like the chevrons.
                 .onKeyPress(.upArrow) { stepFontSize(by: 1); return .handled }
@@ -422,13 +425,15 @@ struct SettingsView: View {
     }
 
     /// Temple's own field: the sidebar search field's shape, a graphite ring
-    /// when focused.
-    private func textField(_ field: SettingsField, placeholder: String, monospaced: Bool,
+    /// when focused. `label` is its accessible name: the visible title is
+    /// left empty, because a macOS TextField draws its title as the
+    /// placeholder, and the row label beside it is a separate Text.
+    private func textField(_ field: SettingsField, label: String, placeholder: String, monospaced: Bool,
                            clearable: Bool = false, centered: Bool = false) -> some View {
-        let binding = Binding(get: { text(field) },
-                              set: { drafts.edit(field, to: $0, committed: editor.committed(field)) })
+        let binding = editor.binding(field, drafts: $drafts)
         return HStack(spacing: 6) {
             TextField("", text: binding, prompt: answersPlaceholder(field) ? nil : Text(placeholder))
+                .accessibilityLabel(label)
                 .textFieldStyle(.plain)
                 .multilineTextAlignment(centered ? .center : .leading)
                 // A Command field's placeholder is the detected path, an
@@ -443,6 +448,8 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.head)
+                            // Drawn, not read: the field's hint says it.
+                            .accessibilityHidden(true)
                     }
                 }
                 .font(monospaced ? .system(size: 12, design: .monospaced)
@@ -463,6 +470,7 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Clear — use the one Temple detects")
+                .accessibilityLabel("Clear")
             }
         }
         .padding(.leading, centered ? 6 : 9)
@@ -697,5 +705,7 @@ private struct FontSizeChevron: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help(help)
+        // `.help` is a tooltip, not a name.
+        .accessibilityLabel(help)
     }
 }
