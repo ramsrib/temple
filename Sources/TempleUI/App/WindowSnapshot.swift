@@ -161,4 +161,7 @@ extension Notification.Name {
     static let templeDebugToggleSidebar = Notification.Name("temple.debug.toggleSidebar")
     /// Posted by the dev-only INFO hook; the first project's disclosure toggles.
     static let templeDebugToggleFirstProject = Notification.Name("temple.debug.toggleFirstProject")
+    /// Posted by `SettingsKeysProbe`; SettingsView focuses the `SettingsField`
+    /// in `object`.
+    static let templeDebugFocusSettingsField = Notification.Name("temple.debug.focusSettingsField")
 }

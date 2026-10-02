@@ -23,7 +23,8 @@ struct HistoryTabView: View {
     @Environment(\.undoManager) private var undoManager
 
     @FocusState private var searchFocused: Bool
-    @State private var width: CGFloat = 1000
+    /// The page's width; nil until measured (`PageWidthMemory`).
+    @State private var width: CGFloat? = PageWidthMemory.last
 
     /// The page caps at this width and centres beyond it.
     static let pageWidth = PageChrome.pageWidth
@@ -36,7 +37,7 @@ struct HistoryTabView: View {
     /// of it, not merely onto the screen underneath it.
     static let dayHeaderHeight: CGFloat = 30
 
-    private var compact: Bool { width < 720 }
+    private var compact: Bool { (width ?? PageChrome.pageWidth) < 720 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {

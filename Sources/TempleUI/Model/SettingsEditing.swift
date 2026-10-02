@@ -166,3 +166,22 @@ enum FontFamilyCheck {
 enum FontFamilyVerdict: Equatable {
     case notInstalled
 }
+
+/// A font verdict together with the family it was made about. The page checks
+/// a family after it renders (a Core Text lookup is not free), so for a frame
+/// the stored verdict is the previous family's; keyed like this, a verdict
+/// about another family is never shown — the override verdict's rule.
+struct FontFamilyCheckResult: Equatable {
+    let family: String
+    let verdict: FontFamilyVerdict?
+
+    init(family: String, isInstalled: (String) -> Bool = FontFamilyCheck.isInstalled) {
+        self.family = family
+        self.verdict = FontFamilyCheck.verdict(for: family, isInstalled: isInstalled)
+    }
+
+    /// The verdict, if it is about `family`; nil for any other.
+    func verdict(for family: String) -> FontFamilyVerdict? {
+        family == self.family ? verdict : nil
+    }
+}

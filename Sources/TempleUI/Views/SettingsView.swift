@@ -26,9 +26,11 @@ struct SettingsView: View {
     @FocusState private var focused: SettingsField?
     /// The agent whose Command row is washed after a deep link.
     @State private var washed: Agent?
-    @State private var fontVerdict: FontFamilyVerdict?
-    /// The page's width, for the column (`pageColumn`, shared with History).
-    @State private var width: CGFloat = 1000
+    /// The family check, with the family it is about (shown only for that one).
+    @State private var fontCheck: FontFamilyCheckResult?
+    /// The page's width, for the column (`pageColumn`, shared with History);
+    /// nil until measured (`PageWidthMemory`).
+    @State private var width: CGFloat? = PageWidthMemory.last
 
     static let labelColumn: CGFloat = 168
     static let formWidth: CGFloat = 720
@@ -73,7 +75,12 @@ struct SettingsView: View {
         // Leaving the page is leaving the field.
         .onDisappear { commitAll() }
         .task(id: settings.fontFamily) {
-            fontVerdict = FontFamilyCheck.verdict(for: settings.fontFamily)
+            fontCheck = FontFamilyCheckResult(family: settings.fontFamily)
+        }
+        // Dev-only (inert without TEMPLE_SNAPSHOT_DIR): the settings-keys
+        // snapshot run focuses a field here, then presses keys in it.
+        .onReceive(WindowSnapshot.debugPublisher(for: .templeDebugFocusSettingsField)) { note in
+            focused = note.object as? SettingsField
         }
     }
 
@@ -380,7 +387,7 @@ struct SettingsView: View {
         }
         if drafts.isEdited(.fontFamily) || drafts.isEdited(.fontSize) {
             quiet("Press Return to apply")
-        } else if fontVerdict == .notInstalled {
+        } else if fontCheck?.verdict(for: settings.fontFamily) == .notInstalled {
             fontNotInstalled
         } else if focused == .fontFamily || focused == .fontSize {
             // Only while there is something to press Return in.

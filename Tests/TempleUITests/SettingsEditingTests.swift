@@ -431,6 +431,16 @@ final class SettingsEditingTests: XCTestCase {
         XCTAssertNil(FontFamilyCheck.verdict(for: " Menlo ", isInstalled: installed.contains))
     }
 
+    /// The check runs after the page renders, so for a frame the stored
+    /// result is the previous family's; it answers only for its own family.
+    func testAFontVerdictAnswersOnlyForTheFamilyItWasMadeAbout() {
+        let installed: Set<String> = ["Menlo"]
+        let check = FontFamilyCheckResult(family: "Menol", isInstalled: installed.contains)
+        XCTAssertEqual(check.verdict(for: "Menol"), .notInstalled)
+        XCTAssertNil(check.verdict(for: "Menlo"), "a verdict about Menol said nothing about Menlo")
+        XCTAssertNil(check.verdict(for: "Other"), "nor about a family not yet checked")
+    }
+
     /// An inherited family (stored by an earlier launch, like the old "SF
     /// Mono" default) is not a choice made now; one committed here is.
     func testAFamilyIsChosenThisLaunchOnlyWhenCommittedNow() {

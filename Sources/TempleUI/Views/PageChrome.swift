@@ -52,6 +52,19 @@ enum PageChrome {
     }()
 }
 
+/// The page's last measured width, kept past the page views that measured it.
+///
+/// A page's width is view state, so every History or Settings view starts
+/// without one. Seeded with a guess (1000), a window wider than the cap drew
+/// the page's first frame with the column at the guess's offset, then moved
+/// it. Every page fills the same detail pane, so the width the last page
+/// measured is the next one's starting point: right, or corrected within a
+/// frame after a resize while no page was open.
+@MainActor
+enum PageWidthMemory {
+    static var last: CGFloat?
+}
+
 extension View {
     /// The page column — capped at `PageChrome.pageWidth`, centred beyond it —
     /// placed from the *page's* width (`measuringPageWidth`), not from the
@@ -60,23 +73,35 @@ extension View {
     /// outside it: Settings' title (in its scroll view) was ~8pt left of
     /// History's (above its list). Every page column goes through here, so
     /// titles, rows and bars share one leading edge whatever scrolls.
-    func pageColumn(pageWidth width: CGFloat, inset: CGFloat = PageChrome.gutter) -> some View {
+    ///
+    /// Before any page has been measured (`nil`: the first page of a launch)
+    /// the column is laid out but not drawn, so it is never seen at a guessed
+    /// offset and then moving.
+    func pageColumn(pageWidth width: CGFloat?, inset: CGFloat = PageChrome.gutter) -> some View {
         frame(maxWidth: PageChrome.pageWidth - 2 * inset, alignment: .leading)
-            .padding(.leading, PageChrome.columnLeading(pageWidth: width, inset: inset))
+            .padding(.leading, PageChrome.columnLeading(pageWidth: width ?? 0, inset: inset))
             .padding(.trailing, inset)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .opacity(width == nil ? 0 : 1)
     }
 
-    /// Reports the page's width into `width`, for `pageColumn`. A background
-    /// reader, so it adds no layout of its own.
-    func measuringPageWidth(_ width: Binding<CGFloat>) -> some View {
+    /// Reports the page's width into `width`, for `pageColumn`, and remembers
+    /// it for the next page (`PageWidthMemory`). A background reader, so it
+    /// adds no layout of its own.
+    func measuringPageWidth(_ width: Binding<CGFloat?>) -> some View {
         background(
             GeometryReader { geo in
                 Color.clear
-                    .onAppear { width.wrappedValue = geo.size.width }
-                    .onChange(of: geo.size.width) { _, new in width.wrappedValue = new }
+                    .onAppear { recordPageWidth(geo.size.width, into: width) }
+                    .onChange(of: geo.size.width) { _, new in recordPageWidth(new, into: width) }
             })
     }
+}
+
+@MainActor
+private func recordPageWidth(_ measured: CGFloat, into width: Binding<CGFloat?>) {
+    PageWidthMemory.last = measured
+    if width.wrappedValue != measured { width.wrappedValue = measured }
 }
 
 /// An uppercase, letter-spaced section label trailed by a hairline rule — the
