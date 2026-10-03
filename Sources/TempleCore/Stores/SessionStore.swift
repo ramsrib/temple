@@ -65,6 +65,21 @@ public extension IncrementalSessionStore {
 
 }
 
+/// Transcript facts alongside the legacy session API. Existing store conformers
+/// need not synthesize facts from their presentation values.
+public protocol TranscriptSummaryStore: IncrementalSessionStore {
+    func loadSummaries() -> [TranscriptSummary]
+    func loadSummary(at fileURL: URL) -> TranscriptSummary?
+    func catalogSummaryParser() -> @Sendable (URL) -> TranscriptSummary?
+}
+
+public extension TranscriptSummaryStore {
+    func catalogSummaryParser() -> @Sendable (URL) -> TranscriptSummary? {
+        let store = self
+        return { store.loadSummary(at: $0) }
+    }
+}
+
 /// Lexical aliases, preserving case and requiring no access to an event leaf.
 enum SessionPaths {
     static func normalized(_ path: String) -> String {
@@ -212,5 +227,23 @@ final class SessionCollector: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return sessions
+    }
+}
+
+/// Locked sink for parallel transcript parsing.
+final class TranscriptSummaryCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var summaries: [TranscriptSummary] = []
+
+    func append(_ summary: TranscriptSummary) {
+        lock.lock()
+        summaries.append(summary)
+        lock.unlock()
+    }
+
+    func result() -> [TranscriptSummary] {
+        lock.lock()
+        defer { lock.unlock() }
+        return summaries
     }
 }

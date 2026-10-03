@@ -51,6 +51,31 @@ public struct AgentSession: Codable, Identifiable, Hashable, Sendable {
         self.originator = originator
     }
 
+    /// Adapts transcript facts and display hints to the legacy index values.
+    public init(summary: TranscriptSummary) {
+        self.init(summary: summary, title: nil)
+    }
+
+    /// Shared Codex titles belong to the compatibility path, not transcript facts.
+    init(summary: TranscriptSummary, title: String?) {
+        self.init(
+            id: summary.id,
+            agent: summary.agent,
+            projectPath: summary.cwd ?? summary.directoryHint ?? "(unknown)",
+            title: title ?? summary.recordedTitle ?? summary.legacyTitleHint
+                ?? summary.firstPrompt ?? summary.laterPromptHint
+                ?? (summary.agent == .claude ? "(untitled)" : "(no prompt)"),
+            createdAt: summary.createdAt,
+            updatedAt: summary.modifiedAt,
+            filePath: summary.locator.localURL ?? URL(fileURLWithPath: summary.locator.path),
+            messageCount: summary.messageCount,
+            model: summary.model,
+            lastMessagePreview: summary.lastMessagePreview,
+            gitBranch: summary.gitBranch,
+            originator: summary.originator
+        )
+    }
+
     /// Decodes caches defensively so additive model evolution can preserve old
     /// snapshots instead of making startup depend on a cache migration.
     public init(from decoder: any Decoder) throws {

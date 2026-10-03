@@ -3,7 +3,7 @@ import Foundation
 
 /// Reads Claude Code sessions from `~/.claude/projects/<encoded-cwd>/<id>.jsonl`.
 /// See SESSION-FORMATS.md.
-public struct ClaudeSessionStore: IncrementalSessionStore {
+public struct ClaudeSessionStore: TranscriptSummaryStore {
     public let agent: Agent = .claude
     private let root: URL
 
@@ -19,10 +19,14 @@ public struct ClaudeSessionStore: IncrementalSessionStore {
     public var watchedURLs: [URL] { [root] }
 
     public func loadSessions() -> [AgentSession] {
+        loadSummaries().map { AgentSession(summary: $0) }
+    }
+
+    public func loadSummaries() -> [TranscriptSummary] {
         let files = sessionFileURLs()
-        let collector = SessionCollector()
+        let collector = TranscriptSummaryCollector()
         DispatchQueue.concurrentPerform(iterations: files.count) { index in
-            if let session = loadSession(at: files[index]) {
+            if let session = loadSummary(at: files[index]) {
                 collector.append(session)
             }
         }
@@ -66,10 +70,14 @@ public struct ClaudeSessionStore: IncrementalSessionStore {
     }
 
     public func loadSession(at fileURL: URL) -> AgentSession? {
+        loadSummary(at: fileURL).map { AgentSession(summary: $0) }
+    }
+
+    public func loadSummary(at fileURL: URL) -> TranscriptSummary? {
         parse(file: fileURL, encodedDirName: fileURL.deletingLastPathComponent().lastPathComponent)
     }
 
-    private func parse(file: URL, encodedDirName: String) -> AgentSession? {
+    private func parse(file: URL, encodedDirName: String) -> TranscriptSummary? {
         let id = file.deletingPathExtension().lastPathComponent
         let signature = StoreIO.fileSignature(file)
         guard let segments = StoreIO.boundedSegments(file, fileSize: signature?.fileSize),
@@ -79,7 +87,8 @@ public struct ClaudeSessionStore: IncrementalSessionStore {
         var createdAt: Date?
         var humanTitle: String?   // first real human prompt
         var anyUserTitle: String? // first user text of any kind (fallback)
-        var queuedTitle: String?
+        var topLevelTitle: String? // legacy fallback from any record
+        var queuedPrompt: String?
         var validTypedLine = false
         var count = 0
         var model: String?
@@ -96,8 +105,12 @@ public struct ClaudeSessionStore: IncrementalSessionStore {
                 if createdAt == nil, let value = obj["timestamp"] as? String {
                     createdAt = StoreIO.parseDate(value)
                 }
-                if queuedTitle == nil, let value = obj["content"] as? String, !value.isEmpty {
-                    queuedTitle = value
+                if let value = obj["content"] as? String, !value.isEmpty {
+                    if topLevelTitle == nil { topLevelTitle = value }
+                    if queuedPrompt == nil, type == "queue-operation",
+                       (obj["operation"] as? String) == "enqueue" {
+                        queuedPrompt = value
+                    }
                 }
                 if type == "user" || type == "assistant" {
                     count += 1
@@ -123,22 +136,26 @@ public struct ClaudeSessionStore: IncrementalSessionStore {
         }
         guard validTypedLine else { return nil }
 
-        // Fallbacks: any user text, then a queued prompt; lossy dir-name for cwd.
-        let title = humanTitle ?? anyUserTitle ?? queuedTitle
-        let projectPath = cwd ?? Self.decodeDirName(encodedDirName)
+        // Synthetic user messages and arbitrary top-level content can title the
+        // legacy index, but only human messages and enqueues state a prompt.
+        let firstPrompt = humanTitle ?? queuedPrompt
+        let legacyTitle = humanTitle ?? anyUserTitle ?? topLevelTitle
 
-        return AgentSession(
+        return TranscriptSummary(
             id: id,
             agent: .claude,
-            projectPath: projectPath,
-            title: summary ?? title.map { StoreIO.cleanTitle($0) } ?? "(untitled)",
+            locator: TranscriptLocator(localURL: file),
+            modifiedAt: signature?.modificationDate ?? StoreIO.modificationDate(file),
+            cwd: cwd,
+            firstPrompt: firstPrompt.map { StoreIO.cleanTitle($0) },
             createdAt: createdAt,
-            updatedAt: signature?.modificationDate ?? StoreIO.modificationDate(file),
-            filePath: file,
-            messageCount: count > 0 ? count : nil,
+            gitBranch: branch,
             model: model,
+            messageCount: count > 0 ? count : nil,
             lastMessagePreview: preview,
-            gitBranch: branch
+            recordedTitle: summary,
+            directoryHint: cwd == nil ? Self.decodeDirName(encodedDirName) : nil,
+            legacyTitleHint: legacyTitle.map { StoreIO.cleanTitle($0) }
         )
     }
 

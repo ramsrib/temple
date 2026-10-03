@@ -3,7 +3,7 @@ import Foundation
 
 /// Reads Codex sessions from `~/.codex/sessions/**/rollout-*.jsonl`, titling them
 /// from `~/.codex/history.jsonl`. See SESSION-FORMATS.md.
-public struct CodexSessionStore: IncrementalSessionStore {
+public struct CodexSessionStore: TranscriptSummaryStore {
     public let agent: Agent = .codex
     let sessionsRoot: URL
     private let historyFile: URL
@@ -37,11 +37,26 @@ public struct CodexSessionStore: IncrementalSessionStore {
         let files = sessionFileURLs()
         let collector = SessionCollector()
         DispatchQueue.concurrentPerform(iterations: files.count) { index in
-            if let session = parse(file: files[index], titles: titles) {
+            if let session = parseSession(file: files[index], titles: titles) {
                 collector.append(session)
             }
         }
         return collector.result()
+    }
+
+    public func loadSummaries() -> [TranscriptSummary] {
+        let files = sessionFileURLs()
+        let collector = TranscriptSummaryCollector()
+        DispatchQueue.concurrentPerform(iterations: files.count) { index in
+            if let summary = loadSummary(at: files[index]) {
+                collector.append(summary)
+            }
+        }
+        return collector.result()
+    }
+
+    public func loadSummary(at fileURL: URL) -> TranscriptSummary? {
+        parse(file: fileURL)
     }
 
     public func sessionFileURLs() -> [URL] { (try? enumerateSessionFiles()) ?? [] }
@@ -130,7 +145,9 @@ public struct CodexSessionStore: IncrementalSessionStore {
 
     /// The engine retains the rollout-derived title separately, so deleting a
     /// shared title can restore it without reading the transcript again.
-    public func loadTranscript(at url: URL) -> AgentSession? { parse(file: url, titles: [:]) }
+    public func loadTranscript(at url: URL) -> AgentSession? {
+        loadSummary(at: url).map { AgentSession(summary: $0) }
+    }
 
     /// A thread spawned by another agent (`source.subagent.thread_spawn`, with
     /// the parent in `parent_thread_id`) has a rollout of its own, but it is
@@ -142,7 +159,7 @@ public struct CodexSessionStore: IncrementalSessionStore {
     }
 
     public func loadSession(at fileURL: URL) -> AgentSession? {
-        parse(file: fileURL, titles: loadTitles())
+        parseSession(file: fileURL, titles: loadTitles())
     }
 
     /// `loadSession(at:)` rereads both title files per call; a full-disk read
@@ -150,10 +167,15 @@ public struct CodexSessionStore: IncrementalSessionStore {
     public func catalogParser() -> @Sendable (URL) -> AgentSession? {
         let titles = loadTitles()
         let store = self
-        return { store.parse(file: $0, titles: titles) }
+        return { store.parseSession(file: $0, titles: titles) }
     }
 
-    private func parse(file: URL, titles: [String: String]) -> AgentSession? {
+    private func parseSession(file: URL, titles: [String: String]) -> AgentSession? {
+        guard let summary = parse(file: file, sharedTitles: titles) else { return nil }
+        return AgentSession(summary: summary, title: titles[summary.id])
+    }
+
+    private func parse(file: URL, sharedTitles: [String: String] = [:]) -> TranscriptSummary? {
         let signature = StoreIO.fileSignature(file)
         guard let segments = StoreIO.boundedSegments(file, fileSize: signature?.fileSize),
               let head = segments.first,
@@ -169,7 +191,7 @@ public struct CodexSessionStore: IncrementalSessionStore {
               !id.isEmpty
         else { return nil }
 
-        let cwd = (payload["cwd"] as? String) ?? "(unknown)"
+        let cwd = payload["cwd"] as? String
         let createdAt = StoreIO.parseDate(
             (payload["timestamp"] as? String) ?? (firstObject["timestamp"] as? String))
         var count = 0
@@ -224,23 +246,24 @@ public struct CodexSessionStore: IncrementalSessionStore {
         // instruction blobs — routinely past the 64 KB head window — so when
         // nothing recorded a title, pay for one wider read to find it. Past
         // even that cap, a later prompt from the tail beats "(no prompt)".
-        if titles[id] == nil, fallbackTitle == nil {
-            fallbackTitle = Self.firstUserMessage(in: file) ?? tailFallbackTitle
+        if sharedTitles[id] == nil, fallbackTitle == nil {
+            fallbackTitle = Self.firstUserMessage(in: file)
         }
 
-        return AgentSession(
+        return TranscriptSummary(
             id: id,
             agent: .codex,
-            projectPath: cwd,
-            title: titles[id] ?? fallbackTitle ?? "(no prompt)",
+            locator: TranscriptLocator(localURL: file),
+            modifiedAt: signature?.modificationDate ?? StoreIO.modificationDate(file),
+            cwd: cwd,
+            firstPrompt: fallbackTitle,
             createdAt: createdAt,
-            updatedAt: signature?.modificationDate ?? StoreIO.modificationDate(file),
-            filePath: file,
-            messageCount: count > 0 ? count : nil,
-            model: model,
-            lastMessagePreview: preview,
             gitBranch: branch,
-            originator: payload["originator"] as? String
+            model: model,
+            messageCount: count > 0 ? count : nil,
+            lastMessagePreview: preview,
+            originator: payload["originator"] as? String,
+            laterPromptHint: tailFallbackTitle
         )
     }
 
