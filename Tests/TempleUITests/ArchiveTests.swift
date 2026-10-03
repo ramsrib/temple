@@ -315,7 +315,7 @@ final class ArchiveTests: XCTestCase {
         let (model, overlay) = makeModel(index)
         model.moveProject("/p/b", before: "/p/a")
 
-        overlay.join("n1", via: .created)
+        overlay.join("n1", via: .created, agent: .claude, core: SessionCore(directory: "/p/new", title: "Title", lastActiveAt: Date(timeIntervalSince1970: 50)))
         model.index = SessionIndex(projects: index.projects + [
             Project(path: "/p/new", sessions: [Fixture.session("n1", project: "/p/new", updated: 50)]),
         ])

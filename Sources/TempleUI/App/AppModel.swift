@@ -47,7 +47,41 @@ public final class AppModel: ObservableObject {
         if next != sessions { sessions = next }
         let projects = SessionRowProject.grouping(next)
         if projects != rowProjects { rowProjects = projects }
+        extendRowRanks()
     }
+    private var rowProjectRank: [ProjectKey: Int] = [:]
+    private var rowSessionRank: [ProjectKey: [String: Int]] = [:]
+
+    private func extendRowRanks() {
+        let keys = rowProjects.map(\.key).filter { rowProjectRank[$0] == nil }
+        for key in rowProjectRank.keys { rowProjectRank[key]! += keys.count }
+        for (offset, key) in keys.enumerated() { rowProjectRank[key] = offset }
+        for project in rowProjects {
+            var ranks = rowSessionRank[project.key] ?? [:]
+            let ids = project.sessions.map(\.id).filter { ranks[$0] == nil }
+            for id in ranks.keys { ranks[id]! += ids.count }
+            for (offset, id) in ids.enumerated() { ranks[id] = offset }
+            rowSessionRank[project.key] = ranks
+        }
+    }
+
+    public var visibleRows: [Session] {
+        sessions.filter { !$0.state.archived && !($0.project.map { overlay.isProjectArchived($0.path) } ?? false) }
+    }
+    public var visibleRowProjects: [SessionRowProject] { SessionRowProject.grouping(visibleRows) }
+
+    private func orderedRowProjects(_ projects: [SessionRowProject]) -> [SessionRowProject] {
+        let placement = Dictionary(overlay.projectOrder.enumerated().map { (ProjectKey(host: .local, path: $0.element), $0.offset) }, uniquingKeysWith: { first, _ in first })
+        return projects.sorted { lhs, rhs in
+            switch (placement[lhs.key], placement[rhs.key]) {
+            case (nil, nil): return (rowProjectRank[lhs.key] ?? .max) < (rowProjectRank[rhs.key] ?? .max)
+            case (nil, .some): return true
+            case (.some, nil): return false
+            case (.some(let l), .some(let r)): return l < r
+            }
+        }
+    }
+
     @Published public var index = SessionIndex(projects: []) {
         didSet {
             recomputeNoise()
@@ -635,6 +669,9 @@ public final class AppModel: ObservableObject {
 
     // MARK: Sidebar data (U1)
 
+    public func displayTitle(_ session: Session) -> String { session.displayTitle }
+    public func resumeArgv(for session: Session) -> [String] { SessionLauncher.resumeArgv(session) }
+
     public func displayTitle(_ session: AgentSession) -> String {
         overlay.displayTitle(for: session)
     }
@@ -733,13 +770,14 @@ public final class AppModel: ObservableObject {
 
     /// Projects for the sidebar (in-memory search over the cached non-noise
     /// set), sessions in the launch-frozen order — not live recency.
-    public var displayProjects: [Project] {
-        sortedByManualOrder(visibleProjects.compactMap { project -> Project? in
-            var sessions = project.sessions.filter(matches)
-            if let ranks = frozenSessionRank[project.path] {
-                sessions.sort { (ranks[$0.id] ?? .max) < (ranks[$1.id] ?? .max) }
+    public var displayProjects: [SessionRowProject] {
+        let q = searchText.trimmingCharacters(in: .whitespaces)
+        return orderedRowProjects(visibleRowProjects.compactMap { project in
+            var rows = project.sessions.filter { q.isEmpty || $0.displayTitle.localizedCaseInsensitiveContains(q) }
+            if let ranks = rowSessionRank[project.key] {
+                rows.sort { (ranks[$0.id] ?? .max) < (ranks[$1.id] ?? .max) }
             }
-            return sessions.isEmpty ? nil : Project(path: project.path, sessions: sessions)
+            return rows.isEmpty ? nil : SessionRowProject(key: project.key, sessions: rows)
         })
     }
 
@@ -748,7 +786,7 @@ public final class AppModel: ObservableObject {
     /// hides half the rail must not persist an order derived from that
     /// half-list.
     public var orderedVisibleProjectPaths: [String] {
-        sortedByManualOrder(visibleProjects).map(\.path)
+        orderedRowProjects(visibleRowProjects).filter { $0.key.host.isLocal }.map(\.path)
     }
 
     /// The project header being dragged, from grab to drop. Drop targets read
@@ -841,13 +879,13 @@ public final class AppModel: ObservableObject {
 
     /// Projects rendered in the collapsed sidebar. Search bypasses the cap, and
     /// an active project outside it is appended so an opened session stays visible.
-    public var cappedDisplayProjects: [Project] { capped(displayProjects) }
+    public var cappedDisplayProjects: [SessionRowProject] { capped(displayProjects) }
 
     /// Cap applied to an already-computed `displayProjects` — the sidebar body
     /// computes that list ONCE and derives everything from it, because each
     /// `displayProjects` access refilters and resorts every session and view
     /// bodies re-evaluate on every publish.
-    public func capped(_ all: [Project]) -> [Project] {
+    public func capped(_ all: [SessionRowProject]) -> [SessionRowProject] {
         guard searchText.trimmingCharacters(in: .whitespaces).isEmpty else {
             return all
         }
@@ -863,22 +901,18 @@ public final class AppModel: ObservableObject {
     /// Number of projects hidden by the default cap; search always reports zero.
     public var hiddenProjectsCount: Int { hiddenCount(displayProjects) }
 
-    public func hiddenCount(_ all: [Project]) -> Int {
+    public func hiddenCount(_ all: [SessionRowProject]) -> Int {
         guard searchText.trimmingCharacters(in: .whitespaces).isEmpty else { return 0 }
         return max(0, all.count - Self.projectCap)
     }
 
     /// Pinned section: user-pinned sessions, search filtered (pins are in-memory).
-    public var pinnedSessions: [AgentSession] {
-        visibleProjects
-            .flatMap(\.sessions)
-            .filter { overlay.isPinned($0.id) && matches($0) }
-            .sorted { $0.updatedAt > $1.updatedAt }
+    public var pinnedSessions: [Session] {
+        let q = searchText.trimmingCharacters(in: .whitespaces)
+        return visibleRows.filter { $0.project != nil && $0.state.pinned && (q.isEmpty || $0.displayTitle.localizedCaseInsensitiveContains(q)) }
     }
 
-    /// The flat, ordered list of sessions the sidebar renders (for arrow-key
-    /// highlight movement). Pinned first, then per project.
-    public var highlightableSessions: [AgentSession] {
+    public var highlightableSessions: [Session] {
         pinnedSessions + displayProjects.flatMap(\.sessions)
     }
 

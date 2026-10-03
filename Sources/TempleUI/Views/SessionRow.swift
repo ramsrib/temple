@@ -7,7 +7,7 @@ import TempleCore
 struct SessionRow: View {
     @Environment(\.undoManager) private var undoManager
     @EnvironmentObject var model: AppModel
-    let session: AgentSession
+    let session: Session
 
     @State private var renaming = false
     @State private var draftName = ""
@@ -36,8 +36,10 @@ struct SessionRow: View {
                 // colour is what gives a dense list its rhythm (Finder's
                 // sidebar works the same way). Full strength only where the
                 // session is open or under the pointer, so open tabs stand out.
-                AgentBadge(agent: session.agent, size: 13)
-                    .opacity(openTab != nil || hovering ? 1 : 0.55)
+                if let agent = session.agent {
+                    AgentBadge(agent: agent, size: 13)
+                        .opacity(openTab != nil || hovering ? 1 : 0.55)
+                }
                 Text(model.displayTitle(session))
                     // Medium on the highlighted row — the same "you are here"
                     // weight the active tab chip carries.
@@ -136,8 +138,10 @@ struct SessionRow: View {
             copyToPasteboard(model.resumeArgv(for: session).joined(separator: " "))
         }
         Button("Copy session ID") { copyToPasteboard(session.id) }
-        Button("Reveal session file in Finder") {
-            NSWorkspace.shared.activateFileViewerSelecting([session.filePath])
+        if let url = session.transcript?.localURL {
+            Button("Reveal session file in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
         }
         if let tab = openTab {
             Divider()

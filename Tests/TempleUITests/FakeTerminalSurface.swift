@@ -165,6 +165,23 @@ enum Fixture {
                      filePath: URL(fileURLWithPath: "/tmp/\(id).jsonl"))
     }
 
+    static func row(_ id: String, agent: Agent? = .claude, project: String? = nil,
+                    title: String = "Title", updated: TimeInterval = 0, host: HostID = .local) -> Session {
+        Session(state: SessionState(id: id, pinned: false, archived: false, customName: nil,
+            color: nil, generatedTitle: nil, lastOpenedAt: nil, joinedVia: .imported,
+            joinedAt: nil, agent: agent, host: host, directory: project,
+            directorySource: project == nil ? nil : .tab, title: title,
+            lastActiveAt: Date(timeIntervalSince1970: updated)))
+    }
+
+    static func join(_ rows: [Session], to database: TempleDB) {
+        for row in rows {
+            try! database.join(sessionID: row.id, via: .imported, agent: row.agent,
+                core: SessionCore(host: row.host, directory: row.directory,
+                    directorySource: row.state.directorySource, title: row.state.title, lastActiveAt: row.sortDate))
+        }
+    }
+
     /// An isolated defaults object that never reaches the disk.
     static func uniqueDefaults() -> UserDefaults { InMemoryDefaults() }
 

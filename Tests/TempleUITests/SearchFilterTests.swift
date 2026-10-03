@@ -89,48 +89,43 @@ final class SearchFilterTests: XCTestCase {
         return (model, overlay)
     }
 
+    private func makeRowModel(_ rows: [Session]) -> (AppModel, SessionOverlayStore) {
+        let db = try! TempleDB.inMemory()
+        Fixture.join(rows, to: db)
+        let overlay = SessionOverlayStore(db: db)
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+            indexSource: FakeIndexSource(SessionIndex(projects: [])), database: db,
+            settings: SettingsStore(defaults: Fixture.uniqueDefaults()), overlay: overlay)
+        return (model, overlay)
+    }
+
     func testDisplayProjectsAppliesSearch() {
-        let index = SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [
-                Fixture.session("1", project: "/p/a", title: "Analyze setup"),
-                Fixture.session("2", project: "/p/a", title: "Inspect logs"),
-            ]),
-        ])
-        let (model, _) = makeAppModel(index)
+        let (model, _) = makeRowModel([
+            Fixture.row("1", project: "/p/a", title: "Analyze setup"),
+            Fixture.row("2", project: "/p/a", title: "Inspect logs")])
         model.searchText = "analyze"
-        XCTAssertEqual(model.displayProjects.flatMap { $0.sessions }.map(\.id), ["1"])
+        XCTAssertEqual(model.displayProjects.flatMap(\.sessions).map(\.id), ["1"])
     }
 
     func testPinnedSectionReflectsOverlay() {
-        let index = SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [Fixture.session("1", project: "/p/a", title: "T")]),
-        ])
-        let (model, overlay) = makeAppModel(index)
+        let (model, overlay) = makeRowModel([Fixture.row("1", project: "/p/a", title: "T")])
         XCTAssertTrue(model.pinnedSessions.isEmpty)
         overlay.togglePin("1")
         XCTAssertEqual(model.pinnedSessions.map(\.id), ["1"])
     }
 
     func testCustomNameOverridesTitle() {
-        let index = SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [Fixture.session("1", project: "/p/a", title: "Original")]),
-        ])
-        let (model, overlay) = makeAppModel(index)
+        let (model, overlay) = makeRowModel([Fixture.row("1", project: "/p/a", title: "Original")])
         overlay.rename("1", to: "My name")
-        XCTAssertEqual(model.displayTitle(index.allSessions[0]), "My name")
+        XCTAssertEqual(model.displayProjects.first?.sessions.first?.displayTitle, "My name")
     }
 
-    func testNoiseFilterHidesNoisySessionsUnlessShown() {
-        let index = SessionIndex(projects: [
-            Project(path: "/", sessions: [Fixture.session("noise", project: "/", title: "ambient")]),
-            Project(path: NSTemporaryDirectory(), sessions: [
-                Fixture.session("real", project: NSTemporaryDirectory(), title: "real"),
-            ]),
-        ])
-        let (model, _) = makeAppModel(index, noise: DefaultNoiseFilter())
-        XCTAssertEqual(model.displayProjects.flatMap { $0.sessions }.map(\.id), ["real"])
+    func testNoiseNeverHidesAMember() {
+        let (model, _) = makeRowModel([Fixture.row("noise", project: "/", title: "ambient"),
+            Fixture.row("real", project: NSTemporaryDirectory(), title: "real")])
+        XCTAssertEqual(Set(model.displayProjects.flatMap(\.sessions).map(\.id)), ["noise", "real"])
         model.showNoise = true
-        XCTAssertEqual(Set(model.displayProjects.flatMap { $0.sessions }.map(\.id)), ["noise", "real"])
+        XCTAssertEqual(Set(model.displayProjects.flatMap(\.sessions).map(\.id)), ["noise", "real"])
     }
 
     func testPaletteRanksAcrossAllProjects() {
@@ -313,7 +308,7 @@ final class SearchFilterTests: XCTestCase {
 
         // A genuinely new project surfaces at the top; existing ones stay put.
         let c = Project(path: "/p/c", sessions: [Fixture.session("c1", project: "/p/c")])
-        overlay.join("c1", via: .created)
+        overlay.join("c1", via: .created, agent: .claude, core: SessionCore(directory: "/p/c", title: "Title"))
         model.index = SessionIndex(projects: [c, b, a])
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/c", "/p/a", "/p/b"])
     }
@@ -335,7 +330,7 @@ final class SearchFilterTests: XCTestCase {
 
         // A brand-new session prepends at the top (fresh), others stay put.
         let s3 = Fixture.session("s3", project: "/p/a")
-        overlay.join("s3", via: .created)
+        overlay.join("s3", via: .created, agent: .claude, core: SessionCore(directory: "/p/a", title: "Title"))
         model.index = SessionIndex(projects: [
             Project(path: "/p/a", sessions: [s3, s2, s1]),
         ])

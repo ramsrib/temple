@@ -598,7 +598,7 @@ private struct FooterGearMenu: NSViewRepresentable {
 private struct ProjectDisclosure: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.undoManager) private var undoManager
-    let project: Project
+    let project: SessionRowProject
     /// Only the dev-only fold hook reads this.
     var isFirst = false
     @State private var expanded = true
@@ -612,7 +612,7 @@ private struct ProjectDisclosure: View {
     private static let collapsedLimit = 6
     private static let batch = 10
 
-    private var shownSessions: [AgentSession] {
+    private var shownSessions: [Session] {
         Array(project.sessions.prefix(limit))
     }
 

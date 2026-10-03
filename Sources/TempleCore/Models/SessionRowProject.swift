@@ -4,6 +4,9 @@ import Foundation
 public struct SessionRowProject: Identifiable, Equatable, Sendable {
     public let key: ProjectKey
     public let sessions: [Session]
+    public init(key: ProjectKey, sessions: [Session]) { self.key = key; self.sessions = sessions }
+    public var path: String { key.path }
+    public var name: String { key.displayName }
     public var id: ProjectKey { key }
     public var lastActivity: Date { sessions.map(\.sortDate).max() ?? .distantPast }
 

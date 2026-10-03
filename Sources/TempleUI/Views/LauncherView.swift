@@ -15,7 +15,7 @@ struct LauncherView: View {
     private var recentProjects: [Project] {
         // Noise-filtered + launch-frozen order (raw index.projects would leak
         // ambient noise like the cwd="/" codex runs into the home page).
-        Array(model.displayProjects.prefix(recentLimit))
+        Array(model.visibleProjects.prefix(recentLimit))
     }
 
     var body: some View {

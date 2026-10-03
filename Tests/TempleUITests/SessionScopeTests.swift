@@ -336,7 +336,10 @@ final class SessionScopeTests: XCTestCase {
 
     private func database(touching ids: [String]) -> TempleDB {
         let database = try! TempleDB.inMemory()
-        for id in ids { try! database.join(sessionID: id, via: .opened) }
+        for id in ids {
+            let row = Fixture.row(id, project: "/p/temple", title: "Temple one", updated: 40)
+            Fixture.join([row], to: database)
+        }
         return database
     }
 
@@ -373,6 +376,8 @@ final class SessionScopeTests: XCTestCase {
 
         let outside = try XCTUnwrap(mixedIndex().allSessions.first { $0.id == "o1" })
         model.openSessions.openSession(outside)
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: [:],
+            summaries: ["o1": summary("o1", cwd: "/p/outside", prompt: "Outside one", time: 50)]))
 
         XCTAssertEqual(model.displayProjects.flatMap(\.sessions).map(\.id), ["o1"])
         // A relaunch reads it back from the DB.
@@ -422,6 +427,7 @@ final class SessionScopeTests: XCTestCase {
     func testExplicitImportMakesAnOutsideSessionTemples() {
         let database = database(touching: ["t1"])
         let (model, overlay) = makeModel(mixedIndex(), database: database)
+        overlay.join("o1", via: .imported, agent: .claude, core: SessionCore(directory: "/p/outside", directorySource: .transcript, title: "Outside one", lastActiveAt: Date(timeIntervalSince1970: 50)))
         overlay.togglePin("o1")
 
         XCTAssertEqual(model.pinnedSessions.map(\.id), ["o1"])
