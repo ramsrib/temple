@@ -22,7 +22,7 @@ public enum HistoryScope: String, CaseIterable, Identifiable, Sendable {
 /// filters, selection, the import in flight).
 ///
 /// The live index holds Temple's sessions only (ADR-027), so this reads the
-/// disk itself, through `SessionCatalog`, when the tab is shown and on
+/// disk itself, through the host catalog, when the tab is shown and on
 /// Refresh — never watched. The tab's view state lives as long as the tab:
 /// `reset()` runs when it closes. Filters are a question, not a setting, and
 /// are never persisted.
@@ -92,7 +92,7 @@ public final class HistoryModel: ObservableObject {
     private let pathExists: @Sendable (String) -> Bool
     private let now: () -> Date
     /// The full-disk read. Replaceable so tests feed events by hand.
-    var catalog: () -> AsyncStream<SessionCatalog.Event>
+    var catalog: () -> AsyncStream<CatalogBatch>
     /// Open (or focus) a session in a tab. Opening an outside session joins it
     /// as `opened` on the way (ADR-023).
     var openSession: (TranscriptSummary) -> Void = { _ in }
@@ -204,7 +204,7 @@ public final class HistoryModel: ObservableObject {
     var queryDebounce: TimeInterval = 0.12
 
     init(overlay: SessionOverlayStore,
-         catalog: @escaping () -> AsyncStream<SessionCatalog.Event> = { SessionCatalog().stream() },
+         catalog: @escaping () -> AsyncStream<CatalogBatch> = { HostRegistry().catalog() },
          pathExists: @escaping @Sendable (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
          now: @escaping () -> Date = Date.init) {
         self.overlay = overlay

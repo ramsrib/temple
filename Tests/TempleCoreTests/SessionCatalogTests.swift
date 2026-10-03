@@ -1,11 +1,11 @@
 import XCTest
 @testable import TempleCore
 
-/// The History tab reads the whole disk through `SessionCatalog.stream`: rows
+/// The History tab reads the whole disk through `LocalSessionCatalog.stream`: rows
 /// must arrive newest first, a batch at a time, with a total to count against,
 /// a failed store named rather than silently missing, and a read that stops
 /// when nobody is listening any more.
-final class SessionCatalogTests: XCTestCase {
+final class LocalSessionCatalogTests: XCTestCase {
     private var roots: [URL] = []
 
     override func tearDown() {
@@ -31,8 +31,8 @@ final class SessionCatalogTests: XCTestCase {
         return root
     }
 
-    private func collect(_ stream: AsyncStream<SessionCatalog.Event>) async -> [SessionCatalog.Event] {
-        var events: [SessionCatalog.Event] = []
+    private func collect(_ stream: AsyncStream<CatalogBatch>) async -> [CatalogBatch] {
+        var events: [CatalogBatch] = []
         for await event in stream { events.append(event) }
         return events
     }
@@ -42,7 +42,7 @@ final class SessionCatalogTests: XCTestCase {
             ("old", "a", 300), ("newest", "b", 10), ("middle", "a", 100),
             ("older", "b", 200), ("new", "a", 50),
         ])
-        let catalog = SessionCatalog(stores: [ClaudeSessionStore(root: root)])
+        let catalog = LocalSessionCatalog(stores: [ClaudeSessionStore(root: root)])
 
         let events = await collect(catalog.stream(batchSize: 2))
 
@@ -60,7 +60,7 @@ final class SessionCatalogTests: XCTestCase {
 
     func testAFailedStoreIsNamedAndTheOthersStillArrive() async throws {
         let root = try claudeRoot([("kept", "a", 10)])
-        let catalog = SessionCatalog(stores: [ClaudeSessionStore(root: root), FailingStore()])
+        let catalog = LocalSessionCatalog(stores: [ClaudeSessionStore(root: root), FailingStore()])
 
         let events = await collect(catalog.stream())
 
@@ -75,7 +75,7 @@ final class SessionCatalogTests: XCTestCase {
     func testEmptyDiskListsZeroAndFinishes() async {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("temple-catalog-missing-\(UUID().uuidString)")
-        let events = await collect(SessionCatalog(stores: [ClaudeSessionStore(root: missing)]).stream())
+        let events = await collect(LocalSessionCatalog(stores: [ClaudeSessionStore(root: missing)]).stream())
         XCTAssertEqual(events, [.listed(total: 0)])
     }
 
@@ -86,7 +86,7 @@ final class SessionCatalogTests: XCTestCase {
         let firstBatch = expectation(description: "first batch")
         let consumer = Task {
             var fulfilled = false
-            for await event in SessionCatalog(stores: [store]).stream(batchSize: 1) {
+            for await event in LocalSessionCatalog(stores: [store]).stream(batchSize: 1) {
                 if case .sessions = event, !fulfilled { fulfilled = true; firstBatch.fulfill() }
             }
         }

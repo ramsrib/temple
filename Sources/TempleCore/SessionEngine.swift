@@ -21,6 +21,7 @@ public final class SessionEngine: @unchecked Sendable {
     private var running = false
     private var changesTask: Task<Void, Never>?
     private var workTask: Task<Void, Never>?
+    private var workTasks: [UUID: Task<Void, Never>] = [:]
     private var observers: [UUID: AsyncStream<EngineSnapshot>.Continuation] = [:]
     private var stateObservers: [UUID: AsyncStream<[String: MemberResolution]>.Continuation] = [:]
     private var startContinuation: AsyncStream<EngineSnapshot>.Continuation?
@@ -32,15 +33,16 @@ public final class SessionEngine: @unchecked Sendable {
 
     public init(source: any HostSessionSource, database: TempleDB? = nil, members: Set<String> = []) {
         self.source = source; self.database = database; self.initialMembers = members
-        joins = database?.observeJoins { [weak self] id, awaiting in
+        joins = database?.observeJoins { [weak self = self] id, awaiting in
             self?.resolveRequest(id, awaitingCreation: awaiting, explicit: false)
         }
-        leaves = database?.observeLeaves { [weak self] id in self?.forgetMember(id) }
+        leaves = database?.observeLeaves { [weak self = self] id in self?.forgetMember(id) }
     }
     deinit {
         if let joins { database?.removeJoinObserver(joins) }
         if let leaves { database?.removeLeaveObserver(leaves) }
         changesTask?.cancel(); workTask?.cancel()
+        workTasks.values.forEach { $0.cancel() }
         adoptionTasks.values.forEach { $0.cancel() }
     }
     public func resolution(for id: String) -> MemberResolution? {
@@ -58,8 +60,8 @@ public final class SessionEngine: @unchecked Sendable {
     public func snapshots() -> AsyncStream<EngineSnapshot> {
         let token = UUID()
         return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
-            continuation.onTermination = { [weak self] _ in
-                self?.queue.async { [weak self] in self?.observers.removeValue(forKey: token) }
+            continuation.onTermination = { [weak self = self] _ in
+                self?.queue.async { [weak self = self] in self?.observers.removeValue(forKey: token) }
             }
             queue.async {
                 self.observers[token] = continuation
@@ -70,8 +72,8 @@ public final class SessionEngine: @unchecked Sendable {
     public func resolutionUpdates() -> AsyncStream<[String: MemberResolution]> {
         let token = UUID()
         return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
-            continuation.onTermination = { [weak self] _ in
-                self?.queue.async { [weak self] in self?.stateObservers.removeValue(forKey: token) }
+            continuation.onTermination = { [weak self = self] _ in
+                self?.queue.async { [weak self = self] in self?.stateObservers.removeValue(forKey: token) }
             }
             queue.async { self.stateObservers[token] = continuation; continuation.yield(self.states) }
         }
@@ -79,8 +81,8 @@ public final class SessionEngine: @unchecked Sendable {
     public func start() -> AsyncStream<EngineSnapshot> {
         let token = UUID()
         return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
-            continuation.onTermination = { [weak self] _ in
-                self?.queue.async { [weak self] in
+            continuation.onTermination = { [weak self = self] _ in
+                self?.queue.async { [weak self = self] in
                     if self?.runID == token { self?.stopLocked() }
                 }
             }
@@ -95,11 +97,11 @@ public final class SessionEngine: @unchecked Sendable {
                 for id in self.members { self.states[id] = self.awaiting.contains(id) ? .awaitingCreation : .resolving }
                 // changes() arms local observation before the first resolve enumeration.
                 let changes = self.source.changes()
-                self.changesTask = Task { [weak self] in
+                self.changesTask = Task { [weak self = self] in
                     do {
                         for try await change in changes {
                             guard !Task.isCancelled else { break }
-                            self?.queue.async { [weak self] in
+                            self?.queue.async { [weak self = self] in
                                 guard let self, self.running, self.runID == token else { return }
                                 switch change {
                                 case .sessions(let ids): self.enqueueLocked(Set(ids).intersection(self.members))
@@ -112,7 +114,7 @@ public final class SessionEngine: @unchecked Sendable {
                             }
                         }
                     } catch {
-                        self?.queue.async { [weak self] in
+                        self?.queue.async { [weak self = self] in
                             guard let self, self.running, self.runID == token else { return }
                             for id in self.members { self.states[id] = .incomplete; self.summaries.removeValue(forKey: id) }
                             self.publishLocked()
@@ -123,10 +125,11 @@ public final class SessionEngine: @unchecked Sendable {
             }
         }
     }
-    public func stop() { queue.async { [weak self] in self?.stopLocked() } }
+    public func stop() { queue.async { [weak self = self] in self?.stopLocked() } }
     private func stopLocked(preservePrestart: Bool = false) {
         running = false; runID = UUID()
-        changesTask?.cancel(); changesTask = nil; workTask?.cancel(); workTask = nil
+        changesTask?.cancel(); changesTask = nil
+        workTasks.values.forEach { $0.cancel() }; workTasks.removeAll(); workTask = nil
         if !preservePrestart { adoptionTasks.values.forEach { $0.cancel() }; adoptionTasks.removeAll(); awaiting.removeAll() }
         source.release(Array(members)); members.removeAll(); states.removeAll(); summaries.removeAll()
         startContinuation?.finish(); startContinuation = nil
@@ -189,13 +192,15 @@ public final class SessionEngine: @unchecked Sendable {
         }
         let versions = Dictionary(uniqueKeysWithValues: requests.map { ($0.id, revisions[$0.id, default: 0]) })
         let preceding = workTask
-        workTask = Task { [weak self, source] in
+        let operation = UUID()
+        workTask = Task { [weak self = self, source] in
+            defer { self?.queue.async { [weak self = self] in self?.workTasks.removeValue(forKey: operation) } }
             await preceding?.value
             guard !Task.isCancelled else { return }
             do {
                 let batch = try await source.resolve(requests)
                 guard !Task.isCancelled else { return }
-                self?.queue.async { [weak self] in
+                self?.queue.async { [weak self = self] in
                     guard let self, self.running, self.runID == token, batch.generation >= self.generation else { return }
                     self.generation = batch.generation
                     for request in requests where self.members.contains(request.id) && self.revisions[request.id, default: 0] == versions[request.id] {
@@ -215,7 +220,7 @@ public final class SessionEngine: @unchecked Sendable {
                                let agent = summary?.agent ?? request.agent,
                                row.transcriptPath != locator.path || row.agent == nil {
                                 try? database.updateTranscriptHint(sessionID: id, agent: agent,
-                                    path: URL(fileURLWithPath: locator.path))
+                                    locator: locator)
                             }
                         case .absent: self.states[id] = .confirmedAbsent
                         case .awaitingCreation: self.states[id] = .awaitingCreation
@@ -228,7 +233,7 @@ public final class SessionEngine: @unchecked Sendable {
                 }
             } catch {
                 guard !Task.isCancelled else { return }
-                self?.queue.async { [weak self] in
+                self?.queue.async { [weak self = self] in
                     guard let self, self.running, self.runID == token, self.generation <= requestedGeneration else { return }
                     for request in requests where self.members.contains(request.id) && self.revisions[request.id, default: 0] == versions[request.id] {
                         self.states[request.id] = .incomplete; self.summaries.removeValue(forKey: request.id)
@@ -237,6 +242,7 @@ public final class SessionEngine: @unchecked Sendable {
                 }
             }
         }
+        workTasks[operation] = workTask
     }
     private func publishLocked() {
         guard running else { return }
@@ -250,21 +256,75 @@ public final class SessionEngine: @unchecked Sendable {
         observers.values.forEach { $0.yield(next) }
         stateObservers.values.forEach { $0.yield(states) }
     }
+    /// Revalidate catalog facts through the same semantic seam. Temporary interest
+    /// is released only if no committed join acquired the id during the read.
+    public func summaryForImport(_ summary: TranscriptSummary) async -> TranscriptSummary? {
+        guard summary.locator.host == host else { return nil }
+        return await withCheckedContinuation { continuation in
+            queue.async {
+                let preceding = self.workTask
+                let operation = UUID()
+                self.workTask = Task { [weak self = self, source = self.source] in
+                    defer { self?.queue.async { [weak self = self] in self?.workTasks.removeValue(forKey: operation) } }
+                    await preceding?.value
+                    var facts: TranscriptSummary?
+                    if !Task.isCancelled {
+                        let request = ResolutionRequest(id: summary.id, agent: summary.agent, hint: summary.locator,
+                            wanted: [.agent, .directory, .title, .lastActiveAt], explicit: true)
+                        if let batch = try? await source.resolve([request]),
+                           case .loaded(let locator, let result, _) = batch.results[summary.id],
+                           locator.host == summary.locator.host, result?.id == summary.id,
+                           result?.locator.host == summary.locator.host {
+                            facts = result
+                        }
+                    }
+                    let result = Task.isCancelled ? nil : facts
+                    guard let self else { source.release([summary.id]); continuation.resume(returning: nil); return }
+                    self.queue.async {
+                        if !self.members.contains(summary.id) { source.release([summary.id]) }
+                        continuation.resume(returning: result)
+                    }
+                }
+                self.workTasks[operation] = self.workTask
+            }
+        }
+    }
+
     public func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult {
-        try await source.adopt(request)
+        let cancellation = EngineCancellation()
+        let token = UUID()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                queue.async {
+                    guard !cancellation.isCancelled else { continuation.resume(throwing: CancellationError()); return }
+                    self.adoptionTasks[token] = Task { [weak self = self, source = self.source] in
+                        defer { self?.queue.async { [weak self = self] in self?.adoptionTasks.removeValue(forKey: token) } }
+                        do {
+                            let result = try await source.adopt(request)
+                            try Task.checkCancellation()
+                            continuation.resume(returning: result)
+                        } catch { continuation.resume(throwing: error) }
+                    }
+                }
+            }
+        } onCancel: {
+            cancellation.cancel()
+            self.queue.async { self.adoptionTasks[token]?.cancel() }
+        }
     }
     public func registerAdoption(projectPath: String, startedAt: Date, window: TimeInterval = 5,
                                  completion: @escaping @Sendable (CodexRolloutCandidate?) -> Void) {
         let token = UUID()
         queue.async {
-            self.adoptionTasks[token] = Task { [weak self, source = self.source] in
+            self.adoptionTasks[token] = Task { [weak self = self, source = self.source] in
                 let request = AdoptionRequest(directory: projectPath, startedAt: startedAt, window: window)
                 let result = try? await source.adopt(request)
                 guard !Task.isCancelled else { return }
                 if case .adopted(let id, let locator) = result, let url = locator.localURL {
                     completion(CodexRolloutCandidate(sessionID: id, cwd: projectPath, createdAt: startedAt, filePath: url))
                 } else { completion(nil) }
-                self?.queue.async { [weak self] in self?.adoptionTasks.removeValue(forKey: token) }
+                self?.queue.async { [weak self = self] in self?.adoptionTasks.removeValue(forKey: token) }
             }
         }
     }
@@ -275,4 +335,11 @@ public struct EngineMetrics: Sendable {
     public var verifications: UInt64 = 0
     public var publications: UInt64 = 0
     public var observations: UInt64 = 0
+}
+
+private final class EngineCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+    func cancel() { lock.lock(); cancelled = true; lock.unlock() }
 }

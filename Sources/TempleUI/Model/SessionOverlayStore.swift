@@ -221,10 +221,10 @@ public final class SessionOverlayStore: ObservableObject {
 
     /// Revalidate catalog facts before committing an import. Parsing is bounded to four
     /// workers and runs off-main; membership is checked again at commit time.
-    var importSummaryReader: @Sendable (TranscriptSummary) -> TranscriptSummary? = { session in
-        session.agent == .claude
-            ? ClaudeSessionStore().loadSummary(at: session.locator.localURL!)
-            : CodexSessionStore().loadSummary(at: session.locator.localURL!)
+    var importSummaryReader: @Sendable (TranscriptSummary) async -> TranscriptSummary? = { summary in
+        guard summary.locator.host.isLocal else { return nil }
+        let engine = SessionEngine(source: LocalSessionSource())
+        return await engine.summaryForImport(summary)
     }
 
     func prepareImports(_ sessions: [TranscriptSummary]) async -> [PreparedSessionImport] {
@@ -237,10 +237,10 @@ public final class SessionOverlayStore: ObservableObject {
                 func enqueue(_ index: Int) {
                     let session = sessions[index]
                     group.addTask {
-                        let summary = read(session)
-                        let facts = summary?.id == session.id ? summary : nil
+                        let summary = await read(session)
+                        let facts = summary?.id == session.id && summary?.locator.host == session.locator.host ? summary : nil
                         return (index, PreparedSessionImport(id: session.id, agent: session.agent,
-                            path: session.locator.localURL!, core: SessionCore(directory: facts?.cwd,
+                            path: session.locator.localURL, core: SessionCore(host: session.locator.host, directory: facts?.cwd,
                                 directorySource: facts?.cwd == nil ? nil : .transcript,
                                 title: facts?.firstPrompt ?? facts?.historyPrompt, lastActiveAt: facts?.modifiedAt)))
                     }

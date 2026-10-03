@@ -10,26 +10,39 @@ public protocol IndexSource: AnyObject {
 
 @MainActor
 public final class WatcherIndexSource: IndexSource {
-    let watcher: SessionEngine
-    private var task: Task<Void, Never>?
-    private var snapshotTask: Task<Void, Never>?
+    let engines: [SessionEngine]
+    var watcher: SessionEngine { engines.first { $0.host.isLocal } ?? engines[0] }
+    private var tasks: [Task<Void, Never>] = []
+    private var hostSnapshots: [HostID: EngineSnapshot] = [:]
+    private var publicationGeneration: UInt64 = 0
+    func engine(for host: HostID) -> SessionEngine? { engines.first { $0.host == host } }
+    func setEnrichmentWanted(_ missing: [String: Set<SessionCoreField>]) {
+        for engine in engines { engine.setEnrichmentWanted(missing) }
+    }
     private var latestSnapshot: EngineSnapshot?
     var onResolutionUpdate: (([String: MemberResolution]) -> Void)? {
         didSet { if let latestSnapshot { onResolutionUpdate?(latestSnapshot.resolutions) } }
     }
     private var observers: [UUID: (EngineSnapshot) -> Void] = [:]
     private var onUpdate: ((EngineSnapshot) -> Void)?
-    public init(watcher: SessionEngine = SessionEngine(source: LocalSessionSource())) { self.watcher = watcher }
+    public convenience init(watcher: SessionEngine = SessionEngine(source: LocalSessionSource())) {
+        self.init(engines: [watcher])
+    }
+    public init(engines: [SessionEngine]) {
+        precondition(!engines.isEmpty)
+        precondition(Set(engines.map(\.host)).count == engines.count)
+        self.engines = engines
+    }
     public func start(onUpdate: @escaping (EngineSnapshot) -> Void) {
         self.onUpdate = onUpdate
         if let latestSnapshot { onUpdate(latestSnapshot) }
         startEngineIfNeeded()
     }
     public func stop() {
-        task?.cancel(); task = nil
-        snapshotTask?.cancel(); snapshotTask = nil
+        tasks.forEach { $0.cancel() }; tasks.removeAll()
+        hostSnapshots.removeAll()
         latestSnapshot = nil; onUpdate = nil
-        watcher.stop()
+        engines.forEach { $0.stop() }
     }
     func observe(_ observer: @escaping (EngineSnapshot) -> Void) -> UUID {
         let id = UUID(); observers[id] = observer
@@ -39,18 +52,26 @@ public final class WatcherIndexSource: IndexSource {
     }
     func removeObserver(_ id: UUID) { observers.removeValue(forKey: id) }
     func startEngineIfNeeded() {
-        guard task == nil else { return }
-        let snapshots = watcher.snapshots()
-        snapshotTask = Task { [weak self] in
-            for await snapshot in snapshots {
-                guard !Task.isCancelled, let self else { break }
-                self.latestSnapshot = snapshot
-                self.onResolutionUpdate?(snapshot.resolutions)
-                self.onUpdate?(snapshot)
-                for observer in Array(self.observers.values) { observer(snapshot) }
-            }
+        guard tasks.isEmpty else { return }
+        for engine in engines {
+            let snapshots = engine.snapshots()
+            tasks.append(Task { [weak self] in
+                for await snapshot in snapshots {
+                    guard !Task.isCancelled, let self else { break }
+                    if let old = self.hostSnapshots[engine.host], snapshot.generation < old.generation { continue }
+                    self.hostSnapshots[engine.host] = snapshot
+                    self.publicationGeneration &+= 1
+                    let merged = EngineSnapshot(generation: self.publicationGeneration,
+                        resolutions: self.hostSnapshots.values.reduce(into: [:]) { $0.merge($1.resolutions) { first, _ in first } },
+                        summaries: self.hostSnapshots.values.reduce(into: [:]) { $0.merge($1.summaries) { first, _ in first } })
+                    self.latestSnapshot = merged
+                    self.onResolutionUpdate?(merged.resolutions)
+                    self.onUpdate?(merged)
+                    for observer in Array(self.observers.values) { observer(merged) }
+                }
+            })
+            let stream = engine.start()
+            tasks.append(Task { for await _ in stream { if Task.isCancelled { break } } })
         }
-        let stream = watcher.start()
-        task = Task { for await _ in stream { if Task.isCancelled { break } } }
     }
 }

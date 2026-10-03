@@ -425,9 +425,13 @@ public final class TempleDB: @unchecked Sendable {
     /// Hints never insert membership or change provenance, and do not trigger a
     /// second resolution after the engine has already parsed this file.
     public func updateTranscriptHint(sessionID: String, agent: Agent, path: URL) throws {
+        try updateTranscriptHint(sessionID: sessionID, agent: agent, locator: TranscriptLocator(localURL: path))
+    }
+
+    public func updateTranscriptHint(sessionID: String, agent: Agent, locator: TranscriptLocator) throws {
         let changed = try db.write { database in
             try database.execute(sql: "UPDATE session_state SET agent = ?, transcript_path = ? WHERE id = ? AND (agent IS NOT ? OR transcript_path IS NOT ?)",
-                                 arguments: [agent.rawValue, path.path, sessionID, agent.rawValue, path.path])
+                                 arguments: [agent.rawValue, locator.path, sessionID, agent.rawValue, locator.path])
             return database.changesCount > 0
         }
         if changed { committedRowChange(sessionID) }

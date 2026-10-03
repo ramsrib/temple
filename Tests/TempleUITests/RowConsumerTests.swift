@@ -367,7 +367,7 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertFalse(app.archivedSessionResults("").contains { $0.id == "unknown" })
     }
 
-    private func read(_ app: AppModel, events: [SessionCatalog.Event]) async throws {
+    private func read(_ app: AppModel, events: [CatalogBatch]) async throws {
         app.history.catalog = { AsyncStream { c in events.forEach { c.yield($0) }; c.finish() } }
         app.history.activate()
         let deadline = Date().addingTimeInterval(2)

@@ -64,7 +64,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     /// Transitional lookup: legacy callers, restore and reopen prefer the durable row.
     public var sessionRow: (String) -> Session? = { _ in nil }
-    private let commandWrapper: any HostCommandWrapper
+    private let commandWrapperForHost: (HostID) -> (any HostCommandWrapper)?
 
     /// Resolution updates retain the diagnosis interest after an early exit.
     public func refreshExitedResumeDiagnoses() {
@@ -103,8 +103,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                 defaultAgent: @escaping () -> Agent = { .claude },
                 canLaunch: @escaping (Agent) -> Bool = { _ in true },
                 now: @escaping () -> Date = Date.init,
-                commandWrapper: any HostCommandWrapper = LocalCommandWrapper()) {
-        self.commandWrapper = commandWrapper
+                commandWrapper: any HostCommandWrapper = LocalCommandWrapper(),
+                commandWrapperForHost: ((HostID) -> (any HostCommandWrapper)?)? = nil) {
+        self.commandWrapperForHost = commandWrapperForHost ?? { _ in commandWrapper }
         self.surfaceFactory = surfaceFactory
         self.appearanceProvider = appearanceProvider
         self.runtime = runtime
@@ -288,7 +289,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         if let sid = spec.sessionID { openedHandler?(sid, .created, spec.agent, nil, SessionCore(host: project.host)) }
         if spec.isProvisional {
             // Codex: adopt the real id once its rollout file appears (ADR-008).
-            reconciler.reconcile(projectPath: projectPath, startedAt: Date()) { [weak self, weak tab] id in
+            reconciler.reconcile(host: tab.host, projectPath: projectPath, startedAt: Date()) { [weak self, weak tab] id in
                 guard let self, let tab else { return }
                 self.adopt(sessionID: id, for: tab.id)
             }
@@ -374,6 +375,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Spawn the surface for a session tab on first activation (lazy restore).
     private func ensureSurface(for tab: SessionTab) {
         guard !isQuitting, tab.kind == .session, tab.surface == nil, let command = tab.command else { return }
+        guard let wrapper = commandWrapperForHost(tab.host) else {
+            TempleUILog.launch.notice("host has no launch wrapper: \(tab.host.rawValue, privacy: .public)")
+            return
+        }
         let surface = surfaceFactory.makeSurface(appearance: appearanceProvider())
         surface.delegate = self
         let spawnedAt = now()
@@ -390,7 +395,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         let launchDirectory = FileManager.default.fileExists(atPath: command.cwd, isDirectory: &isDirectory)
             && isDirectory.boolValue ? command.cwd : nil
         do {
-            try surface.start(TerminalIdentity.apply(to: commandWrapper.wrap(command)))
+            try surface.start(TerminalIdentity.apply(to: wrapper.wrap(command)))
         } catch {
             TempleUILog.launch.error("spawn failed: agent=\(tab.agent.rawValue, privacy: .public) argv0=\(command.argv.first ?? "?", privacy: .public) cwd=\(command.cwd, privacy: .public) error=\(String(describing: error), privacy: .public)")
             // A surface that won't even start is always the command's problem.

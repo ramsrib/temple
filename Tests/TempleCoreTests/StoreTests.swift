@@ -415,7 +415,7 @@ final class StoreTests: XCTestCase {
                               filePath: base)
 
         let store = StubStore(sessions: [s1, s2, s3])
-        let sessions = SessionCatalog(stores: [store]).load()
+        let sessions = LocalSessionCatalog(stores: [store]).load()
         XCTAssertEqual(sessions.count, 3)
         XCTAssertEqual(Set(sessions.compactMap(\.cwd)), ["/p/a", "/p/b"])
         XCTAssertEqual(sessions.first?.id, "2")

@@ -28,7 +28,7 @@ final class HistoryTests: XCTestCase {
                      lastMessagePreview: preview, gitBranch: branch)
     }
 
-    private static func stream(_ events: [SessionCatalog.Event]) -> AsyncStream<SessionCatalog.Event> {
+    private static func stream(_ events: [CatalogBatch]) -> AsyncStream<CatalogBatch> {
         AsyncStream { continuation in
             for event in events { continuation.yield(event) }
             continuation.finish()
@@ -57,7 +57,7 @@ final class HistoryTests: XCTestCase {
         let overlay = SessionOverlayStore(db: database)
         let parser = overlay.importSummaryReader
         overlay.importSummaryReader = { session in
-            if FileManager.default.fileExists(atPath: session.filePath.path) { return parser(session) }
+            if FileManager.default.fileExists(atPath: session.filePath.path) { return await parser(session) }
             return TranscriptSummary(id: session.id, agent: session.agent,
                 locator: TranscriptLocator(host: .local, path: session.filePath.path),
                 modifiedAt: session.updatedAt, cwd: session.projectPath, firstPrompt: session.title)
@@ -227,9 +227,11 @@ final class HistoryTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let file = root.appendingPathComponent("history-facts.jsonl")
+        let project = root.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let file = project.appendingPathComponent("history-facts.jsonl")
         try """
-        {"type":"user","cwd":"/fact-cwd","message":{"content":"First fact"}}
+        {"type":"user","sessionId":"history-facts","cwd":"/fact-cwd","message":{"content":"First fact"}}
         {"type":"summary","summary":"Display summary"}
         """.write(to: file, atomically: true, encoding: .utf8)
         let store = ClaudeSessionStore(root: root)
@@ -237,6 +239,8 @@ final class HistoryTests: XCTestCase {
         let legacy = try XCTUnwrap(store.loadSummary(at: file))
         XCTAssertEqual(legacy.title, "Display summary")
         let h = harness([legacy])
+        let engine = SessionEngine(source: LocalSessionSource(stores: [store]))
+        h.overlay.importSummaryReader = { await engine.summaryForImport($0) }
         await load(h.history)
         h.history.selectAll()
         h.history.requestImport()
@@ -341,8 +345,8 @@ final class HistoryTests: XCTestCase {
     func testStreamingShowsRowsBeforeTheReadEndsAndRecordsStoreFailures() async {
         let database = try! TempleDB.inMemory()
         let overlay = SessionOverlayStore(db: database)
-        var continuation: AsyncStream<SessionCatalog.Event>.Continuation!
-        let stream = AsyncStream<SessionCatalog.Event> { continuation = $0 }
+        var continuation: AsyncStream<CatalogBatch>.Continuation!
+        let stream = AsyncStream<CatalogBatch> { continuation = $0 }
         let history = HistoryModel(overlay: overlay, catalog: { stream },
                                    pathExists: { _ in true }, now: { [now] in now })
 
@@ -395,7 +399,7 @@ final class HistoryTests: XCTestCase {
         let overlay = SessionOverlayStore(db: database)
         var reads: [[TranscriptSummary]] = [[session("a", hoursAgo: 1), session("gone", hoursAgo: 2)],
                                        [session("a", hoursAgo: 1)]]
-        var pending: AsyncStream<SessionCatalog.Event>.Continuation?
+        var pending: AsyncStream<CatalogBatch>.Continuation?
         let cancelled = CancelFlag()
         let history = HistoryModel(overlay: overlay, catalog: {
             AsyncStream { continuation in

@@ -24,6 +24,15 @@ func openDatabase(readOnly: Bool = false) throws -> TempleDB {
     }
 }
 
+func readCatalog() async throws -> [TranscriptSummary] {
+    var summaries: [TranscriptSummary] = []
+    for try await batch in LocalSessionSource().catalog(CatalogQuery()) {
+        if case .sessions(let sessions, _, _) = batch { summaries.append(contentsOf: sessions) }
+        if case .storeFailed(_, let message) = batch { fputs("catalog: \(message)\n", stderr) }
+    }
+    return summaries.sorted { $0.modifiedAt > $1.modifiedAt }
+}
+
 // `make demo` seeds sessions Temple never saw; this imports each one so the
 // demo sidebar has something in it. Refused against the real state dir:
 // a row for every session on disk would erase the line the sidebar draws,
@@ -34,7 +43,7 @@ if CommandLine.arguments.contains("--import-all") {
         exit(1)
     }
     let db = try openDatabase()
-    let sessions = ClaudeSessionStore().loadSummaries() + CodexSessionStore().loadSummaries()
+    let sessions = try await readCatalog()
     var imported = 0
     for session in sessions where try db.sessionState(session.id) == nil {
         try db.join(sessionID: session.id, via: .imported, agent: session.agent,
@@ -82,7 +91,7 @@ func catalogTitle(_ summary: TranscriptSummary) -> String {
 }
 
 if CommandLine.arguments.contains("--disk") {
-    let catalog = SessionFilter.filtered(SessionCatalog().load(), includeNoise: includeNoise)
+    let catalog = SessionFilter.filtered(try await readCatalog(), includeNoise: includeNoise)
     if let searchQuery {
         let needle = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let scored: [(TranscriptSummary, Int)] = needle.isEmpty ? [] : catalog.compactMap { summary in

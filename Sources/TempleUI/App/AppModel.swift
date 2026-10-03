@@ -63,7 +63,7 @@ public final class AppModel: ObservableObject {
             default: return false
             }
         }) { freezeSidebarRanks() }
-        (indexSource as? WatcherIndexSource)?.watcher.setEnrichmentWanted(overlay.missingCoreFields)
+        (indexSource as? WatcherIndexSource)?.setEnrichmentWanted(overlay.missingCoreFields)
         openSessions.refreshExitedResumeDiagnoses()
     }
 
@@ -289,6 +289,7 @@ public final class AppModel: ObservableObject {
     // Seams (Track C)
     private let stateDirectory: URL?
     private let indexSource: IndexSource
+    public let hostRegistry: HostRegistry
 
     private var cancellables: Set<AnyCancellable> = []
     private var themeObserver: NSObjectProtocol?
@@ -300,7 +301,8 @@ public final class AppModel: ObservableObject {
                 database: TempleDB,
                 settings: SettingsStore? = nil,
                 overlay: SessionOverlayStore? = nil,
-                stateDirectory: URL? = nil) {
+                stateDirectory: URL? = nil,
+                hostRegistry: HostRegistry? = nil) {
         // Defaults that touch @MainActor types are built here (not as default
         // arguments, which evaluate in a nonisolated context).
         let settings = settings ?? SettingsStore(defaults: SettingsKeysProbe.scratchDefaults() ?? .standard)
@@ -308,7 +310,11 @@ public final class AppModel: ObservableObject {
         let uiState = UIStateStore(db: database)
         let registry = registry ?? DBProcessRegistry(db: database)
         let persistence = persistence ?? DBTabPersistence(db: database)
-        let resolvedIndexSource = indexSource ?? WatcherIndexSource(watcher: SessionEngine(source: LocalSessionSource(), database: database))
+        let hosts = hostRegistry ?? HostRegistry()
+        self.hostRegistry = hosts
+        let resolvedIndexSource = indexSource ?? WatcherIndexSource(engines: hosts.entries.map {
+            SessionEngine(source: $0.source, database: database)
+        })
         let reconciler = reconciler ?? (resolvedIndexSource as? WatcherIndexSource).map {
             WatcherCodexReconciler(indexSource: $0)
         } ?? NoopCodexReconciler()
@@ -319,7 +325,7 @@ public final class AppModel: ObservableObject {
         self.indexSource = resolvedIndexSource
         self.stateDirectory = stateDirectory
         self.notifications = NotificationController()
-        self.history = HistoryModel(overlay: overlay)
+        self.history = HistoryModel(overlay: overlay, catalog: { hosts.catalog() })
 
         let toolchain = ToolchainModel()
         toolchain.override = { [weak settings] in settings?.overridePath(for: $0) ?? "" }
@@ -340,7 +346,8 @@ public final class AppModel: ObservableObject {
             binaryPath: { toolchain.launchPath(for: $0) },
             extraArgs: { settingsRef.extraArgs(for: $0) },
             defaultAgent: { settingsRef.defaultAgent },
-            canLaunch: { toolchain.canLaunch($0) })
+            canLaunch: { toolchain.canLaunch($0) },
+            commandWrapperForHost: { hosts.entry(for: $0)?.commandWrapper })
 
         // Now self is fully initialized — finish wiring the closures & observers.
         resolveAppearance = { [weak self] in
@@ -352,7 +359,7 @@ public final class AppModel: ObservableObject {
                 guard let self else { return }
                 self.rowPresentationDirty = true
                 self.changedRowIDs.insert(change.id)
-                (self.indexSource as? WatcherIndexSource)?.watcher.setEnrichmentWanted(self.overlay.missingCoreFields)
+                (self.indexSource as? WatcherIndexSource)?.setEnrichmentWanted(self.overlay.missingCoreFields)
                 if !change.recencyOnly { self.recencyOnlyChanges = false }
                 guard !self.applyingEngineSnapshot else { return }
                 if change.recencyOnly {
@@ -363,7 +370,12 @@ public final class AppModel: ObservableObject {
             }
             .store(in: &cancellables)
         if let source = resolvedIndexSource as? WatcherIndexSource {
-            source.watcher.setEnrichmentWanted(overlay.missingCoreFields)
+            source.setEnrichmentWanted(overlay.missingCoreFields)
+            let engines = source.engines
+            overlay.importSummaryReader = { summary in
+                guard let engine = engines.first(where: { $0.host == summary.locator.host }) else { return nil }
+                return await engine.summaryForImport(summary)
+            }
         }
         wire()
         wireHistory(database: database)
@@ -400,10 +412,9 @@ public final class AppModel: ObservableObject {
             // opened since, even once its tab is closed (TempleDB.leave
             // keeps a row with last_opened_at set).
             if via == .opened { self.overlay.recordOpened(sessionID) }
-            if let source = self.indexSource as? WatcherIndexSource,
-               case .loaded = source.watcher.resolution(for: sessionID) { return }
-            if let source = self.indexSource as? WatcherIndexSource {
-                source.watcher.requestResolution(sessionID)
+            if let engine = (self.indexSource as? WatcherIndexSource)?.engine(for: core.host) {
+                if case .loaded = engine.resolution(for: sessionID) { return }
+                engine.requestResolution(sessionID)
             }
         }
         openSessions.touchHandler = { [weak self] id, at in self?.overlay.touch(id, at: at) }
@@ -585,6 +596,7 @@ public final class AppModel: ObservableObject {
             // Final barrier for writes queued while the processes drained.
             overlay.flushPendingTitles()
             overlay.flushPendingTouches()
+            indexSource.stop()
             completion()
         }
     }
@@ -650,7 +662,8 @@ public final class AppModel: ObservableObject {
             openSessions.openSession(row)
             return
         }
-        let engine = (indexSource as? WatcherIndexSource)?.watcher
+        let host = overlay.rows[id]?.host ?? openSessions.sessionTab(withSessionID: id)?.host ?? .local
+        let engine = (indexSource as? WatcherIndexSource)?.engine(for: host)
         if let tab = openSessions.sessionTab(withSessionID: id) {
             engine?.requestResolution(id)
             openSessions.activate(tab)

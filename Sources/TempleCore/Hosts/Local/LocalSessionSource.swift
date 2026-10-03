@@ -87,14 +87,14 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     public func changes() -> AsyncThrowingStream<SourceChange, Error> {
         let token = UUID()
         return AsyncThrowingStream { continuation in
-            continuation.onTermination = { [weak self] _ in
-                self?.queue.async { [weak self] in
+            continuation.onTermination = { [weak self = self] _ in
+                self?.queue.async { [weak self = self] in
                     guard let self else { return }
                     self.changeContinuations.removeValue(forKey: token)
                     self.stopIfIdleLocked()
                 }
             }
-            queue.async { [weak self] in
+            queue.async { [weak self = self] in
                 guard let self else { continuation.finish(); return }
                 self.changeContinuations[token] = continuation
                 self.startLocked()
@@ -107,49 +107,49 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
             return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ResolutionBatch, Error>) in
-            queue.async {
-                guard !ticket.isCancelled else { continuation.resume(throwing: CancellationError()); return }
-                self.startLocked()
-                for request in requests {
+                queue.async {
                     guard !ticket.isCancelled else { continuation.resume(throwing: CancellationError()); return }
-                    let id = request.id
-                    let previous = self.interests[id]
-                    self.interests[id] = request
-                    self.registeredIDs.insert(id)
-                    if request.awaitingCreation { self.awaiting.insert(id) }
-                    let filled = previous.map { !$0.wanted.subtracting(request.wanted).isEmpty } ?? false
-                    if request.explicit || previous == nil || filled { self.resetEnrichmentLocked(id) }
-                    self.resolveLocked(id, explicit: request.explicit || filled)
-                    if request.explicit && (self.states[id] == .confirmedAbsent || self.states[id] == .resolving) {
-                        self.enumerateLocked(); self.resolveLocked(id, explicit: true)
-                    }
-                }
-                self.snapshotLocked()
-                var results: [String: ResolutionResult] = [:]
-                for request in requests {
-                    let id = request.id
-                    switch self.states[id] ?? .incomplete {
-                    case .loaded(let locator):
-                        let summary = self.summaries[id]
-                        var missing = request.wanted
-                        if let summary {
-                            missing.remove(.agent); missing.remove(.lastActiveAt)
-                            if summary.cwd != nil { missing.remove(.directory) }
-                            if summary.firstPrompt != nil { missing.remove(.title) }
+                    self.startLocked()
+                    for request in requests {
+                        guard !ticket.isCancelled else { continuation.resume(throwing: CancellationError()); return }
+                        let id = request.id
+                        let previous = self.interests[id]
+                        self.interests[id] = request
+                        self.registeredIDs.insert(id)
+                        if request.awaitingCreation { self.awaiting.insert(id) }
+                        let filled = previous.map { !$0.wanted.subtracting(request.wanted).isEmpty } ?? false
+                        if request.explicit || previous == nil || filled { self.resetEnrichmentLocked(id) }
+                        self.resolveLocked(id, explicit: request.explicit || filled)
+                        if request.explicit && (self.states[id] == .confirmedAbsent || self.states[id] == .resolving) {
+                            self.enumerateLocked(); self.resolveLocked(id, explicit: true)
                         }
-                        results[id] = .loaded(locator, summary, missing)
-                    case .confirmedAbsent: results[id] = .absent
-                    case .awaitingCreation: results[id] = .awaitingCreation
-                    case .unreadable: results[id] = .unreadable
-                    case .mismatch: results[id] = .mismatch
-                    case .resolving, .incomplete: results[id] = .incomplete
                     }
+                    self.snapshotLocked()
+                    var results: [String: ResolutionResult] = [:]
+                    for request in requests {
+                        let id = request.id
+                        switch self.states[id] ?? .incomplete {
+                        case .loaded(let locator):
+                            let summary = self.summaries[id]
+                            var missing = request.wanted
+                            if let summary {
+                                missing.remove(.agent); missing.remove(.lastActiveAt)
+                                if summary.cwd != nil { missing.remove(.directory) }
+                                if summary.firstPrompt != nil || summary.historyPrompt != nil { missing.remove(.title) }
+                            }
+                            results[id] = .loaded(locator, summary, missing)
+                        case .confirmedAbsent: results[id] = .absent
+                        case .awaitingCreation: results[id] = .awaitingCreation
+                        case .unreadable: results[id] = .unreadable
+                        case .mismatch: results[id] = .mismatch
+                        case .resolving, .incomplete: results[id] = .incomplete
+                        }
+                    }
+                    // A request reads the latest local state; no redundant invalidation.
+                    self.contentDirty = false
+                    if ticket.isCancelled { continuation.resume(throwing: CancellationError()) }
+                    else { continuation.resume(returning: ResolutionBatch(generation: self.generation, results: results)) }
                 }
-                // A request reads the latest local state; no redundant invalidation.
-                self.contentDirty = false
-                if ticket.isCancelled { continuation.resume(throwing: CancellationError()) }
-                else { continuation.resume(returning: ResolutionBatch(generation: self.generation, results: results)) }
-            }
             }
         } onCancel: { ticket.cancel() }
     }
@@ -159,7 +159,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     }
 
     public func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error> {
-        let catalog = SessionCatalog(stores: stores.filter { query.agents.contains($0.agent) })
+        let catalog = LocalSessionCatalog(stores: stores.filter { query.agents.contains($0.agent) })
         return AsyncThrowingStream { continuation in
             let task = Task {
                 for await event in catalog.stream(batchSize: query.batchSize, newestFirst: query.newestFirst) {
@@ -206,6 +206,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             for requestID in requests.keys { scheduleAdoptionDeadlineLocked(requestID) }
             sweepCandidatesLocked()
         }
+        snapshotLocked()
     }
 
     private func stopIfIdleLocked() {
@@ -217,7 +218,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             adoptionTimers.values.forEach { $0.cancel() }; adoptionTimers.removeAll()
             for request in requests.values where !request.decided { request.completion(.incomplete) }
             requests.removeAll(); candidates.removeAll(); seenCandidates.removeAll(); candidateSignatures.removeAll()
-            unresolvedCandidates.removeAll(); claimed.removeAll(); awaiting.removeAll()
+            unresolvedCandidates.removeAll(); awaiting.removeAll()
         }
         running = false
         monitoring = false
@@ -238,7 +239,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
 
     /// Release observation state without disturbing the filename map.
     private func forgetMember(_ id: String) {
-        queue.async { [weak self] in
+        queue.async { [weak self = self] in
             guard let self, self.registeredIDs.contains(id) else { return }
             self.interests.removeValue(forKey: id)
             self.registeredIDs.remove(id)
@@ -314,7 +315,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
 
     /// Deterministic recovery seam; production and tests use the same classifier.
     func reconcileEvent(path: String, flags: FSEventStreamEventFlags) {
-        queue.async { [weak self] in self?.eventLocked(path, flags: flags) }
+        queue.async { [weak self = self] in self?.eventLocked(path, flags: flags) }
     }
 
     private func eventLocked(_ rawPath: String, flags: FSEventStreamEventFlags) {
@@ -330,6 +331,14 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         }
         guard let path else { return }
         let url = URL(fileURLWithPath: path)
+        if ["history.jsonl", "session_index.jsonl"].contains(url.lastPathComponent),
+           stores.contains(where: { store in
+               guard let codex = store as? CodexSessionStore else { return false }
+               return SessionPaths.normalized(codex.sessionsRoot.deletingLastPathComponent().path) == url.deletingLastPathComponent().path
+           }) {
+            for continuation in changeContinuations.values { continuation.yield(.sharedTitlesChanged) }
+            return
+        }
         // Codex sqlite/WAL/log traffic is rejected before stat or resolution.
         let isTranscript = stores.contains { $0.acceptsTranscript(url) }
         let directory = has(kFSEventStreamEventFlagItemIsDir)
@@ -374,7 +383,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
 
     private func scheduleLocked() {
         guard work == nil else { return }
-        let item = DispatchWorkItem { [weak self] in
+        let item = DispatchWorkItem { [weak self = self] in
             guard let self, self.running else { return }
             self.work = nil
             let paths = self.pendingPaths; self.pendingPaths.removeAll()
@@ -662,7 +671,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
 
     private func scheduleEnrichmentLocked(_ id: String, after delay: TimeInterval) {
         guard enrichmentTimers[id] == nil else { return }
-        let timer = DispatchWorkItem { [weak self] in
+        let timer = DispatchWorkItem { [weak self = self] in
             guard let self, self.running else { return }
             self.enrichmentTimers.removeValue(forKey: id)
             self.resolveLocked(id)
@@ -674,7 +683,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
 
     /// Deterministic backoff checkpoint; tests can advance a clock without waiting minutes.
     func reconcileEnrichment() {
-        queue.async { [weak self] in
+        queue.async { [weak self = self] in
             guard let self, self.running else { return }
             for id in self.registeredIDs { self.resolveLocked(id) }
             self.publishLocked()
@@ -724,8 +733,8 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
                     let id = ticket.id
                     self.requests[id] = LocalAdoptionWindow(cwd: request.directory, start: request.startedAt,
                         window: request.window, completion: { continuation.resume(returning: $0) })
-                    ticket.cancelAction = { [weak self] in
-                        self?.queue.async { [weak self] in
+                    ticket.cancelAction = { [weak self = self] in
+                        self?.queue.async { [weak self = self] in
                             guard let self, let pending = self.requests.removeValue(forKey: id), !pending.decided else { return }
                             self.adoptionTimers.removeValue(forKey: id)?.cancel()
                             pending.completion(.incomplete)
@@ -749,7 +758,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         guard let request = requests[id], !request.decided, let generation = streamID else { return }
         adoptionTimers.removeValue(forKey: id)?.cancel()
         let delay = max(0, request.start.addingTimeInterval(request.window).timeIntervalSinceNow) + debounceInterval
-        let timer = DispatchWorkItem { [weak self] in
+        let timer = DispatchWorkItem { [weak self = self] in
             guard let self, self.running, self.streamID == generation else { return }
             self.decideAdoptionLocked(id)
         }

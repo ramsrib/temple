@@ -24,7 +24,7 @@ final class RobustnessTests: XCTestCase {
         XCTAssertTrue(CodexSessionStore(root: missing).loadSummaries().isEmpty)
 
         let empty = try directory("empty")
-        XCTAssertTrue(SessionCatalog(stores: [ClaudeSessionStore(root: empty), CodexSessionStore(root: empty)]).load().isEmpty)
+        XCTAssertTrue(LocalSessionCatalog(stores: [ClaudeSessionStore(root: empty), CodexSessionStore(root: empty)]).load().isEmpty)
     }
 
     func testZeroByteAndMalformedSessionsAreSkipped() throws {

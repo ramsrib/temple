@@ -15,15 +15,18 @@ public final class WatcherCodexReconciler: CodexAdopting {
         self.init(indexSource: WatcherIndexSource(), window: window)
     }
     public func reconcile(projectPath: String, startedAt: Date, adopt: @escaping (String) -> Void) {
-        indexSource.watcher.registerAdoption(projectPath: projectPath, startedAt: startedAt, window: window) { [weak self] candidate in
-            Task { @MainActor [weak self] in
-                guard let candidate, let self else { return }
-                self.adoptedPaths[candidate.sessionID] = candidate.filePath
-                adopt(candidate.sessionID)
-                self.adoptedPaths.removeValue(forKey: candidate.sessionID)
-            }
-        }
-        // Starts the same stream if a new tab precedes AppModel.start().
+        reconcile(host: .local, projectPath: projectPath, startedAt: startedAt, adopt: adopt)
+    }
+    public func reconcile(host: HostID, projectPath: String, startedAt: Date, adopt: @escaping (String) -> Void) {
+        guard let engine = indexSource.engine(for: host) else { return }
+        // Start before registering so stop/start cannot cancel the new window.
         indexSource.startEngineIfNeeded()
+        Task {
+            let result = try? await engine.adopt(AdoptionRequest(directory: projectPath, startedAt: startedAt, window: window))
+            guard !Task.isCancelled, case .adopted(let id, let locator) = result else { return }
+            self.adoptedPaths[id] = locator.localURL
+            adopt(id)
+            self.adoptedPaths.removeValue(forKey: id)
+        }
     }
 }
