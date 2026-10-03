@@ -8,33 +8,30 @@ private struct ArchiveNoNoiseFilter: NoiseFilter {
 
 @MainActor
 final class ArchiveTests: XCTestCase {
-    private func makeModel(_ index: SessionIndex,
+    private func makeModel(_ rows: [Session],
                            database: TempleDB? = nil) -> (AppModel, SessionOverlayStore) {
         let database = database ?? (try! TempleDB.inMemory())
-        Fixture.join(index, to: database)
+        Fixture.join(rows, to: database)
         let overlay = SessionOverlayStore(db: database)
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(index),
+            indexSource: FakeIndexSource(SessionIndex(projects: [])),
             noiseFilter: ArchiveNoNoiseFilter(),
             database: database,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: overlay
         )
-        model.index = index
         return (model, overlay)
     }
 
-    private func twoProjects() -> SessionIndex {
-        SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [
-                Fixture.session("a1", project: "/p/a", title: "Alpha one", updated: 40),
-                Fixture.session("a2", project: "/p/a", title: "Alpha two", updated: 30),
-            ]),
-            Project(path: "/p/b", sessions: [
-                Fixture.session("b1", project: "/p/b", title: "Beta one", updated: 20),
-            ]),
-        ])
+    private func twoProjects() -> [Session] {
+        [
+
+                Fixture.row("a1", project: "/p/a", title: "Alpha one", updated: 40),
+                Fixture.row("a2", project: "/p/a", title: "Alpha two", updated: 30),
+
+                Fixture.row("b1", project: "/p/b", title: "Beta one", updated: 20),
+        ]
     }
 
     // MARK: Sessions
@@ -161,30 +158,30 @@ final class ArchiveTests: XCTestCase {
         overlay.setArchived(true, sessionID: "b1")
 
         let groups = model.archiveGroups("")
-        XCTAssertEqual(groups.map(\.id), ["/p/a", "/p/b"])
+        XCTAssertEqual(groups.map(\.project.path), ["/p/a", "/p/b"])
         XCTAssertEqual(groups.map(\.wholeProject), [true, false])
         XCTAssertEqual(groups[0].project.sessions.map(\.id), ["a1", "a2"])
         XCTAssertEqual(groups[1].project.sessions.map(\.id), ["b1"])
 
-        XCTAssertEqual(model.archiveGroups("alpha two").map(\.id), ["/p/a"])
+        XCTAssertEqual(model.archiveGroups("alpha two").map(\.project.path), ["/p/a"])
         XCTAssertEqual(model.archiveGroups("alpha two")[0].project.sessions.map(\.id), ["a2"])
         XCTAssertEqual(model.archiveGroups("/p/a")[0].project.sessions.count, 2)
-        XCTAssertEqual(model.archiveGroups("beta").map(\.id), ["/p/b"])
+        XCTAssertEqual(model.archiveGroups("beta").map(\.project.path), ["/p/b"])
         // A path match keeps a partial group's sessions too, not only a title match.
-        XCTAssertEqual(model.archiveGroups("/p/b").map(\.id), ["/p/b"])
-        XCTAssertEqual(model.archiveGroups("p/").map(\.id), ["/p/a", "/p/b"])
+        XCTAssertEqual(model.archiveGroups("/p/b").map(\.project.path), ["/p/b"])
+        XCTAssertEqual(model.archiveGroups("p/").map(\.project.path), ["/p/a", "/p/b"])
         XCTAssertTrue(model.archiveGroups("zzz").isEmpty)
     }
 
     /// The index can list one session id under two projects; the browser's
     /// rows are keyed by session id, so each session appears once.
     func testArchiveGroupsListEachSessionOnce() {
-        let shared = Fixture.session("dup", project: "/p/a", title: "Shared", updated: 10)
-        let twin = Fixture.session("dup", project: "/p/b", title: "Shared", updated: 10)
-        let (model, overlay) = makeModel(SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [shared]),
-            Project(path: "/p/b", sessions: [twin]),
-        ]))
+        let shared = Fixture.row("dup", project: "/p/a", title: "Shared", updated: 10)
+        let twin = Fixture.row("dup", project: "/p/b", title: "Shared", updated: 10)
+        let (model, overlay) = makeModel([
+            shared,
+            twin,
+        ])
         overlay.setProjectArchived(true, path: "/p/a")
         overlay.setProjectArchived(true, path: "/p/b")
 
@@ -217,11 +214,11 @@ final class ArchiveTests: XCTestCase {
     /// leave theirs alone — otherwise archiving C and nudging B would silently
     /// un-place C, and it would resurface "new", on top.
     func testMovingWhileAProjectIsArchivedKeepsItsSlot() {
-        let index = SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [Fixture.session("a1", project: "/p/a", updated: 30)]),
-            Project(path: "/p/b", sessions: [Fixture.session("b1", project: "/p/b", updated: 20)]),
-            Project(path: "/p/c", sessions: [Fixture.session("c1", project: "/p/c", updated: 10)]),
-        ])
+        let index = [
+            Fixture.row("a1", project: "/p/a", updated: 30),
+            Fixture.row("b1", project: "/p/b", updated: 20),
+            Fixture.row("c1", project: "/p/c", updated: 10),
+        ]
         let (model, overlay) = makeModel(index)
         model.moveProject("/p/c", before: "/p/b")               // A, C, B
         XCTAssertEqual(overlay.projectOrder, ["/p/a", "/p/c", "/p/b"])
@@ -248,11 +245,11 @@ final class ArchiveTests: XCTestCase {
     /// are stated against the visible order with the moving project already
     /// out of it, so dragging downward needs no off-by-one fix-up.
     func testDroppingAProjectBeforeOrAfterAnotherReordersTheSidebarAndPersists() {
-        let index = SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [Fixture.session("a1", project: "/p/a", updated: 30)]),
-            Project(path: "/p/b", sessions: [Fixture.session("b1", project: "/p/b", updated: 20)]),
-            Project(path: "/p/c", sessions: [Fixture.session("c1", project: "/p/c", updated: 10)]),
-        ])
+        let index = [
+            Fixture.row("a1", project: "/p/a", updated: 30),
+            Fixture.row("b1", project: "/p/b", updated: 20),
+            Fixture.row("c1", project: "/p/c", updated: 10),
+        ]
         let (model, overlay) = makeModel(index)
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b", "/p/c"])
 
@@ -290,10 +287,10 @@ final class ArchiveTests: XCTestCase {
     }
 
     func testDroppingAProjectWhereItAlreadySitsIsANoOp() {
-        let index = SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [Fixture.session("a1", project: "/p/a", updated: 30)]),
-            Project(path: "/p/b", sessions: [Fixture.session("b1", project: "/p/b", updated: 20)]),
-        ])
+        let index = [
+            Fixture.row("a1", project: "/p/a", updated: 30),
+            Fixture.row("b1", project: "/p/b", updated: 20),
+        ]
         let (model, overlay) = makeModel(index)
 
         model.moveProject("/p/a", before: "/p/b")   // already directly above b
@@ -308,17 +305,15 @@ final class ArchiveTests: XCTestCase {
     /// placed block — otherwise the newest thing you started would land under
     /// the eight-project cap and look like it never happened.
     func testAnUnplacedProjectSortsAboveThePlacedBlock() {
-        let index = SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [Fixture.session("a1", project: "/p/a", updated: 30)]),
-            Project(path: "/p/b", sessions: [Fixture.session("b1", project: "/p/b", updated: 20)]),
-        ])
+        let index = [
+            Fixture.row("a1", project: "/p/a", updated: 30),
+            Fixture.row("b1", project: "/p/b", updated: 20),
+        ]
         let (model, overlay) = makeModel(index)
         model.moveProject("/p/b", before: "/p/a")
 
         overlay.join("n1", via: .created, agent: .claude, core: SessionCore(directory: "/p/new", title: "Title", lastActiveAt: Date(timeIntervalSince1970: 50)))
-        model.index = SessionIndex(projects: index.projects + [
-            Project(path: "/p/new", sessions: [Fixture.session("n1", project: "/p/new", updated: 50)]),
-        ])
+
 
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/new", "/p/b", "/p/a"])
     }
@@ -331,7 +326,7 @@ final class ArchiveTests: XCTestCase {
         overlay.setArchived(true, sessionID: "a1")
         overlay.setProjectArchived(true, path: "/p/a")
 
-        let session = index.projects[0].sessions[0]
+        let session = index[0]
         model.openSessions.openSession(session)
 
         // The unarchive rides the activeTabID sink, which lands on RunLoop.main.
@@ -353,8 +348,8 @@ final class ArchiveTests: XCTestCase {
         overlay.setArchived(true, sessionID: "a1")
         overlay.setProjectArchived(true, path: "/p/a")
 
-        model.openSessions.openSession(index.projects[0].sessions[0])   // a1
-        model.openSessions.openSession(index.projects[1].sessions[0])   // b1, now active
+        model.openSessions.openSession(index[0])   // a1
+        model.openSessions.openSession(index[2])   // b1, now active
 
         let settled = expectation(description: "active tab sink")
         DispatchQueue.main.async { settled.fulfill() }
@@ -373,15 +368,13 @@ final class ArchiveTests: XCTestCase {
         overlay.setArchived(true, sessionID: "a1")
         overlay.setProjectArchived(true, path: "/p/b")
 
-        model.index = SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [
-                Fixture.session("a1", project: "/p/a", title: "Alpha one", updated: 400),
-                index.projects[0].sessions[1],
-            ]),
-            Project(path: "/p/b", sessions: [
-                Fixture.session("b1", project: "/p/b", title: "Beta one", updated: 500),
-            ]),
-        ])
+        let summaries = ["a1", "b1"].map { id in
+            TranscriptSummary(id: id, agent: .claude,
+                locator: TranscriptLocator(host: .local, path: "/tmp/\(id).jsonl"),
+                modifiedAt: Date(timeIntervalSince1970: 500), cwd: "/changed", firstPrompt: "Changed externally")
+        }
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: [:],
+            summaries: Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0) })))
 
         XCTAssertTrue(overlay.isArchived("a1"))
         XCTAssertTrue(overlay.isProjectArchived("/p/b"))
@@ -393,7 +386,7 @@ final class ArchiveTests: XCTestCase {
     /// Every presenter dismisses the archive browser, and the archive browser
     /// dismisses every other panel and both HUD switchers.
     func testArchiveIsMutuallyExclusiveWithEveryOtherPanel() {
-        let (model, _) = makeModel(SessionIndex(projects: []))
+        let (model, _) = makeModel([])
         let others: [(String, KeyPath<AppModel, Bool>, () -> Void)] = [
             ("palette", \.commandPalettePresented, { model.toggleCommandPalette() }),
             ("new session picker", \.newSessionPickerPresented, { model.toggleNewSessionPicker() }),

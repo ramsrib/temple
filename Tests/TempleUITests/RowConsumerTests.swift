@@ -50,6 +50,17 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(app.launcherDefaultProjectKey?.path, "/old")
     }
 
+    func testArchiveIncludesMembersWithoutTranscriptsAndDirectories() throws {
+        let app = try model([Fixture.row("missing", project: "/gone", title: "Kept"), Fixture.row("unknown", title: "Directoryless")])
+        app.overlay.setArchived(true, sessionID: "missing")
+        app.overlay.setArchived(true, sessionID: "unknown")
+        XCTAssertEqual(Set(app.archiveGroups("").flatMap(\.project.sessions).map(\.id)), ["missing", "unknown"])
+        XCTAssertEqual(app.archiveGroups("directoryless").first?.name, "No project")
+        XCTAssertNil(app.archiveGroups("directoryless").first?.project.sessions.first?.directory)
+        app.restoreSession("unknown", undoManager: nil)
+        XCTAssertFalse(app.archivedSessionResults("").contains { $0.id == "unknown" })
+    }
+
     func testRailGroupsByHostAndOmitsDirectorylessMembers() throws {
         let app = try model([Fixture.row("local", project: "/same"),
             Fixture.row("remote", project: "/same", host: HostID(rawValue: "remote")), Fixture.row("unknown")])

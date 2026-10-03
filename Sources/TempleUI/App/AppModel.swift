@@ -1031,94 +1031,49 @@ public final class AppModel: ObservableObject {
 
     /// Archived projects, newest activity first. Nothing archive-related lives
     /// in the sidebar, so this panel is the only way back.
-    public var archivedProjects: [Project] {
-        visibleArchivedProjects.sorted { $0.lastActivity > $1.lastActivity }
+    public var archivedProjects: [SessionRowProject] {
+        rowProjects.filter { overlay.isProjectArchived($0.path) }
     }
 
-    private var visibleArchivedProjects: [Project] {
-        scopedProjects.filter { overlay.isProjectArchived($0.path) }
+    public func archivedProjectResults(_ query: String) -> [SessionRowProject] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return archivedProjects.filter { q.isEmpty || $0.path.localizedCaseInsensitiveContains(q) || !RowSearch.rank($0.sessions, query: q).isEmpty }
     }
 
-    /// Typing matches the folder name or any path component, like the ⌘N
-    /// project picker — or any session INSIDE the project, by the same titles
-    /// session search uses. The project row stands in for its sessions in this
-    /// panel, so it has to be findable by what is remembered about them: the
-    /// task, not the folder it happened to run in.
-    public func archivedProjectResults(_ query: String) -> [Project] {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return archivedProjects }
-        let overrides = overlay.displayTitleOverrides
-        return archivedProjects.filter { project in
-            project.path.localizedCaseInsensitiveContains(q)
-                || !search.rank(project.sessions, query: q, titleOverrides: overrides).isEmpty
-        }
+    public func archivedSessionResults(_ query: String) -> [Session] {
+        let rows = sessions.filter { $0.state.archived && !($0.project.map { overlay.isProjectArchived($0.path) } ?? false) }
+        return query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? rows : RowSearch.rank(rows, query: query)
     }
 
-    /// Sessions archived one by one. A session inside an ARCHIVED project is
-    /// left out: the project row already represents it, and listing both would
-    /// offer two different unarchives for the same disappearance.
-    public func archivedSessionResults(_ query: String) -> [AgentSession] {
-        let sessions = Self.dedupedByID(
-            scopedProjects
-                .filter { !overlay.isProjectArchived($0.path) }
-                .flatMap(\.sessions)
-                .filter { overlay.isArchived($0.id) })
-        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
-            return sessions.sorted { lhs, rhs in
-                if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
-                return lhs.id < rhs.id
-            }
-        }
-        return search.rank(sessions, query: query,
-                           titleOverrides: overlay.displayTitleOverrides)
-    }
-
-    /// One group per project in the archive browser, shaped like the sidebar.
-    /// `wholeProject` groups come first (the project itself is archived; its
-    /// sessions are listed so the count is something you can see), then groups
-    /// of sessions archived one by one, each under its project's name. Typing
-    /// keeps a whole project when its path matches (all sessions shown) or when
-    /// any session inside matches (those sessions shown).
     public struct ArchiveGroup: Identifiable, Equatable {
-        public let project: Project
+        public let project: SessionRowProject
         public let wholeProject: Bool
-        public var id: String { project.path }
+        /// An archive header for directoryless rows, never a session directory.
+        public let directoryless: Bool
+        public var id: ProjectKey { project.key }
+        public var name: String { directoryless ? "No project" : project.name }
     }
 
     public func archiveGroups(_ query: String) -> [ArchiveGroup] {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        let overrides = overlay.displayTitleOverrides
-        // One rule for both kinds of group: a path match keeps every session,
-        // otherwise the sessions that match by title — and none means no group.
-        func matching(_ path: String, _ sessions: [AgentSession]) -> [AgentSession]? {
-            if q.isEmpty || path.localizedCaseInsensitiveContains(q) { return sessions }
-            let ranked = search.rank(sessions, query: q, titleOverrides: overrides)
-            return ranked.isEmpty ? nil : ranked
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        func matching(_ project: SessionRowProject) -> [Session] {
+            if q.isEmpty || project.path.localizedCaseInsensitiveContains(q) { return project.sessions }
+            return RowSearch.rank(project.sessions, query: q)
         }
-        // The index can surface one session id under two project paths; a row
-        // id is the session id, so each session may appear once. First wins,
-        // as in every other list here.
-        var seen = Set<String>()
-        func unseen(_ sessions: [AgentSession]) -> [AgentSession] {
-            sessions.filter { seen.insert($0.id).inserted }
+        let whole = archivedProjects.compactMap { project -> ArchiveGroup? in
+            let rows = matching(project)
+            return rows.isEmpty ? nil : ArchiveGroup(project: SessionRowProject(key: project.key, sessions: rows), wholeProject: true, directoryless: false)
         }
-        let whole: [ArchiveGroup] = archivedProjects.compactMap { project in
-            guard let sessions = matching(project.path, project.sessions) else { return nil }
-            return ArchiveGroup(project: Project(path: project.path, sessions: unseen(sessions)),
-                                wholeProject: true)
-        }
-        var byPath: [String: [AgentSession]] = [:]
-        var order: [String] = []
-        for session in archivedSessionResults("") {
-            if byPath[session.projectPath] == nil { order.append(session.projectPath) }
-            byPath[session.projectPath, default: []].append(session)
-        }
-        let partial: [ArchiveGroup] = order.compactMap { path in
-            guard let sessions = matching(path, byPath[path] ?? []) else { return nil }
-            let fresh = unseen(sessions)
-            return fresh.isEmpty ? nil
-                : ArchiveGroup(project: Project(path: path, sessions: fresh), wholeProject: false)
-        }
+        // Directoryless members remain archivable and restorable. The empty
+        // path is a header identity only; the underlying Session stays nil.
+        let partialRows = archivedSessionResults("")
+        let grouped = Dictionary(grouping: partialRows) { $0.project ?? ProjectKey(host: $0.host, path: "") }
+        let partialProjects: [SessionRowProject] = grouped.map { SessionRowProject(key: $0.key, sessions: $0.value) }
+        let ordered = partialProjects.sorted { $0.lastActivity == $1.lastActivity ? $0.key.path < $1.key.path : $0.lastActivity > $1.lastActivity }
+        let partial: [ArchiveGroup] = ordered.compactMap { project -> ArchiveGroup? in
+                let rows = matching(project)
+                return rows.isEmpty ? nil : ArchiveGroup(project: SessionRowProject(key: project.key, sessions: rows), wholeProject: false, directoryless: rows.allSatisfy { $0.project == nil })
+            }
         return whole + partial
     }
 

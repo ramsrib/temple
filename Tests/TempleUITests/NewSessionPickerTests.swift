@@ -29,11 +29,11 @@ final class NewSessionPickerTests: XCTestCase {
 
     func testPickerListsProjectsByRecencyAndFiltersByPath() {
         let model = makeModel( [
-            
+
                 Fixture.row("a", project: "/work/api", updated: 10),
-            
+
                 Fixture.row("b", project: "/home/temple", updated: 30),
-            
+
                 Fixture.row("c", project: "/work/site", updated: 20),
         ])
 
@@ -48,9 +48,9 @@ final class NewSessionPickerTests: XCTestCase {
 
     func testPickerKeepsNoisyMembers() {
         let model = makeModel( [
-            
+
                 Fixture.row("noise", project: "/p/junk", updated: 20),
-            
+
                 Fixture.row("kept", project: "/p/kept", updated: 10),
         ], noise: PickerNoiseFilter())
 

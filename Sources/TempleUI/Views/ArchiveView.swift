@@ -31,12 +31,12 @@ struct ArchiveView: View {
     /// session row. Headers of groups that merely contain archived sessions
     /// are labels, not rows — there is nothing to restore on them.
     enum Entry: Identifiable {
-        case project(Project)
-        case session(AgentSession)
+        case project(SessionRowProject)
+        case session(Session)
 
         var id: String {
             switch self {
-            case .project(let project): return "project:\(project.path)"
+            case .project(let project): return "project:\(project.key.host.rawValue):\(project.path)"
             case .session(let session): return "session:\(session.id)"
             }
         }
@@ -183,7 +183,7 @@ struct ArchiveView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
                     .frame(width: 16)
-                Text(group.project.name)
+                Text(group.name)
                     .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
                 Text(parentPath(group.project.path))
@@ -198,7 +198,7 @@ struct ArchiveView: View {
         } else {
             // Not a row — a label, in the History tab's day-header style, so it
             // can never be mistaken for the restorable project header above.
-            HistoryHeader(title: group.project.name)
+            HistoryHeader(title: group.name)
                 .frame(height: 27)
         }
     }
@@ -207,10 +207,10 @@ struct ArchiveView: View {
     /// only thing that could bring it back alone is bringing the whole project
     /// back, and a button that says Restore must do exactly one thing. Open is
     /// still there — opening restores the project, as ADR-017 promises.
-    private func sessionRow(_ session: AgentSession) -> some View {
+    private func sessionRow(_ session: Session) -> some View {
         let entry = Entry.session(session)
         let index = indexByID[entry.id] ?? 0
-        let insideArchivedProject = model.overlay.isProjectArchived(session.projectPath)
+        let insideArchivedProject = (session.project.map { model.overlay.isProjectArchived($0.path) } ?? false)
         return ArchiveRow(
             selected: index == selection,
             restoreLabel: insideArchivedProject ? nil : "Restore",
@@ -218,13 +218,12 @@ struct ArchiveView: View {
             hover: { hoverSelect(index) },
             act: { selection = index; act(on: entry) }
         ) {
-            AgentBadge(agent: session.agent, size: 13)
-                .frame(width: 16)
+            if let agent = session.agent { AgentBadge(agent: agent, size: 13).frame(width: 16) }
             Text(model.displayTitle(session))
                 .font(.system(size: 13))
                 .lineLimit(1)
             Spacer(minLength: 12)
-            Text(RelativeTime.string(from: session.updatedAt))
+            Text(RelativeTime.string(from: session.sortDate))
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
@@ -283,8 +282,8 @@ struct ArchiveView: View {
         case .project:
             return "restore project"
         case .session(let session):
-            if model.overlay.isProjectArchived(session.projectPath) {
-                return "open · restores \(model.projectName(session.projectPath))"
+            if (session.project.map { model.overlay.isProjectArchived($0.path) } ?? false) {
+                return "open · restores \(session.project?.displayName ?? "No project")"
             }
             return "open session"
         }
@@ -370,8 +369,8 @@ struct ArchiveView: View {
         case .project(let project):
             model.restoreProject(project.path, undoManager: undoManager)
         case .session(let session):
-            if model.overlay.isProjectArchived(session.projectPath) {
-                model.restoreProject(session.projectPath, undoManager: undoManager)
+            if (session.project.map { model.overlay.isProjectArchived($0.path) } ?? false) {
+                if let project = session.project { model.restoreProject(project.path, undoManager: undoManager) }
             } else {
                 model.restoreSession(session.id, undoManager: undoManager)
             }
