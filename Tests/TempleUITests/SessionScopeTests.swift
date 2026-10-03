@@ -5,16 +5,13 @@ import CoreServices
 @testable import TempleUI
 @testable import TempleCore
 
-private struct ScopeNoNoiseFilter: NoiseFilter {
-    func isNoise(_ session: AgentSession) -> Bool { false }
-}
 
 /// The session scope: by default Temple browses only the sessions it has
 /// touched — the ones with a row in its DB — and a session from anywhere else
 /// is on no surface at all.
 @MainActor
 final class SessionScopeTests: XCTestCase {
-    private func makeModel(_ index: SessionIndex,
+    private func makeModel(_ index: CatalogFixtureIndex,
                            database: TempleDB? = nil,
                            settings: SettingsStore? = nil) -> (AppModel, SessionOverlayStore) {
         let database = database ?? (try! TempleDB.inMemory())
@@ -22,12 +19,11 @@ final class SessionScopeTests: XCTestCase {
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
             indexSource: FakeIndexSource(index),
-            noiseFilter: ScopeNoNoiseFilter(),
             database: database,
             settings: settings ?? SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: overlay
         )
-        model.index = index
+
         return (model, overlay)
     }
 
@@ -52,7 +48,7 @@ final class SessionScopeTests: XCTestCase {
         }
         let db = try TempleDB(database: DatabaseQueue(configuration: config))
         try db.join(sessionID: "legacy", via: .imported)
-        let (model, overlay) = makeModel(SessionIndex(projects: []), database: db)
+        let (model, overlay) = makeModel(CatalogFixtureIndex(projects: []), database: db)
         let facts = summary()
         for _ in 0..<20 {
             model.receiveEngineSnapshot(EngineSnapshot(generation: 1,
@@ -87,8 +83,8 @@ final class SessionScopeTests: XCTestCase {
         let facts = TranscriptSummary(id: "legacy", agent: agent,
             locator: TranscriptLocator(host: .local, path: "/private/tmp/legacy.jsonl"),
             modifiedAt: Date(timeIntervalSince1970: 100), cwd: "/project", firstPrompt: "First prompt",
-            recordedTitle: agent == .claude ? title : nil)
-        let legacy = AgentSession(summary: facts, title: agent == .codex ? title : nil)
+            recordedTitle: title)
+        let legacy = facts
         let overlay = SessionOverlayStore(db: db)
         overlay.fillMissingCoreFields(from: facts)
         for store in [overlay, SessionOverlayStore(db: db)] {
@@ -136,7 +132,7 @@ final class SessionScopeTests: XCTestCase {
     func testCompleteRowBurstsDoNotRebuildPresentation() throws {
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "legacy", via: .imported)
-        let (model, overlay) = makeModel(SessionIndex(projects: []), database: db)
+        let (model, overlay) = makeModel(CatalogFixtureIndex(projects: []), database: db)
         let resolution: [String: MemberResolution] = ["legacy": .loaded(summary().locator.localURL!)]
         model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: resolution, summaries: ["legacy": summary()]))
         let filledBuilds = model.sessionPresentationBuildCount
@@ -189,7 +185,7 @@ final class SessionScopeTests: XCTestCase {
                     core: SessionCore(host: HostID(rawValue: "remote"), directory: "/row", directorySource: .tab,
                                       title: "Row title", lastActiveAt: Date(timeIntervalSince1970: 5)))
         try db.join(sessionID: "directoryless", via: .imported)
-        let (model, overlay) = makeModel(SessionIndex(projects: []), database: db)
+        let (model, overlay) = makeModel(CatalogFixtureIndex(projects: []), database: db)
         model.receiveEngineSnapshot(EngineSnapshot(generation: 1,
             resolutions: ["missing": .confirmedAbsent], summaries: [:]))
         XCTAssertEqual(Set(model.sessions.map(\.id)), ["missing", "directoryless"])
@@ -200,7 +196,6 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertTrue(session.canResume)
         XCTAssertNil(session.transcript)
         XCTAssertEqual(model.rowProjects.count, 1)
-        XCTAssertTrue(model.index.allSessions.isEmpty)
         try db.setTitle("Changed by row observer", sessionID: "missing")
         XCTAssertEqual(overlay.rows["missing"]?.title, "Changed by row observer")
         overlay.touch("missing", at: Date(timeIntervalSince1970: 500))
@@ -212,7 +207,7 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertEqual(model.sessions.first(where: { $0.id == "missing" })?.sortDate, Date(timeIntervalSince1970: 500))
     }
 
-    func testCodexHistoryPromptsFillRowsAtStartupAndOnSharedFileUpdates() async throws {
+    func testCodexHistoryPromptsFillRowsAtStartupAndOnExplicitEnrichment() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let sessionDirectory = root.appendingPathComponent("sessions")
         try FileManager.default.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
@@ -237,8 +232,7 @@ final class SessionScopeTests: XCTestCase {
         let cache = root.appendingPathComponent("cache.json")
         let source = WatcherIndexSource(watcher: watcher)
         defer { source.stop() }
-        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
-            noiseFilter: ScopeNoNoiseFilter(), database: db,
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source, database: db,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()), stateDirectory: root)
         model.start()
         let initialDeadline = Date().addingTimeInterval(3)
@@ -247,16 +241,14 @@ final class SessionScopeTests: XCTestCase {
         }
         XCTAssertEqual(try db.sessionState(initial)?.title, "First recorded prompt")
         XCTAssertNil(try db.sessionState(late)?.title)
-        let legacyBefore = model.index
         try (firstLine + "\n{\"session_id\":\"\(late)\",\"ts\":20,\"text\":\"Late recorded prompt\"}")
             .write(to: history, atomically: true, encoding: .utf8)
-        watcher.reconcileEvent(path: history.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
+        watcher.requestResolution(late)
         let lateDeadline = Date().addingTimeInterval(3)
         while model.sessions.first(where: { $0.id == late })?.state.title == nil, Date() < lateDeadline {
             try await Task.sleep(for: .milliseconds(15))
         }
         XCTAssertEqual(try db.sessionState(late)?.title, "Late recorded prompt")
-        XCTAssertEqual(model.index, legacyBefore, "A history fact update need not change legacy presentation")
         XCTAssertNil(try db.sessionState(initial)?.generatedTitle)
         XCTAssertNil(try db.sessionState(late)?.generatedTitle)
     }
@@ -276,8 +268,7 @@ final class SessionScopeTests: XCTestCase {
         let cacheURL = root.appendingPathComponent("cache.json")
         let source = WatcherIndexSource(watcher: SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db))
         defer { source.stop() }
-        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
-            noiseFilter: ScopeNoNoiseFilter(), database: db,
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source, database: db,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()), stateDirectory: root)
         model.start()
         let end = Date().addingTimeInterval(3)
@@ -285,8 +276,8 @@ final class SessionScopeTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(15))
         }
         XCTAssertFalse(model.isLoading)
-        XCTAssertEqual(model.index.allSessions.map(\.id), ["legacy"])
-        XCTAssertEqual(model.index.allSessions.first?.title, "Real prompt")
+        XCTAssertEqual(Set(model.sessions.map(\.id)), ["legacy", "missing"])
+        XCTAssertEqual(model.sessions.first { $0.id == "legacy" }?.displayTitle, "Real prompt")
         XCTAssertEqual(try db.sessionState("legacy")?.directory, "/facts")
         XCTAssertEqual(model.sessions.first(where: { $0.id == "legacy" })?.displayTitle, "Real prompt")
         XCTAssertEqual(model.sessions.first(where: { $0.id == "missing" })?.displayTitle, "Kept row")
@@ -321,12 +312,12 @@ final class SessionScopeTests: XCTestCase {
 
     /// `/p/outside` holds only a session run elsewhere, and is the most recent
     /// project, so recency alone would put it first everywhere.
-    private func mixedIndex() -> SessionIndex {
-        SessionIndex(projects: [
-            Project(path: "/p/outside", sessions: [
+    private func mixedIndex() -> CatalogFixtureIndex {
+        CatalogFixtureIndex(projects: [
+            CatalogFixtureProject(path: "/p/outside", sessions: [
                 Fixture.session("o1", project: "/p/outside", title: "Outside one", updated: 50),
             ]),
-            Project(path: "/p/temple", sessions: [
+            CatalogFixtureProject(path: "/p/temple", sessions: [
                 Fixture.session("t1", project: "/p/temple", title: "Temple one", updated: 40),
                 Fixture.session("t2", project: "/p/temple", title: "Temple two", updated: 30),
             ]),
@@ -385,7 +376,7 @@ final class SessionScopeTests: XCTestCase {
 
     func testANewClaudeSessionIsCreatedInTempleAsSoonAsItsIdIsMinted() throws {
         let database = try! TempleDB.inMemory()
-        let (model, overlay) = makeModel(SessionIndex(projects: []), database: database)
+        let (model, overlay) = makeModel(CatalogFixtureIndex(projects: []), database: database)
         let tab = model.openSessions.newSession(agent: .claude, projectPath: "/p/new")
         let id = try XCTUnwrap(tab.sessionID)
         XCTAssertTrue(overlay.isTempleSession(id))
@@ -394,7 +385,7 @@ final class SessionScopeTests: XCTestCase {
 
     func testANewCodexSessionIsCreatedInTempleWhenItsIdIsAdopted() throws {
         let database = try! TempleDB.inMemory()
-        let (model, overlay) = makeModel(SessionIndex(projects: []), database: database)
+        let (model, overlay) = makeModel(CatalogFixtureIndex(projects: []), database: database)
         let tab = model.openSessions.newSession(agent: .codex, projectPath: "/p/new")
         XCTAssertNil(tab.sessionID)
         XCTAssertTrue(overlay.templeSessions.isEmpty)

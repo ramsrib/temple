@@ -21,7 +21,7 @@ final class MetadataTests: XCTestCase {
         """
         try content.write(to: file, atomically: true, encoding: .utf8)
 
-        let session = try XCTUnwrap(ClaudeSessionStore(root: root).loadSessions().first)
+        let session = try XCTUnwrap(ClaudeSessionStore(root: root).loadSummaries().first)
         XCTAssertEqual(session.messageCount, 2)
         XCTAssertEqual(session.model, "claude-opus-4-6")
         XCTAssertEqual(session.lastMessagePreview, "latest answer")
@@ -41,7 +41,7 @@ final class MetadataTests: XCTestCase {
         """
         try content.write(to: file, atomically: true, encoding: .utf8)
 
-        let session = try XCTUnwrap(CodexSessionStore(root: root).loadSessions().first)
+        let session = try XCTUnwrap(CodexSessionStore(root: root).loadSummaries().first)
         XCTAssertEqual(session.messageCount, 2)
         XCTAssertEqual(session.model, "openai")
         XCTAssertEqual(session.lastMessagePreview, "done")
@@ -51,7 +51,7 @@ final class MetadataTests: XCTestCase {
         let plainFile = sessions.appendingPathComponent("rollout-plain.jsonl")
         try #"{"type":"session_meta","payload":{"session_id":"plain","cwd":"/work/project"}}"#
             .write(to: plainFile, atomically: true, encoding: .utf8)
-        let plain = try XCTUnwrap(CodexSessionStore(root: root).loadSessions().first { $0.id == "plain" })
+        let plain = try XCTUnwrap(CodexSessionStore(root: root).loadSummaries().first { $0.id == "plain" })
         XCTAssertNil(plain.model)
         XCTAssertNil(plain.gitBranch)
         XCTAssertNil(plain.lastMessagePreview)
@@ -74,8 +74,8 @@ final class MetadataTests: XCTestCase {
             .write(to: sessions.appendingPathComponent("rollout-c-own.jsonl"), atomically: true, encoding: .utf8)
 
         let store = CodexSessionStore(root: root)
-        XCTAssertEqual(Set(store.loadSessions().map(\.id)), ["parent", "own"])
-        XCTAssertNil(store.loadSession(at: sessions.appendingPathComponent("rollout-b-child.jsonl")))
+        XCTAssertEqual(Set(store.loadSummaries().map(\.id)), ["parent", "own"])
+        XCTAssertNil(store.loadSummary(at: sessions.appendingPathComponent("rollout-b-child.jsonl")))
     }
 
     func testCodexTitleFallbackChain() throws {
@@ -120,7 +120,7 @@ final class MetadataTests: XCTestCase {
         try writeRollout("beyond-id", lines: [hugeInstructions, prompt])
 
         let byID = Dictionary(uniqueKeysWithValues:
-            CodexSessionStore(root: root).loadSessions().map { ($0.id, $0.title) })
+            CodexSessionStore(root: root).loadSummaries().map { ($0.id, $0.title) })
         XCTAssertEqual(byID["hist-id"], "typed prompt")
         XCTAssertEqual(byID["index-id"], "companion thread")
         XCTAssertEqual(byID["exec-id"], "prompt from rollout")
@@ -131,7 +131,7 @@ final class MetadataTests: XCTestCase {
     }
 
     func testAutomationOriginatorIsNoise() {
-        let session = AgentSession(id: "id", agent: .codex, projectPath: "/work", title: "x",
+        let session = catalogFixture(id: "id", agent: .codex, projectPath: "/work", title: "x",
                                    createdAt: nil, updatedAt: Date(), filePath: URL(fileURLWithPath: "/tmp/x"),
                                    originator: "codex_exec")
         XCTAssertTrue(SessionFilter.isNoise(session, pathExists: { _ in true }))
@@ -146,7 +146,7 @@ final class MetadataTests: XCTestCase {
         let content = #"{"type":"user","cwd":"/work/project","message":{"content":"the text contains \"type\":\"assistant\" but is one message"}}"#
         try content.write(to: file, atomically: true, encoding: .utf8)
 
-        let session = try XCTUnwrap(ClaudeSessionStore(root: root).loadSessions().first)
+        let session = try XCTUnwrap(ClaudeSessionStore(root: root).loadSummaries().first)
         XCTAssertEqual(session.messageCount, 1)
         XCTAssertEqual(session.title, #"the text contains "type":"assistant" but is one message"#)
     }

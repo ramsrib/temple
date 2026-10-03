@@ -55,11 +55,11 @@ final class CoreWiringTests: XCTestCase {
         if injectEvents { watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemCreated)) }
 
         let updateDeadline = Date().addingTimeInterval(5)
-        while !model.index.allSessions.contains(where: { $0.id == "wired-session" }),
+        while !model.sessions.contains(where: { $0.id == "wired-session" }),
               Date() < updateDeadline {
             try await Task.sleep(for: .milliseconds(25))
         }
-        XCTAssertTrue(model.index.allSessions.contains(where: { $0.id == "wired-session" }))
+        XCTAssertTrue(model.sessions.contains(where: { $0.id == "wired-session" }))
         if injectEvents { XCTAssertEqual(model.openSessions.activeTab?.sessionID, "wired-session") }
     }
 

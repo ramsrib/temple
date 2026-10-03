@@ -63,7 +63,7 @@ final class StoreTests: XCTestCase {
         XCTAssertNil(recordedCwd.directoryHint)
     }
 
-    func testAgentSessionSummaryPreservesLegacyFallbacks() throws {
+    func testTranscriptSummarySummaryPreservesLegacyFallbacks() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let claudeFile = root.appendingPathComponent("claude/-work-my-project/claude-id.jsonl")
@@ -76,19 +76,12 @@ final class StoreTests: XCTestCase {
         ]
         for (store, file) in zip(stores, [claudeFile, codexFile]) {
             let summary = try XCTUnwrap(store.loadSummary(at: file))
-            let expected = AgentSession(
-                id: store.agent == .claude ? "claude-id" : "codex-id",
-                agent: store.agent,
-                projectPath: store.agent == .claude ? "/work/my/project" : "(unknown)",
-                title: store.agent == .claude ? "(untitled)" : "(no prompt)",
-                createdAt: nil, updatedAt: StoreIO.modificationDate(file), filePath: file)
-            XCTAssertEqual(AgentSession(summary: summary), expected)
-            XCTAssertEqual(store.loadSession(at: file), expected)
-            XCTAssertEqual(store.loadSessions(), [expected])
-            XCTAssertEqual(store.catalogParser()(file), expected)
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = .sortedKeys
-            XCTAssertEqual(try encoder.encode(AgentSession(summary: summary)), try encoder.encode(expected))
+            XCTAssertNil(summary.cwd)
+            XCTAssertNil(summary.firstPrompt)
+            XCTAssertEqual(summary.directoryHint, store.agent == .claude ? "/work/my/project" : nil)
+            XCTAssertEqual(store.loadSummary(at: file), summary)
+            XCTAssertEqual(store.loadSummaries(), [summary])
+            XCTAssertEqual(store.catalogParser()(file), summary)
         }
     }
 
@@ -104,8 +97,8 @@ final class StoreTests: XCTestCase {
         let summary = try XCTUnwrap(store.loadSummary(at: file))
         XCTAssertEqual(summary.firstPrompt, "first prompt")
         XCTAssertEqual(summary.recordedTitle, "recorded title")
-        XCTAssertEqual(AgentSession(summary: summary).title, "recorded title")
-        XCTAssertEqual(store.loadSession(at: file)?.title, "recorded title")
+        XCTAssertEqual(summary.title, "recorded title")
+        XCTAssertEqual(store.loadSummary(at: file)?.title, "recorded title")
     }
 
     func testCodexTailPromptIsAHintNotAFirstPrompt() throws {
@@ -122,8 +115,8 @@ final class StoreTests: XCTestCase {
         let summary = try XCTUnwrap(store.loadSummary(at: file))
         XCTAssertNil(summary.firstPrompt)
         XCTAssertEqual(summary.laterPromptHint, "later prompt")
-        XCTAssertEqual(AgentSession(summary: summary).title, "later prompt")
-        XCTAssertEqual(store.loadTranscript(at: file), AgentSession(summary: summary))
+        XCTAssertEqual(summary.title, "later prompt")
+        XCTAssertEqual(store.loadSummary(at: file), summary)
     }
 
     func testCodexHistoryPromptIsSeparateFromRolloutAndLegacyTitles() throws {
@@ -143,9 +136,9 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(summary.firstPrompt, "rollout prompt")
         XCTAssertEqual(summary.historyPrompt, "shared title")
         XCTAssertNil(summary.recordedTitle)
-        XCTAssertEqual(AgentSession(summary: summary).title, "rollout prompt")
-        XCTAssertEqual(store.loadSession(at: file)?.title, "shared title")
-        XCTAssertEqual(store.loadSessions().first?.title, "shared title")
+        XCTAssertEqual(summary.title, "shared title")
+        XCTAssertEqual(store.loadSummary(at: file)?.title, "shared title")
+        XCTAssertEqual(store.loadSummaries().first?.title, "shared title")
         XCTAssertEqual(store.catalogParser()(file)?.title, "shared title")
     }
 
@@ -166,24 +159,32 @@ final class StoreTests: XCTestCase {
             let summary = try XCTUnwrap(summary)
             XCTAssertNil(summary.firstPrompt)
             XCTAssertEqual(summary.historyPrompt, "First recorded prompt")
-            XCTAssertEqual(AgentSession(summary: summary).title, "(no prompt)", "Legacy rollout title remains unchanged")
+            XCTAssertNil(summary.firstPrompt, "History prompts remain separate from rollout facts")
         }
-        XCTAssertEqual(store.loadSession(at: file)?.title, "First recorded prompt")
+        XCTAssertEqual(store.loadSummary(at: file)?.title, "First recorded prompt")
         try writeTranscript(#"{"session_id":"codex-id","ts":10,"text":"   "}"#,
                             at: root.appendingPathComponent("history.jsonl"))
         XCTAssertNil(store.loadSummary(at: file)?.historyPrompt)
-        XCTAssertEqual(store.loadSession(at: file)?.title, "Display name")
+        XCTAssertEqual(store.loadSummary(at: file)?.title, "Display name")
     }
 
     private func assertLegacyValue(
-        _ actual: AgentSession?, equals expected: AgentSession,
+        _ actual: TranscriptSummary?, equals expected: TranscriptSummary,
         file: StaticString = #filePath, line: UInt = #line
     ) throws {
         let actual = try XCTUnwrap(actual, file: file, line: line)
-        XCTAssertEqual(actual, expected, file: file, line: line)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .sortedKeys
-        XCTAssertEqual(try encoder.encode(actual), try encoder.encode(expected), file: file, line: line)
+        XCTAssertEqual(actual.id, expected.id, file: file, line: line)
+        XCTAssertEqual(actual.agent, expected.agent, file: file, line: line)
+        XCTAssertEqual(actual.projectPath, expected.projectPath, file: file, line: line)
+        XCTAssertEqual(actual.title, expected.title, file: file, line: line)
+        XCTAssertEqual(actual.createdAt, expected.createdAt, file: file, line: line)
+        XCTAssertEqual(actual.modifiedAt, expected.modifiedAt, file: file, line: line)
+        XCTAssertEqual(actual.locator.localURL, expected.locator.localURL, file: file, line: line)
+        XCTAssertEqual(actual.messageCount, expected.messageCount, file: file, line: line)
+        XCTAssertEqual(actual.model, expected.model, file: file, line: line)
+        XCTAssertEqual(actual.gitBranch, expected.gitBranch, file: file, line: line)
+        XCTAssertEqual(actual.lastMessagePreview, expected.lastMessagePreview, file: file, line: line)
+        XCTAssertEqual(actual.originator, expected.originator, file: file, line: line)
     }
 
     func testClaudeSystemContentIsOnlyALegacyTitleHint() throws {
@@ -195,12 +196,12 @@ final class StoreTests: XCTestCase {
         let summary = try XCTUnwrap(store.loadSummary(at: file))
         XCTAssertNil(summary.firstPrompt)
         XCTAssertEqual(summary.legacyTitleHint, "status")
-        let expected = AgentSession(id: "system", agent: .claude, projectPath: "/work/project",
+        let expected = catalogFixture(id: "system", agent: .claude, projectPath: "/work/project",
                                     title: "status", createdAt: nil,
                                     updatedAt: StoreIO.modificationDate(file), filePath: file)
-        try assertLegacyValue(AgentSession(summary: summary), equals: expected)
-        try assertLegacyValue(store.loadSession(at: file), equals: expected)
-        try assertLegacyValue(store.loadSessions().first, equals: expected)
+        try assertLegacyValue(summary, equals: expected)
+        try assertLegacyValue(store.loadSummary(at: file), equals: expected)
+        try assertLegacyValue(store.loadSummaries().first, equals: expected)
         try assertLegacyValue(store.catalogParser()(file), equals: expected)
     }
 
@@ -238,7 +239,7 @@ final class StoreTests: XCTestCase {
             try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: file.path)
             files[item.id] = file
         }
-        let bulk = Dictionary(uniqueKeysWithValues: store.loadSessions().map { ($0.id, $0) })
+        let bulk = Dictionary(uniqueKeysWithValues: store.loadSummaries().map { ($0.id, $0) })
         let catalog = store.catalogParser()
         XCTAssertEqual(bulk.count, cases.count)
         for item in cases {
@@ -246,12 +247,12 @@ final class StoreTests: XCTestCase {
             let summary = try XCTUnwrap(store.loadSummary(at: file))
             XCTAssertEqual(summary.firstPrompt, item.prompt, item.id)
             XCTAssertEqual(summary.recordedTitle, item.recorded, item.id)
-            let expected = AgentSession(id: item.id, agent: .claude, projectPath: "/actual/my-project",
+            let expected = catalogFixture(id: item.id, agent: .claude, projectPath: "/actual/my-project",
                                         title: item.title, createdAt: created, updatedAt: modified, filePath: file,
                                         messageCount: item.count, model: "latest", lastMessagePreview: "final answer",
                                         gitBranch: "feature", originator: nil)
-            try assertLegacyValue(AgentSession(summary: summary), equals: expected)
-            try assertLegacyValue(store.loadSession(at: file), equals: expected)
+            try assertLegacyValue(summary, equals: expected)
+            try assertLegacyValue(store.loadSummary(at: file), equals: expected)
             try assertLegacyValue(bulk[item.id], equals: expected)
             try assertLegacyValue(catalog(file), equals: expected)
         }
@@ -304,7 +305,7 @@ final class StoreTests: XCTestCase {
         }
         try writeTranscript(history.joined(separator: "\n"), at: root.appendingPathComponent("history.jsonl"))
         try writeTranscript(index.joined(separator: "\n"), at: root.appendingPathComponent("session_index.jsonl"))
-        let bulk = Dictionary(uniqueKeysWithValues: store.loadSessions().map { ($0.id, $0) })
+        let bulk = Dictionary(uniqueKeysWithValues: store.loadSummaries().map { ($0.id, $0) })
         let catalog = store.catalogParser()
         XCTAssertEqual(bulk.count, cases.count)
         for item in cases {
@@ -312,19 +313,19 @@ final class StoreTests: XCTestCase {
             let summary = try XCTUnwrap(store.loadSummary(at: file))
             XCTAssertEqual(summary.firstPrompt, item.prompt, item.id)
             XCTAssertEqual(summary.laterPromptHint, "tail prompt", item.id)
-            func expected(title: String) -> AgentSession {
-                AgentSession(id: item.id, agent: .codex, projectPath: "/actual/my-project",
+            func expected(title: String) -> TranscriptSummary {
+                catalogFixture(id: item.id, agent: .codex, projectPath: "/actual/my-project",
                              title: title, createdAt: created, updatedAt: modified, filePath: file,
                              messageCount: item.head ? 4 : 3, model: "latest", lastMessagePreview: "final answer",
                              gitBranch: "main", originator: "codex_exec")
             }
             let legacy = expected(title: item.title)
             let transcript = expected(title: item.prompt ?? "tail prompt")
-            try assertLegacyValue(store.loadSession(at: file), equals: legacy)
+            try assertLegacyValue(store.loadSummary(at: file), equals: legacy)
             try assertLegacyValue(bulk[item.id], equals: legacy)
             try assertLegacyValue(catalog(file), equals: legacy)
-            try assertLegacyValue(AgentSession(summary: summary), equals: transcript)
-            try assertLegacyValue(store.loadTranscript(at: file), equals: transcript)
+            try assertLegacyValue(summary, equals: legacy)
+            try assertLegacyValue(store.loadSummary(at: file), equals: legacy)
         }
     }
 
@@ -348,18 +349,18 @@ final class StoreTests: XCTestCase {
             XCTAssertNotNil(relative.baseURL)
             XCTAssertEqual(summary.locator.localURL?.baseURL, relative.baseURL)
             XCTAssertEqual(summary.locator.localURL?.relativeString, item.relativePath)
-            func expected(file: URL) -> AgentSession {
-                AgentSession(id: item.id, agent: item.store.agent, projectPath: "/work/project",
+            func expected(file: URL) -> TranscriptSummary {
+                catalogFixture(id: item.id, agent: item.store.agent, projectPath: "/work/project",
                              title: "prompt", createdAt: nil, updatedAt: StoreIO.modificationDate(absolute),
                              filePath: file, messageCount: 1, lastMessagePreview: "prompt")
             }
             let legacy = expected(file: relative)
-            try assertLegacyValue(AgentSession(summary: summary), equals: legacy)
-            try assertLegacyValue(item.store.loadSession(at: relative), equals: legacy)
+            try assertLegacyValue(summary, equals: legacy)
+            try assertLegacyValue(item.store.loadSummary(at: relative), equals: legacy)
             try assertLegacyValue(item.store.catalogParser()(relative), equals: legacy)
-            try assertLegacyValue(item.store.loadSessions().first, equals: expected(file: absolute))
+            try assertLegacyValue(item.store.loadSummaries().first, equals: expected(file: absolute))
             if let codex = item.store as? CodexSessionStore {
-                try assertLegacyValue(codex.loadTranscript(at: relative), equals: legacy)
+                try assertLegacyValue(codex.loadSummary(at: relative), equals: legacy)
             }
         }
     }
@@ -403,29 +404,26 @@ final class StoreTests: XCTestCase {
 
     func testIndexGroupsByProjectPath() {
         let base = URL(fileURLWithPath: "/tmp/x.jsonl")
-        let s1 = AgentSession(id: "1", agent: .claude, projectPath: "/p/a",
+        let s1 = catalogFixture(id: "1", agent: .claude, projectPath: "/p/a",
                               title: "t1", createdAt: nil, updatedAt: Date(timeIntervalSince1970: 10),
                               filePath: base)
-        let s2 = AgentSession(id: "2", agent: .codex, projectPath: "/p/a",
+        let s2 = catalogFixture(id: "2", agent: .codex, projectPath: "/p/a",
                               title: "t2", createdAt: nil, updatedAt: Date(timeIntervalSince1970: 20),
                               filePath: base)
-        let s3 = AgentSession(id: "3", agent: .claude, projectPath: "/p/b",
+        let s3 = catalogFixture(id: "3", agent: .claude, projectPath: "/p/b",
                               title: "t3", createdAt: nil, updatedAt: Date(timeIntervalSince1970: 5),
                               filePath: base)
 
         let store = StubStore(sessions: [s1, s2, s3])
-        let index = SessionIndex.build(stores: [store])
-
-        XCTAssertEqual(index.projects.count, 2)
-        // /p/a is most recently active → first.
-        XCTAssertEqual(index.projects.first?.path, "/p/a")
-        // Newest session within /p/a is first.
-        XCTAssertEqual(index.projects.first?.sessions.first?.id, "2")
+        let sessions = SessionCatalog(stores: [store]).load()
+        XCTAssertEqual(sessions.count, 3)
+        XCTAssertEqual(Set(sessions.compactMap(\.cwd)), ["/p/a", "/p/b"])
+        XCTAssertEqual(sessions.first?.id, "2")
     }
 }
 
 private struct StubStore: SessionStore {
     let agent: Agent = .claude
-    let sessions: [AgentSession]
-    func loadSessions() -> [AgentSession] { sessions }
+    let sessions: [TranscriptSummary]
+    func loadSummaries() -> [TranscriptSummary] { sessions }
 }

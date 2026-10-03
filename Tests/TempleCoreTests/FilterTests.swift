@@ -2,8 +2,8 @@ import XCTest
 @testable import TempleCore
 
 final class FilterTests: XCTestCase {
-    private func session(path: String) -> AgentSession {
-        AgentSession(
+    private func session(path: String) -> TranscriptSummary {
+        catalogFixture(
             id: UUID().uuidString,
             agent: .codex,
             projectPath: path,

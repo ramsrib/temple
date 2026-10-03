@@ -110,15 +110,15 @@ final class FakeTerminalSurfaceFactory: TerminalSurfaceFactory {
 /// An `IndexSource` that emits a fixed index on demand (no disk / no timer).
 @MainActor
 final class FakeIndexSource: IndexSource {
-    var index: SessionIndex
-    private var onUpdate: ((SessionIndex) -> Void)?
-    init(_ index: SessionIndex) { self.index = index }
-    func start(onUpdate: @escaping (SessionIndex) -> Void) {
+    var index: CatalogFixtureIndex
+    private var onUpdate: ((EngineSnapshot) -> Void)?
+    init(_ index: CatalogFixtureIndex) { self.index = index }
+    func start(onUpdate: @escaping (EngineSnapshot) -> Void) {
         self.onUpdate = onUpdate
-        onUpdate(index)
+        onUpdate(index.snapshot)
     }
     func stop() {}
-    func emit(_ new: SessionIndex) { index = new; onUpdate?(new) }
+    func emit(_ new: CatalogFixtureIndex) { index = new; onUpdate?(new.snapshot) }
 }
 
 
@@ -159,8 +159,8 @@ final class InMemoryDefaults: UserDefaults {
 @MainActor
 enum Fixture {
     static func session(_ id: String, agent: Agent = .claude, project: String,
-                        title: String = "Title", updated: TimeInterval = 0) -> AgentSession {
-        AgentSession(id: id, agent: agent, projectPath: project, title: title,
+                        title: String = "Title", updated: TimeInterval = 0) -> TranscriptSummary {
+        catalogFixture(id: id, agent: agent, projectPath: project, title: title,
                      createdAt: nil, updatedAt: Date(timeIntervalSince1970: updated),
                      filePath: URL(fileURLWithPath: "/tmp/\(id).jsonl"))
     }
@@ -186,7 +186,7 @@ enum Fixture {
     static func uniqueDefaults() -> UserDefaults { InMemoryDefaults() }
 
     /// Complete member rows for tests focused on browsing a supplied index.
-    static func join(_ index: SessionIndex, to database: TempleDB) {
+    static func join(_ index: CatalogFixtureIndex, to database: TempleDB) {
         for session in index.allSessions {
             try! database.join(sessionID: session.id, via: .imported,
                                agent: session.agent, transcriptPath: session.filePath,

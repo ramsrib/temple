@@ -8,7 +8,7 @@ final class RowConsumerTests: XCTestCase {
         let db = try TempleDB.inMemory()
         Fixture.join(rows, to: db)
         return AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(SessionIndex(projects: [])), database: db,
+            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])), database: db,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
     }
 
@@ -403,7 +403,7 @@ final class RowConsumerTests: XCTestCase {
     func testHistoryUnionsMembersWithTheUnfilteredCatalog() async throws {
         let app = try model([Fixture.row("member", project: "/", title: "Durable title", updated: 100),
             Fixture.row("missing", title: "Kept without catalog", updated: 50)])
-        let disk = AgentSession(id: "member", agent: .claude, projectPath: "/", title: "Disk title",
+        let disk = catalogFixture(id: "member", agent: .claude, projectPath: "/", title: "Disk title",
             createdAt: nil, updatedAt: Date(timeIntervalSince1970: 10), filePath: URL(fileURLWithPath: "/tmp/member.jsonl"),
             lastMessagePreview: "Catalog preview", gitBranch: "catalog-branch")
         let noisy = Fixture.session("noisy-outside", project: "/", title: "Noise", updated: 20)
@@ -531,7 +531,6 @@ final class RowConsumerTests: XCTestCase {
         let app = try model([Fixture.row("local", project: "/row", title: "Row title"),
             Fixture.row("remote", project: "/row", host: remote)])
         let legacy = Fixture.session("local", agent: .codex, project: "/wrong")
-        app.index = SessionIndex(projects: [Project(path: "/wrong", sessions: [legacy])])
         XCTAssertNil(app.transcriptURL(for: "local"), "legacy index presence is not a row locator")
         let localURL = URL(fileURLWithPath: "/tmp/local.jsonl")
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["local": .loaded(localURL),

@@ -11,7 +11,7 @@ import TempleCore
 final class UIStateTests: XCTestCase {
     private func makeModel(db: TempleDB) -> AppModel {
         AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
-                 indexSource: FakeIndexSource(SessionIndex(projects: [])),
+                 indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
                  database: db,
                  settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
                  overlay: SessionOverlayStore(db: db))

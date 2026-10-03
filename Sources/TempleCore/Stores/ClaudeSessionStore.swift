@@ -18,10 +18,6 @@ public struct ClaudeSessionStore: TranscriptSummaryStore {
 
     public var watchedURLs: [URL] { [root] }
 
-    public func loadSessions() -> [AgentSession] {
-        loadSummaries().map { AgentSession(summary: $0) }
-    }
-
     public func loadSummaries() -> [TranscriptSummary] {
         let files = sessionFileURLs()
         let collector = TranscriptSummaryCollector()
@@ -67,10 +63,6 @@ public struct ClaudeSessionStore: TranscriptSummaryStore {
         let prefix = SessionPaths.normalized(root.path)
         return url.pathExtension == "jsonl" && path.hasPrefix(prefix + "/") &&
             path.split(separator: "/").count == prefix.split(separator: "/").count + 2
-    }
-
-    public func loadSession(at fileURL: URL) -> AgentSession? {
-        loadSummary(at: fileURL).map { AgentSession(summary: $0) }
     }
 
     public func loadSummary(at fileURL: URL) -> TranscriptSummary? {

@@ -6,7 +6,10 @@ public struct SessionCatalog: Sendable {
     public init(stores: [any SessionStore] = [ClaudeSessionStore(), CodexSessionStore()]) {
         self.stores = stores
     }
-    public func load() -> SessionIndex { SessionIndex.build(stores: stores) }
+    public func load() -> [TranscriptSummary] {
+        FileDescriptorLimit.ensureRaised()
+        return stores.flatMap { $0.loadSummaries() }.sorted { $0.modifiedAt > $1.modifiedAt }
+    }
 
     /// What a streamed read reports, in order: one `listed`, any number of
     /// `storeFailed` and `sessions`, then the stream finishes.
@@ -19,7 +22,7 @@ public struct SessionCatalog: Sendable {
         case storeFailed(Agent, message: String)
         /// Parsed sessions, newest file first within and across batches.
         /// `read` counts the files consumed so far, out of `total`.
-        case sessions([AgentSession], read: Int, total: Int)
+        case sessions([TranscriptSummary], read: Int, total: Int)
     }
 
     /// The whole disk, newest first, a batch at a time — for a page that wants
@@ -44,7 +47,7 @@ public struct SessionCatalog: Sendable {
     private struct Entry {
         let url: URL?
         let modified: Date
-        let parse: @Sendable () -> AgentSession?
+        let parse: @Sendable () -> TranscriptSummary?
     }
 
     private static func read(_ stores: [any SessionStore], batchSize: Int,
@@ -56,8 +59,8 @@ public struct SessionCatalog: Sendable {
             guard let incremental = store as? any IncrementalSessionStore else {
                 // A store that can only load wholesale still takes part; its
                 // sessions arrive pre-parsed and sort in with the rest.
-                for session in store.loadSessions() {
-                    entries.append(Entry(url: nil, modified: session.updatedAt, parse: { session }))
+                for session in store.loadSummaries() {
+                    entries.append(Entry(url: nil, modified: session.modifiedAt, parse: { session }))
                 }
                 continue
             }
@@ -82,13 +85,13 @@ public struct SessionCatalog: Sendable {
         while start < total {
             if cancelled.isCancelled { return }
             let chunk = Array(entries[start..<min(start + batchSize, total)])
-            let collector = SessionCollector()
+            let collector = TranscriptSummaryCollector()
             DispatchQueue.concurrentPerform(iterations: chunk.count) { index in
                 if let session = chunk[index].parse() { collector.append(session) }
             }
             start += chunk.count
             let sessions = collector.result().sorted {
-                $0.updatedAt == $1.updatedAt ? $0.id < $1.id : $0.updatedAt > $1.updatedAt
+                $0.modifiedAt == $1.modifiedAt ? $0.id < $1.id : $0.modifiedAt > $1.modifiedAt
             }
             if cancelled.isCancelled { return }
             emit(.sessions(sessions, read: start, total: total))

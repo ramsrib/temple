@@ -65,7 +65,7 @@ final class OpenSessionsModelTests: XCTestCase {
         try db.join(sessionID: "row", via: .imported, agent: .claude,
             core: SessionCore(directory: "/row-directory", title: "Stored title"))
         let factory = FakeTerminalSurfaceFactory()
-        let app = AppModel(surfaceFactory: factory, indexSource: FakeIndexSource(SessionIndex(projects: [])),
+        let app = AppModel(surfaceFactory: factory, indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
             database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             stateDirectory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["row": .resolving], summaries: [:]))
@@ -111,7 +111,7 @@ final class OpenSessionsModelTests: XCTestCase {
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "row", via: .imported, agent: .claude,
             core: SessionCore(directory: "/row-directory"))
-        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: FakeIndexSource(SessionIndex(projects: [])),
+        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
             database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         XCTAssertEqual(app.resumeArgv(for: Fixture.session("row", agent: .codex, project: "/transcript")),
             ["claude", "--resume", "row"])

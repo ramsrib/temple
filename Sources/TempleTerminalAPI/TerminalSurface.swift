@@ -1,6 +1,6 @@
 import AppKit
 
-/// The command a surface spawns in its PTY — e.g. `AgentSession.resume`.
+/// The command a surface spawns in its PTY — e.g. `TranscriptSummary.resume`.
 public struct TerminalCommand: Sendable, Equatable {
     public var argv: [String]
     public var cwd: String

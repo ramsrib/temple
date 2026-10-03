@@ -24,7 +24,7 @@ final class WatcherIndexSourceTests: XCTestCase {
         let complete = expectation(description: "complete batch index")
         let intermediate = expectation(description: "no partially reconciled index")
         intermediate.isInverted = true
-        var indices: [SessionIndex] = []
+        var indices: [EngineSnapshot] = []
         source.start { index in
             indices.append(index)
             let updated = index.allSessions.filter { $0.title == "After" }.count
@@ -67,9 +67,7 @@ private final class BatchGateStore: TranscriptSummaryStore, @unchecked Sendable 
     var agent: Agent { inner.agent }
     var watchedURLs: [URL] { inner.watchedURLs }
     func sessionFileURLs() -> [URL] { inner.sessionFileURLs() }
-    func loadSessions() -> [AgentSession] { inner.loadSessions() }
     func loadSummaries() -> [TranscriptSummary] { inner.loadSummaries() }
-    func loadSession(at url: URL) -> AgentSession? { loadSummary(at: url).map(AgentSession.init(summary:)) }
     func loadSummary(at url: URL) -> TranscriptSummary? {
         XCTAssertFalse(Thread.isMainThread)
         lock.lock()

@@ -2,16 +2,16 @@ import Foundation
 
 /// Classifies ambient/automation sessions that should be hidden by default.
 public enum SessionFilter {
-    public static func isNoise(_ session: AgentSession) -> Bool {
+    public static func isNoise(_ session: TranscriptSummary) -> Bool {
         isNoise(session, pathExists: FileManager.default.fileExists(atPath:))
     }
 
     /// Injectable filesystem check keeps classification deterministic in tests.
     public static func isNoise(
-        _ session: AgentSession,
+        _ session: TranscriptSummary,
         pathExists: (String) -> Bool
     ) -> Bool {
-        if session.projectPath == "/" || !pathExists(session.projectPath) { return true }
+        if (session.cwd ?? session.directoryHint ?? "") == "/" || !pathExists((session.cwd ?? session.directoryHint ?? "")) { return true }
         guard session.agent == .codex, let origin = session.originator?.lowercased() else {
             return false
         }
@@ -19,27 +19,17 @@ public enum SessionFilter {
     }
 
     public static func filtered(
-        _ sessions: [AgentSession],
+        _ sessions: [TranscriptSummary],
         includeNoise: Bool
-    ) -> [AgentSession] {
+    ) -> [TranscriptSummary] {
         includeNoise ? sessions : sessions.filter { !isNoise($0) }
     }
 
     public static func filtered(
-        _ sessions: [AgentSession],
+        _ sessions: [TranscriptSummary],
         includeNoise: Bool,
         pathExists: (String) -> Bool
-    ) -> [AgentSession] {
+    ) -> [TranscriptSummary] {
         includeNoise ? sessions : sessions.filter { !isNoise($0, pathExists: pathExists) }
-    }
-}
-
-public extension SessionIndex {
-    func filteringNoise(includeNoise: Bool) -> SessionIndex {
-        let sessions = SessionFilter.filtered(allSessions, includeNoise: includeNoise)
-        let grouped = Dictionary(grouping: sessions, by: \.projectPath)
-        return SessionIndex(projects: grouped.map { path, sessions in
-            Project(path: path, sessions: sessions.sorted { $0.updatedAt > $1.updatedAt })
-        }.sorted { $0.lastActivity > $1.lastActivity })
     }
 }

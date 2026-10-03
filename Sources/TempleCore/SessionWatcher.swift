@@ -21,7 +21,7 @@ public final class SessionWatcher: @unchecked Sendable {
     private var stream: FSEventStreamRef?
     private var joinObserver: UUID?
     private var leaveObserver: UUID?
-    private var continuation: AsyncStream<SessionIndex>.Continuation?
+    private var continuation: AsyncStream<EngineSnapshot>.Continuation?
     private var running = false
     private var roots: [RootMapping] = []
     private var files: [String: (URL, Agent)] = [:]
@@ -33,7 +33,7 @@ public final class SessionWatcher: @unchecked Sendable {
     private var awaiting: Set<String> = []
     private var states: [String: MemberResolution] = [:]
     private var statesDirty = false
-    private var sessions: [String: AgentSession] = [:]
+    private var sessions: [String: TranscriptSummary] = [:]
     private var summaries: [String: TranscriptSummary] = [:]
     private var generation: UInt64 = 0
     private var engineContentDirty = false
@@ -42,7 +42,7 @@ public final class SessionWatcher: @unchecked Sendable {
     private var signatures: [String: FileSignature] = [:] // validated member ID -> signature
     private let snapshotLock = NSLock()
     private var snapshotStates: [String: MemberResolution] = [:]
-    private var snapshotIndex: SessionIndex?
+    private var snapshotPublication: EngineSnapshot?
     private var snapshotMonitoring = false
     private var stateContinuations: [UUID: AsyncStream<[String: MemberResolution]>.Continuation] = [:]
     private var adoptionTimers: [UUID: DispatchWorkItem] = [:]
@@ -54,8 +54,7 @@ public final class SessionWatcher: @unchecked Sendable {
     private var streamID: UUID?
     private var pendingPaths: Set<String> = []
     private var work: DispatchWorkItem?
-    private var lastIndex: SessionIndex?
-    private var requests: [UUID: AdoptionRequest] = [:]
+        private var requests: [UUID: AdoptionRequest] = [:]
     private var candidates: [String: CodexRolloutCandidate] = [:]
     // Keep competitors seen anywhere in an active window, even if a later
     // sweep no longer finds their files. Overflow refuses the decision.
@@ -100,9 +99,9 @@ public final class SessionWatcher: @unchecked Sendable {
         snapshotLock.lock(); defer { snapshotLock.unlock() }
         return snapshotStates[id]
     }
-    var publishedIndex: SessionIndex? {
+    public var publishedSnapshot: EngineSnapshot? {
         snapshotLock.lock(); defer { snapshotLock.unlock() }
-        return snapshotIndex
+        return snapshotPublication
     }
     public var isMonitoring: Bool {
         snapshotLock.lock(); defer { snapshotLock.unlock() }
@@ -149,7 +148,7 @@ public final class SessionWatcher: @unchecked Sendable {
         snapshotLock.lock()
         let changed = statesDirty
         if changed { snapshotStates = states; statesDirty = false }
-        snapshotIndex = lastIndex; snapshotMonitoring = monitoring
+        snapshotPublication = lastEngineSnapshot; snapshotMonitoring = monitoring
         snapshotLock.unlock()
         if changed {
             engineContentDirty = true
@@ -160,21 +159,23 @@ public final class SessionWatcher: @unchecked Sendable {
     /// Content is published only after a whole batch has reconciled. Resolution
     /// notifications above retain their independent transition timing.
     private func publishEngineSnapshotLocked() {
-        guard running, engineContentDirty || lastEngineSnapshot == nil, let lastIndex else { return }
+        guard running, engineContentDirty || lastEngineSnapshot == nil else { return }
         engineContentDirty = false
         let loadedSummaries = summaries.filter { id, _ in
             if case .loaded = states[id] { return true }
             return false
         }
         let snapshot = EngineSnapshot(generation: generation, resolutions: states,
-            summaries: loadedSummaries, legacyIndex: lastIndex)
+            summaries: loadedSummaries)
         if snapshot != lastEngineSnapshot {
             lastEngineSnapshot = snapshot
+            snapshotLock.lock(); snapshotPublication = snapshot; snapshotLock.unlock()
+            continuation?.yield(snapshot)
             for continuation in engineContinuations.values { continuation.yield(snapshot) }
         }
     }
 
-    public func start() -> AsyncStream<SessionIndex> {
+    public func start() -> AsyncStream<EngineSnapshot> {
         let id = UUID()
         return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             continuation.onTermination = { [weak self] _ in
@@ -229,7 +230,6 @@ public final class SessionWatcher: @unchecked Sendable {
         hintPathsByID.removeAll(); selectedCodexPaths.removeAll()
         signatures.removeAll(); sessions.removeAll(); summaries.removeAll()
         lastEngineSnapshot = nil
-        lastIndex = nil
         states.removeAll(); statesDirty = true; snapshotLocked()
     }
 
@@ -275,10 +275,7 @@ public final class SessionWatcher: @unchecked Sendable {
                 guard (try? database.sessionState(id)) != nil else { return }
             } else if !self.initialMembers.contains(id) { return }
             self.members.insert(id)
-            if case .loaded = self.states[id], !awaitingCreation {
-                let hint = try? self.database?.sessionState(id)?.transcriptPath
-                if hint == nil || hint == self.sessions[id]?.filePath.path { return }
-            }
+            self.signatures.removeValue(forKey: id)
             if awaitingCreation { self.awaiting.insert(id) }
             self.setStateLocked(id, to: awaitingCreation ? .awaitingCreation : .resolving)
             self.snapshotLocked()
@@ -496,7 +493,7 @@ public final class SessionWatcher: @unchecked Sendable {
         for id in members {
             if let subtree {
                 let mapped = (pathsByID[id] ?? []).contains { $0.hasPrefix(subtree + "/") }
-                let old = sessions[id]?.filePath.path.hasPrefix(subtree + "/") == true
+                let old = sessions[id]?.locator.localURL!.path.hasPrefix(subtree + "/") == true
                 let hinted = (try? database?.sessionState(id)?.transcriptPath)?.hasPrefix(subtree + "/") == true
                 if !mapped && !old && !hinted { continue }
             }
@@ -539,8 +536,8 @@ public final class SessionWatcher: @unchecked Sendable {
             }
         }
         if preferredPath == nil { trackHintLocked(id, path: nil) }
-        if let loaded = sessions[id], selectedPath == nil || loaded.agent != .codex || loaded.filePath.path == selectedPath {
-            paths.insert(loaded.filePath.path)
+        if let loaded = sessions[id], selectedPath == nil || loaded.agent != .codex || loaded.locator.localURL!.path == selectedPath {
+            paths.insert(loaded.locator.localURL!.path)
         }
         var unreadable = false
         var available: [(String, FileSignature)] = []
@@ -588,13 +585,11 @@ public final class SessionWatcher: @unchecked Sendable {
         }
         for (path, signature) in ordered {
             guard let entry = files[path], let store = stores.first(where: { $0.agent == entry.1 }) else { continue }
-            if signatures[id] == signature, let session = sessions[id], session.filePath.path == path {
-                setStateLocked(id, to: .loaded(session.filePath)); return
+            if signatures[id] == signature, let session = sessions[id], session.locator.localURL!.path == path {
+                setStateLocked(id, to: .loaded(session.locator.localURL!)); return
             }
-            let summary = (store as? any TranscriptSummaryStore)?.loadSummary(at: entry.0)
-            // Legacy custom stores retain their API; never invent facts from display values.
-            let parsed = store is any TranscriptSummaryStore
-                ? summary.map { AgentSession(summary: $0) } : store.loadSession(at: entry.0)
+            let summary = store.loadSummary(at: entry.0)
+            let parsed = summary
             if let final = try? FileSignature(entry.0), final != signature {
                 pendingPaths.insert(path); scheduleLocked()
             }
@@ -602,10 +597,10 @@ public final class SessionWatcher: @unchecked Sendable {
             if summaries[id] != summary { engineContentDirty = true }
             summaries[id] = summary
             signatures[id] = signature
-            sessions[id] = parsed; setStateLocked(id, to: .loaded(parsed.filePath)); awaiting.remove(id)
+            sessions[id] = parsed; setStateLocked(id, to: .loaded(parsed.locator.localURL!)); awaiting.remove(id)
             trackHintLocked(id, path: path)
-            if database?.isReadOnly != true, row?.agent != parsed.agent || row?.transcriptPath != parsed.filePath.path {
-                try? database?.updateTranscriptHint(sessionID: id, agent: parsed.agent, path: parsed.filePath)
+            if database?.isReadOnly != true, row?.agent != parsed.agent || row?.transcriptPath != parsed.locator.localURL!.path {
+                try? database?.updateTranscriptHint(sessionID: id, agent: parsed.agent, path: parsed.locator.localURL!)
             }
             return
         }
@@ -640,37 +635,11 @@ public final class SessionWatcher: @unchecked Sendable {
         return changed
     }
 
-    private func refreshTitlesLocked() {
-        guard let store = stores.first(where: { $0.agent == .codex }) else { return }
-        let token = store.cacheInvalidationToken
-        guard token != titleToken else { return }
-        titleToken = token; titles = store.loadSharedTitles()
-        let prompts = (store as? any TranscriptSummaryStore)?.loadSharedPrompts() ?? [:]
-        for id in Array(summaries.keys) where summaries[id]?.agent == .codex {
-            if summaries[id]?.historyPrompt != prompts[id] {
-                summaries[id]?.historyPrompt = prompts[id]
-                engineContentDirty = true
-            }
-        }
-    }
-
-    private func displayedSessionsLocked() -> [AgentSession] {
-        sessions.values.map { session in
-            guard session.agent == .codex, let title = titles[session.id] else { return session }
-            return AgentSession(id: session.id, agent: session.agent, projectPath: session.projectPath,
-                title: title, createdAt: session.createdAt, updatedAt: session.updatedAt,
-                filePath: session.filePath, messageCount: session.messageCount, model: session.model,
-                lastMessagePreview: session.lastMessagePreview, gitBranch: session.gitBranch, originator: session.originator)
-        }
-    }
+    private func refreshTitlesLocked() {}
 
     private func publishLocked() {
-        let index = SessionIndex.grouping(displayedSessionsLocked())
-        let changed = index != lastIndex
-        if changed { engineContentDirty = true }
-        lastIndex = index; snapshotLocked()
+        snapshotLocked()
         publishEngineSnapshotLocked()
-        if changed { continuation?.yield(index) }
     }
 
     /// Registers before spawn. Candidates never enter the member snapshot. The

@@ -22,7 +22,7 @@ final class LauncherTests: XCTestCase {
     }
 
     func testResumeUsesSessionArgv() {
-        let session = AgentSession(id: "sid", agent: .claude, projectPath: "/p/c", title: "t",
+        let session = catalogFixture(id: "sid", agent: .claude, projectPath: "/p/c", title: "t",
                                    createdAt: nil, updatedAt: Date(), filePath: URL(fileURLWithPath: "/tmp/x"))
         let cmd = SessionLauncher.resume(session)
         XCTAssertEqual(cmd.argv, ["claude", "--resume", "sid"])

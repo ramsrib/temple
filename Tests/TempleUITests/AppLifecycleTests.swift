@@ -9,7 +9,7 @@ import TempleCore
 final class AppLifecycleTests: XCTestCase {
     private func makeModel() -> AppModel {
         AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
-                 indexSource: FakeIndexSource(SessionIndex(projects: [])),
+                 indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
                  database: try! TempleDB.inMemory(),
                  settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
     }
@@ -25,7 +25,7 @@ final class AppLifecycleTests: XCTestCase {
         overlay.touch("a")
         overlay.recordGeneratedTitle("Pending", for: "a")
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(SessionIndex(projects: [])), database: db,
+            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])), database: db,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()), overlay: overlay)
         let delegate = TempleAppDelegate()
         delegate.model = model
@@ -42,7 +42,7 @@ final class AppLifecycleTests: XCTestCase {
         let at = Date(timeIntervalSince1970: 4_000_000_000)
         let overlay = SessionOverlayStore(db: db, now: { at }, scheduleTouch: { _, _ in {} })
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(SessionIndex(projects: [])), database: db,
+            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])), database: db,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()), overlay: overlay)
         let tab = model.openSessions.newSession(agent: .codex, projectPath: NSTemporaryDirectory())
         let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)

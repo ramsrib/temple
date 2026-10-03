@@ -5,7 +5,7 @@ public protocol SessionStore: Sendable {
     var agent: Agent { get }
     /// Roots whose filesystem changes can affect this store's sessions.
     var watchedURLs: [URL] { get }
-    func loadSessions() -> [AgentSession]
+    func loadSummaries() -> [TranscriptSummary]
 }
 
 public extension SessionStore {
@@ -18,7 +18,7 @@ public protocol IncrementalSessionStore: SessionStore {
     /// Session files currently owned by this store.
     func sessionFileURLs() -> [URL]
     /// Parses one of the URLs returned by `sessionFileURLs()`.
-    func loadSession(at fileURL: URL) -> AgentSession?
+    func loadSummary(at fileURL: URL) -> TranscriptSummary?
     /// Changes when non-session input (for example Codex history) invalidates
     /// cached sessions. `nil` means session files are the only input.
     var cacheInvalidationToken: String? { get }
@@ -36,7 +36,7 @@ public protocol IncrementalSessionStore: SessionStore {
     func metadataHeader(at url: URL) -> CodexRolloutCandidate?
     /// A parser for many files in one read (`SessionCatalog.stream`): any
     /// input shared by every file is read once, here, not once per file.
-    func catalogParser() -> @Sendable (URL) -> AgentSession?
+    func catalogParser() -> @Sendable (URL) -> TranscriptSummary?
 
 }
 
@@ -58,29 +58,21 @@ public extension IncrementalSessionStore {
         metadataHeader(at: url)
     }
     func metadataHeader(at url: URL) -> CodexRolloutCandidate? { nil }
-    func catalogParser() -> @Sendable (URL) -> AgentSession? {
-        let store = self
-        return { store.loadSession(at: $0) }
-    }
-
-}
-
-/// Transcript facts alongside the legacy session API. Existing store conformers
-/// need not synthesize facts from their presentation values.
-public protocol TranscriptSummaryStore: IncrementalSessionStore {
-    func loadSummaries() -> [TranscriptSummary]
-    func loadSummary(at fileURL: URL) -> TranscriptSummary?
-    func catalogSummaryParser() -> @Sendable (URL) -> TranscriptSummary?
-    /// Recorded human prompts in shared history, excluding display-only titles.
-    func loadSharedPrompts() -> [String: String]
-}
-
-public extension TranscriptSummaryStore {
-    func loadSharedPrompts() -> [String: String] { [:] }
-    func catalogSummaryParser() -> @Sendable (URL) -> TranscriptSummary? {
+    func catalogParser() -> @Sendable (URL) -> TranscriptSummary? {
         let store = self
         return { store.loadSummary(at: $0) }
     }
+
+}
+
+/// Fact-producing stores used by catalog and member enrichment.
+public protocol TranscriptSummaryStore: IncrementalSessionStore {
+    func catalogSummaryParser() -> @Sendable (URL) -> TranscriptSummary?
+    func loadSharedPrompts() -> [String: String]
+}
+public extension TranscriptSummaryStore {
+    func loadSharedPrompts() -> [String: String] { [:] }
+    func catalogSummaryParser() -> @Sendable (URL) -> TranscriptSummary? { catalogParser() }
 }
 
 /// Lexical aliases, preserving case and requiring no access to an event leaf.
@@ -212,25 +204,6 @@ enum StoreIO {
 
     private static let isoWithFraction = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
     private static let isoPlain = Date.ISO8601FormatStyle(includingFractionalSeconds: false)
-}
-
-/// A small locked sink keeps concurrent store loading compatible with strict
-/// concurrency while preserving the stores' value semantics.
-final class SessionCollector: @unchecked Sendable {
-    private let lock = NSLock()
-    private var sessions: [AgentSession] = []
-
-    func append(_ session: AgentSession) {
-        lock.lock()
-        sessions.append(session)
-        lock.unlock()
-    }
-
-    func result() -> [AgentSession] {
-        lock.lock()
-        defer { lock.unlock() }
-        return sessions
-    }
 }
 
 /// Locked sink for parallel transcript parsing.

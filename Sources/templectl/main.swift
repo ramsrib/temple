@@ -47,27 +47,6 @@ if CommandLine.arguments.contains("--import-all") {
     exit(0)
 }
 
-func printIndex(_ index: SessionIndex, compact: Bool = false) {
-    let totalSessions = index.allSessions.count
-    print(compact
-          ? "index updated: \(index.projects.count) projects, \(totalSessions) sessions"
-          : "Temple — \(index.projects.count) projects, \(totalSessions) sessions\n")
-    guard !compact else { return }
-    for project in index.projects.prefix(30) {
-        print("📁 \(project.name)  —  \(project.path)")
-        for session in project.sessions.prefix(limit) {
-            let badge = session.agent == .claude ? "◆ claude" : "◇ codex "
-            let when = df.string(from: session.updatedAt)
-            let detail = session.gitBranch ?? session.model ?? session.messageCount.map { "\($0) messages" }
-            print("   \(badge)  \(when)  \(session.title)\(detail.map { "  [\($0)]" } ?? "")")
-        }
-        if project.sessions.count > limit {
-            print("   … and \(project.sessions.count - limit) more")
-        }
-        print("")
-    }
-}
-
 let searchQuery: String? = {
     guard let index = CommandLine.arguments.firstIndex(of: "--search"),
           CommandLine.arguments.indices.contains(index + 1) else { return nil }
@@ -95,12 +74,13 @@ func printRows(_ rows: [Session], compact: Bool = false) {
 }
 
 if CommandLine.arguments.contains("--disk") {
-    let index = SessionIndex.buildDefault().filteringNoise(includeNoise: includeNoise)
-    if let searchQuery {
-        for session in index.search(searchQuery) {
-            print("\(session.agent.rawValue)  \(session.projectPath)  \(session.title)")
-        }
-    } else { printIndex(index) }
+    let catalog = SessionFilter.filtered(SessionCatalog().load(), includeNoise: includeNoise)
+    for summary in catalog {
+        let title = summary.sharedTitleHint ?? summary.recordedTitle ?? summary.firstPrompt ?? summary.historyPrompt ?? summary.laterPromptHint ?? "New \(summary.agent.displayName) session"
+        let path = summary.cwd ?? summary.directoryHint ?? ""
+        if let searchQuery, ![title, path, summary.agent.rawValue].contains(where: { $0.localizedCaseInsensitiveContains(searchQuery) }) { continue }
+        print("\(summary.agent.rawValue)  \(path)  \(title)")
+    }
 } else if CommandLine.arguments.contains("--watch") {
     let database = try openDatabase(readOnly: !TempleState.isRedirected)
     let watcher = SessionWatcher(database: database)

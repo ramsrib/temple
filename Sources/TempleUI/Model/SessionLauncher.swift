@@ -50,8 +50,8 @@ public enum SessionLauncher {
     }
 
     /// Resume an existing session (the primary action).
-    public static func resume(_ session: AgentSession) -> TerminalCommand {
-        TerminalCommand(argv: session.resume.argv, cwd: session.resume.cwd)
+    public static func resume(_ session: TranscriptSummary) -> TerminalCommand {
+        TerminalCommand(argv: session.agent.resumeArgv(sessionID: session.id), cwd: session.cwd ?? session.directoryHint ?? "")
     }
 }
 

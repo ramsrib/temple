@@ -21,8 +21,8 @@ final class HistoryTests: XCTestCase {
 
     private func session(_ id: String, project: String = "/p/a", agent: Agent = .claude,
                          title: String? = nil, hoursAgo: Double, branch: String? = nil,
-                         preview: String? = nil) -> AgentSession {
-        AgentSession(id: id, agent: agent, projectPath: project, title: title ?? "Title \(id)",
+                         preview: String? = nil) -> TranscriptSummary {
+        catalogFixture(id: id, agent: agent, projectPath: project, title: title ?? "Title \(id)",
                      createdAt: nil, updatedAt: now.addingTimeInterval(-hoursAgo * 3600),
                      filePath: URL(fileURLWithPath: "/tmp/\(id).jsonl"),
                      lastMessagePreview: preview, gitBranch: branch)
@@ -43,7 +43,7 @@ final class HistoryTests: XCTestCase {
     }
 
     /// `members` are already Temple's; `rows` is the disk, newest first.
-    private func harness(_ rows: [AgentSession], members: [String] = [],
+    private func harness(_ rows: [TranscriptSummary], members: [String] = [],
                          missing: Set<String> = []) -> Harness {
         let database = try! TempleDB.inMemory()
         for id in members {
@@ -88,7 +88,7 @@ final class HistoryTests: XCTestCase {
         XCTFail("condition never held", file: file, line: line)
     }
 
-    private func ids(_ rows: [AgentSession]) -> [String] { rows.map(\.id) }
+    private func ids(_ rows: [TranscriptSummary]) -> [String] { rows.map(\.id) }
     private func ids(_ rows: [HistoryRow]) -> [String] { rows.map(\.id) }
 
     func testImportRejectsMismatchedSummaryFacts() async throws {
@@ -99,11 +99,11 @@ final class HistoryTests: XCTestCase {
         try #"{"type":"session_meta","payload":{"id":"different-id","cwd":"/wrong"}}"#
             .write(to: file, atomically: true, encoding: .utf8)
         XCTAssertEqual(CodexSessionStore(root: root).loadSummary(at: file)?.id, "different-id")
-        let row = AgentSession(id: "selected-id", agent: .codex, projectPath: "/display",
+        let row = catalogFixture(id: "selected-id", agent: .codex, projectPath: "/display",
             title: "Display", createdAt: nil, updatedAt: Date(), filePath: file)
         let db = try TempleDB.inMemory()
         let overlay = SessionOverlayStore(db: db)
-        let failures = await overlay.importSessions([row])
+        let failures = await overlay.importCatalogSessions([row])
         XCTAssertTrue(failures.isEmpty)
         let state = try XCTUnwrap(db.sessionState(row.id))
         XCTAssertNil(state.directory)
@@ -120,7 +120,7 @@ final class HistoryTests: XCTestCase {
         let probe = ImportReaderProbe(firstWave: firstWave)
         overlay.importSummaryReader = { probe.read($0) }
         let rows = (0..<12).map { session("import-\($0)", hoursAgo: Double($0)) }
-        let task = Task { await overlay.importSessions(rows) }
+        let task = Task { await overlay.importCatalogSessions(rows) }
         await fulfillment(of: [firstWave], timeout: 3)
         overlay.join(rows[0].id, via: .opened)
         for _ in rows { probe.release.signal() }
@@ -146,7 +146,7 @@ final class HistoryTests: XCTestCase {
         try #"{"session_id":"history-only","ts":10,"text":"A recorded human prompt"}"#
             .write(to: root.appendingPathComponent("history.jsonl"), atomically: true, encoding: .utf8)
         let store = CodexSessionStore(root: root)
-        let legacy = try XCTUnwrap(store.loadSession(at: file))
+        let legacy = try XCTUnwrap(store.loadSummary(at: file))
         let summary = try XCTUnwrap(store.loadSummaries().first)
         XCTAssertNil(summary.firstPrompt)
         XCTAssertEqual(summary.historyPrompt, "A recorded human prompt")
@@ -155,7 +155,7 @@ final class HistoryTests: XCTestCase {
             let overlay = SessionOverlayStore(db: db)
             overlay.importSummaryReader = { store.loadSummary(at: $0.filePath) }
             if legacyImport {
-                let failures = await overlay.importSessions([legacy])
+                let failures = await overlay.importCatalogSessions([legacy])
                 XCTAssertTrue(failures.isEmpty)
             } else {
                 XCTAssertTrue(overlay.importSessions([summary]).isEmpty)
@@ -211,11 +211,11 @@ final class HistoryTests: XCTestCase {
     func testUnreadableHistoryEntryJoinsWithoutDisplayFallbacks() async throws {
         let db = try TempleDB.inMemory()
         let overlay = SessionOverlayStore(db: db)
-        let legacy = AgentSession(id: "missing", agent: .claude,
+        let legacy = catalogFixture(id: "missing", agent: .claude,
             projectPath: "(unknown)", title: "(untitled)", createdAt: nil,
             updatedAt: Date(), filePath: FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString).appendingPathExtension("jsonl"))
-        let failures = await overlay.importSessions([legacy])
+        let failures = await overlay.importCatalogSessions([legacy])
         XCTAssertTrue(failures.isEmpty)
         let row = try XCTUnwrap(db.sessionState(legacy.id))
         XCTAssertNil(row.title)
@@ -234,7 +234,7 @@ final class HistoryTests: XCTestCase {
         """.write(to: file, atomically: true, encoding: .utf8)
         let store = ClaudeSessionStore(root: root)
         let summary = try XCTUnwrap(store.loadSummary(at: file))
-        let legacy = try XCTUnwrap(store.loadSession(at: file))
+        let legacy = try XCTUnwrap(store.loadSummary(at: file))
         XCTAssertEqual(legacy.title, "Display summary")
         let h = harness([legacy])
         await load(h.history)
@@ -393,7 +393,7 @@ final class HistoryTests: XCTestCase {
     func testDeactivateCancelsAndARefreshPrunesVanishedRows() async {
         let database = try! TempleDB.inMemory()
         let overlay = SessionOverlayStore(db: database)
-        var reads: [[AgentSession]] = [[session("a", hoursAgo: 1), session("gone", hoursAgo: 2)],
+        var reads: [[TranscriptSummary]] = [[session("a", hoursAgo: 1), session("gone", hoursAgo: 2)],
                                        [session("a", hoursAgo: 1)]]
         var pending: AsyncStream<SessionCatalog.Event>.Continuation?
         let cancelled = CancelFlag()
@@ -854,7 +854,7 @@ final class HistoryTabTests: XCTestCase {
         let database = try! TempleDB.inMemory()
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(SessionIndex(projects: [])),
+            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
             database: database,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: SessionOverlayStore(db: database))
@@ -972,11 +972,11 @@ final class HistoryTabTests: XCTestCase {
         }
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(SessionIndex(projects: [])),
+            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
             database: database,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: overlay)
-        let row = AgentSession(id: "imp", agent: .claude, projectPath: NSTemporaryDirectory(),
+        let row = catalogFixture(id: "imp", agent: .claude, projectPath: NSTemporaryDirectory(),
                                title: "Imported", createdAt: nil, updatedAt: Date(),
                                filePath: URL(fileURLWithPath: "/tmp/imp.jsonl"))
         model.history.catalog = { AsyncStream { $0.yield(.sessions([row], read: 1, total: 1)); $0.finish() } }
@@ -1057,24 +1057,24 @@ final class HistoryUndoEngineTests: XCTestCase {
                              overlay: SessionOverlayStore(db: database), stateDirectory: root)
         model.start()
         try await waitFor { !model.isLoading }
-        let row = AgentSession(id: "imp", agent: .claude, projectPath: NSTemporaryDirectory(),
+        let row = catalogFixture(id: "imp", agent: .claude, projectPath: NSTemporaryDirectory(),
                                title: "from another terminal", createdAt: nil, updatedAt: Date(),
                                filePath: file)
         model.history.catalog = { AsyncStream { $0.yield(.sessions([row], read: 1, total: 1)); $0.finish() } }
         model.history.activate()
         try await waitFor { model.history.readState == .done }
-        XCTAssertFalse(model.index.allSessions.contains { $0.id == "imp" })
+        XCTAssertFalse(model.sessions.contains { $0.id == "imp" })
         let manager = UndoManager()
         manager.groupsByEvent = false
 
         manager.beginUndoGrouping()
         await model.history.confirmImport(model.history.makeImportRequest(for: [row]), undoManager: manager)
         manager.endUndoGrouping()
-        try await waitFor { model.index.allSessions.contains { $0.id == "imp" } }
+        try await waitFor { model.sessions.contains { $0.id == "imp" } }
 
         manager.undo()
 
-        try await waitFor { !model.index.allSessions.contains { $0.id == "imp" } }
+        try await waitFor { !model.sessions.contains { $0.id == "imp" } }
         XCTAssertFalse(model.overlay.isTempleSession("imp"))
         XCTAssertNil(try database.sessionState("imp"))
     }
@@ -1177,7 +1177,7 @@ private final class ImportReaderProbe: @unchecked Sendable {
 
     init(firstWave: XCTestExpectation) { self.firstWave = firstWave }
 
-    func read(_ session: AgentSession) -> TranscriptSummary {
+    func read(_ session: TranscriptSummary) -> TranscriptSummary {
         lock.lock()
         active += 1
         count += 1

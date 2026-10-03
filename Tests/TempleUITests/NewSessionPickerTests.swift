@@ -2,24 +2,16 @@ import XCTest
 @testable import TempleUI
 import TempleCore
 
-private struct PickerNoiseFilter: NoiseFilter {
-    func isNoise(_ session: AgentSession) -> Bool { session.id == "noise" }
-}
 
-private struct PickerNoNoiseFilter: NoiseFilter {
-    func isNoise(_ session: AgentSession) -> Bool { false }
-}
 
 @MainActor
 final class NewSessionPickerTests: XCTestCase {
-    private func makeModel(_ rows: [Session],
-                           noise: NoiseFilter = PickerNoNoiseFilter()) -> AppModel {
+    private func makeModel(_ rows: [Session]) -> AppModel {
         let database = try! TempleDB.inMemory()
         Fixture.join(rows, to: database)
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(SessionIndex(projects: [])),
-            noiseFilter: noise,
+            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
             database: database,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: SessionOverlayStore(db: database)
@@ -52,7 +44,7 @@ final class NewSessionPickerTests: XCTestCase {
                 Fixture.row("noise", project: "/p/junk", updated: 20),
 
                 Fixture.row("kept", project: "/p/kept", updated: 10),
-        ], noise: PickerNoiseFilter())
+        ])
 
         XCTAssertEqual(model.projectPickerResults("").map(\.path), ["/p/junk", "/p/kept"])
     }

@@ -32,24 +32,13 @@ public struct CodexSessionStore: TranscriptSummaryStore {
         }.joined(separator: "|")
     }
 
-    public func loadSessions() -> [AgentSession] {
-        let titles = loadTitles()
-        let files = sessionFileURLs()
-        let collector = SessionCollector()
-        DispatchQueue.concurrentPerform(iterations: files.count) { index in
-            if let session = parseSession(file: files[index], titles: titles) {
-                collector.append(session)
-            }
-        }
-        return collector.result()
-    }
-
     public func loadSummaries() -> [TranscriptSummary] {
+        let titles = loadTitles()
         let historyPrompts = loadSharedPrompts()
         let files = sessionFileURLs()
         let collector = TranscriptSummaryCollector()
         DispatchQueue.concurrentPerform(iterations: files.count) { index in
-            if let summary = parse(file: files[index], historyPrompts: historyPrompts) {
+            if let summary = parse(file: files[index], sharedTitles: titles, historyPrompts: historyPrompts) {
                 collector.append(summary)
             }
         }
@@ -57,13 +46,16 @@ public struct CodexSessionStore: TranscriptSummaryStore {
     }
 
     public func loadSummary(at fileURL: URL) -> TranscriptSummary? {
-        parse(file: fileURL, historyPrompts: loadSharedPrompts())
+        parse(file: fileURL, sharedTitles: loadTitles(), historyPrompts: loadSharedPrompts())
     }
 
+    public func catalogParser() -> @Sendable (URL) -> TranscriptSummary? { catalogSummaryParser() }
+
     public func catalogSummaryParser() -> @Sendable (URL) -> TranscriptSummary? {
+        let titles = loadTitles()
         let historyPrompts = loadSharedPrompts()
         let store = self
-        return { store.parse(file: $0, historyPrompts: historyPrompts) }
+        return { store.parse(file: $0, sharedTitles: titles, historyPrompts: historyPrompts) }
     }
 
     public func loadSharedPrompts() -> [String: String] {
@@ -157,12 +149,6 @@ public struct CodexSessionStore: TranscriptSummaryStore {
         return CodexRolloutCandidate(sessionID: id, cwd: cwd, createdAt: date, filePath: url)
     }
 
-    /// The engine retains the rollout-derived title separately, so deleting a
-    /// shared title can restore it without reading the transcript again.
-    public func loadTranscript(at url: URL) -> AgentSession? {
-        loadSummary(at: url).map { AgentSession(summary: $0) }
-    }
-
     /// A thread spawned by another agent (`source.subagent.thread_spawn`, with
     /// the parent in `parent_thread_id`) has a rollout of its own, but it is
     /// not a session anyone opens: like Claude's `<session>/subagents/`
@@ -170,23 +156,6 @@ public struct CodexSessionStore: TranscriptSummaryStore {
     static func isSubagentThread(_ payload: [String: Any]) -> Bool {
         if let source = payload["source"] as? [String: Any], source["subagent"] != nil { return true }
         return (payload["thread_source"] as? String) == "subagent"
-    }
-
-    public func loadSession(at fileURL: URL) -> AgentSession? {
-        parseSession(file: fileURL, titles: loadTitles())
-    }
-
-    /// `loadSession(at:)` rereads both title files per call; a full-disk read
-    /// reads them once.
-    public func catalogParser() -> @Sendable (URL) -> AgentSession? {
-        let titles = loadTitles()
-        let store = self
-        return { store.parseSession(file: $0, titles: titles) }
-    }
-
-    private func parseSession(file: URL, titles: [String: String]) -> AgentSession? {
-        guard let summary = parse(file: file, sharedTitles: titles) else { return nil }
-        return AgentSession(summary: summary, title: titles[summary.id])
     }
 
     private func parse(file: URL, sharedTitles: [String: String] = [:],
@@ -261,7 +230,7 @@ public struct CodexSessionStore: TranscriptSummaryStore {
         // instruction blobs — routinely past the 64 KB head window — so when
         // nothing recorded a title, pay for one wider read to find it. Past
         // even that cap, a later prompt from the tail beats "(no prompt)".
-        if sharedTitles[id] == nil, fallbackTitle == nil {
+        if fallbackTitle == nil {
             fallbackTitle = Self.firstUserMessage(in: file)
         }
 
@@ -279,6 +248,7 @@ public struct CodexSessionStore: TranscriptSummaryStore {
             messageCount: count > 0 ? count : nil,
             lastMessagePreview: preview,
             originator: payload["originator"] as? String,
+            sharedTitleHint: sharedTitles[id],
             laterPromptHint: tailFallbackTitle
         )
     }

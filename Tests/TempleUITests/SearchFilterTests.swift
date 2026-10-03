@@ -2,78 +2,15 @@ import XCTest
 @testable import TempleUI
 import TempleCore
 
-struct NoNoiseFilter: NoiseFilter {
-    func isNoise(_ session: AgentSession) -> Bool { false }
-}
 
 @MainActor
 final class SearchFilterTests: XCTestCase {
 
     // MARK: Seams (C3 / C2 defaults)
 
-    func testDefaultSearchFiltersByTitle() {
-        let search = DefaultSessionSearch()
-        let sessions = [
-            Fixture.session("1", project: "/p", title: "Analyze project setup"),
-            Fixture.session("2", project: "/p", title: "Inspect journal"),
-        ]
-        let hits = search.filter(sessions, query: "journal")
-        XCTAssertEqual(hits.map(\.id), ["2"])
-        XCTAssertEqual(search.filter(sessions, query: "").count, 2)  // empty → all
-    }
-
-    func testDefaultSearchRanksPrefixHighest() {
-        let search = DefaultSessionSearch()
-        let sessions = [
-            Fixture.session("sub", project: "/p", title: "Deep analyze routine"),
-            Fixture.session("pre", project: "/p", title: "Analyze project"),
-            Fixture.session("word", project: "/p", title: "Run the analyze step"),
-        ]
-        let ranked = search.rank(sessions, query: "analyze")
-        XCTAssertEqual(ranked.first?.id, "pre")   // prefix wins
-    }
-
-    func testCoreSearchUsesCoreRankingButKeepsFilterTitleOnly() {
-        let search = CoreSessionSearch()
-        let sessions = [
-            Fixture.session("substring", project: "/work/else", title: "Fix the auth bug"),
-            Fixture.session("exact", project: "/work/else", title: "auth"),
-            Fixture.session("prefix", project: "/work/else", title: "Auth cleanup"),
-            Fixture.session("project", project: "/work/auth", title: "Unrelated"),
-            Fixture.session("agent", agent: .codex, project: "/work/else", title: "Other"),
-        ]
-
-        XCTAssertEqual(search.rank(sessions, query: "auth").map(\.id),
-                       ["exact", "prefix", "substring", "project"])
-        XCTAssertEqual(search.filter(sessions, query: "auth").map(\.id),
-                       ["substring", "exact", "prefix"])
-        XCTAssertTrue(search.filter(sessions, query: "codex").isEmpty)
-    }
-
-    func testDefaultNoiseFilterHidesRootAndMissingDirs() {
-        let filter = DefaultNoiseFilter()
-        XCTAssertTrue(filter.isNoise(Fixture.session("a", project: "/")))
-        XCTAssertTrue(filter.isNoise(Fixture.session("b", project: "/does/not/exist/xyz")))
-        XCTAssertFalse(filter.isNoise(Fixture.session("c", project: NSTemporaryDirectory())))
-    }
-
-    func testCoreNoiseFilterDelegatesAutomationClassification() {
-        let session = AgentSession(
-            id: "automation",
-            agent: .codex,
-            projectPath: NSTemporaryDirectory(),
-            title: "Automation",
-            createdAt: nil,
-            updatedAt: Date(),
-            filePath: URL(fileURLWithPath: "/tmp/automation.jsonl"),
-            originator: "codex_exec"
-        )
-        XCTAssertTrue(CoreNoiseFilter().isNoise(session))
-    }
-
     // MARK: AppModel sidebar wiring
 
-    private func makeAppModel(_ index: SessionIndex, noise: NoiseFilter = NoNoiseFilter())
+    private func makeAppModel(_ index: CatalogFixtureIndex)
         -> (AppModel, SessionOverlayStore) {
         let database = try! TempleDB.inMemory()
         Fixture.join(index, to: database)
@@ -81,11 +18,10 @@ final class SearchFilterTests: XCTestCase {
         let settings = SettingsStore(defaults: Fixture.uniqueDefaults())
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
                              indexSource: FakeIndexSource(index),
-                             noiseFilter: noise,
                              database: database,
                              settings: settings,
                              overlay: overlay)
-        model.index = index
+
         model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: Dictionary(uniqueKeysWithValues: model.sessions.map { ($0.id, MemberResolution.confirmedAbsent) }), summaries: [:]))
         return (model, overlay)
     }
@@ -95,7 +31,7 @@ final class SearchFilterTests: XCTestCase {
         Fixture.join(rows, to: db)
         let overlay = SessionOverlayStore(db: db)
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(SessionIndex(projects: [])), database: db,
+            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])), database: db,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()), overlay: overlay)
         return (model, overlay)
     }
@@ -125,7 +61,6 @@ final class SearchFilterTests: XCTestCase {
         let (model, _) = makeRowModel([Fixture.row("noise", project: "/", title: "ambient"),
             Fixture.row("real", project: NSTemporaryDirectory(), title: "real")])
         XCTAssertEqual(Set(model.displayProjects.flatMap(\.sessions).map(\.id)), ["noise", "real"])
-        model.showNoise = true
         XCTAssertEqual(Set(model.displayProjects.flatMap(\.sessions).map(\.id)), ["noise", "real"])
     }
 
@@ -142,10 +77,10 @@ final class SearchFilterTests: XCTestCase {
     /// ⌘P is the ⌘⇥ gesture: the switcher walks projects most-recently-used
     /// first, so one tap-and-release lands on the project you were just in.
     func testProjectSwitcherWalksMostRecentlyUsedFirst() {
-        let index = SessionIndex(projects: [
-            Project(path: "/p/api", sessions: [Fixture.session("1", project: "/p/api", title: "t")]),
-            Project(path: "/p/web", sessions: [Fixture.session("2", project: "/p/web", title: "t")]),
-            Project(path: "/p/notes", sessions: [Fixture.session("3", project: "/p/notes", title: "t")]),
+        let index = CatalogFixtureIndex(projects: [
+            CatalogFixtureProject(path: "/p/api", sessions: [Fixture.session("1", project: "/p/api", title: "t")]),
+            CatalogFixtureProject(path: "/p/web", sessions: [Fixture.session("2", project: "/p/web", title: "t")]),
+            CatalogFixtureProject(path: "/p/notes", sessions: [Fixture.session("3", project: "/p/notes", title: "t")]),
         ])
         let (model, _) = makeAppModel(index)
         model.openSessions.openSession(Fixture.session("1", project: "/p/api", title: "t"))
@@ -174,10 +109,10 @@ final class SearchFilterTests: XCTestCase {
     /// held as an index into a list that then shrank, releasing ⌘ would land on
     /// whatever slid into that slot — a project you never highlighted.
     func testProjectSwitcherSurvivesAProjectClosingWhileItIsUp() {
-        let index = SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [Fixture.session("1", project: "/p/a", title: "t")]),
-            Project(path: "/p/b", sessions: [Fixture.session("2", project: "/p/b", title: "t")]),
-            Project(path: "/p/c", sessions: [Fixture.session("3", project: "/p/c", title: "t")]),
+        let index = CatalogFixtureIndex(projects: [
+            CatalogFixtureProject(path: "/p/a", sessions: [Fixture.session("1", project: "/p/a", title: "t")]),
+            CatalogFixtureProject(path: "/p/b", sessions: [Fixture.session("2", project: "/p/b", title: "t")]),
+            CatalogFixtureProject(path: "/p/c", sessions: [Fixture.session("3", project: "/p/c", title: "t")]),
         ])
         let (model, _) = makeAppModel(index)
         model.openSessions.openSession(Fixture.session("1", project: "/p/a", title: "t"))
@@ -202,9 +137,9 @@ final class SearchFilterTests: XCTestCase {
     /// Opening the switcher from the home page (a click, no ⌘ held) must not be
     /// committed by the next unrelated modifier press.
     func testMouseOpenedSwitcherIsNotCommittedByAModifierRelease() {
-        let index = SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [Fixture.session("1", project: "/p/a", title: "t")]),
-            Project(path: "/p/b", sessions: [Fixture.session("2", project: "/p/b", title: "t")]),
+        let index = CatalogFixtureIndex(projects: [
+            CatalogFixtureProject(path: "/p/a", sessions: [Fixture.session("1", project: "/p/a", title: "t")]),
+            CatalogFixtureProject(path: "/p/b", sessions: [Fixture.session("2", project: "/p/b", title: "t")]),
         ])
         let (model, _) = makeAppModel(index)
         model.openSessions.openSession(Fixture.session("1", project: "/p/a", title: "t"))
@@ -219,10 +154,10 @@ final class SearchFilterTests: XCTestCase {
     }
 
     func testProjectSwitcherWalksAndCancels() {
-        let index = SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [Fixture.session("1", project: "/p/a", title: "t")]),
-            Project(path: "/p/b", sessions: [Fixture.session("2", project: "/p/b", title: "t")]),
-            Project(path: "/p/c", sessions: [Fixture.session("3", project: "/p/c", title: "t")]),
+        let index = CatalogFixtureIndex(projects: [
+            CatalogFixtureProject(path: "/p/a", sessions: [Fixture.session("1", project: "/p/a", title: "t")]),
+            CatalogFixtureProject(path: "/p/b", sessions: [Fixture.session("2", project: "/p/b", title: "t")]),
+            CatalogFixtureProject(path: "/p/c", sessions: [Fixture.session("3", project: "/p/c", title: "t")]),
         ])
         let (model, _) = makeAppModel(index)
         for id in ["1", "2", "3"] {
@@ -246,10 +181,10 @@ final class SearchFilterTests: XCTestCase {
 
     // MARK: Project cap
 
-    private func manyProjectsIndex() -> SessionIndex {
-        SessionIndex(projects: (0..<12).map { number in
+    private func manyProjectsIndex() -> CatalogFixtureIndex {
+        CatalogFixtureIndex(projects: (0..<12).map { number in
             let path = "/projects/\(number)"
-            return Project(path: path, sessions: [
+            return CatalogFixtureProject(path: path, sessions: [
                 Fixture.session(
                     "session-\(number)",
                     project: path,
@@ -364,19 +299,7 @@ final class SearchFilterTests: XCTestCase {
         XCTAssertEqual(Set(model.paletteResults("alpha").prefix(2).map(\.id)), ["a1", "c1"])
     }
 
-    func testCoreSearchRanksOverlayTitles() {
-        let search = CoreSessionSearch()
-        let sessions = [
-            Fixture.session("renamed", project: "/p", title: "can you look at this thing"),
-            Fixture.session("raw", project: "/p", title: "fivetran replication question"),
-        ]
-        // Without the override the renamed session is invisible to its
-        // displayed title; with it, both match and the better band wins.
-        XCTAssertEqual(search.rank(sessions, query: "fivetran").map(\.id), ["raw"])
-        let ranked = search.rank(sessions, query: "finish fivetran",
-                                 titleOverrides: ["renamed": "finish fivetran setup"])
-        XCTAssertEqual(ranked.map(\.id), ["renamed"])
-    }
+
 
     func testPaletteSearchMatchesRenamedAndGeneratedTitles() {
         let a = Fixture.row("a1", project: "/p/a", title: "first prompt about databases")

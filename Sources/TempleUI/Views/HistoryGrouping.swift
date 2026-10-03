@@ -5,7 +5,7 @@ import TempleCore
 public struct HistoryDayGroup: Identifiable, Equatable {
     public let day: Date
     public let title: String
-    public var sessions: [AgentSession]
+    public var sessions: [TranscriptSummary]
 
     public var id: Date { day }
 }
@@ -27,7 +27,7 @@ enum HistoryGrouping {
 
     /// Groups an already-newest-first list in one pass, preserving its order
     /// within every day.
-    static func groups(_ sessions: [AgentSession], calendar: Calendar = .current,
+    static func groups(_ sessions: [TranscriptSummary], calendar: Calendar = .current,
                        now: Date = Date()) -> [HistoryDayGroup] {
         let today = calendar.startOfDay(for: now)
         let yesterday = calendar.date(byAdding: .day, value: -1, to: today)
@@ -35,7 +35,7 @@ enum HistoryGrouping {
         var result: [HistoryDayGroup] = []
 
         for session in sessions {
-            let day = calendar.startOfDay(for: session.updatedAt)
+            let day = calendar.startOfDay(for: session.modifiedAt)
             if result.last?.day == day {
                 result[result.count - 1].sessions.append(session)
                 continue

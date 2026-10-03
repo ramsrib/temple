@@ -20,11 +20,11 @@ final class RobustnessTests: XCTestCase {
 
     func testMissingAndEmptyStoresReturnEmpty() throws {
         let missing = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        XCTAssertTrue(ClaudeSessionStore(root: missing).loadSessions().isEmpty)
-        XCTAssertTrue(CodexSessionStore(root: missing).loadSessions().isEmpty)
+        XCTAssertTrue(ClaudeSessionStore(root: missing).loadSummaries().isEmpty)
+        XCTAssertTrue(CodexSessionStore(root: missing).loadSummaries().isEmpty)
 
         let empty = try directory("empty")
-        XCTAssertTrue(SessionIndex.build(stores: [ClaudeSessionStore(root: empty), CodexSessionStore(root: empty)]).allSessions.isEmpty)
+        XCTAssertTrue(SessionCatalog(stores: [ClaudeSessionStore(root: empty), CodexSessionStore(root: empty)]).load().isEmpty)
     }
 
     func testZeroByteAndMalformedSessionsAreSkipped() throws {
@@ -34,7 +34,7 @@ final class RobustnessTests: XCTestCase {
         try Data().write(to: project.appendingPathComponent("empty.jsonl"))
         try "not json\n[]\n{\"cwd\": 42}".write(
             to: project.appendingPathComponent("bad.jsonl"), atomically: true, encoding: .utf8)
-        XCTAssertTrue(ClaudeSessionStore(root: claude).loadSessions().isEmpty)
+        XCTAssertTrue(ClaudeSessionStore(root: claude).loadSummaries().isEmpty)
 
         let codex = try directory("codex-malformed")
         let sessions = codex.appendingPathComponent("sessions", isDirectory: true)
@@ -43,7 +43,7 @@ final class RobustnessTests: XCTestCase {
             to: sessions.appendingPathComponent("rollout-no-id.jsonl"), atomically: true, encoding: .utf8)
         try "{truncated".write(
             to: sessions.appendingPathComponent("rollout-truncated.jsonl"), atomically: true, encoding: .utf8)
-        XCTAssertTrue(CodexSessionStore(root: codex).loadSessions().isEmpty)
+        XCTAssertTrue(CodexSessionStore(root: codex).loadSummaries().isEmpty)
     }
 
     func testCodexAcceptsPayloadIDVariant() throws {
@@ -52,7 +52,7 @@ final class RobustnessTests: XCTestCase {
         try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
         try #"{"type":"session_meta","payload":{"id":"new-schema-id","cwd":"/work"}}"#.write(
             to: sessions.appendingPathComponent("rollout-id.jsonl"), atomically: true, encoding: .utf8)
-        XCTAssertEqual(CodexSessionStore(root: root).loadSessions().first?.id, "new-schema-id")
+        XCTAssertEqual(CodexSessionStore(root: root).loadSummaries().first?.id, "new-schema-id")
     }
 
     func testHugeFileUsesBoundedReadsAndRetainsHeadAndTailMetadata() throws {
@@ -70,7 +70,7 @@ final class RobustnessTests: XCTestCase {
 
         XCTAssertLessThanOrEqual(StoreIO.readHead(file, maxBytes: 1024)?.utf8.count ?? .max, 1024)
         XCTAssertLessThanOrEqual(StoreIO.readTail(file, maxBytes: 1024)?.utf8.count ?? .max, 1024)
-        let session = try XCTUnwrap(ClaudeSessionStore(root: root).loadSessions().first)
+        let session = try XCTUnwrap(ClaudeSessionStore(root: root).loadSummaries().first)
         XCTAssertEqual(session.title, "first")
         XCTAssertEqual(session.model, "latest-model")
         XCTAssertEqual(session.lastMessagePreview, "tail answer")
@@ -88,7 +88,7 @@ final class RobustnessTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: denied.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: denied.path) }
 
-        let sessions = ClaudeSessionStore(root: root).loadSessions()
+        let sessions = ClaudeSessionStore(root: root).loadSummaries()
         XCTAssertTrue(sessions.contains(where: { $0.id == "readable" }))
     }
 }

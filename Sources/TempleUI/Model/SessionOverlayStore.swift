@@ -215,19 +215,19 @@ public final class SessionOverlayStore: ObservableObject {
     public func importSessions(_ summaries: [TranscriptSummary]) -> [String: Error] {
         importCore(summaries.map { ($0.id, $0.agent, $0.locator.localURL,
             SessionCore(host: $0.locator.host, directory: $0.cwd,
-                        directorySource: $0.cwd == nil ? nil : .transcript,
-                        title: $0.firstPrompt ?? $0.historyPrompt, lastActiveAt: $0.modifiedAt)) })
+                directorySource: $0.cwd == nil ? nil : .transcript,
+                title: $0.firstPrompt ?? $0.historyPrompt, lastActiveAt: $0.modifiedAt)) })
     }
 
-    /// P2 adapter while History holds AgentSession. Parsing is bounded to four
+    /// P2 adapter while History holds TranscriptSummary. Parsing is bounded to four
     /// workers and runs off-main; membership is checked again at commit time.
-    var importSummaryReader: @Sendable (AgentSession) -> TranscriptSummary? = { session in
+    var importSummaryReader: @Sendable (TranscriptSummary) -> TranscriptSummary? = { session in
         session.agent == .claude
-            ? ClaudeSessionStore().loadSummary(at: session.filePath)
-            : CodexSessionStore().loadSummary(at: session.filePath)
+            ? ClaudeSessionStore().loadSummary(at: session.locator.localURL!)
+            : CodexSessionStore().loadSummary(at: session.locator.localURL!)
     }
 
-    func prepareImports(_ sessions: [AgentSession]) async -> [PreparedSessionImport] {
+    func prepareImports(_ sessions: [TranscriptSummary]) async -> [PreparedSessionImport] {
         let sessions = sessions.filter { !templeSessions.contains($0.id) }
         let read = importSummaryReader
         return await Task.detached(priority: .userInitiated) {
@@ -240,7 +240,7 @@ public final class SessionOverlayStore: ObservableObject {
                         let summary = read(session)
                         let facts = summary?.id == session.id ? summary : nil
                         return (index, PreparedSessionImport(id: session.id, agent: session.agent,
-                            path: session.filePath, core: SessionCore(directory: facts?.cwd,
+                            path: session.locator.localURL!, core: SessionCore(directory: facts?.cwd,
                                 directorySource: facts?.cwd == nil ? nil : .transcript,
                                 title: facts?.firstPrompt ?? facts?.historyPrompt, lastActiveAt: facts?.modifiedAt)))
                     }
@@ -255,7 +255,7 @@ public final class SessionOverlayStore: ObservableObject {
         }.value
     }
 
-    public func importSessions(_ sessions: [AgentSession]) async -> [String: Error] {
+    public func importCatalogSessions(_ sessions: [TranscriptSummary]) async -> [String: Error] {
         let entries = await prepareImports(sessions)
         return importPreparedSessions(entries)
     }
@@ -470,8 +470,8 @@ public final class SessionOverlayStore: ObservableObject {
     /// Display title: a rename wins, then whatever the agent last called itself,
     /// then the title parsed from the session file (which is pinned to the first
     /// prompt and never catches up with a long session).
-    public func displayTitle(for session: AgentSession) -> String {
-        customName(for: session.id) ?? generatedTitle(for: session.id) ?? session.title
+    public func displayTitle(for session: TranscriptSummary) -> String {
+        customName(for: session.id) ?? generatedTitle(for: session.id) ?? session.catalogTitle
     }
 
     /// session id → the displayed title, for search (same precedence as

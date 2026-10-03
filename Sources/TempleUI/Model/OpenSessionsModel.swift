@@ -223,13 +223,13 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         TempleUILog.launch.notice("session not opened: id=\(session.id, privacy: .public) reason=\(reason, privacy: .public)")
     }
 
-    public func openSession(_ session: AgentSession) {
+    public func openSession(_ session: TranscriptSummary) {
         if let row = sessionRow(session.id) {
             openSession(row)
             return
         }
         if let existing = sessionTab(withSessionID: session.id) {
-            existing.transcriptHint = session.filePath
+            existing.transcriptHint = session.locator.localURL
             activate(existing)
             return
         }
@@ -247,11 +247,11 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             kind: .session,
             sessionID: session.id,
             agent: session.agent,
-            projectPath: session.projectPath,
-            title: session.title,
+            projectPath: session.catalogDirectory,
+            title: session.catalogTitle,
             command: command,
             isResume: true)
-        tab.transcriptHint = session.filePath
+        tab.transcriptHint = session.locator.localURL
         tabs.append(tab)
         activate(tab)
         persist()

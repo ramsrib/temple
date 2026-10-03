@@ -47,7 +47,7 @@ final class SessionCatalogTests: XCTestCase {
         let events = await collect(catalog.stream(batchSize: 2))
 
         XCTAssertEqual(events.first, .listed(total: 5))
-        let batches: [([AgentSession], Int)] = events.compactMap {
+        let batches: [([TranscriptSummary], Int)] = events.compactMap {
             if case .sessions(let sessions, let read, let total) = $0 {
                 XCTAssertEqual(total, 5)
                 return (sessions, read)
@@ -104,16 +104,16 @@ final class SessionCatalogTests: XCTestCase {
         let root = try claudeRoot([("one", "a", 10)])
         let store = ClaudeSessionStore(root: root)
         let file = try XCTUnwrap(store.sessionFileURLs().first)
-        XCTAssertEqual(store.catalogParser()(file), store.loadSession(at: file))
+        XCTAssertEqual(store.catalogParser()(file), store.loadSummary(at: file))
     }
 }
 
 private struct FailingStore: IncrementalSessionStore {
     static let error = CocoaError(.fileReadNoPermission)
     let agent: Agent = .codex
-    func loadSessions() -> [AgentSession] { [] }
+    func loadSummaries() -> [TranscriptSummary] { [] }
     func sessionFileURLs() -> [URL] { [] }
-    func loadSession(at fileURL: URL) -> AgentSession? { nil }
+    func loadSummary(at fileURL: URL) -> TranscriptSummary? { nil }
     func enumerateSessionFiles() throws -> [URL] { throw Self.error }
 }
 
@@ -126,14 +126,14 @@ private final class SlowStore: IncrementalSessionStore, @unchecked Sendable {
 
     init(count: Int) { self.count = count }
 
-    func loadSessions() -> [AgentSession] { [] }
+    func loadSummaries() -> [TranscriptSummary] { [] }
     func sessionFileURLs() -> [URL] {
         (0..<count).map { URL(fileURLWithPath: "/nonexistent/slow-\($0).jsonl") }
     }
-    func loadSession(at fileURL: URL) -> AgentSession? {
+    func loadSummary(at fileURL: URL) -> TranscriptSummary? {
         Thread.sleep(forTimeInterval: 0.02)
         lock.lock(); parsedCount += 1; lock.unlock()
-        return AgentSession(id: fileURL.lastPathComponent, agent: .claude, projectPath: "/p",
+        return catalogFixture(id: fileURL.lastPathComponent, agent: .claude, projectPath: "/p",
                             title: "t", createdAt: nil, updatedAt: Date(), filePath: fileURL)
     }
 }

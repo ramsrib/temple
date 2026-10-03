@@ -22,37 +22,36 @@ final class StartupIndexTests: XCTestCase {
         XCTAssertEqual(model.sessions.first?.displayTitle, "Durable")
         XCTAssertTrue(model.isLoading)
     }
-    func testTitleOnlyLiveUpdateReachesAppModel() throws {
+    func testTranscriptUpdateDoesNotOverwriteADurableTitle() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("temple-title-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
-        let first = SessionIndex.grouping([Fixture.session("member", project: "/tmp", title: "Before", updated: 10)])
-        let second = SessionIndex.grouping([Fixture.session("member", project: "/tmp", title: "After", updated: 10)])
+        let first = CatalogFixtureIndex.grouping([Fixture.session("member", project: "/tmp", title: "Before", updated: 10)])
+        let second = CatalogFixtureIndex.grouping([Fixture.session("member", project: "/tmp", title: "After", updated: 10)])
         let db = try TempleDB.inMemory()
         Fixture.join(first, to: db)
         let source = DelayedIndexSource()
-        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
-                             noiseFilter: NoNoiseFilter(), database: db,
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source, database: db,
                              settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
                              stateDirectory: directory)
         model.start()
         source.emit(first)
         source.emit(second)
-        XCTAssertEqual(model.index.allSessions.first?.title, "After")
+        XCTAssertEqual(model.sessions.first?.displayTitle, "Before")
     }
 
 }
 
 @MainActor
 private final class DelayedIndexSource: IndexSource {
-    private var onUpdate: ((SessionIndex) -> Void)?
+    private var onUpdate: ((EngineSnapshot) -> Void)?
 
-    func start(onUpdate: @escaping (SessionIndex) -> Void) {
+    func start(onUpdate: @escaping (EngineSnapshot) -> Void) {
         self.onUpdate = onUpdate
     }
 
     func stop() {}
 
-    func emit(_ index: SessionIndex) {
-        onUpdate?(index)
+    func emit(_ index: CatalogFixtureIndex) {
+        onUpdate?(index.snapshot)
     }
 }

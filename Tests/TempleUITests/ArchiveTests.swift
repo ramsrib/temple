@@ -2,9 +2,6 @@ import XCTest
 @testable import TempleUI
 import TempleCore
 
-private struct ArchiveNoNoiseFilter: NoiseFilter {
-    func isNoise(_ session: AgentSession) -> Bool { false }
-}
 
 @MainActor
 final class ArchiveTests: XCTestCase {
@@ -15,8 +12,7 @@ final class ArchiveTests: XCTestCase {
         let overlay = SessionOverlayStore(db: database)
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(SessionIndex(projects: [])),
-            noiseFilter: ArchiveNoNoiseFilter(),
+            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
             database: database,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: overlay

@@ -2,9 +2,6 @@ import XCTest
 @testable import TempleUI
 import TempleCore
 
-private struct NoNoise: NoiseFilter {
-    func isNoise(_ session: AgentSession) -> Bool { false }
-}
 
 /// ⌃⇥ — the tab switcher walks open tabs most-recently-visited first, the
 /// same gesture as the ⌘P project switcher one level down.
@@ -16,8 +13,7 @@ final class TabSwitcherTests: XCTestCase {
         let overlay = SessionOverlayStore(db: database)
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(SessionIndex(projects: [])),
-            noiseFilter: NoNoise(),
+            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
             database: database,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: overlay

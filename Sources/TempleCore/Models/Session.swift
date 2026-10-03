@@ -1,6 +1,6 @@
 import Foundation
 
-/// Row-side presentation. Legacy AgentSession consumers switch in later phases.
+/// Row-side presentation. Legacy TranscriptSummary consumers switch in later phases.
 public struct Session: Identifiable, Hashable, Sendable {
     public let state: SessionState
     public let resolution: MemberResolution?

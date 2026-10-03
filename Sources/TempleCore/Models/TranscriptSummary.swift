@@ -18,6 +18,8 @@ public struct TranscriptSummary: Hashable, Sendable {
     public let lastMessagePreview: String?
     public let originator: String?
     /// Claude's recorded summary title, distinct from the first prompt.
+    /// Display-only shared thread title; never a core fill.
+    public let sharedTitleHint: String?
     public let recordedTitle: String?
     /// Display-only hints, never persisted: Claude's lossy directory decode
     /// and Codex's prompt from a later part of the rollout.
@@ -42,6 +44,7 @@ public struct TranscriptSummary: Hashable, Sendable {
         lastMessagePreview: String? = nil,
         originator: String? = nil,
         recordedTitle: String? = nil,
+        sharedTitleHint: String? = nil,
         directoryHint: String? = nil,
         laterPromptHint: String? = nil,
         legacyTitleHint: String? = nil
@@ -60,6 +63,7 @@ public struct TranscriptSummary: Hashable, Sendable {
         self.lastMessagePreview = lastMessagePreview
         self.originator = originator
         self.recordedTitle = recordedTitle
+        self.sharedTitleHint = sharedTitleHint
         self.directoryHint = directoryHint
         self.laterPromptHint = laterPromptHint
         self.legacyTitleHint = legacyTitleHint

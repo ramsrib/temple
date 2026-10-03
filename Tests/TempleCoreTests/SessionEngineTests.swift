@@ -308,7 +308,7 @@ final class SessionEngineTests: XCTestCase {
         XCTAssertEqual(watcher.resolution(for: "wrong"), .unreadable)
     }
 
-    func testCodexSharedTitlesUpdateWithoutRolloutModification() async throws {
+    func testCodexSharedTitlesAreReadInsideAnExplicitEnrichment() async throws {
         let root = try root()
         let id = UUID().uuidString.lowercased()
         let file = try rollout(root, id: id, at: Date())
@@ -320,14 +320,14 @@ final class SessionEngineTests: XCTestCase {
         let date = recorder.latest.first?.updatedAt
         let title = root.appendingPathComponent("session_index.jsonl")
         try "{\"id\":\"\(id)\",\"thread_name\":\"Retitled\"}".write(to: title, atomically: true, encoding: .utf8)
-        watcher.reconcileEvent(path: title.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
+        watcher.requestResolution(id)
         try await eventually { recorder.latest.first?.title == "Retitled" }
         XCTAssertEqual(recorder.latest.first?.updatedAt, date)
         XCTAssertEqual(recorder.latest.first?.filePath, file)
         try FileManager.default.removeItem(at: title)
-        watcher.reconcileEvent(path: title.path, flags: UInt32(kFSEventStreamEventFlagItemRemoved))
+        watcher.requestResolution(id)
         try await eventually { recorder.latest.first?.title == "(no prompt)" }
-        XCTAssertEqual(store.parses, parses)
+        XCTAssertEqual(store.parses.values.reduce(0, +), parses.values.reduce(0, +) + 2)
     }
 
     func testAdoptionCatchUpFindsFileCreatedBeforeRegistrationWithoutPublishingIt() async throws {
@@ -697,7 +697,7 @@ final class SessionEngineTests: XCTestCase {
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { gate.signal() }
         let began = Date()
         XCTAssertEqual(watcher.resolution(for: "pruned"), .confirmedAbsent)
-        XCTAssertNotNil(watcher.publishedIndex)
+        XCTAssertNotNil(watcher.publishedSnapshot)
         _ = watcher.isMonitoring
         XCTAssertLessThan(Date().timeIntervalSince(began), 0.05)
     }
@@ -738,7 +738,7 @@ final class SessionEngineTests: XCTestCase {
         XCTAssertTrue(recorder.latest.isEmpty)
         XCTAssertNil(watcher.resolution(for: "external"))
         recorder.stop()
-        try await eventually { watcher.publishedIndex == nil }
+        try await eventually { watcher.publishedSnapshot == nil }
         let next = try await start(watcher)
         defer { next.stop() }
         XCTAssertEqual(next.latest.map(\.id), ["external"])
@@ -979,8 +979,8 @@ final class SessionEngineTests: XCTestCase {
 
 @MainActor
 private final class EngineRecorder {
-    var indices: [SessionIndex] = []
-    var latest: [AgentSession] { indices.last?.allSessions ?? [] }
+    var indices: [EngineSnapshot] = []
+    var latest: [TranscriptSummary] { indices.last?.allSessions ?? [] }
     private let watcher: SessionWatcher
     private var task: Task<Void, Never>?
     init(_ watcher: SessionWatcher) {
@@ -1015,7 +1015,7 @@ private final class EngineCountingStore: IncrementalSessionStore, @unchecked Sen
     var cacheInvalidationToken: String? { inner.cacheInvalidationToken }
     var sharedTitleURLs: [URL] { inner.sharedTitleURLs }
     func loadSharedTitles() -> [String: String] { inner.loadSharedTitles() }
-    func loadSessions() -> [AgentSession] { XCTFail("engine must never load the full store"); return [] }
+    func loadSummaries() -> [TranscriptSummary] { XCTFail("engine must never load the full store"); return [] }
     func sessionFileURLs() -> [URL] { inner.sessionFileURLs() }
     func enumerateSessionFiles() throws -> [URL] {
         lock.lock(); listingCount += 1; lock.unlock()
@@ -1037,9 +1037,9 @@ private final class EngineCountingStore: IncrementalSessionStore, @unchecked Sen
         headerObserver?()
         return try inner.adoptionHeader(at: url)
     }
-    func loadSession(at url: URL) -> AgentSession? {
+    func loadSummary(at url: URL) -> TranscriptSummary? {
         lock.lock(); counts[url.deletingPathExtension().lastPathComponent, default: 0] += 1; lock.unlock()
-        return inner.loadSession(at: url)
+        return inner.loadSummary(at: url)
     }
 }
 

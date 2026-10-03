@@ -171,48 +171,12 @@ public final class AppModel: ObservableObject {
             + overlay.projectKeyOrder.compactMap { byKey[$0] }
     }
 
-    @Published public var index = SessionIndex(projects: []) {
-        didSet {
-            recomputeNoise()
-            extendFrozenProjectOrder()
-        }
-    }
-
-    /// Legacy index ranks retained for the transitional adapter until P5.
-    /// The sidebar uses the ProjectKey ranks above, frozen after resolution.
-    private var frozenProjectRank: [String: Int] = [:]
-    /// Per project path: session id → frozen position.
-    private var frozenSessionRank: [String: [String: Int]] = [:]
-
-    private func extendFrozenProjectOrder() {
-        let newPaths = index.projects.map(\.path).filter { frozenProjectRank[$0] == nil }
-        if !newPaths.isEmpty {
-            for key in frozenProjectRank.keys { frozenProjectRank[key]! += newPaths.count }
-            for (offset, path) in newPaths.enumerated() { frozenProjectRank[path] = offset }
-        }
-        for project in index.projects {
-            var ranks = frozenSessionRank[project.path] ?? [:]
-            // Incoming sessions are newest-first; unseen ids prepend in that order.
-            let newIDs = project.sessions.map(\.id).filter { ranks[$0] == nil }
-            if !newIDs.isEmpty {
-                for key in ranks.keys { ranks[key]! += newIDs.count }
-                for (offset, id) in newIDs.enumerated() { ranks[id] = offset }
-                frozenSessionRank[project.path] = ranks
-            }
-        }
-    }
-    // (recomputeNoise refreshes the cached non-noise set below.)
     @Published public var isLoading = true
 
     // Sidebar UI state (U1)
     @Published public var searchText = ""
     @Published public var highlightedID: String?
-    @Published public var showNoise = false { didSet { recomputeNoise() } }
 
-    // The disk-I/O noise stage is cached (recomputed only when the index or the
-    // toggle changes) so it never runs during view body. Search + pins are
-    // applied cheaply in-memory on top (below).
-    private var noiseFilteredProjects: [Project] = []
     /// Restored from `UIStateStore` in `init` (property observers don't fire
     /// there, so the restore doesn't write itself straight back). Every later
     /// change persists — including the ones SwiftUI makes through the binding.
@@ -324,16 +288,12 @@ public final class AppModel: ObservableObject {
     // Seams (Track C)
     private let stateDirectory: URL?
     private let indexSource: IndexSource
-    private let search: SessionSearch
-    private let noiseFilter: NoiseFilter
 
     private var cancellables: Set<AnyCancellable> = []
     private var themeObserver: NSObjectProtocol?
     private(set) var pendingSessionOpens: Set<String> = []
     public init(surfaceFactory: TerminalSurfaceFactory = StubTerminalSurfaceFactory(),
                 indexSource: IndexSource? = nil,
-                search: SessionSearch = CoreSessionSearch(),
-                noiseFilter: NoiseFilter = CoreNoiseFilter(),
                 registry: ProcessRegistry? = nil,
                 reconciler: CodexAdopting? = nil,
                 persistence: TabPersistence? = nil,
@@ -356,8 +316,6 @@ public final class AppModel: ObservableObject {
         self.overlay = overlay
         self.uiState = uiState
         self.sidebarVisibility = uiState.sidebarVisibility ?? .all
-        self.search = search
-        self.noiseFilter = noiseFilter
         self.indexSource = resolvedIndexSource
         self.stateDirectory = stateDirectory
         self.notifications = NotificationController()
@@ -610,26 +568,9 @@ public final class AppModel: ObservableObject {
                 }
             }
         }
-        var isFirstLiveIndex = true
-        indexSource.start { [weak self] index in
-            guard let self else { return }
-            self.isLoading = false
-            if isFirstLiveIndex {
-                TempleUILog.launch.info("live index published")
-                isFirstLiveIndex = false
-            }
-            // Skip the recompute (disk-stat) storm when nothing actually changed.
-            if index != self.index { self.index = index }
-            self.openSessions.refreshExitedResumeDiagnoses()
-            for id in self.pendingSessionOpens {
-                guard !self.sessions.contains(where: { $0.id == id }) else {
-                    self.pendingSessionOpens.remove(id)
-                    continue
-                }
-                guard let session = index.allSessions.first(where: { $0.id == id }) else { continue }
-                self.pendingSessionOpens.remove(id)
-                self.openSessions.openSession(session)
-            }
+        indexSource.start { [weak self] snapshot in
+            self?.isLoading = false
+            self?.receiveEngineSnapshot(snapshot)
         }
         // U10: follow macOS appearance live when theme == .system.
         themeObserver = DistributedNotificationCenter.default().addObserver(
@@ -724,29 +665,15 @@ public final class AppModel: ObservableObject {
             openSessions.activate(tab)
             return
         }
-        if let engine {
-            // Cached content is not proof of a usable resume target. An
-            // activation arriving during resolution is completed on publication.
-            guard case .loaded = engine.resolution(for: id) else {
-                if overlay.isTempleSession(id) { pendingSessionOpens.insert(id) }
-                engine.requestResolution(id)
-                return
-            }
-        }
-        if let session = index.allSessions.first(where: { $0.id == id }) {
-            openSessions.openSession(session)
-        } else if overlay.isTempleSession(id) {
-            pendingSessionOpens.insert(id)
-            engine?.requestResolution(id)
-        }
+        if overlay.isTempleSession(id) { engine?.requestResolution(id) }
     }
 
     /// Legacy surfaces keep their transcript types, but actions prefer row facts.
-    public func resumeArgv(for session: AgentSession) -> [String] {
+    public func resumeArgv(for session: TranscriptSummary) -> [String] {
         if let row = sessions.first(where: { $0.id == session.id }) {
             return SessionLauncher.resumeArgv(row)
         }
-        return session.resume.argv
+        return session.agent.resumeArgv(sessionID: session.id)
     }
 
     /// The project the launcher should default to (last active, else first indexed).
@@ -761,7 +688,7 @@ public final class AppModel: ObservableObject {
     public func displayTitle(_ session: Session) -> String { session.displayTitle }
     public func resumeArgv(for session: Session) -> [String] { SessionLauncher.resumeArgv(session) }
 
-    public func displayTitle(_ session: AgentSession) -> String {
+    public func displayTitle(_ session: TranscriptSummary) -> String {
         overlay.displayTitle(for: session)
     }
 
@@ -777,86 +704,6 @@ public final class AppModel: ObservableObject {
 
     public func projectName(_ path: String) -> String {
         path.isEmpty ? "—" : URL(fileURLWithPath: path).lastPathComponent
-    }
-
-    private func matches(_ session: AgentSession) -> Bool {
-        let q = searchText.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return true }
-        // Search custom name too (title-only per UX, but the custom name IS the title).
-        return displayTitle(session).localizedCaseInsensitiveContains(q)
-    }
-
-    /// Disk stage: drop noise. Runs only when the index or the toggle changes,
-    /// never during view body. Publishes so the computed views below refresh.
-    private func recomputeNoise() {
-        // Memoize the existence stat per unique project path: this runs on the
-        // main thread a couple of times a second while any agent is appending
-        // to its session file, and sessions vastly outnumber projects.
-        var exists: [String: Bool] = [:]
-        func pathExists(_ path: String) -> Bool {
-            if let hit = exists[path] { return hit }
-            let result = FileManager.default.fileExists(atPath: path)
-            exists[path] = result
-            return result
-        }
-        noiseFilteredProjects = index.projects.compactMap { project in
-            let sessions = showNoise ? project.sessions
-                                     : project.sessions.filter { !noiseFilter.isNoise($0, pathExists: pathExists) }
-            return sessions.isEmpty ? nil : Project(path: project.path, sessions: sessions)
-        }
-        objectWillChange.send()
-    }
-
-    /// Membership remains a guard even when a test or cached source supplies
-    /// a broader snapshot. Every browsing surface starts from this set.
-    private var scopedProjects: [Project] {
-        let temple = overlay.templeSessions
-        return noiseFilteredProjects.compactMap { project -> Project? in
-            let sessions = project.sessions.filter { temple.contains($0.id) }
-            return sessions.isEmpty ? nil : Project(path: project.path, sessions: sessions)
-        }
-    }
-
-    /// What every browse surface sees: the scoped non-noise set minus anything
-    /// archived. Set lookups only — no disk — so it is safe to recompute per
-    /// access like the stages built on it.
-    public var visibleProjects: [Project] {
-        let scoped = scopedProjects
-        let archivedProjectPaths = overlay.archivedProjects
-        let archivedSessions = overlay.archivedSessions
-        guard !archivedProjectPaths.isEmpty || !archivedSessions.isEmpty else {
-            return scoped
-        }
-        return scoped.compactMap { project -> Project? in
-            guard !archivedProjectPaths.contains(project.path) else { return nil }
-            guard !archivedSessions.isEmpty else { return project }
-            let sessions = project.sessions.filter { !archivedSessions.contains($0.id) }
-            return sessions.isEmpty ? nil : Project(path: project.path, sessions: sessions)
-        }
-    }
-
-    /// Sidebar order: projects the user has never placed come FIRST, in the
-    /// launch-frozen recency order, then the placed ones in the order they
-    /// were placed in. A brand-new project therefore surfaces at the top
-    /// rather than sinking under the 8-project cap the moment anyone reorders
-    /// anything. With no manual order this is exactly the frozen order.
-    private func sortedByManualOrder(_ projects: [Project]) -> [Project] {
-        let placement = Dictionary(overlay.projectOrder.enumerated().map { ($0.element, $0.offset) },
-                                   uniquingKeysWith: { first, _ in first })
-        guard !placement.isEmpty else {
-            return projects.sorted {
-                (frozenProjectRank[$0.path] ?? .max) < (frozenProjectRank[$1.path] ?? .max)
-            }
-        }
-        return projects.sorted { lhs, rhs in
-            switch (placement[lhs.path], placement[rhs.path]) {
-            case (nil, nil):
-                return (frozenProjectRank[lhs.path] ?? .max) < (frozenProjectRank[rhs.path] ?? .max)
-            case (nil, .some): return true
-            case (.some, nil): return false
-            case (.some(let left), .some(let right)): return left < right
-            }
-        }
     }
 
     /// Projects for the sidebar (in-memory search over the cached non-noise
@@ -1048,11 +895,6 @@ public final class AppModel: ObservableObject {
     /// (the pre-recency palette silently uniqued through a Dictionary). Lists
     /// keyed by id — ForEach identity, selection maps — must never see a
     /// duplicate, so they dedupe up front, first occurrence wins.
-    private static func dedupedByID(_ sessions: [AgentSession]) -> [AgentSession] {
-        var seen = Set<String>()
-        return sessions.filter { seen.insert($0.id).inserted }
-    }
-
     // MARK: Archive browser (⌘⇧Y)
 
     /// Whether the user has ever arranged the sidebar by hand.

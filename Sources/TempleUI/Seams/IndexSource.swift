@@ -1,98 +1,60 @@
 import Foundation
 import TempleCore
 
-/// Supplies the live session index to the UI (U5).
+/// Supplies coherent member facts and resolution outcomes to the row overlay.
 @MainActor
 public protocol IndexSource: AnyObject {
-    /// Emit the current index immediately, then on every change.
-    func start(onUpdate: @escaping (SessionIndex) -> Void)
+    func start(onUpdate: @escaping (EngineSnapshot) -> Void)
     func stop()
 }
 
 @MainActor
 public final class WatcherIndexSource: IndexSource {
-
     let watcher: SessionWatcher
     private var task: Task<Void, Never>?
     private var snapshotTask: Task<Void, Never>?
-    private var resolutionTask: Task<Void, Never>?
     private var latestSnapshot: EngineSnapshot?
     var onSnapshotUpdate: ((EngineSnapshot) -> Void)? {
         didSet { if let latestSnapshot { onSnapshotUpdate?(latestSnapshot) } }
     }
-    private var latestResolutions: [String: MemberResolution]?
     var onResolutionUpdate: (([String: MemberResolution]) -> Void)? {
-        didSet {
-            if let latestResolutions { onResolutionUpdate?(latestResolutions) }
-        }
+        didSet { if let latestSnapshot { onResolutionUpdate?(latestSnapshot.resolutions) } }
     }
-    private var onUpdate: ((SessionIndex) -> Void)?
-    private var observers: [UUID: (SessionIndex) -> Void] = [:]
-    private var latestIndex: SessionIndex?
-
-    public init(watcher: SessionWatcher = SessionWatcher()) {
-        self.watcher = watcher
-    }
-
-    public func start(onUpdate: @escaping (SessionIndex) -> Void) {
+    private var observers: [UUID: (EngineSnapshot) -> Void] = [:]
+    private var onUpdate: ((EngineSnapshot) -> Void)?
+    public init(watcher: SessionWatcher = SessionWatcher()) { self.watcher = watcher }
+    public func start(onUpdate: @escaping (EngineSnapshot) -> Void) {
         self.onUpdate = onUpdate
-        if let latestIndex { onUpdate(latestIndex) }
-        startIfNeeded()
+        if let latestSnapshot { onUpdate(latestSnapshot) }
+        startEngineIfNeeded()
     }
-
     public func stop() {
-        task?.cancel()
-        task = nil
-        latestSnapshot = nil; latestIndex = nil; latestResolutions = nil; onUpdate = nil
+        task?.cancel(); task = nil
         snapshotTask?.cancel(); snapshotTask = nil
-        resolutionTask?.cancel(); resolutionTask = nil
+        latestSnapshot = nil; onUpdate = nil
         watcher.stop()
     }
-
-    /// Adds a second consumer without installing another filesystem watcher.
-    /// The latest index is replayed immediately when available.
-    func observe(_ observer: @escaping (SessionIndex) -> Void) -> UUID {
-        let id = UUID()
-        observers[id] = observer
-        if let latestIndex { observer(latestIndex) }
-        startIfNeeded()
+    func observe(_ observer: @escaping (EngineSnapshot) -> Void) -> UUID {
+        let id = UUID(); observers[id] = observer
+        if let latestSnapshot { observer(latestSnapshot) }
+        startEngineIfNeeded()
         return id
     }
-
-    func removeObserver(_ id: UUID) {
-        observers.removeValue(forKey: id)
-    }
-
-    func startEngineIfNeeded() { startIfNeeded() }
-
-    private func startIfNeeded() {
+    func removeObserver(_ id: UUID) { observers.removeValue(forKey: id) }
+    func startEngineIfNeeded() {
         guard task == nil else { return }
-        let resolutions = watcher.resolutionUpdates()
-        resolutionTask = Task { [weak self] in
-            for await states in resolutions {
-                guard !Task.isCancelled, let self else { break }
-                self.latestResolutions = states
-                self.onResolutionUpdate?(states)
-            }
-        }
         let snapshots = watcher.snapshots()
         snapshotTask = Task { [weak self] in
             for await snapshot in snapshots {
                 guard !Task.isCancelled, let self else { break }
                 self.latestSnapshot = snapshot
+                self.onResolutionUpdate?(snapshot.resolutions)
                 self.onSnapshotUpdate?(snapshot)
-                // All existing consumers retain the legacy presentation and cache.
-                let index = snapshot.legacyIndex
-                guard index != self.latestIndex else { continue }
-                self.latestIndex = index
-                self.onUpdate?(index)
-                for observer in Array(self.observers.values) { observer(index) }
+                self.onUpdate?(snapshot)
+                for observer in Array(self.observers.values) { observer(snapshot) }
             }
         }
         let stream = watcher.start()
-        task = Task {
-            for await _ in stream { if Task.isCancelled { break } }
-        }
+        task = Task { for await _ in stream { if Task.isCancelled { break } } }
     }
-
 }

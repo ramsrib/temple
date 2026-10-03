@@ -46,7 +46,7 @@ public final class HistoryModel: ObservableObject {
     /// copy names exactly the rows that will join.
     public struct ImportRequest: Identifiable, Equatable {
         public let id = UUID()
-        public let sessions: [AgentSession]
+        public let sessions: [TranscriptSummary]
         public let title: String
         public let message: String
         public let confirmLabel: String
@@ -95,7 +95,7 @@ public final class HistoryModel: ObservableObject {
     var catalog: () -> AsyncStream<SessionCatalog.Event>
     /// Open (or focus) a session in a tab. Opening an outside session joins it
     /// as `opened` on the way (ADR-023).
-    var openSession: (AgentSession) -> Void = { _ in }
+    var openSession: (TranscriptSummary) -> Void = { _ in }
     /// Whether a session runs in an open tab: undoing its import must not
     /// pull it out from under that tab.
     var archiveMember: (String, UndoManager?) -> Void = { _, _ in }
@@ -104,7 +104,7 @@ public final class HistoryModel: ObservableObject {
     // MARK: Snapshot
 
     /// The disk as last read: deduped by id, first (newest) file wins.
-    private var diskByID: [String: AgentSession] = [:]
+    private var diskByID: [String: TranscriptSummary] = [:]
     /// Temple's own copies come from the live index — fresher titles and
     /// times. Kept as delivered; keyed by id only when a rebuild needs it.
     var memberRows: () -> [Session] = { [] }
@@ -325,11 +325,11 @@ public final class HistoryModel: ObservableObject {
 
     /// Splits a batch into rows and noise (`SessionFilter.isNoise`), carrying
     /// the per-project existence answers so far in and out.
-    nonisolated static func classify(_ sessions: [AgentSession], exists: [String: Bool],
+    nonisolated static func classify(_ sessions: [TranscriptSummary], exists: [String: Bool],
                                      pathExists: (String) -> Bool)
-        -> (kept: [AgentSession], noise: [String], exists: [String: Bool]) {
+        -> (kept: [TranscriptSummary], noise: [String], exists: [String: Bool]) {
         var exists = exists
-        var kept: [AgentSession] = []
+        var kept: [TranscriptSummary] = []
         var noise: [String] = []
         for session in sessions {
             let isNoise = SessionFilter.isNoise(session) { path in
@@ -607,7 +607,7 @@ public final class HistoryModel: ObservableObject {
     }
 
     /// What the bulk Import would bring in.
-    public var selectedOutsideRows: [AgentSession] {
+    public var selectedOutsideRows: [TranscriptSummary] {
         selectedRows.filter { !isInTemple($0.id) }.compactMap(\.catalog)
     }
 
@@ -658,7 +658,7 @@ public final class HistoryModel: ObservableObject {
         else if let catalog = session.catalog { openSession(catalog) }
     }
 
-    public func open(_ session: AgentSession) { openSession(session) }
+    public func open(_ session: TranscriptSummary) { openSession(session) }
     public func requestImport(_ rows: [HistoryRow]) { requestImport(rows.compactMap(\.catalog)) }
 
 
@@ -670,7 +670,7 @@ public final class HistoryModel: ObservableObject {
     /// ⌘I, the bar's Import, a row's Import: ask first. Rows already in
     /// Temple are left out of the count and the copy; nothing to import, no
     /// sheet.
-    public func requestImport(_ sessions: [AgentSession]? = nil) {
+    public func requestImport(_ sessions: [TranscriptSummary]? = nil) {
         let candidates = (sessions ?? selectedRows.compactMap(\.catalog)).filter { !isInTemple($0.id) }
         guard !candidates.isEmpty else { return }
         pendingImport = makeImportRequest(for: candidates)
@@ -678,7 +678,7 @@ public final class HistoryModel: ObservableObject {
 
     /// The copy in the words the page shows: display titles, and where each
     /// project's rows will actually be listed.
-    func makeImportRequest(for sessions: [AgentSession]) -> ImportRequest {
+    func makeImportRequest(for sessions: [TranscriptSummary]) -> ImportRequest {
         Self.importRequest(for: sessions,
                            title: { [overlay] in overlay.displayTitle(for: $0) },
                            isProjectArchived: { [overlay] in overlay.isProjectArchived($0) })
@@ -689,11 +689,11 @@ public final class HistoryModel: ObservableObject {
     /// A project that is archived lists its sessions in the archive (⌘⇧Y),
     /// not the sidebar — so the copy says so rather than promise a sidebar
     /// row that never appears.
-    static func importRequest(for sessions: [AgentSession],
-                              title: (AgentSession) -> String = { $0.title },
+    static func importRequest(for sessions: [TranscriptSummary],
+                              title: (TranscriptSummary) -> String = { $0.catalogTitle },
                               isProjectArchived: (String) -> Bool = { _ in false }) -> ImportRequest {
         var counts: [String: Int] = [:]
-        for session in sessions { counts[session.projectPath, default: 0] += 1 }
+        for session in sessions { counts[session.catalogDirectory, default: 0] += 1 }
         let paths = counts.sorted { lhs, rhs in
             if lhs.value != rhs.value { return lhs.value > rhs.value }
             return projectName(lhs.key) == projectName(rhs.key) ? lhs.key < rhs.key
@@ -750,7 +750,7 @@ public final class HistoryModel: ObservableObject {
         finishImport(entries, sessions: sessions, undoManager: undoManager)
     }
 
-    private func finishImport(_ prepared: [PreparedSessionImport], sessions: [AgentSession], undoManager: UndoManager?) {
+    private func finishImport(_ prepared: [PreparedSessionImport], sessions: [TranscriptSummary], undoManager: UndoManager?) {
         // A session may have been opened or imported while parsing was in flight.
         let entries = prepared.filter { !overlay.isTempleSession($0.id) }
         let ids = Set(entries.map(\.id))
@@ -784,7 +784,7 @@ public final class HistoryModel: ObservableObject {
     /// still an untouched import not running in a tab (`TempleDB.leave`).
     /// Redo imports what the undo removed. The pair re-registers itself, so
     /// ⌘Z / ⌘⇧Z bounce as often as the user likes.
-    private func registerUndo(_ undoManager: UndoManager?, imported ids: [String], sessions: [AgentSession], entries: [PreparedSessionImport]) {
+    private func registerUndo(_ undoManager: UndoManager?, imported ids: [String], sessions: [TranscriptSummary], entries: [PreparedSessionImport]) {
         guard let undoManager else { return }
         undoManager.registerUndo(withTarget: self) { [weak undoManager] model in
             MainActor.assumeIsolated {

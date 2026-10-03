@@ -5,10 +5,10 @@ import CoreServices
 final class WatcherTests: XCTestCase {
     private func waitForInitialPublication(_ watcher: SessionWatcher) async throws {
         let deadline = Date().addingTimeInterval(3)
-        while watcher.publishedIndex == nil, Date() < deadline {
+        while watcher.publishedSnapshot == nil, Date() < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertNotNil(watcher.publishedIndex)
+        XCTAssertNotNil(watcher.publishedSnapshot)
     }
 
     func testWatcherYieldsUpdatedIndexAfterNewSessionFile() async throws { try await exercise0(injectEvents: false) }
@@ -233,11 +233,11 @@ private final class MidWriteRacingStore: IncrementalSessionStore, @unchecked Sen
 
     var agent: Agent { inner.agent }
     var watchedURLs: [URL] { inner.watchedURLs }
-    func loadSessions() -> [AgentSession] { inner.loadSessions() }
+    func loadSummaries() -> [TranscriptSummary] { inner.loadSummaries() }
     func sessionFileURLs() -> [URL] { inner.sessionFileURLs() }
 
-    func loadSession(at fileURL: URL) -> AgentSession? {
-        let stale = inner.loadSession(at: fileURL)
+    func loadSummary(at fileURL: URL) -> TranscriptSummary? {
+        let stale = inner.loadSummary(at: fileURL)
         // Compare by name: the enumerated URL may carry the resolved
         // /private/var prefix while the fixture URL has /var (tmp symlink).
         if !raced, fileURL.lastPathComponent == racingFile.lastPathComponent,

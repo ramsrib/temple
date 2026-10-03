@@ -18,7 +18,7 @@ final class SettingsResponsivenessTests: XCTestCase {
     override func setUp() async throws {
         factory = FakeTerminalSurfaceFactory()
         model = AppModel(surfaceFactory: factory,
-                         indexSource: FakeIndexSource(SessionIndex(projects: [])),
+                         indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
                          database: try TempleDB.inMemory(),
                          settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         _ = model.openSessions.newSession(agent: .claude, projectPath: "/p/a")
