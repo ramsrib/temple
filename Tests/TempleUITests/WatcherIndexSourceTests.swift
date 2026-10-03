@@ -17,7 +17,7 @@ final class WatcherIndexSourceTests: XCTestCase {
         for file in files { try write(file, prompt: "Before") }
         let secondParse = expectation(description: "second member parse reached")
         let store = BatchGateStore(root: root, onSecondParse: { secondParse.fulfill() })
-        let watcher = SessionWatcher(stores: [store], members: ["one", "two"], debounceInterval: 0.1, now: { store.now })
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.1, now: { store.now }), members: ["one", "two"])
         let source = WatcherIndexSource(watcher: watcher)
         defer { store.release(); source.stop() }
         let initial = expectation(description: "initial index")

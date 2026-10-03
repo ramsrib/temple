@@ -32,7 +32,7 @@ final class SessionEngineTests: XCTestCase {
         return file
     }
 
-    private func start(_ watcher: SessionWatcher) async throws -> EngineRecorder {
+    private func start(_ watcher: SessionEngine) async throws -> EngineRecorder {
         let recorder = EngineRecorder(watcher)
         try await eventually { !recorder.indices.isEmpty }
         return recorder
@@ -48,7 +48,7 @@ final class SessionEngineTests: XCTestCase {
         let root = try root()
         let file = try claude(root, id: "loaded", text: "Recorded prompt")
         try claude(root, id: "outside")
-        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], members: ["loaded", "missing"])
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)]), members: ["loaded", "missing"])
         let updates = watcher.snapshots()
         var snapshots: [EngineSnapshot] = []
         let task = Task { for await snapshot in updates { snapshots.append(snapshot) } }
@@ -80,7 +80,7 @@ final class SessionEngineTests: XCTestCase {
         let member = try claude(root, id: "member")
         let outside = try claude(root, id: "outside")
         let store = EngineCountingStore(ClaudeSessionStore(root: root))
-        let watcher = SessionWatcher(stores: [store], members: ["member"], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), members: ["member"])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         XCTAssertEqual(store.parses, ["member": 1])
@@ -101,7 +101,7 @@ final class SessionEngineTests: XCTestCase {
         let file = try claude(root, id: "existing")
         let db = try TempleDB.inMemory()
         let store = EngineCountingStore(ClaudeSessionStore(root: root))
-        let watcher = SessionWatcher(stores: [store], database: db, debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         XCTAssertTrue(store.parses.isEmpty)
@@ -121,7 +121,7 @@ final class SessionEngineTests: XCTestCase {
         let imported = try claude(root, id: "imported")
         let pinned = try claude(root, id: "pinned")
         let db = try TempleDB.inMemory()
-        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db, debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         try db.join(sessionID: "imported", via: .imported, agent: .claude, transcriptPath: imported)
@@ -143,7 +143,7 @@ final class SessionEngineTests: XCTestCase {
         let file = try claude(root, id: "reimported")
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "reimported", via: .imported, agent: .claude, transcriptPath: file)
-        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db, debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         XCTAssertTrue(try db.leave(sessionID: "reimported"))
@@ -165,7 +165,7 @@ final class SessionEngineTests: XCTestCase {
         let queue = try DatabaseQueue()
         let db = try TempleDB(database: queue)
         try db.join(sessionID: "kept", via: .imported, agent: .claude, transcriptPath: file)
-        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db, debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         try queue.close()
@@ -178,7 +178,7 @@ final class SessionEngineTests: XCTestCase {
     func testPrestartJoinWaitsForClaudeCreationAndDeletionKeepsMembership() async throws {
         let root = try root()
         let db = try TempleDB.inMemory()
-        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db, debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: db)
         try db.join(sessionID: "later", via: .created, agent: .claude)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
@@ -196,7 +196,7 @@ final class SessionEngineTests: XCTestCase {
     func testAliasesAndCombinedFlagsReconcileTheCurrentFile() async throws {
         let root = try root()
         let file = try claude(root, id: "alias")
-        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], members: ["alias"], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), members: ["alias"])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         try claude(root, id: "alias", text: "alias update")
@@ -209,7 +209,7 @@ final class SessionEngineTests: XCTestCase {
         let root = try root()
         let staging = try self.root()
         try claude(staging, id: "moved")
-        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], members: ["moved"], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), members: ["moved"])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let dir = root.appendingPathComponent("project")
@@ -231,7 +231,7 @@ final class SessionEngineTests: XCTestCase {
         let second = try root()
         try claude(first, id: "linked", text: "first")
         try claude(second, id: "linked", text: "second")
-        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: missing)], members: ["linked"], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: missing)], debounceInterval: 0.02), members: ["linked"])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         XCTAssertEqual(watcher.resolution(for: "linked"), .confirmedAbsent)
@@ -252,11 +252,11 @@ final class SessionEngineTests: XCTestCase {
         let root = try root()
         try claude(root, id: "kept")
         let store = EngineCountingStore(ClaudeSessionStore(root: root))
-        let watcher = SessionWatcher(stores: [store], members: ["kept", "unknown"], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), members: ["kept", "unknown"])
         store.failEnumeration = true
         let recorder = try await start(watcher)
         defer { recorder.stop() }
-        XCTAssertEqual(watcher.resolution(for: "unknown"), .resolving)
+        XCTAssertEqual(watcher.resolution(for: "unknown"), .incomplete)
         store.failEnumeration = false
         watcher.reconcileEvent(path: root.path, flags: UInt32(kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagMustScanSubDirs))
         try await eventually { recorder.latest.first?.id == "kept" }
@@ -277,16 +277,16 @@ final class SessionEngineTests: XCTestCase {
                     transcriptPath: project.appendingPathComponent("missing.jsonl"))
         let store = EngineCountingStore(ClaudeSessionStore(root: root))
         store.failEnumeration = true
-        let watcher = SessionWatcher(stores: [store], database: db, debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
-        XCTAssertEqual(watcher.resolution(for: "missing"), .resolving)
+        XCTAssertEqual(watcher.resolution(for: "missing"), .incomplete)
         let scans = store.enumerations
         watcher.reconcileEvent(path: project.path,
             flags: UInt32(kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagMustScanSubDirs))
         try await eventually { store.enumerations > scans }
         try await Task.sleep(for: .milliseconds(150))
-        XCTAssertEqual(watcher.resolution(for: "missing"), .resolving,
+        XCTAssertEqual(watcher.resolution(for: "missing"), .incomplete,
                        "a subtree listing must not establish absence for the whole store")
         store.failEnumeration = false
         watcher.reconcileEvent(path: root.path, flags: UInt32(kFSEventStreamEventFlagKernelDropped))
@@ -300,7 +300,7 @@ final class SessionEngineTests: XCTestCase {
         let db = try TempleDB.inMemory()
         try db.join(sessionID: id, via: .opened, agent: .codex, transcriptPath: file)
         try db.join(sessionID: "wrong", via: .opened, agent: .codex, transcriptPath: file)
-        let watcher = SessionWatcher(stores: [CodexSessionStore(root: root)], database: db, debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         try await eventually { recorder.latest.map(\.id) == [id] }
@@ -313,7 +313,7 @@ final class SessionEngineTests: XCTestCase {
         let id = UUID().uuidString.lowercased()
         let file = try rollout(root, id: id, at: Date())
         let store = EngineCountingStore(CodexSessionStore(root: root))
-        let watcher = SessionWatcher(stores: [store], members: [id], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), members: [id])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let parses = store.parses
@@ -335,7 +335,7 @@ final class SessionEngineTests: XCTestCase {
         let time = Date()
         let id = UUID().uuidString.lowercased()
         try rollout(root, id: id, at: time)
-        let watcher = SessionWatcher(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02))
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let decided = expectation(description: "catch-up adoption")
@@ -351,7 +351,7 @@ final class SessionEngineTests: XCTestCase {
         let time = Date()
         try rollout(root, id: UUID().uuidString.lowercased(), at: time)
         try rollout(root, id: UUID().uuidString.lowercased(), at: time)
-        let watcher = SessionWatcher(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02))
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let decided = expectation(description: "ambiguous decision")
@@ -365,7 +365,7 @@ final class SessionEngineTests: XCTestCase {
         let root = try root()
         let time = Date()
         try rollout(root, id: UUID().uuidString.lowercased(), at: time)
-        let watcher = SessionWatcher(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02))
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let decided = expectation(description: "whole window remains ambiguous")
@@ -386,7 +386,7 @@ final class SessionEngineTests: XCTestCase {
         let time = Date()
         let first = try rollout(root, id: UUID().uuidString.lowercased(), at: time)
         let store = EngineCountingStore(CodexSessionStore(root: root))
-        let watcher = SessionWatcher(stores: [store], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02))
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let decided = expectation(description: "previously seen competitor remains ambiguous")
@@ -405,7 +405,7 @@ final class SessionEngineTests: XCTestCase {
         let time = Date()
         let file = try rollout(root, id: UUID().uuidString.lowercased(), at: time)
         let store = EngineCountingStore(CodexSessionStore(root: root))
-        let watcher = SessionWatcher(stores: [store], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02))
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let decided = expectation(description: "removed candidate cannot bind")
@@ -420,7 +420,7 @@ final class SessionEngineTests: XCTestCase {
     func testOneRolloutCannotSatisfyTwoOverlappingRequests() async throws {
         let root = try root()
         let time = Date()
-        let watcher = SessionWatcher(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02))
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let decided = expectation(description: "two refused requests")
@@ -443,7 +443,7 @@ final class SessionEngineTests: XCTestCase {
         let file = try rollout(root, id: id, at: time)
         let complete = try Data(contentsOf: file)
         try Data("{\"type\":".utf8).write(to: file)
-        let watcher = SessionWatcher(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02))
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let decided = expectation(description: "completed header")
@@ -461,7 +461,7 @@ final class SessionEngineTests: XCTestCase {
         let root = try root()
         try claude(root, id: "before")
         let store = EngineCountingStore(ClaudeSessionStore(root: root))
-        let watcher = SessionWatcher(stores: [store], members: ["before", "during"], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), members: ["before", "during"])
         let file = root.appendingPathComponent("project/during.jsonl")
         store.afterListing = {
             try? #"{"type":"user","sessionId":"during","cwd":"/private/tmp","message":{"content":"during scan"}}"#.write(to: file, atomically: true, encoding: .utf8)
@@ -480,7 +480,7 @@ final class SessionEngineTests: XCTestCase {
         try rollout(root, id: id, at: Date())
         let outside = try rollout(root, id: outsideID, at: Date())
         let store = EngineCountingStore(CodexSessionStore(root: root))
-        let watcher = SessionWatcher(stores: [store], members: [id], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), members: [id])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let counts = store.parses
@@ -520,7 +520,7 @@ final class SessionEngineTests: XCTestCase {
         try rollout(root, id: UUID().uuidString.lowercased(), at: now)
         let own = try rollout(root, id: UUID().uuidString.lowercased(), at: now)
         try Data("{\"type\":\"session_meta\"".utf8).write(to: own)
-        let watcher = SessionWatcher(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02))
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let done = expectation(description: "unresolved competitor refuses adoption")
@@ -538,8 +538,7 @@ final class SessionEngineTests: XCTestCase {
             let file = try rollout(root, id: valid, at: Date())
             let db = try TempleDB.inMemory()
             for id in [valid, wrong] { try db.join(sessionID: id, via: .opened, agent: .codex, transcriptPath: file) }
-            let watcher = SessionWatcher(stores: [CodexSessionStore(root: root)], database: db,
-                debounceInterval: 0.02)
+            let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02), database: db)
             let recorder = try await start(watcher)
             let handle = try FileHandle(forWritingTo: file)
             try handle.seekToEnd()
@@ -556,7 +555,7 @@ final class SessionEngineTests: XCTestCase {
         for restart in [false, true] {
             let root = try root()
             let now = Date()
-            let watcher = SessionWatcher(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02)
+            let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02))
             let recorder = try await start(watcher)
             let forbidden = expectation(description: "old generation never decides")
             forbidden.isInverted = true
@@ -574,7 +573,7 @@ final class SessionEngineTests: XCTestCase {
         let root = try root()
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "restored", via: .created, agent: .claude)
-        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db, debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: db)
         try db.join(sessionID: "new", via: .created, agent: .claude)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
@@ -592,7 +591,7 @@ final class SessionEngineTests: XCTestCase {
         let id = UUID().uuidString.lowercased()
         try rollout(root, id: id, at: now)
         let store = EngineCountingStore(CodexSessionStore(root: root))
-        let watcher = SessionWatcher(stores: [store], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02))
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let first = expectation(description: "deadline adoption")
@@ -613,7 +612,7 @@ final class SessionEngineTests: XCTestCase {
         let root = try root()
         try claude(root, id: "before")
         let store = EngineCountingStore(ClaudeSessionStore(root: root))
-        let watcher = SessionWatcher(stores: [store], members: ["before", "during"], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), members: ["before", "during"])
         let file = root.appendingPathComponent("project/during.jsonl")
         store.afterListing = {
             try? #"{"type":"user","sessionId":"during","cwd":"/private/tmp","message":{"content":"during scan"}}"#.write(to: file, atomically: true, encoding: .utf8)
@@ -630,7 +629,7 @@ final class SessionEngineTests: XCTestCase {
     func testLiveMissingAndRetargetedRoots() async throws {
         let base = try root()
         let logical = base.appendingPathComponent("logical")
-        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: logical)], members: ["member"], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: logical)], debounceInterval: 0.02), members: ["member"])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         try XCTSkipIf(!watcher.isMonitoring, "FSEvents service unavailable in this execution environment")
@@ -653,7 +652,7 @@ final class SessionEngineTests: XCTestCase {
         let id = UUID().uuidString.lowercased()
         let physicalFile = try rollout(physical, id: id, at: Date())
         try FileManager.default.createSymbolicLink(at: base.appendingPathComponent("sessions"), withDestinationURL: physical.appendingPathComponent("sessions"))
-        let watcher = SessionWatcher(stores: [CodexSessionStore(root: base)], members: [id], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: base)], debounceInterval: 0.02), members: [id])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         XCTAssertEqual(recorder.latest.first?.filePath.path, base.appendingPathComponent("sessions/2026/10/02/" + physicalFile.lastPathComponent).path)
@@ -671,7 +670,7 @@ final class SessionEngineTests: XCTestCase {
         try writable.join(sessionID: "member", via: .opened)
         let db = try TempleDB(readOnlyPath: path)
         XCTAssertTrue(db.isReadOnly)
-        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db, debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         XCTAssertEqual(recorder.latest.first?.filePath, file)
@@ -688,8 +687,7 @@ final class SessionEngineTests: XCTestCase {
             entered.fulfill()
             _ = gate.wait(timeout: .now() + 1)
         }
-        let watcher = SessionWatcher(stores: [store], members: ["pruned"],
-            debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), members: ["pruned"])
         let recorder = try await start(watcher)
         defer { recorder.stop(); gate.signal() }
         watcher.registerAdoption(projectPath: "/private/tmp", startedAt: Date(), window: 1) { _ in }
@@ -713,7 +711,7 @@ final class SessionEngineTests: XCTestCase {
             try #"{"type":"other"}"#.write(to: file, atomically: true, encoding: .utf8)
         }
         let store = EngineCountingStore(CodexSessionStore(root: root))
-        let watcher = SessionWatcher(stores: [store], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02))
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let refused = expectation(description: "neither competitor may be evicted before decision")
@@ -729,7 +727,7 @@ final class SessionEngineTests: XCTestCase {
         let file = try claude(root, id: "external")
         let path = root.appendingPathComponent("state.sqlite")
         let db = try TempleDB(path: path)
-        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db, debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         let otherProcess = try TempleDB(path: path)
         try otherProcess.join(sessionID: "external", via: .imported, agent: .claude, transcriptPath: file)
@@ -757,7 +755,7 @@ final class SessionEngineTests: XCTestCase {
         let renamed = file.deletingLastPathComponent().appendingPathComponent("rollout-\(formatter.string(from: now))-\(id).jsonl")
         try FileManager.default.moveItem(at: file, to: renamed)
         try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-3600)], ofItemAtPath: renamed.path)
-        let watcher = SessionWatcher(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02))
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let refused = expectation(description: "recent filename is eligible despite older mtime")
@@ -801,7 +799,7 @@ final class SessionEngineTests: XCTestCase {
         let db = try TempleDB.inMemory()
         try db.join(sessionID: thread, via: .opened, agent: .codex, transcriptPath: original)
         let store = EngineCountingStore(CodexSessionStore(root: root))
-        let watcher = SessionWatcher(stores: [store], database: db, debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         XCTAssertEqual(recorder.latest.map(\.id), [thread])
@@ -831,7 +829,7 @@ final class SessionEngineTests: XCTestCase {
         try Data("{".utf8).write(to: selected)
         let db = try TempleDB.inMemory()
         try db.join(sessionID: thread, via: .opened, agent: .codex, transcriptPath: original)
-        let watcher = SessionWatcher(stores: [CodexSessionStore(root: root)], database: db, debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         XCTAssertEqual(watcher.resolution(for: thread), .incomplete)
@@ -848,7 +846,7 @@ final class SessionEngineTests: XCTestCase {
         let db = try TempleDB.inMemory()
         try db.join(sessionID: member, via: .opened, agent: .codex)
         let store = EngineCountingStore(CodexSessionStore(root: root))
-        let watcher = SessionWatcher(stores: [store], database: db, debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         XCTAssertEqual(watcher.resolution(for: member), .confirmedAbsent)
@@ -861,15 +859,15 @@ final class SessionEngineTests: XCTestCase {
         XCTAssertEqual(store.headerReads, 0)
     }
 
-    func testCodexFailedEnumerationKeepsMissingMemberResolvingUntilRecovery() async throws {
+    func testCodexFailedEnumerationKeepsMissingMemberIncompleteUntilRecovery() async throws {
         let root = try root()
         let member = UUID().uuidString.lowercased()
         let store = EngineCountingStore(CodexSessionStore(root: root))
         store.failEnumeration = true
-        let watcher = SessionWatcher(stores: [store], members: [member], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), members: [member])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
-        XCTAssertEqual(watcher.resolution(for: member), .resolving)
+        XCTAssertEqual(watcher.resolution(for: member), .incomplete)
         store.failEnumeration = false
         watcher.reconcileEvent(path: root.path, flags: UInt32(kFSEventStreamEventFlagKernelDropped))
         try await eventually { watcher.resolution(for: member) == .confirmedAbsent }
@@ -896,7 +894,7 @@ final class SessionEngineTests: XCTestCase {
             outside.append(renamed)
         }
         let store = EngineCountingStore(CodexSessionStore(root: root))
-        let watcher = SessionWatcher(stores: [store], database: db, debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         XCTAssertEqual(store.headerReads, 0, "Startup must never scan outside headers")
@@ -934,7 +932,7 @@ final class SessionEngineTests: XCTestCase {
         let original = try rollout(root, id: thread, at: Date())
         let db = try TempleDB.inMemory()
         let store = EngineCountingStore(CodexSessionStore(root: root))
-        let watcher = SessionWatcher(stores: [store], database: db, debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let listings = store.enumerations
@@ -981,9 +979,9 @@ final class SessionEngineTests: XCTestCase {
 private final class EngineRecorder {
     var indices: [EngineSnapshot] = []
     var latest: [TranscriptSummary] { indices.last?.allSessions ?? [] }
-    private let watcher: SessionWatcher
+    private let watcher: SessionEngine
     private var task: Task<Void, Never>?
-    init(_ watcher: SessionWatcher) {
+    init(_ watcher: SessionEngine) {
         self.watcher = watcher
         let stream = watcher.start()
         task = Task { [weak self] in

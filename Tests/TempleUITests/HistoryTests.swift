@@ -1047,8 +1047,7 @@ final class HistoryUndoEngineTests: XCTestCase {
         try #"{"type":"user","sessionId":"imp","cwd":"/tmp/project","message":{"content":"from another terminal"}}"#
             .write(to: file, atomically: true, encoding: .utf8)
         let database = try TempleDB.inMemory()
-        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: database,
-                                     debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: database)
         let cache = root.appendingPathComponent("cache.json")
         let source = WatcherIndexSource(watcher: watcher)
         defer { source.stop() }

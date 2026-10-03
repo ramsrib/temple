@@ -228,7 +228,7 @@ final class SessionScopeTests: XCTestCase {
         // The engine must still publish its new fact for row filling.
         try "{\"id\":\"\(late)\",\"thread_name\":\"Late recorded prompt\"}"
             .write(to: root.appendingPathComponent("session_index.jsonl"), atomically: true, encoding: .utf8)
-        let watcher = SessionWatcher(stores: [CodexSessionStore(root: root)], database: db, debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02), database: db)
         let cache = root.appendingPathComponent("cache.json")
         let source = WatcherIndexSource(watcher: watcher)
         defer { source.stop() }
@@ -265,7 +265,7 @@ final class SessionScopeTests: XCTestCase {
         try db.join(sessionID: "legacy", via: .imported)
         try db.join(sessionID: "missing", via: .imported,
                     core: SessionCore(directory: "/missing", title: "Kept row"))
-        let source = WatcherIndexSource(watcher: SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db))
+        let source = WatcherIndexSource(watcher: SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)]), database: db))
         defer { source.stop() }
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source, database: db,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()), stateDirectory: root)

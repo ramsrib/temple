@@ -10,7 +10,7 @@ public protocol IndexSource: AnyObject {
 
 @MainActor
 public final class WatcherIndexSource: IndexSource {
-    let watcher: SessionWatcher
+    let watcher: SessionEngine
     private var task: Task<Void, Never>?
     private var snapshotTask: Task<Void, Never>?
     private var latestSnapshot: EngineSnapshot?
@@ -19,7 +19,7 @@ public final class WatcherIndexSource: IndexSource {
     }
     private var observers: [UUID: (EngineSnapshot) -> Void] = [:]
     private var onUpdate: ((EngineSnapshot) -> Void)?
-    public init(watcher: SessionWatcher = SessionWatcher()) { self.watcher = watcher }
+    public init(watcher: SessionEngine = SessionEngine(source: LocalSessionSource())) { self.watcher = watcher }
     public func start(onUpdate: @escaping (EngineSnapshot) -> Void) {
         self.onUpdate = onUpdate
         if let latestSnapshot { onUpdate(latestSnapshot) }

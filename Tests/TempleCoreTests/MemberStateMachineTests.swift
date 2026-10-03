@@ -5,7 +5,7 @@ import CoreServices
 @MainActor
 final class MemberStateMachineTests: XCTestCase {
     private func fixture(agent: Agent = .claude, prompt: String? = nil, complete: Bool = false)
-        throws -> (URL, URL, TempleDB, P5SpyStore, P5Clock, SessionWatcher) {
+        throws -> (URL, URL, TempleDB, P5SpyStore, P5Clock, SessionEngine) {
         let root = URL(fileURLWithPath: "/private/tmp/temple-p5-\(UUID().uuidString)")
         let dir = root.appendingPathComponent(agent == .claude ? "project" : "sessions")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -17,7 +17,7 @@ final class MemberStateMachineTests: XCTestCase {
             core: complete ? SessionCore(directory: "/work", title: "Complete", lastActiveAt: Date()) : nil)
         let store = P5SpyStore(agent == .claude ? ClaudeSessionStore(root: root) : CodexSessionStore(root: root))
         let clock = P5Clock()
-        let watcher = SessionWatcher(stores: [store], database: db, debounceInterval: 0.01, now: { clock.date })
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.01, now: { clock.date }), database: db)
         return (root, file, db, store, clock, watcher)
     }
 
@@ -44,7 +44,7 @@ final class MemberStateMachineTests: XCTestCase {
         XCTAssertTrue(predicate())
     }
 
-    private func start(_ watcher: SessionWatcher) async throws -> Task<Void, Never> {
+    private func start(_ watcher: SessionEngine) async throws -> Task<Void, Never> {
         let stream = watcher.start()
         let task = Task { for await _ in stream {} }
         try await wait { watcher.publishedSnapshot != nil }

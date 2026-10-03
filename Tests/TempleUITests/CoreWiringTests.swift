@@ -18,10 +18,7 @@ final class CoreWiringTests: XCTestCase {
         // Isolate the startup cache: never read or overwrite the developer's
         // real ~/Library/Application Support cache from a test.
         let database = try TempleDB.inMemory()
-        let watcher = SessionWatcher(
-            stores: [ClaudeSessionStore(root: root)], database: database,
-            debounceInterval: 0.05
-        )
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.05), database: database)
         try database.join(sessionID: "wired-session", via: .created, agent: .claude,
                           core: SessionCore(directory: "/tmp/project"))
         let source = WatcherIndexSource(watcher: watcher)
@@ -67,10 +64,7 @@ final class CoreWiringTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let watcher = SessionWatcher(
-            stores: [CodexSessionStore(root: root)],
-            debounceInterval: 0.05
-        )
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.05))
         let source = WatcherIndexSource(
             watcher: watcher
         )
@@ -112,7 +106,7 @@ final class CoreWiringTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02))
         let source = WatcherIndexSource(watcher: watcher)
         defer { source.stop() }
         let early = expectation(description: "early observer received publication")
@@ -138,7 +132,7 @@ final class CoreWiringTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let database = try TempleDB.inMemory()
         try database.join(sessionID: "pruned", via: .created, agent: .claude)
-        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: database, debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: database)
         try database.join(sessionID: "awaiting", via: .created, agent: .claude)
         let cache = root.appendingPathComponent("cache.json")
         let source = WatcherIndexSource(watcher: watcher)
@@ -176,7 +170,7 @@ final class CoreWiringTests: XCTestCase {
         try #"{"sessionId":"member","type":"user","cwd":"/tmp/project","message":{"content":"member"}}"#.write(to: file, atomically: true, encoding: .utf8)
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "member", via: .opened, agent: .claude, transcriptPath: file)
-        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db, debounceInterval: 0.02)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: db)
         let cache = root.appendingPathComponent("cache.json")
         let source = WatcherIndexSource(watcher: watcher)
         defer { source.stop() }

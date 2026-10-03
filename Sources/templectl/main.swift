@@ -143,7 +143,7 @@ if CommandLine.arguments.contains("--disk") {
         print("durable rows available: \(initialRows.count), elapsed_seconds=\(Date().timeIntervalSince(watchStart))")
         fflush(stdout)
     }
-    let watcher = SessionWatcher(database: database, monitorChanges: !disableWatcher)
+    let watcher = SessionEngine(source: LocalSessionSource(monitorChanges: !disableWatcher), database: database)
     let snapshots = watcher.snapshots()
     let engineUpdates = watcher.start()
     let metricsTask = wantsMetrics ? Task {

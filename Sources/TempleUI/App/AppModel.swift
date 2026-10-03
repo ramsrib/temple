@@ -308,7 +308,7 @@ public final class AppModel: ObservableObject {
         let uiState = UIStateStore(db: database)
         let registry = registry ?? DBProcessRegistry(db: database)
         let persistence = persistence ?? DBTabPersistence(db: database)
-        let resolvedIndexSource = indexSource ?? WatcherIndexSource(watcher: SessionWatcher(database: database))
+        let resolvedIndexSource = indexSource ?? WatcherIndexSource(watcher: SessionEngine(source: LocalSessionSource(), database: database))
         let reconciler = reconciler ?? (resolvedIndexSource as? WatcherIndexSource).map {
             WatcherCodexReconciler(indexSource: $0)
         } ?? NoopCodexReconciler()

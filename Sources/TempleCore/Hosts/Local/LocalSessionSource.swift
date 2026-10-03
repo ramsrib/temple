@@ -2,28 +2,17 @@ import Dispatch
 import Foundation
 import CoreServices
 
-public enum MemberResolution: Hashable, Sendable {
-    case resolving
-    case awaitingCreation
-    case loaded(URL)
-    case confirmedAbsent
-    case unreadable
-    case mismatch
-    case incomplete
-}
-
-/// A single FSEvents stream invalidates paths; only committed members are parsed
-/// and published. Engine mutation lives on `queue`; UI reads use a locked snapshot.
-public final class SessionWatcher: @unchecked Sendable {
+/// Local observation, selection, verification and enrichment. Registered interests
+/// come from the engine; this source never reads or writes Temple registeredIDship.
+public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics, @unchecked Sendable {
+    public let host = HostID.local
+    public let capabilities: Set<HostCapability> = [.liveChanges, .revealInFinder, .catalog]
+    private var interests: [String: ResolutionRequest] = [:]
+    private var changeContinuations: [UUID: AsyncThrowingStream<SourceChange, Error>.Continuation] = [:]
     private let stores: [any IncrementalSessionStore]
-    private let database: TempleDB?
-    private let initialMembers: Set<String>
     private let debounceInterval: TimeInterval
-    private let queue = DispatchQueue(label: "com.sriramb.temple.session-engine")
+    private let queue = DispatchQueue(label: "com.sriramb.temple.local-source")
     private var stream: FSEventStreamRef?
-    private var joinObserver: UUID?
-    private var leaveObserver: UUID?
-    private var continuation: AsyncStream<EngineSnapshot>.Continuation?
     private var running = false
     private var roots: [RootMapping] = []
     private var files: [String: (URL, Agent)] = [:]
@@ -31,32 +20,25 @@ public final class SessionWatcher: @unchecked Sendable {
     private var memberIDsByPath: [String: Set<String>] = [:]
     private var hintPathsByID: [String: String] = [:]
     private var selectedCodexPaths: [String: (path: String, key: String)] = [:]
-    private var members: Set<String> = []
+    private var registeredIDs: Set<String> = []
     private var awaiting: Set<String> = []
     private var states: [String: MemberResolution] = [:]
     private var statesDirty = false
     private var summaries: [String: TranscriptSummary] = [:]
     private var generation: UInt64 = 0
-    private var engineContentDirty = false
-    private var lastEngineSnapshot: EngineSnapshot?
-    private var engineContinuations: [UUID: AsyncStream<EngineSnapshot>.Continuation] = [:]
+    private var contentDirty = false
     private var signatures: [String: FileSignature] = [:] // last observed, including stat-only writes
     private var memberWork: [String: MemberWork] = [:]
-    private var wanted: [String: Set<SessionCoreField>]?
     private var enrichmentTimers: [String: DispatchWorkItem] = [:]
     private let now: @Sendable () -> Date
     private let monitorChanges: Bool
     private var parseCount: UInt64 = 0
     private var verificationCount: UInt64 = 0
-    private var publicationCount: UInt64 = 0
     private var observedCount: UInt64 = 0
     private var snapshotMetrics = EngineMetrics()
 
     private let snapshotLock = NSLock()
-    private var snapshotStates: [String: MemberResolution] = [:]
-    private var snapshotPublication: EngineSnapshot?
     private var snapshotMonitoring = false
-    private var stateContinuations: [UUID: AsyncStream<[String: MemberResolution]>.Continuation] = [:]
     private var adoptionTimers: [UUID: DispatchWorkItem] = [:]
     private var unresolvedCandidates: Set<String> = []
     private var enumerationSucceeded = true
@@ -64,7 +46,7 @@ public final class SessionWatcher: @unchecked Sendable {
     private var streamID: UUID?
     private var pendingPaths: Set<String> = []
     private var work: DispatchWorkItem?
-        private var requests: [UUID: AdoptionRequest] = [:]
+    private var requests: [UUID: LocalAdoptionWindow] = [:]
     private var candidates: [String: CodexRolloutCandidate] = [:]
     // Keep competitors seen anywhere in an active window, even if a later
     // sweep no longer finds their files. Overflow refuses the decision.
@@ -82,40 +64,19 @@ public final class SessionWatcher: @unchecked Sendable {
     }()
 
     public init(stores: [any IncrementalSessionStore] = [ClaudeSessionStore(), CodexSessionStore()],
-                database: TempleDB? = nil, members: Set<String> = [],
                 debounceInterval: TimeInterval = 0.3,
                 monitorChanges: Bool = true,
                 now: @escaping @Sendable () -> Date = { Date() }) {
         self.stores = stores
-        self.database = database
-        self.initialMembers = members
         self.debounceInterval = debounceInterval
         self.now = now
         self.monitorChanges = monitorChanges
-        // Observe before startup; the row read at startup is the durable replay.
-        joinObserver = database?.observeJoins { [weak self] id, awaiting in
-            self?.resolveRequest(id, awaitingCreation: awaiting, explicit: false)
-        }
-        leaveObserver = database?.observeLeaves { [weak self] id in
-            self?.forgetMember(id)
-        }
     }
 
     deinit {
-        if let joinObserver { database?.removeJoinObserver(joinObserver) }
-        if let leaveObserver { database?.removeLeaveObserver(leaveObserver) }
         if let stream {
             FSEventStreamStop(stream); FSEventStreamInvalidate(stream); FSEventStreamRelease(stream)
         }
-    }
-
-    public func resolution(for id: String) -> MemberResolution? {
-        snapshotLock.lock(); defer { snapshotLock.unlock() }
-        return snapshotStates[id]
-    }
-    public var publishedSnapshot: EngineSnapshot? {
-        snapshotLock.lock(); defer { snapshotLock.unlock() }
-        return snapshotPublication
     }
     public var isMonitoring: Bool {
         snapshotLock.lock(); defer { snapshotLock.unlock() }
@@ -123,111 +84,138 @@ public final class SessionWatcher: @unchecked Sendable {
     }
     private var monitoring = false
 
-    /// Resolution transitions can finish without changing member content.
-    public func resolutionUpdates() -> AsyncStream<[String: MemberResolution]> {
+    public func changes() -> AsyncThrowingStream<SourceChange, Error> {
         let token = UUID()
-        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+        return AsyncThrowingStream { continuation in
             continuation.onTermination = { [weak self] _ in
-                self?.queue.async { [weak self] in self?.stateContinuations.removeValue(forKey: token) }
+                self?.queue.async { [weak self] in
+                    guard let self else { return }
+                    self.changeContinuations.removeValue(forKey: token)
+                    self.stopIfIdleLocked()
+                }
             }
             queue.async { [weak self] in
-                guard let self else { return }
-                self.stateContinuations[token] = continuation
-                continuation.yield(self.states)
+                guard let self else { continuation.finish(); return }
+                self.changeContinuations[token] = continuation
+                self.startLocked()
             }
         }
     }
 
-    /// Replay the latest engine publication, then deliver coalesced updates.
-    public func snapshots() -> AsyncStream<EngineSnapshot> {
-        let token = UUID()
-        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
-            continuation.onTermination = { [weak self] _ in
-                self?.queue.async { [weak self] in self?.engineContinuations.removeValue(forKey: token) }
+    public func resolve(_ requests: [ResolutionRequest]) async throws -> ResolutionBatch {
+        let ticket = AdoptionTicket()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ResolutionBatch, Error>) in
+            queue.async {
+                guard !ticket.isCancelled else { continuation.resume(throwing: CancellationError()); return }
+                self.startLocked()
+                for request in requests {
+                    guard !ticket.isCancelled else { continuation.resume(throwing: CancellationError()); return }
+                    let id = request.id
+                    let previous = self.interests[id]
+                    self.interests[id] = request
+                    self.registeredIDs.insert(id)
+                    if request.awaitingCreation { self.awaiting.insert(id) }
+                    let filled = previous.map { !$0.wanted.subtracting(request.wanted).isEmpty } ?? false
+                    if request.explicit || previous == nil || filled { self.resetEnrichmentLocked(id) }
+                    self.resolveLocked(id, explicit: request.explicit || filled)
+                    if request.explicit && (self.states[id] == .confirmedAbsent || self.states[id] == .resolving) {
+                        self.enumerateLocked(); self.resolveLocked(id, explicit: true)
+                    }
+                }
+                self.snapshotLocked()
+                var results: [String: ResolutionResult] = [:]
+                for request in requests {
+                    let id = request.id
+                    switch self.states[id] ?? .incomplete {
+                    case .loaded(let locator):
+                        let summary = self.summaries[id]
+                        var missing = request.wanted
+                        if let summary {
+                            missing.remove(.agent); missing.remove(.lastActiveAt)
+                            if summary.cwd != nil { missing.remove(.directory) }
+                            if summary.firstPrompt != nil { missing.remove(.title) }
+                        }
+                        results[id] = .loaded(locator, summary, missing)
+                    case .confirmedAbsent: results[id] = .absent
+                    case .awaitingCreation: results[id] = .awaitingCreation
+                    case .unreadable: results[id] = .unreadable
+                    case .mismatch: results[id] = .mismatch
+                    case .resolving, .incomplete: results[id] = .incomplete
+                    }
+                }
+                // A request reads the latest local state; no redundant invalidation.
+                self.contentDirty = false
+                if ticket.isCancelled { continuation.resume(throwing: CancellationError()) }
+                else { continuation.resume(returning: ResolutionBatch(generation: self.generation, results: results)) }
             }
-            queue.async { [weak self] in
-                guard let self else { return }
-                self.engineContinuations[token] = continuation
-                if let snapshot = self.lastEngineSnapshot { continuation.yield(snapshot) }
             }
+        } onCancel: { ticket.cancel() }
+    }
+
+    public func release(_ ids: [String]) {
+        for id in ids { forgetMember(id) }
+    }
+
+    public func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error> {
+        let catalog = SessionCatalog(stores: stores.filter { query.agents.contains($0.agent) })
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                for await event in catalog.stream(batchSize: query.batchSize, newestFirst: query.newestFirst) {
+                    if Task.isCancelled { break }
+                    continuation.yield(event)
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
     private func setStateLocked(_ id: String, to state: MemberResolution) {
+        if case .loaded = state { awaiting.remove(id) }
         guard states[id] != state else { return }
         states[id] = state; statesDirty = true
     }
 
     private func snapshotLocked() {
         snapshotLock.lock()
-        let changed = statesDirty
-        if changed { snapshotStates = states; statesDirty = false }
-        snapshotPublication = lastEngineSnapshot; snapshotMonitoring = monitoring
-        snapshotMetrics = EngineMetrics(parses: parseCount, verifications: verificationCount, publications: publicationCount, observations: observedCount)
+        if statesDirty { statesDirty = false; contentDirty = true }
+        snapshotMonitoring = monitoring
+        snapshotMetrics = EngineMetrics(parses: parseCount, verifications: verificationCount,
+            publications: 0, observations: observedCount)
         snapshotLock.unlock()
-        if changed {
-            engineContentDirty = true
-            for continuation in stateContinuations.values { continuation.yield(states) }
+    }
+
+    private func emitChangesLocked() {
+        snapshotLocked()
+        guard running, contentDirty else { return }
+        contentDirty = false
+        for continuation in changeContinuations.values { continuation.yield(.sessions(Array(registeredIDs))) }
+    }
+
+    private func startLocked() {
+        guard !running else { return }
+        running = true
+        streamID = UUID()
+        generation &+= 1
+        // Arm before enumeration. Callbacks buffer behind the scan on this queue.
+        armLocked()
+        enumerateLocked()
+        if !requests.isEmpty {
+            for requestID in requests.keys { scheduleAdoptionDeadlineLocked(requestID) }
+            sweepCandidatesLocked()
         }
     }
 
-    /// Content is published only after a whole batch has reconciled. Resolution
-    /// notifications above retain their independent transition timing.
-    private func publishEngineSnapshotLocked() {
-        guard running, engineContentDirty || lastEngineSnapshot == nil else { return }
-        engineContentDirty = false
-        let loadedSummaries = summaries.filter { id, _ in
-            if case .loaded = states[id] { return true }
-            return false
-        }
-        let snapshot = EngineSnapshot(generation: generation, resolutions: states,
-            summaries: loadedSummaries)
-        if snapshot != lastEngineSnapshot {
-            publicationCount &+= 1
-            lastEngineSnapshot = snapshot
-            snapshotLock.lock(); snapshotPublication = snapshot; snapshotMetrics.publications = publicationCount; snapshotLock.unlock()
-            continuation?.yield(snapshot)
-            for continuation in engineContinuations.values { continuation.yield(snapshot) }
-        }
+    private func stopIfIdleLocked() {
+        if changeContinuations.isEmpty && registeredIDs.isEmpty && requests.isEmpty { stopLocked() }
     }
-
-    public func start() -> AsyncStream<EngineSnapshot> {
-        let id = UUID()
-        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
-            continuation.onTermination = { [weak self] _ in
-                self?.queue.async { [weak self] in
-                    guard self?.streamID == id else { return }
-                    self?.stopLocked()
-                }
-            }
-            queue.async { [weak self] in
-                guard let self else { return }
-                self.stopLocked(preservePrestart: self.streamID == nil && !self.running)
-                self.continuation = continuation
-                self.streamID = id
-                self.running = true
-                self.generation &+= 1
-                self.members.formUnion(self.initialMembers)
-                self.reloadMembershipLocked()
-                // The stream starts BEFORE the scan. Its serial-queue callbacks
-                // buffer behind the scan and reconcile after the initial snapshot.
-                self.armLocked()
-                self.enumerateLocked()
-                for id in self.members { self.resolveLocked(id) }
-                self.publishLocked()
-                if !self.requests.isEmpty {
-                    for requestID in self.requests.keys { self.scheduleAdoptionDeadlineLocked(requestID) }
-                    self.sweepCandidatesLocked()
-                }
-            }
-        }
-    }
-
-    public func stop() { queue.async { [weak self] in self?.stopLocked() } }
 
     private func stopLocked(preservePrestart: Bool = false) {
         if !preservePrestart {
             adoptionTimers.values.forEach { $0.cancel() }; adoptionTimers.removeAll()
+            for request in requests.values where !request.decided { request.completion(.incomplete) }
             requests.removeAll(); candidates.removeAll(); seenCandidates.removeAll(); candidateSignatures.removeAll()
             unresolvedCandidates.removeAll(); claimed.removeAll(); awaiting.removeAll()
         }
@@ -239,33 +227,21 @@ public final class SessionWatcher: @unchecked Sendable {
             self.stream = nil
         }
         streamID = nil
-        continuation?.finish(); continuation = nil
         pendingPaths.removeAll()
         files.removeAll(); pathsByID.removeAll(); memberIDsByPath.removeAll()
         hintPathsByID.removeAll(); selectedCodexPaths.removeAll()
         signatures.removeAll(); summaries.removeAll(); memberWork.removeAll()
         enrichmentTimers.values.forEach { $0.cancel() }; enrichmentTimers.removeAll()
-        lastEngineSnapshot = nil
+        interests.removeAll(); registeredIDs.removeAll()
         states.removeAll(); statesDirty = true; snapshotLocked()
     }
 
-    // Membership is observed only through this process's committed joins.
-    // External-process joins (including templectl imports) are seen next launch;
-    // there is no engine-only refresh that could leave the overlay out of sync.
-    /// A leave invalidates membership. Recheck the row because callbacks can
-    /// arrive after a newer re-import. The filename map is disk state and stays.
-    public func forgetMember(_ id: String) {
+    /// Release observation state without disturbing the filename map.
+    private func forgetMember(_ id: String) {
         queue.async { [weak self] in
-            guard let self, self.members.contains(id) else { return }
-            if let database = self.database {
-                do {
-                    guard try database.sessionState(id) == nil else { return }
-                } catch {
-                    TempleCoreLog.watcher.error("leave membership check failed: \(String(describing: error), privacy: .public)")
-                    return
-                }
-            }
-            self.members.remove(id)
+            guard let self, self.registeredIDs.contains(id) else { return }
+            self.interests.removeValue(forKey: id)
+            self.registeredIDs.remove(id)
             self.awaiting.remove(id)
             self.memberWork.removeValue(forKey: id)
             self.enrichmentTimers.removeValue(forKey: id)?.cancel()
@@ -281,52 +257,8 @@ public final class SessionWatcher: @unchecked Sendable {
             self.snapshotLocked()
             guard self.running else { return }
             self.publishLocked()
+            self.stopIfIdleLocked()
         }
-    }
-
-    public func requestResolution(_ id: String, awaitingCreation: Bool = false) {
-        resolveRequest(id, awaitingCreation: awaitingCreation, explicit: true)
-    }
-
-    private func resolveRequest(_ id: String, awaitingCreation: Bool, explicit: Bool) {
-        queue.async { [weak self] in
-            guard let self else { return }
-            // A notification is an invalidation, never membership authority.
-            if let database = self.database {
-                guard (try? database.sessionState(id)) != nil else { return }
-            } else if !self.initialMembers.contains(id) { return }
-            if !explicit, case .loaded = self.states[id], !awaitingCreation {
-                let hint = try? self.database?.sessionState(id)?.transcriptPath
-                if hint == nil || hint == self.memberWork[id]?.path { return }
-            }
-            if explicit || !self.members.contains(id) { self.resetEnrichmentLocked(id) }
-            self.members.insert(id)
-            if awaitingCreation { self.awaiting.insert(id) }
-            if self.states[id] == nil || awaitingCreation {
-                self.setStateLocked(id, to: awaitingCreation ? .awaitingCreation : .resolving)
-            }
-            self.snapshotLocked()
-            guard self.running else { self.snapshotLocked(); return }
-            // Resolve a known hint/map first. A failed lookup gets a fresh name
-            // map even if no filesystem event accompanied this explicit open.
-            self.resolveLocked(id, explicit: explicit)
-            if self.states[id] == .confirmedAbsent || self.states[id] == .resolving {
-                self.enumerateLocked()
-                self.resolveLocked(id, explicit: explicit)
-            }
-            self.publishLocked()
-        }
-    }
-
-    private func reloadMembershipLocked() {
-        if let database {
-            do {
-                let rows = try database.sessionStates()
-                members = Set(rows.map(\.id))
-            }
-            catch { enumerationSucceeded = false }
-        }
-        for id in members where states[id] == nil { setStateLocked(id, to: .resolving) }
     }
 
     private func armLocked() {
@@ -421,7 +353,7 @@ public final class SessionWatcher: @unchecked Sendable {
         guard isTranscript else { return }
         let hintedMember = memberIDsByPath[path]?.isEmpty == false
         let filenameMember = stores.contains { store in
-            store.acceptsTranscript(url) && store.filenameID(at: url).map { members.contains($0) } == true
+            store.acceptsTranscript(url) && store.filenameID(at: url).map { registeredIDs.contains($0) } == true
         }
         guard hintedMember || filenameMember || (stores.contains { $0.agent == .codex && $0.acceptsTranscript(url) } && !requests.isEmpty) else { return }
         pendingPaths.insert(path)
@@ -451,7 +383,7 @@ public final class SessionWatcher: @unchecked Sendable {
                 if self.reconcileFileLocked(URL(fileURLWithPath: path)) { changed = true }
             }
             if changed { self.publishLocked() }
-            else { self.publishEngineSnapshotLocked() }
+            else { self.emitChangesLocked() }
         }
         work = item
         queue.asyncAfter(deadline: .now() + debounceInterval, execute: item)
@@ -515,13 +447,16 @@ public final class SessionWatcher: @unchecked Sendable {
     }
 
     private func recoverLocked(subtree: String? = nil, resetCoverage: Bool = false) {
-        if resetCoverage { generation &+= 1; engineContentDirty = true }
+        if resetCoverage {
+            generation &+= 1; contentDirty = true
+            for continuation in changeContinuations.values { continuation.yield(.coverageReset(generation)) }
+        }
         enumerateLocked(subtree: subtree)
-        for id in members {
+        for id in registeredIDs {
             if let subtree {
                 let mapped = (pathsByID[id] ?? []).contains { $0.hasPrefix(subtree + "/") }
                 let old = memberWork[id]?.path.hasPrefix(subtree + "/") == true
-                let hinted = (try? database?.sessionState(id)?.transcriptPath)?.hasPrefix(subtree + "/") == true
+                let hinted = interests[id]?.hint?.path.hasPrefix(subtree + "/") == true
                 if !mapped && !old && !hinted { continue }
             }
             if resetCoverage { resetEnrichmentLocked(id) }
@@ -532,12 +467,12 @@ public final class SessionWatcher: @unchecked Sendable {
     }
 
     private func resolveLocked(_ id: String, explicit: Bool = false, rescannedMissing: Bool = false) {
-        guard members.contains(id) else { return }
-        let row = try? database?.sessionState(id)
+        guard registeredIDs.contains(id) else { return }
+        let row = interests[id]
         // A committed hint can name a new revert that arrived while this ID
         // was still outside Temple. Include its filename before choosing the
         // thread's active rollout, without enumerating or reading other logs.
-        if let hint = row?.transcriptPath, let agent = row?.agent,
+        if let hint = row?.hint?.path, let agent = row?.agent,
            let store = stores.first(where: { $0.agent == agent }) {
             let path = logicalPath(hint) ?? RootMapping.alias(hint)
             let url = URL(fileURLWithPath: path)
@@ -550,7 +485,7 @@ public final class SessionWatcher: @unchecked Sendable {
         var selectedPath = selectedCodexPaths[id]?.path
         var paths: Set<String> = selectedPath.map { [$0] } ?? pathsByID[id] ?? []
         var preferredPath: String?
-        if let row, let hint = row.transcriptPath {
+        if let row, let hint = row.hint?.path {
             let path = logicalPath(hint) ?? RootMapping.alias(hint)
             if let agent = row.agent, let store = stores.first(where: { $0.agent == agent }),
                store.acceptsTranscript(URL(fileURLWithPath: path)) {
@@ -655,9 +590,6 @@ public final class SessionWatcher: @unchecked Sendable {
             }
             // Path authority changes after verification, even when all core fields exist.
             trackHintLocked(id, path: path)
-            if database?.isReadOnly != true, row?.agent != store.agent || row?.transcriptPath != path {
-                try? database?.updateTranscriptHint(sessionID: id, agent: store.agent, path: entry.0)
-            }
             let missing = missingFieldsLocked(id, row: row)
             guard !missing.isEmpty else {
                 enrichmentTimers.removeValue(forKey: id)?.cancel()
@@ -699,7 +631,7 @@ public final class SessionWatcher: @unchecked Sendable {
                 work.verified = false; memberWork[id] = work
                 failure = .mismatch; continue
             }
-            if summaries[id] != summary { engineContentDirty = true }
+            if summaries[id] != summary { contentDirty = true }
             summaries[id] = summary
             setStateLocked(id, to: .loaded(entry.0)); awaiting.remove(id)
             return
@@ -710,41 +642,15 @@ public final class SessionWatcher: @unchecked Sendable {
             resolveLocked(id, explicit: explicit, rescannedMissing: true)
             return
         }
-        if summaries.removeValue(forKey: id) != nil { engineContentDirty = true }
+        if summaries.removeValue(forKey: id) != nil { contentDirty = true }
         // A candidate with a failed verification is evidence, never absence.
         setStateLocked(id, to: unreadable ? .unreadable : failure ??
             (awaiting.contains(id) ? .awaitingCreation :
                 (enumerationSucceeded && ordered.isEmpty ? .confirmedAbsent : .resolving)))
     }
 
-    private func missingFieldsLocked(_ id: String, row: SessionState?) -> Set<SessionCoreField> {
-        if let wanted { return wanted[id] ?? [] }
-        guard let row else { return [.agent, .directory, .title, .lastActiveAt] }
-        var fields = Set<SessionCoreField>()
-        if row.agent == nil { fields.insert(.agent) }
-        if row.directory == nil { fields.insert(.directory) }
-        if row.title == nil { fields.insert(.title) }
-        if row.lastActiveAt == nil { fields.insert(.lastActiveAt) }
-        return fields
-    }
-
-    /// The overlay owns completeness; the engine owns when to read a transcript.
-    public func setEnrichmentWanted(_ missing: [String: Set<SessionCoreField>]) {
-        queue.async { [weak self] in
-            guard let self else { return }
-            let previous = self.wanted
-            self.wanted = missing
-            for id in self.members {
-                let filled = previous?[id].map { !$0.subtracting(missing[id] ?? []).isEmpty } ?? false
-                if filled { self.resetEnrichmentLocked(id) }
-                if missing[id]?.isEmpty != false { self.enrichmentTimers.removeValue(forKey: id)?.cancel() }
-                else if self.running && (filled || (previous != nil && previous?[id]?.isEmpty != false)) {
-                    self.resetEnrichmentLocked(id)
-                    self.resolveLocked(id, explicit: true)
-                }
-            }
-            if self.running { self.publishLocked() }
-        }
+    private func missingFieldsLocked(_ id: String, row: ResolutionRequest?) -> Set<SessionCoreField> {
+        row?.wanted ?? []
     }
 
     private func resetEnrichmentLocked(_ id: String) {
@@ -770,7 +676,7 @@ public final class SessionWatcher: @unchecked Sendable {
     func reconcileEnrichment() {
         queue.async { [weak self] in
             guard let self, self.running else { return }
-            for id in self.members { self.resolveLocked(id) }
+            for id in self.registeredIDs { self.resolveLocked(id) }
             self.publishLocked()
         }
     }
@@ -784,7 +690,7 @@ public final class SessionWatcher: @unchecked Sendable {
         let path = url.path
         files[path] = (url, store.agent)
         var ids = memberIDsByPath[path] ?? []
-        if let id = recordFilenameLocked(path, store: store), members.contains(id) { ids.insert(id) }
+        if let id = recordFilenameLocked(path, store: store), registeredIDs.contains(id) { ids.insert(id) }
         var changed = false
         // Filename routing and validated hints are the only member discovery.
         // Outside writes never parse transcripts, read the DB, or publish state.
@@ -802,23 +708,41 @@ public final class SessionWatcher: @unchecked Sendable {
 
     private func publishLocked() {
         snapshotLocked()
-        publishEngineSnapshotLocked()
+        emitChangesLocked()
     }
 
-    /// Registers before spawn. Candidates never enter the member snapshot. The
-    /// deadline sweep closes delivery gaps; eligibility uses metadata time.
-    public func registerAdoption(projectPath: String, startedAt: Date, window: TimeInterval = 5,
-                                 completion: @escaping @Sendable (CodexRolloutCandidate?) -> Void) {
-        queue.async { [weak self] in
-            guard let self else { return }
-            guard self.requests.count < Self.adoptionRequestLimit else { completion(nil); return }
-            let id = UUID()
-            self.requests[id] = AdoptionRequest(cwd: projectPath, start: startedAt, window: window, completion: completion)
-            let earliest = self.requests.values.map { $0.start.addingTimeInterval(-$0.window) }.min() ?? startedAt
-            self.claimed = self.claimed.filter { $0.value >= earliest }
-            if self.running { self.sweepCandidatesLocked() }
-            if self.running, self.requests[id]?.decided == false { self.scheduleAdoptionDeadlineLocked(id) }
-        }
+    public func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult {
+        let ticket = AdoptionTicket()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                queue.async {
+                    guard !ticket.isCancelled else { continuation.resume(throwing: CancellationError()); return }
+                    guard request.window >= 0, self.requests.count < Self.adoptionRequestLimit else {
+                        continuation.resume(returning: .incomplete); return
+                    }
+                    let id = ticket.id
+                    self.requests[id] = LocalAdoptionWindow(cwd: request.directory, start: request.startedAt,
+                        window: request.window, completion: { continuation.resume(returning: $0) })
+                    ticket.cancelAction = { [weak self] in
+                        self?.queue.async { [weak self] in
+                            guard let self, let pending = self.requests.removeValue(forKey: id), !pending.decided else { return }
+                            self.adoptionTimers.removeValue(forKey: id)?.cancel()
+                            pending.completion(.incomplete)
+                            if self.requests.values.allSatisfy(\.decided) {
+                                self.requests.removeAll(); self.seenCandidates.removeAll(); self.trimCandidateCacheLocked()
+                                self.stopIfIdleLocked()
+                            }
+                        }
+                    }
+                    let earliest = self.requests.values.map { $0.start.addingTimeInterval(-$0.window) }.min() ?? request.startedAt
+                    self.claimed = self.claimed.filter { $0.value >= earliest }
+                    self.startLocked()
+                    self.sweepCandidatesLocked()
+                    self.scheduleAdoptionDeadlineLocked(id)
+                }
+            }
+        } onCancel: { ticket.cancel() }
     }
 
     private func scheduleAdoptionDeadlineLocked(_ id: UUID) {
@@ -940,19 +864,20 @@ public final class SessionWatcher: @unchecked Sendable {
         sweepCandidatesLocked()
         guard let request = requests[id] else { return }
         let eligible = seenCandidates.values.filter { request.matches($0) }
-        var result: CodexRolloutCandidate?
+        var result: AdoptionResult = request.failedSweep || request.observationOverflow || !unresolvedCandidates.isEmpty ? .incomplete : .none
         let overlapping = requests.filter { $0.key != id && $0.value.cwd == request.cwd &&
             abs($0.value.start.timeIntervalSince(request.start)) <= $0.value.window + request.window }.count > 0
+        if overlapping || eligible.count > 1 { result = .ambiguous }
         if !request.failedSweep, !request.observationOverflow, unresolvedCandidates.isEmpty, !overlapping,
            eligible.count == 1, let seen = eligible.first,
            let candidate = candidates.values.first(where: { $0.sessionID == seen.sessionID && request.matches($0) }),
            claimed[candidate.sessionID] == nil, claimed.count < Self.candidateCacheLimit {
-            claimed[candidate.sessionID] = candidate.createdAt; result = candidate
+            claimed[candidate.sessionID] = candidate.createdAt; result = .adopted(id: candidate.sessionID, locator: TranscriptLocator(localURL: candidate.filePath))
         }
         requests[id]?.decided = true
         adoptionTimers.removeValue(forKey: id)?.cancel()
         request.completion(result)
-        if requests.values.allSatisfy(\.decided) { requests.removeAll(); seenCandidates.removeAll(); trimCandidateCacheLocked() }
+        if requests.values.allSatisfy(\.decided) { requests.removeAll(); seenCandidates.removeAll(); trimCandidateCacheLocked(); stopIfIdleLocked() }
     }
 
     private static func isMissing(_ error: Error) -> Bool {
@@ -965,15 +890,15 @@ public final class SessionWatcher: @unchecked Sendable {
 /// The stream owns this callback context; a weak engine reference avoids both
 /// a retain cycle and a queued callback dereferencing a destroyed watcher.
 private final class EventRelay {
-    weak var watcher: SessionWatcher?
-    init(_ watcher: SessionWatcher) { self.watcher = watcher }
+    weak var watcher: LocalSessionSource?
+    init(_ watcher: LocalSessionSource) { self.watcher = watcher }
 }
 
-private struct AdoptionRequest {
+private struct LocalAdoptionWindow {
     let cwd: String
     let start: Date
     let window: TimeInterval
-    let completion: @Sendable (CodexRolloutCandidate?) -> Void
+    let completion: @Sendable (AdoptionResult) -> Void
     var failedSweep = false
     var observationOverflow = false
     var decided = false
@@ -1019,14 +944,6 @@ private struct RootMapping {
     }
 }
 
-/// Counters measure actual enrichment parses separately from identity reads.
-public struct EngineMetrics: Sendable {
-    public var parses: UInt64 = 0
-    public var verifications: UInt64 = 0
-    public var publications: UInt64 = 0
-    public var observations: UInt64 = 0
-}
-
 private struct MemberWork {
     var path: String
     var verified = false
@@ -1035,4 +952,21 @@ private struct MemberWork {
     var lastAttempt: FileSignature?
     var nextAttempt = Date.distantPast
     var delay: TimeInterval = 1
+}
+
+/// Cancellation can race registration; the action is installed under the same lock.
+private final class AdoptionTicket: @unchecked Sendable {
+    let id = UUID()
+    private let lock = NSLock()
+    private var cancelled = false
+    private var action: (@Sendable () -> Void)?
+    var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+    var cancelAction: (@Sendable () -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return action }
+        set {
+            lock.lock(); action = newValue; let run = cancelled; lock.unlock()
+            if run { newValue?() }
+        }
+    }
+    func cancel() { lock.lock(); cancelled = true; let run = action; lock.unlock(); run?() }
 }

@@ -13,17 +13,7 @@ public struct SessionCatalog: Sendable {
 
     /// What a streamed read reports, in order: one `listed`, any number of
     /// `storeFailed` and `sessions`, then the stream finishes.
-    public enum Event: Sendable, Equatable {
-        /// Every store has been listed. `total` counts session FILES, an upper
-        /// bound on sessions: a file that turns out not to be one is skipped.
-        case listed(total: Int)
-        /// A store could not be listed; its sessions are missing from this
-        /// read. `message` is the error as thrown, never a diagnosis.
-        case storeFailed(Agent, message: String)
-        /// Parsed sessions, newest file first within and across batches.
-        /// `read` counts the files consumed so far, out of `total`.
-        case sessions([TranscriptSummary], read: Int, total: Int)
-    }
+    public typealias Event = CatalogBatch
 
     /// The whole disk, newest first, a batch at a time — for a page that wants
     /// rows on screen before the last of ~4,000 logs is parsed. Files are
@@ -31,14 +21,14 @@ public struct SessionCatalog: Sendable {
     /// first batch is the most recent work. Off the caller's thread; ending
     /// the consumer's iteration (or cancelling its task) stops the read at the
     /// next batch boundary.
-    public func stream(batchSize: Int = 200) -> AsyncStream<Event> {
+    public func stream(batchSize: Int = 200, newestFirst: Bool = true) -> AsyncStream<Event> {
         let stores = self.stores
         let size = max(1, batchSize)
         return AsyncStream { continuation in
             let cancelled = CatalogCancellation()
             continuation.onTermination = { _ in cancelled.cancel() }
             DispatchQueue.global(qos: .userInitiated).async {
-                Self.read(stores, batchSize: size, cancelled: cancelled) { continuation.yield($0) }
+                Self.read(stores, batchSize: size, newestFirst: newestFirst, cancelled: cancelled) { continuation.yield($0) }
                 continuation.finish()
             }
         }
@@ -50,7 +40,7 @@ public struct SessionCatalog: Sendable {
         let parse: @Sendable () -> TranscriptSummary?
     }
 
-    private static func read(_ stores: [any SessionStore], batchSize: Int,
+    private static func read(_ stores: [any SessionStore], batchSize: Int, newestFirst: Bool,
                              cancelled: CatalogCancellation, emit: (Event) -> Void) {
         FileDescriptorLimit.ensureRaised()
         var entries: [Entry] = []
@@ -77,7 +67,7 @@ public struct SessionCatalog: Sendable {
                                      parse: { parser(url) }))
             }
         }
-        entries.sort { $0.modified > $1.modified }
+        entries.sort { newestFirst ? $0.modified > $1.modified : $0.modified < $1.modified }
         let total = entries.count
         emit(.listed(total: total))
 
@@ -91,7 +81,7 @@ public struct SessionCatalog: Sendable {
             }
             start += chunk.count
             let sessions = collector.result().sorted {
-                $0.modifiedAt == $1.modifiedAt ? $0.id < $1.id : $0.modifiedAt > $1.modifiedAt
+                $0.modifiedAt == $1.modifiedAt ? $0.id < $1.id : (newestFirst ? $0.modifiedAt > $1.modifiedAt : $0.modifiedAt < $1.modifiedAt)
             }
             if cancelled.isCancelled { return }
             emit(.sessions(sessions, read: start, total: total))

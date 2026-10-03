@@ -3,7 +3,7 @@ import CoreServices
 @testable import TempleCore
 
 final class WatcherTests: XCTestCase {
-    private func waitForInitialPublication(_ watcher: SessionWatcher) async throws {
+    private func waitForInitialPublication(_ watcher: SessionEngine) async throws {
         let deadline = Date().addingTimeInterval(3)
         while watcher.publishedSnapshot == nil, Date() < deadline {
             try await Task.sleep(for: .milliseconds(10))
@@ -21,10 +21,7 @@ final class WatcherTests: XCTestCase {
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let watcher = SessionWatcher(
-            stores: [ClaudeSessionStore(root: root)], members: ["new-session"],
-            debounceInterval: 0.1
-        )
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.1), members: ["new-session"])
         let received = expectation(description: "updated index")
         let stream = watcher.start()
         defer { watcher.stop() }
@@ -70,10 +67,7 @@ final class WatcherTests: XCTestCase {
             )
         }
 
-        let watcher = SessionWatcher(
-            stores: [ClaudeSessionStore(root: root)], members: Set((0..<200).map { "session-\($0)" }),
-            debounceInterval: 0.05
-        )
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.05), members: Set((0..<200).map { "session-\($0)" }))
         let received = expectation(description: "incremental update")
         let target = project.appendingPathComponent("session-100.jsonl")
         let stream = watcher.start()
@@ -120,10 +114,7 @@ final class WatcherTests: XCTestCase {
         let firstLine = #"{"sessionId":"streaming-session","type":"user","message":{"content":"hello"},"cwd":"/tmp/project","timestamp":"2026-01-01T00:00:00Z"}"#
         try firstLine.write(to: session, atomically: true, encoding: .utf8)
 
-        let watcher = SessionWatcher(
-            stores: [ClaudeSessionStore(root: root)], members: ["streaming-session"],
-            debounceInterval: 0.3
-        )
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.3), members: ["streaming-session"])
         let initial = expectation(description: "initial index")
         let updatedWhileAppending = expectation(description: "update before steady appends stop")
         let stream = watcher.start()
@@ -187,7 +178,7 @@ final class WatcherTests: XCTestCase {
             racingFile: file,
             lateLine: "\n" + #"{"sessionId":"racy-session","type":"user","message":{"content":"hello"},"cwd":"/tmp/tw-proj","timestamp":"2026-01-01T00:00:01Z"}"#)
 
-        let watcher = SessionWatcher(stores: [store], members: ["racy-session"], debounceInterval: 0.05)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.05), members: ["racy-session"])
         let corrected = expectation(description: "re-parsed with real cwd after mid-write race")
         let stream = watcher.start()
         defer { watcher.stop() }

@@ -21,7 +21,7 @@ public struct Session: Identifiable, Hashable, Sendable {
     }
     public var sortDate: Date { state.lastActiveAt ?? state.lastOpenedAt ?? state.joinedAt ?? .distantPast }
     public var transcript: TranscriptLocator? {
-        guard case .loaded(let url) = resolution else { return nil }
-        return TranscriptLocator(host: host, path: url.path)
+        guard case .loaded(let locator) = resolution, locator.host == host else { return nil }
+        return locator
     }
 }

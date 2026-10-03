@@ -534,7 +534,7 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertNil(app.transcriptURL(for: "local"), "legacy index presence is not a row locator")
         let localURL = URL(fileURLWithPath: "/tmp/local.jsonl")
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["local": .loaded(localURL),
-            "remote": .loaded(URL(fileURLWithPath: "/remote/transcript.jsonl"))], summaries: [:]))
+            "remote": .loaded(TranscriptLocator(host: remote, path: "/remote/transcript.jsonl"))], summaries: [:]))
         XCTAssertEqual(app.transcriptURL(for: "local"), localURL)
         XCTAssertNil(app.transcriptURL(for: "remote"), "remote locators cannot reveal a local file")
         let tab = SessionTab(kind: .session, sessionID: "local", agent: .codex,
