@@ -61,6 +61,68 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertFalse(app.archivedSessionResults("").contains { $0.id == "unknown" })
     }
 
+    private func read(_ app: AppModel, events: [SessionCatalog.Event]) async throws {
+        app.history.catalog = { AsyncStream { c in events.forEach { c.yield($0) }; c.finish() } }
+        app.history.activate()
+        let deadline = Date().addingTimeInterval(2)
+        while app.history.readState != .done && Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(app.history.readState, .done)
+    }
+
+    func testTempleRowsWithoutATranscriptAreTaggedOnlyFromACompletedResolution() async throws {
+        let rows = ["absent", "unreadable", "resolving", "awaiting", "unknown"].map { Fixture.row($0, title: $0) }
+        let app = try model(rows)
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["absent": .confirmedAbsent,
+            "unreadable": .unreadable, "resolving": .resolving, "awaiting": .awaitingCreation], summaries: [:]))
+        try await read(app, events: [.storeFailed(.codex, message: "Failed scan")])
+        XCTAssertEqual(app.history.allRows.count, 5)
+        XCTAssertEqual(app.history.allRows.filter(\.transcriptMissing).map(\.id), ["absent"])
+        XCTAssertTrue(app.history.allRows.allSatisfy { !$0.canResume })
+        app.history.scope = .inTemple
+        app.history.openSelected()
+        XCTAssertTrue(app.openSessions.tabs.isEmpty)
+        // A stale absence cannot replace newer unresolved evidence.
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["unknown": .confirmedAbsent], summaries: [:]))
+        app.history.rebuild()
+        XCTAssertFalse(app.history.allRows.first { $0.id == "unknown" }!.transcriptMissing)
+        // Cancelling a later scan leaves the member union and its evidence intact.
+        app.history.catalog = { AsyncStream { _ in } }
+        app.history.refresh()
+        app.history.deactivate()
+        app.history.rebuild()
+        XCTAssertEqual(app.history.allRows.count, 5)
+        XCTAssertEqual(app.history.allRows.filter(\.transcriptMissing).map(\.id), ["absent"])
+    }
+
+    func testHistoryUnionsMembersWithTheUnfilteredCatalog() async throws {
+        let app = try model([Fixture.row("member", project: "/", title: "Durable title", updated: 100),
+            Fixture.row("missing", title: "Kept without catalog", updated: 50)])
+        let disk = AgentSession(id: "member", agent: .claude, projectPath: "/", title: "Disk title",
+            createdAt: nil, updatedAt: Date(timeIntervalSince1970: 10), filePath: URL(fileURLWithPath: "/tmp/member.jsonl"),
+            lastMessagePreview: "Catalog preview", gitBranch: "catalog-branch")
+        let noisy = Fixture.session("noisy-outside", project: "/", title: "Noise", updated: 20)
+        let outside = Fixture.session("outside", project: NSTemporaryDirectory(), title: "Outside", updated: 30)
+        try await read(app, events: [.sessions([disk, noisy, outside], read: 3, total: 3)])
+        XCTAssertEqual(Set(app.history.allRows.map(\.id)), ["member", "missing", "outside"])
+        XCTAssertEqual(app.history.inTempleCount, 2)
+        let member = try XCTUnwrap(app.history.allRows.first { $0.id == "member" })
+        XCTAssertEqual(member.title, "Durable title")
+        XCTAssertEqual(member.updatedAt, disk.updatedAt)
+        XCTAssertEqual(member.gitBranch, "catalog-branch")
+        XCTAssertEqual(member.lastMessagePreview, "Catalog preview")
+        XCTAssertFalse(member.transcriptMissing)
+        XCTAssertEqual(app.history.allRows.first { $0.id == "missing" }?.updatedAt, Date(timeIntervalSince1970: 50))
+        XCTAssertFalse(app.history.allRows.first { $0.id == "missing" }!.transcriptMissing)
+        // The noisy disk entry was retained, so a later join reveals its disk facts.
+        app.overlay.join("noisy-outside", via: .imported, agent: .claude,
+            core: SessionCore(directory: "/", title: "New member", lastActiveAt: Date(timeIntervalSince1970: 200)))
+        app.history.rebuild()
+        let joined = try XCTUnwrap(app.history.allRows.first { $0.id == "noisy-outside" })
+        XCTAssertEqual(joined.updatedAt, noisy.updatedAt)
+        XCTAssertEqual(joined.title, "New member")
+        XCTAssertEqual(app.history.inTempleCount, 3)
+    }
+
     func testRailGroupsByHostAndOmitsDirectorylessMembers() throws {
         let app = try model([Fixture.row("local", project: "/same"),
             Fixture.row("remote", project: "/same", host: HostID(rawValue: "remote")), Fixture.row("unknown")])

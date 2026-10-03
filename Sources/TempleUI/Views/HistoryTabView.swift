@@ -351,14 +351,14 @@ struct HistoryTabView: View {
     /// A row's inputs as plain values, so a row re-renders only when what it
     /// shows changed — not on every arrow press, streamed batch, notice tick
     /// or live-index publish that re-runs this body.
-    private func row(_ session: AgentSession) -> HistoryPageRow {
+    private func row(_ session: HistoryRow) -> HistoryPageRow {
         let inTemple = history.isInTemple(session.id)
         let archived = history.isArchived(session)
         let openTab = model.openSessions.openTab(forSessionID: session.id)
         return HistoryPageRow(
             session: session,
-            title: model.displayTitle(session),
-            resumeArgv: model.resumeArgv(for: session),
+            title: session.title,
+            resumeArgv: session.resumeArgv,
             selected: history.selection.contains(session.id),
             inTemple: inTemple,
             archived: archived,
@@ -592,7 +592,7 @@ private struct HistoryRowActions {
 /// `.equatable()`), so a body re-run of the page skips the rows whose inputs
 /// did not change. Nothing here observes the history or app model.
 private struct HistoryPageRow: View, Equatable {
-    let session: AgentSession
+    let session: HistoryRow
     let title: String
     let resumeArgv: [String]
     let selected: Bool
@@ -627,8 +627,9 @@ private struct HistoryPageRow: View, Equatable {
                     .font(.system(size: 11).monospacedDigit())
                     .foregroundStyle(.tertiary)
                     .frame(width: 44, alignment: .leading)
-                AgentBadge(agent: session.agent, size: 13)
-                    .opacity(inTemple ? 1 : 0.55)
+                if let agent = session.agent {
+                    AgentBadge(agent: agent, size: 13).opacity(inTemple ? 1 : 0.55)
+                }
                 HStack(spacing: 6) {
                     Text(title)
                         .font(.system(size: 13))
@@ -665,7 +666,7 @@ private struct HistoryPageRow: View, Equatable {
 
     private var meta: some View {
         HStack(spacing: 0) {
-            Text(HistoryModel.projectName(session.projectPath))
+            Text(session.project?.displayName ?? "No project")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             if let branch = session.gitBranch, !branch.isEmpty {
@@ -683,7 +684,9 @@ private struct HistoryPageRow: View, Equatable {
 
     @ViewBuilder
     private func status(lit: Bool) -> some View {
-        if justImported {
+        if session.transcriptMissing {
+            Text("Transcript missing").font(.system(size: 11)).foregroundStyle(.tertiary)
+        } else if justImported {
             Text("Imported")
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
@@ -708,7 +711,7 @@ private struct HistoryPageRow: View, Equatable {
         var details: [String] = []
         if let model = session.model { details.append(model) }
         if let count = session.messageCount { details.append("\(count) messages") }
-        details.append((session.filePath.path as NSString).abbreviatingWithTildeInPath)
+        if let url = session.localURL { details.append((url.path as NSString).abbreviatingWithTildeInPath) }
         return [session.lastMessagePreview, details.joined(separator: " · ")]
             .compactMap { $0 }
             .joined(separator: "\n")
@@ -720,6 +723,7 @@ private struct HistoryPageRow: View, Equatable {
         // color or archive — those belong to the rail. Keeping this short is
         // what keeps Import the obvious verb.
         Button(activity != nil ? "Focus" : "Open") { history.open(session) }
+            .disabled(!session.canResume)
         if !inTemple {
             Button("Import into Temple…") { history.requestImport([session]) }
         }
@@ -728,14 +732,14 @@ private struct HistoryPageRow: View, Equatable {
             copyToPasteboard(resumeArgv.joined(separator: " "))
         }
         Button("Copy session ID") { copyToPasteboard(session.id) }
-        Button("Reveal session file in Finder") {
-            NSWorkspace.shared.activateFileViewerSelecting([session.filePath])
+        if let url = session.localURL {
+            Button("Reveal session file in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
         }
         Divider()
         if inTemple, !archived {
             Button("Show in sidebar") { actions.showInSidebar(session.id) }
         }
-        Button("Show only \(HistoryModel.projectName(session.projectPath))") {
+        Button("Show only \(session.project?.displayName ?? "No project")") {
             history.showOnly(project: session.projectPath)
         }
     }

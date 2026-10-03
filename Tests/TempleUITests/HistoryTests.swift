@@ -46,17 +46,31 @@ final class HistoryTests: XCTestCase {
     private func harness(_ rows: [AgentSession], members: [String] = [],
                          missing: Set<String> = []) -> Harness {
         let database = try! TempleDB.inMemory()
-        for id in members { try! database.join(sessionID: id, via: .opened) }
+        for id in members {
+            if let disk = rows.first(where: { $0.id == id }) {
+                let row = Fixture.row(id, agent: disk.agent, project: disk.projectPath,
+                    title: disk.title, updated: disk.updatedAt.timeIntervalSince1970)
+                try! database.join(sessionID: id, via: .opened, agent: row.agent,
+                    core: SessionCore(directory: row.directory, directorySource: .tab, title: row.state.title, lastActiveAt: row.sortDate))
+            } else { try! database.join(sessionID: id, via: .opened) }
+        }
         let overlay = SessionOverlayStore(db: database)
+        let parser = overlay.importSummaryReader
+        overlay.importSummaryReader = { session in
+            if FileManager.default.fileExists(atPath: session.filePath.path) { return parser(session) }
+            return TranscriptSummary(id: session.id, agent: session.agent,
+                locator: TranscriptLocator(host: .local, path: session.filePath.path),
+                modifiedAt: session.updatedAt, cwd: session.projectPath, firstPrompt: session.title)
+        }
         let history = HistoryModel(
             overlay: overlay,
             catalog: { Self.stream([.listed(total: rows.count),
                                     .sessions(rows, read: rows.count, total: rows.count)]) },
             pathExists: { !missing.contains($0) },
             now: { [now] in now })
-        history.memberStates = { (try? database.sessionStates()) ?? [] }
         var opened: [String] = []
         history.openSession = { opened.append($0.id) }
+        history.openMember = { opened.append($0.id) }
         return Harness(history: history, overlay: overlay, database: database, opened: { opened })
     }
 
@@ -75,6 +89,7 @@ final class HistoryTests: XCTestCase {
     }
 
     private func ids(_ rows: [AgentSession]) -> [String] { rows.map(\.id) }
+    private func ids(_ rows: [HistoryRow]) -> [String] { rows.map(\.id) }
 
     func testImportRejectsMismatchedSummaryFacts() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -295,15 +310,16 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(h.history.allRows.map(\.title), ["Newest copy"])
     }
 
-    func testTempleRowsPreferTheLiveIndexCopy() async {
+    func testTempleRowsUseRowTitleAndCatalogTime() async {
         let disk = session("mine", title: "First prompt", hoursAgo: 5)
-        let live = session("mine", title: "Fresher title", hoursAgo: 1)
         let h = harness([disk], members: ["mine"])
-        h.history.liveIndexChanged(SessionIndex(projects: [Project(path: "/p/a", sessions: [live])]))
+        h.overlay.recordGeneratedTitle("Fresher title", for: "mine")
+        h.overlay.flushPendingTitles()
 
         await load(h.history)
 
         XCTAssertEqual(h.history.allRows.map(\.title), ["Fresher title"])
+        XCTAssertEqual(h.history.allRows.first?.updatedAt, disk.updatedAt)
     }
 
     func testArchivedTempleRowsAreShownTaggedUnderInTemple() async {
@@ -317,9 +333,9 @@ final class HistoryTests: XCTestCase {
         h.history.scope = .inTemple
 
         XCTAssertEqual(ids(h.history.visibleRows), ["put-away", "project-away"])
-        XCTAssertTrue(h.history.isArchived(rows[0]))
-        XCTAssertTrue(h.history.isArchived(rows[1]))
-        XCTAssertFalse(h.history.isArchived(rows[2]), "an outside row is never 'archived'")
+        XCTAssertTrue(h.history.isArchived(h.history.allRows[0]))
+        XCTAssertTrue(h.history.isArchived(h.history.allRows[1]))
+        XCTAssertFalse(h.history.isArchived(h.history.allRows[2]), "an outside row is never 'archived'")
     }
 
     func testStreamingShowsRowsBeforeTheReadEndsAndRecordsStoreFailures() async {
@@ -787,8 +803,8 @@ final class HistoryTests: XCTestCase {
         h.history.deactivate()
 
         _ = h.overlay.join("a", via: .opened)
-        h.history.liveIndexChanged(SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [session("a", title: "Live title", hoursAgo: 1)])]))
+        h.overlay.recordGeneratedTitle("Live title", for: "a")
+        h.overlay.flushPendingTitles()
         try? await Task.sleep(nanoseconds: 30_000_000)
         XCTAssertEqual(h.history.inTempleCount, 0, "nothing rebuilt off screen")
         XCTAssertEqual(h.history.allRows.map(\.title), ["Disk title"])

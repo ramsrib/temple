@@ -449,9 +449,9 @@ public final class AppModel: ObservableObject {
         history.hasOpenTab = { [weak self] id in
             self?.openSessions.openTab(forSessionID: id) != nil
         }
-        history.memberStates = { (try? database.sessionStates()) ?? [] }
-        $index
-            .sink { [weak self] index in self?.history.liveIndexChanged(index) }
+        history.memberRows = { [weak self] in self?.sessions ?? [] }
+        history.openMember = { [weak self] in self?.openSessions.openSession($0) }
+        $sessions.dropFirst().sink { [weak self] _ in self?.history.rowsChanged() }
             .store(in: &cancellables)
         var historyWasOpen = false
         openSessions.$tabs

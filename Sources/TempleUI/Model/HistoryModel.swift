@@ -92,8 +92,6 @@ public final class HistoryModel: ObservableObject {
     private let now: () -> Date
     /// The full-disk read. Replaceable so tests feed events by hand.
     var catalog: () -> AsyncStream<SessionCatalog.Event>
-    /// How each Temple session joined, for the gate mark's tooltip.
-    var memberStates: () -> [SessionState] = { [] }
     /// Open (or focus) a session in a tab. Opening an outside session joins it
     /// as `opened` on the way (ADR-023).
     var openSession: (AgentSession) -> Void = { _ in }
@@ -107,7 +105,9 @@ public final class HistoryModel: ObservableObject {
     private var diskByID: [String: AgentSession] = [:]
     /// Temple's own copies come from the live index — fresher titles and
     /// times. Kept as delivered; keyed by id only when a rebuild needs it.
-    private var liveIndex = SessionIndex(projects: [])
+    var memberRows: () -> [Session] = { [] }
+    var openMember: (Session) -> Void = { _ in }
+    private var noiseIDs: Set<String> = []
     private var joinedByID: [String: SessionState] = [:]
 
     @Published public private(set) var readState: ReadState = .idle
@@ -115,10 +115,10 @@ public final class HistoryModel: ObservableObject {
     @Published public private(set) var storeFailures: [StoreFailure] = []
 
     /// Every non-noise session on disk, newest first.
-    @Published public private(set) var allRows: [AgentSession] = []
+    @Published public private(set) var allRows: [HistoryRow] = []
     /// `allRows` through search and filters, in the same order.
-    @Published public private(set) var visibleRows: [AgentSession] = []
-    @Published public private(set) var groups: [HistoryDayGroup] = []
+    @Published public private(set) var visibleRows: [HistoryRow] = []
+    @Published public private(set) var groups: [HistoryRowDayGroup] = []
     @Published public private(set) var inTempleCount = 0
     @Published public private(set) var agentCounts: [Agent: Int] = [:]
     /// Projects for the popup, by session count, most first.
@@ -197,10 +197,11 @@ public final class HistoryModel: ObservableObject {
             .store(in: &cancellables)
     }
 
-    /// The live index changed: Temple's own rows take its copies.
-    func liveIndexChanged(_ index: SessionIndex) {
-        liveIndex = index
-        scheduleRebuild()
+    func rowsChanged() { scheduleRebuild() }
+
+    private var currentMembers: [Session] {
+        let supplied = memberRows()
+        return supplied.isEmpty ? overlay.rows.values.map { Session(state: $0) } : supplied
     }
 
     // MARK: Lifecycle
@@ -211,7 +212,7 @@ public final class HistoryModel: ObservableObject {
     public func activate() {
         isActive = true
         if selection.isEmpty { wantsInitialSelection = true }
-        if needsRebuild { rebuild() }
+        rebuild()
         refresh()
     }
 
@@ -228,6 +229,7 @@ public final class HistoryModel: ObservableObject {
     public func reset() {
         deactivate()
         diskByID = [:]
+        noiseIDs = []
         joinedByID = [:]
         storeFailures = []
         lastUpdated = nil
@@ -278,8 +280,11 @@ public final class HistoryModel: ObservableObject {
                     }.value
                     guard !Task.isCancelled else { return }
                     exists = sorted.exists
-                    for session in sorted.kept { self.diskByID[session.id] = session }
-                    for id in sorted.noise { self.diskByID[id] = nil }
+                    for session in fresh {
+                        self.diskByID[session.id] = session
+                        self.noiseIDs.remove(session.id)
+                    }
+                    self.noiseIDs.formUnion(sorted.noise)
                     self.readState = .reading(read: read, total: total)
                     self.rebuild()
                 }
@@ -288,7 +293,7 @@ public final class HistoryModel: ObservableObject {
             // Gone from disk since the last read: drop it now the read is whole.
             self.diskByID = self.diskByID.filter { seen.contains($0.key) }
             self.storeFailures = failures
-            self.joinedByID = Dictionary(self.memberStates().map { ($0.id, $0) },
+            self.joinedByID = Dictionary(self.currentMembers.map { ($0.id, $0.state) },
                                          uniquingKeysWith: { first, _ in first })
             self.lastUpdated = self.now()
             self.readState = .done
@@ -319,10 +324,10 @@ public final class HistoryModel: ObservableObject {
 
     // MARK: Derived
 
-    public func isInTemple(_ id: String) -> Bool { overlay.isTempleSession(id) }
+    public func isInTemple(_ id: String) -> Bool { overlay.rows[id] != nil }
 
     /// In Temple and put away (the session, or its whole project).
-    public func isArchived(_ session: AgentSession) -> Bool {
+    public func isArchived(_ session: HistoryRow) -> Bool {
         isInTemple(session.id)
             && (overlay.isArchived(session.id) || overlay.isProjectArchived(session.projectPath))
     }
@@ -373,22 +378,22 @@ public final class HistoryModel: ObservableObject {
     /// title arriving for some open tab) re-renders nothing.
     func rebuild() {
         needsRebuild = false
-        let temple = overlay.templeSessions
-        var liveByID: [String: AgentSession] = [:]
-        for session in liveIndex.allSessions where liveByID[session.id] == nil {
-            liveByID[session.id] = session
+        let members = Dictionary(currentMembers.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let temple = Set(members.keys)
+        var rows = diskByID.values.compactMap { disk -> HistoryRow? in
+            if let member = members[disk.id] { return HistoryRow(member: member, catalog: disk) }
+            return noiseIDs.contains(disk.id) ? nil : HistoryRow(catalog: disk)
         }
-        var rows = diskByID.values.map { disk -> AgentSession in
-            temple.contains(disk.id) ? (liveByID[disk.id] ?? disk) : disk
-        }
+        rows += members.values.filter { diskByID[$0.id] == nil }.map { HistoryRow(member: $0) }
+        joinedByID = Dictionary(members.values.map { ($0.id, $0.state) }, uniquingKeysWith: { first, _ in first })
         rows.sort { $0.updatedAt == $1.updatedAt ? $0.id < $1.id : $0.updatedAt > $1.updatedAt }
         assign(\.allRows, rows)
         assign(\.inTempleCount, rows.reduce(0) { $0 + (temple.contains($1.id) ? 1 : 0) })
         var agents: [Agent: Int] = [:]
         var projectCounts: [String: Int] = [:]
         for row in rows {
-            agents[row.agent, default: 0] += 1
-            projectCounts[row.projectPath, default: 0] += 1
+            if let agent = row.agent { agents[agent, default: 0] += 1 }
+            if row.project != nil { projectCounts[row.projectPath, default: 0] += 1 }
         }
         assign(\.agentCounts, agents)
         assign(\.projects, projectCounts
@@ -396,7 +401,6 @@ public final class HistoryModel: ObservableObject {
             .sorted { $0.count == $1.count ? $0.path < $1.path : $0.count > $1.count })
 
         let needle = normalizedQuery
-        let overrides = needle.isEmpty ? [:] : overlay.displayTitleOverrides
         let visible = rows.filter { session in
             switch scope {
             case .all: break
@@ -405,10 +409,10 @@ public final class HistoryModel: ObservableObject {
             }
             if let agentFilter, session.agent != agentFilter { return false }
             if let projectFilter, session.projectPath != projectFilter { return false }
-            return needle.isEmpty || Self.matches(session, needle, override: overrides[session.id])
+            return needle.isEmpty || Self.matches(session, needle)
         }
         assign(\.visibleRows, visible)
-        assign(\.groups, HistoryGrouping.groups(visible, now: now()))
+        assign(\.groups, HistoryRowGrouping.groups(visible, now: now()))
 
         // A selected row that left the view is not selected: nothing hidden
         // can be imported by a key press.
@@ -431,9 +435,8 @@ public final class HistoryModel: ObservableObject {
     /// Case-insensitive substring over everything the row shows or hides in
     /// its tooltip, plus an id prefix (a pasted id from a log finds its row).
     /// No ranking: order is chronology.
-    static func matches(_ session: AgentSession, _ needle: String, override: String?) -> Bool {
+    static func matches(_ session: HistoryRow, _ needle: String) -> Bool {
         if session.title.localizedCaseInsensitiveContains(needle) { return true }
-        if let override, override.localizedCaseInsensitiveContains(needle) { return true }
         if session.projectPath.localizedCaseInsensitiveContains(needle) { return true }
         if let branch = session.gitBranch, branch.localizedCaseInsensitiveContains(needle) { return true }
         if let preview = session.lastMessagePreview, preview.localizedCaseInsensitiveContains(needle) { return true }
@@ -572,13 +575,13 @@ public final class HistoryModel: ObservableObject {
     }
 
     /// The selected rows in page order.
-    public var selectedRows: [AgentSession] {
+    public var selectedRows: [HistoryRow] {
         visibleRows.filter { selection.contains($0.id) }
     }
 
     /// What the bulk Import would bring in.
     public var selectedOutsideRows: [AgentSession] {
-        selectedRows.filter { !isInTemple($0.id) }
+        selectedRows.filter { !isInTemple($0.id) }.compactMap(\.catalog)
     }
 
     /// Esc: clear search → clear selection → leave (the caller goes back to
@@ -610,12 +613,18 @@ public final class HistoryModel: ObservableObject {
         flushQuery()
         guard selection.count == 1, let id = selection.first,
               let session = visibleRows.first(where: { $0.id == id }) else { return }
-        openSession(session)
+        open(session)
     }
 
-    public func open(_ session: AgentSession) {
-        openSession(session)
+    public func open(_ session: HistoryRow) {
+        guard session.canResume else { return }
+        if let member = session.member { openMember(member) }
+        else if let catalog = session.catalog { openSession(catalog) }
     }
+
+    public func open(_ session: AgentSession) { openSession(session) }
+    public func requestImport(_ rows: [HistoryRow]) { requestImport(rows.compactMap(\.catalog)) }
+
 
     public func showOnly(project path: String) {
         projectFilter = path
@@ -627,7 +636,7 @@ public final class HistoryModel: ObservableObject {
     /// Temple are left out of the count and the copy; nothing to import, no
     /// sheet.
     public func requestImport(_ sessions: [AgentSession]? = nil) {
-        let candidates = (sessions ?? selectedRows).filter { !isInTemple($0.id) }
+        let candidates = (sessions ?? selectedRows.compactMap(\.catalog)).filter { !isInTemple($0.id) }
         guard !candidates.isEmpty else { return }
         pendingImport = makeImportRequest(for: candidates)
     }
@@ -794,7 +803,7 @@ public final class HistoryModel: ObservableObject {
     }
 
     private func refreshJoinedStates() {
-        joinedByID = Dictionary(memberStates().map { ($0.id, $0) },
+        joinedByID = Dictionary(currentMembers.map { ($0.id, $0.state) },
                                 uniquingKeysWith: { first, _ in first })
     }
 

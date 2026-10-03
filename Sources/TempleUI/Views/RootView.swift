@@ -685,7 +685,7 @@ private struct KeyCatcher: NSViewRepresentable {
             case .copyResumeCommands:
                 let rows = history.selectedRows
                 guard !rows.isEmpty else { return false }
-                copyToPasteboard(rows.map { $0.resume.argv.joined(separator: " ") }
+                copyToPasteboard(rows.map { $0.resumeArgv.joined(separator: " ") }
                     .joined(separator: "\n"))
             }
             return true
