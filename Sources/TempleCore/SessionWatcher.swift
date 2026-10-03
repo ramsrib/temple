@@ -2,7 +2,7 @@ import Dispatch
 import Foundation
 import CoreServices
 
-public enum MemberResolution: Equatable, Sendable {
+public enum MemberResolution: Hashable, Sendable {
     case resolving
     case awaitingCreation
     case loaded(URL)
@@ -34,6 +34,11 @@ public final class SessionWatcher: @unchecked Sendable {
     private var states: [String: MemberResolution] = [:]
     private var statesDirty = false
     private var sessions: [String: AgentSession] = [:]
+    private var summaries: [String: TranscriptSummary] = [:]
+    private var generation: UInt64 = 0
+    private var engineContentDirty = false
+    private var lastEngineSnapshot: EngineSnapshot?
+    private var engineContinuations: [UUID: AsyncStream<EngineSnapshot>.Continuation] = [:]
     private var signatures: [String: FileSignature] = [:] // validated member ID -> signature
     private let snapshotLock = NSLock()
     private var snapshotStates: [String: MemberResolution] = [:]
@@ -120,6 +125,21 @@ public final class SessionWatcher: @unchecked Sendable {
         }
     }
 
+    /// Replay the latest engine publication, then deliver coalesced updates.
+    public func snapshots() -> AsyncStream<EngineSnapshot> {
+        let token = UUID()
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            continuation.onTermination = { [weak self] _ in
+                self?.queue.async { [weak self] in self?.engineContinuations.removeValue(forKey: token) }
+            }
+            queue.async { [weak self] in
+                guard let self else { return }
+                self.engineContinuations[token] = continuation
+                if let snapshot = self.lastEngineSnapshot { continuation.yield(snapshot) }
+            }
+        }
+    }
+
     private func setStateLocked(_ id: String, to state: MemberResolution) {
         guard states[id] != state else { return }
         states[id] = state; statesDirty = true
@@ -131,7 +151,27 @@ public final class SessionWatcher: @unchecked Sendable {
         if changed { snapshotStates = states; statesDirty = false }
         snapshotIndex = lastIndex; snapshotMonitoring = monitoring
         snapshotLock.unlock()
-        if changed { for continuation in stateContinuations.values { continuation.yield(states) } }
+        if changed {
+            engineContentDirty = true
+            for continuation in stateContinuations.values { continuation.yield(states) }
+        }
+    }
+
+    /// Content is published only after a whole batch has reconciled. Resolution
+    /// notifications above retain their independent transition timing.
+    private func publishEngineSnapshotLocked() {
+        guard running, engineContentDirty || lastEngineSnapshot == nil, let lastIndex else { return }
+        engineContentDirty = false
+        let loadedSummaries = summaries.filter { id, _ in
+            if case .loaded = states[id] { return true }
+            return false
+        }
+        let snapshot = EngineSnapshot(generation: generation, resolutions: states,
+            summaries: loadedSummaries, legacyIndex: lastIndex)
+        if snapshot != lastEngineSnapshot {
+            lastEngineSnapshot = snapshot
+            for continuation in engineContinuations.values { continuation.yield(snapshot) }
+        }
     }
 
     public func start() -> AsyncStream<SessionIndex> {
@@ -149,6 +189,7 @@ public final class SessionWatcher: @unchecked Sendable {
                 self.continuation = continuation
                 self.streamID = id
                 self.running = true
+                self.generation &+= 1
                 self.members.formUnion(self.initialMembers)
                 self.reloadMembershipLocked()
                 // The stream starts BEFORE the scan. Its serial-queue callbacks
@@ -186,7 +227,8 @@ public final class SessionWatcher: @unchecked Sendable {
         pendingPaths.removeAll()
         files.removeAll(); pathsByID.removeAll(); memberIDsByPath.removeAll()
         hintPathsByID.removeAll(); selectedCodexPaths.removeAll()
-        signatures.removeAll(); sessions.removeAll()
+        signatures.removeAll(); sessions.removeAll(); summaries.removeAll()
+        lastEngineSnapshot = nil
         lastIndex = nil
         states.removeAll(); statesDirty = true; snapshotLocked()
     }
@@ -210,6 +252,7 @@ public final class SessionWatcher: @unchecked Sendable {
             self.members.remove(id)
             self.awaiting.remove(id)
             self.sessions.removeValue(forKey: id)
+            self.summaries.removeValue(forKey: id)
             self.signatures.removeValue(forKey: id)
             self.hintPathsByID.removeValue(forKey: id)
             for path in Array(self.memberIDsByPath.keys) {
@@ -383,6 +426,7 @@ public final class SessionWatcher: @unchecked Sendable {
                 if self.reconcileFileLocked(URL(fileURLWithPath: path)) { changed = true }
             }
             if changed { self.publishLocked() }
+            else { self.publishEngineSnapshotLocked() }
         }
         work = item
         queue.asyncAfter(deadline: .now() + debounceInterval, execute: item)
@@ -446,6 +490,8 @@ public final class SessionWatcher: @unchecked Sendable {
     }
 
     private func recoverLocked(subtree: String? = nil) {
+        generation &+= 1
+        engineContentDirty = true
         enumerateLocked(subtree: subtree); refreshTitlesLocked()
         for id in members {
             if let subtree {
@@ -545,13 +591,16 @@ public final class SessionWatcher: @unchecked Sendable {
             if signatures[id] == signature, let session = sessions[id], session.filePath.path == path {
                 setStateLocked(id, to: .loaded(session.filePath)); return
             }
-            let parsed: AgentSession?
-            if let codex = store as? CodexSessionStore { parsed = codex.loadTranscript(at: entry.0) }
-            else { parsed = store.loadSession(at: entry.0) }
+            let summary = (store as? any TranscriptSummaryStore)?.loadSummary(at: entry.0)
+            // Legacy custom stores retain their API; never invent facts from display values.
+            let parsed = store is any TranscriptSummaryStore
+                ? summary.map { AgentSession(summary: $0) } : store.loadSession(at: entry.0)
             if let final = try? FileSignature(entry.0), final != signature {
                 pendingPaths.insert(path); scheduleLocked()
             }
             guard let parsed, parsed.id == id else { unreadable = true; continue }
+            if summaries[id] != summary { engineContentDirty = true }
+            summaries[id] = summary
             signatures[id] = signature
             sessions[id] = parsed; setStateLocked(id, to: .loaded(parsed.filePath)); awaiting.remove(id)
             trackHintLocked(id, path: path)
@@ -561,6 +610,7 @@ public final class SessionWatcher: @unchecked Sendable {
             return
         }
         sessions.removeValue(forKey: id)
+        summaries.removeValue(forKey: id)
         signatures.removeValue(forKey: id)
         // Only a completed enumeration proves absence. A listing failure is
         // unknown, not a verdict about a missing or unreadable transcript.
@@ -597,17 +647,22 @@ public final class SessionWatcher: @unchecked Sendable {
         titleToken = token; titles = store.loadSharedTitles()
     }
 
-    private func publishLocked() {
-        let displayed = sessions.values.map { session in
+    private func displayedSessionsLocked() -> [AgentSession] {
+        sessions.values.map { session in
             guard session.agent == .codex, let title = titles[session.id] else { return session }
             return AgentSession(id: session.id, agent: session.agent, projectPath: session.projectPath,
                 title: title, createdAt: session.createdAt, updatedAt: session.updatedAt,
                 filePath: session.filePath, messageCount: session.messageCount, model: session.model,
                 lastMessagePreview: session.lastMessagePreview, gitBranch: session.gitBranch, originator: session.originator)
         }
-        let index = SessionIndex.grouping(displayed)
+    }
+
+    private func publishLocked() {
+        let index = SessionIndex.grouping(displayedSessionsLocked())
         let changed = index != lastIndex
+        if changed { engineContentDirty = true }
         lastIndex = index; snapshotLocked()
+        publishEngineSnapshotLocked()
         if changed { continuation?.yield(index) }
     }
 

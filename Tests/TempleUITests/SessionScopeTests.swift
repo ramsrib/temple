@@ -1,7 +1,8 @@
 import XCTest
 import SQLite3
+import GRDB
 @testable import TempleUI
-import TempleCore
+@testable import TempleCore
 
 private struct ScopeNoNoiseFilter: NoiseFilter {
     func isNoise(_ session: AgentSession) -> Bool { false }
@@ -27,6 +28,246 @@ final class SessionScopeTests: XCTestCase {
         )
         model.index = index
         return (model, overlay)
+    }
+
+    private func summary(_ id: String = "legacy", cwd: String? = "/transcript",
+                         prompt: String? = "First prompt", time: TimeInterval = 100) -> TranscriptSummary {
+        TranscriptSummary(id: id, agent: .claude,
+            locator: TranscriptLocator(host: .local, path: "/private/tmp/\(id).jsonl"),
+            modifiedAt: Date(timeIntervalSince1970: time), cwd: cwd, firstPrompt: prompt,
+            recordedTitle: "Recorded hint", directoryHint: "/lossy-hint",
+            laterPromptHint: "Later hint", legacyTitleHint: "Legacy hint")
+    }
+
+    func testALegacyRowIsFilledFromItsTranscriptOnce() throws {
+        let counter = FillSQLCounter()
+        var config = Configuration()
+        config.prepareDatabase { db in
+            db.trace { event in
+                if event.expandedDescription.contains("UPDATE session_state SET agent = COALESCE") {
+                    counter.increment()
+                }
+            }
+        }
+        let db = try TempleDB(database: DatabaseQueue(configuration: config))
+        try db.join(sessionID: "legacy", via: .imported)
+        let (model, overlay) = makeModel(SessionIndex(projects: []), database: db)
+        let facts = summary()
+        for _ in 0..<20 {
+            model.receiveEngineSnapshot(EngineSnapshot(generation: 1,
+                resolutions: ["legacy": .loaded(facts.locator.localURL!)], summaries: ["legacy": facts]))
+        }
+        XCTAssertEqual(counter.count, 1)
+        let row = try XCTUnwrap(db.sessionState("legacy"))
+        XCTAssertEqual(row.agent, .claude)
+        XCTAssertEqual(row.directory, "/transcript")
+        XCTAssertEqual(row.directorySource, .transcript)
+        XCTAssertEqual(row.title, "First prompt")
+        XCTAssertNil(row.generatedTitle)
+        XCTAssertEqual(row.lastActiveAt, facts.modifiedAt)
+        XCTAssertEqual(overlay.rows["legacy"], row)
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: [:],
+            summaries: ["legacy": summary(cwd: "/changed", prompt: "Changed", time: 200)]))
+        XCTAssertEqual(try db.sessionState("legacy"), row)
+        XCTAssertEqual(counter.count, 1)
+    }
+
+    func testClaudeRecordedTitleSurvivesFillAndOverlayReconstruction() throws {
+        try assertLegacyTitleSurvivesFill(agent: .claude, title: "Claude recorded title")
+    }
+
+    func testCodexSharedTitleSurvivesFillAndOverlayReconstruction() throws {
+        try assertLegacyTitleSurvivesFill(agent: .codex, title: "Codex shared title")
+    }
+
+    private func assertLegacyTitleSurvivesFill(agent: Agent, title: String) throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "legacy", via: .imported)
+        let facts = TranscriptSummary(id: "legacy", agent: agent,
+            locator: TranscriptLocator(host: .local, path: "/private/tmp/legacy.jsonl"),
+            modifiedAt: Date(timeIntervalSince1970: 100), cwd: "/project", firstPrompt: "First prompt",
+            recordedTitle: agent == .claude ? title : nil)
+        let legacy = AgentSession(summary: facts, title: agent == .codex ? title : nil)
+        let overlay = SessionOverlayStore(db: db)
+        overlay.fillMissingCoreFields(from: facts)
+        for store in [overlay, SessionOverlayStore(db: db)] {
+            XCTAssertNil(store.generatedTitle(for: "legacy"))
+            XCTAssertEqual(store.displayTitle(for: legacy), title)
+            XCTAssertEqual(Session(state: try XCTUnwrap(store.rows["legacy"])).displayTitle, "First prompt")
+        }
+        // A genuine agent retitle remains a legacy override after reconstruction.
+        overlay.recordGeneratedTitle("OSC retitle", for: "legacy")
+        overlay.flushPendingTitles()
+        XCTAssertEqual(SessionOverlayStore(db: db).displayTitle(for: legacy), "OSC retitle")
+    }
+
+    func testQueuedLocalFillCannotChangeARowRejoinedOnAnotherHost() throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "legacy", via: .imported)
+        let overlay = SessionOverlayStore(db: db)
+        let committed = DispatchSemaphore(value: 0)
+        let remote = HostID(rawValue: "remote")
+        // Hold the main actor until both commits finish: the row observer's
+        // queued refresh cannot update the overlay before the stale summary.
+        DispatchQueue.global().async {
+            defer { committed.signal() }
+            do {
+                XCTAssertTrue(try db.leave(sessionID: "legacy"))
+                try db.join(sessionID: "legacy", via: .imported, core: SessionCore(host: remote))
+            } catch { XCTFail("leave/rejoin failed: \(error)") }
+        }
+        XCTAssertEqual(committed.wait(timeout: .now() + 3), .success)
+        XCTAssertEqual(overlay.rows["legacy"]?.host, .local)
+        XCTAssertEqual(try db.sessionState("legacy")?.host, remote)
+        overlay.fillMissingCoreFields(from: summary())
+        let row = try XCTUnwrap(db.sessionState("legacy"))
+        XCTAssertEqual(row.host, remote)
+        XCTAssertNil(row.agent)
+        XCTAssertNil(row.directory)
+        XCTAssertNil(row.directorySource)
+        XCTAssertNil(row.title)
+        XCTAssertNil(row.lastActiveAt)
+        XCTAssertEqual(overlay.rows["legacy"], row)
+        // A fact from the expected host can still fill the same row.
+        XCTAssertEqual(try db.fillCoreFields(sessionID: "legacy", expectedHost: remote, title: "Remote prompt"), [.title])
+    }
+
+    func testCompleteRowBurstsDoNotRebuildPresentation() throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "legacy", via: .imported)
+        let (model, overlay) = makeModel(SessionIndex(projects: []), database: db)
+        let resolution: [String: MemberResolution] = ["legacy": .loaded(summary().locator.localURL!)]
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: resolution, summaries: ["legacy": summary()]))
+        let filledBuilds = model.sessionPresentationBuildCount
+        let filledSessions = model.sessions
+        // Each publication has changed transcript facts and generation, but the
+        // completed row and its resolution stay identical.
+        for tick in 2...30 {
+            model.receiveEngineSnapshot(EngineSnapshot(generation: UInt64(tick), resolutions: resolution,
+                summaries: ["legacy": summary(prompt: "Changed \(tick)", time: Double(tick + 100))]))
+        }
+        XCTAssertEqual(model.sessionPresentationBuildCount, filledBuilds)
+        XCTAssertEqual(model.sessions, filledSessions)
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 31, resolutions: ["legacy": .confirmedAbsent], summaries: [:]))
+        XCTAssertEqual(model.sessionPresentationBuildCount, filledBuilds + 1)
+        XCTAssertNil(model.sessions.first?.transcript)
+        overlay.rename("legacy", to: "Renamed")
+        XCTAssertEqual(model.sessionPresentationBuildCount, filledBuilds + 2)
+        XCTAssertEqual(model.sessions.first?.displayTitle, "Renamed")
+    }
+
+    func testATabDirectoryIsNeverOverwrittenByTheTranscriptCwd() throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "legacy", via: .opened,
+                    core: SessionCore(directory: "/tab", directorySource: .tab))
+        let overlay = SessionOverlayStore(db: db)
+        overlay.fillMissingCoreFields(from: summary())
+        XCTAssertEqual(try db.sessionState("legacy")?.directory, "/tab")
+        XCTAssertEqual(try db.sessionState("legacy")?.directorySource, .tab)
+        XCTAssertEqual(try db.sessionState("legacy")?.title, "First prompt")
+    }
+
+    func testFillNeverPersistsHints() throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "legacy", via: .imported)
+        let overlay = SessionOverlayStore(db: db)
+        overlay.fillMissingCoreFields(from: summary(cwd: nil, prompt: nil))
+        let row = try XCTUnwrap(db.sessionState("legacy"))
+        XCTAssertNil(row.directory)
+        XCTAssertNil(row.directorySource)
+        XCTAssertNil(row.title)
+        XCTAssertNil(row.generatedTitle)
+        XCTAssertEqual(row.agent, .claude)
+        overlay.fillMissingCoreFields(from: summary())
+        XCTAssertEqual(try db.sessionState("legacy")?.title, "First prompt")
+    }
+
+    func testSessionsAreBuiltFromRowsIncludingMembersWithoutATranscript() async throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "missing", via: .opened, agent: .codex,
+                    core: SessionCore(host: HostID(rawValue: "remote"), directory: "/row", directorySource: .tab,
+                                      title: "Row title", lastActiveAt: Date(timeIntervalSince1970: 5)))
+        try db.join(sessionID: "directoryless", via: .imported)
+        let (model, overlay) = makeModel(SessionIndex(projects: []), database: db)
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1,
+            resolutions: ["missing": .confirmedAbsent], summaries: [:]))
+        XCTAssertEqual(Set(model.sessions.map(\.id)), ["missing", "directoryless"])
+        let session = try XCTUnwrap(model.sessions.first { $0.id == "missing" })
+        XCTAssertEqual(session.displayTitle, "Row title")
+        XCTAssertEqual(session.directory, "/row")
+        XCTAssertEqual(session.project, ProjectKey(host: HostID(rawValue: "remote"), path: "/row"))
+        XCTAssertTrue(session.canResume)
+        XCTAssertNil(session.transcript)
+        XCTAssertEqual(model.rowProjects.count, 1)
+        XCTAssertTrue(model.index.allSessions.isEmpty)
+        try db.setTitle("Changed by row observer", sessionID: "missing")
+        XCTAssertEqual(overlay.rows["missing"]?.title, "Changed by row observer")
+        overlay.touch("missing", at: Date(timeIntervalSince1970: 500))
+        let end = Date().addingTimeInterval(2)
+        while model.sessions.first(where: { $0.id == "missing" })?.sortDate != Date(timeIntervalSince1970: 500), Date() < end {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(model.sessions.first(where: { $0.id == "missing" })?.displayTitle, "Changed by row observer")
+        XCTAssertEqual(model.sessions.first(where: { $0.id == "missing" })?.sortDate, Date(timeIntervalSince1970: 500))
+    }
+
+    func testWatcherAdapterPublishesLegacyIndexAndFillsRows() async throws {
+        let root = URL(fileURLWithPath: "/private/tmp/temple-p3-adapter-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let file = project.appendingPathComponent("legacy.jsonl")
+        try "{\"type\":\"user\",\"cwd\":\"/facts\",\"message\":{\"content\":\"Real prompt\"}}".write(to: file, atomically: true, encoding: .utf8)
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "legacy", via: .imported)
+        try db.join(sessionID: "missing", via: .imported,
+                    core: SessionCore(directory: "/missing", title: "Kept row"))
+        let cacheURL = root.appendingPathComponent("cache.json")
+        let source = WatcherIndexSource(watcher: SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db),
+                                        cacheURL: cacheURL)
+        defer { source.stop() }
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
+            noiseFilter: ScopeNoNoiseFilter(), database: db,
+            settings: SettingsStore(defaults: Fixture.uniqueDefaults()), cacheURL: cacheURL)
+        model.start()
+        let end = Date().addingTimeInterval(3)
+        while (model.isLoading || model.sessions.first(where: { $0.id == "legacy" })?.state.title == nil), Date() < end {
+            try await Task.sleep(for: .milliseconds(15))
+        }
+        XCTAssertFalse(model.isLoading)
+        XCTAssertEqual(model.index.allSessions.map(\.id), ["legacy"])
+        XCTAssertEqual(model.index.allSessions.first?.title, "Real prompt")
+        XCTAssertEqual(try db.sessionState("legacy")?.directory, "/facts")
+        XCTAssertEqual(model.sessions.first(where: { $0.id == "legacy" })?.displayTitle, "Real prompt")
+        XCTAssertEqual(model.sessions.first(where: { $0.id == "missing" })?.displayTitle, "Kept row")
+        XCTAssertEqual(model.sessions.first(where: { $0.id == "missing" })?.resolution, .confirmedAbsent)
+        let filled = try XCTUnwrap(db.sessionState("legacy"))
+        let activity = try XCTUnwrap(filled.lastActiveAt)
+        model.overlay.touch("legacy", at: activity.addingTimeInterval(-100))
+        XCTAssertEqual(model.overlay.rows["legacy"]?.lastActiveAt, filled.lastActiveAt)
+    }
+
+    func testDisplayTitleChainAndSortDate() {
+        func row(name: String? = nil, title: String? = nil, agent: Agent? = nil,
+                 active: Date? = nil, opened: Date? = nil, joined: Date? = nil) -> SessionState {
+            SessionState(id: "s", pinned: false, archived: false, customName: name, color: nil,
+                         generatedTitle: "Legacy title", lastOpenedAt: opened, joinedVia: nil, joinedAt: joined,
+                         agent: agent, directory: "/row", title: title, lastActiveAt: active)
+        }
+        XCTAssertEqual(Session(state: row()).displayTitle, "Untitled session")
+        XCTAssertEqual(Session(state: row(agent: .claude)).displayTitle, "New Claude Code session")
+        XCTAssertEqual(Session(state: row(agent: .codex)).displayTitle, "New Codex session")
+        XCTAssertEqual(Session(state: row(title: "Title", agent: .claude)).displayTitle, "Title")
+        XCTAssertEqual(Session(state: row(name: "Custom", title: "Title", agent: .claude)).displayTitle, "Custom")
+        let a = Date(timeIntervalSince1970: 1), b = Date(timeIntervalSince1970: 2), c = Date(timeIntervalSince1970: 3)
+        XCTAssertEqual(Session(state: row(active: a, opened: b, joined: c)).sortDate, a)
+        XCTAssertEqual(Session(state: row(opened: b, joined: c)).sortDate, b)
+        XCTAssertEqual(Session(state: row(joined: c)).sortDate, c)
+        XCTAssertEqual(Session(state: row()).sortDate, .distantPast)
+        XCTAssertFalse(Session(state: row()).canResume)
+        let url = URL(fileURLWithPath: "/private/tmp/s.jsonl")
+        XCTAssertEqual(Session(state: row(agent: .codex), resolution: .loaded(url)).transcript?.localURL, url)
     }
 
     /// `/p/outside` holds only a session run elsewhere, and is the most recent
@@ -233,4 +474,11 @@ final class SessionScopeTests: XCTestCase {
         settings.fontSize = 17
         XCTAssertEqual(defaults.string(forKey: "temple.settings.sessionScope"), "all")
     }
+}
+
+private final class FillSQLCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.lock(); defer { lock.unlock() }; return value }
+    func increment() { lock.lock(); value += 1; lock.unlock() }
 }

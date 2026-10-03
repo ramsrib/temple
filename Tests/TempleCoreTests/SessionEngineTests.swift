@@ -44,6 +44,37 @@ final class SessionEngineTests: XCTestCase {
         XCTAssertTrue(predicate())
     }
 
+    func testSnapshotsCarryResolutionsAndSummariesForLoadedMembers() async throws {
+        let root = try root()
+        let file = try claude(root, id: "loaded", text: "Recorded prompt")
+        try claude(root, id: "outside")
+        let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], members: ["loaded", "missing"])
+        let updates = watcher.snapshots()
+        var snapshots: [EngineSnapshot] = []
+        let task = Task { for await snapshot in updates { snapshots.append(snapshot) } }
+        let recorder = try await start(watcher)
+        defer { task.cancel(); recorder.stop() }
+        try await eventually { snapshots.last?.summaries["loaded"] != nil }
+        let snapshot = try XCTUnwrap(snapshots.last)
+        XCTAssertGreaterThan(snapshot.generation, 0)
+        XCTAssertEqual(snapshot.resolutions["loaded"], .loaded(file))
+        XCTAssertEqual(snapshot.resolutions["missing"], .confirmedAbsent)
+        XCTAssertEqual(Set(snapshot.summaries.keys), ["loaded"])
+        XCTAssertEqual(snapshot.summaries["loaded"]?.cwd, "/private/tmp")
+        XCTAssertEqual(snapshot.summaries["loaded"]?.firstPrompt, "Recorded prompt")
+        XCTAssertEqual(snapshot.summaries["loaded"]?.locator.localURL, file)
+        XCTAssertEqual(snapshot.summaries["loaded"]?.modifiedAt, recorder.latest.first?.updatedAt)
+
+        let replay = watcher.snapshots()
+        var iterator = replay.makeAsyncIterator()
+        let replayed = await iterator.next()
+        XCTAssertEqual(replayed, snapshot)
+        try FileManager.default.removeItem(at: file)
+        watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemRemoved))
+        try await eventually { snapshots.last?.resolutions["loaded"] == .confirmedAbsent }
+        XCTAssertNil(snapshots.last?.summaries["loaded"])
+    }
+
     func testOnlyMembersAreParsedAndNonmemberWriteDoesNotPublish() async throws {
         let root = try root()
         let member = try claude(root, id: "member")

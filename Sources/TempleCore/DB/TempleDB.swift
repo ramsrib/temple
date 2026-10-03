@@ -50,7 +50,7 @@ public enum SessionCoreField: Hashable, Sendable {
     case agent, directory, title, lastActiveAt
 }
 
-public struct SessionState: Codable, Equatable, Sendable {
+public struct SessionState: Codable, Hashable, Sendable {
     public let id: String
     public let pinned: Bool
     public let archived: Bool
@@ -70,7 +70,7 @@ public struct SessionState: Codable, Equatable, Sendable {
     public let directory: String?
     public let directorySource: DirectorySource?
     public let title: String?
-    public let lastActiveAt: Date?
+    public var lastActiveAt: Date?
 
     public init(id: String, pinned: Bool, archived: Bool, customName: String?, color: String?,
                 generatedTitle: String?, lastOpenedAt: Date?, joinedVia: JoinedVia?, joinedAt: Date?,
@@ -512,12 +512,13 @@ public final class TempleDB: @unchecked Sendable {
     }
 
     /// Transcript facts fill NULLs only. Does not insert membership or dual-write
-    /// generated_title, so a titled import can still be undone.
+    /// generated_title, so a titled import can still be undone. The host is checked
+    /// in the transaction: queued facts cannot fill a row rejoined on another host.
     @discardableResult
-    public func fillCoreFields(sessionID: String, agent: Agent? = nil, directory: String? = nil,
+    public func fillCoreFields(sessionID: String, expectedHost: HostID = .local, agent: Agent? = nil, directory: String? = nil,
                                title: String? = nil, lastActiveAt: Date? = nil) throws -> Set<SessionCoreField> {
         let changed = try db.write { database -> Set<SessionCoreField> in
-            guard let row = try Row.fetchOne(database, sql: "SELECT * FROM session_state WHERE id = ?", arguments: [sessionID]) else { return [] }
+            guard let row = try Row.fetchOne(database, sql: "SELECT * FROM session_state WHERE id = ? AND host = ?", arguments: [sessionID, expectedHost.rawValue]) else { return [] }
             var fields: Set<SessionCoreField> = []
             if (row["agent"] as String?) == nil && agent != nil { fields.insert(.agent) }
             if (row["directory"] as String?) == nil && directory != nil { fields.insert(.directory) }
@@ -528,8 +529,8 @@ public final class TempleDB: @unchecked Sendable {
                 UPDATE session_state SET agent = COALESCE(agent, ?),
                     directory_source = CASE WHEN directory IS NULL AND ? IS NOT NULL THEN 'transcript' ELSE directory_source END,
                     directory = COALESCE(directory, ?), title = COALESCE(title, ?),
-                    last_active_at = COALESCE(last_active_at, ?) WHERE id = ?
-                """, arguments: [agent?.rawValue, directory, directory, title, lastActiveAt, sessionID])
+                    last_active_at = COALESCE(last_active_at, ?) WHERE id = ? AND host = ?
+                """, arguments: [agent?.rawValue, directory, directory, title, lastActiveAt, sessionID, expectedHost.rawValue])
             return fields
         }
         if !changed.isEmpty { committedRowChange(sessionID) }

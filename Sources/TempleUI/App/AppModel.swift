@@ -14,6 +14,39 @@ public final class AppModel: ObservableObject {
     public static let projectCap = 8
 
     // Data
+    /// Row-side presentation, built now; consumers switch in later phases.
+    @Published public private(set) var sessions: [Session] = []
+    @Published public private(set) var rowProjects: [SessionRowProject] = []
+    private var applyingEngineSnapshot = false
+    private var rowPresentationDirty = false
+    /// Diagnostic work count, including builds whose values compare equal.
+    private(set) var sessionPresentationBuildCount = 0
+    private var latestEngineSnapshot: EngineSnapshot?
+
+    func receiveEngineSnapshot(_ snapshot: EngineSnapshot) {
+        if let latestEngineSnapshot, snapshot.generation < latestEngineSnapshot.generation { return }
+        let resolutionsChanged = (latestEngineSnapshot?.resolutions ?? [:]) != snapshot.resolutions
+        latestEngineSnapshot = snapshot
+        applyingEngineSnapshot = true
+        for summary in snapshot.summaries.values { overlay.fillMissingCoreFields(from: summary) }
+        applyingEngineSnapshot = false
+        if rowPresentationDirty || resolutionsChanged { rebuildSessions() }
+    }
+
+    private func rebuildSessions(rows stateRows: [String: SessionState]? = nil) {
+        rowPresentationDirty = false
+        sessionPresentationBuildCount += 1
+        let rows: [Session] = (stateRows ?? overlay.rows).values.map { row in
+            Session(state: row, resolution: latestEngineSnapshot?.resolutions[row.id])
+        }
+        let next = rows.sorted { lhs, rhs in
+            if lhs.sortDate == rhs.sortDate { return lhs.id < rhs.id }
+            return lhs.sortDate > rhs.sortDate
+        }
+        if next != sessions { sessions = next }
+        let projects = SessionRowProject.grouping(next)
+        if projects != rowProjects { rowProjects = projects }
+    }
     @Published public var index = SessionIndex(projects: []) {
         didSet {
             recomputeNoise()
@@ -233,6 +266,21 @@ public final class AppModel: ObservableObject {
         // Now self is fully initialized — finish wiring the closures & observers.
         resolveAppearance = { [weak self] in
             self?.currentAppearance() ?? .default
+        }
+        rebuildSessions()
+        overlay.$rows.dropFirst()
+            .sink { [weak self] rows in
+                guard let self else { return }
+                if self.applyingEngineSnapshot {
+                    self.rowPresentationDirty = true
+                    return
+                }
+                // Published emits before assignment; use the emitted rows.
+                self.rebuildSessions(rows: rows)
+            }
+            .store(in: &cancellables)
+        if let source = resolvedIndexSource as? WatcherIndexSource {
+            source.onSnapshotUpdate = { [weak self] in self?.receiveEngineSnapshot($0) }
         }
         wire()
         wireHistory(database: database)

@@ -16,6 +16,11 @@ struct PreparedSessionImport: Sendable {
 /// through to TempleDB on mutation.
 @MainActor
 public final class SessionOverlayStore: ObservableObject {
+    /// Full durable row state, including immediate in-memory activity.
+    @Published public private(set) var rows: [String: SessionState]
+    private var missingCoreFields: [String: Set<SessionCoreField>] = [:]
+    private var rowObserver: UUID?
+
     @Published public private(set) var pinned: Set<String>
     @Published public private(set) var customNames: [String: String]
     @Published public private(set) var colors: [String: String]
@@ -59,6 +64,7 @@ public final class SessionOverlayStore: ObservableObject {
         self.scheduleTouch = scheduleTouch
         self.db = db
         let states = (try? db.sessionStates()) ?? []
+        self.rows = Dictionary(uniqueKeysWithValues: states.map { ($0.id, $0) })
         self.lastActiveAt = Dictionary(uniqueKeysWithValues: states.compactMap { row in row.lastActiveAt.map { (row.id, $0) } })
         let projects = (try? db.projectStates()) ?? []
         self.pinned = Set(states.lazy.filter(\.pinned).map(\.id))
@@ -81,9 +87,73 @@ public final class SessionOverlayStore: ObservableObject {
         )
         self.generatedTitles = Dictionary(
             uniqueKeysWithValues: states.compactMap { state in
-                state.title.map { (state.id, $0) }
+                state.generatedTitle.map { (state.id, $0) }
             }
         )
+        rowObserver = db.observeRowChanges { [weak self] id in
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { self?.refreshRow(id) }
+            } else {
+                Task { @MainActor [weak self] in self?.refreshRow(id) }
+            }
+        }
+        // Replay after registration so a concurrent commit cannot be lost.
+        if let current = try? db.sessionStates() {
+            rows = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
+        }
+        for row in rows.values { trackMissingFields(row) }
+    }
+
+    deinit {
+        if let rowObserver { db.removeRowChangeObserver(rowObserver) }
+    }
+
+    private func trackMissingFields(_ row: SessionState) {
+        var missing: Set<SessionCoreField> = []
+        if row.agent == nil { missing.insert(.agent) }
+        if row.directory == nil { missing.insert(.directory) }
+        if row.title == nil { missing.insert(.title) }
+        if row.lastActiveAt == nil { missing.insert(.lastActiveAt) }
+        missingCoreFields[row.id] = missing.isEmpty ? nil : missing
+    }
+
+    private func refreshRow(_ id: String) {
+        do {
+            if var row = try db.sessionState(id) {
+                if let pending = pendingTouches[id] {
+                    row.lastActiveAt = max(row.lastActiveAt ?? .distantPast, pending)
+                }
+                trackMissingFields(row)
+                if lastActiveAt[id] != row.lastActiveAt { lastActiveAt[id] = row.lastActiveAt }
+                if rows[id] != row { rows[id] = row }
+            } else {
+                missingCoreFields.removeValue(forKey: id)
+                lastActiveAt.removeValue(forKey: id)
+                if rows[id] != nil { rows.removeValue(forKey: id) }
+            }
+        } catch {
+            TempleUILog.db.error("row refresh failed for session \(id, privacy: .public): \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Only recorded facts fill NULL core fields; complete rows never hit SQLite.
+    /// Partial rows also skip writes until a summary supplies a missing fact.
+    public func fillMissingCoreFields(from summary: TranscriptSummary) {
+        guard let row = rows[summary.id], row.host == summary.locator.host,
+              let missing = missingCoreFields[summary.id] else { return }
+        let supplied = Set<SessionCoreField>([.agent, .lastActiveAt])
+            .union(summary.cwd == nil ? [] : [.directory])
+            .union(summary.firstPrompt == nil ? [] : [.title])
+        guard !missing.isDisjoint(with: supplied) else { return }
+        do {
+            let changed = try db.fillCoreFields(sessionID: summary.id, expectedHost: summary.locator.host, agent: summary.agent,
+                directory: summary.cwd, title: summary.firstPrompt, lastActiveAt: summary.modifiedAt)
+            // Changed rows refresh synchronously through the committed observer.
+            // Reconcile a no-op too: another writer may already have filled it.
+            if changed.isEmpty { refreshRow(summary.id) }
+        } catch {
+            TempleUILog.db.error("core fill failed for session \(summary.id, privacy: .public): \(String(describing: error), privacy: .public)")
+        }
     }
 
     public convenience init() throws {
@@ -210,6 +280,11 @@ public final class SessionOverlayStore: ObservableObject {
         guard isTempleSession(id) else { return }
         let date = max(lastActiveAt[id] ?? .distantPast, at ?? now())
         if lastActiveAt[id] != date { lastActiveAt[id] = date }
+        if var row = rows[id], row.lastActiveAt != date {
+            row.lastActiveAt = date
+            trackMissingFields(row)
+            rows[id] = row
+        }
         pendingTouches[id] = max(pendingTouches[id] ?? .distantPast, date)
         guard touchTimers[id] == nil else { return }
         touchTimers[id] = scheduleTouch(30) { [weak self] in self?.flushTouch(id) }

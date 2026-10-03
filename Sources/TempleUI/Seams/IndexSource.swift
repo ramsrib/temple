@@ -16,7 +16,12 @@ public final class WatcherIndexSource: IndexSource {
     let watcher: SessionWatcher
     private let cacheURL: URL
     private var task: Task<Void, Never>?
-    private var stateTask: Task<Void, Never>?
+    private var snapshotTask: Task<Void, Never>?
+    private var resolutionTask: Task<Void, Never>?
+    private var latestSnapshot: EngineSnapshot?
+    var onSnapshotUpdate: ((EngineSnapshot) -> Void)? {
+        didSet { if let latestSnapshot { onSnapshotUpdate?(latestSnapshot) } }
+    }
     private var latestResolutions: [String: MemberResolution]?
     var onResolutionUpdate: (([String: MemberResolution]) -> Void)? {
         didSet {
@@ -49,8 +54,9 @@ public final class WatcherIndexSource: IndexSource {
         cacheTask?.cancel()
         cacheTask = nil
         pendingCacheIndex = nil
-        latestIndex = nil; latestResolutions = nil; onUpdate = nil
-        stateTask?.cancel(); stateTask = nil
+        latestSnapshot = nil; latestIndex = nil; latestResolutions = nil; onUpdate = nil
+        snapshotTask?.cancel(); snapshotTask = nil
+        resolutionTask?.cancel(); resolutionTask = nil
         watcher.stop()
     }
 
@@ -72,25 +78,32 @@ public final class WatcherIndexSource: IndexSource {
 
     private func startIfNeeded() {
         guard task == nil else { return }
-        let states = watcher.resolutionUpdates()
-        stateTask = Task { [weak self] in
-            for await snapshot in states {
-                guard !Task.isCancelled else { break }
-                self?.latestResolutions = snapshot
-                self?.onResolutionUpdate?(snapshot)
+        let resolutions = watcher.resolutionUpdates()
+        resolutionTask = Task { [weak self] in
+            for await states in resolutions {
+                guard !Task.isCancelled, let self else { break }
+                self.latestResolutions = states
+                self.onResolutionUpdate?(states)
+            }
+        }
+        let snapshots = watcher.snapshots()
+        snapshotTask = Task { [weak self] in
+            for await snapshot in snapshots {
+                guard !Task.isCancelled, let self else { break }
+                self.latestSnapshot = snapshot
+                self.onSnapshotUpdate?(snapshot)
+                // All existing consumers retain the legacy presentation and cache.
+                let index = snapshot.legacyIndex
+                guard index != self.latestIndex else { continue }
+                self.latestIndex = index
+                self.onUpdate?(index)
+                for observer in Array(self.observers.values) { observer(index) }
+                self.scheduleCacheSave(index)
             }
         }
         let stream = watcher.start()
-        task = Task { [weak self] in
-            for await index in stream {
-                guard !Task.isCancelled, let self else { break }
-                self.latestIndex = index
-                self.onUpdate?(index)
-                for observer in Array(self.observers.values) {
-                    observer(index)
-                }
-                self.scheduleCacheSave(index)
-            }
+        task = Task {
+            for await _ in stream { if Task.isCancelled { break } }
         }
     }
 
