@@ -18,6 +18,9 @@ struct PreparedSessionImport: Sendable {
 public final class SessionOverlayStore: ObservableObject {
     /// Full durable row state, including immediate in-memory activity.
     @Published public private(set) var rows: [String: SessionState]
+    /// Emitted after a row changes, without making subscribers diff the whole store.
+    struct RowChange { let id: String; let recencyOnly: Bool }
+    let rowChanges = PassthroughSubject<RowChange, Never>()
     private var missingCoreFields: [String: Set<SessionCoreField>] = [:]
     private var rowObserver: UUID?
 
@@ -127,11 +130,19 @@ public final class SessionOverlayStore: ObservableObject {
                 }
                 trackMissingFields(row)
                 if lastActiveAt[id] != row.lastActiveAt { lastActiveAt[id] = row.lastActiveAt }
-                if rows[id] != row { rows[id] = row }
+                if rows[id] != row {
+                    var previous = rows[id]
+                    previous?.lastActiveAt = row.lastActiveAt
+                    let recencyOnly = previous == row
+                    rows[id] = row
+                    rowChanges.send(RowChange(id: id, recencyOnly: recencyOnly))
+                }
             } else {
                 missingCoreFields.removeValue(forKey: id)
                 lastActiveAt.removeValue(forKey: id)
-                if rows[id] != nil { rows.removeValue(forKey: id) }
+                if rows.removeValue(forKey: id) != nil {
+                    rowChanges.send(RowChange(id: id, recencyOnly: false))
+                }
             }
         } catch {
             TempleUILog.db.error("row refresh failed for session \(id, privacy: .public): \(String(describing: error), privacy: .public)")
@@ -286,6 +297,7 @@ public final class SessionOverlayStore: ObservableObject {
             row.lastActiveAt = date
             trackMissingFields(row)
             rows[id] = row
+            rowChanges.send(RowChange(id: id, recencyOnly: true))
         }
         pendingTouches[id] = max(pendingTouches[id] ?? .distantPast, date)
         guard touchTimers[id] == nil else { return }

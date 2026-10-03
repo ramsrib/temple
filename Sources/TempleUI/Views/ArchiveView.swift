@@ -232,7 +232,7 @@ struct ArchiveView: View {
         .id(entry.id)
         .contextMenu {
             Button(session.canResume ? "Open" : "Restore") { act(on: entry) }
-            if !insideArchivedProject { Button("Restore") { restore(entry) } }
+            if !insideArchivedProject && session.canResume { Button("Restore") { restore(entry) } }
         }
     }
 

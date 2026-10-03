@@ -178,6 +178,20 @@ public final class HistoryModel: ObservableObject {
     private var importedTask: Task<Void, Never>?
     private var debounceTask: Task<Void, Never>?
     private var rebuildScheduled = false
+    private(set) var rebuildCount = 0
+    private var presentedMembers: Set<Session> = []
+    private var presentedArchivedProjects: Set<ProjectKey> = []
+
+    /// Catalog members use disk time. Activity alone cannot change anything
+    /// History presents, so it must not trigger a catalog union and sort.
+    private var presentationMembers: Set<Session> {
+        Set(currentMembers.map { member in
+            guard diskByID[member.id] != nil else { return member }
+            var state = member.state
+            state.lastActiveAt = nil
+            return Session(state: state, resolution: member.resolution)
+        })
+    }
     /// The tab is on screen. Off screen, a change only marks the page dirty:
     /// re-sorting a few thousand rows for a page nobody is looking at, on
     /// every membership or live-index change, is work for nothing.
@@ -374,7 +388,10 @@ public final class HistoryModel: ObservableObject {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.rebuildScheduled = false
-                self.invalidate()
+                if self.presentationMembers != self.presentedMembers
+                    || self.overlay.archivedProjectKeys != self.presentedArchivedProjects {
+                    self.invalidate()
+                }
             }
         }
     }
@@ -384,6 +401,9 @@ public final class HistoryModel: ObservableObject {
     /// assigned only when it changed, so a write the page does not show (a
     /// title arriving for some open tab) re-renders nothing.
     func rebuild() {
+        rebuildCount += 1
+        presentedMembers = presentationMembers
+        presentedArchivedProjects = overlay.archivedProjectKeys
         needsRebuild = false
         let members = Dictionary(currentMembers.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let temple = Set(members.keys)

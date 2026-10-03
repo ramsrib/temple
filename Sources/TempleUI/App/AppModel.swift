@@ -21,11 +21,34 @@ public final class AppModel: ObservableObject {
     private var rowPresentationDirty = false
     /// Diagnostic work count, including builds whose values compare equal.
     private(set) var sessionPresentationBuildCount = 0
+    private var rowPresentationScheduled = false
+    private var changedRowIDs = Set<String>()
+    private var presentedByID: [String: Session] = [:]
+    private var projectsByKey: [ProjectKey: SessionRowProject] = [:]
+    private(set) var rowProjectBuildCount = 0
+
+    private func scheduleRowPresentation() {
+        guard !rowPresentationScheduled else { return }
+        rowPresentationScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.rowPresentationScheduled = false
+                if self.rowPresentationDirty { self.rebuildSessions() }
+            }
+        }
+    }
+
     private var latestEngineSnapshot: EngineSnapshot?
 
     func receiveEngineSnapshot(_ snapshot: EngineSnapshot) {
         if let latestEngineSnapshot, snapshot.generation < latestEngineSnapshot.generation { return }
-        let resolutionsChanged = (latestEngineSnapshot?.resolutions ?? [:]) != snapshot.resolutions
+        let previous = latestEngineSnapshot?.resolutions ?? [:]
+        let resolutionsChanged = previous != snapshot.resolutions
+        if resolutionsChanged {
+            changedRowIDs.formUnion(Set(previous.keys).union(snapshot.resolutions.keys)
+                .filter { previous[$0] != snapshot.resolutions[$0] })
+        }
         latestEngineSnapshot = snapshot
         applyingEngineSnapshot = true
         for summary in snapshot.summaries.values { overlay.fillMissingCoreFields(from: summary) }
@@ -40,18 +63,40 @@ public final class AppModel: ObservableObject {
         openSessions.refreshExitedResumeDiagnoses()
     }
 
-    private func rebuildSessions(rows stateRows: [String: SessionState]? = nil) {
+    private func rebuildSessions() {
         rowPresentationDirty = false
         sessionPresentationBuildCount += 1
-        let rows: [Session] = (stateRows ?? overlay.rows).values.map { row in
-            Session(state: row, resolution: latestEngineSnapshot?.resolutions[row.id])
+        var byID = presentedByID
+        let changed = presentedByID.isEmpty ? changedRowIDs.union(overlay.rows.keys) : changedRowIDs
+        changedRowIDs.removeAll(keepingCapacity: true)
+        var changedProjects = Set<ProjectKey>()
+        for id in changed {
+            let row = overlay.rows[id].map { Session(state: $0, resolution: latestEngineSnapshot?.resolutions[id]) }
+            guard byID[id] != row else { continue }
+            if let key = byID[id]?.project { changedProjects.insert(key) }
+            if let key = row?.project { changedProjects.insert(key) }
+            byID[id] = row
         }
-        let next = rows.sorted { lhs, rhs in
+        let next = byID.values.sorted { lhs, rhs in
             if lhs.sortDate == rhs.sortDate { return lhs.id < rhs.id }
             return lhs.sortDate > rhs.sortDate
         }
         if next != sessions { sessions = next }
-        let projects = SessionRowProject.grouping(next)
+        // Only changed groups get rebuilt; next already has live recency order.
+        var changedGroups: [ProjectKey: [Session]] = [:]
+        for row in next {
+            if let key = row.project, changedProjects.contains(key) { changedGroups[key, default: []].append(row) }
+        }
+        for key in changedProjects {
+            rowProjectBuildCount += 1
+            projectsByKey[key] = changedGroups[key].map { SessionRowProject(key: key, sessions: $0) }
+        }
+        presentedByID = byID
+        var seen = Set<ProjectKey>()
+        let projects = next.compactMap { row -> SessionRowProject? in
+            guard let key = row.project, seen.insert(key).inserted else { return nil }
+            return projectsByKey[key]
+        }.sorted(by: SessionRowProject.moreRecent)
         if projects != rowProjects { rowProjects = projects }
         extendRowRanks()
     }
@@ -70,6 +115,7 @@ public final class AppModel: ObservableObject {
 
     private func freezeSidebarRanks() {
         guard !sidebarRanksFrozen else { return }
+        if rowPresentationDirty { rebuildSessions() }
         sidebarRanksFrozen = true
         extendRowRanks()
         objectWillChange.send()
@@ -77,42 +123,41 @@ public final class AppModel: ObservableObject {
 
     /// Row recency stays live until initial resolution completes or the
     /// startup deadline fires. Unseen projects and sessions then prepend.
-    private var rowProjectRank: [ProjectKey: Int] = [:]
-    private var rowSessionRank: [ProjectKey: [String: Int]] = [:]
+    private var frozenProjectOrder: [ProjectKey] = []
+    private var frozenSessionOrder: [ProjectKey: [String]] = [:]
+    private var knownProjectKeys = Set<ProjectKey>()
+    private var knownSessionIDs: [ProjectKey: Set<String>] = [:]
 
     private func extendRowRanks() {
         guard sidebarRanksFrozen else { return }
-        let keys = rowProjects.map(\.key).filter { rowProjectRank[$0] == nil }
-        for key in rowProjectRank.keys { rowProjectRank[key]! += keys.count }
-        for (offset, key) in keys.enumerated() { rowProjectRank[key] = offset }
+        let keys = rowProjects.map(\.key).filter { !knownProjectKeys.contains($0) }
+        frozenProjectOrder.insert(contentsOf: keys, at: 0)
+        knownProjectKeys.formUnion(keys)
         for project in rowProjects {
-            var ranks = rowSessionRank[project.key] ?? [:]
-            let ids = project.sessions.map(\.id).filter { ranks[$0] == nil }
-            for id in ranks.keys { ranks[id]! += ids.count }
-            for (offset, id) in ids.enumerated() { ranks[id] = offset }
-            rowSessionRank[project.key] = ranks
+            let known = knownSessionIDs[project.key] ?? []
+            let ids = project.sessions.map(\.id).filter { !known.contains($0) }
+            frozenSessionOrder[project.key, default: []].insert(contentsOf: ids, at: 0)
+            knownSessionIDs[project.key, default: []].formUnion(ids)
         }
     }
 
     public var visibleRows: [Session] {
         sessions.filter { !$0.state.archived && !($0.project.map { overlay.isProjectArchived($0) } ?? false) }
     }
-    public var visibleRowProjects: [SessionRowProject] { SessionRowProject.grouping(visibleRows) }
+    public var visibleRowProjects: [SessionRowProject] {
+        rowProjects.compactMap { project in
+            guard !overlay.isProjectArchived(project.key) else { return nil }
+            let rows = project.sessions.filter { !$0.state.archived }
+            return rows.isEmpty ? nil : SessionRowProject(key: project.key, sessions: rows)
+        }.sorted(by: SessionRowProject.moreRecent)
+    }
 
     private func orderedRowProjects(_ projects: [SessionRowProject]) -> [SessionRowProject] {
-        let placement = Dictionary(overlay.projectKeyOrder.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
-        return projects.sorted { lhs, rhs in
-            switch (placement[lhs.key], placement[rhs.key]) {
-            case (nil, nil):
-                if sidebarRanksFrozen { return (rowProjectRank[lhs.key] ?? .max) < (rowProjectRank[rhs.key] ?? .max) }
-                if lhs.lastActivity != rhs.lastActivity { return lhs.lastActivity > rhs.lastActivity }
-                if lhs.key.host != rhs.key.host { return lhs.key.host.rawValue < rhs.key.host.rawValue }
-                return lhs.key.path < rhs.key.path
-            case (nil, .some): return true
-            case (.some, nil): return false
-            case (.some(let l), .some(let r)): return l < r
-            }
-        }
+        let byKey = Dictionary(uniqueKeysWithValues: projects.map { ($0.key, $0) })
+        let placed = Set(overlay.projectKeyOrder)
+        let order = sidebarRanksFrozen ? frozenProjectOrder : projects.map(\.key)
+        return order.filter { !placed.contains($0) }.compactMap { byKey[$0] }
+            + overlay.projectKeyOrder.compactMap { byKey[$0] }
     }
 
     @Published public var index = SessionIndex(projects: []) {
@@ -336,15 +381,17 @@ public final class AppModel: ObservableObject {
             self?.currentAppearance() ?? .default
         }
         rebuildSessions()
-        overlay.$rows.dropFirst()
-            .sink { [weak self] rows in
+        overlay.rowChanges
+            .sink { [weak self] change in
                 guard let self else { return }
-                if self.applyingEngineSnapshot {
-                    self.rowPresentationDirty = true
-                    return
+                self.rowPresentationDirty = true
+                self.changedRowIDs.insert(change.id)
+                guard !self.applyingEngineSnapshot else { return }
+                if change.recencyOnly {
+                    self.scheduleRowPresentation()
+                } else {
+                    self.rebuildSessions()
                 }
-                // Published emits before assignment; use the emitted rows.
-                self.rebuildSessions(rows: rows)
             }
             .store(in: &cancellables)
         if let source = resolvedIndexSource as? WatcherIndexSource {
@@ -812,12 +859,17 @@ public final class AppModel: ObservableObject {
     /// Projects for the sidebar (in-memory search over the cached non-noise
     /// set), sessions in the launch-frozen order — not live recency.
     public var displayProjects: [SessionRowProject] {
-        let q = searchText.trimmingCharacters(in: .whitespaces)
-        return orderedRowProjects(visibleRowProjects.compactMap { project in
-            var rows = project.sessions.filter { q.isEmpty || $0.displayTitle.localizedCaseInsensitiveContains(q) }
-            if let ranks = rowSessionRank[project.key] {
-                rows.sort { (ranks[$0.id] ?? .max) < (ranks[$1.id] ?? .max) }
-            }
+        sidebarProjects(matching: searchText.trimmingCharacters(in: .whitespaces))
+    }
+
+    private func sidebarProjects(matching q: String) -> [SessionRowProject] {
+        let projects = sidebarRanksFrozen ? rowProjects : visibleRowProjects
+        return orderedRowProjects(projects.compactMap { project in
+            guard !overlay.isProjectArchived(project.key) else { return nil }
+            let ordered = sidebarRanksFrozen
+                ? (frozenSessionOrder[project.key] ?? []).compactMap { presentedByID[$0] }.filter { $0.project == project.key }
+                : project.sessions
+            let rows = ordered.filter { !$0.state.archived && (q.isEmpty || $0.displayTitle.localizedCaseInsensitiveContains(q)) }
             return rows.isEmpty ? nil : SessionRowProject(key: project.key, sessions: rows)
         })
     }
@@ -826,7 +878,7 @@ public final class AppModel: ObservableObject {
     /// items in a project's context menu act on. Reordering while a search
     /// hides half the rail must not persist an order derived from that
     /// half-list.
-    public var orderedVisibleProjectKeys: [ProjectKey] { orderedRowProjects(visibleRowProjects).map(\.key) }
+    public var orderedVisibleProjectKeys: [ProjectKey] { sidebarProjects(matching: "").map(\.key) }
 
     public var orderedVisibleProjectPaths: [String] {
         orderedVisibleProjectKeys.filter { $0.host.isLocal }.map(\.path)

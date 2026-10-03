@@ -12,6 +12,80 @@ final class RowConsumerTests: XCTestCase {
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
     }
 
+    private func nextPresentationTurn() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+    }
+
+    func testBurstTouchesCoalescePresentationAndOnlyRebuildTheirProject() async throws {
+        let app = try model([Fixture.row("a", project: "/a", updated: 20),
+                             Fixture.row("b", project: "/b", updated: 10)])
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1,
+            resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent], summaries: [:]))
+        let builds = app.sessionPresentationBuildCount
+        let groups = app.rowProjectBuildCount
+        for tick in 1...100 { app.overlay.touch("b", at: Date(timeIntervalSince1970: Double(100 + tick))) }
+        XCTAssertEqual(app.sessionPresentationBuildCount, builds)
+        XCTAssertEqual(app.overlay.rows["b"]?.lastActiveAt, Date(timeIntervalSince1970: 200))
+        await nextPresentationTurn()
+        XCTAssertEqual(app.sessionPresentationBuildCount, builds + 1)
+        XCTAssertEqual(app.rowProjectBuildCount, groups + 1)
+        XCTAssertEqual(app.sessions.first?.id, "b")
+        XCTAssertEqual(app.displayProjects.map(\.path), ["/a", "/b"])
+        XCTAssertEqual(app.projectPickerResults("").map(\.path), ["/b", "/a"])
+        // A real title change is immediate and consumes queued activity too.
+        app.overlay.touch("a", at: Date(timeIntervalSince1970: 300))
+        app.overlay.rename("a", to: "Renamed immediately")
+        XCTAssertEqual(app.sessions.first?.displayTitle, "Renamed immediately")
+        XCTAssertEqual(app.sessions.first?.sortDate, Date(timeIntervalSince1970: 300))
+        let afterRename = app.sessionPresentationBuildCount
+        await nextPresentationTurn()
+        XCTAssertEqual(app.sessionPresentationBuildCount, afterRename)
+    }
+
+    func testPendingActivityIsIncludedWhenRanksFreezeAndDirectoriesStayImmediate() throws {
+        let app = try model([Fixture.row("a", project: "/a", updated: 20), Fixture.row("b", updated: 10)])
+        app.overlay.touch("b", at: Date(timeIntervalSince1970: 30))
+        app.overlay.observeLaunchDirectory("b", "/b")
+        XCTAssertEqual(app.displayProjects.map(\.path), ["/b", "/a"])
+        app.overlay.touch("a", at: Date(timeIntervalSince1970: 40))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1,
+            resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent], summaries: [:]))
+        XCTAssertTrue(app.sidebarRanksFrozen)
+        XCTAssertEqual(app.displayProjects.map(\.path), ["/a", "/b"])
+        app.overlay.observeLaunchDirectory("b", "/a")
+        XCTAssertEqual(app.displayProjects.map(\.path), ["/a"])
+        XCTAssertEqual(app.displayProjects[0].sessions.map(\.id), ["b", "a"])
+        app.overlay.join("new", via: .created, agent: .claude, core: SessionCore(directory: "/new"))
+        XCTAssertEqual(app.displayProjects.map(\.path), ["/new", "/a"])
+    }
+
+    func testHistoryDoesNotRebuildForCatalogMemberTouchBursts() async throws {
+        let app = try model([Fixture.row("catalog", project: "/p", updated: 20),
+                             Fixture.row("missing", updated: 10)])
+        try await read(app, events: [.sessions([Fixture.session("catalog", project: "/p", updated: 5)], read: 1, total: 1)])
+        await nextPresentationTurn()
+        let builds = app.history.rebuildCount
+        let chronology = app.history.allRows.map(\.id)
+        for tick in 1...100 { app.overlay.touch("catalog", at: Date(timeIntervalSince1970: Double(100 + tick))) }
+        await nextPresentationTurn()
+        await nextPresentationTurn()
+        XCTAssertEqual(app.history.rebuildCount, builds)
+        XCTAssertEqual(app.history.allRows.map(\.id), chronology)
+        XCTAssertEqual(app.history.allRows.last?.updatedAt, Date(timeIntervalSince1970: 5))
+        // An absent member DOES use row time, while titles still update for both.
+        app.overlay.touch("missing", at: Date(timeIntervalSince1970: 400))
+        await nextPresentationTurn()
+        await nextPresentationTurn()
+        XCTAssertEqual(app.history.rebuildCount, builds + 1)
+        XCTAssertEqual(app.history.allRows.first?.updatedAt, Date(timeIntervalSince1970: 400))
+        app.overlay.rename("catalog", to: "New catalog member title")
+        await nextPresentationTurn()
+        XCTAssertEqual(app.history.rebuildCount, builds + 2)
+        XCTAssertEqual(app.history.allRows.last?.title, "New catalog member title")
+    }
+
     func testHistoryArchivesDirectorylessMembersWithUndo() throws {
         let app = try model([Fixture.row("unknown"), Fixture.row("project", project: "/p")])
         let undo = UndoManager()
@@ -88,12 +162,13 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(RowSearch.rank(rows, query: "codex").map(\.id), ["agent"])
     }
 
-    func testPickerAndLauncherUseRowActivityWithoutTranscripts() throws {
+    func testPickerAndLauncherUseRowActivityWithoutTranscripts() async throws {
         let app = try model([Fixture.row("old", project: "/old", updated: 10),
             Fixture.row("new", project: "/new", updated: 20), Fixture.row("no-directory", updated: 30)])
         XCTAssertEqual(app.projectPickerResults("").map(\.path), ["/new", "/old"])
         XCTAssertEqual(app.launcherDefaultProjectKey, ProjectKey(host: .local, path: "/new"))
         app.overlay.touch("old", at: Date(timeIntervalSince1970: 50))
+        await nextPresentationTurn()
         XCTAssertEqual(app.projectPickerResults("").map(\.path), ["/old", "/new"])
         XCTAssertEqual(app.launcherDefaultProjectKey?.path, "/old")
     }
@@ -214,35 +289,40 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(app.displayProjects.map(\.key), [other, local])
     }
 
-    func testFrozenRankWaitsForTheFirstCompleteGeneration() throws {
+    func testFrozenRankWaitsForTheFirstCompleteGeneration() async throws {
         let app = try model([Fixture.row("a", project: "/a", updated: 20), Fixture.row("b", project: "/b", updated: 10)])
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .confirmedAbsent, "b": .resolving], summaries: [:]))
         XCTAssertFalse(app.sidebarRanksFrozen)
         app.overlay.touch("b", at: Date(timeIntervalSince1970: 30))
+        await nextPresentationTurn()
         XCTAssertEqual(app.displayProjects.map(\.path), ["/b", "/a"])
         app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["a": .resolving, "b": .confirmedAbsent], summaries: [:]))
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent], summaries: [:]))
         XCTAssertFalse(app.sidebarRanksFrozen, "a stale complete generation cannot freeze the newer one")
         app.overlay.touch("a", at: Date(timeIntervalSince1970: 40))
+        await nextPresentationTurn()
         app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent], summaries: [:]))
         XCTAssertTrue(app.sidebarRanksFrozen)
         XCTAssertEqual(app.displayProjects.map(\.path), ["/a", "/b"])
         app.overlay.touch("b", at: Date(timeIntervalSince1970: 50))
+        await nextPresentationTurn()
         XCTAssertEqual(app.displayProjects.map(\.path), ["/a", "/b"])
     }
 
-    func testSidebarSessionsSortLiveUntilInitialResolutionCompletes() throws {
+    func testSidebarSessionsSortLiveUntilInitialResolutionCompletes() async throws {
         let app = try model([Fixture.row("a", project: "/same", updated: 20), Fixture.row("b", project: "/same", updated: 10)])
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .loaded(URL(fileURLWithPath: "/tmp/a.jsonl")), "b": .resolving], summaries: [:]))
         app.overlay.touch("b", at: Date(timeIntervalSince1970: 30))
+        await nextPresentationTurn()
         XCTAssertEqual(app.displayProjects.first?.sessions.map(\.id), ["b", "a"])
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .loaded(URL(fileURLWithPath: "/tmp/a.jsonl")), "b": .unreadable], summaries: [:]))
         XCTAssertTrue(app.sidebarRanksFrozen)
         app.overlay.touch("a", at: Date(timeIntervalSince1970: 40))
+        await nextPresentationTurn()
         XCTAssertEqual(app.displayProjects.first?.sessions.map(\.id), ["b", "a"])
     }
 
-    func testFrozenRankFallsBackThreeSecondsAfterStartAndKeepsHostsSeparate() throws {
+    func testFrozenRankFallsBackThreeSecondsAfterStartAndKeepsHostsSeparate() async throws {
         let remote = HostID(rawValue: "remote")
         let app = try model([Fixture.row("a", project: "/same", updated: 20),
             Fixture.row("b", project: "/same", updated: 10, host: remote)])
@@ -252,10 +332,12 @@ final class RowConsumerTests: XCTestCase {
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .unreadable, "b": .awaitingCreation], summaries: [:]))
         XCTAssertFalse(app.sidebarRanksFrozen)
         app.overlay.touch("b", at: Date(timeIntervalSince1970: 30))
+        await nextPresentationTurn()
         XCTAssertEqual(app.displayProjects.map(\.key.host), [remote, .local])
         try XCTUnwrap(deadline)()
         XCTAssertTrue(app.sidebarRanksFrozen)
         app.overlay.touch("a", at: Date(timeIntervalSince1970: 40))
+        await nextPresentationTurn()
         XCTAssertEqual(app.displayProjects.map(\.key.host), [remote, .local])
         app.overlay.join("new", via: .created, agent: .claude, core: SessionCore(directory: "/new", lastActiveAt: Date(timeIntervalSince1970: 50)))
         XCTAssertEqual(app.displayProjects.map(\.path), ["/new", "/same", "/same"])

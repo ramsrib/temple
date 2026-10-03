@@ -296,29 +296,35 @@ final class SearchFilterTests: XCTestCase {
 
     // MARK: Launch-frozen project order
 
-    func testProjectOrderFrozenAtFirstCompleteSnapshotAndStableAcrossUpdates() {
+    func testProjectOrderFrozenAtFirstCompleteSnapshotAndStableAcrossUpdates() async {
         let (model, overlay) = makeRowModel([Fixture.row("a1", project: "/p/a", updated: 20),
             Fixture.row("b1", project: "/p/b", updated: 10)])
         model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a1": .confirmedAbsent, "b1": .confirmedAbsent], summaries: [:]))
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
         overlay.touch("b1", at: Date(timeIntervalSince1970: 50))
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
         overlay.join("c1", via: .created, agent: .claude, core: SessionCore(directory: "/p/c", title: "Title", lastActiveAt: Date(timeIntervalSince1970: 60)))
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/c", "/p/a", "/p/b"])
     }
 
-    func testSessionOrderWithinProjectFrozenAndNewSessionsPrepend() {
+    func testSessionOrderWithinProjectFrozenAndNewSessionsPrepend() async {
         let (model, overlay) = makeRowModel([Fixture.row("s1", project: "/p/a", updated: 20),
             Fixture.row("s2", project: "/p/a", updated: 10)])
         model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["s1": .confirmedAbsent, "s2": .confirmedAbsent], summaries: [:]))
         XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["s1", "s2"])
         overlay.touch("s2", at: Date(timeIntervalSince1970: 50))
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
         XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["s1", "s2"])
         overlay.join("s3", via: .created, agent: .claude, core: SessionCore(directory: "/p/a", title: "Title", lastActiveAt: Date(timeIntervalSince1970: 60)))
         XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["s3", "s1", "s2"])
     }
 
-    func testPaletteEmptyQueryListsOpenSessionsOnlyByRecency() {
+    func testPaletteEmptyQueryListsOpenSessionsOnlyByRecency() async {
         let a = Fixture.row("a1", project: "/p/a", updated: 50)
         let b = Fixture.row("b1", project: "/p/b", updated: 40)
         let c = Fixture.row("c1", project: "/p/c", updated: 20)
@@ -333,6 +339,9 @@ final class SearchFilterTests: XCTestCase {
 
         model.openSessions.openSession(c)
         model.openSessions.openSession(a)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
         // Open in "wrong" recency order: the switcher sorts by live activity,
         // not tab order, and never mixes in closed sessions ("b1").
         XCTAssertEqual(model.paletteResults("").map(\.id), ["a1", "c1"])
@@ -391,7 +400,7 @@ final class SearchFilterTests: XCTestCase {
         XCTAssertTrue(model.paletteResults("databases").isEmpty)
     }
 
-    func testPaletteEmptyQueryBreaksRecencyTiesByID() {
+    func testPaletteEmptyQueryBreaksRecencyTiesByID() async {
         let b = Fixture.row("b", project: "/p/a", updated: 10)
         let a = Fixture.row("a", project: "/p/b", updated: 10)
         let (model, _) = makeRowModel( [
@@ -403,6 +412,9 @@ final class SearchFilterTests: XCTestCase {
         model.openSessions.openSession(a)
         model.overlay.touch("a", at: Date(timeIntervalSince1970: 9_000_000_000))
         model.overlay.touch("b", at: Date(timeIntervalSince1970: 9_000_000_000))
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
         XCTAssertEqual(model.paletteResults("").map(\.id), ["a", "b"])
     }
 }
