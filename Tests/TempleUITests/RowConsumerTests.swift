@@ -123,6 +123,48 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(app.history.inTempleCount, 3)
     }
 
+    func testProjectSwitchingAndTabStripsKeepSamePathHostsSeparate() throws {
+        let remote = HostID(rawValue: "remote")
+        let app = try model([Fixture.row("local", project: "/same", title: "Local row"),
+            Fixture.row("remote", project: "/same", title: "Remote row", host: remote)])
+        app.openSessions.openSession(app.sessions.first { $0.id == "local" }!)
+        app.openSessions.openSession(app.sessions.first { $0.id == "remote" }!)
+        let local = ProjectKey(host: .local, path: "/same"), other = ProjectKey(host: remote, path: "/same")
+        XCTAssertEqual(app.openSessions.openProjectKeys, [local, other])
+        XCTAssertEqual(app.switchableProjectKeys, [other, local])
+        XCTAssertEqual(app.openSessions.visibleTabs.compactMap(\.sessionID), ["remote"])
+        app.advanceProjectSwitcher(by: 1)
+        XCTAssertEqual(app.projectSwitcherKeySelection, local)
+        app.commitProjectSwitcher()
+        XCTAssertEqual(app.openSessions.activeProjectKey, local)
+        XCTAssertEqual(app.openSessions.visibleTabs.compactMap(\.sessionID), ["local"])
+        app.openSessions.activateProject(other)
+        XCTAssertEqual(app.openSessions.activeTab?.sessionID, "remote")
+    }
+
+    func testRowTitlesAndProjectArchiveStateStayHostAware() throws {
+        let remote = HostID(rawValue: "remote")
+        let app = try model([Fixture.row("local", project: "/same", title: "Local row"),
+            Fixture.row("remote", project: "/same", title: "Remote row", host: remote)])
+        app.openSessions.openSession(app.sessions.first { $0.id == "remote" }!)
+        let tab = try XCTUnwrap(app.openSessions.activeTab)
+        tab.title = "Stale chip title"
+        XCTAssertEqual(app.tabDisplayTitle(tab), "Remote row")
+        app.overlay.rename("remote", to: "Renamed row")
+        XCTAssertEqual(app.tabDisplayTitle(tab), "Renamed row")
+        XCTAssertEqual(tab.projectKey.displayName, "same @remote")
+        let local = ProjectKey(host: .local, path: "/same"), other = tab.projectKey
+        app.archiveProject(other, undoManager: nil)
+        XCTAssertFalse(app.overlay.isProjectArchived(local))
+        XCTAssertTrue(app.overlay.isProjectArchived(other))
+        XCTAssertEqual(app.archivedProjects.map(\.key), [other])
+        XCTAssertEqual(app.displayProjects.map(\.key), [local])
+        app.restoreProject(other, undoManager: nil)
+        app.moveProject(other, before: local)
+        XCTAssertEqual(app.overlay.projectKeyOrder, [other, local])
+        XCTAssertEqual(app.displayProjects.map(\.key), [other, local])
+    }
+
     func testRailGroupsByHostAndOmitsDirectorylessMembers() throws {
         let app = try model([Fixture.row("local", project: "/same"),
             Fixture.row("remote", project: "/same", host: HostID(rawValue: "remote")), Fixture.row("unknown")])

@@ -13,7 +13,7 @@ struct TabStripPinnedCluster: View {
         // chips belong to, and switches between the projects you have work
         // open in (⌘⇧[ / ⌘⇧]).
         if !model.openSessions.visibleTabs.isEmpty,
-           !model.openSessions.openProjects.isEmpty {
+           !model.openSessions.openProjectKeys.isEmpty {
             HStack(spacing: 3) {
                 ProjectSwitcher()
                 Divider().frame(height: 16).opacity(0.5)
@@ -83,9 +83,9 @@ struct TabStripTrailingCluster: View {
         // which belongs to no project, and a `+` whose every row is a dead row is
         // worse than no `+`.
         if !model.openSessions.visibleTabs.isEmpty,
-           let projectPath = model.openSessions.activeProjectPath {
+           let projectKey = model.openSessions.activeProjectKey {
             Menu {
-                NewSessionMenuItems(projectPath: projectPath)
+                NewSessionMenuItems(project: projectKey)
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .medium))
@@ -118,7 +118,7 @@ struct TabStripChipsRow: View {
     /// the overflow cues can step exactly one tab per click — tagged with the
     /// project the row was rendered for, so a per-project scroll restore can
     /// tell the incoming project's geometry from a late report of the old.
-    let framesChanged: ([CGRect], _ project: String?) -> Void
+    let framesChanged: ([CGRect], _ project: ProjectKey?) -> Void
 
     @State private var dragging: SessionTab.ID?
     private let dragWatchdog = MonitorBox()
@@ -153,7 +153,7 @@ struct TabStripChipsRow: View {
         let activeID = model.openSessions.activeTabID
         // Captured with `visible`: the frames this body produces belong to
         // THIS project, whatever the model says by the time the report fires.
-        let project = model.openSessions.activeProjectPath
+        let project = model.openSessions.activeProjectKey
         // Chips abut (browser-style): the tick between them is the whole gap.
         HStack(spacing: 0) {
             ForEach(Array(visible.enumerated()),
@@ -348,7 +348,7 @@ private struct ProjectSwitcher: View {
     @State private var hovering = false
     @State private var openHovering = false
 
-    private var active: String? { model.openSessions.activeProjectPath }
+    private var active: ProjectKey? { model.openSessions.activeProjectKey }
 
     var body: some View {
         Button { presented.toggle() } label: {
@@ -378,7 +378,7 @@ private struct ProjectSwitcher: View {
         .help("Switch project (⌘⇧[ / ⌘⇧])")
         .popover(isPresented: $presented, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 1) {
-                ForEach(model.openSessions.openProjects, id: \.self) { path in
+                ForEach(model.openSessions.openProjectKeys, id: \.self) { path in
                     ProjectSwitcherRow(path: path, isCurrent: path == active) {
                         model.openSessions.activateProject(path)
                         presented = false
@@ -440,7 +440,7 @@ private struct ProjectSwitcher: View {
 /// sessions open there, and a dot if any of them is running or wants you.
 private struct ProjectSwitcherRow: View {
     @EnvironmentObject var model: AppModel
-    let path: String
+    let path: ProjectKey
     let isCurrent: Bool
     let select: () -> Void
 
@@ -448,7 +448,7 @@ private struct ProjectSwitcherRow: View {
 
     /// Tabs open in this project — the switcher only ever lists projects with some.
     private var tabs: [SessionTab] {
-        model.openSessions.tabs.filter { $0.kind == .session && $0.projectPath == path }
+        model.openSessions.tabs.filter { $0.kind == .session && $0.projectKey == path }
     }
 
     /// The loudest state among them: someone waiting on you outranks someone working.
@@ -461,7 +461,7 @@ private struct ProjectSwitcherRow: View {
 
     /// The folder the project sits in — what tells two worktrees of one repo apart.
     private var parent: String {
-        let tilde = (path as NSString).abbreviatingWithTildeInPath
+        let tilde = (path.path as NSString).abbreviatingWithTildeInPath
         let folder = (tilde as NSString).deletingLastPathComponent
         return folder.isEmpty ? tilde : folder
     }

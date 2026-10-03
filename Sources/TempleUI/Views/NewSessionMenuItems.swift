@@ -22,7 +22,7 @@ struct NewSessionMenuItems: View {
     /// The project to start in. Non-optional on purpose: a `+` with nowhere to
     /// start is not shown at all (see `TabStripTrailingCluster`), so there is no
     /// such thing here as a row disabled for want of a project.
-    let projectPath: String
+    let project: ProjectKey
 
     var body: some View {
         Section("New session") {
@@ -43,7 +43,7 @@ struct NewSessionMenuItems: View {
     private func row(_ agent: Agent) -> some View {
         let launchable = model.toolchain.canLaunch(agent)
         Button {
-            model.openSessions.newSession(agent: agent, projectPath: projectPath)
+            model.openSessions.newSession(agent: agent, project: project)
         } label: {
             Label {
                 Text(launchable ? agent.displayName
@@ -83,6 +83,6 @@ struct NewSessionMenuItems: View {
     /// `⌘T` is only the truth for the default agent in the *active* project.
     private func showsShortcut(_ agent: Agent) -> Bool {
         agent == model.settings.defaultAgent
-            && projectPath == model.openSessions.activeProjectPath
+            && project == model.openSessions.activeProjectKey
     }
 }

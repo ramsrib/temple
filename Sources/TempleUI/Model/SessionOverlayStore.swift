@@ -32,7 +32,8 @@ public final class SessionOverlayStore: ObservableObject {
     /// Archived sessions and projects: hidden from every browse surface, found
     /// again only in the ⌘⇧Y archive browser.
     @Published public private(set) var archivedSessions: Set<String>
-    @Published public private(set) var archivedProjects: Set<String>
+    @Published public private(set) var archivedProjectKeys: Set<ProjectKey>
+    public var archivedProjects: Set<String> { Set(archivedProjectKeys.filter { $0.host.isLocal }.map(\.path)) }
     /// Temple's sessions: every one it started, opened, or had pinned, renamed,
     /// colored or archived. Exactly the sessions with a row in the DB — each
     /// write below joins its session first — and, at the default session
@@ -41,7 +42,8 @@ public final class SessionOverlayStore: ObservableObject {
     /// The sidebar order the user arranged, outermost first. Only projects the
     /// user has actually placed appear here; everything else stays on the
     /// launch-frozen recency order.
-    @Published public private(set) var projectOrder: [String]
+    @Published public private(set) var projectKeyOrder: [ProjectKey]
+    public var projectOrder: [String] { projectKeyOrder.filter { $0.host.isLocal }.map(\.path) }
 
     @Published public private(set) var lastActiveAt: [String: Date]
     private let now: () -> Date
@@ -70,11 +72,11 @@ public final class SessionOverlayStore: ObservableObject {
         self.pinned = Set(states.lazy.filter(\.pinned).map(\.id))
         self.archivedSessions = Set(states.lazy.filter(\.archived).map(\.id))
         self.templeSessions = Set(states.lazy.map(\.id))
-        self.archivedProjects = Set(projects.lazy.filter(\.archived).map(\.path))
-        self.projectOrder = projects
+        self.archivedProjectKeys = Set(projects.lazy.filter(\.archived).map { ProjectKey(host: .local, path: $0.path) })
+        self.projectKeyOrder = projects
             .compactMap { state in state.position.map { ($0, state.path) } }
             .sorted { $0.0 < $1.0 }
-            .map(\.1)
+            .map { ProjectKey(host: .local, path: $0.1) }
         self.customNames = Dictionary(
             uniqueKeysWithValues: states.compactMap { state in
                 state.customName.map { (state.id, $0) }
@@ -352,20 +354,19 @@ public final class SessionOverlayStore: ObservableObject {
         try? db.setArchived(archived, sessionID: id)
     }
 
-    public func isProjectArchived(_ path: String) -> Bool { archivedProjects.contains(path) }
-
-    public func setProjectArchived(_ archived: Bool, path: String) {
-        if archived { archivedProjects.insert(path) } else { archivedProjects.remove(path) }
-        try? db.setProjectArchived(archived, path: path)
+    public func isProjectArchived(_ key: ProjectKey) -> Bool { archivedProjectKeys.contains(key) }
+    public func isProjectArchived(_ path: String) -> Bool { isProjectArchived(ProjectKey(host: .local, path: path)) }
+    public func setProjectArchived(_ archived: Bool, key: ProjectKey) {
+        if archived { archivedProjectKeys.insert(key) } else { archivedProjectKeys.remove(key) }
+        // Project-state host persistence is the explicitly deferred v11 migration.
+        if key.host.isLocal { try? db.setProjectArchived(archived, path: key.path) }
     }
-
-    /// The whole manual order, not a delta: the caller hands over the full
-    /// list it wants the sidebar to show, so a reorder can never leave two
-    /// projects sharing a slot.
-    public func setProjectOrder(_ paths: [String]) {
-        projectOrder = paths
-        try? db.setProjectOrder(paths)
+    public func setProjectArchived(_ archived: Bool, path: String) { setProjectArchived(archived, key: ProjectKey(host: .local, path: path)) }
+    public func setProjectKeyOrder(_ keys: [ProjectKey]) {
+        projectKeyOrder = keys
+        try? db.setProjectOrder(keys.filter { $0.host.isLocal }.map(\.path))
     }
+    public func setProjectOrder(_ paths: [String]) { setProjectKeyOrder(paths.map { ProjectKey(host: .local, path: $0) }) }
 
     public func customName(for id: String) -> String? { customNames[id] }
 

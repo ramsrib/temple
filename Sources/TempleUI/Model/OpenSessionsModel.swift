@@ -28,7 +28,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// from" trail that closing a tab walks back (browser MRU, not first-tab).
     private var activationHistory: [SessionTab.ID] = []
     /// Derived from the active *session* tab; the Settings tab never changes it.
-    @Published public private(set) var activeProjectPath: String?
+    @Published public private(set) var activeProjectKey: ProjectKey?
+    public var activeProjectPath: String? { activeProjectKey?.path }
 
     // Dependencies (injected; all swappable for Track C/T).
     private let surfaceFactory: TerminalSurfaceFactory
@@ -142,7 +143,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// (clamped to the row length). Lower offsets go in first, so two utility
     /// chips land where they were dropped; ties keep the order they opened in.
     public var visibleTabs: [SessionTab] {
-        let sessions = tabs.filter { $0.kind == .session && $0.projectPath == activeProjectPath }
+        let sessions = tabs.filter { $0.kind == .session && $0.projectKey == activeProjectKey }
         let utilities = tabs.filter(\.isUtility)
         guard !utilities.isEmpty else { return sessions }
         var result = sessions
@@ -301,8 +302,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// configured default agent (UX keyboard path — no menu).
     @discardableResult
     public func newSessionDefaultAgent(projectPath: String? = nil) -> SessionTab? {
-        guard let path = projectPath ?? activeProjectPath else { return nil }
-        return newSession(agent: defaultAgent(), projectPath: path)
+        if let projectPath { return newSession(agent: defaultAgent(), projectPath: projectPath) }
+        guard let key = activeProjectKey else { return nil }
+        return newSession(agent: defaultAgent(), project: key)
     }
 
     /// Codex reconcile seam (ADR-008): rebind a provisional tab to its real id.
@@ -310,7 +312,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
         tab.sessionID = sessionID
         tab.isProvisional = false
-        openedHandler?(sessionID, .created, .codex, reconciler.transcriptPath(for: sessionID), SessionCore())
+        openedHandler?(sessionID, .created, .codex, reconciler.transcriptPath(for: sessionID), SessionCore(host: tab.host))
         if let launch = tab.launchObservation {
             if let directory = launch.directory { launchDirectoryHandler?(sessionID, directory) }
             if !isQuitting { touchHandler?(sessionID, launch.at) }
@@ -334,10 +336,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         }
         activeTabID = tab.id
         if tab.kind == .session {
-            let projectChanged = activeProjectPath != tab.projectPath
-            activeProjectPath = tab.projectPath
-            lastActiveTabByProject[tab.projectPath] = tab.id
-            touchProject(tab.projectPath)
+            let projectChanged = activeProjectKey != tab.projectKey
+            activeProjectKey = tab.projectKey
+            lastActiveTabByProject[tab.projectKey] = tab.id
+            touchProject(tab.projectKey)
             ensureSurface(for: tab)
             // Keep the persisted active-project ordering current even when the
             // switch happens by focusing an already-open tab (no open/close).
@@ -668,15 +670,15 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         activationHistory.removeAll { $0 == tabID }
         // A project with no tabs left is not switchable — forget it, or the MRU
         // list grows for the life of the run as folders come and go.
-        if !tabs.contains(where: { $0.kind == .session && $0.projectPath == tab.projectPath }) {
-            projectMRU.removeAll { $0 == tab.projectPath }
-            lastActiveTabByProject.removeValue(forKey: tab.projectPath)
+        if !tabs.contains(where: { $0.kind == .session && $0.projectKey == tab.projectKey }) {
+            projectMRU.removeAll { $0 == tab.projectKey }
+            lastActiveTabByProject.removeValue(forKey: tab.projectKey)
         }
-        if wasActive { selectNeighbor(removedIndex: index, removedProject: tab.projectPath, wasUtility: tab.isUtility) }
+        if wasActive { selectNeighbor(removedIndex: index, removedProject: tab.projectKey, wasUtility: tab.isUtility) }
         persist()
     }
 
-    private func selectNeighbor(removedIndex: Int, removedProject: String, wasUtility: Bool) {
+    private func selectNeighbor(removedIndex: Int, removedProject: ProjectKey, wasUtility: Bool) {
         // Go back where you came from (browser MRU): closing Settings or a
         // just-opened tab returns to the previously active tab, wherever it
         // lives — not to the first tab in the row.
@@ -687,7 +689,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         }
         // No history (e.g. relaunch-restored chips): prefer another tab in the
         // same project; else any session tab; else nil.
-        let sameProject = tabs.filter { $0.kind == .session && $0.projectPath == removedProject }
+        let sameProject = tabs.filter { $0.kind == .session && $0.projectKey == removedProject }
         if let next = sameProject.first {
             activate(next)
         } else if let anySession = tabs.first(where: { $0.kind == .session }) {
@@ -734,12 +736,12 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         }
         // Write the reordered session chips back into the master list, preserving
         // other projects' relative order.
-        guard let project = activeProjectPath else { persist(); return }
+        guard let project = activeProjectKey else { persist(); return }
         let newOrder = row.filter { $0.kind == .session }
         var iterator = newOrder.makeIterator()
         var reordered: [SessionTab] = []
         for tab in tabs {
-            if tab.kind == .session && tab.projectPath == project {
+            if tab.kind == .session && tab.projectKey == project {
                 if let next = iterator.next() { reordered.append(next) }
             } else {
                 reordered.append(tab)
@@ -754,52 +756,42 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// The projects you have sessions open in, in the order their first tab was
     /// opened. Deliberately not recency-ordered: a switcher whose entries
     /// reshuffle as you use it is one you can't build muscle memory for.
-    public var openProjects: [String] {
-        var seen: Set<String> = []
+    public var openProjectKeys: [ProjectKey] {
+        var seen = Set<ProjectKey>()
         return tabs.compactMap { tab in
-            guard tab.kind == .session, seen.insert(tab.projectPath).inserted else { return nil }
-            return tab.projectPath
+            guard tab.kind == .session, seen.insert(tab.projectKey).inserted else { return nil }
+            return tab.projectKey
         }
     }
-
-    /// The session last active in each project, so coming back to a project
-    /// returns you to where you were, not to whichever chip happens to be first.
-    private var lastActiveTabByProject: [String: SessionTab.ID] = [:]
-
-    /// Projects most-recently-used first. The ⌘P switcher walks this, so one tap
-    /// lands on the project you were just in — the reason ⌘⇥ is worth using. It
-    /// is deliberately NOT the order the sidebar or the title-bar list uses:
-    /// those must hold still while you read them, and this must not.
-    public var projectsByRecency: [String] {
-        let open = Set(openProjects)
+    /// Compatibility for legacy callers. Presentation uses host-aware keys.
+    public var openProjects: [String] { openProjectKeys.map(\.path) }
+    private var lastActiveTabByProject: [ProjectKey: SessionTab.ID] = [:]
+    public var projectKeysByRecency: [ProjectKey] {
+        let open = Set(openProjectKeys)
         let recent = projectMRU.filter(open.contains)
-        return recent + openProjects.filter { !recent.contains($0) }
+        return recent + openProjectKeys.filter { !recent.contains($0) }
     }
-
-    private var projectMRU: [String] = []
-
-    private func touchProject(_ path: String) {
-        projectMRU.removeAll { $0 == path }
-        projectMRU.insert(path, at: 0)
+    public var projectsByRecency: [String] { projectKeysByRecency.map(\.path) }
+    private var projectMRU: [ProjectKey] = []
+    private func touchProject(_ key: ProjectKey) {
+        projectMRU.removeAll { $0 == key }
+        projectMRU.insert(key, at: 0)
     }
-
-    /// Switch the strip to `project` and re-activate its last-used session. The
-    /// other projects' tabs stay alive (and their agents keep running) — they
-    /// were only hidden.
-    public func activateProject(_ path: String) {
-        let inProject = tabs.filter { $0.kind == .session && $0.projectPath == path }
+    public func activateProject(_ key: ProjectKey) {
+        let inProject = tabs.filter { $0.kind == .session && $0.projectKey == key }
         guard let first = inProject.first else { return }
-        let remembered = lastActiveTabByProject[path].flatMap { id in inProject.first { $0.id == id } }
+        let remembered = lastActiveTabByProject[key].flatMap { id in inProject.first { $0.id == id } }
         activate(remembered ?? first)
     }
+    public func activateProject(_ path: String) { activateProject(ProjectKey(host: .local, path: path)) }
 
     public func selectNextProject() { cycleProject(by: 1) }
     public func selectPreviousProject() { cycleProject(by: -1) }
 
     private func cycleProject(by delta: Int) {
-        let list = openProjects
+        let list = openProjectKeys
         guard list.count > 1 else { return }
-        let current = activeProjectPath.flatMap { list.firstIndex(of: $0) } ?? 0
+        let current = activeProjectKey.flatMap { list.firstIndex(of: $0) } ?? 0
         activateProject(list[(current + delta + list.count) % list.count])
     }
 
@@ -807,7 +799,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     /// ⌘1–9 within the active project (1-based, session tabs only).
     public func selectTab(index: Int) {
-        let sessionTabs = tabs.filter { $0.kind == .session && $0.projectPath == activeProjectPath }
+        let sessionTabs = tabs.filter { $0.kind == .session && $0.projectKey == activeProjectKey }
         guard index >= 1, index <= sessionTabs.count else { return }
         activate(sessionTabs[index - 1])
     }
@@ -857,9 +849,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         // restore() derives the launch-time active project from the first
         // saved tab, so this is what makes a relaunch come back showing the
         // project you were last working in.
-        if let active = activeProjectPath {
-            restorable = restorable.filter { $0.projectPath == active }
-                + restorable.filter { $0.projectPath != active }
+        if let active = activeProjectKey {
+            let keys = Dictionary(tabs.compactMap { tab in tab.sessionID.map { ($0, tab.projectKey) } }, uniquingKeysWith: { first, _ in first })
+            restorable = restorable.filter { keys[$0.sessionID] == active }
+                + restorable.filter { keys[$0.sessionID] != active }
         }
         persistence.save(restorable)
     }
@@ -902,7 +895,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             openedHandler?(p.sessionID, .opened, row.agent, nil, SessionCore(host: row.host))
         }
         // Restore active project context without spawning anything.
-        activeProjectPath = tabs.first?.projectPath
+        activeProjectKey = tabs.first?.projectKey
         // Every other chip stays inert until clicked (lazy restore). The one the
         // user was looking at when they quit is the exception: reopening to the
         // launcher after a quit reads as "Temple lost my session", so that one

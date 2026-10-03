@@ -80,7 +80,8 @@ public final class HistoryModel: ObservableObject {
 
     /// A project in the popup, with how many sessions on disk it holds.
     public struct ProjectCount: Equatable, Sendable {
-        public let path: String
+        public let key: ProjectKey
+        public var path: String { key.path }
         public let count: Int
     }
 
@@ -140,7 +141,12 @@ public final class HistoryModel: ObservableObject {
     }
     @Published public var scope: HistoryScope = .all { didSet { if scope != oldValue { filtersChanged() } } }
     @Published public var agentFilter: Agent? { didSet { if agentFilter != oldValue { filtersChanged() } } }
-    @Published public var projectFilter: String? { didSet { if projectFilter != oldValue { filtersChanged() } } }
+    @Published public var projectKeyFilter: ProjectKey? { didSet { if projectKeyFilter != oldValue { filtersChanged() } } }
+    public var projectFilter: String? {
+        get { projectKeyFilter?.path }
+        set { projectKeyFilter = newValue.map { ProjectKey(host: .local, path: $0) } }
+    }
+
 
     @Published public private(set) var selection: Set<String> = []
     /// The row the keyboard is on: arrows move from it, ⇧ extends to it.
@@ -245,7 +251,7 @@ public final class HistoryModel: ObservableObject {
         debounceTask?.cancel()
         debounceTask = nil
         draft = ""
-        query = ""; scope = .all; agentFilter = nil; projectFilter = nil
+        query = ""; scope = .all; agentFilter = nil; projectKeyFilter = nil
         // Directly, not through `invalidate()`: the tab is gone, and its page
         // must open empty next time rather than flash the old snapshot.
         rebuild()
@@ -329,14 +335,14 @@ public final class HistoryModel: ObservableObject {
     /// In Temple and put away (the session, or its whole project).
     public func isArchived(_ session: HistoryRow) -> Bool {
         isInTemple(session.id)
-            && (overlay.isArchived(session.id) || overlay.isProjectArchived(session.projectPath))
+            && (overlay.isArchived(session.id) || (session.project.map { overlay.isProjectArchived($0) } ?? false))
     }
 
     public func joinedState(_ id: String) -> SessionState? { joinedByID[id] }
 
     /// Search or a filter is narrowing the page ("Showing 47 of 3,810").
     public var isNarrowed: Bool {
-        !normalizedQuery.isEmpty || scope != .all || agentFilter != nil || projectFilter != nil
+        !normalizedQuery.isEmpty || scope != .all || agentFilter != nil || projectKeyFilter != nil
     }
 
     public var isReading: Bool {
@@ -390,14 +396,14 @@ public final class HistoryModel: ObservableObject {
         assign(\.allRows, rows)
         assign(\.inTempleCount, rows.reduce(0) { $0 + (temple.contains($1.id) ? 1 : 0) })
         var agents: [Agent: Int] = [:]
-        var projectCounts: [String: Int] = [:]
+        var projectCounts: [ProjectKey: Int] = [:]
         for row in rows {
             if let agent = row.agent { agents[agent, default: 0] += 1 }
-            if row.project != nil { projectCounts[row.projectPath, default: 0] += 1 }
+            if let project = row.project { projectCounts[project, default: 0] += 1 }
         }
         assign(\.agentCounts, agents)
         assign(\.projects, projectCounts
-            .map { ProjectCount(path: $0.key, count: $0.value) }
+            .map { ProjectCount(key: $0.key, count: $0.value) }
             .sorted { $0.count == $1.count ? $0.path < $1.path : $0.count > $1.count })
 
         let needle = normalizedQuery
@@ -408,7 +414,7 @@ public final class HistoryModel: ObservableObject {
             case .notInTemple: if temple.contains(session.id) { return false }
             }
             if let agentFilter, session.agent != agentFilter { return false }
-            if let projectFilter, session.projectPath != projectFilter { return false }
+            if let projectKeyFilter, session.project != projectKeyFilter { return false }
             return needle.isEmpty || Self.matches(session, needle)
         }
         assign(\.visibleRows, visible)
@@ -626,9 +632,8 @@ public final class HistoryModel: ObservableObject {
     public func requestImport(_ rows: [HistoryRow]) { requestImport(rows.compactMap(\.catalog)) }
 
 
-    public func showOnly(project path: String) {
-        projectFilter = path
-    }
+    public func showOnly(project key: ProjectKey) { projectKeyFilter = key }
+    public func showOnly(project path: String) { showOnly(project: ProjectKey(host: .local, path: path)) }
 
     // MARK: Import
 

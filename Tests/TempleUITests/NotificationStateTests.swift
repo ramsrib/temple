@@ -10,8 +10,8 @@ final class NotificationStateTests: XCTestCase {
         var fired: (title: String, body: String)?
         model.attentionHandler = { _, title, body in fired = (title, body) }
 
-        model.openSession(Fixture.session("a", project: "/p/a"))
-        model.openSession(Fixture.session("b", project: "/p/b"))  // b is now active
+        model.openSession(Fixture.row("a", project: "/p/a"))
+        model.openSession(Fixture.row("b", project: "/p/b"))  // b is now active
         let aSurface = model.openTab(forSessionID: "a")?.surface as? FakeTerminalSurface
 
         aSurface?.simulateBell()
@@ -25,8 +25,8 @@ final class NotificationStateTests: XCTestCase {
         var fired: (title: String, body: String)?
         model.attentionHandler = { _, title, body in fired = (title, body) }
 
-        model.openSession(Fixture.session("a", project: "/p/a"))
-        model.openSession(Fixture.session("b", project: "/p/b"))
+        model.openSession(Fixture.row("a", project: "/p/a"))
+        model.openSession(Fixture.row("b", project: "/p/b"))
         let aSurface = model.openTab(forSessionID: "a")?.surface as? FakeTerminalSurface
 
         aSurface?.simulateNotification(title: "Done", body: "Task complete")
@@ -41,7 +41,7 @@ final class NotificationStateTests: XCTestCase {
         var fired = false
         model.attentionHandler = { _, _, _ in fired = true }
 
-        model.openSession(Fixture.session("a", project: "/p/a"))  // a is active
+        model.openSession(Fixture.row("a", project: "/p/a"))  // a is active
         let aSurface = model.activeTab?.surface as? FakeTerminalSurface
 
         aSurface?.simulateBell()  // agent finished while you're watching
@@ -52,8 +52,8 @@ final class NotificationStateTests: XCTestCase {
 
     func testActivatingClearsAttentionToIdle() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
-        model.openSession(Fixture.session("a", project: "/p/a"))
-        model.openSession(Fixture.session("b", project: "/p/b"))
+        model.openSession(Fixture.row("a", project: "/p/a"))
+        model.openSession(Fixture.row("b", project: "/p/b"))
         let aTab = model.openTab(forSessionID: "a")!
         (aTab.surface as? FakeTerminalSurface)?.simulateBell()
         XCTAssertEqual(aTab.activity, .needsAttention)
@@ -64,7 +64,7 @@ final class NotificationStateTests: XCTestCase {
 
     func testTitleUpdateFromDelegate() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
-        model.openSession(Fixture.session("a", project: "/p/a", title: "Old"))
+        model.openSession(Fixture.row("a", project: "/p/a", title: "Old"))
         let s = model.activeTab?.surface as? FakeTerminalSurface
         s?.simulateTitle("New Title")
         XCTAssertEqual(model.activeTab?.title, "New Title")
@@ -74,13 +74,13 @@ final class NotificationStateTests: XCTestCase {
 
     func testSpawnStartsRunning() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
-        model.openSession(Fixture.session("a", project: "/p/a"))
+        model.openSession(Fixture.row("a", project: "/p/a"))
         XCTAssertEqual(model.activeTab?.activity, .running)
     }
 
     func testSubmitInputMarksRunning() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
-        model.openSession(Fixture.session("a", project: "/p/a"))
+        model.openSession(Fixture.row("a", project: "/p/a"))
         let tab = model.activeTab!
         let surface = tab.surface as? FakeTerminalSurface
         // Settle it to idle first, then a Return re-arms it to running.
@@ -93,8 +93,8 @@ final class NotificationStateTests: XCTestCase {
 
     func testBellOnBackgroundTabIsAttentionNotIdle() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
-        model.openSession(Fixture.session("a", project: "/p/a"))
-        model.openSession(Fixture.session("b", project: "/p/b"))  // b active
+        model.openSession(Fixture.row("a", project: "/p/a"))
+        model.openSession(Fixture.row("b", project: "/p/b"))  // b active
         let a = model.openTab(forSessionID: "a")?.surface as? FakeTerminalSurface
         a?.simulateBell()
         XCTAssertEqual(model.openTab(forSessionID: "a")?.activity, .needsAttention)
@@ -104,7 +104,7 @@ final class NotificationStateTests: XCTestCase {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.settleDelaySeconds = 0.05
         model.titleQuietWindow = 0.01
-        model.openSession(Fixture.session("a", project: "/p/a"))
+        model.openSession(Fixture.row("a", project: "/p/a"))
         let tab = model.activeTab!
         XCTAssertEqual(tab.activity, .running)
 
@@ -115,7 +115,7 @@ final class NotificationStateTests: XCTestCase {
     func testTitleMovementPromotesIdleBackToRunning() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.ringGraceSeconds = -1  // out of grace immediately
-        model.openSession(Fixture.session("a", project: "/p/a"))
+        model.openSession(Fixture.row("a", project: "/p/a"))
         let tab = model.activeTab!
         let surface = tab.surface as? FakeTerminalSurface
         surface?.simulateBell()
@@ -130,7 +130,7 @@ final class NotificationStateTests: XCTestCase {
 
     func testFinishingRetitleInsideRingGraceStaysIdle() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
-        model.openSession(Fixture.session("a", project: "/p/a"))
+        model.openSession(Fixture.row("a", project: "/p/a"))
         let tab = model.activeTab!
         let surface = tab.surface as? FakeTerminalSurface
         surface?.simulateBell()
@@ -144,8 +144,8 @@ final class NotificationStateTests: XCTestCase {
     func testTitleMovementDoesNotClearAttention() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.ringGraceSeconds = -1
-        model.openSession(Fixture.session("a", project: "/p/a"))
-        model.openSession(Fixture.session("b", project: "/p/b"))  // b active
+        model.openSession(Fixture.row("a", project: "/p/a"))
+        model.openSession(Fixture.row("b", project: "/p/b"))  // b active
         let a = model.openTab(forSessionID: "a")!
         (a.surface as? FakeTerminalSurface)?.simulateBell()
         XCTAssertEqual(a.activity, .needsAttention)
@@ -158,7 +158,7 @@ final class NotificationStateTests: XCTestCase {
 
     func testCloseGatePromptsOnlyWhenRunning() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
-        model.openSession(Fixture.session("a", project: "/p/a"))
+        model.openSession(Fixture.row("a", project: "/p/a"))
         let tab = model.activeTab!
         // Idle after a bell → closes immediately, no prompt.
         (tab.surface as? FakeTerminalSurface)?.simulateBell()

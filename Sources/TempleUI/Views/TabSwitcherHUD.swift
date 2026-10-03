@@ -62,7 +62,7 @@ struct TabSwitcherHUD: View {
                     .lineLimit(1)
                 // The trail spans projects, so say where each tab would take you.
                 if tab.kind == .session {
-                    Text(model.projectName(tab.projectPath))
+                    Text(tab.projectKey.displayName)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }

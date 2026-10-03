@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import TempleCore
 
 /// Mounts the tab strip into the native title-bar band as a titlebar accessory,
 /// bypassing NSToolbar item layout entirely: NSToolbar overflows an item
@@ -191,9 +192,9 @@ final class TabStripContainerView: NSView {
         }
     }
     /// The project `chipFrames` was rendered for (reported alongside it).
-    private var framesProject: String?
+    private var framesProject: ProjectKey?
 
-    func reportFrames(_ rects: [CGRect], project: String?) {
+    func reportFrames(_ rects: [CGRect], project: ProjectKey?) {
         framesProject = project
         chipFrames = rects
     }
@@ -204,10 +205,10 @@ final class TabStripContainerView: NSView {
     /// reveal only does the minimum to show the active chip — parking it at
     /// the right edge, wherever you had left the row. Saved on the way out,
     /// restored before that reveal measures.
-    private var savedOffsets: [String: CGFloat] = [:]
+    private var savedOffsets: [ProjectKey: CGFloat] = [:]
     /// The incoming project and its remembered offset, applied once the row
     /// reports that project's geometry (see `applyPendingRestore`).
-    private var pendingRestore: (project: String?, offset: CGFloat)?
+    private var pendingRestore: (project: ProjectKey?, offset: CGFloat)?
     private var projectSwitch: AnyCancellable?
 
     /// Detail pane's leading edge in window coordinates (set by the installer).
@@ -342,9 +343,9 @@ final class TabStripContainerView: NSView {
         // `@Published` emits in willSet: `activeProjectPath` still names the
         // project being left, and `offset` is still its scroll position.
         let sessions = model.openSessions
-        projectSwitch = sessions.$activeProjectPath.sink { [weak self, weak sessions] next in
+        projectSwitch = sessions.$activeProjectKey.sink { [weak self, weak sessions] next in
             guard let self, let sessions else { return }
-            let leaving = sessions.activeProjectPath
+            let leaving = sessions.activeProjectKey
             guard next != leaving else { return }
             // A second switch before the first one's row has rendered:
             // `offset` still describes the project before THAT, so it is

@@ -12,7 +12,7 @@ public struct HistoryRow: Identifiable, Equatable, Sendable {
     }
     public var id: String { member?.id ?? catalog!.id }
     public var title: String { member?.displayTitle ?? catalog!.title }
-    public var agent: Agent? { member?.agent ?? catalog?.agent }
+    public var agent: Agent? { member != nil ? member?.agent : catalog?.agent }
     public var project: ProjectKey? { member != nil ? member?.project : catalog.map { ProjectKey(host: .local, path: $0.projectPath) } }
     public var projectPath: String { project?.path ?? "" }
     public var updatedAt: Date { catalog?.updatedAt ?? member!.sortDate }

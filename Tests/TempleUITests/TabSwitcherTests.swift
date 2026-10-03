@@ -10,19 +10,18 @@ private struct NoNoise: NoiseFilter {
 /// same gesture as the ⌘P project switcher one level down.
 @MainActor
 final class TabSwitcherTests: XCTestCase {
-    private func makeModel(_ index: SessionIndex) -> AppModel {
+    private func makeModel(_ rows: [Session]) -> AppModel {
         let database = try! TempleDB.inMemory()
-        Fixture.join(index, to: database)
+        Fixture.join(rows, to: database)
         let overlay = SessionOverlayStore(db: database)
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(index),
+            indexSource: FakeIndexSource(SessionIndex(projects: [])),
             noiseFilter: NoNoise(),
             database: database,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: overlay
         )
-        model.index = index
         return model
     }
 
@@ -30,15 +29,11 @@ final class TabSwitcherTests: XCTestCase {
     /// trail is 1, 2, 3 and the MRU list reads 3, 2, 1.
     private func modelWithThreeTabs() -> AppModel {
         let sessions = [
-            Fixture.session("1", project: "/p/api", title: "t"),
-            Fixture.session("2", project: "/p/api", title: "t"),
-            Fixture.session("3", project: "/p/web", title: "t"),
+            Fixture.row("1", project: "/p/api", title: "t"),
+            Fixture.row("2", project: "/p/api", title: "t"),
+            Fixture.row("3", project: "/p/web", title: "t"),
         ]
-        let index = SessionIndex(projects: [
-            Project(path: "/p/api", sessions: Array(sessions[0...1])),
-            Project(path: "/p/web", sessions: [sessions[2]]),
-        ])
-        let model = makeModel(index)
+        let model = makeModel(sessions)
         for session in sessions { model.openSessions.openSession(session) }
         return model
     }
@@ -105,10 +100,8 @@ final class TabSwitcherTests: XCTestCase {
     /// From home even a single open tab is somewhere to go; the two-tab
     /// guard only applies while one of them is already active.
     func testSwitcherFromHomeWorksWithASingleTab() {
-        let session = Fixture.session("1", project: "/p/api", title: "t")
-        let model = makeModel(SessionIndex(projects: [
-            Project(path: "/p/api", sessions: [session]),
-        ]))
+        let session = Fixture.row("1", project: "/p/api", title: "t")
+        let model = makeModel([session])
         model.openSessions.openSession(session)
 
         model.advanceTabSwitcher(by: 1)
@@ -199,8 +192,8 @@ final class TabSwitcherTests: XCTestCase {
     }
 
     func testTabSwitcherNeedsTwoTabs() {
-        let session = Fixture.session("only", project: "/p", title: "t")
-        let model = makeModel(SessionIndex(projects: [Project(path: "/p", sessions: [session])]))
+        let session = Fixture.row("only", project: "/p", title: "t")
+        let model = makeModel([session])
         model.openSessions.openSession(session)
 
         model.advanceTabSwitcher(by: 1)

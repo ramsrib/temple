@@ -631,7 +631,7 @@ private struct ProjectDisclosure: View {
     /// header (before) or under the last visible row (after). Read from the
     /// model's single slot so only one line exists in the whole rail.
     private var dropIndicator: Edge? {
-        model.projectDropSlot?.path == project.path ? model.projectDropSlot?.edge : nil
+        model.projectDropSlot?.key == project.key ? model.projectDropSlot?.edge : nil
     }
     @State private var headerHeight: CGFloat = 22
 
@@ -639,7 +639,7 @@ private struct ProjectDisclosure: View {
 
     /// This project is the one being dragged: the whole group fades, not just
     /// its header — the thing in hand is the project.
-    private var inHand: Bool { model.draggedProjectPath == project.path }
+    private var inHand: Bool { model.draggedProjectKey == project.key }
 
     var body: some View {
         header
@@ -726,7 +726,7 @@ private struct ProjectDisclosure: View {
     /// half the pointer is in — the collapsed case, where the header is the
     /// only row this project has.
     private func dropDelegate(row: String, edge: Edge?) -> ProjectDropDelegate {
-        ProjectDropDelegate(model: model, target: project.path, row: "\(project.path)#\(row)") { point in
+        ProjectDropDelegate(model: model, target: project.key, row: "\(project.key.host.rawValue):\(project.path)#\(row)") { point in
             edge ?? (point.y < headerHeight / 2 ? .top : .bottom)
         }
     }
@@ -750,13 +750,13 @@ private struct ProjectDisclosure: View {
                 .disabled(true)
         } else {
             Button("Archive project") {
-                model.archiveProject(project.path, undoManager: undoManager)
+                model.archiveProject(project.key, undoManager: undoManager)
             }
         }
     }
 
     private var hasOpenTabs: Bool {
-        model.openSessions.tabs.contains { $0.kind == .session && $0.projectPath == project.path }
+        model.openSessions.tabs.contains { $0.kind == .session && $0.projectKey == project.key }
     }
 
     private func expandButton(_ title: String, action: @escaping () -> Void) -> some View {
@@ -790,7 +790,7 @@ private struct ProjectDisclosure: View {
         .contextMenu { headerContextMenu }
         .overlay(alignment: .trailing) {
             // Quiet until the pointer is on the row, like Finder's "Hide".
-            NewSessionMenu(projectPath: project.path)
+            NewSessionMenu(project: project.key)
                 .opacity(headerHovering ? 1 : 0)
                 .animation(.easeOut(duration: 0.12), value: headerHovering)
         }
@@ -802,7 +802,7 @@ private struct ProjectDisclosure: View {
                 .onChange(of: geo.size.height) { _, height in headerHeight = height }
         })
         .onDrag {
-            model.beginProjectDrag(project.path)
+            model.beginProjectDrag(project.key)
             let provider = NSItemProvider()
             provider.registerDataRepresentation(
                 forTypeIdentifier: Self.dragType.identifier, visibility: .ownProcess
@@ -875,7 +875,7 @@ private struct ProjectDisclosure: View {
 /// exactly once, on the edge the drop would use.
 private struct ProjectDropDelegate: DropDelegate {
     let model: AppModel
-    let target: String
+    let target: ProjectKey
     /// This row's identity, distinct from every other row of the same project.
     let row: String
     /// Which edge a pointer at this location (row coordinates) means.
@@ -886,16 +886,16 @@ private struct ProjectDropDelegate: DropDelegate {
     private func show(_ info: DropInfo) {
         // No drag in flight (the drop already landed) — a straggling update
         // must not resurrect the line the drop just cleared.
-        guard model.draggedProjectPath != nil else { return }
-        let slot = AppModel.ProjectDropSlot(path: target, edge: edge(info.location))
+        guard model.draggedProjectKey != nil else { return }
+        let slot = AppModel.ProjectDropSlot(key: target, edge: edge(info.location))
         model.projectDropOwner = row
         if model.projectDropSlot != slot { model.projectDropSlot = slot }
     }
 
     func validateDrop(info: DropInfo) -> Bool {
         info.hasItemsConforming(to: [ProjectDisclosure.dragType])
-            && model.draggedProjectPath != nil
-            && model.draggedProjectPath != target
+            && model.draggedProjectKey != nil
+            && model.draggedProjectKey != target
     }
 
     func dropEntered(info: DropInfo) { show(info) }
@@ -915,7 +915,7 @@ private struct ProjectDropDelegate: DropDelegate {
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        guard let path = model.draggedProjectPath else { return false }
+        guard let path = model.draggedProjectKey else { return false }
         model.endProjectDrag()
         // Updates queued before the mouse-up can land after this returns.
         DispatchQueue.main.async { model.endProjectDrag() }
@@ -933,12 +933,12 @@ private struct ProjectDropDelegate: DropDelegate {
 /// disclosure.
 private struct NewSessionMenu: View {
     @EnvironmentObject var model: AppModel
-    let projectPath: String
+    let project: ProjectKey
     @State private var hovering = false
 
     var body: some View {
         Menu {
-            NewSessionMenuItems(projectPath: projectPath)
+            NewSessionMenuItems(project: project)
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 11, weight: .semibold))
@@ -950,6 +950,6 @@ private struct NewSessionMenu: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .onHover { hovering = $0 }
-        .help("New session in \(model.projectName(projectPath))")
+        .help("New session in \(project.displayName)")
     }
 }

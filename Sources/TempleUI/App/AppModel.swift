@@ -66,12 +66,12 @@ public final class AppModel: ObservableObject {
     }
 
     public var visibleRows: [Session] {
-        sessions.filter { !$0.state.archived && !($0.project.map { overlay.isProjectArchived($0.path) } ?? false) }
+        sessions.filter { !$0.state.archived && !($0.project.map { overlay.isProjectArchived($0) } ?? false) }
     }
     public var visibleRowProjects: [SessionRowProject] { SessionRowProject.grouping(visibleRows) }
 
     private func orderedRowProjects(_ projects: [SessionRowProject]) -> [SessionRowProject] {
-        let placement = Dictionary(overlay.projectOrder.enumerated().map { (ProjectKey(host: .local, path: $0.element), $0.offset) }, uniquingKeysWith: { first, _ in first })
+        let placement = Dictionary(overlay.projectKeyOrder.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
         return projects.sorted { lhs, rhs in
             switch (placement[lhs.key], placement[rhs.key]) {
             case (nil, nil): return (rowProjectRank[lhs.key] ?? .max) < (rowProjectRank[rhs.key] ?? .max)
@@ -121,7 +121,7 @@ public final class AppModel: ObservableObject {
 
     // Sidebar UI state (U1)
     @Published public var searchText = ""
-    @Published public var highlightedID: AgentSession.ID?
+    @Published public var highlightedID: String?
     @Published public var showNoise = false { didSet { recomputeNoise() } }
 
     // The disk-I/O noise stage is cached (recomputed only when the index or the
@@ -164,7 +164,11 @@ public final class AppModel: ObservableObject {
     /// The highlighted project, held as a PATH rather than an index: a project's
     /// last tab can exit while the switcher is up, and an index into a list that
     /// shrank under you lands on the wrong project (or silently on none).
-    @Published public var projectSwitcherSelection: String?
+    @Published public var projectSwitcherKeySelection: ProjectKey?
+    public var projectSwitcherSelection: String? {
+        get { projectSwitcherKeySelection?.path }
+        set { projectSwitcherKeySelection = newValue.map { ProjectKey(host: .local, path: $0) } }
+    }
     /// True when ⌘ was down as the switcher opened. Only then does releasing ⌘
     /// commit — otherwise opening it from the home page (mouse, no ⌘ held) would
     /// be committed by the next unrelated modifier press.
@@ -329,7 +333,7 @@ public final class AppModel: ObservableObject {
         openSessions.attentionHandler = { [weak self] tab, title, body in
             guard let self else { return }
             let message = body.isEmpty ? title : body
-            self.notifications.post(projectName: self.projectName(tab.projectPath),
+            self.notifications.post(projectName: tab.projectKey.displayName,
                                     sessionTitle: overlayTitle(tab: tab),
                                     sessionID: tab.sessionID,
                                     body: message)
@@ -396,8 +400,8 @@ public final class AppModel: ObservableObject {
                         self.overlay.setArchived(false, sessionID: sid)
                     }
                 }
-                if self.overlay.isProjectArchived(tab.projectPath) {
-                    self.overlay.setProjectArchived(false, path: tab.projectPath)
+                if self.overlay.isProjectArchived(tab.projectKey) {
+                    self.overlay.setProjectArchived(false, key: tab.projectKey)
                 }
             }
             .store(in: &cancellables)
@@ -498,7 +502,7 @@ public final class AppModel: ObservableObject {
     }
 
     private func overlayTitle(tab: SessionTab) -> String {
-        if let sid = tab.sessionID, let name = overlay.customName(for: sid) { return name }
+        if let sid = tab.sessionID, let row = sessions.first(where: { $0.id == sid }) { return row.displayTitle }
         return tab.title
     }
 
@@ -664,8 +668,7 @@ public final class AppModel: ObservableObject {
 
     /// The project the launcher should default to (last active, else first indexed).
     public var launcherDefaultProjectKey: ProjectKey? {
-        openSessions.activeTab.flatMap { $0.kind == .session ? $0.projectKey : nil }
-            ?? openSessions.activeProjectPath.map { ProjectKey(host: .local, path: $0) }
+        openSessions.activeProjectKey
             ?? visibleRowProjects.first?.key
     }
     public var launcherDefaultProject: String? { launcherDefaultProjectKey?.path }
@@ -683,9 +686,11 @@ public final class AppModel: ObservableObject {
     /// the user's custom name wins; provisional tabs say they are starting.
     public func tabDisplayTitle(_ tab: SessionTab) -> String {
         if let utility = tab.kind.utilityTitle { return utility }
-        if let sid = tab.sessionID, let name = overlay.customName(for: sid) { return name }
+        if let sid = tab.sessionID, let row = sessions.first(where: { $0.id == sid }) { return row.displayTitle }
         return tab.isProvisional ? "\(tab.title) (starting…)" : tab.title
     }
+
+    public func projectName(_ key: ProjectKey) -> String { key.displayName }
 
     public func projectName(_ path: String) -> String {
         path.isEmpty ? "—" : URL(fileURLWithPath: path).lastPathComponent
@@ -788,13 +793,16 @@ public final class AppModel: ObservableObject {
     /// items in a project's context menu act on. Reordering while a search
     /// hides half the rail must not persist an order derived from that
     /// half-list.
+    public var orderedVisibleProjectKeys: [ProjectKey] { orderedRowProjects(visibleRowProjects).map(\.key) }
+
     public var orderedVisibleProjectPaths: [String] {
-        orderedRowProjects(visibleRowProjects).filter { $0.key.host.isLocal }.map(\.path)
+        orderedVisibleProjectKeys.filter { $0.host.isLocal }.map(\.path)
     }
 
     /// The project header being dragged, from grab to drop. Drop targets read
     /// it to refuse a project dropped onto itself; the header in hand dims.
-    @Published public private(set) var draggedProjectPath: String?
+    @Published public private(set) var draggedProjectKey: ProjectKey?
+    public var draggedProjectPath: String? { draggedProjectKey?.path }
     private var projectDragWatch: Timer?
 
     /// A header drag begins. SwiftUI's drop delegates report enters, moves and
@@ -803,9 +811,10 @@ public final class AppModel: ObservableObject {
     /// the "a drag is in flight" flag outlive the drag. So the drag is watched
     /// from the source side: the button coming up, wherever that happens, ends
     /// it. Common modes, because AppKit runs a drag in the event-tracking mode.
-    public func beginProjectDrag(_ path: String) {
+    public func beginProjectDrag(_ path: String) { beginProjectDrag(ProjectKey(host: .local, path: path)) }
+    public func beginProjectDrag(_ key: ProjectKey) {
         endProjectDrag()
-        draggedProjectPath = path
+        draggedProjectKey = key
         let watch = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, NSEvent.pressedMouseButtons == 0 else { return }
@@ -821,7 +830,7 @@ public final class AppModel: ObservableObject {
     public func endProjectDrag() {
         projectDragWatch?.invalidate()
         projectDragWatch = nil
-        draggedProjectPath = nil
+        draggedProjectKey = nil
         projectDropOwner = nil
         if projectDropSlot != nil { projectDropSlot = nil }
     }
@@ -831,8 +840,11 @@ public final class AppModel: ObservableObject {
     /// row that never got its exit callback (rows re-created under the pointer
     /// as the drop reorders them) kept drawing its line after the drop.
     public struct ProjectDropSlot: Equatable {
-        public let path: String
+        public let key: ProjectKey
+        public var path: String { key.path }
         public let edge: Edge
+        public init(key: ProjectKey, edge: Edge) { self.key = key; self.edge = edge }
+        public init(path: String, edge: Edge) { self.init(key: ProjectKey(host: .local, path: path), edge: edge) }
     }
     @Published public var projectDropSlot: ProjectDropSlot?
     /// Which drop target row last wrote the slot. Every row of a project shares
@@ -841,26 +853,17 @@ public final class AppModel: ObservableObject {
     public var projectDropOwner: String?
 
     /// Drop on a project's header: the dragged project lands just above it.
-    public func moveProject(_ path: String, before target: String) {
-        place(path) { $0.firstIndex(of: target) }
-    }
-
-    /// Drop anywhere in a project's body (its sessions, its Show more row):
-    /// the dragged project lands just below it, under its last row.
-    public func moveProject(_ path: String, after target: String) {
-        place(path) { $0.firstIndex(of: target).map { $0 + 1 } }
-    }
-
-    /// `slot` picks the insertion index in the visible order WITH the moving
-    /// project already removed, so "before X" and "after X" need no fix-up for
-    /// where the project came from.
-    private func place(_ path: String, slot: ([String]) -> Int?) {
-        var paths = orderedVisibleProjectPaths
-        guard let from = paths.firstIndex(of: path) else { return }
-        paths.remove(at: from)
-        guard let to = slot(paths), to != from else { return }
-        paths.insert(path, at: to)
-        overlay.setProjectOrder(Self.merge(visibleOrder: paths, into: overlay.projectOrder))
+    public func moveProject(_ path: String, before target: String) { moveProject(ProjectKey(host: .local, path: path), before: ProjectKey(host: .local, path: target)) }
+    public func moveProject(_ path: String, after target: String) { moveProject(ProjectKey(host: .local, path: path), after: ProjectKey(host: .local, path: target)) }
+    public func moveProject(_ key: ProjectKey, before target: ProjectKey) { place(key) { $0.firstIndex(of: target) } }
+    public func moveProject(_ key: ProjectKey, after target: ProjectKey) { place(key) { $0.firstIndex(of: target).map { $0 + 1 } } }
+    private func place(_ key: ProjectKey, slot: ([ProjectKey]) -> Int?) {
+        var keys = orderedVisibleProjectKeys
+        guard let from = keys.firstIndex(of: key) else { return }
+        keys.remove(at: from)
+        guard let to = slot(keys), to != from else { return }
+        keys.insert(key, at: to)
+        overlay.setProjectKeyOrder(Self.merge(visibleOrder: keys, into: overlay.projectKeyOrder))
     }
 
     /// Persist the WHOLE visible list — a move is a statement about where this
@@ -872,7 +875,7 @@ public final class AppModel: ObservableObject {
     /// hidden paths stay where they are, and visible paths placed for the first
     /// time go on the end. Otherwise archiving a project and moving any other
     /// would silently un-place it, and it would come back "new", on top.
-    static func merge(visibleOrder: [String], into stored: [String]) -> [String] {
+    static func merge<Key: Hashable>(visibleOrder: [Key], into stored: [Key]) -> [Key] {
         let visible = Set(visibleOrder)
         var next = visibleOrder.makeIterator()
         var merged = stored.map { visible.contains($0) ? next.next()! : $0 }
@@ -893,9 +896,9 @@ public final class AppModel: ObservableObject {
             return all
         }
         var projects = Array(all.prefix(Self.projectCap))
-        if let activePath = openSessions.activeProjectPath,
-           !projects.contains(where: { $0.path == activePath }),
-           let activeProject = all.first(where: { $0.path == activePath }) {
+        if let activeKey = openSessions.activeProjectKey,
+           !projects.contains(where: { $0.key == activeKey }),
+           let activeProject = all.first(where: { $0.key == activeKey }) {
             projects.append(activeProject)
         }
         return projects
@@ -965,7 +968,7 @@ public final class AppModel: ObservableObject {
     // MARK: Archive browser (⌘⇧Y)
 
     /// Whether the user has ever arranged the sidebar by hand.
-    public var hasManualProjectOrder: Bool { !overlay.projectOrder.isEmpty }
+    public var hasManualProjectOrder: Bool { !overlay.projectKeyOrder.isEmpty }
 
     /// Archive from the sidebar is one click with no confirmation, so it must be
     /// one keystroke to take back: ⌘Z through the window's undo manager (Edit ▸
@@ -982,12 +985,13 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    public func archiveProject(_ path: String, undoManager: UndoManager?) {
-        overlay.setProjectArchived(true, path: path)
+    public func archiveProject(_ path: String, undoManager: UndoManager?) { archiveProject(ProjectKey(host: .local, path: path), undoManager: undoManager) }
+    public func archiveProject(_ key: ProjectKey, undoManager: UndoManager?) {
+        overlay.setProjectArchived(true, key: key)
         registerUndo(undoManager, name: "Archive Project") { [overlay] in
-            overlay.setProjectArchived(false, path: path)
+            overlay.setProjectArchived(false, key: key)
         } redo: { [overlay] in
-            overlay.setProjectArchived(true, path: path)
+            overlay.setProjectArchived(true, key: key)
         }
     }
 
@@ -1002,12 +1006,13 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    public func restoreProject(_ path: String, undoManager: UndoManager?) {
-        overlay.setProjectArchived(false, path: path)
+    public func restoreProject(_ path: String, undoManager: UndoManager?) { restoreProject(ProjectKey(host: .local, path: path), undoManager: undoManager) }
+    public func restoreProject(_ key: ProjectKey, undoManager: UndoManager?) {
+        overlay.setProjectArchived(false, key: key)
         registerUndo(undoManager, name: "Restore Project") { [overlay] in
-            overlay.setProjectArchived(true, path: path)
+            overlay.setProjectArchived(true, key: key)
         } redo: { [overlay] in
-            overlay.setProjectArchived(false, path: path)
+            overlay.setProjectArchived(false, key: key)
         }
     }
 
@@ -1032,7 +1037,7 @@ public final class AppModel: ObservableObject {
     /// Archived projects, newest activity first. Nothing archive-related lives
     /// in the sidebar, so this panel is the only way back.
     public var archivedProjects: [SessionRowProject] {
-        rowProjects.filter { overlay.isProjectArchived($0.path) }
+        rowProjects.filter { overlay.isProjectArchived($0.key) }
     }
 
     public func archivedProjectResults(_ query: String) -> [SessionRowProject] {
@@ -1041,7 +1046,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func archivedSessionResults(_ query: String) -> [Session] {
-        let rows = sessions.filter { $0.state.archived && !($0.project.map { overlay.isProjectArchived($0.path) } ?? false) }
+        let rows = sessions.filter { $0.state.archived && !($0.project.map { overlay.isProjectArchived($0) } ?? false) }
         return query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? rows : RowSearch.rank(rows, query: query)
     }
 
@@ -1171,20 +1176,19 @@ public final class AppModel: ObservableObject {
 
     /// What the switcher walks: the projects you have work open in, most recently
     /// used first — the same set the app switcher shows for running apps.
-    public var switchableProjects: [String] {
-        openSessions.projectsByRecency
-    }
+    public var switchableProjectKeys: [ProjectKey] { openSessions.projectKeysByRecency }
+    public var switchableProjects: [String] { switchableProjectKeys.map(\.path) }
 
     /// ⌘P pressed. First press opens the switcher already on the PREVIOUS project,
     /// so a tap-and-release bounces between two projects the way ⌘⇥ does; further
     /// presses walk the list while ⌘ stays down.
     public func advanceProjectSwitcher(by delta: Int, heldCommand: Bool = true) {
-        let projects = switchableProjects
+        let projects = switchableProjectKeys
         guard projects.count > 1 else { return }
 
         if projectSwitcherPresented {
-            let current = projectSwitcherSelection.flatMap { projects.firstIndex(of: $0) } ?? 0
-            projectSwitcherSelection = projects[(current + delta + projects.count) % projects.count]
+            let current = projectSwitcherKeySelection.flatMap { projects.firstIndex(of: $0) } ?? 0
+            projectSwitcherKeySelection = projects[(current + delta + projects.count) % projects.count]
         } else {
             // Panels are mutually exclusive (same rule as ⌘K/⌘N/⌘/): the
             // HUD must not stack over an open palette.
@@ -1196,7 +1200,7 @@ public final class AppModel: ObservableObject {
             deferredLanding = nil
             projectSwitcherPresented = true
             switcherArmedByCommand = heldCommand
-            projectSwitcherSelection = projects[delta > 0 ? 1 : projects.count - 1]
+            projectSwitcherKeySelection = projects[delta > 0 ? 1 : projects.count - 1]
         }
     }
 
@@ -1209,12 +1213,12 @@ public final class AppModel: ObservableObject {
     /// Go where the highlight is (⌘ released, Return, or a click on a tile).
     public func commitProjectSwitcher() {
         guard projectSwitcherPresented else { return }
-        let selection = projectSwitcherSelection
+        let selection = projectSwitcherKeySelection
         cancelProjectSwitcher()
         // The project may have closed its last tab while the switcher was up.
-        guard let selection, openSessions.openProjects.contains(selection) else { return }
+        guard let selection, openSessions.openProjectKeys.contains(selection) else { return }
         land(releasing: .command) { [openSessions] in
-            guard openSessions.openProjects.contains(selection) else { return }
+            guard openSessions.openProjectKeys.contains(selection) else { return }
             openSessions.activateProject(selection)
         }
     }
@@ -1259,7 +1263,7 @@ public final class AppModel: ObservableObject {
 
     public func cancelProjectSwitcher() {
         projectSwitcherPresented = false
-        projectSwitcherSelection = nil
+        projectSwitcherKeySelection = nil
         switcherArmedByCommand = false
     }
 

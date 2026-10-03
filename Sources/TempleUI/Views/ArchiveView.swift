@@ -64,9 +64,9 @@ struct ArchiveView: View {
         }
         .onDisappear { model.openSessions.focusActiveTerminal() }
         .onChange(of: query) { _, _ in reload() }
-        // The rows are @State, so an index update — or a restore from this very
+        // The rows are @State, so a row update — or a restore from this very
         // panel — needs an explicit refresh. Selection sticks to its row's id.
-        .onChange(of: model.index) { _, _ in reloadPreservingSelection() }
+        .onChange(of: model.sessions) { _, _ in reloadPreservingSelection() }
         .onReceive(model.overlay.objectWillChange
             .receive(on: DispatchQueue.main)) { _ in reloadPreservingSelection() }
         .onKeyPress(.downArrow) { move(1); return .handled }
@@ -210,7 +210,7 @@ struct ArchiveView: View {
     private func sessionRow(_ session: Session) -> some View {
         let entry = Entry.session(session)
         let index = indexByID[entry.id] ?? 0
-        let insideArchivedProject = (session.project.map { model.overlay.isProjectArchived($0.path) } ?? false)
+        let insideArchivedProject = (session.project.map { model.overlay.isProjectArchived($0) } ?? false)
         return ArchiveRow(
             selected: index == selection,
             restoreLabel: insideArchivedProject ? nil : "Restore",
@@ -282,7 +282,7 @@ struct ArchiveView: View {
         case .project:
             return "restore project"
         case .session(let session):
-            if (session.project.map { model.overlay.isProjectArchived($0.path) } ?? false) {
+            if (session.project.map { model.overlay.isProjectArchived($0) } ?? false) {
                 return "open · restores \(session.project?.displayName ?? "No project")"
             }
             return "open session"
@@ -367,10 +367,10 @@ struct ArchiveView: View {
     private func restore(_ entry: Entry) {
         switch entry {
         case .project(let project):
-            model.restoreProject(project.path, undoManager: undoManager)
+            model.restoreProject(project.key, undoManager: undoManager)
         case .session(let session):
-            if (session.project.map { model.overlay.isProjectArchived($0.path) } ?? false) {
-                if let project = session.project { model.restoreProject(project.path, undoManager: undoManager) }
+            if (session.project.map { model.overlay.isProjectArchived($0) } ?? false) {
+                if let project = session.project { model.restoreProject(project, undoManager: undoManager) }
             } else {
                 model.restoreSession(session.id, undoManager: undoManager)
             }

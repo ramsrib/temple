@@ -229,17 +229,17 @@ struct HistoryTabView: View {
 
     private var projectMenu: some View {
         Menu {
-            Picker("", selection: $history.projectFilter) {
-                Text("Any project").tag(String?.none)
-                ForEach(history.projects, id: \.path) { project in
-                    Text("\(HistoryModel.projectName(project.path)) — \(Self.parentFolder(project.path))")
-                        .tag(String?.some(project.path))
+            Picker("", selection: $history.projectKeyFilter) {
+                Text("Any project").tag(ProjectKey?.none)
+                ForEach(history.projects, id: \.key) { project in
+                    Text("\(project.key.displayName) — \(Self.parentFolder(project.path))")
+                        .tag(ProjectKey?.some(project.key))
                 }
             }
             .pickerStyle(.inline)
             .labelsHidden()
         } label: {
-            Text(history.projectFilter.map(HistoryModel.projectName) ?? "Any project")
+            Text(history.projectKeyFilter.map(\.displayName) ?? "Any project")
         }
         .menuIndicator(.visible)
         .modifier(FlatToolbarMenu(width: 150))
@@ -545,7 +545,7 @@ struct HistoryTabView: View {
                 title: "No sessions yet",
                 detail: "Sessions you run with Claude Code or Codex — here or in any terminal — appear here.")
         }
-        let otherFilters = history.agentFilter != nil || history.projectFilter != nil
+        let otherFilters = history.agentFilter != nil || history.projectKeyFilter != nil
         if !otherFilters, history.scope == .notInTemple {
             return EmptyCopy(
                 title: "Everything on disk is in Temple.",
@@ -561,7 +561,7 @@ struct HistoryTabView: View {
             action: ("Show all", {
                 history.scope = .all
                 history.agentFilter = nil
-                history.projectFilter = nil
+                history.projectKeyFilter = nil
             }))
     }
 
@@ -570,7 +570,7 @@ struct HistoryTabView: View {
         var names: [String] = []
         if history.scope != .all { names.append(history.scope.label) }
         if let agent = history.agentFilter { names.append(agent.displayName) }
-        if let project = history.projectFilter { names.append(HistoryModel.projectName(project)) }
+        if let project = history.projectKeyFilter { names.append(project.displayName) }
         return names
     }
 }
@@ -740,7 +740,7 @@ private struct HistoryPageRow: View, Equatable {
             Button("Show in sidebar") { actions.showInSidebar(session.id) }
         }
         Button("Show only \(session.project?.displayName ?? "No project")") {
-            history.showOnly(project: session.projectPath)
+            if let project = session.project { history.showOnly(project: project) }
         }
     }
 

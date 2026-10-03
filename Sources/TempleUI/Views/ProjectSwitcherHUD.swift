@@ -12,17 +12,17 @@ import TempleCore
 struct ProjectSwitcherHUD: View {
     @EnvironmentObject var model: AppModel
 
-    private var projects: [String] { model.switchableProjects }
+    private var projects: [ProjectKey] { model.switchableProjectKeys }
 
     /// Where you are switching FROM. Most-recently-used order puts it first, and
     /// saying so matters: without it the highlight alone tells you where you would
     /// land but not where you would be leaving.
-    private var current: String? { model.openSessions.activeProjectPath }
+    private var current: ProjectKey? { model.openSessions.activeProjectKey }
 
     var body: some View {
         HStack(spacing: 4) {
             ForEach(projects, id: \.self) { path in
-                tile(path, selected: path == model.projectSwitcherSelection)
+                tile(path, selected: path == model.projectSwitcherKeySelection)
             }
         }
         .padding(14)
@@ -30,8 +30,8 @@ struct ProjectSwitcherHUD: View {
         .fixedSize()
     }
 
-    private func tile(_ path: String, selected: Bool) -> some View {
-        let tabs = model.openSessions.tabs.filter { $0.kind == .session && $0.projectPath == path }
+    private func tile(_ path: ProjectKey, selected: Bool) -> some View {
+        let tabs = model.openSessions.tabs.filter { $0.kind == .session && $0.projectKey == path }
         let states = tabs.map(\.activity)
         let activity: ActivityState? = states.contains(.needsAttention) ? .needsAttention
             : (states.contains(.running) ? .running : nil)
@@ -75,7 +75,7 @@ struct ProjectSwitcherHUD: View {
         )
         .contentShape(Rectangle())
         .onTapGesture {
-            model.projectSwitcherSelection = path
+            model.projectSwitcherKeySelection = path
             model.commitProjectSwitcher()
         }
     }

@@ -1,8 +1,7 @@
 import Foundation
 import TempleCore
 
-// Prints the real project → session index from ~/.claude and ~/.codex.
-// A no-UI proof that TempleCore reads live data (Phase 1).
+// Row browsing by default; --disk explicitly browses the transcript catalog.
 
 let df = DateFormatter()
 df.dateFormat = "MMM d HH:mm"
@@ -11,7 +10,7 @@ let limit = CommandLine.arguments.contains("--all") ? Int.max : 8
 let includeNoise = CommandLine.arguments.contains("--all")
 
 if CommandLine.arguments.contains("--help") {
-    print("Usage: templectl [--watch] [--all] [--search <term>] [--import-all]\n  --all  include noise sessions and do not cap sessions per project\n  --import-all  make every indexed session a Temple session (demo state dirs only)")
+    print("Usage: templectl [--disk] [--watch] [--all] [--search <term>] [--import-all]\n  --disk  browse the transcript catalog instead of Temple rows\n  --all  include noise sessions and do not cap sessions per project\n  --import-all  make every indexed session a Temple session (demo state dirs only)")
     exit(0)
 }
 
@@ -75,22 +74,55 @@ let searchQuery: String? = {
     return CommandLine.arguments[index + 1]
 }()
 
-if let searchQuery {
-    let index = SessionIndex.buildDefault().filteringNoise(includeNoise: includeNoise)
-    for session in index.search(searchQuery) {
-        let badge = session.agent == .claude ? "◆ claude" : "◇ codex "
-        let project = URL(fileURLWithPath: session.projectPath).lastPathComponent
-        print("\(badge)  \(project)  —  \(session.title)")
+func printRows(_ rows: [Session], compact: Bool = false) {
+    let projects = SessionRowProject.grouping(rows)
+    print(compact ? "rows updated: \(projects.count) projects, \(rows.count) sessions"
+          : "Temple: \(projects.count) projects, \(rows.count) sessions\n")
+    for row in rows.prefix(compact || limit == Int.max ? rows.count : 30 * limit) {
+        let agent = row.agent?.rawValue ?? "unknown"
+        let project = row.project?.displayName ?? "No project"
+        let resolution: String
+        switch row.resolution {
+        case .confirmedAbsent: resolution = "Transcript missing"
+        case .loaded: resolution = "Transcript found"
+        case .resolving: resolution = "Resolving"
+        case .awaitingCreation: resolution = "Awaiting creation"
+        case .unreadable: resolution = "Transcript unreadable"
+        case nil: resolution = "Unresolved"
+        }
+        print("\(agent)  \(project)  \(df.string(from: row.sortDate))  \(row.displayTitle)  [\(resolution)]")
     }
+}
+
+if CommandLine.arguments.contains("--disk") {
+    let index = SessionIndex.buildDefault().filteringNoise(includeNoise: includeNoise)
+    if let searchQuery {
+        for session in index.search(searchQuery) {
+            print("\(session.agent.rawValue)  \(session.projectPath)  \(session.title)")
+        }
+    } else { printIndex(index) }
 } else if CommandLine.arguments.contains("--watch") {
     let database = try openDatabase(readOnly: !TempleState.isRedirected)
     let watcher = SessionWatcher(database: database)
-    var first = true
-    for await index in watcher.start() {
-        printIndex(index.filteringNoise(includeNoise: includeNoise), compact: !first)
-        first = false
-        fflush(stdout) // live proof harness: keep updates visible when piped/redirected
+    let snapshots = watcher.snapshots()
+    let legacyUpdates = watcher.start()
+    defer { watcher.stop(); withExtendedLifetime(legacyUpdates) {} }
+    for await snapshot in snapshots {
+        if !database.isReadOnly {
+            for summary in snapshot.summaries.values {
+                _ = try database.fillCoreFields(sessionID: summary.id, expectedHost: summary.locator.host,
+                    agent: summary.agent, directory: summary.cwd, title: summary.firstPrompt ?? summary.historyPrompt,
+                    lastActiveAt: summary.modifiedAt)
+            }
+        }
+        let rows = try database.sessionStates().map { Session(state: $0, resolution: snapshot.resolutions[$0.id]) }
+            .sorted { $0.sortDate == $1.sortDate ? $0.id < $1.id : $0.sortDate > $1.sortDate }
+        printRows(searchQuery.map { SessionRowSearch.rank(rows, query: $0) } ?? rows, compact: true)
+        fflush(stdout)
     }
 } else {
-    printIndex(SessionIndex.buildDefault().filteringNoise(includeNoise: includeNoise))
+    let database = try openDatabase(readOnly: !TempleState.isRedirected)
+    let rows = try database.sessionStates().map { Session(state: $0) }
+        .sorted { $0.sortDate == $1.sortDate ? $0.id < $1.id : $0.sortDate > $1.sortDate }
+    printRows(searchQuery.map { SessionRowSearch.rank(rows, query: $0) } ?? rows)
 }
