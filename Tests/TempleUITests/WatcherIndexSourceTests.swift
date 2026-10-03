@@ -17,7 +17,7 @@ final class WatcherIndexSourceTests: XCTestCase {
         for file in files { try write(file, prompt: "Before") }
         let secondParse = expectation(description: "second member parse reached")
         let store = BatchGateStore(root: root, onSecondParse: { secondParse.fulfill() })
-        let watcher = SessionWatcher(stores: [store], members: ["one", "two"], debounceInterval: 0.1)
+        let watcher = SessionWatcher(stores: [store], members: ["one", "two"], debounceInterval: 0.1, now: { store.now })
         let source = WatcherIndexSource(watcher: watcher)
         defer { store.release(); source.stop() }
         let initial = expectation(description: "initial index")
@@ -57,12 +57,21 @@ private final class BatchGateStore: TranscriptSummaryStore, @unchecked Sendable 
     private let onSecondParse: @Sendable () -> Void
     private var armed = false
     private var parses = 0
+    private var clock = Date()
+    var now: Date { lock.lock(); defer { lock.unlock() }; return clock }
 
     init(root: URL, onSecondParse: @escaping @Sendable () -> Void) {
         inner = ClaudeSessionStore(root: root)
         self.onSecondParse = onSecondParse
     }
-    func arm() { lock.lock(); armed = true; parses = 0; lock.unlock() }
+    func arm() {
+        lock.lock()
+        // Both members must be eligible in this batch. A shrinking file now
+        // invalidates identity without resetting its independent parse deadline.
+        clock.addTimeInterval(61)
+        armed = true; parses = 0
+        lock.unlock()
+    }
     func release() { gate.signal() }
     var agent: Agent { inner.agent }
     var watchedURLs: [URL] { inner.watchedURLs }

@@ -168,17 +168,60 @@ final class MemberStateMachineTests: XCTestCase {
         XCTAssertEqual(spy.verifications, 1, "Coverage resets enrichment without invalidating a stable identity")
     }
 
-    func testAFieldFillResetsBackoffAndTheNextMissingFactRemainsEligible() async throws {
-        let (_, file, _, spy, clock, watcher) = try fixture()
+    func testAPartialFillResolvesADeferredSignatureWithoutAnotherWrite() async throws {
+        let (_, file, db, spy, clock, watcher) = try fixture()
         watcher.setEnrichmentWanted(["member": [.directory, .title]])
         let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
-        watcher.setEnrichmentWanted(["member": [.title]])
-        let before = spy.parses
         clock.advance(0.1)
         try append(file, "{\"type\":\"user\",\"sessionId\":\"member\",\"message\":{\"content\":\"Soon\"}}\n")
+        let observations = watcher.metrics.observations
         watcher.reconcileEnrichment()
-        try await wait { spy.parses == before + 1 }
-        XCTAssertEqual(watcher.publishedSnapshot?.summaries["member"]?.firstPrompt, "Soon")
+        try await wait { watcher.metrics.observations > observations }
+        XCTAssertEqual(spy.parses, 1, "Changed signature is deferred behind the first deadline")
+        _ = try db.fillCoreFields(sessionID: "member", directory: "/work")
+        watcher.setEnrichmentWanted(["member": [.title]])
+        // No clock advance, reconciliation or further write: the fill must re-arm work.
+        try await wait { watcher.publishedSnapshot?.summaries["member"]?.firstPrompt == "Soon" }
+        XCTAssertEqual(spy.parses, 2)
+        let summary = try XCTUnwrap(watcher.publishedSnapshot?.summaries["member"])
+        _ = try db.fillCoreFields(sessionID: "member", title: summary.firstPrompt)
+        XCTAssertEqual(try db.sessionState("member")?.title, "Soon")
+    }
+
+    func testRapidReplacementsPreserveTheMembersParseBackoff() async throws {
+        let (_, file, _, spy, clock, watcher) = try fixture()
+        watcher.setEnrichmentWanted(["member": [.title]])
+        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
+        for _ in 0..<240 {
+            clock.advance(0.25)
+            let verifications = spy.verifications
+            try write(file, atomic: true)
+            watcher.reconcileEnrichment()
+            try await wait { spy.verifications > verifications }
+        }
+        XCTAssertEqual(spy.parses, 6, "Replacements verify immediately but parse only at 0,1,3,7,15,31")
+        XCTAssertGreaterThanOrEqual(spy.verifications, 241)
+    }
+
+    func testRepeatedAfterParseRacesStillChargeTheMembersBackoff() async throws {
+        let (_, file, _, spy, clock, watcher) = try fixture()
+        spy.afterParse = {
+            let handle = try! FileHandle(forWritingTo: file)
+            defer { try? handle.close() }
+            try! handle.seekToEnd()
+            try! handle.write(contentsOf: Data("{}\n".utf8))
+        }
+        watcher.setEnrichmentWanted(["member": [.title]])
+        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
+        for _ in 0..<240 {
+            clock.advance(0.25)
+            try append(file)
+            let observations = watcher.metrics.observations
+            watcher.reconcileEnrichment()
+            try await wait { watcher.metrics.observations > observations }
+        }
+        XCTAssertEqual(spy.parses, 6, "Every discarded parse consumes a backoff interval")
+        XCTAssertNil(watcher.publishedSnapshot?.summaries["member"], "Racing results must never escape")
     }
 
     func testAnIdentityReadRacingAReplacementNeverPublishesLoaded() async throws {
@@ -230,6 +273,7 @@ private final class P5SpyStore: IncrementalSessionStore, @unchecked Sendable {
     private var parseCount = 0
     private var verifyCount = 0
     private var failure = false
+    var afterParse: (@Sendable () -> Void)?
     var afterVerification: (@Sendable () -> Void)?
     init(_ inner: any IncrementalSessionStore) { self.inner = inner }
     var parses: Int { lock.lock(); defer { lock.unlock() }; return parseCount }
@@ -243,7 +287,9 @@ private final class P5SpyStore: IncrementalSessionStore, @unchecked Sendable {
     func loadSummaries() -> [TranscriptSummary] { XCTFail("No full-store parse"); return [] }
     func loadSummary(at fileURL: URL) -> TranscriptSummary? {
         lock.lock(); parseCount += 1; lock.unlock()
-        return inner.loadSummary(at: fileURL)
+        let summary = inner.loadSummary(at: fileURL)
+        afterParse?()
+        return summary
     }
     func verifyIdentity(at url: URL, expectedID: String) throws -> TranscriptVerification {
         lock.lock(); verifyCount += 1; lock.unlock()

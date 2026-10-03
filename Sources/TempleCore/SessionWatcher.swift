@@ -614,7 +614,13 @@ public final class SessionWatcher: @unchecked Sendable {
             let invalidate = work.path != path || previous?.fileNumber != signature.fileNumber
                 || signature.size < (previous?.size ?? 0)
             if invalidate {
-                work = MemberWork(path: path)
+                // Identity belongs to the selected file; the parse budget belongs
+                // to the member and survives replacements, truncation and reverts.
+                work.path = path
+                work.verified = false
+                work.verificationFailure = nil
+                work.lastAttempt = nil
+                work.enrichmentFailed = false
                 summaries.removeValue(forKey: id)
             }
             signatures[id] = signature
@@ -662,6 +668,11 @@ public final class SessionWatcher: @unchecked Sendable {
                 scheduleEnrichmentLocked(id, after: work.nextAttempt.timeIntervalSince(now()))
                 setStateLocked(id, to: .loaded(entry.0)); return
             }
+            // Charge even a read whose result is discarded for a concurrent write.
+            work.lastAttempt = signature
+            work.nextAttempt = now().addingTimeInterval(work.delay)
+            work.delay = min(60, work.delay * 2)
+            memberWork[id] = work
             parseCount &+= 1
             let summary = store.loadSummary(at: entry.0)
             do {
@@ -675,9 +686,6 @@ public final class SessionWatcher: @unchecked Sendable {
                 work.verified = false; memberWork[id] = work
                 unreadable = true; continue
             }
-            work.lastAttempt = signature
-            work.nextAttempt = now().addingTimeInterval(work.delay)
-            work.delay = min(60, work.delay * 2)
             work.enrichmentFailed = summary == nil
             memberWork[id] = work
             guard let summary else { unreadable = true; continue }
@@ -721,11 +729,10 @@ public final class SessionWatcher: @unchecked Sendable {
             let previous = self.wanted
             self.wanted = missing
             for id in self.members {
-                if let old = previous?[id], !old.subtracting(missing[id] ?? []).isEmpty {
-                    self.resetEnrichmentLocked(id)
-                }
+                let filled = previous?[id].map { !$0.subtracting(missing[id] ?? []).isEmpty } ?? false
+                if filled { self.resetEnrichmentLocked(id) }
                 if missing[id]?.isEmpty != false { self.enrichmentTimers.removeValue(forKey: id)?.cancel() }
-                else if previous != nil && previous?[id]?.isEmpty != false && self.running {
+                else if self.running && (filled || (previous != nil && previous?[id]?.isEmpty != false)) {
                     self.resetEnrichmentLocked(id)
                     self.resolveLocked(id, explicit: true)
                 }
@@ -1015,7 +1022,7 @@ public struct EngineMetrics: Sendable {
 }
 
 private struct MemberWork {
-    let path: String
+    var path: String
     var verified = false
     var enrichmentFailed = false
     var verificationFailure: MemberResolution?
