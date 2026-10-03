@@ -18,7 +18,7 @@ final class WatcherIndexSourceTests: XCTestCase {
         let secondParse = expectation(description: "second member parse reached")
         let store = BatchGateStore(root: root, onSecondParse: { secondParse.fulfill() })
         let watcher = SessionWatcher(stores: [store], members: ["one", "two"], debounceInterval: 0.1)
-        let source = WatcherIndexSource(watcher: watcher, cacheURL: root.appendingPathComponent("cache.json"))
+        let source = WatcherIndexSource(watcher: watcher)
         defer { store.release(); source.stop() }
         let initial = expectation(description: "initial index")
         let complete = expectation(description: "complete batch index")

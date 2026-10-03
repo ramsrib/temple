@@ -11,10 +11,8 @@ public protocol IndexSource: AnyObject {
 
 @MainActor
 public final class WatcherIndexSource: IndexSource {
-    private static let cacheSaveInterval = Duration.seconds(5)
 
     let watcher: SessionWatcher
-    private let cacheURL: URL
     private var task: Task<Void, Never>?
     private var snapshotTask: Task<Void, Never>?
     private var resolutionTask: Task<Void, Never>?
@@ -28,18 +26,12 @@ public final class WatcherIndexSource: IndexSource {
             if let latestResolutions { onResolutionUpdate?(latestResolutions) }
         }
     }
-    private var cacheTask: Task<Void, Never>?
-    private var pendingCacheIndex: SessionIndex?
     private var onUpdate: ((SessionIndex) -> Void)?
     private var observers: [UUID: (SessionIndex) -> Void] = [:]
     private var latestIndex: SessionIndex?
 
-    public init(
-        watcher: SessionWatcher = SessionWatcher(),
-        cacheURL: URL = CachedIndexStore.defaultURL
-    ) {
+    public init(watcher: SessionWatcher = SessionWatcher()) {
         self.watcher = watcher
-        self.cacheURL = cacheURL
     }
 
     public func start(onUpdate: @escaping (SessionIndex) -> Void) {
@@ -51,9 +43,6 @@ public final class WatcherIndexSource: IndexSource {
     public func stop() {
         task?.cancel()
         task = nil
-        cacheTask?.cancel()
-        cacheTask = nil
-        pendingCacheIndex = nil
         latestSnapshot = nil; latestIndex = nil; latestResolutions = nil; onUpdate = nil
         snapshotTask?.cancel(); snapshotTask = nil
         resolutionTask?.cancel(); resolutionTask = nil
@@ -98,7 +87,6 @@ public final class WatcherIndexSource: IndexSource {
                 self.latestIndex = index
                 self.onUpdate?(index)
                 for observer in Array(self.observers.values) { observer(index) }
-                self.scheduleCacheSave(index)
             }
         }
         let stream = watcher.start()
@@ -107,27 +95,4 @@ public final class WatcherIndexSource: IndexSource {
         }
     }
 
-    /// Coalesces watcher snapshots and keeps JSON encoding and disk I/O away
-    /// from the main actor that delivers sidebar updates.
-    private func scheduleCacheSave(_ index: SessionIndex) {
-        pendingCacheIndex = index
-        guard cacheTask == nil else { return }
-        cacheTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: Self.cacheSaveInterval)
-            } catch {
-                return
-            }
-            guard let self, let index = self.pendingCacheIndex else { return }
-            self.pendingCacheIndex = nil
-            let cacheURL = self.cacheURL
-            await Task.detached(priority: .utility) {
-                try? CachedIndexStore.save(index, to: cacheURL)
-            }.value
-            self.cacheTask = nil
-            if let pending = self.pendingCacheIndex {
-                self.scheduleCacheSave(pending)
-            }
-        }
-    }
 }

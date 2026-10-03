@@ -1050,11 +1050,11 @@ final class HistoryUndoEngineTests: XCTestCase {
         let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: database,
                                      debounceInterval: 0.02)
         let cache = root.appendingPathComponent("cache.json")
-        let source = WatcherIndexSource(watcher: watcher, cacheURL: cache)
+        let source = WatcherIndexSource(watcher: watcher)
         defer { source.stop() }
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
                              database: database, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
-                             overlay: SessionOverlayStore(db: database), cacheURL: cache)
+                             overlay: SessionOverlayStore(db: database), stateDirectory: root)
         model.start()
         try await waitFor { !model.isLoading }
         let row = AgentSession(id: "imp", agent: .claude, projectPath: NSTemporaryDirectory(),

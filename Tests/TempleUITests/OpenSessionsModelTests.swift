@@ -67,7 +67,7 @@ final class OpenSessionsModelTests: XCTestCase {
         let factory = FakeTerminalSurfaceFactory()
         let app = AppModel(surfaceFactory: factory, indexSource: FakeIndexSource(SessionIndex(projects: [])),
             database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
-            cacheURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+            stateDirectory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["row": .resolving], summaries: [:]))
         app.openSession(id: "row")
         XCTAssertEqual(factory.created.count, 1)

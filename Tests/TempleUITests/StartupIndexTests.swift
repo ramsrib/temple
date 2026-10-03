@@ -4,45 +4,23 @@ import TempleCore
 
 @MainActor
 final class StartupIndexTests: XCTestCase {
-    func testCachedIndexPublishesBeforeFirstLiveEmission() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("temple-ui-cache-\(UUID().uuidString)", isDirectory: true)
+    func testIndexCacheFileIsRemovedOnStart() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("temple-cache-removal-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let cacheURL = directory.appendingPathComponent("index-cache.json")
-        let cachedIndex = SessionIndex(projects: [
-            Project(path: "/cached", sessions: [
-                Fixture.session("cached", project: "/cached", title: "Cached"),
-            ]),
-        ])
-        let liveIndex = SessionIndex(projects: [
-            Project(path: "/live", sessions: [
-                Fixture.session("live", project: "/live", title: "Live"),
-            ]),
-        ])
-        try CachedIndexStore.save(cachedIndex, to: cacheURL)
-        let source = DelayedIndexSource()
-        let database = try TempleDB.inMemory()
-        Fixture.join(cachedIndex, to: database)
-        Fixture.join(liveIndex, to: database)
-        let model = AppModel(
-            surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: source,
-            noiseFilter: NoNoiseFilter(),
-            database: database,
-            settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
-            overlay: SessionOverlayStore(db: database),
-            cacheURL: cacheURL
-        )
-
+        let cache = directory.appendingPathComponent("index-cache.json")
+        try Data("obsolete".utf8).write(to: cache)
+        let sentinel = directory.appendingPathComponent("keep.json")
+        try Data("keep".utf8).write(to: sentinel)
+        let db = try TempleDB.inMemory()
+        Fixture.join([Fixture.row("member", project: "/work", title: "Durable")], to: db)
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: DelayedIndexSource(),
+            database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()), stateDirectory: directory)
         model.start()
-
-        XCTAssertEqual(model.index, cachedIndex)
-        XCTAssertFalse(model.isLoading)
-        XCTAssertTrue(model.isIndexStale)
-
-        source.emit(liveIndex)
-        XCTAssertEqual(model.index, liveIndex)
-        XCTAssertFalse(model.isIndexStale)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cache.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sentinel.path))
+        XCTAssertEqual(model.sessions.first?.displayTitle, "Durable")
+        XCTAssertTrue(model.isLoading)
     }
     func testTitleOnlyLiveUpdateReachesAppModel() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("temple-title-\(UUID().uuidString)")
@@ -55,7 +33,7 @@ final class StartupIndexTests: XCTestCase {
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
                              noiseFilter: NoNoiseFilter(), database: db,
                              settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
-                             cacheURL: directory.appendingPathComponent("cache.json"))
+                             stateDirectory: directory)
         model.start()
         source.emit(first)
         source.emit(second)

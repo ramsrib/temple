@@ -974,18 +974,7 @@ final class SessionEngineTests: XCTestCase {
         XCTAssertEqual(try upgraded.sessionState("legacy")?.agent, .claude)
     }
 
-    func testVersionTwoCacheRejectedAndCurrentCacheFilteredByMembers() throws {
-        let root = try root()
-        let url = root.appendingPathComponent("cache.json")
-        let sessions = ["in", "out"].map { AgentSession(id: $0, agent: .claude, projectPath: "/tmp", title: $0,
-            createdAt: nil, updatedAt: Date(), filePath: URL(fileURLWithPath: "/tmp/\($0).jsonl")) }
-        try CachedIndexStore.save(.grouping(sessions), to: url)
-        XCTAssertEqual(CachedIndexStore.load(from: url, members: ["in"])?.allSessions.map(\.id), ["in"])
-        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
-        object["schemaVersion"] = 2
-        try JSONSerialization.data(withJSONObject: object).write(to: url)
-        XCTAssertNil(CachedIndexStore.load(from: url, members: ["in"]))
-    }
+
 }
 
 @MainActor

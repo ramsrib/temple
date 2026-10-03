@@ -235,11 +235,11 @@ final class SessionScopeTests: XCTestCase {
             .write(to: root.appendingPathComponent("session_index.jsonl"), atomically: true, encoding: .utf8)
         let watcher = SessionWatcher(stores: [CodexSessionStore(root: root)], database: db, debounceInterval: 0.02)
         let cache = root.appendingPathComponent("cache.json")
-        let source = WatcherIndexSource(watcher: watcher, cacheURL: cache)
+        let source = WatcherIndexSource(watcher: watcher)
         defer { source.stop() }
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
             noiseFilter: ScopeNoNoiseFilter(), database: db,
-            settings: SettingsStore(defaults: Fixture.uniqueDefaults()), cacheURL: cache)
+            settings: SettingsStore(defaults: Fixture.uniqueDefaults()), stateDirectory: root)
         model.start()
         let initialDeadline = Date().addingTimeInterval(3)
         while (model.isLoading || model.sessions.first(where: { $0.id == initial })?.state.title == nil), Date() < initialDeadline {
@@ -274,12 +274,11 @@ final class SessionScopeTests: XCTestCase {
         try db.join(sessionID: "missing", via: .imported,
                     core: SessionCore(directory: "/missing", title: "Kept row"))
         let cacheURL = root.appendingPathComponent("cache.json")
-        let source = WatcherIndexSource(watcher: SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db),
-                                        cacheURL: cacheURL)
+        let source = WatcherIndexSource(watcher: SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db))
         defer { source.stop() }
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
             noiseFilter: ScopeNoNoiseFilter(), database: db,
-            settings: SettingsStore(defaults: Fixture.uniqueDefaults()), cacheURL: cacheURL)
+            settings: SettingsStore(defaults: Fixture.uniqueDefaults()), stateDirectory: root)
         model.start()
         let end = Date().addingTimeInterval(3)
         while (model.isLoading || model.sessions.first(where: { $0.id == "legacy" })?.state.title == nil), Date() < end {

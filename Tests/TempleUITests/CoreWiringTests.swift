@@ -25,7 +25,7 @@ final class CoreWiringTests: XCTestCase {
         )
         try database.join(sessionID: "wired-session", via: .created, agent: .claude,
                           core: SessionCore(directory: "/tmp/project"))
-        let source = WatcherIndexSource(watcher: watcher, cacheURL: cacheURL)
+        let source = WatcherIndexSource(watcher: watcher)
         defer { source.stop() }
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
@@ -33,7 +33,7 @@ final class CoreWiringTests: XCTestCase {
             database: database,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: SessionOverlayStore(db: database),
-            cacheURL: cacheURL
+            stateDirectory: root
         )
         model.start()
 
@@ -74,8 +74,7 @@ final class CoreWiringTests: XCTestCase {
             debounceInterval: 0.05
         )
         let source = WatcherIndexSource(
-            watcher: watcher,
-            cacheURL: root.appendingPathComponent("index-cache.json")
+            watcher: watcher
         )
         defer { source.stop() }
         let reconciler = WatcherCodexReconciler(indexSource: source, window: 3)
@@ -116,7 +115,7 @@ final class CoreWiringTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02)
-        let source = WatcherIndexSource(watcher: watcher, cacheURL: root.appendingPathComponent("cache.json"))
+        let source = WatcherIndexSource(watcher: watcher)
         defer { source.stop() }
         let early = expectation(description: "early observer received publication")
         let token = source.observe { _ in early.fulfill() }
@@ -144,11 +143,11 @@ final class CoreWiringTests: XCTestCase {
         let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: database, debounceInterval: 0.02)
         try database.join(sessionID: "awaiting", via: .created, agent: .claude)
         let cache = root.appendingPathComponent("cache.json")
-        let source = WatcherIndexSource(watcher: watcher, cacheURL: cache)
+        let source = WatcherIndexSource(watcher: watcher)
         defer { source.stop() }
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
             database: database, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
-            overlay: SessionOverlayStore(db: database), cacheURL: cache)
+            overlay: SessionOverlayStore(db: database), stateDirectory: root)
         model.start()
         try await waitFor { !model.isLoading }
         XCTAssertEqual(model.openSessions.sessionKnown("pruned"), false)
@@ -183,11 +182,11 @@ final class CoreWiringTests: XCTestCase {
         try db.join(sessionID: "member", via: .opened, agent: .claude, transcriptPath: file)
         let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db, debounceInterval: 0.02)
         let cache = root.appendingPathComponent("cache.json")
-        let source = WatcherIndexSource(watcher: watcher, cacheURL: cache)
+        let source = WatcherIndexSource(watcher: watcher)
         defer { source.stop() }
         let overlay = SessionOverlayStore(db: db)
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
-            database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()), overlay: overlay, cacheURL: cache)
+            database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()), overlay: overlay, stateDirectory: root)
         model.start()
         try await waitFor { model.openSessions.sessionKnown("member") == true }
         let loadedResolution = watcher.resolution(for: "member")

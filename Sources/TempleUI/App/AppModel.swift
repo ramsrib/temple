@@ -322,17 +322,14 @@ public final class AppModel: ObservableObject {
     public let history: HistoryModel
 
     // Seams (Track C)
+    private let stateDirectory: URL?
     private let indexSource: IndexSource
     private let search: SessionSearch
     private let noiseFilter: NoiseFilter
-    private let cacheURL: URL
 
     private var cancellables: Set<AnyCancellable> = []
     private var themeObserver: NSObjectProtocol?
     private(set) var pendingSessionOpens: Set<String> = []
-    /// A cached snapshot is replaced unconditionally by the first live index.
-    private(set) var isIndexStale = false
-
     public init(surfaceFactory: TerminalSurfaceFactory = StubTerminalSurfaceFactory(),
                 indexSource: IndexSource? = nil,
                 search: SessionSearch = CoreSessionSearch(),
@@ -343,7 +340,7 @@ public final class AppModel: ObservableObject {
                 database: TempleDB,
                 settings: SettingsStore? = nil,
                 overlay: SessionOverlayStore? = nil,
-                cacheURL: URL = CachedIndexStore.defaultURL) {
+                stateDirectory: URL? = nil) {
         // Defaults that touch @MainActor types are built here (not as default
         // arguments, which evaluate in a nonisolated context).
         let settings = settings ?? SettingsStore(defaults: SettingsKeysProbe.scratchDefaults() ?? .standard)
@@ -351,7 +348,7 @@ public final class AppModel: ObservableObject {
         let uiState = UIStateStore(db: database)
         let registry = registry ?? DBProcessRegistry(db: database)
         let persistence = persistence ?? DBTabPersistence(db: database)
-        let resolvedIndexSource = indexSource ?? WatcherIndexSource(watcher: SessionWatcher(database: database), cacheURL: cacheURL)
+        let resolvedIndexSource = indexSource ?? WatcherIndexSource(watcher: SessionWatcher(database: database))
         let reconciler = reconciler ?? (resolvedIndexSource as? WatcherIndexSource).map {
             WatcherCodexReconciler(indexSource: $0)
         } ?? NoopCodexReconciler()
@@ -362,7 +359,7 @@ public final class AppModel: ObservableObject {
         self.search = search
         self.noiseFilter = noiseFilter
         self.indexSource = resolvedIndexSource
-        self.cacheURL = cacheURL
+        self.stateDirectory = stateDirectory
         self.notifications = NotificationController()
         self.history = HistoryModel(overlay: overlay)
 
@@ -601,14 +598,9 @@ public final class AppModel: ObservableObject {
         beginSidebarRanking()
         applyAppearance()
         openSessions.restore()
-        if let cachedIndex = CachedIndexStore.load(from: cacheURL, members: overlay.templeSessions) {
-            index = cachedIndex
-            isLoading = false
-            isIndexStale = true
-            // Startup breadcrumbs are greppable with:
-            // log show --predicate 'eventMessage CONTAINS "index published"'
-            TempleUILog.launch.info("cached index published")
-        }
+        // Temple owns this obsolete cache. Rows in SQLite are the launch path.
+        try? FileManager.default.removeItem(at: (stateDirectory ?? TempleState.directory)
+            .appendingPathComponent("index-cache.json"))
         if let source = indexSource as? WatcherIndexSource {
             source.onResolutionUpdate = { [weak self] states in
                 self?.openSessions.refreshExitedResumeDiagnoses()
@@ -622,7 +614,6 @@ public final class AppModel: ObservableObject {
         indexSource.start { [weak self] index in
             guard let self else { return }
             self.isLoading = false
-            self.isIndexStale = false
             if isFirstLiveIndex {
                 TempleUILog.launch.info("live index published")
                 isFirstLiveIndex = false
