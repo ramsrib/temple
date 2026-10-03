@@ -940,23 +940,13 @@ public final class AppModel: ObservableObject {
     /// activity first (live recency, unlike the launch-frozen sidebar).
     /// Browsing everything on disk is the History tab's job (⌘Y). Typing
     /// searches every Temple session.
-    public func paletteResults(_ query: String) -> [AgentSession] {
-        let sessions = Self.dedupedByID(visibleProjects.flatMap(\.sessions))
-        let openIDs = openSessions.openSessionIDsInTabOrder
-        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
-            let open = Set(openIDs)
-            return sessions.filter { open.contains($0.id) }.sorted { lhs, rhs in
-                if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
-                return lhs.id < rhs.id
-            }
+    public func paletteResults(_ query: String) -> [Session] {
+        let rows = visibleRows
+        let open = Set(openSessions.openSessionIDsInTabOrder)
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return rows.filter { open.contains($0.id) }
         }
-        // Rank over the cached non-noise set (respects the noise toggle),
-        // with open sessions weighted above equally-ranked closed ones.
-        // Overlay titles participate: a renamed or agent-retitled session
-        // must be findable under the title the row displays.
-        let ranked = search.rank(sessions, query: query,
-                                 titleOverrides: overlay.displayTitleOverrides)
-        let open = Set(openIDs)
+        let ranked = RowSearch.rank(rows, query: query)
         return ranked.filter { open.contains($0.id) } + ranked.filter { !open.contains($0.id) }
     }
 

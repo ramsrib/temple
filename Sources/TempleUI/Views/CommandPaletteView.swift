@@ -9,7 +9,7 @@ struct CommandPaletteView: View {
     @State private var selection = 0
     @FocusState private var fieldFocused: Bool
 
-    private var results: [AgentSession] {
+    private var results: [Session] {
         Array(model.paletteResults(query).prefix(40))
     }
 
@@ -154,7 +154,7 @@ private struct SearchHistoryRow: View {
 /// Return opens mid-typing.
 private struct PaletteResultRow: View {
     @EnvironmentObject var model: AppModel
-    let session: AgentSession
+    let session: Session
     let selected: Bool
     let open: () -> Void
 
@@ -162,12 +162,12 @@ private struct PaletteResultRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            AgentBadge(agent: session.agent, size: 14)
+            if let agent = session.agent { AgentBadge(agent: agent, size: 14) }
             VStack(alignment: .leading, spacing: 1) {
                 Text(model.displayTitle(session))
                     .font(.system(size: 13))
                     .lineLimit(1)
-                Text(model.projectName(session.projectPath))
+                Text(session.project?.displayName ?? "No project")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }

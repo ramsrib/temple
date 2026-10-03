@@ -129,11 +129,11 @@ final class SearchFilterTests: XCTestCase {
     }
 
     func testPaletteRanksAcrossAllProjects() {
-        let index = SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [Fixture.session("1", project: "/p/a", title: "Alpha task")]),
-            Project(path: "/p/b", sessions: [Fixture.session("2", project: "/p/b", title: "Alpine hike")]),
-        ])
-        let (model, _) = makeAppModel(index)
+        let rows = [
+            Fixture.row("1", project: "/p/a", title: "Alpha task"),
+            Fixture.row("2", project: "/p/b", title: "Alpine hike"),
+        ]
+        let (model, _) = makeRowModel(rows)
         let results = model.paletteResults("alp")
         XCTAssertEqual(Set(results.map(\.id)), ["1", "2"])
     }
@@ -338,14 +338,14 @@ final class SearchFilterTests: XCTestCase {
     }
 
     func testPaletteEmptyQueryListsOpenSessionsOnlyByRecency() {
-        let a = Fixture.session("a1", project: "/p/a", updated: 50)
-        let b = Fixture.session("b1", project: "/p/b", updated: 40)
-        let c = Fixture.session("c1", project: "/p/c", updated: 20)
-        let (model, _) = makeAppModel(SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [a]),
-            Project(path: "/p/b", sessions: [b]),
-            Project(path: "/p/c", sessions: [c]),
-        ]))
+        let a = Fixture.row("a1", project: "/p/a", updated: 50)
+        let b = Fixture.row("b1", project: "/p/b", updated: 40)
+        let c = Fixture.row("c1", project: "/p/c", updated: 20)
+        let (model, _) = makeRowModel( [
+            a,
+            b,
+            c,
+        ])
         // Nothing open → empty-query palette is empty (type-to-search hint);
         // browsing everything is ⌘Y's job.
         XCTAssertTrue(model.paletteResults("").isEmpty)
@@ -358,14 +358,14 @@ final class SearchFilterTests: XCTestCase {
     }
 
     func testPaletteNonEmptyQueryWeightsOpenMatches() {
-        let a = Fixture.session("a1", project: "/p/a", title: "alpha work", updated: 10)
-        let b = Fixture.session("b1", project: "/p/b", title: "alpha review", updated: 30)
-        let c = Fixture.session("c1", project: "/p/c", title: "alpha notes", updated: 20)
-        let (model, _) = makeAppModel(SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [a]),
-            Project(path: "/p/b", sessions: [b]),
-            Project(path: "/p/c", sessions: [c]),
-        ]))
+        let a = Fixture.row("a1", project: "/p/a", title: "alpha work", updated: 10)
+        let b = Fixture.row("b1", project: "/p/b", title: "alpha review", updated: 30)
+        let c = Fixture.row("c1", project: "/p/c", title: "alpha notes", updated: 20)
+        let (model, _) = makeRowModel( [
+            a,
+            b,
+            c,
+        ])
 
         model.openSessions.openSession(c)
         model.openSessions.openSession(a)
@@ -389,12 +389,12 @@ final class SearchFilterTests: XCTestCase {
     }
 
     func testPaletteSearchMatchesRenamedAndGeneratedTitles() {
-        let a = Fixture.session("a1", project: "/p/a", title: "first prompt about databases")
-        let b = Fixture.session("b1", project: "/p/b", title: "unrelated prompt")
-        let (model, overlay) = makeAppModel(SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [a]),
-            Project(path: "/p/b", sessions: [b]),
-        ]))
+        let a = Fixture.row("a1", project: "/p/a", title: "first prompt about databases")
+        let b = Fixture.row("b1", project: "/p/b", title: "unrelated prompt")
+        let (model, overlay) = makeRowModel( [
+            a,
+            b,
+        ])
 
         // The palette renders display titles, so search must match them too.
         overlay.rename("b1", to: "finish fivetran setup")
@@ -406,20 +406,22 @@ final class SearchFilterTests: XCTestCase {
         overlay.flushPendingTitles()
         XCTAssertEqual(Set(model.paletteResults("fivetran").map(\.id)), ["a1", "b1"])
 
-        // …and the raw file title still matches after an overlay exists.
-        XCTAssertEqual(model.paletteResults("databases").map(\.id), ["a1"])
+        // Search follows the displayed title after a retitle.
+        XCTAssertTrue(model.paletteResults("databases").isEmpty)
     }
 
     func testPaletteEmptyQueryBreaksRecencyTiesByID() {
-        let b = Fixture.session("b", project: "/p/a", updated: 10)
-        let a = Fixture.session("a", project: "/p/b", updated: 10)
-        let (model, _) = makeAppModel(SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [b]),
-            Project(path: "/p/b", sessions: [a]),
-        ]))
+        let b = Fixture.row("b", project: "/p/a", updated: 10)
+        let a = Fixture.row("a", project: "/p/b", updated: 10)
+        let (model, _) = makeRowModel( [
+            b,
+            a,
+        ])
 
         model.openSessions.openSession(b)
         model.openSessions.openSession(a)
+        model.overlay.touch("a", at: Date(timeIntervalSince1970: 9_000_000_000))
+        model.overlay.touch("b", at: Date(timeIntervalSince1970: 9_000_000_000))
         XCTAssertEqual(model.paletteResults("").map(\.id), ["a", "b"])
     }
 }
