@@ -40,6 +40,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     private let binaryPath: (Agent) -> String
     private let extraArgs: (Agent) -> [String]
     private let defaultAgent: () -> Agent
+    private let now: () -> Date
     /// "Is there anything wrong with how we'd launch this agent?" — asked at the
     /// moment a tab dies, never afterwards (see `SessionTab.commandWasSuspect`).
     private let canLaunch: (Agent) -> Bool
@@ -55,7 +56,31 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// A tab now runs this session: `.created` for one started here (a minted
     /// Claude id, or the Codex id adopted for a session this model launched),
     /// `.opened` for one resumed or restored. AppModel makes it a Temple session.
-    public var openedHandler: ((_ sessionID: String, _ via: JoinedVia, _ agent: Agent?, _ transcriptPath: URL?) -> Void)?
+    public var openedHandler: ((_ sessionID: String, _ via: JoinedVia, _ agent: Agent?, _ transcriptPath: URL?, _ core: SessionCore) -> Void)?
+    public var touchHandler: ((String, Date?) -> Void)?
+    public var launchDirectoryHandler: ((String, String) -> Void)?
+    private var awaitingExitDiagnosis: Set<SessionTab.ID> = []
+
+    /// Resolution updates retain the diagnosis interest after an early exit.
+    public func refreshExitedResumeDiagnoses() {
+        for tab in tabs where awaitingExitDiagnosis.contains(tab.id) {
+            guard case .exited = tab.activity, let sid = tab.sessionID else { continue }
+            if let known = sessionKnown(sid) {
+                tab.resumeTargetMissing = !known
+                awaitingExitDiagnosis.remove(tab.id)
+            }
+        }
+    }
+
+    private func diagnoseExit(_ tab: SessionTab) {
+        if let cwd = tab.command?.cwd {
+            tab.missingWorkingDirectory = FileManager.default.fileExists(atPath: cwd) ? nil : cwd
+        }
+        guard tab.isResume, let sid = tab.sessionID else { return }
+        if let known = sessionKnown(sid) { tab.resumeTargetMissing = !known }
+        else { awaitingExitDiagnosis.insert(tab.id) }
+    }
+
     /// Does any transcript on disk carry this session id? Answered from the
     /// index (AppModel wires it); nil means "can't say yet" — the index is
     /// still loading — and no verdict is recorded. Only a provable absence
@@ -71,7 +96,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                 binaryPath: @escaping (Agent) -> String = { $0.binaryName },
                 extraArgs: @escaping (Agent) -> [String] = { _ in [] },
                 defaultAgent: @escaping () -> Agent = { .claude },
-                canLaunch: @escaping (Agent) -> Bool = { _ in true }) {
+                canLaunch: @escaping (Agent) -> Bool = { _ in true },
+                now: @escaping () -> Date = Date.init) {
         self.surfaceFactory = surfaceFactory
         self.appearanceProvider = appearanceProvider
         self.runtime = runtime
@@ -82,6 +108,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         self.extraArgs = extraArgs
         self.defaultAgent = defaultAgent
         self.canLaunch = canLaunch
+        self.now = now
         super.init()
     }
 
@@ -159,7 +186,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Either way the session's project becomes active (UX "Open an existing
     /// session").
     public func openSession(_ session: AgentSession) {
-        openedHandler?(session.id, .opened, session.agent, session.filePath)
+        openedHandler?(session.id, .opened, session.agent, session.filePath, SessionCore())
         if let existing = sessionTab(withSessionID: session.id) {
             activate(existing)
             return
@@ -209,7 +236,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             command: spec.command,
             isProvisional: spec.isProvisional)
         tabs.append(tab)
-        if let sid = spec.sessionID { openedHandler?(sid, .created, spec.agent, nil) }
+        if let sid = spec.sessionID { openedHandler?(sid, .created, spec.agent, nil, SessionCore()) }
         if spec.isProvisional {
             // Codex: adopt the real id once its rollout file appears (ADR-008).
             reconciler.reconcile(projectPath: projectPath, startedAt: Date()) { [weak self, weak tab] id in
@@ -235,7 +262,11 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
         tab.sessionID = sessionID
         tab.isProvisional = false
-        openedHandler?(sessionID, .created, .codex, reconciler.transcriptPath(for: sessionID))
+        openedHandler?(sessionID, .created, .codex, reconciler.transcriptPath(for: sessionID), SessionCore())
+        if let launch = tab.launchObservation {
+            if let directory = launch.directory { launchDirectoryHandler?(sessionID, directory) }
+            if !isQuitting { touchHandler?(sessionID, launch.at) }
+        }
         if case .running(let pid) = tab.surface?.processState ?? .notStarted {
             registry.register(pid: pid, sessionID: sessionID)
         }
@@ -284,20 +315,35 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     /// Spawn the surface for a session tab on first activation (lazy restore).
     private func ensureSurface(for tab: SessionTab) {
-        guard tab.kind == .session, tab.surface == nil, let command = tab.command else { return }
+        guard !isQuitting, tab.kind == .session, tab.surface == nil, let command = tab.command else { return }
         let surface = surfaceFactory.makeSurface(appearance: appearanceProvider())
         surface.delegate = self
-        tab.attach(surface: surface)
+        let spawnedAt = now()
+        tab.attach(surface: surface, at: spawnedAt)
         // The shell should know it is in Temple, not in the library that
         // drives its PTY. A command's own variables still win.
+        if let sid = tab.sessionID {
+            openedHandler?(sid, tab.isResume ? .opened : .created, tab.agent, nil, SessionCore())
+        }
+        // Ghostty falls back to its default cwd when the requested path is not
+        // a directory. Capture the local fact at spawn, before adoption can lag.
+        var isDirectory: ObjCBool = false
+        let launchDirectory = FileManager.default.fileExists(atPath: command.cwd, isDirectory: &isDirectory)
+            && isDirectory.boolValue ? command.cwd : nil
         do {
             try surface.start(TerminalIdentity.apply(to: command))
         } catch {
             TempleUILog.launch.error("spawn failed: agent=\(tab.agent.rawValue, privacy: .public) argv0=\(command.argv.first ?? "?", privacy: .public) cwd=\(command.cwd, privacy: .public) error=\(String(describing: error), privacy: .public)")
             // A surface that won't even start is always the command's problem.
             tab.commandWasSuspect = true
+            diagnoseExit(tab)
             tab.activity = .exited(status: -1)
             return
+        }
+        tab.launchObservation = SessionTab.LaunchObservation(at: spawnedAt, directory: launchDirectory)
+        if let sid = tab.sessionID {
+            if let launchDirectory { launchDirectoryHandler?(sid, launchDirectory) }
+            if !isQuitting { touchHandler?(sid, spawnedAt) }
         }
         if case .running(let pid) = surface.processState, let sid = tab.sessionID {
             registry.register(pid: pid, sessionID: sid)
@@ -465,8 +511,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// eventual `.exited` delegate callback removes the tab. Inert chips and the
     /// Settings tab are removed immediately.
     public func closeTab(_ tabID: SessionTab.ID) {
-        guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
+        guard !isQuitting, let tab = tabs.first(where: { $0.id == tabID }) else { return }
         if tab.kind == .session, let sessionID = tab.sessionID {
+            touchHandler?(sessionID, nil)
             closedTabs.append(ClosedTabRecord(
                 sessionID: sessionID,
                 agent: tab.agent,
@@ -546,6 +593,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     private func removeTab(_ tabID: SessionTab.ID) {
         guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
         let tab = tabs[index]
+        awaitingExitDiagnosis.remove(tabID)
         cancelSettle(for: tabID)
         if let sid = tab.sessionID { registry.unregister(sessionID: sid) }
         let wasActive = activeTabID == tabID
@@ -777,7 +825,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                               projectPath: p.projectPath, title: p.title, command: command,
                               isResume: true)
         }
-        for p in saved { openedHandler?(p.sessionID, .opened, Agent(rawValue: p.agent), nil) }
+        for p in saved { openedHandler?(p.sessionID, .opened, Agent(rawValue: p.agent), nil, SessionCore()) }
         // Restore active project context without spawning anything.
         activeProjectPath = tabs.first?.projectPath
         // Every other chip stays inert until clicked (lazy restore). The one the
@@ -807,6 +855,7 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
             tab.activity = .running
             if let sid = tab.sessionID { registry.register(pid: pid, sessionID: sid) }
         case .exited(let status):
+            if let sid = tab.sessionID { touchHandler?(sid, nil) }
             // Tab == process (ADR-010): a finished agent auto-closes its tab.
             // Exception: a process that dies within seconds of spawning (and
             // that the user did not close) almost certainly failed to launch
@@ -822,9 +871,7 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
                 // Resumes only: a NEW tab's freshly minted id is legitimately
                 // absent from the index, and its early exit (auth, config)
                 // has nothing to do with id rotation.
-                if tab.isResume, let sid = tab.sessionID {
-                    tab.resumeTargetMissing = sessionKnown(sid) == false
-                }
+                diagnoseExit(tab)
                 tab.activity = .exited(status: status)
             } else {
                 autoClose(surface: surface)
@@ -835,7 +882,8 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
     }
 
     public func surface(_ surface: TerminalSurface, didUpdateTitle title: String) {
-        guard let tab = tab(for: surface), !title.isEmpty else { return }
+        guard !isQuitting, let tab = tab(for: surface), !title.isEmpty else { return }
+        if tab.title != title, let sid = tab.sessionID { touchHandler?(sid, nil) }
         tab.title = title
         // Agents retitle themselves as the work moves on, and record that title
         // nowhere on disk — hand it up so the sidebar and ⌘K can keep it.
@@ -873,7 +921,8 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
 
     /// The user submitted a prompt (Return) → the agent is now working (Item E).
     public func surfaceDidSubmitInput(_ surface: TerminalSurface) {
-        guard let tab = tab(for: surface), tab.kind == .session else { return }
+        guard !isQuitting, let tab = tab(for: surface), tab.kind == .session else { return }
+        if let sid = tab.sessionID { touchHandler?(sid, nil) }
         tab.activity = .running
         // Restart the settle clock so it can decay again once work finishes.
         lastTitleChange[tab.id] = Date()

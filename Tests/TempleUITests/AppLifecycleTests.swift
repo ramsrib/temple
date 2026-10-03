@@ -14,6 +14,70 @@ final class AppLifecycleTests: XCTestCase {
                  settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
     }
 
+    func testImmediateDelegateQuitFlushesPendingTouches() throws {
+        let db = try TempleDB.inMemory()
+        let at = Date(timeIntervalSince1970: 100)
+        var cancelled = false
+        let overlay = SessionOverlayStore(db: db, now: { at }, scheduleTouch: { _, _ in
+            return { cancelled = true }
+        })
+        overlay.join("a", via: .created)
+        overlay.touch("a")
+        overlay.recordGeneratedTitle("Pending", for: "a")
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+            indexSource: FakeIndexSource(SessionIndex(projects: [])), database: db,
+            settings: SettingsStore(defaults: Fixture.uniqueDefaults()), overlay: overlay)
+        let delegate = TempleAppDelegate()
+        delegate.model = model
+        XCTAssertNil(try db.sessionState("a")?.lastActiveAt)
+        XCTAssertEqual(delegate.applicationShouldTerminate(NSApplication.shared), .terminateNow)
+        XCTAssertEqual(try db.sessionState("a")?.lastActiveAt, at)
+        XCTAssertEqual(try db.sessionState("a")?.title, "Pending")
+        XCTAssertTrue(cancelled)
+        XCTAssertTrue(model.openSessions.isQuitting)
+    }
+
+    func testDrainingDelegateQuitRejectsLateAdoptionActivityAndFinallyFlushesTouches() async throws {
+        let db = try TempleDB.inMemory()
+        let at = Date(timeIntervalSince1970: 4_000_000_000)
+        let overlay = SessionOverlayStore(db: db, now: { at }, scheduleTouch: { _, _ in {} })
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+            indexSource: FakeIndexSource(SessionIndex(projects: [])), database: db,
+            settings: SettingsStore(defaults: Fixture.uniqueDefaults()), overlay: overlay)
+        let tab = model.openSessions.newSession(agent: .codex, projectPath: NSTemporaryDirectory())
+        let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
+        overlay.join("known", via: .created)
+        overlay.touch("known")
+        XCTAssertNil(try db.sessionState("known")?.lastActiveAt)
+        surface.onGracefulExit = { [weak model] in
+            XCTAssertTrue(model?.openSessions.isQuitting == true)
+            XCTAssertEqual(try? db.sessionState("known")?.lastActiveAt, at, "initial flush precedes drain")
+            model?.openSessions.adopt(sessionID: "late-codex", for: tab.id)
+            // Simulate a store write already queued at the initial flush barrier.
+            overlay.touch("known", at: at.addingTimeInterval(1))
+        }
+        let delegate = TempleAppDelegate()
+        delegate.model = model
+        delegate.confirmQuitWhileWorking = { _ in true }
+        let completed = expectation(description: "termination replies after final flush")
+        var returned = false
+        delegate.replyToTermination = { reply in
+            XCTAssertTrue(reply)
+            XCTAssertTrue(returned)
+            XCTAssertEqual(try? db.sessionState("known")?.lastActiveAt, at.addingTimeInterval(1))
+            XCTAssertNil(try? db.sessionState("late-codex")?.lastActiveAt)
+            XCTAssertNil(overlay.lastActiveAt["late-codex"])
+            completed.fulfill()
+        }
+        XCTAssertEqual(delegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
+        returned = true
+        XCTAssertEqual(try db.sessionState("known")?.lastActiveAt, at)
+        XCTAssertNotNil(try db.sessionState("late-codex"))
+        XCTAssertEqual(try db.sessionState("late-codex")?.directory, NSTemporaryDirectory())
+        await fulfillment(of: [completed], timeout: 5)
+        surface.onGracefulExit = nil
+    }
+
     func testClosingTheLastWindowQuits() {
         let delegate = TempleAppDelegate()
         XCTAssertTrue(delegate.applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))

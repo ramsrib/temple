@@ -697,12 +697,22 @@ public final class HistoryModel: ObservableObject {
     /// says what happened with an Undo, and leaves the user on History.
     /// `request` is the one the sheet was showing: the sheet's dismissal can
     /// clear `pendingImport` before its button's action runs.
-    public func confirmImport(_ request: ImportRequest? = nil, undoManager: UndoManager?) {
+    public func confirmImport(_ request: ImportRequest? = nil, undoManager: UndoManager?) async {
         guard let request = request ?? pendingImport else { return }
         pendingImport = nil
         let sessions = request.sessions.filter { !isInTemple($0.id) }
         guard !sessions.isEmpty else { return }
-        let failures = overlay.importSessions(sessions)
+        let entries = await overlay.prepareImports(sessions)
+        finishImport(entries, sessions: sessions, undoManager: undoManager)
+    }
+
+    private func finishImport(_ prepared: [PreparedSessionImport], sessions: [AgentSession], undoManager: UndoManager?) {
+        // A session may have been opened or imported while parsing was in flight.
+        let entries = prepared.filter { !overlay.isTempleSession($0.id) }
+        let ids = Set(entries.map(\.id))
+        let sessions = sessions.filter { ids.contains($0.id) }
+        guard !sessions.isEmpty else { return }
+        let failures = overlay.importPreparedSessions(entries)
         let imported = sessions.map(\.id).filter { failures[$0] == nil }
         refreshJoinedStates()
         clearSelection()
@@ -710,7 +720,7 @@ public final class HistoryModel: ObservableObject {
             markJustImported(imported)
             showNotice(Notice(text: imported.count == 1 ? "1 session imported" : "\(imported.count) sessions imported",
                               offersUndo: undoManager != nil))
-            registerUndo(undoManager, imported: imported, sessions: sessions)
+            registerUndo(undoManager, imported: imported, sessions: sessions, entries: entries)
         }
         if !failures.isEmpty {
             let failedTitles = sessions.filter { failures[$0.id] != nil }.map(overlay.displayTitle(for:))
@@ -730,7 +740,7 @@ public final class HistoryModel: ObservableObject {
     /// still an untouched import not running in a tab (`TempleDB.leave`).
     /// Redo imports what the undo removed. The pair re-registers itself, so
     /// ⌘Z / ⌘⇧Z bounce as often as the user likes.
-    private func registerUndo(_ undoManager: UndoManager?, imported ids: [String], sessions: [AgentSession]) {
+    private func registerUndo(_ undoManager: UndoManager?, imported ids: [String], sessions: [AgentSession], entries: [PreparedSessionImport]) {
         guard let undoManager else { return }
         undoManager.registerUndo(withTarget: self) { [weak undoManager] model in
             MainActor.assumeIsolated {
@@ -739,7 +749,10 @@ public final class HistoryModel: ObservableObject {
                 let back = sessions.filter { left.contains($0.id) }
                 undoManager.registerUndo(withTarget: model) { [weak undoManager] model in
                     MainActor.assumeIsolated {
-                        model.confirmImport(model.makeImportRequest(for: back), undoManager: undoManager)
+                        // Redo must register its inverse synchronously inside UndoManager's
+                        // callback. Reuse the facts captured by the original import.
+                        model.finishImport(entries.filter { left.contains($0.id) },
+                                           sessions: back, undoManager: undoManager)
                     }
                 }
                 undoManager.setActionName("Import")

@@ -62,6 +62,10 @@ public final class SessionTab: ObservableObject, Identifiable {
     /// and the resume that fails is Temple's, built from its persisted id.
     /// Frozen at death, same reasoning as `commandWasSuspect`.
     @Published public var resumeTargetMissing = false
+    @Published public var missingWorkingDirectory: String?
+    public var missingWorkingDirectoryMessage: String? {
+        missingWorkingDirectory.map { "The folder \($0) no longer exists" }
+    }
     @Published public var isProvisional: Bool
 
     /// The command the surface spawns. `nil` for a utility tab.
@@ -110,9 +114,16 @@ public final class SessionTab: ObservableObject, Identifiable {
     /// output stays readable).
     public private(set) var spawnedAt: Date?
 
-    func attach(surface: TerminalSurface) {
+    struct LaunchObservation {
+        let at: Date
+        let directory: String?
+    }
+    /// Retained only after start succeeds; adoption can arrive much later.
+    var launchObservation: LaunchObservation?
+
+    func attach(surface: TerminalSurface, at: Date = Date()) {
         self.surface = surface
-        self.spawnedAt = Date()
+        self.spawnedAt = at
         find.surface = surface
     }
 }

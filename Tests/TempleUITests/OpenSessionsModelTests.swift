@@ -6,6 +6,259 @@ import TempleTerminalAPI
 @MainActor
 final class OpenSessionsModelTests: XCTestCase {
 
+    private func writerModel(db: TempleDB, overlay: SessionOverlayStore,
+                             persistence: TabPersistence? = nil,
+                             factory: FakeTerminalSurfaceFactory? = nil,
+                             now: @escaping () -> Date = Date.init) -> OpenSessionsModel {
+        let model = OpenSessionsModel(surfaceFactory: factory ?? FakeTerminalSurfaceFactory(),
+            appearanceProvider: { .default }, runtime: SessionRuntimeController(),
+            registry: InMemoryProcessRegistry(),
+            persistence: persistence ?? UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()), now: now)
+        model.openedHandler = { id, via, agent, path, core in
+            overlay.join(id, via: via, agent: agent, transcriptPath: path, core: core)
+            if via == .opened { overlay.recordOpened(id) }
+        }
+        model.touchHandler = { overlay.touch($0, at: $1) }
+        model.launchDirectoryHandler = { overlay.observeLaunchDirectory($0, $1) }
+        return model
+    }
+
+    private func temporaryDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
+    }
+
+    func testThrowingStartDoesNotWriteLaunchFacts() throws {
+        let directory = try temporaryDirectory()
+        for agent in Agent.allCases {
+            let db = try TempleDB.inMemory()
+            let overlay = SessionOverlayStore(db: db)
+            let factory = FakeTerminalSurfaceFactory()
+            factory.configure = { $0.startError = CocoaError(.executableNotLoadable) }
+            let model = writerModel(db: db, overlay: overlay, factory: factory)
+            let tab = model.newSession(agent: agent, projectPath: directory.path)
+            if agent == .codex { model.adopt(sessionID: "codex-id", for: tab.id) }
+            let row = try XCTUnwrap(db.sessionState(try XCTUnwrap(tab.sessionID)))
+            XCTAssertNil(row.directory)
+            XCTAssertNil(row.directorySource)
+            XCTAssertNil(tab.launchObservation)
+            XCTAssertNil(overlay.lastActiveAt[row.id])
+        }
+    }
+
+    func testNonexistentOrFileCwdDoesNotWriteLaunchDirectory() throws {
+        let directory = try temporaryDirectory()
+        let file = directory.appendingPathComponent("file")
+        try Data().write(to: file)
+        for cwd in [directory.appendingPathComponent("missing"), file] {
+            for agent in Agent.allCases {
+                let db = try TempleDB.inMemory()
+                let overlay = SessionOverlayStore(db: db)
+                let model = writerModel(db: db, overlay: overlay)
+                let tab = model.newSession(agent: agent, projectPath: cwd.path)
+                if agent == .codex { model.adopt(sessionID: "codex-id", for: tab.id) }
+                let row = try XCTUnwrap(db.sessionState(try XCTUnwrap(tab.sessionID)))
+                XCTAssertNil(row.directory)
+                XCTAssertNil(row.directorySource)
+                XCTAssertNil(tab.launchObservation?.directory)
+            }
+        }
+    }
+
+    func testCodexAdoptionUsesOriginalSpawnTime() throws {
+        let db = try TempleDB.inMemory()
+        var date = Date(timeIntervalSince1970: 100)
+        let overlay = SessionOverlayStore(db: db, now: { date }, scheduleTouch: { _, _ in {} })
+        let model = writerModel(db: db, overlay: overlay, now: { date })
+        let tab = model.newSession(agent: .codex, projectPath: try temporaryDirectory().path)
+        date = Date(timeIntervalSince1970: 200)
+        model.adopt(sessionID: "codex-id", for: tab.id)
+        overlay.flushPendingTouches()
+        XCTAssertEqual(overlay.lastActiveAt["codex-id"], Date(timeIntervalSince1970: 100))
+        XCTAssertEqual(try db.sessionState("codex-id")?.lastActiveAt, Date(timeIntervalSince1970: 100))
+    }
+
+    func testTouchFlushCancelsItsScheduledCallback() throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "a", via: .created)
+        var callbacks: [@MainActor () -> Void] = []
+        var cancelled: Set<Int> = []
+        var date = Date(timeIntervalSince1970: 100)
+        let overlay = SessionOverlayStore(db: db, now: { date }, scheduleTouch: { _, callback in
+            let index = callbacks.count
+            callbacks.append { if !cancelled.contains(index) { callback() } }
+            return { cancelled.insert(index) }
+        })
+        overlay.touch("a")
+        overlay.flushPendingTouches()
+        XCTAssertEqual(cancelled, [0])
+        date = Date(timeIntervalSince1970: 200)
+        overlay.touch("a")
+        callbacks[0]()
+        XCTAssertEqual(try db.sessionState("a")?.lastActiveAt, Date(timeIntervalSince1970: 100))
+        callbacks[1]()
+        XCTAssertEqual(try db.sessionState("a")?.lastActiveAt, date)
+        XCTAssertEqual(cancelled, [0, 1])
+    }
+
+    func testOpeningATabWritesDirectoryAsTabSourced() throws {
+        let directory = try temporaryDirectory()
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "a", via: .imported,
+                    core: SessionCore(directory: "/transcript", directorySource: .transcript))
+        let overlay = SessionOverlayStore(db: db)
+        let model = writerModel(db: db, overlay: overlay)
+        model.openSession(Fixture.session("a", project: directory.path))
+        XCTAssertEqual(try db.sessionState("a")?.directory, directory.path)
+        XCTAssertEqual(try db.sessionState("a")?.directorySource, .tab)
+        XCTAssertEqual(try db.sessionState("a")?.host, .local)
+        try db.fillCoreFields(sessionID: "a", directory: "/later-transcript")
+        XCTAssertEqual(try db.sessionState("a")?.directory, directory.path)
+    }
+
+    func testCodexAdoptionWritesTheLaunchDirectory() throws {
+        let directory = try temporaryDirectory()
+        let db = try TempleDB.inMemory()
+        let overlay = SessionOverlayStore(db: db)
+        let model = writerModel(db: db, overlay: overlay)
+        let tab = model.newSession(agent: .codex, projectPath: directory.path)
+        try FileManager.default.removeItem(at: directory)
+        model.adopt(sessionID: "codex-id", for: tab.id)
+        XCTAssertEqual(try db.sessionState("codex-id")?.directory, directory.path)
+        XCTAssertEqual(try db.sessionState("codex-id")?.directorySource, .tab)
+        XCTAssertNotNil(overlay.lastActiveAt["codex-id"])
+    }
+
+    func testRestoredChipWritesNoDirectoryUntilItSpawns() throws {
+        let directory = try temporaryDirectory()
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "a", via: .opened,
+                    core: SessionCore(directory: "/old", directorySource: .tab))
+        let persistence = UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults())
+        persistence.save([PersistedTab(sessionID: "a", agent: .claude, projectPath: directory.path, title: "A")])
+        let overlay = SessionOverlayStore(db: db)
+        let model = writerModel(db: db, overlay: overlay, persistence: persistence)
+        model.restore()
+        XCTAssertEqual(try db.sessionState("a")?.directory, "/old")
+        XCTAssertFalse(try XCTUnwrap(model.tabs.first).hasSurface)
+        model.activate(try XCTUnwrap(model.tabs.first))
+        XCTAssertEqual(try db.sessionState("a")?.directory, directory.path)
+        XCTAssertEqual(try db.sessionState("a")?.directorySource, .tab)
+    }
+
+    func testTouchIsImmediateInMemoryCoalescedOnDiskAndMonotonic() throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "a", via: .created)
+        try db.join(sessionID: "b", via: .created)
+        var date = Date(timeIntervalSince1970: 100)
+        var scheduled: [(TimeInterval, @MainActor () -> Void)] = []
+        let overlay = SessionOverlayStore(db: db, now: { date }, scheduleTouch: { delay, action in
+            scheduled.append((delay, action)); return {}
+        })
+        overlay.touch("a")
+        XCTAssertEqual(overlay.lastActiveAt["a"], date)
+        XCTAssertNil(try db.sessionState("a")?.lastActiveAt)
+        date = Date(timeIntervalSince1970: 120)
+        overlay.touch("a")
+        date = Date(timeIntervalSince1970: 110)
+        overlay.touch("a")
+        overlay.touch("b")
+        XCTAssertEqual(scheduled.count, 2, "each session owns a coalescing window")
+        XCTAssertEqual(scheduled.map { $0.0 }, [30, 30])
+        XCTAssertEqual(overlay.lastActiveAt["a"], Date(timeIntervalSince1970: 120))
+        scheduled[0].1()
+        XCTAssertEqual(try db.sessionState("a")?.lastActiveAt, Date(timeIntervalSince1970: 120))
+        XCTAssertNil(try db.sessionState("b")?.lastActiveAt)
+        date = Date(timeIntervalSince1970: 130)
+        overlay.touch("a")
+        try db.touch(sessionID: "a", at: Date(timeIntervalSince1970: 200))
+        overlay.flushPendingTouches()
+        XCTAssertEqual(try db.sessionState("a")?.lastActiveAt, Date(timeIntervalSince1970: 200))
+    }
+
+    func testQuitFlushesButDoesNotTouch() throws {
+        let db = try TempleDB.inMemory()
+        var date = Date(timeIntervalSince1970: 100)
+        let overlay = SessionOverlayStore(db: db, now: { date }, scheduleTouch: { _, _ in {} })
+        let model = writerModel(db: db, overlay: overlay, now: { date })
+        let tab = model.newSession(agent: .claude, projectPath: "/launch")
+        let id = try XCTUnwrap(tab.sessionID)
+        overlay.recordGeneratedTitle("Pending title", for: id)
+        date = Date(timeIntervalSince1970: 200)
+        model.prepareForQuit()
+        overlay.flushPendingTitles()
+        overlay.flushPendingTouches()
+        model.surface(try XCTUnwrap(tab.surface), didChangeState: .exited(status: 0))
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        model.surface(try XCTUnwrap(tab.surface), didUpdateTitle: "Shutdown")
+        XCTAssertEqual(overlay.lastActiveAt[id], Date(timeIntervalSince1970: 100))
+        XCTAssertEqual(try db.sessionState(id)?.lastActiveAt, Date(timeIntervalSince1970: 100))
+        XCTAssertEqual(try db.sessionState(id)?.title, "Pending title")
+    }
+
+    func testRestoreDoesNotTouchInertChips() throws {
+        let db = try TempleDB.inMemory()
+        let date = Date(timeIntervalSince1970: 100)
+        try db.join(sessionID: "a", via: .opened, core: SessionCore(lastActiveAt: date))
+        let persistence = UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults())
+        persistence.save([PersistedTab(sessionID: "a", agent: .claude, projectPath: "/p", title: "A")])
+        let overlay = SessionOverlayStore(db: db, now: { date.addingTimeInterval(50) }, scheduleTouch: { _, _ in {} })
+        let model = writerModel(db: db, overlay: overlay, persistence: persistence, now: { date.addingTimeInterval(50) })
+        model.restore()
+        overlay.flushPendingTouches()
+        XCTAssertEqual(overlay.lastActiveAt["a"], date)
+        XCTAssertEqual(try db.sessionState("a")?.lastActiveAt, date)
+        model.activate(try XCTUnwrap(model.tabs.first))
+        XCTAssertEqual(overlay.lastActiveAt["a"], date.addingTimeInterval(50))
+    }
+
+    func testALateAbsentVerdictAnnotatesAnExitedTab() throws {
+        var known: Bool?
+        let model = modelForResumeTests(sessionKnown: { _ in known })
+        model.openSession(Fixture.session("a", project: "/p"))
+        let tab = try XCTUnwrap(model.tabs.first)
+        model.surface(try XCTUnwrap(tab.surface), didChangeState: .exited(status: 1))
+        XCTAssertFalse(tab.resumeTargetMissing)
+        model.refreshExitedResumeDiagnoses()
+        XCTAssertFalse(tab.resumeTargetMissing)
+        known = false
+        model.refreshExitedResumeDiagnoses()
+        XCTAssertTrue(tab.resumeTargetMissing)
+    }
+
+    func testADeletedWorkingDirectoryGetsItsOwnLine() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let model = modelForResumeTests(sessionKnown: { _ in true })
+        model.openSession(Fixture.session("a", project: directory.path))
+        let tab = try XCTUnwrap(model.tabs.first)
+        try FileManager.default.removeItem(at: directory)
+        model.surface(try XCTUnwrap(tab.surface), didChangeState: .exited(status: 1))
+        XCTAssertFalse(tab.resumeTargetMissing)
+        XCTAssertEqual(tab.missingWorkingDirectoryMessage, "The folder \(directory.path) no longer exists")
+    }
+
+    func testActivitySignalsTouchButQuietAgentsAndRefocusingDoNot() throws {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        var touched: [String] = []
+        model.touchHandler = { id, _ in touched.append(id) }
+        let tab = model.newSession(agent: .claude, projectPath: "/p")
+        let id = try XCTUnwrap(tab.sessionID)
+        let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
+        XCTAssertEqual(touched, [id])
+        touched.removeAll()
+        model.activate(tab)
+        model.surface(surface, didUpdateTitle: tab.title)
+        XCTAssertTrue(touched.isEmpty)
+        model.surface(surface, didUpdateTitle: "Changed")
+        model.surfaceDidSubmitInput(surface)
+        surface.simulateExit(status: 1)
+        model.closeTab(tab.id)
+        XCTAssertEqual(touched, [id, id, id, id])
+    }
+
     func testOpenSessionSpawnsSurfaceAndActivates() {
         let factory = FakeTerminalSurfaceFactory()
         let model = Fixture.openModel(factory: factory)

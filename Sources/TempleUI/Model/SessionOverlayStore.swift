@@ -2,6 +2,13 @@ import Foundation
 import Combine
 import TempleCore
 
+struct PreparedSessionImport: Sendable {
+    let id: String
+    let agent: Agent
+    let path: URL?
+    let core: SessionCore
+}
+
 /// App-state overlay the CLIs don't track: pins, custom names, color marks,
 /// archive state, and the manual project order (ADR-009).
 ///
@@ -31,11 +38,28 @@ public final class SessionOverlayStore: ObservableObject {
     /// launch-frozen recency order.
     @Published public private(set) var projectOrder: [String]
 
+    @Published public private(set) var lastActiveAt: [String: Date]
+    private let now: () -> Date
+    /// A cancellable one-shot scheduler; tests advance it without wall-clock waits.
+    private let scheduleTouch: (TimeInterval, @escaping @MainActor () -> Void) -> () -> Void
+    private var pendingTouches: [String: Date] = [:]
+    private var touchTimers: [String: () -> Void] = [:]
     private let db: TempleDB
 
-    public init(db: TempleDB) {
+    public init(db: TempleDB, now: @escaping () -> Date = Date.init,
+                scheduleTouch: @escaping (TimeInterval, @escaping @MainActor () -> Void) -> () -> Void = { delay, action in
+                    let task = Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(delay))
+                        guard !Task.isCancelled else { return }
+                        action()
+                    }
+                    return { task.cancel() }
+                }) {
+        self.now = now
+        self.scheduleTouch = scheduleTouch
         self.db = db
         let states = (try? db.sessionStates()) ?? []
+        self.lastActiveAt = Dictionary(uniqueKeysWithValues: states.compactMap { row in row.lastActiveAt.map { (row.id, $0) } })
         let projects = (try? db.projectStates()) ?? []
         self.pinned = Set(states.lazy.filter(\.pinned).map(\.id))
         self.archivedSessions = Set(states.lazy.filter(\.archived).map(\.id))
@@ -71,8 +95,8 @@ public final class SessionOverlayStore: ObservableObject {
     public func isTempleSession(_ id: String) -> Bool { templeSessions.contains(id) }
 
     /// The session becomes Temple's, if it is not already. Called on every
-    /// open, so a session Temple knows returns before publishing or touching
-    /// the DB. How it joined is recorded only by the first join (see `TempleDB`).
+    /// open; core facts fill only unknown fields. How it joined is recorded
+    /// only by the first join (see `TempleDB`).
     ///
     /// Membership follows the row, not the attempt: a failed write leaves the
     /// id out, and whatever touches the session next joins it then. Returns
@@ -85,14 +109,9 @@ public final class SessionOverlayStore: ObservableObject {
     /// never, and a retry ledger for them grew a new edge case per review
     /// round; what matters is that failure never shows the wrong sessions.
     @discardableResult
-    public func join(_ id: String, via: JoinedVia, agent: Agent? = nil, transcriptPath: URL? = nil) -> Bool {
-        if templeSessions.contains(id) {
-            guard let transcriptPath else { return true }
-            if let row = try? db.sessionState(id), row.transcriptPath == transcriptPath.path,
-               agent == nil || row.agent == agent { return true }
-        }
+    public func join(_ id: String, via: JoinedVia, agent: Agent? = nil, transcriptPath: URL? = nil, core: SessionCore = SessionCore()) -> Bool {
         do {
-            try db.join(sessionID: id, via: via, agent: agent, transcriptPath: transcriptPath)
+            try db.join(sessionID: id, via: via, agent: agent, transcriptPath: transcriptPath, core: core)
             templeSessions.insert(id)
             return true
         } catch {
@@ -110,21 +129,100 @@ public final class SessionOverlayStore: ObservableObject {
     /// session that is already Temple's keeps its row as it is. Returns the
     /// failures, keyed by id, with the error as thrown (ADR-023: not retried;
     /// a failed session simply stays out).
-    public func importSessions(_ sessions: [AgentSession]) -> [String: Error] {
-        var joined: Set<String> = []
+    public func importSessions(_ summaries: [TranscriptSummary]) -> [String: Error] {
+        importCore(summaries.map { ($0.id, $0.agent, $0.locator.localURL,
+            SessionCore(host: $0.locator.host, directory: $0.cwd,
+                        directorySource: $0.cwd == nil ? nil : .transcript,
+                        title: $0.firstPrompt, lastActiveAt: $0.modifiedAt)) })
+    }
+
+    /// P2 adapter while History holds AgentSession. Parsing is bounded to four
+    /// workers and runs off-main; membership is checked again at commit time.
+    var importSummaryReader: @Sendable (AgentSession) -> TranscriptSummary? = { session in
+        session.agent == .claude
+            ? ClaudeSessionStore().loadSummary(at: session.filePath)
+            : CodexSessionStore().loadSummary(at: session.filePath)
+    }
+
+    func prepareImports(_ sessions: [AgentSession]) async -> [PreparedSessionImport] {
+        let sessions = sessions.filter { !templeSessions.contains($0.id) }
+        let read = importSummaryReader
+        return await Task.detached(priority: .userInitiated) {
+            await withTaskGroup(of: (Int, PreparedSessionImport).self) { group in
+                var next = 0
+                var results: [Int: PreparedSessionImport] = [:]
+                func enqueue(_ index: Int) {
+                    let session = sessions[index]
+                    group.addTask {
+                        let summary = read(session)
+                        let facts = summary?.id == session.id ? summary : nil
+                        return (index, PreparedSessionImport(id: session.id, agent: session.agent,
+                            path: session.filePath, core: SessionCore(directory: facts?.cwd,
+                                directorySource: facts?.cwd == nil ? nil : .transcript,
+                                title: facts?.firstPrompt, lastActiveAt: facts?.modifiedAt)))
+                    }
+                }
+                while next < min(4, sessions.count) { enqueue(next); next += 1 }
+                while let (index, entry) = await group.next() {
+                    results[index] = entry
+                    if next < sessions.count { enqueue(next); next += 1 }
+                }
+                return sessions.indices.compactMap { results[$0] }
+            }
+        }.value
+    }
+
+    public func importSessions(_ sessions: [AgentSession]) async -> [String: Error] {
+        let entries = await prepareImports(sessions)
+        return importPreparedSessions(entries)
+    }
+
+    func importPreparedSessions(_ entries: [PreparedSessionImport]) -> [String: Error] {
+        importCore(entries.map { ($0.id, $0.agent, $0.path, $0.core) })
+    }
+
+    private func importCore(_ entries: [(String, Agent, URL?, SessionCore)]) -> [String: Error] {
         var failures: [String: Error] = [:]
-        for session in sessions where !templeSessions.contains(session.id) {
+        var joined: Set<String> = []
+        var activity = lastActiveAt
+        for (id, agent, path, core) in entries where !templeSessions.contains(id) && !joined.contains(id) {
             do {
-                try db.join(sessionID: session.id, via: .imported,
-                            agent: session.agent, transcriptPath: session.filePath)
-                joined.insert(session.id)
+                try db.join(sessionID: id, via: .imported, agent: agent, transcriptPath: path, core: core)
+                joined.insert(id)
+                if let date = core.lastActiveAt { activity[id] = date }
             } catch {
-                TempleUILog.db.error("import failed for session \(session.id, privacy: .public): \(String(describing: error), privacy: .public)")
-                failures[session.id] = error
+                TempleUILog.db.error("import failed for session \(id, privacy: .public): \(String(describing: error), privacy: .public)")
+                failures[id] = error
             }
         }
         if !joined.isEmpty { templeSessions.formUnion(joined) }
+        if activity != lastActiveAt { lastActiveAt = activity }
         return failures
+    }
+
+    public func observeLaunchDirectory(_ id: String, _ directory: String) {
+        guard isTempleSession(id) else { return }
+        try? db.observeLaunchDirectory(sessionID: id, directory)
+    }
+
+    /// Immediate, monotonic publication; one fixed 30-second window per session.
+    public func touch(_ id: String, at: Date? = nil) {
+        guard isTempleSession(id) else { return }
+        let date = max(lastActiveAt[id] ?? .distantPast, at ?? now())
+        if lastActiveAt[id] != date { lastActiveAt[id] = date }
+        pendingTouches[id] = max(pendingTouches[id] ?? .distantPast, date)
+        guard touchTimers[id] == nil else { return }
+        touchTimers[id] = scheduleTouch(30) { [weak self] in self?.flushTouch(id) }
+    }
+
+    private func flushTouch(_ id: String) {
+        touchTimers.removeValue(forKey: id)?()
+        guard let date = pendingTouches.removeValue(forKey: id) else { return }
+        try? db.touch(sessionID: id, at: date)
+    }
+
+    public func flushPendingTouches() {
+        for id in Array(pendingTouches.keys) { flushTouch(id) }
     }
 
     /// Undo of an import (`TempleDB.leave`): each row goes only if it is

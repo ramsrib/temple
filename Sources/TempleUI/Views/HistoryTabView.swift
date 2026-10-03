@@ -71,7 +71,7 @@ struct HistoryTabView: View {
                presenting: history.pendingImport) { request in
             Button("Cancel", role: .cancel) { history.cancelImport() }
             Button(request.confirmLabel) {
-                history.confirmImport(request, undoManager: undoManager)
+                Task { await history.confirmImport(request, undoManager: undoManager) }
             }
             .keyboardShortcut(.defaultAction)
         } message: { request in

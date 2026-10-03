@@ -34,9 +34,17 @@ if CommandLine.arguments.contains("--import-all") {
         exit(1)
     }
     let db = try openDatabase()
-    let sessions = SessionCatalog().load().allSessions
-    for session in sessions { try db.join(sessionID: session.id, via: .imported, agent: session.agent, transcriptPath: session.filePath) }
-    print("imported \(sessions.count) sessions")
+    let sessions = ClaudeSessionStore().loadSummaries() + CodexSessionStore().loadSummaries()
+    var imported = 0
+    for session in sessions where try db.sessionState(session.id) == nil {
+        try db.join(sessionID: session.id, via: .imported, agent: session.agent,
+                    transcriptPath: session.locator.localURL,
+                    core: SessionCore(host: session.locator.host, directory: session.cwd,
+                                      directorySource: session.cwd == nil ? nil : .transcript,
+                                      title: session.firstPrompt, lastActiveAt: session.modifiedAt))
+        imported += 1
+    }
+    print("imported \(imported) sessions")
     exit(0)
 }
 

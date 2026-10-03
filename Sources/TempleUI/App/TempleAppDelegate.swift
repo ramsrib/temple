@@ -6,6 +6,7 @@ import AppKit
 @MainActor
 public final class TempleAppDelegate: NSObject, NSApplicationDelegate {
     public weak var model: AppModel?
+    var replyToTermination: (Bool) -> Void = { NSApp.reply(toApplicationShouldTerminate: $0) }
 
     /// Shown instead of the real alert in tests, which must not block on a modal.
     /// Returns true to proceed with the quit.
@@ -148,7 +149,9 @@ public final class TempleAppDelegate: NSObject, NSApplicationDelegate {
             // No agents to drain, but a just-retitled session may still be
             // inside the title-coalescing window — drainForQuit (which also
             // flushes) never runs on this path.
+            model?.openSessions.prepareForQuit()
             model?.overlay.flushPendingTitles()
+            model?.overlay.flushPendingTouches()
             return .terminateNow
         }
         // Quitting ends every agent, and the window's close button quits too —
@@ -168,8 +171,8 @@ public final class TempleAppDelegate: NSObject, NSApplicationDelegate {
         if working > 0, !asked, hasCancellableWindow(), !confirmQuit(workingCount: working) {
             return .terminateCancel
         }
-        model.drainForQuit {
-            NSApp.reply(toApplicationShouldTerminate: true)
+        model.drainForQuit { [self] in
+            replyToTermination(true)
         }
         return .terminateLater
     }

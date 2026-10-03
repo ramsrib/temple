@@ -18,6 +18,8 @@ final class FakeTerminalSurface: TerminalSurface {
     weak var delegate: TerminalSurfaceDelegate?
 
     var behavior: ExitBehavior = .graceful
+    var startError: Error?
+    var onGracefulExit: (() -> Void)?
     private(set) var didRequestGracefulExit = false
     private(set) var didTerminate = false
     private(set) var appliedAppearances: [TerminalAppearance] = []
@@ -37,6 +39,7 @@ final class FakeTerminalSurface: TerminalSurface {
 
     func start(_ command: TerminalCommand) throws {
         startedCommand = command
+        if let startError { throw startError }
         processState = .running(pid: 4242)
     }
 
@@ -54,6 +57,7 @@ final class FakeTerminalSurface: TerminalSurface {
 
     func requestGracefulExit() {
         didRequestGracefulExit = true
+        onGracefulExit?()
         switch behavior {
         case .graceful:
             exitNow(status: 0)
@@ -94,8 +98,10 @@ final class FakeTerminalSurface: TerminalSurface {
 @MainActor
 final class FakeTerminalSurfaceFactory: TerminalSurfaceFactory {
     private(set) var created: [FakeTerminalSurface] = []
+    var configure: (FakeTerminalSurface) -> Void = { _ in }
     func makeSurface(appearance: TerminalAppearance) -> TerminalSurface {
         let s = FakeTerminalSurface()
+        configure(s)
         created.append(s)
         return s
     }

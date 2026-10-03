@@ -122,6 +122,12 @@ private struct SessionTerminalView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
+                if let message = tab.missingWorkingDirectoryMessage {
+                    Text(message)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 if tab.resumeTargetMissing {
                     // States only what the index proves (no transcript carries
                     // this id) and the most common cause — it must not promise

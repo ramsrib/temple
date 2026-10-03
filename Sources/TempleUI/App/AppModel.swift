@@ -262,9 +262,9 @@ public final class AppModel: ObservableObject {
         }
         // Whatever a tab runs is a Temple session from then on — including one
         // resumed from elsewhere, which is how it joins the sidebar.
-        openSessions.openedHandler = { [weak self] sessionID, via, agent, path in
+        openSessions.openedHandler = { [weak self] sessionID, via, agent, path, core in
             guard let self else { return }
-            self.overlay.join(sessionID, via: via, agent: agent, transcriptPath: path)
+            self.overlay.join(sessionID, via: via, agent: agent, transcriptPath: path, core: core)
             // Durably: History's Undo Import must keep a session that was
             // opened since, even once its tab is closed (TempleDB.leave
             // keeps a row with last_opened_at set).
@@ -274,6 +274,10 @@ public final class AppModel: ObservableObject {
             if let source = self.indexSource as? WatcherIndexSource {
                 source.watcher.requestResolution(sessionID)
             }
+        }
+        openSessions.touchHandler = { [weak self] id, at in self?.overlay.touch(id, at: at) }
+        openSessions.launchDirectoryHandler = { [weak self] id, cwd in
+            self?.overlay.observeLaunchDirectory(id, cwd)
         }
         // A resume failure uses this member's completed resolution. A newly
         // launched or unreadable transcript never acquires a missing verdict.
@@ -430,6 +434,7 @@ public final class AppModel: ObservableObject {
         }
         if let source = indexSource as? WatcherIndexSource {
             source.onResolutionUpdate = { [weak self] states in
+                self?.openSessions.refreshExitedResumeDiagnoses()
                 guard let self else { return }
                 self.pendingSessionOpens = self.pendingSessionOpens.filter { id in
                     states[id] != .confirmedAbsent && states[id] != .unreadable
@@ -447,6 +452,7 @@ public final class AppModel: ObservableObject {
             }
             // Skip the recompute (disk-stat) storm when nothing actually changed.
             if index != self.index { self.index = index }
+            self.openSessions.refreshExitedResumeDiagnoses()
             for id in self.pendingSessionOpens {
                 guard let session = index.allSessions.first(where: { $0.id == id }) else { continue }
                 self.pendingSessionOpens.remove(id)
@@ -465,11 +471,17 @@ public final class AppModel: ObservableObject {
     public func drainForQuit(completion: @escaping () -> Void) {
         // The last title an agent gave itself may still be coalescing.
         overlay.flushPendingTitles()
+        overlay.flushPendingTouches()
         // Freeze the open-tab set BEFORE the agents start dying, so their exits
         // can't be mistaken for "the agent finished" and close the tabs we are
         // meant to reopen next launch.
         openSessions.prepareForQuit()
-        SessionRuntimeController().drainAll(openSessions.allSurfaces, completion: completion)
+        SessionRuntimeController().drainAll(openSessions.allSurfaces) { [self] in
+            // Final barrier for writes queued while the processes drained.
+            overlay.flushPendingTitles()
+            overlay.flushPendingTouches()
+            completion()
+        }
     }
 
     // MARK: Theme (U10)

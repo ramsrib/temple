@@ -76,6 +76,131 @@ final class HistoryTests: XCTestCase {
 
     private func ids(_ rows: [AgentSession]) -> [String] { rows.map(\.id) }
 
+    func testImportRejectsMismatchedSummaryFacts() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("mismatched.jsonl")
+        try #"{"type":"session_meta","payload":{"id":"different-id","cwd":"/wrong"}}"#
+            .write(to: file, atomically: true, encoding: .utf8)
+        XCTAssertEqual(CodexSessionStore(root: root).loadSummary(at: file)?.id, "different-id")
+        let row = AgentSession(id: "selected-id", agent: .codex, projectPath: "/display",
+            title: "Display", createdAt: nil, updatedAt: Date(), filePath: file)
+        let db = try TempleDB.inMemory()
+        let overlay = SessionOverlayStore(db: db)
+        let failures = await overlay.importSessions([row])
+        XCTAssertTrue(failures.isEmpty)
+        let state = try XCTUnwrap(db.sessionState(row.id))
+        XCTAssertNil(state.directory)
+        XCTAssertNil(state.title)
+        XCTAssertNil(state.lastActiveAt)
+        XCTAssertNil(try db.sessionState("different-id"))
+    }
+
+    func testImportParsesOffMainWithBoundedConcurrencyAndRechecksMembership() async throws {
+        let db = try TempleDB.inMemory()
+        let overlay = SessionOverlayStore(db: db)
+        let firstWave = expectation(description: "four readers are in flight")
+        firstWave.expectedFulfillmentCount = 4
+        let probe = ImportReaderProbe(firstWave: firstWave)
+        overlay.importSummaryReader = { probe.read($0) }
+        let rows = (0..<12).map { session("import-\($0)", hoursAgo: Double($0)) }
+        let task = Task { await overlay.importSessions(rows) }
+        await fulfillment(of: [firstWave], timeout: 3)
+        overlay.join(rows[0].id, via: .opened)
+        for _ in rows { probe.release.signal() }
+        let failures = await task.value
+        XCTAssertTrue(failures.isEmpty)
+        XCTAssertFalse(probe.sawMainThread)
+        XCTAssertEqual(probe.peak, 4)
+        XCTAssertEqual(probe.count, 12)
+        let raced = try XCTUnwrap(db.sessionState(rows[0].id))
+        XCTAssertEqual(raced.joinedVia, .opened)
+        XCTAssertNil(raced.title, "joining during the read prevents an import fill")
+        XCTAssertNil(raced.directory)
+        XCTAssertEqual(try db.sessionState(rows[1].id)?.title, "Parsed fact")
+    }
+
+    func testImportCopiesTitleDirectoryAndTimeOnce() throws {
+        let db = try TempleDB.inMemory()
+        let overlay = SessionOverlayStore(db: db)
+        let date = Date(timeIntervalSince1970: 100)
+        let summary = TranscriptSummary(id: "a", agent: .claude,
+            locator: TranscriptLocator(host: .local, path: "/tmp/a.jsonl"),
+            modifiedAt: date, cwd: "/cwd", firstPrompt: "First prompt", recordedTitle: "Different title")
+        XCTAssertTrue(overlay.importSessions([summary]).isEmpty)
+        let row = try XCTUnwrap(db.sessionState("a"))
+        XCTAssertEqual(row.title, "First prompt")
+        XCTAssertNil(row.generatedTitle)
+        XCTAssertEqual(row.directory, "/cwd")
+        XCTAssertEqual(row.directorySource, .transcript)
+        XCTAssertEqual(row.lastActiveAt, date)
+        XCTAssertEqual(row.agent, .claude)
+        XCTAssertEqual(row.transcriptPath, "/tmp/a.jsonl")
+        let changed = TranscriptSummary(id: "a", agent: .claude,
+            locator: summary.locator, modifiedAt: date.addingTimeInterval(100),
+            cwd: "/changed", firstPrompt: "Changed")
+        XCTAssertTrue(overlay.importSessions([changed]).isEmpty)
+        XCTAssertEqual(try db.sessionState("a"), row)
+        XCTAssertEqual(overlay.leave(["a"]), ["a"], "fact fills remain undoable")
+    }
+
+    func testImportNeverPersistsPlaceholders() throws {
+        let db = try TempleDB.inMemory()
+        let overlay = SessionOverlayStore(db: db)
+        for agent in Agent.allCases {
+            let summary = TranscriptSummary(id: agent.rawValue, agent: agent,
+                locator: TranscriptLocator(host: .local, path: "/tmp/absent.jsonl"),
+                modifiedAt: Date(timeIntervalSince1970: 100), directoryHint: "/lossy",
+                laterPromptHint: "Later prompt", legacyTitleHint: "Legacy")
+            XCTAssertTrue(overlay.importSessions([summary]).isEmpty)
+            let row = try XCTUnwrap(db.sessionState(summary.id))
+            XCTAssertNil(row.title)
+            XCTAssertNil(row.directory)
+            XCTAssertNil(row.directorySource)
+        }
+    }
+
+    func testUnreadableHistoryEntryJoinsWithoutDisplayFallbacks() async throws {
+        let db = try TempleDB.inMemory()
+        let overlay = SessionOverlayStore(db: db)
+        let legacy = AgentSession(id: "missing", agent: .claude,
+            projectPath: "(unknown)", title: "(untitled)", createdAt: nil,
+            updatedAt: Date(), filePath: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString).appendingPathExtension("jsonl"))
+        let failures = await overlay.importSessions([legacy])
+        XCTAssertTrue(failures.isEmpty)
+        let row = try XCTUnwrap(db.sessionState(legacy.id))
+        XCTAssertNil(row.title)
+        XCTAssertNil(row.directory)
+        XCTAssertNil(row.lastActiveAt)
+    }
+
+    func testHistoryImportAdapterUsesParserFacts() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("history-facts.jsonl")
+        try """
+        {"type":"user","cwd":"/fact-cwd","message":{"content":"First fact"}}
+        {"type":"summary","summary":"Display summary"}
+        """.write(to: file, atomically: true, encoding: .utf8)
+        let store = ClaudeSessionStore(root: root)
+        let summary = try XCTUnwrap(store.loadSummary(at: file))
+        let legacy = try XCTUnwrap(store.loadSession(at: file))
+        XCTAssertEqual(legacy.title, "Display summary")
+        let h = harness([legacy])
+        await load(h.history)
+        h.history.selectAll()
+        h.history.requestImport()
+        await h.history.confirmImport(undoManager: nil)
+        let row = try XCTUnwrap(h.database.sessionState(summary.id))
+        XCTAssertEqual(row.title, summary.firstPrompt)
+        XCTAssertEqual(row.directory, summary.cwd)
+        XCTAssertEqual(try XCTUnwrap(row.lastActiveAt).timeIntervalSince1970,
+                       summary.modifiedAt.timeIntervalSince1970, accuracy: 0.001)
+    }
+
     // MARK: Grouping
 
     func testHistoryGroupingTitlesAndPreservesInputOrderWithinDay() throws {
@@ -505,7 +630,7 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(ids(request.sessions), ["o1", "o2"], "already-in-Temple rows are not imported again")
         XCTAssertEqual(request.confirmLabel, "Import 2")
 
-        h.history.confirmImport(request, undoManager: nil)
+        await h.history.confirmImport(request, undoManager: nil)
 
         XCTAssertNil(h.history.pendingImport)
         XCTAssertEqual(try h.database.sessionState("o1")?.joinedVia, .imported)
@@ -542,7 +667,7 @@ final class HistoryTests: XCTestCase {
 
         overlay.recordGeneratedTitle("Renamed by the agent", for: "b")
         overlay.flushPendingTitles()
-        history.confirmImport(HistoryModel.importRequest(for: rows), undoManager: nil)
+        await history.confirmImport(HistoryModel.importRequest(for: rows), undoManager: nil)
 
         let failure = try XCTUnwrap(history.importFailure)
         XCTAssertEqual(failure.title, "Couldn't import 2 of 2 sessions")
@@ -567,7 +692,7 @@ final class HistoryTests: XCTestCase {
         let manager = undoManager()
 
         manager.beginUndoGrouping()
-        h.history.confirmImport(HistoryModel.importRequest(for: rows), undoManager: manager)
+        await h.history.confirmImport(HistoryModel.importRequest(for: rows), undoManager: manager)
         manager.endUndoGrouping()
         XCTAssertEqual(manager.undoActionName, "Import")
         // Something is decided about one of them before the undo.
@@ -612,7 +737,7 @@ final class HistoryTests: XCTestCase {
         let manager = undoManager()
 
         manager.beginUndoGrouping()
-        h.history.confirmImport(h.history.makeImportRequest(for: rows), undoManager: manager)
+        await h.history.confirmImport(h.history.makeImportRequest(for: rows), undoManager: manager)
         manager.endUndoGrouping()
 
         XCTAssertTrue(h.history.visibleRows.isEmpty, "everything left the Not in Temple view")
@@ -807,7 +932,7 @@ final class HistoryTabTests: XCTestCase {
         manager.groupsByEvent = false
 
         manager.beginUndoGrouping()
-        model.history.confirmImport(model.history.makeImportRequest(for: [row]), undoManager: manager)
+        await model.history.confirmImport(model.history.makeImportRequest(for: [row]), undoManager: manager)
         manager.endUndoGrouping()
         model.history.open(row)
         XCTAssertNotNil(model.openSessions.openTab(forSessionID: "imp"))
@@ -889,7 +1014,7 @@ final class HistoryUndoEngineTests: XCTestCase {
         manager.groupsByEvent = false
 
         manager.beginUndoGrouping()
-        model.history.confirmImport(model.history.makeImportRequest(for: [row]), undoManager: manager)
+        await model.history.confirmImport(model.history.makeImportRequest(for: [row]), undoManager: manager)
         manager.endUndoGrouping()
         try await waitFor { model.index.allSessions.contains { $0.id == "imp" } }
 
@@ -985,4 +1110,32 @@ private final class CancelFlag: @unchecked Sendable {
     private var value = false
     var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
     func set() { lock.lock(); value = true; lock.unlock() }
+}
+
+private final class ImportReaderProbe: @unchecked Sendable {
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private let firstWave: XCTestExpectation
+    private var active = 0
+    private(set) var peak = 0
+    private(set) var count = 0
+    private(set) var sawMainThread = false
+
+    init(firstWave: XCTestExpectation) { self.firstWave = firstWave }
+
+    func read(_ session: AgentSession) -> TranscriptSummary {
+        lock.lock()
+        active += 1
+        count += 1
+        peak = max(peak, active)
+        sawMainThread = sawMainThread || Thread.isMainThread
+        let ordinal = count
+        lock.unlock()
+        if ordinal <= 4 { firstWave.fulfill() }
+        release.wait()
+        lock.lock(); active -= 1; lock.unlock()
+        return TranscriptSummary(id: session.id, agent: session.agent,
+            locator: TranscriptLocator(host: .local, path: session.filePath.path),
+            modifiedAt: Date(timeIntervalSince1970: 100), cwd: "/fact", firstPrompt: "Parsed fact")
+    }
 }
