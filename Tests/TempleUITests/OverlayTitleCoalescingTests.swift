@@ -12,6 +12,20 @@ final class OverlayTitleCoalescingTests: XCTestCase {
         SessionOverlayStore(db: try! TempleDB.inMemory())
     }
 
+    func testReadsCoreTitleAndRecordsBothTitleColumns() throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "s", via: .imported)
+        try db.fillCoreFields(sessionID: "s", title: "First prompt")
+        let overlay = SessionOverlayStore(db: db)
+        XCTAssertEqual(overlay.generatedTitle(for: "s"), "First prompt")
+        XCTAssertNil(try db.sessionState("s")?.generatedTitle)
+        overlay.recordGeneratedTitle("Agent retitle", for: "s")
+        overlay.flushPendingTitles()
+        XCTAssertEqual(try db.sessionState("s")?.title, "Agent retitle")
+        XCTAssertEqual(try db.sessionState("s")?.generatedTitle, "Agent retitle")
+        XCTAssertEqual(SessionOverlayStore(db: db).generatedTitle(for: "s"), "Agent retitle")
+    }
+
     func testCustomNameSetOverwriteClearAndReload() throws {
         let db = try TempleDB.inMemory()
         let overlay = SessionOverlayStore(db: db)

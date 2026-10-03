@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 @testable import TempleCore
 import GRDB
 
@@ -170,7 +171,7 @@ final class DBTests: XCTestCase {
             let hadJoinedVia = try legacy.read { database in
                 try database.columns(in: "session_state").contains { $0.name == "joined_via" }
             }
-            XCTAssertFalse(hadJoinedVia, "fixture at \(start) already had session_state.joined_via")
+            if index < 7 { XCTAssertFalse(hadJoinedVia, "fixture at \(start) already had session_state.joined_via") }
             try legacy.close()
 
             let migrated = try TempleDB(path: path)
@@ -203,12 +204,19 @@ final class DBTests: XCTestCase {
             XCTAssertTrue(state.archived, "from \(start)")
             if index >= 2 { XCTAssertEqual(state.generatedTitle, "Agent title", "from \(start)") }
             if index >= 3 { XCTAssertEqual(state.color, "blue", "from \(start)") }
+            XCTAssertEqual(state.title, index >= 2 ? "Agent title" : nil, "from \(start)")
+            XCTAssertEqual(state.host, .local, "from \(start)")
+            XCTAssertNil(state.directory, "from \(start)")
+            XCTAssertNil(state.directorySource, "from \(start)")
+            XCTAssertNil(state.lastActiveAt, "from \(start)")
             // Unknown, not guessed: nothing older says who started a session.
-            XCTAssertNil(state.joinedVia, "from \(start)")
-            XCTAssertNil(state.joinedAt, "from \(start)")
+            XCTAssertEqual(state.joinedVia, index >= 7 ? .imported : nil, "from \(start)")
+            XCTAssertEqual(state.joinedAt, index >= 7 ? Self.seededDate : nil, "from \(start)")
+            XCTAssertEqual(state.agent, index >= 8 ? .codex : nil, "from \(start)")
+            XCTAssertEqual(state.transcriptPath, index >= 8 ? "/transcript.jsonl" : nil, "from \(start)")
             // ...and a later join does not rewrite that history.
             try migrated.join(sessionID: "s", via: .opened)
-            XCTAssertNil(try migrated.sessionState("s")?.joinedVia, "from \(start)")
+            XCTAssertEqual(try migrated.sessionState("s")?.joinedVia, index >= 7 ? .imported : nil, "from \(start)")
 
             let tab = try XCTUnwrap(migrated.openTabRecords().first, "from \(start)")
             XCTAssertEqual(tab.sessionID, "s", "from \(start)")
@@ -237,10 +245,10 @@ final class DBTests: XCTestCase {
     private static let legacyVersions = [
         "v1", "v2-open-tab-metadata", "v3-generated-title",
         "v4-session-color", "v5-open-tab-active", "v6-ui-state",
-        "v7-project-state",
+        "v7-project-state", "v8-session-join", "v9-session-transcript",
     ]
 
-    /// A database stopped at `target`: the v1–v7 migrations registered as
+    /// A database stopped at `target`: the v1–v9 migrations registered as
     /// production spells them, applied only up to that identifier, with GRDB's own
     /// bookkeeping and a row in each table so the migration has something to
     /// preserve.
@@ -303,6 +311,19 @@ final class DBTests: XCTestCase {
             }
         }
 
+        migrator.registerMigration("v8-session-join") { database in
+            try database.alter(table: "session_state") { table in
+                table.add(column: "joined_via", .text)
+                table.add(column: "joined_at", .datetime)
+            }
+        }
+        migrator.registerMigration("v9-session-transcript") { database in
+            try database.alter(table: "session_state") { table in
+                table.add(column: "agent", .text)
+                table.add(column: "transcript_path", .text)
+            }
+        }
+
         let queue = try DatabaseQueue(path: path.path)
         try migrator.migrate(queue, upTo: target)
         // Seed every column that exists at this starting version, each with a
@@ -314,6 +335,15 @@ final class DBTests: XCTestCase {
                               "last_opened_at": "'\(seededDateLiteral)'"]
         if reached.contains("v3-generated-title") { sessionColumns["generated_title"] = "'Agent title'" }
         if reached.contains("v4-session-color") { sessionColumns["color"] = "'blue'" }
+
+        if reached.contains("v8-session-join") {
+            sessionColumns["joined_via"] = "'imported'"
+            sessionColumns["joined_at"] = "'\(seededDateLiteral)'"
+        }
+        if reached.contains("v9-session-transcript") {
+            sessionColumns["agent"] = "'codex'"
+            sessionColumns["transcript_path"] = "'/transcript.jsonl'"
+        }
 
         var tabColumns = ["project_path": "'/p'", "session_id": "'s'", "position": "3"]
         if reached.contains("v2-open-tab-metadata") {
@@ -461,5 +491,406 @@ final class DBTests: XCTestCase {
 
     func testDefaultPathShape() {
         XCTAssertTrue(TempleDB.defaultPath().path.hasSuffix("Library/Application Support/Temple/temple.sqlite"))
+    }
+}
+
+extension DBTests {
+    func testReadOnlyV9RowsRemainReadableWithoutMigration() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("temple-read-v9-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let path = directory.appendingPathComponent("temple.sqlite")
+        paths.append(path)
+        try Self.writeLegacyDatabase(at: path, upTo: "v9-session-transcript")
+        let before = try Data(contentsOf: path)
+        let reader = try TempleDB(readOnlyPath: path)
+        XCTAssertEqual(try reader.sessionState("s")?.host, .local)
+        XCTAssertEqual(try reader.sessionStates().map(\.id), ["s"])
+        XCTAssertEqual(try reader.sessionStates(host: .local).map(\.id), ["s"])
+        XCTAssertTrue(try reader.sessionStates(host: HostID(rawValue: "remote")).isEmpty)
+        XCTAssertEqual(try Data(contentsOf: path), before)
+    }
+
+    func testOldWriterSQLStillRunsOnV10() throws {
+        let (_, path) = try database()
+        let old = try DatabaseQueue(path: path.path)
+        defer { try? old.close() }
+        // Literal statements from v9, including the ensureState used by its
+        // setter. No production API calls here: those would test the new writer.
+        try old.write { db in
+            try db.execute(sql: "INSERT OR IGNORE INTO session_state (id) VALUES (?)", arguments: ["old-title"])
+            try db.execute(sql: "UPDATE session_state SET generated_title = ? WHERE id = ?", arguments: ["Old writer title", "old-title"])
+            try db.execute(sql: "INSERT INTO session_state (id, joined_via, joined_at) VALUES (?, ?, ?) ON CONFLICT(id) DO NOTHING",
+                           arguments: ["old-import", "imported", Self.seededDate])
+            try db.execute(sql: "UPDATE session_state SET agent = COALESCE(?, agent), transcript_path = COALESCE(?, transcript_path) WHERE id = ?",
+                           arguments: ["codex", "/old/path", "old-import"])
+            try db.execute(sql: """
+                DELETE FROM session_state
+                WHERE id = ? AND joined_via = ?
+                  AND pinned = 0 AND archived = 0
+                  AND custom_name IS NULL AND color IS NULL
+                  AND generated_title IS NULL AND last_opened_at IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
+                """, arguments: ["old-import", "imported", "old-import"])
+            XCTAssertEqual(db.changesCount, 1)
+        }
+        let reopened = try TempleDB(path: path)
+        XCTAssertEqual(try reopened.sessionState("old-title")?.title, "Old writer title")
+        XCTAssertEqual(try reopened.sessionState("old-title")?.generatedTitle, "Old writer title")
+        XCTAssertNil(try reopened.sessionState("old-import"))
+        try old.write { db in
+            try db.execute(sql: "INSERT INTO session_state (id, joined_via, joined_at) VALUES (?, ?, ?) ON CONFLICT(id) DO NOTHING",
+                           arguments: ["old-join", "opened", Self.seededDate])
+        }
+        XCTAssertEqual(try reopened.sessionState("old-join")?.host, .local)
+    }
+
+    func testTwoConnectionsOldThenNewReconcileTitle() throws {
+        let (new, path) = try database()
+        try new.setTitle("Initial", sessionID: "s")
+        let old = try DatabaseQueue(path: path.path)
+        defer { try? old.close() }
+        try old.write { db in
+            try db.execute(sql: "UPDATE session_state SET generated_title = ? WHERE id = ?", arguments: ["Old process retitle", "s"])
+        }
+        // A7: no live reconcile on reads of an already-open connection.
+        XCTAssertEqual(try new.sessionState("s")?.title, "Initial")
+        let reopened = try TempleDB(path: path)
+        XCTAssertEqual(try reopened.sessionState("s")?.title, "Old process retitle")
+        XCTAssertEqual(try TempleDB(path: path).sessionState("s")?.title, "Old process retitle")
+        try reopened.join(sessionID: "prompt", via: .imported)
+        try reopened.fillCoreFields(sessionID: "prompt", title: "First prompt")
+        XCTAssertEqual(try TempleDB(path: path).sessionState("prompt")?.title, "First prompt")
+        XCTAssertNil(try reopened.sessionState("prompt")?.generatedTitle)
+    }
+
+    func testASupersededDatabaseThrowsNewerSchemaAndIsNotWritten() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("temple-future-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let path = directory.appendingPathComponent("temple.sqlite")
+        paths.append(path)
+        // Start before v10 to prove the guard precedes both migration and reconcile.
+        try Self.writeLegacyDatabase(at: path, upTo: "v9-session-transcript")
+        let queue = try DatabaseQueue(path: path.path)
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO grdb_migrations(identifier) VALUES ('future-unknown')")
+        }
+        try queue.close()
+        let before = try Data(contentsOf: path)
+        let filesBefore = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+        for open in [{ try TempleDB(path: path) }, { try TempleDB(readOnlyPath: path) }] {
+            XCTAssertThrowsError(try open()) { XCTAssertEqual($0 as? TempleDBError, .newerSchema) }
+            XCTAssertEqual(try Data(contentsOf: path), before)
+            let expectedFiles = Set(filesBefore).union(["temple.sqlite.migrate-lock"])
+            XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: directory.path)), expectedFiles)
+        }
+    }
+
+    func testCoreFillsNeverOverwriteAndLaunchDirectoryAlwaysWins() throws {
+        let (db, _) = try database()
+        try db.join(sessionID: "s", via: .imported)
+        XCTAssertEqual(try db.fillCoreFields(sessionID: "s", agent: .claude, directory: "/transcript", title: "Prompt", lastActiveAt: Self.seededDate),
+                       [.agent, .directory, .title, .lastActiveAt])
+        XCTAssertEqual(try db.sessionState("s")?.directorySource, .transcript)
+        XCTAssertTrue(try db.fillCoreFields(sessionID: "s", agent: .codex, directory: "/ignored", title: "Ignored", lastActiveAt: Date()).isEmpty)
+        try db.observeLaunchDirectory(sessionID: "s", "/launch-A")
+        try db.observeLaunchDirectory(sessionID: "s", "/launch-B")
+        try db.fillCoreFields(sessionID: "s", directory: "/transcript-C")
+        let state = try XCTUnwrap(db.sessionState("s"))
+        XCTAssertEqual(state.directory, "/launch-B")
+        XCTAssertEqual(state.directorySource, .tab)
+        XCTAssertEqual(state.agent, .claude)
+        XCTAssertEqual(state.title, "Prompt")
+        XCTAssertEqual(state.lastActiveAt, Self.seededDate)
+        XCTAssertNil(state.generatedTitle)
+        XCTAssertTrue(try db.fillCoreFields(sessionID: "absent", title: "No row").isEmpty)
+        try db.observeLaunchDirectory(sessionID: "absent", "/no-row")
+        try db.touch(sessionID: "absent")
+        XCTAssertNil(try db.sessionState("absent"))
+    }
+
+    func testJoinCoreIsNullOnlyAndHostQueriesAreScoped() throws {
+        let (db, _) = try database()
+        let remote = HostID(rawValue: "remote-alias")
+        try db.join(sessionID: "remote", via: .imported, core: SessionCore(host: remote, directory: "/A", directorySource: .transcript, title: "A", lastActiveAt: Self.seededDate))
+        try db.join(sessionID: "remote", via: .opened, core: SessionCore(directory: "/B", directorySource: .tab, title: "B", lastActiveAt: Date()))
+        let state = try XCTUnwrap(db.sessionState("remote"))
+        XCTAssertEqual(try JSONDecoder().decode(SessionState.self, from: JSONEncoder().encode(state)), state)
+        XCTAssertEqual(state.host, remote)
+        XCTAssertEqual(state.directory, "/A")
+        XCTAssertEqual(state.directorySource, .transcript)
+        XCTAssertEqual(state.title, "A")
+        XCTAssertEqual(state.lastActiveAt, Self.seededDate)
+        XCTAssertEqual(state.joinedVia, .imported)
+        try db.join(sessionID: "local", via: .created)
+        try db.join(sessionID: "local", via: .opened, core: SessionCore(directory: "/local", directorySource: .tab, title: "Local"))
+        XCTAssertEqual(try db.sessionState("local")?.directory, "/local")
+        XCTAssertEqual(try db.sessionStates(host: .local).map(\.id), ["local"])
+        XCTAssertEqual(try db.sessionStates(host: remote).map(\.id), ["remote"])
+        XCTAssertEqual(try db.sessionStates().count, 2)
+    }
+
+    func testTouchIsMonotonic() throws {
+        let (db, path) = try database()
+        try db.join(sessionID: "s", via: .created)
+        // Dates remain GRDB datetime values, including the NULL case.
+        let early = Date(timeIntervalSince1970: -100)
+        let late = Self.seededDate
+        try db.touch(sessionID: "s", at: early)
+        XCTAssertEqual(try db.sessionState("s")?.lastActiveAt, early)
+        try db.touch(sessionID: "s", at: late)
+        try db.touch(sessionID: "s", at: early)
+        try db.touch(sessionID: "s", at: late)
+        XCTAssertEqual(try TempleDB(path: path).sessionState("s")?.lastActiveAt, late)
+    }
+
+    func testLeaveAllowsUndoOfATitledImportButNotARetitledOrOpenedOne() throws {
+        let (db, _) = try database()
+        try db.join(sessionID: "filled", via: .imported, core: SessionCore(directory: "/p", directorySource: .transcript, title: "Prompt"))
+        try db.fillCoreFields(sessionID: "filled", lastActiveAt: Self.seededDate)
+        XCTAssertTrue(try db.leave(sessionID: "filled"))
+        try db.join(sessionID: "retitled", via: .imported)
+        try db.setTitle("Agent title", sessionID: "retitled")
+        XCTAssertFalse(try db.leave(sessionID: "retitled"))
+        try db.join(sessionID: "opened", via: .imported)
+        try db.recordOpened(sessionID: "opened")
+        XCTAssertFalse(try db.leave(sessionID: "opened"))
+    }
+
+    func testSessionStateDecodesV9Fixture() throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/session-state-v9.json")
+        let state = try JSONDecoder().decode(SessionState.self, from: Data(contentsOf: fixture))
+        XCTAssertEqual(state.id, "legacy-v9")
+        XCTAssertTrue(state.pinned)
+        XCTAssertFalse(state.archived)
+        XCTAssertEqual(state.customName, "Kept name")
+        XCTAssertEqual(state.color, "blue")
+        XCTAssertEqual(state.generatedTitle, "Agent title")
+        XCTAssertEqual(state.lastOpenedAt, Date(timeIntervalSinceReferenceDate: 123))
+        XCTAssertEqual(state.joinedVia, .imported)
+        XCTAssertEqual(state.joinedAt, Date(timeIntervalSinceReferenceDate: 100))
+        XCTAssertEqual(state.agent, .codex)
+        XCTAssertEqual(state.transcriptPath, "/old/transcript.jsonl")
+        XCTAssertEqual(state.host, .local)
+        XCTAssertNil(state.directory)
+        XCTAssertNil(state.directorySource)
+        XCTAssertNil(state.title)
+        XCTAssertNil(state.lastActiveAt)
+        XCTAssertEqual(try JSONDecoder().decode(SessionState.self, from: JSONEncoder().encode(state)), state)
+    }
+
+    func testMigrationLockWaitsForConcurrentUnknownMigrationBeforeOpening() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("temple-migration-race-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let path = directory.appendingPathComponent("temple.sqlite")
+        paths.append(path)
+        try Self.writeLegacyDatabase(at: path, upTo: "v9-session-transcript")
+        let before = try Data(contentsOf: path)
+
+        // A separate descriptor/connection plays the future migrator. BSD flock
+        // ownership follows the open descriptor, so it also excludes this process's
+        // second opener, exactly as it would an opener in another process.
+        let fd = Darwin.open(path.path + ".migrate-lock", O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else { throw POSIXError(.EIO) }
+        defer { flock(fd, LOCK_UN); Darwin.close(fd) }
+        XCTAssertEqual(flock(fd, LOCK_EX), 0)
+        let contended = DispatchSemaphore(value: 0)
+        let completed = expectation(description: "waiting opener rejects newer schema")
+        DispatchQueue.global().async {
+            defer { completed.fulfill() }
+            do {
+                _ = try TempleDB(path: path, onMigrationLockContention: { contended.signal() })
+                XCTFail("opener accepted an unknown migration")
+            } catch {
+                XCTAssertEqual(error as? TempleDBError, .newerSchema)
+            }
+        }
+        // The signal comes from an actual EWOULDBLOCK, not a sleep or a guess
+        // that the other thread has been scheduled far enough into the opener.
+        guard contended.wait(timeout: .now() + 3) == .success else {
+            XCTFail("opener did not contend on the migration lock")
+            return
+        }
+        XCTAssertEqual(try Data(contentsOf: path), before, "no migration or reconcile before acquiring the lock")
+        let future = try DatabaseQueue(path: path.path)
+        try future.write { db in
+            try db.execute(sql: "INSERT INTO grdb_migrations(identifier) VALUES ('future-unknown')")
+        }
+        try future.close()
+        let afterFutureCommit = try Data(contentsOf: path)
+        XCTAssertEqual(flock(fd, LOCK_UN), 0)
+        wait(for: [completed], timeout: 3)
+        XCTAssertEqual(try Data(contentsOf: path), afterFutureCommit, "rejected opener must write nothing")
+        // A failed open must release its lock as well.
+        XCTAssertEqual(flock(fd, LOCK_EX | LOCK_NB), 0)
+    }
+
+    func testRowObserversReadOriginatingConnectionForEveryMutationAndIgnoreNoOps() throws {
+        let (db, _) = try database()
+        let recorder = RowChangeRecorder()
+        let token = recorder.observe(db)
+        defer { db.removeRowChangeObserver(token) }
+        let transcript = URL(fileURLWithPath: "/transcript")
+        let mutations: [(String, () throws -> Void)] = [
+            ("join", { try db.join(sessionID: "s", via: .imported) }),
+            ("join core", { try db.join(sessionID: "s", via: .imported, core: SessionCore(directory: "/core", directorySource: .transcript)) }),
+            ("join hint", { try db.join(sessionID: "s", via: .imported, agent: .claude, transcriptPath: transcript) }),
+            ("pin", { try db.setPinned(true, sessionID: "s") }),
+            ("archive clears pin", { try db.setArchived(true, sessionID: "s") }),
+            ("pin archived row", { try db.setPinned(true, sessionID: "s") }),
+            ("same archive clears new pin", { try db.setArchived(true, sessionID: "s") }),
+            ("unarchive", { try db.setArchived(false, sessionID: "s") }),
+            ("custom name", { try db.setCustomName("Name", sessionID: "s") }),
+            ("clear custom name", { try db.setCustomName(nil, sessionID: "s") }),
+            ("color", { try db.setColor("blue", sessionID: "s") }),
+            ("clear color", { try db.setColor(nil, sessionID: "s") }),
+            ("opened", { try db.recordOpened(sessionID: "s", at: Self.seededDate) }),
+            ("hint", { try db.updateTranscriptHint(sessionID: "s", agent: .codex, path: transcript) }),
+            ("fill", { try db.fillCoreFields(sessionID: "s", title: "Prompt", lastActiveAt: Self.seededDate) }),
+            ("title dual write", { try db.setTitle("Prompt", sessionID: "s") }),
+            ("clear title", { try db.setTitle(nil, sessionID: "s") }),
+            ("legacy title setter", { try db.setGeneratedTitle("Agent", sessionID: "s") }),
+            ("launch directory", { try db.observeLaunchDirectory(sessionID: "s", "/launch") }),
+            ("touch", { try db.touch(sessionID: "s", at: Self.seededDate.addingTimeInterval(1)) }),
+        ]
+        for (name, mutate) in mutations {
+            let count = recorder.events.count
+            try mutate()
+            XCTAssertEqual(recorder.events.count, count + 1, name)
+            XCTAssertEqual(recorder.events.last?.id, "s", name)
+            XCTAssertEqual(recorder.events.last?.state, try db.sessionState("s"), name)
+            try mutate()
+            XCTAssertEqual(recorder.events.count, count + 1, "no-op \(name)")
+        }
+        var count = recorder.events.count
+        try db.touch(sessionID: "s", at: Self.seededDate) // older timestamp
+        XCTAssertFalse(try db.leave(sessionID: "s")) // opened/retitled row
+        try db.updateTranscriptHint(sessionID: "absent", agent: .claude, path: transcript)
+        try db.observeLaunchDirectory(sessionID: "absent", "/launch")
+        try db.touch(sessionID: "absent")
+        try db.fillCoreFields(sessionID: "absent", title: "Unknown")
+        XCTAssertEqual(recorder.events.count, count)
+
+        try db.join(sessionID: "removable", via: .imported)
+        count += 1
+        XCTAssertEqual(recorder.events.count, count)
+        XCTAssertTrue(try db.leave(sessionID: "removable"))
+        XCTAssertEqual(recorder.events.count, count + 1)
+        XCTAssertEqual(recorder.events.last?.id, "removable")
+        XCTAssertNil(recorder.events.last?.state)
+        XCTAssertFalse(try db.leave(sessionID: "removable"))
+        XCTAssertEqual(recorder.events.count, count + 1)
+
+        db.removeRowChangeObserver(token)
+        try db.setTitle("After removal", sessionID: "s")
+        XCTAssertEqual(recorder.events.count, count + 1)
+    }
+
+    func testCreatingRowsThroughSettersNotifiesOnceWithTheFinalState() throws {
+        let db = try TempleDB.inMemory()
+        let recorder = RowChangeRecorder()
+        let token = recorder.observe(db)
+        defer { db.removeRowChangeObserver(token) }
+        let setters: [(String, () throws -> Void)] = [
+            ("pin", { try db.setPinned(true, sessionID: "pin") }),
+            ("archive", { try db.setArchived(true, sessionID: "archive") }),
+            ("name", { try db.setCustomName("Name", sessionID: "name") }),
+            ("color", { try db.setColor("blue", sessionID: "color") }),
+            ("opened", { try db.recordOpened(sessionID: "opened", at: Self.seededDate) }),
+            ("title", { try db.setTitle("Title", sessionID: "title") }),
+            // Inserting a row with default values is still a membership change.
+            ("default", { try db.setPinned(false, sessionID: "default") }),
+        ]
+        for (id, set) in setters {
+            let count = recorder.events.count
+            try set()
+            XCTAssertEqual(recorder.events.count, count + 1, id)
+            XCTAssertEqual(recorder.events.last?.state, try db.sessionState(id), id)
+            try set()
+            XCTAssertEqual(recorder.events.count, count + 1, "no-op \(id)")
+        }
+    }
+
+    func testFailedSessionRowMutationsNeverNotify() throws {
+        let queue = try DatabaseQueue()
+        let db = try TempleDB(database: queue)
+        try db.join(sessionID: "s", via: .imported)
+        let before = try db.sessionStates()
+        // Abort actual writes, including after a setter's provisional INSERT.
+        // This tests rollback, not just a readonly failure before work begins.
+        try queue.write { database in
+            try database.execute(sql: """
+                CREATE TRIGGER reject_update BEFORE UPDATE ON session_state
+                BEGIN SELECT RAISE(ABORT, 'test rejects update'); END;
+                CREATE TRIGGER reject_delete BEFORE DELETE ON session_state
+                BEGIN SELECT RAISE(ABORT, 'test rejects delete'); END;
+                """)
+        }
+        let recorder = RowChangeRecorder()
+        let token = recorder.observe(db)
+        defer { db.removeRowChangeObserver(token) }
+        let joins = RowChangeRecorder()
+        let joinToken = db.observeJoins { id, _ in joins.append(id: id, state: try! db.sessionState(id)) }
+        defer { db.removeJoinObserver(joinToken) }
+        let failures: [(String, () throws -> Void)] = [
+            ("pin insertion rolls back", { try db.setPinned(true, sessionID: "new-pin") }),
+            ("archive insertion rolls back", { try db.setArchived(true, sessionID: "new-archive") }),
+            ("name insertion rolls back", { try db.setCustomName("Name", sessionID: "new-name") }),
+            ("color insertion rolls back", { try db.setColor("blue", sessionID: "new-color") }),
+            ("opened insertion rolls back", { try db.recordOpened(sessionID: "new-opened") }),
+            ("title insertion rolls back", { try db.setTitle("Title", sessionID: "new-title") }),
+            ("pin existing", { try db.setPinned(true, sessionID: "s") }),
+            ("archive existing", { try db.setArchived(true, sessionID: "s") }),
+            ("name existing", { try db.setCustomName("Name", sessionID: "s") }),
+            ("color existing", { try db.setColor("blue", sessionID: "s") }),
+            ("opened existing", { try db.recordOpened(sessionID: "s") }),
+            ("title existing", { try db.setTitle("Title", sessionID: "s") }),
+            ("legacy title", { try db.setGeneratedTitle("Title", sessionID: "s") }),
+            ("hint", { try db.updateTranscriptHint(sessionID: "s", agent: .claude, path: URL(fileURLWithPath: "/hint")) }),
+            ("leave", { _ = try db.leave(sessionID: "s") }),
+            ("launch directory", { try db.observeLaunchDirectory(sessionID: "s", "/launch") }),
+            ("touch", { try db.touch(sessionID: "s") }),
+            ("fill", { try db.fillCoreFields(sessionID: "s", title: "Prompt") }),
+            ("join core", { try db.join(sessionID: "s", via: .imported, core: SessionCore(title: "Prompt")) }),
+            ("join insertion rolls back", { try db.join(sessionID: "new-join", via: .created, core: SessionCore(title: "Prompt")) }),
+        ]
+        for (name, mutate) in failures {
+            XCTAssertThrowsError(try mutate(), name)
+            XCTAssertTrue(recorder.events.isEmpty, name)
+            XCTAssertTrue(joins.events.isEmpty, name)
+            XCTAssertEqual(try db.sessionStates(), before, name)
+        }
+        try queue.write { database in
+            try database.execute(sql: "CREATE TRIGGER reject_insert BEFORE INSERT ON session_state BEGIN SELECT RAISE(ABORT, 'test rejects insert'); END")
+        }
+        XCTAssertThrowsError(try db.join(sessionID: "new-plain-join", via: .created))
+        XCTAssertTrue(recorder.events.isEmpty)
+        XCTAssertTrue(joins.events.isEmpty)
+    }
+}
+
+private final class RowChangeRecorder: @unchecked Sendable {
+    struct Event {
+        let id: String
+        let state: SessionState?
+    }
+    private let lock = NSLock()
+    private var storedEvents: [Event] = []
+    var events: [Event] { lock.lock(); defer { lock.unlock() }; return storedEvents }
+
+    func append(id: String, state: SessionState?) {
+        lock.lock(); defer { lock.unlock() }
+        storedEvents.append(Event(id: id, state: state))
+    }
+
+    func observe(_ db: TempleDB) -> UUID {
+        db.observeRowChanges { id in
+            // Reading the ORIGINATING connection fails if this callback still
+            // runs on its writer queue. Register/remove also re-enters the
+            // observer mutex, proving that lock is not held during delivery.
+            let state = try! db.sessionState(id)
+            let temporary = db.observeRowChanges { _ in }
+            db.removeRowChangeObserver(temporary)
+            self.append(id: id, state: state)
+        }
     }
 }

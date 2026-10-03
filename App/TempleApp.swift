@@ -14,7 +14,7 @@ import TempleTerminal
 @main
 struct TempleApp: App {
     @NSApplicationDelegateAdaptor(TempleAppDelegate.self) private var appDelegate
-    @StateObject private var model: AppModel
+    @StateObject private var startup: AppStartup
 
     init() {
         // In the bundle, resources resolve to Contents/Resources/ghostty; the
@@ -23,29 +23,38 @@ struct TempleApp: App {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()  // App
             .deletingLastPathComponent()  // repo root
-        GhosttyResources.configure(devCheckoutRoot: repoRoot)
         // Agents spawned in Temple must see the user's real PATH (agent hooks
         // and tools break under launchd's minimal GUI environment).
-        LoginShellEnvironment.adoptLoginShellPATH()
         // The usage meter's file trail (ADR-022). Only the app turns it on:
         // tests and tools that reuse the model must never write one. The
         // SwiftPM entry point (Sources/Temple/TempleApp.swift) has the same
         // line — see AGENTS.md, "Two entry points".
-        UsageLog.fileURL = UsageLog.defaultFileURL
-        _model = StateObject(wrappedValue: AppModel(surfaceFactory: GhosttyTerminalSurfaceFactory()))
+        _startup = StateObject(wrappedValue: AppStartup { database in
+            GhosttyResources.configure(devCheckoutRoot: repoRoot)
+            LoginShellEnvironment.adoptLoginShellPATH()
+            UsageLog.fileURL = UsageLog.defaultFileURL
+            return AppModel(surfaceFactory: GhosttyTerminalSurfaceFactory(), database: database)
+        })
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView()
-                .environmentObject(model)
-                .frame(minWidth: 900, minHeight: 600)
-                .task {
-                    appDelegate.model = model
-                    model.start()
-                }
+            if let model = startup.model {
+                RootView()
+                    .environmentObject(model)
+                    .frame(minWidth: 900, minHeight: 600)
+                    .task {
+                        appDelegate.model = model
+                        model.start()
+                    }
+            } else {
+                StartupFailureView(message: startup.failureMessage ?? "Unable to open Temple.")
+                    .frame(minWidth: 900, minHeight: 600)
+            }
         }
-        .commands { TempleCommands(model: model) }
+        .commands {
+            if let model = startup.model { TempleCommands(model: model) }
+        }
         .windowStyle(.hiddenTitleBar)
         // Unified toolbar: tab chips + sidebar toggle live in the native
         // title-bar band, keeping native double-click-to-zoom / drag (Item A/B).

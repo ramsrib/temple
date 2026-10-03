@@ -15,6 +15,15 @@ if CommandLine.arguments.contains("--help") {
     exit(0)
 }
 
+func openDatabase(readOnly: Bool = false) throws -> TempleDB {
+    do {
+        return try readOnly ? TempleDB(readOnlyPath: TempleDB.defaultPath()) : TempleDB(path: TempleDB.defaultPath())
+    } catch TempleDBError.newerSchema {
+        FileHandle.standardError.write(Data((TempleDBError.updateRequiredMessage + "\n").utf8))
+        exit(1)
+    }
+}
+
 // `make demo` seeds sessions Temple never saw; this imports each one so the
 // demo sidebar has something in it. Refused against the real state dir:
 // a row for every session on disk would erase the line the sidebar draws,
@@ -24,7 +33,7 @@ if CommandLine.arguments.contains("--import-all") {
         FileHandle.standardError.write(Data("templectl: --import-all needs TEMPLE_STATE_DIR set to a directory other than the real state dir\n".utf8))
         exit(1)
     }
-    let db = try TempleDB(path: TempleDB.defaultPath())
+    let db = try openDatabase()
     let sessions = SessionCatalog().load().allSessions
     for session in sessions { try db.join(sessionID: session.id, via: .imported, agent: session.agent, transcriptPath: session.filePath) }
     print("imported \(sessions.count) sessions")
@@ -66,9 +75,7 @@ if let searchQuery {
         print("\(badge)  \(project)  —  \(session.title)")
     }
 } else if CommandLine.arguments.contains("--watch") {
-    let database = try TempleState.isRedirected
-        ? TempleDB(path: TempleDB.defaultPath())
-        : TempleDB(readOnlyPath: TempleDB.defaultPath())
+    let database = try openDatabase(readOnly: !TempleState.isRedirected)
     let watcher = SessionWatcher(database: database)
     var first = true
     for await index in watcher.start() {

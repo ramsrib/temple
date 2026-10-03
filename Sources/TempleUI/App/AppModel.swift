@@ -183,13 +183,12 @@ public final class AppModel: ObservableObject {
                 registry: ProcessRegistry? = nil,
                 reconciler: CodexAdopting? = nil,
                 persistence: TabPersistence? = nil,
-                database: TempleDB? = nil,
+                database: TempleDB,
                 settings: SettingsStore? = nil,
                 overlay: SessionOverlayStore? = nil,
                 cacheURL: URL = CachedIndexStore.defaultURL) {
         // Defaults that touch @MainActor types are built here (not as default
         // arguments, which evaluate in a nonisolated context).
-        let database = database ?? Self.openDefaultDatabase()
         let settings = settings ?? SettingsStore(defaults: SettingsKeysProbe.scratchDefaults() ?? .standard)
         let overlay = overlay ?? SessionOverlayStore(db: database)
         let uiState = UIStateStore(db: database)
@@ -240,16 +239,6 @@ public final class AppModel: ObservableObject {
         // NB: detection is NOT started here. It runs real binaries (`claude --version`),
         // and `AppModel` is constructed by tests — which must not shell out to whatever
         // CLIs happen to be on the machine. `RootView` starts it when the UI appears.
-    }
-
-    private static func openDefaultDatabase() -> TempleDB {
-        let path = TempleDB.defaultPath()
-        do {
-            return try TempleDB(path: path)
-        } catch {
-            TempleUILog.db.fault("failed to open database at \(path.path, privacy: .public), falling back to in-memory (state will not persist): \(String(describing: error), privacy: .public)")
-            return try! TempleDB.inMemory()
-        }
     }
 
     private func wire() {

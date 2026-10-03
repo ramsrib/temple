@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import GRDB
 
 /// How a session joined Temple — recorded once, when its row is first written,
@@ -21,6 +22,34 @@ public enum JoinedVia: String, Codable, Sendable {
     case imported
 }
 
+public enum TempleDBError: Error, Equatable, LocalizedError {
+    case newerSchema
+
+    public static let updateRequiredMessage = "This Temple is older than the data it found. Update Temple to continue."
+    public var errorDescription: String? { Self.updateRequiredMessage }
+}
+
+/// Core facts supplied at join. Launch directory observations are a separate,
+/// authoritative write; joining itself only fills unknown facts.
+public struct SessionCore: Sendable {
+    public let host: HostID
+    public let directory: String?
+    public let directorySource: DirectorySource?
+    public let title: String?
+    public let lastActiveAt: Date?
+
+    public init(host: HostID = .local, directory: String? = nil,
+                directorySource: DirectorySource? = nil, title: String? = nil,
+                lastActiveAt: Date? = nil) {
+        self.host = host; self.directory = directory; self.directorySource = directorySource
+        self.title = title; self.lastActiveAt = lastActiveAt
+    }
+}
+
+public enum SessionCoreField: Hashable, Sendable {
+    case agent, directory, title, lastActiveAt
+}
+
 public struct SessionState: Codable, Equatable, Sendable {
     public let id: String
     public let pinned: Bool
@@ -37,14 +66,24 @@ public struct SessionState: Codable, Equatable, Sendable {
     public let joinedAt: Date?
     public let agent: Agent?
     public let transcriptPath: String?
+    public let host: HostID
+    public let directory: String?
+    public let directorySource: DirectorySource?
+    public let title: String?
+    public let lastActiveAt: Date?
 
     public init(id: String, pinned: Bool, archived: Bool, customName: String?, color: String?,
                 generatedTitle: String?, lastOpenedAt: Date?, joinedVia: JoinedVia?, joinedAt: Date?,
-                agent: Agent? = nil, transcriptPath: String? = nil) {
+                agent: Agent? = nil, transcriptPath: String? = nil,
+                host: HostID = .local, directory: String? = nil,
+                directorySource: DirectorySource? = nil, title: String? = nil,
+                lastActiveAt: Date? = nil) {
         self.id = id; self.pinned = pinned; self.archived = archived
         self.customName = customName; self.color = color; self.generatedTitle = generatedTitle
         self.lastOpenedAt = lastOpenedAt; self.joinedVia = joinedVia; self.joinedAt = joinedAt
         self.agent = agent; self.transcriptPath = transcriptPath
+        self.host = host; self.directory = directory; self.directorySource = directorySource
+        self.title = title; self.lastActiveAt = lastActiveAt
     }
 
     public init(from decoder: any Decoder) throws {
@@ -60,6 +99,11 @@ public struct SessionState: Codable, Equatable, Sendable {
         joinedAt = try c.decodeIfPresent(Date.self, forKey: .joinedAt)
         agent = try c.decodeIfPresent(Agent.self, forKey: .agent)
         transcriptPath = try c.decodeIfPresent(String.self, forKey: .transcriptPath)
+        host = try c.decodeIfPresent(HostID.self, forKey: .host) ?? .local
+        directory = try c.decodeIfPresent(String.self, forKey: .directory)
+        directorySource = try c.decodeIfPresent(DirectorySource.self, forKey: .directorySource)
+        title = try c.decodeIfPresent(String.self, forKey: .title)
+        lastActiveAt = try c.decodeIfPresent(Date.self, forKey: .lastActiveAt)
     }
 }
 
@@ -143,13 +187,93 @@ public final class TempleDB: @unchecked Sendable {
     }
 
 
-    public init(path: URL) throws {
+    private var rowObservers: [UUID: @Sendable (String) -> Void] = [:]
+
+    /// Like join observation, callbacks run after commit and outside the lock.
+    /// Register before reading rows. This observes this connection's writes only.
+    public func observeRowChanges(_ observer: @escaping @Sendable (String) -> Void) -> UUID {
+        observerLock.lock(); defer { observerLock.unlock() }
+        let token = UUID(); rowObservers[token] = observer; return token
+    }
+
+    public func removeRowChangeObserver(_ token: UUID) {
+        observerLock.lock(); defer { observerLock.unlock() }
+        rowObservers.removeValue(forKey: token)
+    }
+
+    private func committedRowChange(_ id: String) {
+        observerLock.lock(); let callbacks = Array(rowObservers.values); observerLock.unlock()
+        callbacks.forEach { $0(id) }
+    }
+
+    private static func checkSchema(_ queue: DatabaseQueue) throws {
+        if try queue.read({ try migrator.hasBeenSuperseded($0) }) {
+            throw TempleDBError.newerSchema
+        }
+    }
+
+    private static func migrateAndReconcile(_ queue: DatabaseQueue) throws {
+        try checkSchema(queue)
+        try migrator.migrate(queue)
+        // A7: open-time only. Old-process writes after this open are picked up
+        // on the next open; there is no live cross-process title synchronization.
+        try queue.write { database in
+            try database.execute(sql: "UPDATE session_state SET title = generated_title WHERE generated_title IS NOT NULL AND title IS NOT generated_title")
+        }
+    }
+
+    public convenience init(path: URL) throws {
+        try self.init(path: path, onMigrationLockContention: nil)
+    }
+
+    // The contention callback is an internal test seam, called only after flock
+    // proves another opener owns the lock (no timing assumptions in race tests).
+    init(path: URL, onMigrationLockContention: (() -> Void)?) throws {
+        let path = path.resolvingSymlinksInPath()
         try FileManager.default.createDirectory(
             at: path.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        db = try DatabaseQueue(path: path.path)
-        try Self.migrator.migrate(db)
+        db = try Self.withMigrationLock(at: path, onContention: onMigrationLockContention) {
+            // Inspect existing files read-only before opening a writer: even queue
+            // setup must not modify a database whose schema we do not understand.
+            // A live WAL reader may coordinate via -shm; that changes no schema or data.
+            if FileManager.default.fileExists(atPath: path.path) {
+                var configuration = Configuration()
+                configuration.readonly = true
+                let probe = try DatabaseQueue(path: path.path, configuration: configuration)
+                defer { try? probe.close() }
+                try Self.checkSchema(probe)
+            }
+            let queue = try DatabaseQueue(path: path.path)
+            try Self.migrateAndReconcile(queue)
+            return queue
+        }
+    }
+
+    private static func withMigrationLock<T>(at path: URL, onContention: (() -> Void)?,
+                                             _ body: () throws -> T) throws -> T {
+        // SQLite's separate check/migration/reconcile transactions leave a gap.
+        // Every P1+ migrator holds this cross-process lock through ALL of them,
+        // including probe and writer open, so a future incompatible migration
+        // cannot commit in that gap. Pre-P1 migrations are all known to this build.
+        // Keep the sidecar: unlinking it would let another opener lock a new inode.
+        let fd = Darwin.open(path.path + ".migrate-lock", O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { Darwin.close(fd) }
+        var operation = LOCK_EX | LOCK_NB
+        while flock(fd, operation) != 0 {
+            let code = errno
+            if code == EINTR { continue }
+            if code == EWOULDBLOCK && operation & LOCK_NB != 0 {
+                onContention?()
+                operation = LOCK_EX
+                continue
+            }
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
+        defer { flock(fd, LOCK_UN) }
+        return try body()
     }
 
     /// Opens an existing, already-migrated database without write access: for
@@ -160,12 +284,15 @@ public final class TempleDB: @unchecked Sendable {
         configuration.readonly = true
         isReadOnly = true
         db = try DatabaseQueue(path: path.path, configuration: configuration)
+        try Self.checkSchema(db)
     }
 
-    // Internal queue injection lets tests trace actual SQL without per-read hooks.
+    // In-memory queue injection lets tests trace SQL without a filesystem lock.
+    // File-backed callers must use init(path:) so writer open is also locked.
     init(database: DatabaseQueue) throws {
+        precondition(database.path == ":memory:", "File-backed databases require init(path:)")
         db = database
-        try Self.migrator.migrate(db)
+        try Self.migrateAndReconcile(db)
     }
 
     public static func inMemory() throws -> TempleDB {
@@ -177,9 +304,9 @@ public final class TempleDB: @unchecked Sendable {
     }
 
     public func setPinned(_ pinned: Bool, sessionID: String) throws {
-        try ensureState(sessionID)
-        try db.write { database in
-            try database.execute(sql: "UPDATE session_state SET pinned = ? WHERE id = ?", arguments: [pinned, sessionID])
+        try updateState(sessionID) { database in
+            try database.execute(sql: "UPDATE session_state SET pinned = ? WHERE id = ? AND pinned IS NOT ?",
+                                 arguments: [pinned, sessionID, pinned])
         }
     }
 
@@ -187,37 +314,40 @@ public final class TempleDB: @unchecked Sendable {
     /// land one without the other and leave a session both put away and pinned
     /// after a restart. Unarchiving leaves the pin column alone.
     public func setArchived(_ archived: Bool, sessionID: String) throws {
-        try ensureState(sessionID)
-        try db.write { database in
+        try updateState(sessionID) { database in
             try database.execute(
                 sql: """
                     UPDATE session_state
                     SET archived = ?, pinned = CASE WHEN ? THEN 0 ELSE pinned END
-                    WHERE id = ?
+                    WHERE id = ? AND (archived IS NOT ? OR (? AND pinned != 0))
                     """,
-                arguments: [archived, archived, sessionID]
+                arguments: [archived, archived, sessionID, archived, archived]
             )
         }
     }
 
     public func setCustomName(_ name: String?, sessionID: String) throws {
-        try ensureState(sessionID)
-        try db.write { database in
-            try database.execute(sql: "UPDATE session_state SET custom_name = ? WHERE id = ?", arguments: [name, sessionID])
+        try updateState(sessionID) { database in
+            try database.execute(sql: "UPDATE session_state SET custom_name = ? WHERE id = ? AND custom_name IS NOT ?",
+                                 arguments: [name, sessionID, name])
         }
     }
 
     public func setColor(_ color: String?, sessionID: String) throws {
-        try ensureState(sessionID)
-        try db.write { database in
-            try database.execute(sql: "UPDATE session_state SET color = ? WHERE id = ?", arguments: [color, sessionID])
+        try updateState(sessionID) { database in
+            try database.execute(sql: "UPDATE session_state SET color = ? WHERE id = ? AND color IS NOT ?",
+                                 arguments: [color, sessionID, color])
         }
     }
 
     public func setGeneratedTitle(_ title: String?, sessionID: String) throws {
-        try ensureState(sessionID)
-        try db.write { database in
-            try database.execute(sql: "UPDATE session_state SET generated_title = ? WHERE id = ?", arguments: [title, sessionID])
+        try setTitle(title, sessionID: sessionID)
+    }
+
+    public func setTitle(_ title: String?, sessionID: String) throws {
+        try updateState(sessionID) { database in
+            try database.execute(sql: "UPDATE session_state SET title = ?, generated_title = ? WHERE id = ? AND (title IS NOT ? OR generated_title IS NOT ?)",
+                                 arguments: [title, title, sessionID, title, title])
         }
     }
 
@@ -226,13 +356,13 @@ public final class TempleDB: @unchecked Sendable {
     /// before that was recorded stays unknown rather than being
     /// credited to whatever touched it next.
     public func join(sessionID: String, via: JoinedVia, at: Date = Date(),
-                     agent: Agent? = nil, transcriptPath: URL? = nil) throws {
-        let changed = try db.write { database -> Bool in
-            let old = try Row.fetchOne(database, sql: "SELECT agent, transcript_path FROM session_state WHERE id = ?", arguments: [sessionID])
+                     agent: Agent? = nil, transcriptPath: URL? = nil, core: SessionCore? = nil) throws {
+        let changed = try db.write { database -> (join: Bool, row: Bool) in
+            let old = try Row.fetchOne(database, sql: "SELECT * FROM session_state WHERE id = ?", arguments: [sessionID])
             let inserted = old == nil
             try database.execute(
-                sql: "INSERT INTO session_state (id, joined_via, joined_at) VALUES (?, ?, ?) ON CONFLICT(id) DO NOTHING",
-                arguments: [sessionID, via.rawValue, at])
+                sql: "INSERT INTO session_state (id, joined_via, joined_at, host) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+                arguments: [sessionID, via.rawValue, at, core?.host.rawValue ?? HostID.local.rawValue])
             let oldAgent: String? = old?["agent"]
             let oldPath: String? = old?["transcript_path"]
             let hintChanged = (agent != nil && agent?.rawValue != oldAgent) ||
@@ -241,16 +371,32 @@ public final class TempleDB: @unchecked Sendable {
                 try database.execute(sql: "UPDATE session_state SET agent = COALESCE(?, agent), transcript_path = COALESCE(?, transcript_path) WHERE id = ?",
                                      arguments: [agent?.rawValue, transcriptPath?.path, sessionID])
             }
-            return inserted || hintChanged
+            var coreChanged = false
+            if let core {
+                try database.execute(sql: """
+                    UPDATE session_state SET
+                        directory_source = CASE WHEN directory IS NULL AND ? IS NOT NULL THEN ? ELSE directory_source END,
+                        directory = COALESCE(directory, ?), title = COALESCE(title, ?),
+                        last_active_at = COALESCE(last_active_at, ?)
+                    WHERE id = ? AND ((directory IS NULL AND ? IS NOT NULL)
+                        OR (title IS NULL AND ? IS NOT NULL) OR (last_active_at IS NULL AND ? IS NOT NULL))
+                    """, arguments: [core.directory, core.directorySource?.rawValue, core.directory,
+                                       core.title, core.lastActiveAt, sessionID, core.directory, core.title, core.lastActiveAt])
+                coreChanged = database.changesCount > 0
+            }
+            return (inserted || hintChanged, inserted || hintChanged || coreChanged)
         }
-        if changed { committedJoin(sessionID, awaitingCreation: via == .created && agent == .claude && transcriptPath == nil) }
+        if changed.join { committedJoin(sessionID, awaitingCreation: via == .created && agent == .claude && transcriptPath == nil) }
+        if changed.row { committedRowChange(sessionID) }
     }
 
     /// Undo of an import: the one write that removes membership. It deletes
     /// the row only while the row still says nothing but how the session
     /// joined — imported, never pinned, named, colored, retitled, archived or
     /// opened since, and not in a restorable tab. Anything else and the row
-    /// stays: it holds a decision the undo knows nothing about. Returns
+    /// stays: it holds a decision the undo knows nothing about. A transcript
+    /// title fill does not block undo: only generated_title records a retitle.
+    /// Returns
     /// whether the row went. ADR-023's "first join is kept" is untouched; a
     /// row that is undone was never kept.
     @discardableResult
@@ -269,23 +415,28 @@ public final class TempleDB: @unchecked Sendable {
             )
             return database.changesCount > 0
         }
-        if left { committedLeave(sessionID) }
+        if left {
+            committedLeave(sessionID)
+            committedRowChange(sessionID)
+        }
         return left
     }
 
     /// Hints never insert membership or change provenance, and do not trigger a
     /// second resolution after the engine has already parsed this file.
     public func updateTranscriptHint(sessionID: String, agent: Agent, path: URL) throws {
-        try db.write { database in
-            try database.execute(sql: "UPDATE session_state SET agent = ?, transcript_path = ? WHERE id = ?",
-                                 arguments: [agent.rawValue, path.path, sessionID])
+        let changed = try db.write { database in
+            try database.execute(sql: "UPDATE session_state SET agent = ?, transcript_path = ? WHERE id = ? AND (agent IS NOT ? OR transcript_path IS NOT ?)",
+                                 arguments: [agent.rawValue, path.path, sessionID, agent.rawValue, path.path])
+            return database.changesCount > 0
         }
+        if changed { committedRowChange(sessionID) }
     }
 
     public func recordOpened(sessionID: String, at: Date = Date()) throws {
-        try ensureState(sessionID)
-        try db.write { database in
-            try database.execute(sql: "UPDATE session_state SET last_opened_at = ? WHERE id = ?", arguments: [at, sessionID])
+        try updateState(sessionID) { database in
+            try database.execute(sql: "UPDATE session_state SET last_opened_at = ? WHERE id = ? AND last_opened_at IS NOT ?",
+                                 arguments: [at, sessionID, at])
         }
     }
 
@@ -305,14 +456,25 @@ public final class TempleDB: @unchecked Sendable {
                 joinedVia: (row["joined_via"] as String?).flatMap(JoinedVia.init(rawValue:)),
                 joinedAt: row["joined_at"],
                 agent: (row["agent"] as String?).flatMap(Agent.init(rawValue:)),
-                transcriptPath: row["transcript_path"]
+                transcriptPath: row["transcript_path"],
+                host: HostID(rawValue: (row["host"] as String?) ?? ""), directory: row["directory"],
+                directorySource: (row["directory_source"] as String?).flatMap(DirectorySource.init(rawValue:)),
+                title: row["title"], lastActiveAt: row["last_active_at"]
             )
         }
     }
 
-    public func sessionStates() throws -> [SessionState] {
+    public func sessionStates(host: HostID? = nil) throws -> [SessionState] {
         try db.read { database in
-            try Row.fetchAll(database, sql: "SELECT * FROM session_state ORDER BY id").map { row in
+            // templectl's read-only watch can inspect a pre-v10 database without
+            // migrating it. Its rows are local and have no core facts yet.
+            let hasHost = try database.columns(in: "session_state").contains { $0.name == "host" }
+            if !hasHost, let host, !host.isLocal { return [] }
+            let sql = hasHost && host != nil
+                ? "SELECT * FROM session_state WHERE host = ? ORDER BY id"
+                : "SELECT * FROM session_state ORDER BY id"
+            let arguments: StatementArguments = hasHost && host != nil ? [host!.rawValue] : []
+            return try Row.fetchAll(database, sql: sql, arguments: arguments).map { row in
                 SessionState(
                     id: row["id"],
                     pinned: row["pinned"],
@@ -324,10 +486,63 @@ public final class TempleDB: @unchecked Sendable {
                     joinedVia: (row["joined_via"] as String?).flatMap(JoinedVia.init(rawValue:)),
                     joinedAt: row["joined_at"],
                     agent: (row["agent"] as String?).flatMap(Agent.init(rawValue:)),
-                    transcriptPath: row["transcript_path"]
+                    transcriptPath: row["transcript_path"],
+                    host: HostID(rawValue: (row["host"] as String?) ?? ""), directory: row["directory"],
+                    directorySource: (row["directory_source"] as String?).flatMap(DirectorySource.init(rawValue:)),
+                    title: row["title"], lastActiveAt: row["last_active_at"]
                 )
             }
         }
+    }
+
+    /// Actual launch observations replace even a previous tab's directory.
+    public func observeLaunchDirectory(sessionID: String, _ directory: String) throws {
+        let result = try db.write { database -> (changed: Bool, priorDirectory: String?) in
+            let prior = try String.fetchOne(database, sql: "SELECT directory FROM session_state WHERE id = ?", arguments: [sessionID])
+            try database.execute(sql: "UPDATE session_state SET directory = ?, directory_source = 'tab' WHERE id = ? AND (directory IS NOT ? OR directory_source IS NOT 'tab')",
+                                 arguments: [directory, sessionID, directory])
+            return (database.changesCount > 0, prior)
+        }
+        if result.changed {
+            if let prior = result.priorDirectory, prior != directory {
+                TempleCoreLog.db.notice("launch directory replaced for \(sessionID, privacy: .public): \(prior, privacy: .public) → \(directory, privacy: .public)")
+            }
+            committedRowChange(sessionID)
+        }
+    }
+
+    /// Transcript facts fill NULLs only. Does not insert membership or dual-write
+    /// generated_title, so a titled import can still be undone.
+    @discardableResult
+    public func fillCoreFields(sessionID: String, agent: Agent? = nil, directory: String? = nil,
+                               title: String? = nil, lastActiveAt: Date? = nil) throws -> Set<SessionCoreField> {
+        let changed = try db.write { database -> Set<SessionCoreField> in
+            guard let row = try Row.fetchOne(database, sql: "SELECT * FROM session_state WHERE id = ?", arguments: [sessionID]) else { return [] }
+            var fields: Set<SessionCoreField> = []
+            if (row["agent"] as String?) == nil && agent != nil { fields.insert(.agent) }
+            if (row["directory"] as String?) == nil && directory != nil { fields.insert(.directory) }
+            if (row["title"] as String?) == nil && title != nil { fields.insert(.title) }
+            if (row["last_active_at"] as Date?) == nil && lastActiveAt != nil { fields.insert(.lastActiveAt) }
+            guard !fields.isEmpty else { return [] }
+            try database.execute(sql: """
+                UPDATE session_state SET agent = COALESCE(agent, ?),
+                    directory_source = CASE WHEN directory IS NULL AND ? IS NOT NULL THEN 'transcript' ELSE directory_source END,
+                    directory = COALESCE(directory, ?), title = COALESCE(title, ?),
+                    last_active_at = COALESCE(last_active_at, ?) WHERE id = ?
+                """, arguments: [agent?.rawValue, directory, directory, title, lastActiveAt, sessionID])
+            return fields
+        }
+        if !changed.isEmpty { committedRowChange(sessionID) }
+        return changed
+    }
+
+    public func touch(sessionID: String, at: Date = Date()) throws {
+        let changed = try db.write { database in
+            try database.execute(sql: "UPDATE session_state SET last_active_at = MAX(COALESCE(last_active_at, ?), ?) WHERE id = ? AND (last_active_at IS NULL OR last_active_at < ?)",
+                                 arguments: [at, at, sessionID, at])
+            return database.changesCount > 0
+        }
+        if changed { committedRowChange(sessionID) }
     }
 
     public func projectStates() throws -> [ProjectState] {
@@ -499,15 +714,18 @@ public final class TempleDB: @unchecked Sendable {
         }
     }
 
-    private func ensureState(_ sessionID: String) throws {
-        let inserted = try db.write { database in
-            try database.execute(
-                sql: "INSERT OR IGNORE INTO session_state (id) VALUES (?)",
-                arguments: [sessionID]
-            )
-            return database.changesCount > 0
+    /// Setters can create membership. Insert and update commit together so a
+    /// failed update neither leaves an empty row nor sends a premature callback.
+    /// The update's predicate must exclude unchanged values.
+    private func updateState(_ sessionID: String, _ update: (Database) throws -> Void) throws {
+        let result = try db.write { database in
+            try database.execute(sql: "INSERT OR IGNORE INTO session_state (id) VALUES (?)", arguments: [sessionID])
+            let inserted = database.changesCount > 0
+            try update(database)
+            return (inserted: inserted, changed: inserted || database.changesCount > 0)
         }
-        if inserted { committedJoin(sessionID) }
+        if result.inserted { committedJoin(sessionID) }
+        if result.changed { committedRowChange(sessionID) }
     }
 
     private func ensureProjectState(_ path: String) throws {
@@ -589,6 +807,16 @@ public final class TempleDB: @unchecked Sendable {
                 table.add(column: "agent", .text)
                 table.add(column: "transcript_path", .text)
             }
+        }
+        migrator.registerMigration("v10-session-core") { database in
+            try database.alter(table: "session_state") { table in
+                table.add(column: "host", .text).notNull().defaults(to: "")
+                table.add(column: "directory", .text)
+                table.add(column: "directory_source", .text)
+                table.add(column: "title", .text)
+                table.add(column: "last_active_at", .datetime)
+            }
+            try database.execute(sql: "UPDATE session_state SET title = generated_title WHERE title IS NULL")
         }
         return migrator
     }

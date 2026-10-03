@@ -57,13 +57,13 @@ public final class SessionOverlayStore: ObservableObject {
         )
         self.generatedTitles = Dictionary(
             uniqueKeysWithValues: states.compactMap { state in
-                state.generatedTitle.map { (state.id, $0) }
+                state.title.map { (state.id, $0) }
             }
         )
     }
 
-    public convenience init() {
-        self.init(db: Self.openDefaultDatabase())
+    public convenience init() throws {
+        self.init(db: try AppDatabase.open())
     }
 
     public func isPinned(_ id: String) -> Bool { pinned.contains(id) }
@@ -276,7 +276,7 @@ public final class SessionOverlayStore: ObservableObject {
             // not written, rather than writing a row that forgets how the
             // session joined.
             guard isTempleSession(id) else { continue }
-            try? db.setGeneratedTitle(title, sessionID: id)
+            try? db.setTitle(title, sessionID: id)
         }
         pendingGeneratedTitles.removeAll()
     }
@@ -293,12 +293,5 @@ public final class SessionOverlayStore: ObservableObject {
     /// list shows, not only under the file title nobody sees anymore.
     public var displayTitleOverrides: [String: String] {
         generatedTitles.merging(customNames) { _, custom in custom }
-    }
-
-    private static func openDefaultDatabase() -> TempleDB {
-        if let db = try? TempleDB(path: TempleDB.defaultPath()) { return db }
-        // A DB-open failure should not make the UI unusable; mutations remain
-        // available for this process even though they cannot survive restart.
-        return try! TempleDB.inMemory()
     }
 }

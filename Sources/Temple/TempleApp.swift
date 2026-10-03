@@ -9,7 +9,7 @@ import TempleTerminal
 @main
 struct TempleApp: App {
     @NSApplicationDelegateAdaptor(TempleAppDelegate.self) private var appDelegate
-    @StateObject private var model: AppModel
+    @StateObject private var startup: AppStartup
 
     init() {
         // Un-bundled `swift run` dev path: resources live in the checkout.
@@ -17,16 +17,18 @@ struct TempleApp: App {
             .deletingLastPathComponent()  // Temple
             .deletingLastPathComponent()  // Sources
             .deletingLastPathComponent()  // repo root
-        GhosttyResources.configure(devCheckoutRoot: repoRoot)
         // Agents spawned in Temple must see the user's real PATH (agent hooks
         // and tools break under launchd's minimal GUI environment).
-        LoginShellEnvironment.adoptLoginShellPATH()
         // The usage meter's file trail (ADR-022). Only the app turns it on:
         // tests and tools that reuse the model must never write one. The
         // bundled app's entry point (App/TempleApp.swift) has the same line —
         // see AGENTS.md, "Two entry points".
-        UsageLog.fileURL = UsageLog.defaultFileURL
-        _model = StateObject(wrappedValue: AppModel(surfaceFactory: GhosttyTerminalSurfaceFactory()))
+        _startup = StateObject(wrappedValue: AppStartup { database in
+            GhosttyResources.configure(devCheckoutRoot: repoRoot)
+            LoginShellEnvironment.adoptLoginShellPATH()
+            UsageLog.fileURL = UsageLog.defaultFileURL
+            return AppModel(surfaceFactory: GhosttyTerminalSurfaceFactory(), database: database)
+        })
 
         // `swift run temple` / `make demo` launch an un-bundled binary, which
         // AppKit treats as an accessory: no Dock icon, window opens behind
@@ -36,22 +38,29 @@ struct TempleApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
-                .environmentObject(model)
-                .frame(minWidth: 900, minHeight: 600)
-                .task {
-                    appDelegate.model = model
-                    model.start()
-                    // A snapshot run (TEMPLE_SNAPSHOT_DIR) must not take focus:
-                    // the hook captures this window alone even when covered,
-                    // and an activated demo window caught keystrokes meant for
-                    // whatever the user was typing in (it opened a session).
-                    if ProcessInfo.processInfo.environment["TEMPLE_SNAPSHOT_DIR"] == nil {
-                        NSApplication.shared.activate()
+            if let model = startup.model {
+                RootView()
+                    .environmentObject(model)
+                    .frame(minWidth: 900, minHeight: 600)
+                    .task {
+                        appDelegate.model = model
+                        model.start()
+                        // A snapshot run (TEMPLE_SNAPSHOT_DIR) must not take focus:
+                        // the hook captures this window alone even when covered,
+                        // and an activated demo window caught keystrokes meant for
+                        // whatever the user was typing in (it opened a session).
+                        if ProcessInfo.processInfo.environment["TEMPLE_SNAPSHOT_DIR"] == nil {
+                            NSApplication.shared.activate()
+                        }
                     }
-                }
+            } else {
+                StartupFailureView(message: startup.failureMessage ?? "Unable to open Temple.")
+                    .frame(minWidth: 900, minHeight: 600)
+            }
         }
-        .commands { TempleCommands(model: model) }
+        .commands {
+            if let model = startup.model { TempleCommands(model: model) }
+        }
         .windowStyle(.hiddenTitleBar)
         // Unified toolbar: the tab chips live in the native title-bar band, so
         // the empty band keeps native double-click-to-zoom and window-drag
