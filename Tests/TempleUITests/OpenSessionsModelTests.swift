@@ -6,6 +6,269 @@ import TempleTerminalAPI
 @MainActor
 final class OpenSessionsModelTests: XCTestCase {
 
+    private func row(_ id: String = "row", agent: Agent? = .codex,
+                     directory: String? = "/row-directory",
+                     resolution: MemberResolution? = nil) -> Session {
+        Session(state: SessionState(id: id, pinned: false, archived: false,
+            customName: "Row title", color: nil, generatedTitle: nil,
+            lastOpenedAt: nil, joinedVia: .imported, joinedAt: nil,
+            agent: agent, directory: directory, title: "Stored title"), resolution: resolution)
+    }
+
+    func testOpeningARowWithoutATranscriptSpawnsFromRowFields() throws {
+        let factory = FakeTerminalSurfaceFactory()
+        let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
+            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+            persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
+            binaryPath: { "/configured/" + $0.binaryName }, extraArgs: { _ in ["--flag"] })
+        model.openSession(row(resolution: .confirmedAbsent))
+        let command = try XCTUnwrap(factory.created.first?.startedCommand)
+        XCTAssertEqual(command.argv, ["/configured/codex", "--flag", "resume", "row"])
+        XCTAssertEqual(command.cwd, "/row-directory")
+        XCTAssertEqual(model.activeTab?.title, "Row title")
+        XCTAssertEqual(model.activeTab?.host, .local)
+        XCTAssertEqual(command.env["TERM_PROGRAM"], "Temple")
+        model.openSession(row())
+        XCTAssertEqual(factory.created.count, 1, "Reuse the existing tab")
+    }
+
+    func testOpeningUsesRowDirectoryNotTranscriptCwd() throws {
+        let factory = FakeTerminalSurfaceFactory()
+        let model = Fixture.openModel(factory: factory)
+        model.sessionRow = { _ in self.row(agent: .claude) }
+        model.openSession(Fixture.session("row", agent: .codex, project: "/transcript-cwd", title: "Transcript"))
+        XCTAssertEqual(factory.created.first?.startedCommand?.cwd, "/row-directory")
+        XCTAssertEqual(factory.created.first?.startedCommand?.argv, ["claude", "--resume", "row"])
+        XCTAssertEqual(model.activeTab?.title, "Row title")
+    }
+
+    func testARowWithoutDirectoryIsNotSpawned() {
+        let factory = FakeTerminalSurfaceFactory()
+        let model = Fixture.openModel(factory: factory)
+        var joins = 0
+        model.openedHandler = { _, _, _, _, _ in joins += 1 }
+        model.openSession(row(directory: nil))
+        model.openSession(row(agent: nil))
+        XCTAssertTrue(factory.created.isEmpty)
+        XCTAssertTrue(model.tabs.isEmpty)
+        XCTAssertEqual(joins, 0)
+    }
+
+    func testTheLocalWrapperLeavesTheCommandAlone() {
+        let command = TerminalCommand(argv: ["codex", "resume", "id with spaces"],
+            cwd: "/a folder", env: ["CUSTOM": "value", "TERM_PROGRAM": "Own"])
+        XCTAssertEqual(LocalCommandWrapper().wrap(command), command)
+    }
+
+    func testOpenNoLongerWaitsForResolution() throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "row", via: .imported, agent: .claude,
+            core: SessionCore(directory: "/row-directory", title: "Stored title"))
+        let factory = FakeTerminalSurfaceFactory()
+        let app = AppModel(surfaceFactory: factory, indexSource: FakeIndexSource(SessionIndex(projects: [])),
+            database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+            cacheURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["row": .resolving], summaries: [:]))
+        app.openSession(id: "row")
+        XCTAssertEqual(factory.created.count, 1)
+        XCTAssertTrue(app.pendingSessionOpens.isEmpty)
+        let tab = try XCTUnwrap(app.openSessions.activeTab)
+        app.openSessions.surface(try XCTUnwrap(tab.surface), didChangeState: .exited(status: 1))
+        XCTAssertFalse(tab.resumeTargetMissing)
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["row": .unreadable], summaries: [:]))
+        XCTAssertNil(app.openSessions.sessionKnown("row"))
+        XCTAssertFalse(tab.resumeTargetMissing)
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 3, resolutions: ["row": .confirmedAbsent], summaries: [:]))
+        XCTAssertTrue(tab.resumeTargetMissing)
+        // Older generations cannot replace the completed evidence.
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: [:], summaries: [:]))
+        XCTAssertEqual(app.openSessions.sessionKnown("row"), false)
+    }
+
+    func testRestoreAndReopenPreferTheRowAndKeepRestoreInert() throws {
+        let factory = FakeTerminalSurfaceFactory()
+        let defaults = Fixture.uniqueDefaults()
+        let persistence = UserDefaultsTabPersistence(defaults: defaults)
+        persistence.save([PersistedTab(sessionID: "row", agent: .claude, projectPath: "/saved", title: "Saved")])
+        let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
+            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(), persistence: persistence)
+        model.sessionRow = { _ in self.row() }
+        model.restore()
+        XCTAssertTrue(factory.created.isEmpty)
+        let tab = try XCTUnwrap(model.tabs.first)
+        XCTAssertEqual(tab.title, "Row title")
+        XCTAssertEqual(tab.projectPath, "/row-directory")
+        XCTAssertEqual(tab.host, .local)
+        model.activate(tab)
+        XCTAssertEqual(factory.created.first?.startedCommand?.argv, ["codex", "resume", "row"])
+        model.closeTab(tab.id)
+        model.reopenLastClosedTab()
+        XCTAssertEqual(factory.created.count, 2)
+        XCTAssertEqual(model.activeTab?.title, "Row title")
+    }
+
+    func testCopyResumeCommandPrefersTheRowAndKeepsLegacyFallback() throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "row", via: .imported, agent: .claude,
+            core: SessionCore(directory: "/row-directory"))
+        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: FakeIndexSource(SessionIndex(projects: [])),
+            database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
+        XCTAssertEqual(app.resumeArgv(for: Fixture.session("row", agent: .codex, project: "/transcript")),
+            ["claude", "--resume", "row"])
+        XCTAssertEqual(app.resumeArgv(for: Fixture.session("outside", agent: .codex, project: "/transcript")),
+            ["codex", "resume", "outside"])
+    }
+
+    func testAnInertRestoredChipUsesFactsFilledBeforeItsFirstSpawn() throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "row", via: .imported, agent: .claude)
+        var current = Session(state: try XCTUnwrap(db.sessionState("row")))
+        let persistence = UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults())
+        persistence.save([PersistedTab(sessionID: "row", agent: .claude, projectPath: "/saved", title: "Saved")])
+        let factory = FakeTerminalSurfaceFactory()
+        let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
+            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(), persistence: persistence)
+        model.sessionRow = { _ in current }
+        model.restore()
+        let tab = try XCTUnwrap(model.tabs.first)
+        model.activate(tab)
+        XCTAssertTrue(factory.created.isEmpty, "A directoryless row cannot use the saved path to spawn")
+        _ = try db.fillCoreFields(sessionID: "row", directory: "/filled", title: "Filled")
+        current = Session(state: try XCTUnwrap(db.sessionState("row")))
+        model.activate(tab)
+        XCTAssertEqual(factory.created.first?.startedCommand?.cwd, "/filled")
+        XCTAssertEqual(tab.title, "Filled")
+        XCTAssertEqual(tab.projectPath, "/filled")
+    }
+
+    func testRestoreWithoutARowJoinsOnlyAtFirstSpawn() throws {
+        for isActive in [false, true] {
+            let directory = try temporaryDirectory()
+            let db = try TempleDB.inMemory()
+            let overlay = SessionOverlayStore(db: db)
+            let persistence = UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults())
+            persistence.save([PersistedTab(sessionID: "legacy", agent: .codex,
+                projectPath: directory.path, title: "Saved", isActive: isActive)])
+            let factory = FakeTerminalSurfaceFactory()
+            let model = writerModel(db: db, overlay: overlay, persistence: persistence, factory: factory)
+            model.sessionRow = { id in overlay.rows[id].map { Session(state: $0) } }
+            model.restore()
+            if !isActive {
+                XCTAssertNil(try db.sessionState("legacy"), "An inert chip must not join")
+                XCTAssertTrue(factory.created.isEmpty)
+                model.activate(try XCTUnwrap(model.tabs.first))
+            }
+            XCTAssertEqual(factory.created.count, 1)
+            XCTAssertEqual(factory.created.first?.startedCommand?.cwd, directory.path)
+            XCTAssertEqual(try db.sessionState("legacy")?.directory, directory.path)
+            XCTAssertEqual(try db.sessionState("legacy")?.joinedVia, .opened)
+        }
+    }
+
+    func testDelayedChipActivationRejectsAnIncompleteRowThatAppearedAfterRestore() throws {
+        for missingAgent in [false, true] {
+            let directory = try temporaryDirectory()
+            let db = try TempleDB.inMemory()
+            let overlay = SessionOverlayStore(db: db)
+            let persistence = UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults())
+            persistence.save([PersistedTab(sessionID: "legacy", agent: .codex,
+                projectPath: directory.path, title: "Saved")])
+            let factory = FakeTerminalSurfaceFactory()
+            let model = writerModel(db: db, overlay: overlay, persistence: persistence, factory: factory)
+            model.sessionRow = { id in overlay.rows[id].map { Session(state: $0) } }
+            model.restore()
+            XCTAssertNil(try db.sessionState("legacy"))
+            overlay.join("legacy", via: .imported, agent: missingAgent ? nil : .codex,
+                core: SessionCore(directory: missingAgent ? directory.path : nil))
+            let before = try db.sessionState("legacy")
+            let tab = try XCTUnwrap(model.tabs.first)
+            model.activate(tab)
+            model.activate(tab)
+            XCTAssertTrue(factory.created.isEmpty)
+            XCTAssertFalse(tab.hasSurface)
+            XCTAssertNil(model.activeTabID)
+            XCTAssertEqual(try db.sessionState("legacy"), before, "Activation cannot fill missing facts from the chip")
+        }
+    }
+
+    func testActiveRestoreKeepsTheSavedTitleWhenTheRowHasNoTitle() throws {
+        try assertUntitledRowKeepsSavedTitle(isActive: true)
+    }
+
+    func testLazyActivationKeepsTheSavedTitleWhenTheRowHasNoTitle() throws {
+        try assertUntitledRowKeepsSavedTitle(isActive: false)
+    }
+
+    private func assertUntitledRowKeepsSavedTitle(isActive: Bool) throws {
+        for agent in Agent.allCases {
+            let db = try TempleDB.inMemory()
+            try db.join(sessionID: "row", via: .opened, agent: agent,
+                core: SessionCore(directory: "/row-directory"))
+            let current = Session(state: try XCTUnwrap(db.sessionState("row")))
+            let persistence = UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults())
+            persistence.save([PersistedTab(sessionID: "row", agent: agent,
+                projectPath: "/saved", title: "Saved conversation", isActive: isActive)])
+            let factory = FakeTerminalSurfaceFactory()
+            let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
+                runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(), persistence: persistence)
+            model.sessionRow = { _ in current }
+            model.restore()
+            let tab = try XCTUnwrap(model.tabs.first)
+            XCTAssertEqual(tab.title, "Saved conversation")
+            if !isActive {
+                XCTAssertTrue(factory.created.isEmpty)
+                model.activate(tab)
+            }
+            XCTAssertEqual(tab.title, "Saved conversation")
+            XCTAssertEqual(factory.created.first?.startedCommand?.cwd, "/row-directory")
+        }
+    }
+
+    func testCommandWrapperRunsExactlyOncePerSpawnAcrossAllOpenPaths() throws {
+        let factory = FakeTerminalSurfaceFactory()
+        let wrapper = CountingCommandWrapper()
+        let persistence = UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults())
+        persistence.save([PersistedTab(sessionID: "restored", agent: .codex, projectPath: "/saved", title: "Saved")])
+        let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
+            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+            persistence: persistence, commandWrapper: wrapper)
+        model.restore()
+        let restored = try XCTUnwrap(model.tabs.first)
+        XCTAssertEqual(wrapper.count, 0)
+        let fresh = model.newSession(agent: .claude, projectPath: "/new")
+        XCTAssertEqual(wrapper.count, 1)
+        model.activate(fresh)
+        model.activate(fresh)
+        XCTAssertEqual(wrapper.count, 1)
+        model.activate(restored)
+        XCTAssertEqual(wrapper.count, 2)
+        model.activate(restored)
+        XCTAssertEqual(wrapper.count, 2)
+        model.closeTab(restored.id)
+        model.reopenLastClosedTab()
+        XCTAssertEqual(wrapper.count, 3)
+        model.openSession(Fixture.session("restored", agent: .codex, project: "/saved"))
+        model.focusActiveTerminal()
+        XCTAssertEqual(wrapper.count, 3)
+        model.openSession(row())
+        XCTAssertEqual(wrapper.count, 4)
+        model.openSession(row())
+        XCTAssertEqual(wrapper.count, 4)
+        XCTAssertEqual(wrapper.count, factory.created.count)
+    }
+
+    func testSpawnWrapsTheCommandBeforeApplyingTerminalIdentity() throws {
+        let factory = FakeTerminalSurfaceFactory()
+        let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
+            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+            persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
+            commandWrapper: ObservingCommandWrapper())
+        model.openSession(row())
+        let command = try XCTUnwrap(factory.created.first?.startedCommand)
+        XCTAssertEqual(command.env["IDENTITY_AT_WRAP"], "absent")
+        XCTAssertEqual(command.env["TERM_PROGRAM"], "Temple")
+    }
+
     private func writerModel(db: TempleDB, overlay: SessionOverlayStore,
                              persistence: TabPersistence? = nil,
                              factory: FakeTerminalSurfaceFactory? = nil,
@@ -1017,5 +1280,29 @@ final class ImmediateReconciler: TempleUI.CodexAdopting {
     init(id: String) { self.id = id }
     func reconcile(projectPath: String, startedAt: Date, adopt: @escaping (String) -> Void) {
         adopt(id)
+    }
+}
+
+private struct ObservingCommandWrapper: HostCommandWrapper {
+    func wrap(_ command: TerminalCommand) -> TerminalCommand {
+        var result = command
+        result.env["IDENTITY_AT_WRAP"] = command.env["TERM_PROGRAM"] ?? "absent"
+        return result
+    }
+}
+
+private final class CountingCommandWrapper: HostCommandWrapper, @unchecked Sendable {
+    private let lock = NSLock()
+    private var invocations = 0
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return invocations
+    }
+    func wrap(_ command: TerminalCommand) -> TerminalCommand {
+        lock.lock()
+        invocations += 1
+        lock.unlock()
+        return LocalCommandWrapper().wrap(command)
     }
 }

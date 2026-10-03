@@ -1,6 +1,7 @@
 import XCTest
 import SQLite3
 import GRDB
+import CoreServices
 @testable import TempleUI
 @testable import TempleCore
 
@@ -209,6 +210,55 @@ final class SessionScopeTests: XCTestCase {
         }
         XCTAssertEqual(model.sessions.first(where: { $0.id == "missing" })?.displayTitle, "Changed by row observer")
         XCTAssertEqual(model.sessions.first(where: { $0.id == "missing" })?.sortDate, Date(timeIntervalSince1970: 500))
+    }
+
+    func testCodexHistoryPromptsFillRowsAtStartupAndOnSharedFileUpdates() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let sessionDirectory = root.appendingPathComponent("sessions")
+        try FileManager.default.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let initial = UUID().uuidString.lowercased()
+        let late = UUID().uuidString.lowercased()
+        let db = try TempleDB.inMemory()
+        for id in [initial, late] {
+            let file = sessionDirectory.appendingPathComponent("rollout-2026-10-03T00-00-00-\(id).jsonl")
+            try "{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(id)\",\"cwd\":\"/recorded\"}}"
+                .write(to: file, atomically: true, encoding: .utf8)
+            try db.join(sessionID: id, via: .imported, agent: .codex, transcriptPath: file)
+        }
+        let history = root.appendingPathComponent("history.jsonl")
+        let firstLine = "{\"session_id\":\"\(initial)\",\"ts\":10,\"text\":\"First recorded prompt\"}"
+        try firstLine.write(to: history, atomically: true, encoding: .utf8)
+        // The late history prompt will not change the legacy display title.
+        // The engine must still publish its new fact for row filling.
+        try "{\"id\":\"\(late)\",\"thread_name\":\"Late recorded prompt\"}"
+            .write(to: root.appendingPathComponent("session_index.jsonl"), atomically: true, encoding: .utf8)
+        let watcher = SessionWatcher(stores: [CodexSessionStore(root: root)], database: db, debounceInterval: 0.02)
+        let cache = root.appendingPathComponent("cache.json")
+        let source = WatcherIndexSource(watcher: watcher, cacheURL: cache)
+        defer { source.stop() }
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
+            noiseFilter: ScopeNoNoiseFilter(), database: db,
+            settings: SettingsStore(defaults: Fixture.uniqueDefaults()), cacheURL: cache)
+        model.start()
+        let initialDeadline = Date().addingTimeInterval(3)
+        while (model.isLoading || model.sessions.first(where: { $0.id == initial })?.state.title == nil), Date() < initialDeadline {
+            try await Task.sleep(for: .milliseconds(15))
+        }
+        XCTAssertEqual(try db.sessionState(initial)?.title, "First recorded prompt")
+        XCTAssertNil(try db.sessionState(late)?.title)
+        let legacyBefore = model.index
+        try (firstLine + "\n{\"session_id\":\"\(late)\",\"ts\":20,\"text\":\"Late recorded prompt\"}")
+            .write(to: history, atomically: true, encoding: .utf8)
+        watcher.reconcileEvent(path: history.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
+        let lateDeadline = Date().addingTimeInterval(3)
+        while model.sessions.first(where: { $0.id == late })?.state.title == nil, Date() < lateDeadline {
+            try await Task.sleep(for: .milliseconds(15))
+        }
+        XCTAssertEqual(try db.sessionState(late)?.title, "Late recorded prompt")
+        XCTAssertEqual(model.index, legacyBefore, "A history fact update need not change legacy presentation")
+        XCTAssertNil(try db.sessionState(initial)?.generatedTitle)
+        XCTAssertNil(try db.sessionState(late)?.generatedTitle)
     }
 
     func testWatcherAdapterPublishesLegacyIndexAndFillsRows() async throws {

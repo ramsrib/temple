@@ -41,7 +41,7 @@ if CommandLine.arguments.contains("--import-all") {
                     transcriptPath: session.locator.localURL,
                     core: SessionCore(host: session.locator.host, directory: session.cwd,
                                       directorySource: session.cwd == nil ? nil : .transcript,
-                                      title: session.firstPrompt, lastActiveAt: session.modifiedAt))
+                                      title: session.firstPrompt ?? session.historyPrompt, lastActiveAt: session.modifiedAt))
         imported += 1
     }
     print("imported \(imported) sessions")

@@ -61,6 +61,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     public var launchDirectoryHandler: ((String, String) -> Void)?
     private var awaitingExitDiagnosis: Set<SessionTab.ID> = []
 
+    /// Transitional lookup: legacy callers, restore and reopen prefer the durable row.
+    public var sessionRow: (String) -> Session? = { _ in nil }
+    private let commandWrapper: any HostCommandWrapper
+
     /// Resolution updates retain the diagnosis interest after an early exit.
     public func refreshExitedResumeDiagnoses() {
         for tab in tabs where awaitingExitDiagnosis.contains(tab.id) {
@@ -82,8 +86,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     }
 
     /// Does any transcript on disk carry this session id? Answered from the
-    /// index (AppModel wires it); nil means "can't say yet" — the index is
-    /// still loading — and no verdict is recorded. Only a provable absence
+    /// latest engine snapshot (AppModel wires it); nil means "can't say yet"
+    /// because resolution is unfinished — and no verdict is recorded. Only a provable absence
     /// annotates a failure; this can prove a missing target, never a good one.
     public var sessionKnown: (_ sessionID: String) -> Bool? = { _ in nil }
 
@@ -97,7 +101,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                 extraArgs: @escaping (Agent) -> [String] = { _ in [] },
                 defaultAgent: @escaping () -> Agent = { .claude },
                 canLaunch: @escaping (Agent) -> Bool = { _ in true },
-                now: @escaping () -> Date = Date.init) {
+                now: @escaping () -> Date = Date.init,
+                commandWrapper: any HostCommandWrapper = LocalCommandWrapper()) {
+        self.commandWrapper = commandWrapper
         self.surfaceFactory = surfaceFactory
         self.appearanceProvider = appearanceProvider
         self.runtime = runtime
@@ -185,9 +191,44 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Click a sidebar session → focus its tab if open, else open a new one.
     /// Either way the session's project becomes active (UX "Open an existing
     /// session").
-    public func openSession(_ session: AgentSession) {
-        openedHandler?(session.id, .opened, session.agent, session.filePath, SessionCore())
+    public func openSession(_ session: Session) {
+        // Focusing a live process does not require resume facts or spawn again.
+        if let existing = sessionTab(withSessionID: session.id), existing.hasSurface {
+            activate(existing)
+            return
+        }
+        guard session.canResume, let agent = session.agent, let directory = session.directory else {
+            logNonOpenable(session)
+            return
+        }
         if let existing = sessionTab(withSessionID: session.id) {
+            existing.transcriptHint = session.transcript?.localURL
+            existing.prepareResume(session, command: resumeCommand(agent: agent, sessionID: session.id, cwd: directory))
+            activate(existing)
+            return
+        }
+        let tab = SessionTab(kind: .session, sessionID: session.id, agent: agent,
+            projectPath: directory, title: session.displayTitle,
+            command: resumeCommand(agent: agent, sessionID: session.id, cwd: directory),
+            isResume: true, host: session.host)
+        tab.transcriptHint = session.transcript?.localURL
+        tabs.append(tab)
+        activate(tab)
+        persist()
+    }
+
+    private func logNonOpenable(_ session: Session) {
+        let reason = session.agent == nil ? "agent is unknown" : "directory is unknown"
+        TempleUILog.launch.notice("session not opened: id=\(session.id, privacy: .public) reason=\(reason, privacy: .public)")
+    }
+
+    public func openSession(_ session: AgentSession) {
+        if let row = sessionRow(session.id) {
+            openSession(row)
+            return
+        }
+        if let existing = sessionTab(withSessionID: session.id) {
+            existing.transcriptHint = session.filePath
             activate(existing)
             return
         }
@@ -209,6 +250,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             title: session.title,
             command: command,
             isResume: true)
+        tab.transcriptHint = session.filePath
         tabs.append(tab)
         activate(tab)
         persist()
@@ -276,6 +318,14 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     // MARK: Activation & lazy surface spawn
 
     public func activate(_ tab: SessionTab) {
+        if tab.isResume, !tab.hasSurface, let sid = tab.sessionID, let row = sessionRow(sid) {
+            if row.canResume, let agent = row.agent, let directory = row.directory {
+                tab.prepareResume(row, command: resumeCommand(agent: agent, sessionID: sid, cwd: directory))
+            } else {
+                logNonOpenable(row)
+                return
+            }
+        }
         activeTabID = tab.id
         if tab.kind == .session {
             let projectChanged = activeProjectPath != tab.projectPath
@@ -323,7 +373,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         // The shell should know it is in Temple, not in the library that
         // drives its PTY. A command's own variables still win.
         if let sid = tab.sessionID {
-            openedHandler?(sid, tab.isResume ? .opened : .created, tab.agent, nil, SessionCore())
+            openedHandler?(sid, tab.isResume ? .opened : .created, tab.agent,
+                           tab.transcriptHint, SessionCore(host: tab.host))
         }
         // Ghostty falls back to its default cwd when the requested path is not
         // a directory. Capture the local fact at spawn, before adoption can lag.
@@ -331,7 +382,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         let launchDirectory = FileManager.default.fileExists(atPath: command.cwd, isDirectory: &isDirectory)
             && isDirectory.boolValue ? command.cwd : nil
         do {
-            try surface.start(TerminalIdentity.apply(to: command))
+            try surface.start(TerminalIdentity.apply(to: commandWrapper.wrap(command)))
         } catch {
             TempleUILog.launch.error("spawn failed: agent=\(tab.agent.rawValue, privacy: .public) argv0=\(command.argv.first ?? "?", privacy: .public) cwd=\(command.cwd, privacy: .public) error=\(String(describing: error), privacy: .public)")
             // A surface that won't even start is always the command's problem.
@@ -570,6 +621,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                     return
                 }
                 continue  // genuinely reopened by another route — spent
+            }
+            if let row = sessionRow(closed.sessionID) {
+                openSession(row)
+                return
             }
             let tab = SessionTab(
                 kind: .session,
@@ -818,14 +873,28 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         let saved = persistence.load()
         guard !saved.isEmpty else { return }
         tabs = saved.map { p in
-            let agent = p.resolvedAgent
-            let command = resumeCommand(agent: agent, sessionID: p.sessionID,
-                                        cwd: p.projectPath)
-            return SessionTab(kind: .session, sessionID: p.sessionID, agent: agent,
-                              projectPath: p.projectPath, title: p.title, command: command,
-                              isResume: true)
+            let row = sessionRow(p.sessionID)
+            let agent = row?.agent ?? p.resolvedAgent
+            let directory = row?.directory ?? p.projectPath
+            let command: TerminalCommand?
+            if let row, !row.canResume {
+                logNonOpenable(row)
+                command = nil
+            } else {
+                command = resumeCommand(agent: agent, sessionID: p.sessionID, cwd: directory)
+            }
+            let tab = SessionTab(kind: .session, sessionID: p.sessionID, agent: agent,
+                                 projectPath: directory,
+                                 title: row.flatMap { $0.state.customName ?? $0.state.title } ?? p.title,
+                                 command: command, isResume: true, host: row?.host ?? .local)
+            return tab
         }
-        for p in saved { openedHandler?(p.sessionID, .opened, Agent(rawValue: p.agent), nil, SessionCore()) }
+        for p in saved {
+            // A chip with no row joins only at spawn, after activation checks
+            // any membership that may have appeared since restore.
+            guard let row = sessionRow(p.sessionID) else { continue }
+            openedHandler?(p.sessionID, .opened, row.agent, nil, SessionCore(host: row.host))
+        }
         // Restore active project context without spawning anything.
         activeProjectPath = tabs.first?.projectPath
         // Every other chip stays inert until clicked (lazy restore). The one the

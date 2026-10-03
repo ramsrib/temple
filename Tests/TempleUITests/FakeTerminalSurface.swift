@@ -168,11 +168,13 @@ enum Fixture {
     /// An isolated defaults object that never reaches the disk.
     static func uniqueDefaults() -> UserDefaults { InMemoryDefaults() }
 
-    /// Explicit membership for tests focused on browsing a supplied index.
+    /// Complete member rows for tests focused on browsing a supplied index.
     static func join(_ index: SessionIndex, to database: TempleDB) {
         for session in index.allSessions {
             try! database.join(sessionID: session.id, via: .imported,
-                               agent: session.agent, transcriptPath: session.filePath)
+                               agent: session.agent, transcriptPath: session.filePath,
+                               core: SessionCore(directory: session.projectPath, directorySource: .transcript,
+                                                 title: session.title, lastActiveAt: session.updatedAt))
         }
     }
 

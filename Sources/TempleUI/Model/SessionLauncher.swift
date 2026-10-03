@@ -44,6 +44,11 @@ public enum SessionLauncher {
         }
     }
 
+    public static func resumeArgv(_ session: Session) -> [String] {
+        guard session.canResume, let agent = session.agent else { return [] }
+        return agent.resumeArgv(sessionID: session.id)
+    }
+
     /// Resume an existing session (the primary action).
     public static func resume(_ session: AgentSession) -> TerminalCommand {
         TerminalCommand(argv: session.resume.argv, cwd: session.resume.cwd)

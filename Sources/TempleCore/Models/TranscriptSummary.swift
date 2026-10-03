@@ -1,6 +1,6 @@
 import Foundation
 
-/// Facts a transcript states. Nil means the file did not say, never a placeholder.
+/// Recorded transcript and session-history facts. Nil never means a placeholder.
 public struct TranscriptSummary: Hashable, Sendable {
     public let id: String
     public let agent: Agent
@@ -8,6 +8,9 @@ public struct TranscriptSummary: Hashable, Sendable {
     public let modifiedAt: Date
     public let cwd: String?
     public let firstPrompt: String?
+    /// Earliest recorded human prompt from Codex history.jsonl, separate from
+    /// rollout facts and display-only thread names. Shared-file updates refresh it.
+    public internal(set) var historyPrompt: String?
     public let createdAt: Date?
     public let gitBranch: String?
     public let model: String?
@@ -31,6 +34,7 @@ public struct TranscriptSummary: Hashable, Sendable {
         modifiedAt: Date,
         cwd: String? = nil,
         firstPrompt: String? = nil,
+        historyPrompt: String? = nil,
         createdAt: Date? = nil,
         gitBranch: String? = nil,
         model: String? = nil,
@@ -48,6 +52,7 @@ public struct TranscriptSummary: Hashable, Sendable {
         self.modifiedAt = modifiedAt
         self.cwd = cwd
         self.firstPrompt = firstPrompt
+        self.historyPrompt = historyPrompt
         self.createdAt = createdAt
         self.gitBranch = gitBranch
         self.model = model

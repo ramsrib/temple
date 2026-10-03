@@ -645,6 +645,13 @@ public final class SessionWatcher: @unchecked Sendable {
         let token = store.cacheInvalidationToken
         guard token != titleToken else { return }
         titleToken = token; titles = store.loadSharedTitles()
+        let prompts = (store as? any TranscriptSummaryStore)?.loadSharedPrompts() ?? [:]
+        for id in Array(summaries.keys) where summaries[id]?.agent == .codex {
+            if summaries[id]?.historyPrompt != prompts[id] {
+                summaries[id]?.historyPrompt = prompts[id]
+                engineContentDirty = true
+            }
+        }
     }
 
     private func displayedSessionsLocked() -> [AgentSession] {

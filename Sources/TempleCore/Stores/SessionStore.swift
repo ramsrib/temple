@@ -71,9 +71,12 @@ public protocol TranscriptSummaryStore: IncrementalSessionStore {
     func loadSummaries() -> [TranscriptSummary]
     func loadSummary(at fileURL: URL) -> TranscriptSummary?
     func catalogSummaryParser() -> @Sendable (URL) -> TranscriptSummary?
+    /// Recorded human prompts in shared history, excluding display-only titles.
+    func loadSharedPrompts() -> [String: String]
 }
 
 public extension TranscriptSummaryStore {
+    func loadSharedPrompts() -> [String: String] { [:] }
     func catalogSummaryParser() -> @Sendable (URL) -> TranscriptSummary? {
         let store = self
         return { store.loadSummary(at: $0) }

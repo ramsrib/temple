@@ -358,6 +358,7 @@ struct HistoryTabView: View {
         return HistoryPageRow(
             session: session,
             title: model.displayTitle(session),
+            resumeArgv: model.resumeArgv(for: session),
             selected: history.selection.contains(session.id),
             inTemple: inTemple,
             archived: archived,
@@ -593,6 +594,7 @@ private struct HistoryRowActions {
 private struct HistoryPageRow: View, Equatable {
     let session: AgentSession
     let title: String
+    let resumeArgv: [String]
     let selected: Bool
     let inTemple: Bool
     let archived: Bool
@@ -604,7 +606,7 @@ private struct HistoryPageRow: View, Equatable {
     let actions: HistoryRowActions
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.session == rhs.session && lhs.title == rhs.title
+        lhs.session == rhs.session && lhs.title == rhs.title && lhs.resumeArgv == rhs.resumeArgv
             && lhs.selected == rhs.selected && lhs.inTemple == rhs.inTemple
             && lhs.archived == rhs.archived && lhs.justImported == rhs.justImported
             && lhs.activity == rhs.activity && lhs.colorMark == rhs.colorMark
@@ -723,7 +725,7 @@ private struct HistoryPageRow: View, Equatable {
         }
         Divider()
         Button("Copy resume command") {
-            copyToPasteboard(session.resume.argv.joined(separator: " "))
+            copyToPasteboard(resumeArgv.joined(separator: " "))
         }
         Button("Copy session ID") { copyToPasteboard(session.id) }
         Button("Reveal session file in Finder") {

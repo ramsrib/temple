@@ -45,10 +45,11 @@ public struct CodexSessionStore: TranscriptSummaryStore {
     }
 
     public func loadSummaries() -> [TranscriptSummary] {
+        let historyPrompts = loadSharedPrompts()
         let files = sessionFileURLs()
         let collector = TranscriptSummaryCollector()
         DispatchQueue.concurrentPerform(iterations: files.count) { index in
-            if let summary = loadSummary(at: files[index]) {
+            if let summary = parse(file: files[index], historyPrompts: historyPrompts) {
                 collector.append(summary)
             }
         }
@@ -56,7 +57,20 @@ public struct CodexSessionStore: TranscriptSummaryStore {
     }
 
     public func loadSummary(at fileURL: URL) -> TranscriptSummary? {
-        parse(file: fileURL)
+        parse(file: fileURL, historyPrompts: loadSharedPrompts())
+    }
+
+    public func catalogSummaryParser() -> @Sendable (URL) -> TranscriptSummary? {
+        let historyPrompts = loadSharedPrompts()
+        let store = self
+        return { store.parse(file: $0, historyPrompts: historyPrompts) }
+    }
+
+    public func loadSharedPrompts() -> [String: String] {
+        loadHistoryTitles().compactMapValues { text in
+            let cleaned = StoreIO.cleanTitle(text)
+            return cleaned.isEmpty ? nil : cleaned
+        }
     }
 
     public func sessionFileURLs() -> [URL] { (try? enumerateSessionFiles()) ?? [] }
@@ -175,7 +189,8 @@ public struct CodexSessionStore: TranscriptSummaryStore {
         return AgentSession(summary: summary, title: titles[summary.id])
     }
 
-    private func parse(file: URL, sharedTitles: [String: String] = [:]) -> TranscriptSummary? {
+    private func parse(file: URL, sharedTitles: [String: String] = [:],
+                       historyPrompts: [String: String] = [:]) -> TranscriptSummary? {
         let signature = StoreIO.fileSignature(file)
         guard let segments = StoreIO.boundedSegments(file, fileSize: signature?.fileSize),
               let head = segments.first,
@@ -257,6 +272,7 @@ public struct CodexSessionStore: TranscriptSummaryStore {
             modifiedAt: signature?.modificationDate ?? StoreIO.modificationDate(file),
             cwd: cwd,
             firstPrompt: fallbackTitle,
+            historyPrompt: historyPrompts[id],
             createdAt: createdAt,
             gitBranch: branch,
             model: model,

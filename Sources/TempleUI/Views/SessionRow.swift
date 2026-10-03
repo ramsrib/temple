@@ -133,7 +133,7 @@ struct SessionRow: View {
         }
         Divider()
         Button("Copy resume command") {
-            copyToPasteboard(session.resume.argv.joined(separator: " "))
+            copyToPasteboard(model.resumeArgv(for: session).joined(separator: " "))
         }
         Button("Copy session ID") { copyToPasteboard(session.id) }
         Button("Reveal session file in Finder") {

@@ -31,6 +31,7 @@ public final class AppModel: ObservableObject {
         for summary in snapshot.summaries.values { overlay.fillMissingCoreFields(from: summary) }
         applyingEngineSnapshot = false
         if rowPresentationDirty || resolutionsChanged { rebuildSessions() }
+        openSessions.refreshExitedResumeDiagnoses()
     }
 
     private func rebuildSessions(rows stateRows: [String: SessionState]? = nil) {
@@ -331,16 +332,16 @@ public final class AppModel: ObservableObject {
         // launched or unreadable transcript never acquires a missing verdict.
         openSessions.sessionKnown = { [weak self] sessionID in
             guard let self else { return nil }
-            if let source = self.indexSource as? WatcherIndexSource {
-                switch source.watcher.resolution(for: sessionID) {
-                case .loaded: return true
-                case .confirmedAbsent: return false
-                default: return nil
-                }
+            switch self.latestEngineSnapshot?.resolutions[sessionID] {
+            case .loaded: return true
+            case .confirmedAbsent: return false
+            default: return nil
             }
-            guard !self.isLoading, !self.isIndexStale else { return nil }
-            return self.index.allSessions.contains { $0.id == sessionID }
         }
+        openSessions.sessionRow = { [weak self] id in
+            self?.sessions.first { $0.id == id }
+        }
+
         // Sidebar highlight follows the active tab (UX "Select vs. open").
         openSessions.$activeTabID
             .receive(on: RunLoop.main)
@@ -502,6 +503,10 @@ public final class AppModel: ObservableObject {
             if index != self.index { self.index = index }
             self.openSessions.refreshExitedResumeDiagnoses()
             for id in self.pendingSessionOpens {
+                guard !self.sessions.contains(where: { $0.id == id }) else {
+                    self.pendingSessionOpens.remove(id)
+                    continue
+                }
                 guard let session = index.allSessions.first(where: { $0.id == id }) else { continue }
                 self.pendingSessionOpens.remove(id)
                 self.openSessions.openSession(session)
@@ -587,6 +592,11 @@ public final class AppModel: ObservableObject {
     // MARK: Opening by id (palette / notifications)
 
     public func openSession(id: String) {
+        if let row = sessions.first(where: { $0.id == id }) {
+            pendingSessionOpens.remove(id)
+            openSessions.openSession(row)
+            return
+        }
         let engine = (indexSource as? WatcherIndexSource)?.watcher
         if let tab = openSessions.sessionTab(withSessionID: id) {
             engine?.requestResolution(id)
@@ -608,6 +618,14 @@ public final class AppModel: ObservableObject {
             pendingSessionOpens.insert(id)
             engine?.requestResolution(id)
         }
+    }
+
+    /// Legacy surfaces keep their transcript types, but actions prefer row facts.
+    public func resumeArgv(for session: AgentSession) -> [String] {
+        if let row = sessions.first(where: { $0.id == session.id }) {
+            return SessionLauncher.resumeArgv(row)
+        }
+        return session.resume.argv
     }
 
     /// The project the launcher should default to (last active, else first indexed).

@@ -126,7 +126,7 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(store.loadTranscript(at: file), AgentSession(summary: summary))
     }
 
-    func testCodexSharedTitleIsNotATranscriptFact() throws {
+    func testCodexHistoryPromptIsSeparateFromRolloutAndLegacyTitles() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let file = root.appendingPathComponent("sessions/rollout-codex.jsonl")
@@ -141,11 +141,38 @@ final class StoreTests: XCTestCase {
         let store = CodexSessionStore(root: root)
         let summary = try XCTUnwrap(store.loadSummary(at: file))
         XCTAssertEqual(summary.firstPrompt, "rollout prompt")
+        XCTAssertEqual(summary.historyPrompt, "shared title")
         XCTAssertNil(summary.recordedTitle)
         XCTAssertEqual(AgentSession(summary: summary).title, "rollout prompt")
         XCTAssertEqual(store.loadSession(at: file)?.title, "shared title")
         XCTAssertEqual(store.loadSessions().first?.title, "shared title")
         XCTAssertEqual(store.catalogParser()(file)?.title, "shared title")
+    }
+
+    func testCodexSummaryIncludesOnlyRecordedHistoryPromptsAsFacts() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("sessions/rollout-codex.jsonl")
+        try writeTranscript(#"{"type":"session_meta","payload":{"id":"codex-id","cwd":"/work"}}"#, at: file)
+        try writeTranscript(#"{"id":"codex-id","thread_name":"Display name"}"#,
+                            at: root.appendingPathComponent("session_index.jsonl"))
+        let store = CodexSessionStore(root: root)
+        XCTAssertNil(store.loadSummary(at: file)?.historyPrompt, "A thread name is not a human prompt")
+        try writeTranscript("""
+        {"session_id":"codex-id","ts":20,"text":"Later prompt"}
+        {"session_id":"codex-id","ts":10,"text":"First recorded prompt"}
+        """, at: root.appendingPathComponent("history.jsonl"))
+        for summary in [store.loadSummary(at: file), store.loadSummaries().first, store.catalogSummaryParser()(file)] {
+            let summary = try XCTUnwrap(summary)
+            XCTAssertNil(summary.firstPrompt)
+            XCTAssertEqual(summary.historyPrompt, "First recorded prompt")
+            XCTAssertEqual(AgentSession(summary: summary).title, "(no prompt)", "Legacy rollout title remains unchanged")
+        }
+        XCTAssertEqual(store.loadSession(at: file)?.title, "First recorded prompt")
+        try writeTranscript(#"{"session_id":"codex-id","ts":10,"text":"   "}"#,
+                            at: root.appendingPathComponent("history.jsonl"))
+        XCTAssertNil(store.loadSummary(at: file)?.historyPrompt)
+        XCTAssertEqual(store.loadSession(at: file)?.title, "Display name")
     }
 
     private func assertLegacyValue(

@@ -23,7 +23,8 @@ final class CoreWiringTests: XCTestCase {
             stores: [ClaudeSessionStore(root: root)], database: database,
             debounceInterval: 0.05
         )
-        try database.join(sessionID: "wired-session", via: .created, agent: .claude)
+        try database.join(sessionID: "wired-session", via: .created, agent: .claude,
+                          core: SessionCore(directory: "/tmp/project"))
         let source = WatcherIndexSource(watcher: watcher, cacheURL: cacheURL)
         defer { source.stop() }
         let model = AppModel(
@@ -43,7 +44,11 @@ final class CoreWiringTests: XCTestCase {
         XCTAssertFalse(model.isLoading)
         try XCTSkipIf(!injectEvents && !watcher.isMonitoring, "FSEvents service unavailable in this execution environment")
 
-        if injectEvents { model.openSession(id: "wired-session") }
+        if injectEvents {
+            model.openSession(id: "wired-session")
+            XCTAssertEqual(model.openSessions.activeTab?.sessionID, "wired-session", "Row opens before the transcript exists")
+            XCTAssertTrue(model.pendingSessionOpens.isEmpty)
+        }
         let file = projectDirectory.appendingPathComponent("wired-session.jsonl")
         let json = #"{"type":"user","message":{"content":"hello"},"cwd":"/tmp/project","timestamp":"2026-01-01T00:00:00Z"}"#
         try json.write(to: file, atomically: true, encoding: .utf8)
@@ -129,7 +134,7 @@ final class CoreWiringTests: XCTestCase {
         try await waitFor { received == 2 }
     }
 
-    func testAppModelUsesMemberResolutionAndDropsFinalPendingOpens() async throws {
+    func testAppModelUsesSnapshotResolutionAndDoesNotQueueDirectorylessRows() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let dir = root.appendingPathComponent("project")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -149,7 +154,8 @@ final class CoreWiringTests: XCTestCase {
         XCTAssertEqual(model.openSessions.sessionKnown("pruned"), false)
         XCTAssertNil(model.openSessions.sessionKnown("awaiting"))
         model.openSession(id: "awaiting")
-        XCTAssertTrue(model.pendingSessionOpens.contains("awaiting"))
+        XCTAssertTrue(model.pendingSessionOpens.isEmpty, "Directoryless rows are refused immediately")
+        XCTAssertTrue(model.openSessions.tabs.isEmpty)
         let file = dir.appendingPathComponent("awaiting.jsonl")
         try "{".write(to: file, atomically: true, encoding: .utf8)
         watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemCreated))

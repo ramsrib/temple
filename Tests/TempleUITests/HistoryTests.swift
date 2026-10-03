@@ -121,6 +121,38 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(try db.sessionState(rows[1].id)?.title, "Parsed fact")
     }
 
+    func testCodexHistoryPromptFillsBothImportPaths() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let file = root.appendingPathComponent("sessions/rollout-history-only.jsonl")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try #"{"type":"session_meta","payload":{"id":"history-only","cwd":"/recorded"}}"#
+            .write(to: file, atomically: true, encoding: .utf8)
+        try #"{"session_id":"history-only","ts":10,"text":"A recorded human prompt"}"#
+            .write(to: root.appendingPathComponent("history.jsonl"), atomically: true, encoding: .utf8)
+        let store = CodexSessionStore(root: root)
+        let legacy = try XCTUnwrap(store.loadSession(at: file))
+        let summary = try XCTUnwrap(store.loadSummaries().first)
+        XCTAssertNil(summary.firstPrompt)
+        XCTAssertEqual(summary.historyPrompt, "A recorded human prompt")
+        for legacyImport in [false, true] {
+            let db = try TempleDB.inMemory()
+            let overlay = SessionOverlayStore(db: db)
+            overlay.importSummaryReader = { store.loadSummary(at: $0.filePath) }
+            if legacyImport {
+                let failures = await overlay.importSessions([legacy])
+                XCTAssertTrue(failures.isEmpty)
+            } else {
+                XCTAssertTrue(overlay.importSessions([summary]).isEmpty)
+            }
+            let row = try XCTUnwrap(db.sessionState(summary.id))
+            XCTAssertEqual(row.title, "A recorded human prompt")
+            XCTAssertEqual(row.directory, "/recorded")
+            XCTAssertNil(row.generatedTitle, "A prompt fill is not an OSC title override")
+            XCTAssertEqual(overlay.displayTitle(for: legacy), legacy.title)
+        }
+    }
+
     func testImportCopiesTitleDirectoryAndTimeOnce() throws {
         let db = try TempleDB.inMemory()
         let overlay = SessionOverlayStore(db: db)
@@ -916,12 +948,18 @@ final class HistoryTabTests: XCTestCase {
     /// not inferred from a tab that is no longer there.
     func testUndoKeepsAnImportThatWasOpenedSinceEvenOnceItsTabIsClosed() async throws {
         let database = try TempleDB.inMemory()
+        let overlay = SessionOverlayStore(db: database)
+        overlay.importSummaryReader = { session in
+            TranscriptSummary(id: session.id, agent: session.agent,
+                locator: TranscriptLocator(host: .local, path: session.filePath.path),
+                modifiedAt: session.updatedAt, cwd: session.projectPath, firstPrompt: session.title)
+        }
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
             indexSource: FakeIndexSource(SessionIndex(projects: [])),
             database: database,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
-            overlay: SessionOverlayStore(db: database))
+            overlay: overlay)
         let row = AgentSession(id: "imp", agent: .claude, projectPath: NSTemporaryDirectory(),
                                title: "Imported", createdAt: nil, updatedAt: Date(),
                                filePath: URL(fileURLWithPath: "/tmp/imp.jsonl"))

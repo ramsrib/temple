@@ -42,9 +42,11 @@ public final class SessionTab: ObservableObject, Identifiable {
 
     /// The CLI session id. `nil` while a Codex session is provisional (U4).
     @Published public var sessionID: String?
-    public let agent: Agent
+    @Published public private(set) var agent: Agent
+    @Published public private(set) var host: HostID
+    public var projectKey: ProjectKey { ProjectKey(host: host, path: projectPath) }
     /// Fixed by the session's `cwd`; drives per-project tab-bar scoping (U2).
-    public let projectPath: String
+    @Published public private(set) var projectPath: String
     @Published public var title: String
     @Published public var activity: ActivityState = .idle
 
@@ -69,7 +71,7 @@ public final class SessionTab: ObservableObject, Identifiable {
     @Published public var isProvisional: Bool
 
     /// The command the surface spawns. `nil` for a utility tab.
-    public let command: TerminalCommand?
+    public private(set) var command: TerminalCommand?
 
     /// Live terminal; `nil` for an inert restored chip or a utility tab.
     @Published public private(set) var surface: TerminalSurface?
@@ -80,6 +82,8 @@ public final class SessionTab: ObservableObject, Identifiable {
 
     /// Retains the per-tab delegate so the surface's `weak delegate` stays alive.
     var coordinator: AnyObject?
+    /// Optional join hint, consumed at spawn; it never supplies launch facts.
+    var transcriptHint: URL?
 
     /// Was this tab spawned to RESUME an existing conversation (sidebar open,
     /// relaunch restore) rather than to start a fresh one? Only a resume can
@@ -95,15 +99,28 @@ public final class SessionTab: ObservableObject, Identifiable {
                 title: String,
                 command: TerminalCommand?,
                 isProvisional: Bool = false,
-                isResume: Bool = false) {
+                isResume: Bool = false,
+                host: HostID = .local) {
         self.kind = kind
         self.sessionID = sessionID
         self.agent = agent
+        self.host = host
         self.projectPath = projectPath
         self.title = title
         self.command = command
         self.isProvisional = isProvisional
         self.isResume = isResume
+    }
+
+    /// An inert resume chip takes the latest row before its first spawn.
+    /// Once a surface exists, its launch identity stays fixed.
+    func prepareResume(_ session: Session, command: TerminalCommand) {
+        guard surface == nil, isResume, let agent = session.agent, let directory = session.directory else { return }
+        self.agent = agent
+        self.host = session.host
+        self.projectPath = directory
+        self.title = session.state.customName ?? session.state.title ?? self.title
+        self.command = command
     }
 
     public var isUtility: Bool { kind != .session }

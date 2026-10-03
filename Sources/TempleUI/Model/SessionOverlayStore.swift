@@ -143,11 +143,11 @@ public final class SessionOverlayStore: ObservableObject {
               let missing = missingCoreFields[summary.id] else { return }
         let supplied = Set<SessionCoreField>([.agent, .lastActiveAt])
             .union(summary.cwd == nil ? [] : [.directory])
-            .union(summary.firstPrompt == nil ? [] : [.title])
+            .union((summary.firstPrompt ?? summary.historyPrompt) == nil ? [] : [.title])
         guard !missing.isDisjoint(with: supplied) else { return }
         do {
             let changed = try db.fillCoreFields(sessionID: summary.id, expectedHost: summary.locator.host, agent: summary.agent,
-                directory: summary.cwd, title: summary.firstPrompt, lastActiveAt: summary.modifiedAt)
+                directory: summary.cwd, title: summary.firstPrompt ?? summary.historyPrompt, lastActiveAt: summary.modifiedAt)
             // Changed rows refresh synchronously through the committed observer.
             // Reconcile a no-op too: another writer may already have filled it.
             if changed.isEmpty { refreshRow(summary.id) }
@@ -203,7 +203,7 @@ public final class SessionOverlayStore: ObservableObject {
         importCore(summaries.map { ($0.id, $0.agent, $0.locator.localURL,
             SessionCore(host: $0.locator.host, directory: $0.cwd,
                         directorySource: $0.cwd == nil ? nil : .transcript,
-                        title: $0.firstPrompt, lastActiveAt: $0.modifiedAt)) })
+                        title: $0.firstPrompt ?? $0.historyPrompt, lastActiveAt: $0.modifiedAt)) })
     }
 
     /// P2 adapter while History holds AgentSession. Parsing is bounded to four
@@ -229,7 +229,7 @@ public final class SessionOverlayStore: ObservableObject {
                         return (index, PreparedSessionImport(id: session.id, agent: session.agent,
                             path: session.filePath, core: SessionCore(directory: facts?.cwd,
                                 directorySource: facts?.cwd == nil ? nil : .transcript,
-                                title: facts?.firstPrompt, lastActiveAt: facts?.modifiedAt)))
+                                title: facts?.firstPrompt ?? facts?.historyPrompt, lastActiveAt: facts?.modifiedAt)))
                     }
                 }
                 while next < min(4, sessions.count) { enqueue(next); next += 1 }
