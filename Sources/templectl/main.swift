@@ -124,14 +124,26 @@ if CommandLine.arguments.contains("--disk") {
     }
 } else if CommandLine.arguments.contains("--watch") {
     let watchStart = Date()
+    let wantsMetrics = CommandLine.arguments.contains("--metrics")
+    let disableWatcher = CommandLine.arguments.contains("--benchmark-disable-watcher")
+    if disableWatcher {
+        let keys = ["TEMPLE_CLAUDE_ROOT", "TEMPLE_CODEX_ROOT", "TEMPLE_STATE_DIR"]
+        let temporaryRoot = URL(fileURLWithPath: "/private/tmp").resolvingSymlinksInPath().path + "/"
+        guard wantsMetrics, keys.allSatisfy({ key in
+            guard let path = ProcessInfo.processInfo.environment[key] else { return false }
+            return URL(fileURLWithPath: path).resolvingSymlinksInPath().path.hasPrefix(temporaryRoot)
+        }) else {
+            fputs("The disabled-watcher control requires --metrics and all roots under /private/tmp.\n", stderr)
+            exit(2)
+        }
+    }
     let database = try openDatabase(readOnly: !TempleState.isRedirected)
     let initialRows = try database.sessionStates().map { Session(state: $0) }
-    let wantsMetrics = CommandLine.arguments.contains("--metrics")
     if wantsMetrics {
         print("durable rows available: \(initialRows.count), elapsed_seconds=\(Date().timeIntervalSince(watchStart))")
         fflush(stdout)
     }
-    let watcher = SessionWatcher(database: database)
+    let watcher = SessionWatcher(database: database, monitorChanges: !disableWatcher)
     let snapshots = watcher.snapshots()
     let engineUpdates = watcher.start()
     let metricsTask = wantsMetrics ? Task {
@@ -147,7 +159,8 @@ if CommandLine.arguments.contains("--disk") {
             buffer.deallocate()
             let sample: [String: Any] = ["event": "metrics", "parses": counters.parses,
                 "verifications": counters.verifications, "publications": counters.publications,
-                "observations": counters.observations, "cpu_seconds": userCPU + systemCPU,
+                "observations": counters.observations, "monitoring": watcher.isMonitoring,
+                "cpu_seconds": userCPU + systemCPU,
                 "wall_seconds": Date().timeIntervalSince(watchStart),
                 "open_fds": Int(bytes) / MemoryLayout<proc_fdinfo>.stride]
             if let data = try? JSONSerialization.data(withJSONObject: sample, options: .sortedKeys) {

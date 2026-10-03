@@ -45,6 +45,7 @@ public final class SessionWatcher: @unchecked Sendable {
     private var wanted: [String: Set<SessionCoreField>]?
     private var enrichmentTimers: [String: DispatchWorkItem] = [:]
     private let now: @Sendable () -> Date
+    private let monitorChanges: Bool
     private var parseCount: UInt64 = 0
     private var verificationCount: UInt64 = 0
     private var publicationCount: UInt64 = 0
@@ -83,12 +84,14 @@ public final class SessionWatcher: @unchecked Sendable {
     public init(stores: [any IncrementalSessionStore] = [ClaudeSessionStore(), CodexSessionStore()],
                 database: TempleDB? = nil, members: Set<String> = [],
                 debounceInterval: TimeInterval = 0.3,
+                monitorChanges: Bool = true,
                 now: @escaping @Sendable () -> Date = { Date() }) {
         self.stores = stores
         self.database = database
         self.initialMembers = members
         self.debounceInterval = debounceInterval
         self.now = now
+        self.monitorChanges = monitorChanges
         // Observe before startup; the row read at startup is the durable replay.
         joinObserver = database?.observeJoins { [weak self] id, awaiting in
             self?.resolveRequest(id, awaitingCreation: awaiting, explicit: false)
@@ -332,6 +335,9 @@ public final class SessionWatcher: @unchecked Sendable {
             self.stream = nil
         }
         roots = stores.flatMap(\.watchedURLs).map(RootMapping.init)
+        // Enumeration-only control for the synthetic benchmark: startup still
+        // resolves rows, but no filesystem events can reach the engine.
+        guard monitorChanges else { return }
         let requestedPaths = Set(roots.flatMap { [$0.watchPhysical, $0.watchLogical] })
         let paths = requestedPaths.filter { path in
             !requestedPaths.contains { other in other != path && path.hasPrefix(other + "/") }
