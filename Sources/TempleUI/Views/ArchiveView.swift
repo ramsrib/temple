@@ -390,11 +390,16 @@ struct ArchiveView: View {
         case .project(let project):
             model.restoreProject(project.key, undoManager: undoManager)
         case .session(let session):
-            if (session.project.map { model.overlay.isProjectArchived($0) } ?? false) {
-                if let project = session.project { model.restoreProject(project, undoManager: undoManager) }
-            } else {
+            // A row can be hidden by both flags. One Restore must make it
+            // visible, and one Undo must put both flags back.
+            undoManager?.beginUndoGrouping()
+            if let project = session.project, model.overlay.isProjectArchived(project) {
+                model.restoreProject(project, undoManager: undoManager)
+            }
+            if model.overlay.isArchived(session.id) {
                 model.restoreSession(session.id, undoManager: undoManager)
             }
+            undoManager?.endUndoGrouping()
         }
     }
 }

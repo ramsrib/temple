@@ -14,7 +14,8 @@ public final class AppModel: ObservableObject {
     public static let projectCap = 8
 
     // Data
-    /// Member presentation, independent of transcript availability.
+    /// Member presentation, independent of transcript availability. Touches keep
+    /// storage order after rank freeze; live-recency consumers sort on demand.
     @Published public private(set) var sessions: [Session] = []
     @Published public private(set) var rowProjects: [SessionRowProject] = []
     private var applyingEngineSnapshot = false
@@ -24,7 +25,8 @@ public final class AppModel: ObservableObject {
     private var rowPresentationScheduled = false
     private var changedRowIDs = Set<String>()
     private var presentedByID: [String: Session] = [:]
-    private var projectsByKey: [ProjectKey: SessionRowProject] = [:]
+    private var recencyOnlyChanges = true
+    private(set) var rowPresentationSortCount = 0
     private(set) var rowProjectBuildCount = 0
 
     private func scheduleRowPresentation() {
@@ -46,6 +48,7 @@ public final class AppModel: ObservableObject {
         let previous = latestEngineSnapshot?.resolutions ?? [:]
         let resolutionsChanged = previous != snapshot.resolutions
         if resolutionsChanged {
+            recencyOnlyChanges = false
             changedRowIDs.formUnion(Set(previous.keys).union(snapshot.resolutions.keys)
                 .filter { previous[$0] != snapshot.resolutions[$0] })
         }
@@ -66,40 +69,48 @@ public final class AppModel: ObservableObject {
     private func rebuildSessions() {
         rowPresentationDirty = false
         sessionPresentationBuildCount += 1
-        var byID = presentedByID
-        let changed = presentedByID.isEmpty ? changedRowIDs.union(overlay.rows.keys) : changedRowIDs
+        let changed = changedRowIDs
         changedRowIDs.removeAll(keepingCapacity: true)
-        var changedProjects = Set<ProjectKey>()
-        for id in changed {
-            let row = overlay.rows[id].map { Session(state: $0, resolution: latestEngineSnapshot?.resolutions[id]) }
-            guard byID[id] != row else { continue }
-            if let key = byID[id]?.project { changedProjects.insert(key) }
-            if let key = row?.project { changedProjects.insert(key) }
-            byID[id] = row
+        let replaceValuesOnly = sidebarRanksFrozen && recencyOnlyChanges
+        recencyOnlyChanges = true
+        if replaceValuesOnly {
+            // Membership and grouping cannot change on this path. Preserve every
+            // position, even across separate turns of continuous activity.
+            for id in changed {
+                if let state = overlay.rows[id] {
+                    presentedByID[id] = Session(state: state, resolution: latestEngineSnapshot?.resolutions[id])
+                }
+            }
+            sessions = sessions.map { changed.contains($0.id) ? presentedByID[$0.id]! : $0 }
+            rowProjects = rowProjects.map { project in
+                guard project.sessions.contains(where: { changed.contains($0.id) }) else { return project }
+                return SessionRowProject(key: project.key, sessions: project.sessions.map {
+                    changed.contains($0.id) ? presentedByID[$0.id]! : $0
+                })
+            }
+            return
         }
-        let next = byID.values.sorted { lhs, rhs in
-            if lhs.sortDate == rhs.sortDate { return lhs.id < rhs.id }
-            return lhs.sortDate > rhs.sortDate
-        }
+
+        // Facts and membership changes use a full recomputation. There is no
+        // incremental sorted sequence or project membership cache to maintain.
+        let rows = overlay.rows.values.map { Session(state: $0, resolution: latestEngineSnapshot?.resolutions[$0.id]) }
+        rowPresentationSortCount += 1
+        let next = rows.sorted(by: Self.moreRecentRow)
+        presentedByID = Dictionary(uniqueKeysWithValues: next.map { ($0.id, $0) })
         if next != sessions { sessions = next }
-        // Only changed groups get rebuilt; next already has live recency order.
-        var changedGroups: [ProjectKey: [Session]] = [:]
-        for row in next {
-            if let key = row.project, changedProjects.contains(key) { changedGroups[key, default: []].append(row) }
-        }
-        for key in changedProjects {
-            rowProjectBuildCount += 1
-            projectsByKey[key] = changedGroups[key].map { SessionRowProject(key: key, sessions: $0) }
-        }
-        presentedByID = byID
-        var seen = Set<ProjectKey>()
-        let projects = next.compactMap { row -> SessionRowProject? in
-            guard let key = row.project, seen.insert(key).inserted else { return nil }
-            return projectsByKey[key]
-        }.sorted(by: SessionRowProject.moreRecent)
+        let grouped = Dictionary(grouping: next.filter { $0.project != nil }) { $0.project! }
+        rowProjectBuildCount += grouped.count
+        rowPresentationSortCount += 1
+        let projects = grouped.map { SessionRowProject(key: $0.key, sessions: $0.value) }
+            .sorted(by: SessionRowProject.moreRecent)
         if projects != rowProjects { rowProjects = projects }
         extendRowRanks()
     }
+
+    private static func moreRecentRow(_ lhs: Session, _ rhs: Session) -> Bool {
+        lhs.sortDate == rhs.sortDate ? lhs.id < rhs.id : lhs.sortDate > rhs.sortDate
+    }
+
     private(set) var sidebarRanksFrozen = false
     private var sidebarRankingStarted = false
     /// A one-shot scheduler seam: tests deliver the deadline without waiting.
@@ -386,6 +397,7 @@ public final class AppModel: ObservableObject {
                 guard let self else { return }
                 self.rowPresentationDirty = true
                 self.changedRowIDs.insert(change.id)
+                if !change.recencyOnly { self.recencyOnlyChanges = false }
                 guard !self.applyingEngineSnapshot else { return }
                 if change.recencyOnly {
                     self.scheduleRowPresentation()
@@ -1035,7 +1047,7 @@ public final class AppModel: ObservableObject {
         let rows = visibleRows
         let open = Set(openSessions.openSessionIDsInTabOrder)
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return rows.filter { open.contains($0.id) }
+            return rows.filter { open.contains($0.id) }.sorted(by: Self.moreRecentRow)
         }
         let ranked = RowSearch.rank(rows, query: query)
         return ranked.filter { open.contains($0.id) } + ranked.filter { !open.contains($0.id) }
@@ -1123,6 +1135,8 @@ public final class AppModel: ObservableObject {
     /// in the sidebar, so this panel is the only way back.
     public var archivedProjects: [SessionRowProject] {
         rowProjects.filter { overlay.isProjectArchived($0.key) }
+            .map { SessionRowProject(key: $0.key, sessions: $0.sessions.sorted(by: Self.moreRecentRow)) }
+            .sorted(by: SessionRowProject.moreRecent)
     }
 
     public func archivedProjectResults(_ query: String) -> [SessionRowProject] {
@@ -1132,7 +1146,7 @@ public final class AppModel: ObservableObject {
 
     public func archivedSessionResults(_ query: String) -> [Session] {
         let rows = sessions.filter { $0.state.archived && !($0.project.map { overlay.isProjectArchived($0) } ?? false) }
-        return query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? rows : RowSearch.rank(rows, query: query)
+        return query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? rows.sorted(by: Self.moreRecentRow) : RowSearch.rank(rows, query: query)
     }
 
     public struct ArchiveGroup: Identifiable, Equatable {

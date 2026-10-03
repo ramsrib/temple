@@ -18,7 +18,190 @@ final class RowConsumerTests: XCTestCase {
         }
     }
 
-    func testBurstTouchesCoalescePresentationAndOnlyRebuildTheirProject() async throws {
+    private func key(_ path: String, host: HostID = .local) -> ProjectKey {
+        ProjectKey(host: host, path: path)
+    }
+
+    private func freeze(_ app: AppModel) {
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1,
+            resolutions: Dictionary(uniqueKeysWithValues: app.sessions.map { ($0.id, MemberResolution.confirmedAbsent) }),
+            summaries: [:]))
+        XCTAssertTrue(app.sidebarRanksFrozen)
+    }
+
+    /// Recompute from source rows, never the presentation cache. Explicit rank
+    /// expectations keep the oracle independent of the production rank ledger.
+    private func assertFrozenPresentation(_ app: AppModel, _ order: [(ProjectKey, [String])],
+                                          file: StaticString = #filePath, line: UInt = #line) {
+        let rows = app.overlay.rows.values.map { Session(state: $0) }
+        let full = SessionRowProject.grouping(rows)
+        XCTAssertEqual(app.sessions.count, rows.count, file: file, line: line)
+        XCTAssertEqual(Set(app.sessions.map(\.state)), Set(rows.map(\.state)), file: file, line: line)
+        XCTAssertEqual(Set(full.map(\.key)), Set(order.map { $0.0 }), file: file, line: line)
+        XCTAssertEqual(app.rowProjects.count, full.count, file: file, line: line)
+        XCTAssertEqual(Set(app.rowProjects.map(\.key)), Set(full.map(\.key)), file: file, line: line)
+        for project in full {
+            let cached = app.rowProjects.first { $0.key == project.key }
+            XCTAssertEqual(Set(cached?.sessions.map(\.state) ?? []), Set(project.sessions.map(\.state)), file: file, line: line)
+            XCTAssertEqual(cached?.lastActivity, project.lastActivity, file: file, line: line)
+        }
+        let expected = order.compactMap { projectKey, ids -> SessionRowProject? in
+            let members = full.first { $0.key == projectKey }?.sessions ?? []
+            XCTAssertEqual(Set(members.map(\.id)), Set(ids), file: file, line: line)
+            guard !app.overlay.isProjectArchived(projectKey) else { return nil }
+            let rank = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($0.element, $0.offset) })
+            let visible = members.filter { !$0.state.archived }.sorted { rank[$0.id]! < rank[$1.id]! }
+            return visible.isEmpty ? nil : SessionRowProject(key: projectKey, sessions: visible)
+        }
+        XCTAssertEqual(app.displayProjects.map(\.key), expected.map(\.key), file: file, line: line)
+        XCTAssertEqual(app.displayProjects.map { $0.sessions.map(\.state) },
+                       expected.map { $0.sessions.map(\.state) }, file: file, line: line)
+        XCTAssertEqual(app.orderedVisibleProjectKeys, expected.map(\.key), file: file, line: line)
+    }
+
+    func testLastMemberRemovalMatchesFullFrozenRecomputation() throws {
+        let app = try model([Fixture.row("a1", project: "/a", updated: 30),
+                             Fixture.row("a2", project: "/a", updated: 20), Fixture.row("b", project: "/b", updated: 10)])
+        freeze(app)
+        assertFrozenPresentation(app, [(key("/a"), ["a1", "a2"]), (key("/b"), ["b"])])
+        XCTAssertEqual(app.overlay.leave(["a1"]), ["a1"])
+        assertFrozenPresentation(app, [(key("/a"), ["a2"]), (key("/b"), ["b"])])
+        XCTAssertEqual(app.overlay.leave(["a2"]), ["a2"])
+        assertFrozenPresentation(app, [(key("/b"), ["b"])])
+        XCTAssertEqual(app.overlay.leave(["b"]), ["b"])
+        assertFrozenPresentation(app, [])
+    }
+
+    func testLeaveAndRejoinAcrossHostsMatchesFullFrozenRecomputation() throws {
+        let remote = HostID(rawValue: "remote")
+        let app = try model([Fixture.row("moving", project: "/same", updated: 20),
+                             Fixture.row("anchor", project: "/same", updated: 10, host: remote)])
+        freeze(app)
+        assertFrozenPresentation(app, [(key("/same"), ["moving"]), (key("/same", host: remote), ["anchor"])])
+        XCTAssertEqual(app.overlay.leave(["moving"]), ["moving"])
+        assertFrozenPresentation(app, [(key("/same", host: remote), ["anchor"])])
+        XCTAssertTrue(app.overlay.join("moving", via: .imported, agent: .claude,
+            core: SessionCore(host: remote, directory: "/same", title: "Remote", lastActiveAt: Date(timeIntervalSince1970: 40))))
+        assertFrozenPresentation(app, [(key("/same", host: remote), ["moving", "anchor"])])
+        XCTAssertEqual(app.overlay.leave(["moving"]), ["moving"])
+        assertFrozenPresentation(app, [(key("/same", host: remote), ["anchor"])])
+        XCTAssertTrue(app.overlay.join("moving", via: .imported, agent: .claude,
+            core: SessionCore(directory: "/same", title: "Local again", lastActiveAt: Date(timeIntervalSince1970: 50))))
+        assertFrozenPresentation(app, [(key("/same"), ["moving"]), (key("/same", host: remote), ["anchor"])])
+    }
+
+    func testDirectoryMoveAndMoveBackMatchesFullFrozenRecomputation() throws {
+        let app = try model([Fixture.row("a", project: "/a", updated: 30),
+                             Fixture.row("moving", project: "/a", updated: 20), Fixture.row("b", project: "/b", updated: 10)])
+        freeze(app)
+        assertFrozenPresentation(app, [(key("/a"), ["a", "moving"]), (key("/b"), ["b"])])
+        app.overlay.observeLaunchDirectory("moving", "/b")
+        assertFrozenPresentation(app, [(key("/a"), ["a"]), (key("/b"), ["moving", "b"])])
+        app.overlay.observeLaunchDirectory("moving", "/a")
+        assertFrozenPresentation(app, [(key("/a"), ["a", "moving"]), (key("/b"), ["b"])])
+    }
+
+    func testArchiveAndRestoreWithPendingTouchesMatchesFullFrozenRecomputation() async throws {
+        let app = try model([Fixture.row("a", project: "/a", updated: 20), Fixture.row("b", project: "/b", updated: 10)])
+        freeze(app)
+        let order = [(key("/a"), ["a"]), (key("/b"), ["b"])]
+        assertFrozenPresentation(app, order)
+        app.overlay.touch("b", at: Date(timeIntervalSince1970: 40))
+        app.archiveSession("b", undoManager: nil)
+        assertFrozenPresentation(app, order)
+        await nextPresentationTurn()
+        assertFrozenPresentation(app, order)
+        app.overlay.touch("b", at: Date(timeIntervalSince1970: 50))
+        app.restoreSession("b", undoManager: nil)
+        assertFrozenPresentation(app, order)
+        await nextPresentationTurn()
+        assertFrozenPresentation(app, order)
+        app.overlay.touch("a", at: Date(timeIntervalSince1970: 60))
+        app.archiveProject(key("/a"), undoManager: nil)
+        await nextPresentationTurn()
+        assertFrozenPresentation(app, order)
+        app.overlay.touch("b", at: Date(timeIntervalSince1970: 70))
+        app.restoreProject(key("/a"), undoManager: nil)
+        await nextPresentationTurn()
+        assertFrozenPresentation(app, order)
+    }
+
+    func testContinuousTouchesAcrossTurnsNeverSortOrRegroupAfterFreeze() async throws {
+        let app = try model([Fixture.row("a", project: "/a", updated: 30),
+                             Fixture.row("a2", project: "/a", updated: 20), Fixture.row("b", project: "/b", updated: 10)])
+        freeze(app)
+        let order = [(key("/a"), ["a", "a2"]), (key("/b"), ["b"])]
+        assertFrozenPresentation(app, order)
+        let sorts = app.rowPresentationSortCount
+        let groups = app.rowProjectBuildCount
+        let builds = app.sessionPresentationBuildCount
+        for tick in 1...100 {
+            let id = ["a", "a2", "b"][tick % 3]
+            let date = Date(timeIntervalSince1970: Double(100 + tick))
+            app.overlay.touch(id, at: date)
+            await nextPresentationTurn()
+            XCTAssertEqual(app.sessions.first { $0.id == id }?.sortDate, date)
+            XCTAssertEqual(app.sessionPresentationBuildCount, builds + tick, "continuous activity must not starve publication")
+            XCTAssertEqual(app.rowPresentationSortCount, sorts)
+            XCTAssertEqual(app.rowProjectBuildCount, groups)
+            assertFrozenPresentation(app, order)
+        }
+    }
+
+    func testArchiveStillReadsLiveRecencyAfterFrozenValueUpdates() async throws {
+        let app = try model([Fixture.row("a", project: "/a", updated: 30),
+                             Fixture.row("b", project: "/b", updated: 20), Fixture.row("b2", project: "/b", updated: 10)])
+        freeze(app)
+        let order = [(key("/a"), ["a"]), (key("/b"), ["b", "b2"])]
+        app.archiveSession("a", undoManager: nil)
+        app.archiveSession("b2", undoManager: nil)
+        app.overlay.touch("b2", at: Date(timeIntervalSince1970: 40))
+        await nextPresentationTurn()
+        assertFrozenPresentation(app, order)
+        XCTAssertEqual(app.archivedSessionResults("").map(\.id), ["b2", "a"])
+        app.archiveProject(key("/a"), undoManager: nil)
+        app.archiveProject(key("/b"), undoManager: nil)
+        app.overlay.touch("a", at: Date(timeIntervalSince1970: 50))
+        await nextPresentationTurn()
+        assertFrozenPresentation(app, order)
+        XCTAssertEqual(app.archivedProjects.map(\.path), ["/a", "/b"])
+        XCTAssertEqual(app.archivedProjects.last?.sessions.map(\.id), ["b2", "b"])
+        app.overlay.touch("b", at: Date(timeIntervalSince1970: 60))
+        await nextPresentationTurn()
+        assertFrozenPresentation(app, order)
+        XCTAssertEqual(app.archivedProjects.map(\.path), ["/b", "/a"])
+        XCTAssertEqual(app.archivedProjects.first?.sessions.map(\.id), ["b", "b2"])
+    }
+
+    func testAgentlessArchiveReturnRestoresBothFlagsAsOneUndoGroup() throws {
+        let app = try model([Fixture.row("agentless", agent: nil, project: "/a", updated: 20)])
+        freeze(app)
+        let order = [(key("/a"), ["agentless"])]
+        app.archiveSession("agentless", undoManager: nil)
+        app.archiveProject(key("/a"), undoManager: nil)
+        assertFrozenPresentation(app, order)
+        let entry = ArchiveView.Entry.session(app.sessions[0])
+        XCTAssertEqual(ArchiveView.returnHint(for: entry, model: app), "restore session")
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        ArchiveView.activateSelection([entry], selection: 0, model: app, undoManager: undo)
+        XCTAssertFalse(app.overlay.isArchived("agentless"))
+        XCTAssertFalse(app.overlay.isProjectArchived(key("/a")))
+        assertFrozenPresentation(app, order)
+        XCTAssertEqual(app.displayProjects.first?.sessions.map(\.id), ["agentless"])
+        XCTAssertTrue(app.openSessions.tabs.isEmpty)
+        undo.undo()
+        XCTAssertTrue(app.overlay.isArchived("agentless"))
+        XCTAssertTrue(app.overlay.isProjectArchived(key("/a")))
+        XCTAssertFalse(undo.canUndo, "both flags belong to one undo step")
+        assertFrozenPresentation(app, order)
+        undo.redo()
+        XCTAssertFalse(app.overlay.isArchived("agentless"))
+        XCTAssertFalse(app.overlay.isProjectArchived(key("/a")))
+        assertFrozenPresentation(app, order)
+    }
+
+    func testBurstTouchesCoalescePresentationWithoutRegroupingAfterFreeze() async throws {
         let app = try model([Fixture.row("a", project: "/a", updated: 20),
                              Fixture.row("b", project: "/b", updated: 10)])
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1,
@@ -30,8 +213,8 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(app.overlay.rows["b"]?.lastActiveAt, Date(timeIntervalSince1970: 200))
         await nextPresentationTurn()
         XCTAssertEqual(app.sessionPresentationBuildCount, builds + 1)
-        XCTAssertEqual(app.rowProjectBuildCount, groups + 1)
-        XCTAssertEqual(app.sessions.first?.id, "b")
+        XCTAssertEqual(app.rowProjectBuildCount, groups)
+        XCTAssertEqual(app.sessions.first { $0.id == "b" }?.sortDate, Date(timeIntervalSince1970: 200))
         XCTAssertEqual(app.displayProjects.map(\.path), ["/a", "/b"])
         XCTAssertEqual(app.projectPickerResults("").map(\.path), ["/b", "/a"])
         // A real title change is immediate and consumes queued activity too.
