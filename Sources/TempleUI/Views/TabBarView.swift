@@ -702,18 +702,14 @@ private struct TabChip: View {
             Divider()
             moveControls
             Button("Copy resume command") {
-                if let sid = tab.sessionID {
-                    copyToPasteboard(tab.agent.resumeArgv(sessionID: sid).joined(separator: " "))
-                }
+                copyToPasteboard(model.resumeArgv(for: tab).joined(separator: " "))
             }
             Button("Copy session ID") { if let sid = tab.sessionID { copyToPasteboard(sid) } }
-            Button("Reveal session file in Finder") {
-                if let sid = tab.sessionID,
-                   let url = model.transcriptURL(for: sid) {
+            if let sid = tab.sessionID, let url = model.transcriptURL(for: sid) {
+                Button("Reveal session file in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([url])
                 }
             }
-            .disabled(tab.sessionID == nil)
             Divider()
         }
         Button("Close tab") { model.openSessions.requestClose(tabID: tab.id) }

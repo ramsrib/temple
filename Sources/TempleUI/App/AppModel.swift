@@ -650,11 +650,13 @@ public final class AppModel: ObservableObject {
     }
 
     public func transcriptURL(for id: String) -> URL? {
-        if let source = indexSource as? WatcherIndexSource {
-            if case .loaded(let url) = source.watcher.resolution(for: id) { return url }
-            return nil
-        }
-        return index.allSessions.first { $0.id == id }?.filePath
+        sessions.first { $0.id == id }?.transcript?.localURL
+    }
+
+    public func resumeArgv(for tab: SessionTab) -> [String] {
+        guard let id = tab.sessionID else { return [] }
+        if let row = sessions.first(where: { $0.id == id }) { return SessionLauncher.resumeArgv(row) }
+        return tab.agent.resumeArgv(sessionID: id)
     }
 
     // MARK: Opening by id (palette / notifications)

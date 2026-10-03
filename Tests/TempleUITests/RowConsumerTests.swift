@@ -213,6 +213,27 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(app.displayProjects.map(\.path), ["/new", "/same", "/same"])
     }
 
+    func testTabTranscriptActionsUseOnlyRowLocatorsAndResumeFacts() throws {
+        let remote = HostID(rawValue: "remote")
+        let app = try model([Fixture.row("local", project: "/row", title: "Row title"),
+            Fixture.row("remote", project: "/row", host: remote)])
+        let legacy = Fixture.session("local", agent: .codex, project: "/wrong")
+        app.index = SessionIndex(projects: [Project(path: "/wrong", sessions: [legacy])])
+        XCTAssertNil(app.transcriptURL(for: "local"), "legacy index presence is not a row locator")
+        let localURL = URL(fileURLWithPath: "/tmp/local.jsonl")
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["local": .loaded(localURL),
+            "remote": .loaded(URL(fileURLWithPath: "/remote/transcript.jsonl"))], summaries: [:]))
+        XCTAssertEqual(app.transcriptURL(for: "local"), localURL)
+        XCTAssertNil(app.transcriptURL(for: "remote"), "remote locators cannot reveal a local file")
+        let tab = SessionTab(kind: .session, sessionID: "local", agent: .codex,
+            projectPath: "/wrong", title: "Old title", command: nil)
+        XCTAssertEqual(app.resumeArgv(for: tab), ["claude", "--resume", "local"])
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["local": .confirmedAbsent,
+            "remote": .unreadable], summaries: [:]))
+        XCTAssertNil(app.transcriptURL(for: "local"))
+        XCTAssertNil(app.transcriptURL(for: "remote"))
+    }
+
     func testRailGroupsByHostAndOmitsDirectorylessMembers() throws {
         let app = try model([Fixture.row("local", project: "/same"),
             Fixture.row("remote", project: "/same", host: HostID(rawValue: "remote")), Fixture.row("unknown")])
