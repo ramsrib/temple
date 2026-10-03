@@ -146,6 +146,7 @@ final class RowConsumerTests: XCTestCase {
         let remote = HostID(rawValue: "remote")
         let app = try model([Fixture.row("local", project: "/same", title: "Local row"),
             Fixture.row("remote", project: "/same", title: "Remote row", host: remote)])
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["local": .confirmedAbsent, "remote": .confirmedAbsent], summaries: [:]))
         app.openSessions.openSession(app.sessions.first { $0.id == "remote" }!)
         let tab = try XCTUnwrap(app.openSessions.activeTab)
         tab.title = "Stale chip title"
@@ -163,6 +164,53 @@ final class RowConsumerTests: XCTestCase {
         app.moveProject(other, before: local)
         XCTAssertEqual(app.overlay.projectKeyOrder, [other, local])
         XCTAssertEqual(app.displayProjects.map(\.key), [other, local])
+    }
+
+    func testFrozenRankWaitsForTheFirstCompleteGeneration() throws {
+        let app = try model([Fixture.row("a", project: "/a", updated: 20), Fixture.row("b", project: "/b", updated: 10)])
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .confirmedAbsent, "b": .resolving], summaries: [:]))
+        XCTAssertFalse(app.sidebarRanksFrozen)
+        app.overlay.touch("b", at: Date(timeIntervalSince1970: 30))
+        XCTAssertEqual(app.displayProjects.map(\.path), ["/b", "/a"])
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["a": .resolving, "b": .confirmedAbsent], summaries: [:]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent], summaries: [:]))
+        XCTAssertFalse(app.sidebarRanksFrozen, "a stale complete generation cannot freeze the newer one")
+        app.overlay.touch("a", at: Date(timeIntervalSince1970: 40))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent], summaries: [:]))
+        XCTAssertTrue(app.sidebarRanksFrozen)
+        XCTAssertEqual(app.displayProjects.map(\.path), ["/a", "/b"])
+        app.overlay.touch("b", at: Date(timeIntervalSince1970: 50))
+        XCTAssertEqual(app.displayProjects.map(\.path), ["/a", "/b"])
+    }
+
+    func testSidebarSessionsSortLiveUntilInitialResolutionCompletes() throws {
+        let app = try model([Fixture.row("a", project: "/same", updated: 20), Fixture.row("b", project: "/same", updated: 10)])
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .loaded(URL(fileURLWithPath: "/tmp/a.jsonl")), "b": .resolving], summaries: [:]))
+        app.overlay.touch("b", at: Date(timeIntervalSince1970: 30))
+        XCTAssertEqual(app.displayProjects.first?.sessions.map(\.id), ["b", "a"])
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .loaded(URL(fileURLWithPath: "/tmp/a.jsonl")), "b": .unreadable], summaries: [:]))
+        XCTAssertTrue(app.sidebarRanksFrozen)
+        app.overlay.touch("a", at: Date(timeIntervalSince1970: 40))
+        XCTAssertEqual(app.displayProjects.first?.sessions.map(\.id), ["b", "a"])
+    }
+
+    func testFrozenRankFallsBackThreeSecondsAfterStartAndKeepsHostsSeparate() throws {
+        let remote = HostID(rawValue: "remote")
+        let app = try model([Fixture.row("a", project: "/same", updated: 20),
+            Fixture.row("b", project: "/same", updated: 10, host: remote)])
+        var deadline: (@MainActor () -> Void)?
+        app.scheduleSidebarFreeze = { delay, action in XCTAssertEqual(delay, 3); deadline = action }
+        app.beginSidebarRanking()
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .unreadable, "b": .awaitingCreation], summaries: [:]))
+        XCTAssertFalse(app.sidebarRanksFrozen)
+        app.overlay.touch("b", at: Date(timeIntervalSince1970: 30))
+        XCTAssertEqual(app.displayProjects.map(\.key.host), [remote, .local])
+        try XCTUnwrap(deadline)()
+        XCTAssertTrue(app.sidebarRanksFrozen)
+        app.overlay.touch("a", at: Date(timeIntervalSince1970: 40))
+        XCTAssertEqual(app.displayProjects.map(\.key.host), [remote, .local])
+        app.overlay.join("new", via: .created, agent: .claude, core: SessionCore(directory: "/new", lastActiveAt: Date(timeIntervalSince1970: 50)))
+        XCTAssertEqual(app.displayProjects.map(\.path), ["/new", "/same", "/same"])
     }
 
     func testRailGroupsByHostAndOmitsDirectorylessMembers() throws {

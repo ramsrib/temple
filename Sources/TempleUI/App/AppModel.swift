@@ -14,7 +14,7 @@ public final class AppModel: ObservableObject {
     public static let projectCap = 8
 
     // Data
-    /// Row-side presentation, built now; consumers switch in later phases.
+    /// Member presentation, independent of transcript availability.
     @Published public private(set) var sessions: [Session] = []
     @Published public private(set) var rowProjects: [SessionRowProject] = []
     private var applyingEngineSnapshot = false
@@ -31,6 +31,12 @@ public final class AppModel: ObservableObject {
         for summary in snapshot.summaries.values { overlay.fillMissingCoreFields(from: summary) }
         applyingEngineSnapshot = false
         if rowPresentationDirty || resolutionsChanged { rebuildSessions() }
+        if !sidebarRanksFrozen && sessions.allSatisfy({ row in
+            switch snapshot.resolutions[row.id] {
+            case .loaded, .confirmedAbsent, .unreadable: return true
+            default: return false
+            }
+        }) { freezeSidebarRanks() }
         openSessions.refreshExitedResumeDiagnoses()
     }
 
@@ -49,10 +55,33 @@ public final class AppModel: ObservableObject {
         if projects != rowProjects { rowProjects = projects }
         extendRowRanks()
     }
+    private(set) var sidebarRanksFrozen = false
+    private var sidebarRankingStarted = false
+    /// A one-shot scheduler seam: tests deliver the deadline without waiting.
+    var scheduleSidebarFreeze: (TimeInterval, @escaping @MainActor () -> Void) -> Void = { delay, action in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated { action() } }
+    }
+
+    func beginSidebarRanking() {
+        guard !sidebarRankingStarted else { return }
+        sidebarRankingStarted = true
+        scheduleSidebarFreeze(3) { [weak self] in self?.freezeSidebarRanks() }
+    }
+
+    private func freezeSidebarRanks() {
+        guard !sidebarRanksFrozen else { return }
+        sidebarRanksFrozen = true
+        extendRowRanks()
+        objectWillChange.send()
+    }
+
+    /// Row recency stays live until initial resolution completes or the
+    /// startup deadline fires. Unseen projects and sessions then prepend.
     private var rowProjectRank: [ProjectKey: Int] = [:]
     private var rowSessionRank: [ProjectKey: [String: Int]] = [:]
 
     private func extendRowRanks() {
+        guard sidebarRanksFrozen else { return }
         let keys = rowProjects.map(\.key).filter { rowProjectRank[$0] == nil }
         for key in rowProjectRank.keys { rowProjectRank[key]! += keys.count }
         for (offset, key) in keys.enumerated() { rowProjectRank[key] = offset }
@@ -74,7 +103,11 @@ public final class AppModel: ObservableObject {
         let placement = Dictionary(overlay.projectKeyOrder.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
         return projects.sorted { lhs, rhs in
             switch (placement[lhs.key], placement[rhs.key]) {
-            case (nil, nil): return (rowProjectRank[lhs.key] ?? .max) < (rowProjectRank[rhs.key] ?? .max)
+            case (nil, nil):
+                if sidebarRanksFrozen { return (rowProjectRank[lhs.key] ?? .max) < (rowProjectRank[rhs.key] ?? .max) }
+                if lhs.lastActivity != rhs.lastActivity { return lhs.lastActivity > rhs.lastActivity }
+                if lhs.key.host != rhs.key.host { return lhs.key.host.rawValue < rhs.key.host.rawValue }
+                return lhs.key.path < rhs.key.path
             case (nil, .some): return true
             case (.some, nil): return false
             case (.some(let l), .some(let r)): return l < r
@@ -89,12 +122,8 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    /// Sidebar order is frozen at launch: recency decides it once (at the
-    /// first index publish), then it stays put for the rest of the run so
-    /// neither projects nor the sessions inside them shuffle underfoot as
-    /// session files update. Genuinely NEW projects/sessions surface at the
-    /// top of their list (fresh activity); existing entries never move
-    /// relative to each other. Recomputed fresh next launch.
+    /// Legacy index ranks retained for the transitional adapter until P5.
+    /// The sidebar uses the ProjectKey ranks above, frozen after resolution.
     private var frozenProjectRank: [String: Int] = [:]
     /// Per project path: session id → frozen position.
     private var frozenSessionRank: [String: [String: Int]] = [:]
@@ -509,6 +538,7 @@ public final class AppModel: ObservableObject {
     // MARK: Lifecycle
 
     public func start() {
+        beginSidebarRanking()
         applyAppearance()
         openSessions.restore()
         if let cachedIndex = CachedIndexStore.load(from: cacheURL, members: overlay.templeSessions) {

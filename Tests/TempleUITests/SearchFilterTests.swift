@@ -86,6 +86,7 @@ final class SearchFilterTests: XCTestCase {
                              settings: settings,
                              overlay: overlay)
         model.index = index
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: Dictionary(uniqueKeysWithValues: model.sessions.map { ($0.id, MemberResolution.confirmedAbsent) }), summaries: [:]))
         return (model, overlay)
     }
 
@@ -295,45 +296,25 @@ final class SearchFilterTests: XCTestCase {
 
     // MARK: Launch-frozen project order
 
-    func testProjectOrderFrozenAtFirstPublishAndStableAcrossUpdates() {
-        let a = Project(path: "/p/a", sessions: [Fixture.session("a1", project: "/p/a")])
-        let b = Project(path: "/p/b", sessions: [Fixture.session("b1", project: "/p/b")])
-        let (model, overlay) = makeAppModel(SessionIndex(projects: [a, b]))
+    func testProjectOrderFrozenAtFirstCompleteSnapshotAndStableAcrossUpdates() {
+        let (model, overlay) = makeRowModel([Fixture.row("a1", project: "/p/a", updated: 20),
+            Fixture.row("b1", project: "/p/b", updated: 10)])
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a1": .confirmedAbsent, "b1": .confirmedAbsent], summaries: [:]))
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
-
-        // New activity re-sorts the incoming index (b now first) — the sidebar
-        // must NOT shuffle: launch order holds.
-        model.index = SessionIndex(projects: [b, a])
+        overlay.touch("b1", at: Date(timeIntervalSince1970: 50))
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
-
-        // A genuinely new project surfaces at the top; existing ones stay put.
-        let c = Project(path: "/p/c", sessions: [Fixture.session("c1", project: "/p/c")])
-        overlay.join("c1", via: .created, agent: .claude, core: SessionCore(directory: "/p/c", title: "Title"))
-        model.index = SessionIndex(projects: [c, b, a])
+        overlay.join("c1", via: .created, agent: .claude, core: SessionCore(directory: "/p/c", title: "Title", lastActiveAt: Date(timeIntervalSince1970: 60)))
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/c", "/p/a", "/p/b"])
     }
 
     func testSessionOrderWithinProjectFrozenAndNewSessionsPrepend() {
-        let s1 = Fixture.session("s1", project: "/p/a")
-        let s2 = Fixture.session("s2", project: "/p/a")
-        let (model, overlay) = makeAppModel(SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [s1, s2]),
-        ]))
+        let (model, overlay) = makeRowModel([Fixture.row("s1", project: "/p/a", updated: 20),
+            Fixture.row("s2", project: "/p/a", updated: 10)])
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["s1": .confirmedAbsent, "s2": .confirmedAbsent], summaries: [:]))
         XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["s1", "s2"])
-
-        // Opening/resuming s2 bumps its recency — the incoming index reorders,
-        // but the sidebar must not shuffle.
-        model.index = SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [s2, s1]),
-        ])
+        overlay.touch("s2", at: Date(timeIntervalSince1970: 50))
         XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["s1", "s2"])
-
-        // A brand-new session prepends at the top (fresh), others stay put.
-        let s3 = Fixture.session("s3", project: "/p/a")
-        overlay.join("s3", via: .created, agent: .claude, core: SessionCore(directory: "/p/a", title: "Title"))
-        model.index = SessionIndex(projects: [
-            Project(path: "/p/a", sessions: [s3, s2, s1]),
-        ])
+        overlay.join("s3", via: .created, agent: .claude, core: SessionCore(directory: "/p/a", title: "Title", lastActiveAt: Date(timeIntervalSince1970: 60)))
         XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["s3", "s1", "s2"])
     }
 

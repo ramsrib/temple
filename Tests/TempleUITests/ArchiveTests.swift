@@ -21,6 +21,7 @@ final class ArchiveTests: XCTestCase {
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: overlay
         )
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: Dictionary(uniqueKeysWithValues: model.sessions.map { ($0.id, MemberResolution.confirmedAbsent) }), summaries: [:]))
         return (model, overlay)
     }
 
