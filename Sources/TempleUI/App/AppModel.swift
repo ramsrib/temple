@@ -663,9 +663,12 @@ public final class AppModel: ObservableObject {
     }
 
     /// The project the launcher should default to (last active, else first indexed).
-    public var launcherDefaultProject: String? {
-        openSessions.activeProjectPath ?? orderedVisibleProjectPaths.first
+    public var launcherDefaultProjectKey: ProjectKey? {
+        openSessions.activeTab.flatMap { $0.kind == .session ? $0.projectKey : nil }
+            ?? openSessions.activeProjectPath.map { ProjectKey(host: .local, path: $0) }
+            ?? visibleRowProjects.first?.key
     }
+    public var launcherDefaultProject: String? { launcherDefaultProjectKey?.path }
 
     // MARK: Sidebar data (U1)
 
@@ -1202,8 +1205,8 @@ public final class AppModel: ObservableObject {
     /// Projects for the ⌘N picker: every non-noise project in scope, most recent
     /// activity first (live recency, like the palettes); typing filters on
     /// the folder name or any path component.
-    public func projectPickerResults(_ query: String) -> [Project] {
-        let projects = visibleProjects.sorted { $0.lastActivity > $1.lastActivity }
+    public func projectPickerResults(_ query: String) -> [SessionRowProject] {
+        let projects = visibleRowProjects
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return projects }
         return projects.filter { $0.path.localizedCaseInsensitiveContains(q) }

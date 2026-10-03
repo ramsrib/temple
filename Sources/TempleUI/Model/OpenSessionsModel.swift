@@ -261,6 +261,12 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// New empty session in a project with an explicit agent (`+` menu).
     @discardableResult
     public func newSession(agent: Agent, projectPath: String) -> SessionTab {
+        newSession(agent: agent, project: ProjectKey(host: .local, path: projectPath))
+    }
+
+    @discardableResult
+    public func newSession(agent: Agent, project: ProjectKey) -> SessionTab {
+        let projectPath = project.path
         var spec = SessionLauncher.newSession(
             agent: agent,
             projectPath: projectPath,
@@ -276,9 +282,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             projectPath: spec.projectPath,
             title: spec.title,
             command: spec.command,
-            isProvisional: spec.isProvisional)
+            isProvisional: spec.isProvisional, host: project.host)
         tabs.append(tab)
-        if let sid = spec.sessionID { openedHandler?(sid, .created, spec.agent, nil, SessionCore()) }
+        if let sid = spec.sessionID { openedHandler?(sid, .created, spec.agent, nil, SessionCore(host: project.host)) }
         if spec.isProvisional {
             // Codex: adopt the real id once its rollout file appears (ADR-008).
             reconciler.reconcile(projectPath: projectPath, startedAt: Date()) { [weak self, weak tab] id in

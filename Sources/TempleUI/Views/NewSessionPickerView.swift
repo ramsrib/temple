@@ -10,7 +10,7 @@ struct NewSessionPickerView: View {
     @State private var selection = 0
     @FocusState private var fieldFocused: Bool
 
-    private var projects: [Project] {
+    private var projects: [SessionRowProject] {
         Array(model.projectPickerResults(query).prefix(40))
     }
 
@@ -51,13 +51,13 @@ struct NewSessionPickerView: View {
                     // Plain VStack: same stale-highlight LazyVStack trap as the
                     // palette (see CommandPaletteView).
                     VStack(spacing: 0) {
-                        ForEach(Array(projects.enumerated()), id: \.element.path) { idx, project in
+                        ForEach(Array(projects.enumerated()), id: \.element.key) { idx, project in
                             ProjectPickerRow(project: project, selected: idx == selection) {
                                 selection = idx
                                 open(index: idx, in: projects)
                             }
                             .frame(height: Self.rowHeight)
-                            .id(project.path)
+                            .id(project.key)
                         }
                         chooseFolderRow(selected: selection == projects.count)
                             .frame(height: Self.rowHeight)
@@ -68,7 +68,7 @@ struct NewSessionPickerView: View {
                 .thinScrollers()
                 .onChange(of: selection) {
                     proxy.scrollTo(selection < projects.count
-                                   ? projects[selection].path : Self.chooseFolderID,
+                                   ? AnyHashable(projects[selection].key) : AnyHashable(Self.chooseFolderID),
                                    anchor: .center)
                 }
             }
@@ -102,10 +102,10 @@ struct NewSessionPickerView: View {
         selection = max(0, min(rowCount - 1, selection + delta))
     }
 
-    private func open(index: Int, in projects: [Project]) {
+    private func open(index: Int, in projects: [SessionRowProject]) {
         if projects.indices.contains(index) {
             model.openSessions.newSession(agent: model.newSessionPickerAgent,
-                                          projectPath: projects[index].path)
+                                          project: projects[index].key)
             model.newSessionPickerPresented = false
         } else {
             chooseFolder()
@@ -143,7 +143,7 @@ private struct PickerRowChrome<Content: View>: View {
 
 private struct ProjectPickerRow: View {
     @EnvironmentObject var model: AppModel
-    let project: Project
+    let project: SessionRowProject
     let selected: Bool
     let open: () -> Void
 
@@ -154,7 +154,7 @@ private struct ProjectPickerRow: View {
                     .font(.system(size: 14))
                     .foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(model.projectName(project.path))
+                    Text(project.name)
                         .font(.system(size: 13))
                         .lineLimit(1)
                     Text(project.path)

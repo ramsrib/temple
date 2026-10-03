@@ -12,31 +12,30 @@ private struct PickerNoNoiseFilter: NoiseFilter {
 
 @MainActor
 final class NewSessionPickerTests: XCTestCase {
-    private func makeModel(_ index: SessionIndex,
+    private func makeModel(_ rows: [Session],
                            noise: NoiseFilter = PickerNoNoiseFilter()) -> AppModel {
         let database = try! TempleDB.inMemory()
-        Fixture.join(index, to: database)
+        Fixture.join(rows, to: database)
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(index),
+            indexSource: FakeIndexSource(SessionIndex(projects: [])),
             noiseFilter: noise,
             database: database,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: SessionOverlayStore(db: database)
         )
-        model.index = index
         return model
     }
 
     func testPickerListsProjectsByRecencyAndFiltersByPath() {
-        let model = makeModel(SessionIndex(projects: [
-            Project(path: "/work/api", sessions: [
-                Fixture.session("a", project: "/work/api", updated: 10)]),
-            Project(path: "/home/temple", sessions: [
-                Fixture.session("b", project: "/home/temple", updated: 30)]),
-            Project(path: "/work/site", sessions: [
-                Fixture.session("c", project: "/work/site", updated: 20)]),
-        ]))
+        let model = makeModel( [
+            
+                Fixture.row("a", project: "/work/api", updated: 10),
+            
+                Fixture.row("b", project: "/home/temple", updated: 30),
+            
+                Fixture.row("c", project: "/work/site", updated: 20),
+        ])
 
         XCTAssertEqual(model.projectPickerResults("").map(\.path),
                        ["/home/temple", "/work/site", "/work/api"])
@@ -47,19 +46,19 @@ final class NewSessionPickerTests: XCTestCase {
                        ["/home/temple"])
     }
 
-    func testPickerRespectsNoiseFilter() {
-        let model = makeModel(SessionIndex(projects: [
-            Project(path: "/p/junk", sessions: [
-                Fixture.session("noise", project: "/p/junk", updated: 20)]),
-            Project(path: "/p/kept", sessions: [
-                Fixture.session("kept", project: "/p/kept", updated: 10)]),
-        ]), noise: PickerNoiseFilter())
+    func testPickerKeepsNoisyMembers() {
+        let model = makeModel( [
+            
+                Fixture.row("noise", project: "/p/junk", updated: 20),
+            
+                Fixture.row("kept", project: "/p/kept", updated: 10),
+        ], noise: PickerNoiseFilter())
 
-        XCTAssertEqual(model.projectPickerResults("").map(\.path), ["/p/kept"])
+        XCTAssertEqual(model.projectPickerResults("").map(\.path), ["/p/junk", "/p/kept"])
     }
 
     func testPickerToggleAgentTargetingAndExclusion() {
-        let model = makeModel(SessionIndex(projects: []))
+        let model = makeModel( [])
         let defaultAgent = model.settings.defaultAgent
         let other = Agent.allCases.first { $0 != defaultAgent }!
 

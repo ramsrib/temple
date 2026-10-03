@@ -40,6 +40,16 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(RowSearch.rank(rows, query: "codex").map(\.id), ["agent"])
     }
 
+    func testPickerAndLauncherUseRowActivityWithoutTranscripts() throws {
+        let app = try model([Fixture.row("old", project: "/old", updated: 10),
+            Fixture.row("new", project: "/new", updated: 20), Fixture.row("no-directory", updated: 30)])
+        XCTAssertEqual(app.projectPickerResults("").map(\.path), ["/new", "/old"])
+        XCTAssertEqual(app.launcherDefaultProjectKey, ProjectKey(host: .local, path: "/new"))
+        app.overlay.touch("old", at: Date(timeIntervalSince1970: 50))
+        XCTAssertEqual(app.projectPickerResults("").map(\.path), ["/old", "/new"])
+        XCTAssertEqual(app.launcherDefaultProjectKey?.path, "/old")
+    }
+
     func testRailGroupsByHostAndOmitsDirectorylessMembers() throws {
         let app = try model([Fixture.row("local", project: "/same"),
             Fixture.row("remote", project: "/same", host: HostID(rawValue: "remote")), Fixture.row("unknown")])

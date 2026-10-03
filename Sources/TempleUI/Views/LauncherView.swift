@@ -12,10 +12,9 @@ struct LauncherView: View {
 
     private let recentLimit = 5
 
-    private var recentProjects: [Project] {
-        // Noise-filtered + launch-frozen order (raw index.projects would leak
-        // ambient noise like the cwd="/" codex runs into the home page).
-        Array(model.visibleProjects.prefix(recentLimit))
+    private var recentProjects: [SessionRowProject] {
+        // Recent member projects, ordered by Temple row activity.
+        Array(model.visibleRowProjects.prefix(recentLimit))
     }
 
     var body: some View {
@@ -159,7 +158,7 @@ struct LauncherView: View {
                             title: project.name,
                             trailing: RelativeTime.string(from: project.lastActivity),
                             trailingOnHover: true) {
-                    model.openSessions.newSessionDefaultAgent(projectPath: project.path)
+                    model.openSessions.newSession(agent: model.settings.defaultAgent, project: project.key)
                 }
             }
         }
@@ -169,8 +168,8 @@ struct LauncherView: View {
 
     /// Start `agent` in the last-used project; if none is known, ask for a folder.
     private func newSession(_ agent: Agent) {
-        if let path = model.launcherDefaultProject {
-            model.openSessions.newSession(agent: agent, projectPath: path)
+        if let key = model.launcherDefaultProjectKey {
+            model.openSessions.newSession(agent: agent, project: key)
         } else {
             chooseProjectFolder { path in
                 model.openSessions.newSession(agent: agent, projectPath: path)
