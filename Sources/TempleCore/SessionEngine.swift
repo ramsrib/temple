@@ -108,6 +108,11 @@ public final class SessionEngine: @unchecked Sendable {
                                 case .coverageReset(let generation):
                                     guard generation > self.generation else { return }
                                     self.generation = generation
+                                    // Prior coverage cannot diagnose missing transcripts while
+                                    // the new generation's resolution is still in flight.
+                                    for id in self.members { self.states[id] = .resolving }
+                                    self.summaries.removeAll()
+                                    self.publishLocked()
                                     self.enqueueLocked(self.members)
                                 case .sharedTitlesChanged: self.enqueueLocked(self.members)
                                 }
@@ -209,7 +214,7 @@ public final class SessionEngine: @unchecked Sendable {
                         self.summaries.removeValue(forKey: id)
                         switch result {
                         case .loaded(let locator, let summary, _):
-                            guard locator.host == self.host, summary == nil || summary?.locator.host == self.host && summary?.id == id else {
+                            guard locator.host == self.host, summary == nil || summary?.locator == locator && summary?.id == id else {
                                 self.states[id] = .mismatch; continue
                             }
                             self.states[id] = .loaded(locator)
@@ -260,33 +265,43 @@ public final class SessionEngine: @unchecked Sendable {
     /// is released only if no committed join acquired the id during the read.
     public func summaryForImport(_ summary: TranscriptSummary) async -> TranscriptSummary? {
         guard summary.locator.host == host else { return nil }
-        return await withCheckedContinuation { continuation in
-            queue.async {
-                let preceding = self.workTask
-                let operation = UUID()
-                self.workTask = Task { [weak self = self, source = self.source] in
-                    defer { self?.queue.async { [weak self = self] in self?.workTasks.removeValue(forKey: operation) } }
-                    await preceding?.value
-                    var facts: TranscriptSummary?
-                    if !Task.isCancelled {
-                        let request = ResolutionRequest(id: summary.id, agent: summary.agent, hint: summary.locator,
-                            wanted: [.agent, .directory, .title, .lastActiveAt], explicit: true)
-                        if let batch = try? await source.resolve([request]),
-                           case .loaded(let locator, let result, _) = batch.results[summary.id],
-                           locator.host == summary.locator.host, result?.id == summary.id,
-                           result?.locator.host == summary.locator.host {
-                            facts = result
+        let cancellation = EngineCancellation()
+        let operation = UUID()
+        return await withTaskCancellationHandler {
+            guard !Task.isCancelled else { return nil }
+            return await withCheckedContinuation { continuation in
+                queue.async {
+                    guard !cancellation.isCancelled else { continuation.resume(returning: nil); return }
+                    let preceding = self.workTask
+                    self.workTask = Task { [weak self = self, source = self.source] in
+                        defer { self?.queue.async { [weak self = self] in self?.workTasks.removeValue(forKey: operation) } }
+                        await preceding?.value
+                        var facts: TranscriptSummary?
+                        var batchGeneration: UInt64 = 0
+                        if !Task.isCancelled {
+                            let request = ResolutionRequest(id: summary.id, agent: summary.agent, hint: summary.locator,
+                                wanted: [.agent, .directory, .title, .lastActiveAt], explicit: true)
+                            if let batch = try? await source.resolve([request]),
+                               case .loaded(let locator, let result, _) = batch.results[summary.id],
+                               locator.host == summary.locator.host, result?.id == summary.id,
+                               result?.locator == locator {
+                                facts = result; batchGeneration = batch.generation
+                            }
+                        }
+                        let result = Task.isCancelled ? nil : facts
+                        let acceptedGeneration = batchGeneration
+                        guard let self else { source.release([summary.id]); continuation.resume(returning: nil); return }
+                        self.queue.async {
+                            if !self.members.contains(summary.id) { source.release([summary.id]) }
+                            continuation.resume(returning: !cancellation.isCancelled && acceptedGeneration >= self.generation ? result : nil)
                         }
                     }
-                    let result = Task.isCancelled ? nil : facts
-                    guard let self else { source.release([summary.id]); continuation.resume(returning: nil); return }
-                    self.queue.async {
-                        if !self.members.contains(summary.id) { source.release([summary.id]) }
-                        continuation.resume(returning: result)
-                    }
+                    self.workTasks[operation] = self.workTask
                 }
-                self.workTasks[operation] = self.workTask
             }
+        } onCancel: {
+            cancellation.cancel()
+            self.queue.async { self.workTasks[operation]?.cancel() }
         }
     }
 

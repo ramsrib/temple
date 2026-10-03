@@ -27,6 +27,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     private var summaries: [String: TranscriptSummary] = [:]
     private var generation: UInt64 = 0
     private var contentDirty = false
+    private var changedIDs: Set<String> = []
     private var signatures: [String: FileSignature] = [:] // last observed, including stat-only writes
     private var memberWork: [String: MemberWork] = [:]
     private var enrichmentTimers: [String: DispatchWorkItem] = [:]
@@ -146,7 +147,8 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
                         }
                     }
                     // A request reads the latest local state; no redundant invalidation.
-                    self.contentDirty = false
+                    self.changedIDs.subtract(requests.map(\.id))
+                    self.contentDirty = !self.changedIDs.isEmpty
                     if ticket.isCancelled { continuation.resume(throwing: CancellationError()) }
                     else { continuation.resume(returning: ResolutionBatch(generation: self.generation, results: results)) }
                 }
@@ -175,7 +177,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     private func setStateLocked(_ id: String, to state: MemberResolution) {
         if case .loaded = state { awaiting.remove(id) }
         guard states[id] != state else { return }
-        states[id] = state; statesDirty = true
+        states[id] = state; statesDirty = true; changedIDs.insert(id)
     }
 
     private func snapshotLocked() {
@@ -191,7 +193,10 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         snapshotLocked()
         guard running, contentDirty else { return }
         contentDirty = false
-        for continuation in changeContinuations.values { continuation.yield(.sessions(Array(registeredIDs))) }
+        let ids = changedIDs.intersection(registeredIDs).sorted()
+        changedIDs.removeAll()
+        guard !ids.isEmpty else { return }
+        for continuation in changeContinuations.values { continuation.yield(.sessions(ids)) }
     }
 
     private func startLocked() {
@@ -233,7 +238,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         hintPathsByID.removeAll(); selectedCodexPaths.removeAll()
         signatures.removeAll(); summaries.removeAll(); memberWork.removeAll()
         enrichmentTimers.values.forEach { $0.cancel() }; enrichmentTimers.removeAll()
-        interests.removeAll(); registeredIDs.removeAll()
+        interests.removeAll(); registeredIDs.removeAll(); changedIDs.removeAll()
         states.removeAll(); statesDirty = true; snapshotLocked()
     }
 
@@ -640,7 +645,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
                 work.verified = false; memberWork[id] = work
                 failure = .mismatch; continue
             }
-            if summaries[id] != summary { contentDirty = true }
+            if summaries[id] != summary { contentDirty = true; changedIDs.insert(id) }
             summaries[id] = summary
             setStateLocked(id, to: .loaded(entry.0)); awaiting.remove(id)
             return
@@ -651,7 +656,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             resolveLocked(id, explicit: explicit, rescannedMissing: true)
             return
         }
-        if summaries.removeValue(forKey: id) != nil { contentDirty = true }
+        if summaries.removeValue(forKey: id) != nil { contentDirty = true; changedIDs.insert(id) }
         // A candidate with a failed verification is evidence, never absence.
         setStateLocked(id, to: unreadable ? .unreadable : failure ??
             (awaiting.contains(id) ? .awaitingCreation :

@@ -1,4 +1,5 @@
 import XCTest
+import CoreServices
 @testable import TempleCore
 
 final class LocalSourceContractTests: XCTestCase {
@@ -21,6 +22,34 @@ final class LocalSourceContractTests: XCTestCase {
         var excluded: [CatalogBatch] = []
         for try await batch in source.catalog(CatalogQuery(agents: [.codex])) { excluded.append(batch) }
         XCTAssertEqual(excluded, [.listed(total: 0)])
+    }
+
+    func testChangesNameOnlyTheAffectedRegisteredSession() async throws {
+        let root = URL(fileURLWithPath: "/private/tmp/temple-p6-changes-\(UUID().uuidString)")
+        let project = root.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for id in ["one", "two"] {
+            try "{\"type\":\"user\",\"sessionId\":\"\(id)\"}".write(to: project.appendingPathComponent("\(id).jsonl"), atomically: false, encoding: .utf8)
+        }
+        let source = LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.01)
+        let changes = source.changes()
+        defer { source.release(["one", "two"]) }
+        let changed = expectation(description: "semantic invalidation")
+        let reader = Task { () throws -> [String] in
+            for try await change in changes {
+                if case .sessions(let ids) = change { changed.fulfill(); return ids }
+            }
+            return []
+        }
+        _ = try await source.resolve([ResolutionRequest(id: "one"), ResolutionRequest(id: "two")])
+        let file = project.appendingPathComponent("one.jsonl")
+        try FileManager.default.removeItem(at: file)
+        source.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemRemoved))
+        await fulfillment(of: [changed], timeout: 3)
+        reader.cancel()
+        let ids = try await reader.value
+        XCTAssertEqual(ids, ["one"])
     }
 
     func testLocalAdoptionCancellationReleasesItsObservationWindow() async throws {

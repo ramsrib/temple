@@ -30,8 +30,10 @@ final class TranscriptBoundaryTests: XCTestCase {
         var hits: [String] = []
         for (index, line) in text.components(separatedBy: .newlines).enumerated() {
             let range = NSRange(line.startIndex..<line.endIndex, in: line)
-            let stateEnvironment = path == "TempleCore/TempleState.swift" && line.contains("StoreIO.envRoot(\"TEMPLE_STATE_DIR\")")
-            if transcriptPattern.firstMatch(in: line, range: range) != nil && !stateEnvironment {
+            let transcriptLine = path == "TempleCore/TempleState.swift"
+                ? line.replacingOccurrences(of: "StoreIO.envRoot(\"TEMPLE_STATE_DIR\")", with: "") : line
+            let transcriptRange = NSRange(transcriptLine.startIndex..<transcriptLine.endIndex, in: transcriptLine)
+            if transcriptPattern.firstMatch(in: transcriptLine, range: transcriptRange) != nil {
                 hits.append("\(path):\(index + 1): transcript access: \(line)")
             } else if filePattern.firstMatch(in: line, range: range) != nil,
                       nonTranscriptIO[path] == nil, !path.hasPrefix("TempleCore/DB/") {
@@ -59,6 +61,7 @@ final class TranscriptBoundaryTests: XCTestCase {
                      "ProcessInfo.processInfo.environment[\"TEMPLE_CODEX_ROOT\"]"] {
             XCTAssertFalse(try violations(code, path: "TempleUI/App/AppModel.swift").isEmpty)
         }
+        XCTAssertFalse(try violations("StoreIO.envRoot(\"TEMPLE_STATE_DIR\"); StoreIO.readFirstLine(url)", path: "TempleCore/TempleState.swift").isEmpty)
         XCTAssertFalse(try violations("Data(contentsOf: url)", path: "TempleCore/Unexpected.swift").isEmpty)
         XCTAssertTrue(try violations("FileManager.default.fileExists(atPath: cwd)", path: "TempleUI/Model/OpenSessionsModel.swift").isEmpty)
     }
