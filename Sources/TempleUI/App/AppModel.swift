@@ -292,7 +292,6 @@ public final class AppModel: ObservableObject {
 
     private var cancellables: Set<AnyCancellable> = []
     private var themeObserver: NSObjectProtocol?
-    private(set) var pendingSessionOpens: Set<String> = []
     public init(surfaceFactory: TerminalSurfaceFactory = StubTerminalSurfaceFactory(),
                 indexSource: IndexSource? = nil,
                 registry: ProcessRegistry? = nil,
@@ -561,15 +560,6 @@ public final class AppModel: ObservableObject {
         // Temple owns this obsolete cache. Rows in SQLite are the launch path.
         try? FileManager.default.removeItem(at: (stateDirectory ?? TempleState.directory)
             .appendingPathComponent("index-cache.json"))
-        if let source = indexSource as? WatcherIndexSource {
-            source.onResolutionUpdate = { [weak self] states in
-                self?.openSessions.refreshExitedResumeDiagnoses()
-                guard let self else { return }
-                self.pendingSessionOpens = self.pendingSessionOpens.filter { id in
-                    states[id] != .confirmedAbsent && states[id] != .unreadable
-                }
-            }
-        }
         indexSource.start { [weak self] snapshot in
             self?.isLoading = false
             self?.receiveEngineSnapshot(snapshot)
@@ -657,7 +647,6 @@ public final class AppModel: ObservableObject {
 
     public func openSession(id: String) {
         if let row = sessions.first(where: { $0.id == id }) {
-            pendingSessionOpens.remove(id)
             openSessions.openSession(row)
             return
         }

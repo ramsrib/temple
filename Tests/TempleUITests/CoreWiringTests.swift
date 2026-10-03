@@ -17,7 +17,6 @@ final class CoreWiringTests: XCTestCase {
 
         // Isolate the startup cache: never read or overwrite the developer's
         // real ~/Library/Application Support cache from a test.
-        let cacheURL = root.appendingPathComponent("index-cache.json")
         let database = try TempleDB.inMemory()
         let watcher = SessionWatcher(
             stores: [ClaudeSessionStore(root: root)], database: database,
@@ -47,7 +46,6 @@ final class CoreWiringTests: XCTestCase {
         if injectEvents {
             model.openSession(id: "wired-session")
             XCTAssertEqual(model.openSessions.activeTab?.sessionID, "wired-session", "Row opens before the transcript exists")
-            XCTAssertTrue(model.pendingSessionOpens.isEmpty)
         }
         let file = projectDirectory.appendingPathComponent("wired-session.jsonl")
         let json = #"{"sessionId":"wired-session","type":"user","message":{"content":"hello"},"cwd":"/tmp/project","timestamp":"2026-01-01T00:00:00Z"}"#
@@ -153,12 +151,11 @@ final class CoreWiringTests: XCTestCase {
         XCTAssertEqual(model.openSessions.sessionKnown("pruned"), false)
         XCTAssertNil(model.openSessions.sessionKnown("awaiting"))
         model.openSession(id: "awaiting")
-        XCTAssertTrue(model.pendingSessionOpens.isEmpty, "Directoryless rows are refused immediately")
         XCTAssertTrue(model.openSessions.tabs.isEmpty)
         let file = dir.appendingPathComponent("awaiting.jsonl")
         try "{".write(to: file, atomically: true, encoding: .utf8)
         watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemCreated))
-        try await waitFor { watcher.resolution(for: "awaiting") == .incomplete && model.pendingSessionOpens.isEmpty }
+        try await waitFor { watcher.resolution(for: "awaiting") == .incomplete }
         XCTAssertNil(model.openSessions.sessionKnown("awaiting"))
         try #"{"sessionId":"awaiting","type":"user","cwd":"/tmp/project","message":{"content":"late log"}}"#.write(to: file, atomically: true, encoding: .utf8)
         watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
@@ -166,7 +163,6 @@ final class CoreWiringTests: XCTestCase {
         XCTAssertTrue(model.openSessions.tabs.isEmpty, "A final failed open must not create a much later tab")
 
         model.openSession(id: "pruned")
-        try await waitFor { model.pendingSessionOpens.isEmpty }
         XCTAssertTrue(model.openSessions.tabs.isEmpty)
 
     }

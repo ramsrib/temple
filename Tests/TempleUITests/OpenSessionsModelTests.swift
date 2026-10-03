@@ -71,7 +71,6 @@ final class OpenSessionsModelTests: XCTestCase {
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["row": .resolving], summaries: [:]))
         app.openSession(id: "row")
         XCTAssertEqual(factory.created.count, 1)
-        XCTAssertTrue(app.pendingSessionOpens.isEmpty)
         let tab = try XCTUnwrap(app.openSessions.activeTab)
         app.openSessions.surface(try XCTUnwrap(tab.surface), didChangeState: .exited(status: 1))
         XCTAssertFalse(tab.resumeTargetMissing)

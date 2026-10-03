@@ -9,7 +9,7 @@ public struct TranscriptSummary: Hashable, Sendable {
     public let cwd: String?
     public let firstPrompt: String?
     /// Earliest recorded human prompt from Codex history.jsonl, separate from
-    /// rollout facts and display-only thread names. Shared-file updates refresh it.
+    /// rollout facts and display-only thread names. Refreshed by enrichment reads.
     public internal(set) var historyPrompt: String?
     public let createdAt: Date?
     public let gitBranch: String?

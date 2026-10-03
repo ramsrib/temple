@@ -1,5 +1,6 @@
 import Foundation
 import TempleCore
+import Darwin
 
 // Row browsing by default; --disk explicitly browses the transcript catalog.
 
@@ -10,7 +11,7 @@ let limit = CommandLine.arguments.contains("--all") ? Int.max : 8
 let includeNoise = CommandLine.arguments.contains("--all")
 
 if CommandLine.arguments.contains("--help") {
-    print("Usage: templectl [--disk] [--watch] [--all] [--search <term>] [--import-all]\n  --disk  browse the transcript catalog instead of Temple rows\n  --all  include noise sessions and do not cap sessions per project\n  --import-all  make every indexed session a Temple session (demo state dirs only)")
+    print("Usage: templectl [--disk] [--watch] [--all] [--search <term>] [--import-all] [--metrics]\n  --metrics  report watch parses, publications, CPU seconds and open descriptors once per second\n  --disk  browse the transcript catalog instead of Temple rows\n  --all  include noise sessions and do not cap sessions per project\n  --import-all  make every indexed session a Temple session (demo state dirs only)")
     exit(0)
 }
 
@@ -75,21 +76,93 @@ func printRows(_ rows: [Session], compact: Bool = false) {
     }
 }
 
+func catalogTitle(_ summary: TranscriptSummary) -> String {
+    summary.sharedTitleHint ?? summary.recordedTitle ?? summary.legacyTitleHint ?? summary.firstPrompt
+        ?? summary.historyPrompt ?? summary.laterPromptHint ?? "New \(summary.agent.displayName) session"
+}
+
 if CommandLine.arguments.contains("--disk") {
     let catalog = SessionFilter.filtered(SessionCatalog().load(), includeNoise: includeNoise)
-    for summary in catalog {
-        let title = summary.sharedTitleHint ?? summary.recordedTitle ?? summary.firstPrompt ?? summary.historyPrompt ?? summary.laterPromptHint ?? "New \(summary.agent.displayName) session"
-        let path = summary.cwd ?? summary.directoryHint ?? ""
-        if let searchQuery, ![title, path, summary.agent.rawValue].contains(where: { $0.localizedCaseInsensitiveContains(searchQuery) }) { continue }
-        print("\(summary.agent.rawValue)  \(path)  \(title)")
+    if let searchQuery {
+        let needle = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let scored: [(TranscriptSummary, Int)] = needle.isEmpty ? [] : catalog.compactMap { summary in
+            let title = catalogTitle(summary).lowercased()
+            let project = URL(fileURLWithPath: summary.cwd ?? summary.directoryHint ?? "").lastPathComponent.lowercased()
+            let score: Int
+            if title == needle { score = 500 }
+            else if title.hasPrefix(needle) { score = 400 }
+            else if title.contains(needle) { score = 300 }
+            else if project.contains(needle) { score = 200 }
+            else if summary.agent.displayName.lowercased().contains(needle) || summary.agent.rawValue.contains(needle) { score = 100 }
+            else { return nil }
+            return (summary, score)
+        }
+        let ranked = scored.sorted { lhs, rhs in
+            if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+            if lhs.0.modifiedAt != rhs.0.modifiedAt { return lhs.0.modifiedAt > rhs.0.modifiedAt }
+            return lhs.0.id < rhs.0.id
+        }
+        for (summary, _) in ranked {
+            print("\(summary.agent.rawValue)  \(summary.cwd ?? summary.directoryHint ?? "")  \(catalogTitle(summary))")
+        }
+    } else {
+        let groups = Dictionary(grouping: catalog) { $0.cwd ?? $0.directoryHint ?? "" }
+        let paths = groups.keys.sorted {
+            let lhs = groups[$0]!.map(\.modifiedAt).max() ?? .distantPast
+            let rhs = groups[$1]!.map(\.modifiedAt).max() ?? .distantPast
+            return lhs == rhs ? $0 < $1 : lhs > rhs
+        }
+        print("Temple: \(groups.count) projects, \(catalog.count) catalog sessions\n")
+        for path in paths.prefix(30) {
+            print("📁 \(path.isEmpty ? "No project" : URL(fileURLWithPath: path).lastPathComponent)  \(path)")
+            let summaries = groups[path]!
+            for summary in summaries.prefix(limit) {
+                print("   \(summary.agent.rawValue)  \(df.string(from: summary.modifiedAt))  \(catalogTitle(summary))")
+            }
+            if summaries.count > limit { print("   … and \(summaries.count - limit) more") }
+        }
     }
 } else if CommandLine.arguments.contains("--watch") {
+    let watchStart = Date()
     let database = try openDatabase(readOnly: !TempleState.isRedirected)
+    let initialRows = try database.sessionStates().map { Session(state: $0) }
+    let wantsMetrics = CommandLine.arguments.contains("--metrics")
+    if wantsMetrics {
+        print("durable rows available: \(initialRows.count), elapsed_seconds=\(Date().timeIntervalSince(watchStart))")
+        fflush(stdout)
+    }
     let watcher = SessionWatcher(database: database)
     let snapshots = watcher.snapshots()
-    let legacyUpdates = watcher.start()
-    defer { watcher.stop(); withExtendedLifetime(legacyUpdates) {} }
+    let engineUpdates = watcher.start()
+    let metricsTask = wantsMetrics ? Task {
+        while !Task.isCancelled {
+            let counters = watcher.metrics
+            var usage = rusage()
+            getrusage(RUSAGE_SELF, &usage)
+            let userCPU = Double(usage.ru_utime.tv_sec) + Double(usage.ru_utime.tv_usec) / 1_000_000
+            let systemCPU = Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1_000_000
+            let capacity = max(1, Int(proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, nil, 0)))
+            let buffer = UnsafeMutableRawPointer.allocate(byteCount: capacity, alignment: MemoryLayout<proc_fdinfo>.alignment)
+            let bytes = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, buffer, Int32(capacity))
+            buffer.deallocate()
+            let sample: [String: Any] = ["event": "metrics", "parses": counters.parses,
+                "verifications": counters.verifications, "publications": counters.publications,
+                "observations": counters.observations, "cpu_seconds": userCPU + systemCPU,
+                "wall_seconds": Date().timeIntervalSince(watchStart),
+                "open_fds": Int(bytes) / MemoryLayout<proc_fdinfo>.stride]
+            if let data = try? JSONSerialization.data(withJSONObject: sample, options: .sortedKeys) {
+                print(String(decoding: data, as: UTF8.self)); fflush(stdout)
+            }
+            do { try await Task.sleep(for: .seconds(1)) } catch { break }
+        }
+    } : nil
+    defer { metricsTask?.cancel(); watcher.stop(); withExtendedLifetime(engineUpdates) {} }
+    var firstPublication = true
     for await snapshot in snapshots {
+        if firstPublication, wantsMetrics {
+            print("first engine publication: elapsed_seconds=\(Date().timeIntervalSince(watchStart))")
+            firstPublication = false
+        }
         if !database.isReadOnly {
             for summary in snapshot.summaries.values {
                 _ = try database.fillCoreFields(sessionID: summary.id, expectedHost: summary.locator.host,

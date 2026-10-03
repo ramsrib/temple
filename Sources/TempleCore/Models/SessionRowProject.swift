@@ -1,6 +1,6 @@
 import Foundation
 
-/// Row grouping kept distinct from the legacy Project until consumers switch.
+/// Durable rows grouped by owning host and directory.
 public struct SessionRowProject: Identifiable, Equatable, Sendable {
     public let key: ProjectKey
     public let sessions: [Session]

@@ -265,7 +265,6 @@ final class SessionScopeTests: XCTestCase {
         try db.join(sessionID: "legacy", via: .imported)
         try db.join(sessionID: "missing", via: .imported,
                     core: SessionCore(directory: "/missing", title: "Kept row"))
-        let cacheURL = root.appendingPathComponent("cache.json")
         let source = WatcherIndexSource(watcher: SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db))
         defer { source.stop() }
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source, database: db,
