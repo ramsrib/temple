@@ -483,6 +483,7 @@ public final class AppModel: ObservableObject {
             self?.openSessions.openTab(forSessionID: id) != nil
         }
         history.memberRows = { [weak self] in self?.sessions ?? [] }
+        history.archiveMember = { [weak self] in self?.archiveSession($0, undoManager: $1) }
         history.openMember = { [weak self] in self?.openSessions.openSession($0) }
         $sessions.dropFirst().sink { [weak self] _ in self?.history.rowsChanged() }
             .store(in: &cancellables)

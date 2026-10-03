@@ -231,7 +231,7 @@ struct ArchiveView: View {
         .padding(.leading, 18)
         .id(entry.id)
         .contextMenu {
-            Button("Open") { act(on: entry) }
+            Button(session.canResume ? "Open" : "Restore") { act(on: entry) }
             if !insideArchivedProject { Button("Restore") { restore(entry) } }
         }
     }
@@ -278,10 +278,15 @@ struct ArchiveView: View {
 
     private var returnHint: String? {
         guard entries.indices.contains(selection) else { return nil }
-        switch entries[selection] {
+        return Self.returnHint(for: entries[selection], model: model)
+    }
+
+    static func returnHint(for entry: Entry, model: AppModel) -> String {
+        switch entry {
         case .project:
             return "restore project"
         case .session(let session):
+            if !session.canResume { return "restore session" }
             if (session.project.map { model.overlay.isProjectArchived($0) } ?? false) {
                 return "open · restores \(session.project?.displayName ?? "No project")"
             }
@@ -341,8 +346,12 @@ struct ArchiveView: View {
     }
 
     private func actOnSelection() {
+        Self.activateSelection(entries, selection: selection, model: model, undoManager: undoManager)
+    }
+
+    static func activateSelection(_ entries: [Entry], selection: Int, model: AppModel, undoManager: UndoManager?) {
         guard entries.indices.contains(selection) else { return }
-        act(on: entries[selection])
+        activate(entries[selection], model: model, undoManager: undoManager)
     }
 
     /// Return / click. A session opens — and opening is the one implicit
@@ -352,10 +361,18 @@ struct ArchiveView: View {
     /// A project only comes back — its group disappears and the panel stays
     /// up, because restoring a project is usually one of several.
     private func act(on entry: Entry) {
+        Self.activate(entry, model: model, undoManager: undoManager)
+    }
+
+    static func activate(_ entry: Entry, model: AppModel, undoManager: UndoManager?) {
         switch entry {
         case .project:
-            restore(entry)
+            restore(entry, model: model, undoManager: undoManager)
         case .session(let session):
+            guard session.canResume else {
+                restore(entry, model: model, undoManager: undoManager)
+                return
+            }
             model.openSessions.openSession(session)
             model.archivePresented = false
         }
@@ -365,6 +382,10 @@ struct ArchiveView: View {
     /// Project). Opening a session inside an archived project restores the
     /// project, since only that can bring the session back into view.
     private func restore(_ entry: Entry) {
+        Self.restore(entry, model: model, undoManager: undoManager)
+    }
+
+    private static func restore(_ entry: Entry, model: AppModel, undoManager: UndoManager?) {
         switch entry {
         case .project(let project):
             model.restoreProject(project.key, undoManager: undoManager)

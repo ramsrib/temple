@@ -98,6 +98,7 @@ public final class HistoryModel: ObservableObject {
     var openSession: (AgentSession) -> Void = { _ in }
     /// Whether a session runs in an open tab: undoing its import must not
     /// pull it out from under that tab.
+    var archiveMember: (String, UndoManager?) -> Void = { _, _ in }
     var hasOpenTab: (String) -> Bool = { _ in false }
 
     // MARK: Snapshot
@@ -620,6 +621,15 @@ public final class HistoryModel: ObservableObject {
         guard selection.count == 1, let id = selection.first,
               let session = visibleRows.first(where: { $0.id == id }) else { return }
         open(session)
+    }
+
+    public func canArchive(_ session: HistoryRow) -> Bool {
+        isInTemple(session.id) && !isArchived(session) && !hasOpenTab(session.id)
+    }
+
+    public func archive(_ session: HistoryRow, undoManager: UndoManager?) {
+        guard canArchive(session) else { return }
+        archiveMember(session.id, undoManager)
     }
 
     public func open(_ session: HistoryRow) {

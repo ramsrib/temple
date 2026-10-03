@@ -592,6 +592,7 @@ private struct HistoryRowActions {
 /// `.equatable()`), so a body re-run of the page skips the rows whose inputs
 /// did not change. Nothing here observes the history or app model.
 private struct HistoryPageRow: View, Equatable {
+    @Environment(\.undoManager) private var undoManager
     let session: HistoryRow
     let title: String
     let resumeArgv: [String]
@@ -719,11 +720,13 @@ private struct HistoryPageRow: View, Equatable {
 
     @ViewBuilder
     private var contextMenu: some View {
-        // Same words as the sidebar's menu where they overlap; no rename, pin,
-        // color or archive — those belong to the rail. Keeping this short is
-        // what keeps Import the obvious verb.
+        // Members without a directory have no rail row, so History also owns
+        // an archive route. Open tabs must be closed first, as in the rail.
         Button(activity != nil ? "Focus" : "Open") { history.open(session) }
             .disabled(!session.canResume)
+        if history.canArchive(session) {
+            Button("Archive session") { history.archive(session, undoManager: undoManager) }
+        }
         if !inTemple {
             Button("Import into Temple…") { history.requestImport([session]) }
         }

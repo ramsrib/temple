@@ -5,6 +5,7 @@ public struct SessionRowProject: Identifiable, Equatable, Sendable {
     public let key: ProjectKey
     public let sessions: [Session]
     public init(key: ProjectKey, sessions: [Session]) { self.key = key; self.sessions = sessions }
+    public var localDirectoryURL: URL? { key.host.isLocal ? URL(fileURLWithPath: key.path) : nil }
     public var path: String { key.path }
     public var name: String { key.displayName }
     public var id: ProjectKey { key }

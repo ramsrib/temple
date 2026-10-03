@@ -12,6 +12,54 @@ final class RowConsumerTests: XCTestCase {
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
     }
 
+    func testHistoryArchivesDirectorylessMembersWithUndo() throws {
+        let app = try model([Fixture.row("unknown"), Fixture.row("project", project: "/p")])
+        let undo = UndoManager()
+        for member in app.sessions {
+            let row = HistoryRow(member: member)
+            XCTAssertTrue(app.history.canArchive(row))
+            app.history.hasOpenTab = { $0 == member.id }
+            XCTAssertFalse(app.history.canArchive(row))
+            app.history.archive(row, undoManager: undo)
+            XCTAssertFalse(app.overlay.rows[member.id]!.archived)
+            app.history.hasOpenTab = { _ in false }
+            undo.beginUndoGrouping()
+            app.history.archive(row, undoManager: undo)
+            undo.endUndoGrouping()
+            XCTAssertTrue(app.overlay.rows[member.id]!.archived)
+            XCTAssertFalse(app.history.canArchive(row))
+            undo.undo()
+            XCTAssertFalse(app.overlay.rows[member.id]!.archived)
+            undo.redo()
+            XCTAssertTrue(app.overlay.rows[member.id]!.archived)
+        }
+        XCTAssertFalse(app.history.canArchive(HistoryRow(catalog: Fixture.session("outside", project: "/outside"))))
+    }
+
+    func testArchiveReturnRestoresNonResumableSelectionWithoutDismissing() throws {
+        let app = try model([Fixture.row("unknown")])
+        app.archiveSession("unknown", undoManager: nil)
+        app.archivePresented = true
+        let entry = ArchiveView.Entry.session(app.sessions[0])
+        XCTAssertEqual(ArchiveView.returnHint(for: entry, model: app), "restore session")
+        let undo = UndoManager()
+        undo.beginUndoGrouping()
+        ArchiveView.activateSelection([entry], selection: 0, model: app, undoManager: undo)
+        undo.endUndoGrouping()
+        XCTAssertFalse(app.overlay.rows["unknown"]!.archived)
+        XCTAssertTrue(app.openSessions.tabs.isEmpty)
+        XCTAssertTrue(app.archivePresented)
+        undo.undo()
+        XCTAssertTrue(app.overlay.rows["unknown"]!.archived)
+    }
+
+    func testProjectFinderRevealRequiresLocalHostEvenWithTheSamePath() {
+        let local = SessionRowProject(key: ProjectKey(host: .local, path: "/same"), sessions: [])
+        let remote = SessionRowProject(key: ProjectKey(host: HostID(rawValue: "remote"), path: "/same"), sessions: [])
+        XCTAssertEqual(local.localDirectoryURL, URL(fileURLWithPath: "/same"))
+        XCTAssertNil(remote.localDirectoryURL)
+    }
+
     func testAMemberWithoutATranscriptStillHasASidebarRow() throws {
         let app = try model([Fixture.row("missing", project: "/gone", title: "Kept")])
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["missing": .confirmedAbsent], summaries: [:]))

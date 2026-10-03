@@ -736,8 +736,10 @@ private struct ProjectDisclosure: View {
     /// is a drag — the header is the handle — so there are no Move items.
     @ViewBuilder
     private var headerContextMenu: some View {
-        Button("Reveal in Finder") {
-            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: project.path)])
+        if let url = project.localDirectoryURL {
+            Button("Reveal in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
         }
         Button("Copy path") {
             NSPasteboard.general.clearContents()
