@@ -1044,7 +1044,7 @@ final class HistoryUndoEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let file = project.appendingPathComponent("imp.jsonl")
-        try #"{"type":"user","cwd":"/tmp/project","message":{"content":"from another terminal"}}"#
+        try #"{"type":"user","sessionId":"imp","cwd":"/tmp/project","message":{"content":"from another terminal"}}"#
             .write(to: file, atomically: true, encoding: .utf8)
         let database = try TempleDB.inMemory()
         let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: database,

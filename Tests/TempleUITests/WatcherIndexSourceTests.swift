@@ -12,7 +12,7 @@ final class WatcherIndexSourceTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let files = ["one", "two"].map { project.appendingPathComponent("\($0).jsonl") }
         func write(_ file: URL, prompt: String) throws {
-            try "{\"type\":\"user\",\"cwd\":\"/project\",\"message\":{\"content\":\"\(prompt)\"}}".write(to: file, atomically: false, encoding: .utf8)
+            try "{\"type\":\"user\",\"sessionId\":\"\(file.deletingPathExtension().lastPathComponent)\",\"cwd\":\"/project\",\"message\":{\"content\":\"\(prompt)\"}}".write(to: file, atomically: false, encoding: .utf8)
         }
         for file in files { try write(file, prompt: "Before") }
         let secondParse = expectation(description: "second member parse reached")

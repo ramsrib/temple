@@ -59,10 +59,11 @@ public final class AppModel: ObservableObject {
         if rowPresentationDirty || resolutionsChanged { rebuildSessions() }
         if !sidebarRanksFrozen && sessions.allSatisfy({ row in
             switch snapshot.resolutions[row.id] {
-            case .loaded, .confirmedAbsent, .unreadable: return true
+            case .loaded, .confirmedAbsent, .unreadable, .mismatch: return true
             default: return false
             }
         }) { freezeSidebarRanks() }
+        (indexSource as? WatcherIndexSource)?.watcher.setEnrichmentWanted(overlay.missingCoreFields)
         openSessions.refreshExitedResumeDiagnoses()
     }
 
@@ -352,6 +353,7 @@ public final class AppModel: ObservableObject {
                 guard let self else { return }
                 self.rowPresentationDirty = true
                 self.changedRowIDs.insert(change.id)
+                (self.indexSource as? WatcherIndexSource)?.watcher.setEnrichmentWanted(self.overlay.missingCoreFields)
                 if !change.recencyOnly { self.recencyOnlyChanges = false }
                 guard !self.applyingEngineSnapshot else { return }
                 if change.recencyOnly {
@@ -362,7 +364,7 @@ public final class AppModel: ObservableObject {
             }
             .store(in: &cancellables)
         if let source = resolvedIndexSource as? WatcherIndexSource {
-            source.onSnapshotUpdate = { [weak self] in self?.receiveEngineSnapshot($0) }
+            source.watcher.setEnrichmentWanted(overlay.missingCoreFields)
         }
         wire()
         wireHistory(database: database)
@@ -668,7 +670,7 @@ public final class AppModel: ObservableObject {
         if overlay.isTempleSession(id) { engine?.requestResolution(id) }
     }
 
-    /// Legacy surfaces keep their transcript types, but actions prefer row facts.
+    /// Catalog actions prefer durable row facts when the session is a member.
     public func resumeArgv(for session: TranscriptSummary) -> [String] {
         if let row = sessions.first(where: { $0.id == session.id }) {
             return SessionLauncher.resumeArgv(row)

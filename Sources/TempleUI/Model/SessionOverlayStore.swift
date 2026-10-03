@@ -21,7 +21,7 @@ public final class SessionOverlayStore: ObservableObject {
     /// Emitted after a row changes, without making subscribers diff the whole store.
     struct RowChange { let id: String; let recencyOnly: Bool }
     let rowChanges = PassthroughSubject<RowChange, Never>()
-    private var missingCoreFields: [String: Set<SessionCoreField>] = [:]
+    private(set) var missingCoreFields: [String: Set<SessionCoreField>] = [:]
     private var rowObserver: UUID?
 
     @Published public private(set) var pinned: Set<String>
@@ -219,7 +219,7 @@ public final class SessionOverlayStore: ObservableObject {
                 title: $0.firstPrompt ?? $0.historyPrompt, lastActiveAt: $0.modifiedAt)) })
     }
 
-    /// P2 adapter while History holds TranscriptSummary. Parsing is bounded to four
+    /// Revalidate catalog facts before committing an import. Parsing is bounded to four
     /// workers and runs off-main; membership is checked again at commit time.
     var importSummaryReader: @Sendable (TranscriptSummary) -> TranscriptSummary? = { session in
         session.agent == .claude

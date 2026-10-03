@@ -21,17 +21,6 @@ public struct CodexSessionStore: TranscriptSummaryStore {
     }
 
     public var watchedURLs: [URL] { [sessionsRoot.deletingLastPathComponent(), sessionsRoot] }
-    public var sharedTitleURLs: [URL] { titleURLs }
-    public func loadSharedTitles() -> [String: String] { loadTitles() }
-    public var titleURLs: [URL] { [historyFile, sessionIndexFile] }
-
-    public var cacheInvalidationToken: String? {
-        [historyFile, sessionIndexFile].map { url in
-            guard let signature = StoreIO.fileSignature(url) else { return "missing" }
-            return "\(signature.modificationDate.timeIntervalSinceReferenceDate):\(signature.fileSize)"
-        }.joined(separator: "|")
-    }
-
     public func loadSummaries() -> [TranscriptSummary] {
         let titles = loadTitles()
         let historyPrompts = loadSharedPrompts()

@@ -17,7 +17,7 @@ final class SessionEngineTests: XCTestCase {
         let dir = root.appendingPathComponent("project")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = dir.appendingPathComponent("\(id).jsonl")
-        try "{\"type\":\"user\",\"cwd\":\"/private/tmp\",\"message\":{\"content\":\"\(text)\"}}".write(to: file, atomically: true, encoding: .utf8)
+        try "{\"type\":\"user\",\"sessionId\":\"\(id)\",\"cwd\":\"/private/tmp\",\"message\":{\"content\":\"\(text)\"}}".write(to: file, atomically: true, encoding: .utf8)
         return file
     }
 
@@ -305,7 +305,7 @@ final class SessionEngineTests: XCTestCase {
         defer { recorder.stop() }
         try await eventually { recorder.latest.map(\.id) == [id] }
         XCTAssertEqual(try db.sessionState(id)?.transcriptPath, file.path)
-        XCTAssertEqual(watcher.resolution(for: "wrong"), .unreadable)
+        XCTAssertEqual(watcher.resolution(for: "wrong"), .mismatch)
     }
 
     func testCodexSharedTitlesAreReadInsideAnExplicitEnrichment() async throws {
@@ -464,7 +464,7 @@ final class SessionEngineTests: XCTestCase {
         let watcher = SessionWatcher(stores: [store], members: ["before", "during"], debounceInterval: 0.02)
         let file = root.appendingPathComponent("project/during.jsonl")
         store.afterListing = {
-            try? #"{"type":"user","cwd":"/private/tmp","message":{"content":"during scan"}}"#.write(to: file, atomically: true, encoding: .utf8)
+            try? #"{"type":"user","sessionId":"during","cwd":"/private/tmp","message":{"content":"during scan"}}"#.write(to: file, atomically: true, encoding: .utf8)
             watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemCreated))
         }
         let recorder = try await start(watcher)
@@ -616,7 +616,7 @@ final class SessionEngineTests: XCTestCase {
         let watcher = SessionWatcher(stores: [store], members: ["before", "during"], debounceInterval: 0.02)
         let file = root.appendingPathComponent("project/during.jsonl")
         store.afterListing = {
-            try? #"{"type":"user","cwd":"/private/tmp","message":{"content":"during scan"}}"#.write(to: file, atomically: true, encoding: .utf8)
+            try? #"{"type":"user","sessionId":"during","cwd":"/private/tmp","message":{"content":"during scan"}}"#.write(to: file, atomically: true, encoding: .utf8)
             // Hold enumeration open long enough for the live stream to record
             // the write. A stream armed after enumeration misses this event.
             Thread.sleep(forTimeInterval: 0.15)
@@ -834,7 +834,7 @@ final class SessionEngineTests: XCTestCase {
         let watcher = SessionWatcher(stores: [CodexSessionStore(root: root)], database: db, debounceInterval: 0.02)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
-        XCTAssertEqual(watcher.resolution(for: thread), .unreadable)
+        XCTAssertEqual(watcher.resolution(for: thread), .incomplete)
         XCTAssertTrue(recorder.latest.isEmpty)
         try Data(contentsOf: original).write(to: selected)
         watcher.reconcileEvent(path: selected.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
@@ -1012,9 +1012,6 @@ private final class EngineCountingStore: IncrementalSessionStore, @unchecked Sen
     init(_ inner: any IncrementalSessionStore) { self.inner = inner }
     var agent: Agent { inner.agent }
     var watchedURLs: [URL] { inner.watchedURLs }
-    var cacheInvalidationToken: String? { inner.cacheInvalidationToken }
-    var sharedTitleURLs: [URL] { inner.sharedTitleURLs }
-    func loadSharedTitles() -> [String: String] { inner.loadSharedTitles() }
     func loadSummaries() -> [TranscriptSummary] { XCTFail("engine must never load the full store"); return [] }
     func sessionFileURLs() -> [URL] { inner.sessionFileURLs() }
     func enumerateSessionFiles() throws -> [URL] {

@@ -14,9 +14,6 @@ public final class WatcherIndexSource: IndexSource {
     private var task: Task<Void, Never>?
     private var snapshotTask: Task<Void, Never>?
     private var latestSnapshot: EngineSnapshot?
-    var onSnapshotUpdate: ((EngineSnapshot) -> Void)? {
-        didSet { if let latestSnapshot { onSnapshotUpdate?(latestSnapshot) } }
-    }
     var onResolutionUpdate: (([String: MemberResolution]) -> Void)? {
         didSet { if let latestSnapshot { onResolutionUpdate?(latestSnapshot.resolutions) } }
     }
@@ -49,7 +46,6 @@ public final class WatcherIndexSource: IndexSource {
                 guard !Task.isCancelled, let self else { break }
                 self.latestSnapshot = snapshot
                 self.onResolutionUpdate?(snapshot.resolutions)
-                self.onSnapshotUpdate?(snapshot)
                 self.onUpdate?(snapshot)
                 for observer in Array(self.observers.values) { observer(snapshot) }
             }

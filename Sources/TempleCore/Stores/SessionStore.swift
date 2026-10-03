@@ -19,11 +19,7 @@ public protocol IncrementalSessionStore: SessionStore {
     func sessionFileURLs() -> [URL]
     /// Parses one of the URLs returned by `sessionFileURLs()`.
     func loadSummary(at fileURL: URL) -> TranscriptSummary?
-    /// Changes when non-session input (for example Codex history) invalidates
-    /// cached sessions. `nil` means session files are the only input.
-    var cacheInvalidationToken: String? { get }
-    var sharedTitleURLs: [URL] { get }
-    func loadSharedTitles() -> [String: String]
+    func verifyIdentity(at url: URL, expectedID: String) throws -> TranscriptVerification
     /// Unlike the catalog's tolerant listing, resolution must distinguish errors
     /// from a completed empty scan.
     func enumerateSessionFiles() throws -> [URL]
@@ -40,10 +36,42 @@ public protocol IncrementalSessionStore: SessionStore {
 
 }
 
+public enum TranscriptVerification: Equatable, Sendable {
+    case verified, incomplete, mismatch
+}
+
 public extension IncrementalSessionStore {
-    var cacheInvalidationToken: String? { nil }
-    var sharedTitleURLs: [URL] { [] }
-    func loadSharedTitles() -> [String: String] { [:] }
+    /// Identity is independent of enrichment. No shared history is opened here.
+    func verifyIdentity(at url: URL, expectedID: String) throws -> TranscriptVerification {
+        if agent == .codex {
+            let data = try StoreIO.readFirstLine(url)
+            guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  obj["type"] as? String == "session_meta",
+                  let payload = obj["payload"] as? [String: Any],
+                  let id = payload["id"] as? String, !id.isEmpty else { return .incomplete }
+            return id == expectedID ? .verified : .mismatch
+        }
+        // Claude can have untyped records before the first typed sessionId.
+        // Stream lines rather than making verification depend on the head window.
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var pending = Data()
+        func identity(_ line: Data) -> TranscriptVerification? {
+            guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  obj["type"] is String, let id = obj["sessionId"] as? String else { return nil }
+            return id == expectedID ? .verified : .mismatch
+        }
+        while true {
+            let chunk = try handle.read(upToCount: 64 * 1024) ?? Data()
+            if chunk.isEmpty { return identity(pending) ?? .incomplete }
+            pending.append(chunk)
+            while let newline = pending.firstIndex(of: 0x0a) {
+                if let result = identity(Data(pending.prefix(upTo: newline))) { return result }
+                pending.removeSubrange(...newline)
+            }
+        }
+    }
+
     func enumerateSessionFiles() throws -> [URL] { sessionFileURLs() }
     func enumerateSessionFiles(in subtree: URL) throws -> [URL] {
         let prefix = SessionPaths.normalized(subtree.path)

@@ -490,7 +490,18 @@ final class DBTests: XCTestCase {
     }
 
     func testDefaultPathShape() {
-        XCTAssertTrue(TempleDB.defaultPath().path.hasSuffix("Library/Application Support/Temple/temple.sqlite"))
+        // Checking the shipped spelling must not create the real state directory.
+        XCTAssertTrue(TempleState.defaultDirectory.appendingPathComponent("temple.sqlite").path
+            .hasSuffix("Library/Application Support/Temple/temple.sqlite"))
+        let key = "TEMPLE_STATE_DIR"
+        let saved = ProcessInfo.processInfo.environment[key]
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("temple-default-path-\(UUID().uuidString)")
+        defer {
+            if let saved { setenv(key, saved, 1) } else { unsetenv(key) }
+            try? FileManager.default.removeItem(at: root)
+        }
+        setenv(key, root.path, 1)
+        XCTAssertEqual(TempleDB.defaultPath(), root.appendingPathComponent("temple.sqlite"))
     }
 }
 

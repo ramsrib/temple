@@ -1,6 +1,6 @@
 import Foundation
 
-/// Row-side presentation. Legacy TranscriptSummary consumers switch in later phases.
+/// Durable row presentation, independent of transcript availability.
 public struct Session: Identifiable, Hashable, Sendable {
     public let state: SessionState
     public let resolution: MemberResolution?

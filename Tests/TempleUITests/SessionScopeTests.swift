@@ -260,7 +260,7 @@ final class SessionScopeTests: XCTestCase {
         let project = root.appendingPathComponent("project")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         let file = project.appendingPathComponent("legacy.jsonl")
-        try "{\"type\":\"user\",\"cwd\":\"/facts\",\"message\":{\"content\":\"Real prompt\"}}".write(to: file, atomically: true, encoding: .utf8)
+        try "{\"type\":\"user\",\"sessionId\":\"legacy\",\"cwd\":\"/facts\",\"message\":{\"content\":\"Real prompt\"}}".write(to: file, atomically: true, encoding: .utf8)
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "legacy", via: .imported)
         try db.join(sessionID: "missing", via: .imported,

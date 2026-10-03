@@ -36,7 +36,7 @@ final class WatcherTests: XCTestCase {
                 if isInitial {
                     isInitial = false
                     let file = project.appendingPathComponent("new-session.jsonl")
-                    let json = #"{"type":"user","message":{"content":"hello"},"cwd":"/tmp/project","timestamp":"2026-01-01T00:00:00Z"}"#
+                    let json = #"{"sessionId":"new-session","type":"user","message":{"content":"hello"},"cwd":"/tmp/project","timestamp":"2026-01-01T00:00:00Z"}"#
                     try json.write(to: file, atomically: true, encoding: .utf8)
                     if injectEvents { watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemCreated)) }
                 } else if index.allSessions.contains(where: { $0.id == "new-session" }) {
@@ -61,9 +61,9 @@ final class WatcherTests: XCTestCase {
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let firstLine = #"{"type":"user","message":{"content":"hello"},"cwd":"/tmp/project","timestamp":"2026-01-01T00:00:00Z"}"#
+        let firstLine = #"{"sessionId":"streaming-session","type":"user","message":{"content":"hello"},"cwd":"/tmp/project","timestamp":"2026-01-01T00:00:00Z"}"#
         for index in 0..<200 {
-            try firstLine.write(
+            try firstLine.replacingOccurrences(of: "streaming-session", with: "session-\(index)").write(
                 to: project.appendingPathComponent("session-\(index).jsonl"),
                 atomically: true,
                 encoding: .utf8
@@ -117,7 +117,7 @@ final class WatcherTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let session = project.appendingPathComponent("streaming-session.jsonl")
-        let firstLine = #"{"type":"user","message":{"content":"hello"},"cwd":"/tmp/project","timestamp":"2026-01-01T00:00:00Z"}"#
+        let firstLine = #"{"sessionId":"streaming-session","type":"user","message":{"content":"hello"},"cwd":"/tmp/project","timestamp":"2026-01-01T00:00:00Z"}"#
         try firstLine.write(to: session, atomically: true, encoding: .utf8)
 
         let watcher = SessionWatcher(
@@ -185,7 +185,7 @@ final class WatcherTests: XCTestCase {
         let store = MidWriteRacingStore(
             inner: ClaudeSessionStore(root: root),
             racingFile: file,
-            lateLine: "\n" + #"{"type":"user","message":{"content":"hello"},"cwd":"/tmp/tw-proj","timestamp":"2026-01-01T00:00:01Z"}"#)
+            lateLine: "\n" + #"{"sessionId":"racy-session","type":"user","message":{"content":"hello"},"cwd":"/tmp/tw-proj","timestamp":"2026-01-01T00:00:01Z"}"#)
 
         let watcher = SessionWatcher(stores: [store], members: ["racy-session"], debounceInterval: 0.05)
         let corrected = expectation(description: "re-parsed with real cwd after mid-write race")
@@ -200,7 +200,7 @@ final class WatcherTests: XCTestCase {
                     isInitial = false
                     // Preamble only — a typed line but no cwd (like a freshly
                     // created claude session).
-                    let preamble = #"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-01-01T00:00:00Z","content":"hi"}"#
+                    let preamble = #"{"sessionId":"racy-session","type":"queue-operation","operation":"enqueue","timestamp":"2026-01-01T00:00:00Z","content":"hi"}"#
                     try preamble.write(to: file, atomically: true, encoding: .utf8)
                     if injectEvents { watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemCreated)) }
                 } else if index.allSessions.contains(where: { $0.projectPath == "/tmp/tw-proj" }) {

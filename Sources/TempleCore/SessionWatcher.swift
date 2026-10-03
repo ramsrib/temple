@@ -8,6 +8,8 @@ public enum MemberResolution: Hashable, Sendable {
     case loaded(URL)
     case confirmedAbsent
     case unreadable
+    case mismatch
+    case incomplete
 }
 
 /// A single FSEvents stream invalidates paths; only committed members are parsed
@@ -33,13 +35,22 @@ public final class SessionWatcher: @unchecked Sendable {
     private var awaiting: Set<String> = []
     private var states: [String: MemberResolution] = [:]
     private var statesDirty = false
-    private var sessions: [String: TranscriptSummary] = [:]
     private var summaries: [String: TranscriptSummary] = [:]
     private var generation: UInt64 = 0
     private var engineContentDirty = false
     private var lastEngineSnapshot: EngineSnapshot?
     private var engineContinuations: [UUID: AsyncStream<EngineSnapshot>.Continuation] = [:]
-    private var signatures: [String: FileSignature] = [:] // validated member ID -> signature
+    private var signatures: [String: FileSignature] = [:] // last observed, including stat-only writes
+    private var memberWork: [String: MemberWork] = [:]
+    private var wanted: [String: Set<SessionCoreField>]?
+    private var enrichmentTimers: [String: DispatchWorkItem] = [:]
+    private let now: @Sendable () -> Date
+    private var parseCount: UInt64 = 0
+    private var verificationCount: UInt64 = 0
+    private var publicationCount: UInt64 = 0
+    private var observedCount: UInt64 = 0
+    private var snapshotMetrics = EngineMetrics()
+
     private let snapshotLock = NSLock()
     private var snapshotStates: [String: MemberResolution] = [:]
     private var snapshotPublication: EngineSnapshot?
@@ -47,8 +58,6 @@ public final class SessionWatcher: @unchecked Sendable {
     private var stateContinuations: [UUID: AsyncStream<[String: MemberResolution]>.Continuation] = [:]
     private var adoptionTimers: [UUID: DispatchWorkItem] = [:]
     private var unresolvedCandidates: Set<String> = []
-    private var titles: [String: String] = [:]
-    private var titleToken: String?
     private var enumerationSucceeded = true
     private var enumerationByAgent: [Agent: Bool] = [:]
     private var streamID: UUID?
@@ -73,14 +82,16 @@ public final class SessionWatcher: @unchecked Sendable {
 
     public init(stores: [any IncrementalSessionStore] = [ClaudeSessionStore(), CodexSessionStore()],
                 database: TempleDB? = nil, members: Set<String> = [],
-                debounceInterval: TimeInterval = 0.3) {
+                debounceInterval: TimeInterval = 0.3,
+                now: @escaping @Sendable () -> Date = { Date() }) {
         self.stores = stores
         self.database = database
         self.initialMembers = members
         self.debounceInterval = debounceInterval
+        self.now = now
         // Observe before startup; the row read at startup is the durable replay.
         joinObserver = database?.observeJoins { [weak self] id, awaiting in
-            self?.requestResolution(id, awaitingCreation: awaiting)
+            self?.resolveRequest(id, awaitingCreation: awaiting, explicit: false)
         }
         leaveObserver = database?.observeLeaves { [weak self] id in
             self?.forgetMember(id)
@@ -149,6 +160,7 @@ public final class SessionWatcher: @unchecked Sendable {
         let changed = statesDirty
         if changed { snapshotStates = states; statesDirty = false }
         snapshotPublication = lastEngineSnapshot; snapshotMonitoring = monitoring
+        snapshotMetrics = EngineMetrics(parses: parseCount, verifications: verificationCount, publications: publicationCount, observations: observedCount)
         snapshotLock.unlock()
         if changed {
             engineContentDirty = true
@@ -168,8 +180,9 @@ public final class SessionWatcher: @unchecked Sendable {
         let snapshot = EngineSnapshot(generation: generation, resolutions: states,
             summaries: loadedSummaries)
         if snapshot != lastEngineSnapshot {
+            publicationCount &+= 1
             lastEngineSnapshot = snapshot
-            snapshotLock.lock(); snapshotPublication = snapshot; snapshotLock.unlock()
+            snapshotLock.lock(); snapshotPublication = snapshot; snapshotMetrics.publications = publicationCount; snapshotLock.unlock()
             continuation?.yield(snapshot)
             for continuation in engineContinuations.values { continuation.yield(snapshot) }
         }
@@ -197,7 +210,6 @@ public final class SessionWatcher: @unchecked Sendable {
                 // buffer behind the scan and reconcile after the initial snapshot.
                 self.armLocked()
                 self.enumerateLocked()
-                self.refreshTitlesLocked()
                 for id in self.members { self.resolveLocked(id) }
                 self.publishLocked()
                 if !self.requests.isEmpty {
@@ -228,7 +240,8 @@ public final class SessionWatcher: @unchecked Sendable {
         pendingPaths.removeAll()
         files.removeAll(); pathsByID.removeAll(); memberIDsByPath.removeAll()
         hintPathsByID.removeAll(); selectedCodexPaths.removeAll()
-        signatures.removeAll(); sessions.removeAll(); summaries.removeAll()
+        signatures.removeAll(); summaries.removeAll(); memberWork.removeAll()
+        enrichmentTimers.values.forEach { $0.cancel() }; enrichmentTimers.removeAll()
         lastEngineSnapshot = nil
         states.removeAll(); statesDirty = true; snapshotLocked()
     }
@@ -251,7 +264,8 @@ public final class SessionWatcher: @unchecked Sendable {
             }
             self.members.remove(id)
             self.awaiting.remove(id)
-            self.sessions.removeValue(forKey: id)
+            self.memberWork.removeValue(forKey: id)
+            self.enrichmentTimers.removeValue(forKey: id)?.cancel()
             self.summaries.removeValue(forKey: id)
             self.signatures.removeValue(forKey: id)
             self.hintPathsByID.removeValue(forKey: id)
@@ -268,24 +282,34 @@ public final class SessionWatcher: @unchecked Sendable {
     }
 
     public func requestResolution(_ id: String, awaitingCreation: Bool = false) {
+        resolveRequest(id, awaitingCreation: awaitingCreation, explicit: true)
+    }
+
+    private func resolveRequest(_ id: String, awaitingCreation: Bool, explicit: Bool) {
         queue.async { [weak self] in
             guard let self else { return }
             // A notification is an invalidation, never membership authority.
             if let database = self.database {
                 guard (try? database.sessionState(id)) != nil else { return }
             } else if !self.initialMembers.contains(id) { return }
+            if !explicit, case .loaded = self.states[id], !awaitingCreation {
+                let hint = try? self.database?.sessionState(id)?.transcriptPath
+                if hint == nil || hint == self.memberWork[id]?.path { return }
+            }
+            if explicit || !self.members.contains(id) { self.resetEnrichmentLocked(id) }
             self.members.insert(id)
-            self.signatures.removeValue(forKey: id)
             if awaitingCreation { self.awaiting.insert(id) }
-            self.setStateLocked(id, to: awaitingCreation ? .awaitingCreation : .resolving)
+            if self.states[id] == nil || awaitingCreation {
+                self.setStateLocked(id, to: awaitingCreation ? .awaitingCreation : .resolving)
+            }
             self.snapshotLocked()
             guard self.running else { self.snapshotLocked(); return }
             // Resolve a known hint/map first. A failed lookup gets a fresh name
             // map even if no filesystem event accompanied this explicit open.
-            self.resolveLocked(id)
-            if self.sessions[id] == nil {
+            self.resolveLocked(id, explicit: explicit)
+            if self.states[id] == .confirmedAbsent || self.states[id] == .resolving {
                 self.enumerateLocked()
-                self.resolveLocked(id)
+                self.resolveLocked(id, explicit: explicit)
             }
             self.publishLocked()
         }
@@ -364,12 +388,11 @@ public final class SessionWatcher: @unchecked Sendable {
         let path = logicalPath(rawPath)
         let rootLocation = path.map { p in roots.contains { $0.logical == p || $0.logical.hasPrefix(p + "/") } } ?? false
         if dropped || rootChanged || rootLocation {
-            armLocked(); recoverLocked(); return
+            armLocked(); recoverLocked(resetCoverage: dropped || rootChanged); return
         }
         guard let path else { return }
         let url = URL(fileURLWithPath: path)
         // Codex sqlite/WAL/log traffic is rejected before stat or resolution.
-        let isTitle = stores.contains { $0.sharedTitleURLs.contains { SessionPaths.normalized($0.path) == path } }
         let isTranscript = stores.contains { $0.acceptsTranscript(url) }
         let directory = has(kFSEventStreamEventFlagItemIsDir)
         let scan = has(kFSEventStreamEventFlagMustScanSubDirs)
@@ -389,8 +412,7 @@ public final class SessionWatcher: @unchecked Sendable {
             if relevant { recoverLocked(subtree: path) }
             return
         }
-        guard isTitle || isTranscript else { return }
-        if isTitle { refreshTitlesLocked(); publishLocked(); return }
+        guard isTranscript else { return }
         let hintedMember = memberIDsByPath[path]?.isEmpty == false
         let filenameMember = stores.contains { store in
             store.acceptsTranscript(url) && store.filenameID(at: url).map { members.contains($0) } == true
@@ -486,24 +508,24 @@ public final class SessionWatcher: @unchecked Sendable {
         }
     }
 
-    private func recoverLocked(subtree: String? = nil) {
-        generation &+= 1
-        engineContentDirty = true
-        enumerateLocked(subtree: subtree); refreshTitlesLocked()
+    private func recoverLocked(subtree: String? = nil, resetCoverage: Bool = false) {
+        if resetCoverage { generation &+= 1; engineContentDirty = true }
+        enumerateLocked(subtree: subtree)
         for id in members {
             if let subtree {
                 let mapped = (pathsByID[id] ?? []).contains { $0.hasPrefix(subtree + "/") }
-                let old = sessions[id]?.locator.localURL!.path.hasPrefix(subtree + "/") == true
+                let old = memberWork[id]?.path.hasPrefix(subtree + "/") == true
                 let hinted = (try? database?.sessionState(id)?.transcriptPath)?.hasPrefix(subtree + "/") == true
                 if !mapped && !old && !hinted { continue }
             }
-            resolveLocked(id)
+            if resetCoverage { resetEnrichmentLocked(id) }
+            resolveLocked(id, explicit: resetCoverage)
         }
         if !requests.isEmpty { sweepCandidatesLocked(subtree: subtree) }
         publishLocked()
     }
 
-    private func resolveLocked(_ id: String) {
+    private func resolveLocked(_ id: String, explicit: Bool = false, rescannedMissing: Bool = false) {
         guard members.contains(id) else { return }
         let row = try? database?.sessionState(id)
         // A committed hint can name a new revert that arrived while this ID
@@ -536,8 +558,8 @@ public final class SessionWatcher: @unchecked Sendable {
             }
         }
         if preferredPath == nil { trackHintLocked(id, path: nil) }
-        if let loaded = sessions[id], selectedPath == nil || loaded.agent != .codex || loaded.locator.localURL!.path == selectedPath {
-            paths.insert(loaded.locator.localURL!.path)
+        if let loaded = memberWork[id], selectedPath == nil || loaded.path == selectedPath {
+            paths.insert(loaded.path)
         }
         var unreadable = false
         var available: [(String, FileSignature)] = []
@@ -583,35 +605,165 @@ public final class SessionWatcher: @unchecked Sendable {
             if rhs.0 == preferredPath { return false }
             return lhs.0 < rhs.0
         }
+        var failure: MemberResolution?
         for (path, signature) in ordered {
             guard let entry = files[path], let store = stores.first(where: { $0.agent == entry.1 }) else { continue }
-            if signatures[id] == signature, let session = sessions[id], session.locator.localURL!.path == path {
-                setStateLocked(id, to: .loaded(session.locator.localURL!)); return
+            observedCount &+= 1
+            let previous = signatures[id]
+            var work = memberWork[id] ?? MemberWork(path: path)
+            let invalidate = work.path != path || previous?.fileNumber != signature.fileNumber
+                || signature.size < (previous?.size ?? 0)
+            if invalidate {
+                work = MemberWork(path: path)
+                summaries.removeValue(forKey: id)
             }
+            signatures[id] = signature
+            memberWork[id] = work
+            if !work.verified {
+                if !explicit, previous == signature, let cachedFailure = work.verificationFailure {
+                    if cachedFailure == .unreadable { unreadable = true }
+                    else { failure = failure ?? cachedFailure }
+                    continue
+                }
+                verificationCount &+= 1
+                do {
+                    let verdict = try store.verifyIdentity(at: entry.0, expectedID: id)
+                    guard try FileSignature(entry.0) == signature else {
+                        work.verified = false; memberWork[id] = work
+                        pendingPaths.insert(path); scheduleLocked(); continue
+                    }
+                    switch verdict {
+                    case .verified: work.verified = true; work.verificationFailure = nil
+                    case .incomplete: failure = failure ?? .incomplete; work.verificationFailure = .incomplete
+                    case .mismatch: failure = .mismatch; work.verificationFailure = .mismatch
+                    }
+                } catch { unreadable = true; work.verificationFailure = .unreadable }
+                memberWork[id] = work
+                guard work.verified else { continue }
+            }
+            // Path authority changes after verification, even when all core fields exist.
+            trackHintLocked(id, path: path)
+            if database?.isReadOnly != true, row?.agent != store.agent || row?.transcriptPath != path {
+                try? database?.updateTranscriptHint(sessionID: id, agent: store.agent, path: entry.0)
+            }
+            let missing = missingFieldsLocked(id, row: row)
+            guard !missing.isEmpty else {
+                enrichmentTimers.removeValue(forKey: id)?.cancel()
+                memberWork[id] = work
+                setStateLocked(id, to: .loaded(entry.0)); awaiting.remove(id)
+                return
+            }
+            if !explicit && work.lastAttempt == signature {
+                memberWork[id] = work
+                setStateLocked(id, to: work.enrichmentFailed ? .unreadable : .loaded(entry.0)); return
+            }
+            if !explicit && now() < work.nextAttempt {
+                memberWork[id] = work
+                scheduleEnrichmentLocked(id, after: work.nextAttempt.timeIntervalSince(now()))
+                setStateLocked(id, to: .loaded(entry.0)); return
+            }
+            parseCount &+= 1
             let summary = store.loadSummary(at: entry.0)
-            let parsed = summary
-            if let final = try? FileSignature(entry.0), final != signature {
-                pendingPaths.insert(path); scheduleLocked()
+            do {
+                guard try FileSignature(entry.0) == signature else {
+                    // Nothing from either read is accepted across a concurrent write.
+                    work.verified = false
+                    memberWork[id] = work
+                    pendingPaths.insert(path); scheduleLocked(); return
+                }
+            } catch {
+                work.verified = false; memberWork[id] = work
+                unreadable = true; continue
             }
-            guard let parsed, parsed.id == id else { unreadable = true; continue }
+            work.lastAttempt = signature
+            work.nextAttempt = now().addingTimeInterval(work.delay)
+            work.delay = min(60, work.delay * 2)
+            work.enrichmentFailed = summary == nil
+            memberWork[id] = work
+            guard let summary else { unreadable = true; continue }
+            guard summary.id == id else {
+                work.verified = false; memberWork[id] = work
+                failure = .mismatch; continue
+            }
             if summaries[id] != summary { engineContentDirty = true }
             summaries[id] = summary
-            signatures[id] = signature
-            sessions[id] = parsed; setStateLocked(id, to: .loaded(parsed.locator.localURL!)); awaiting.remove(id)
-            trackHintLocked(id, path: path)
-            if database?.isReadOnly != true, row?.agent != parsed.agent || row?.transcriptPath != parsed.locator.localURL!.path {
-                try? database?.updateTranscriptHint(sessionID: id, agent: parsed.agent, path: parsed.locator.localURL!)
-            }
+            setStateLocked(id, to: .loaded(entry.0)); awaiting.remove(id)
             return
         }
-        sessions.removeValue(forKey: id)
-        summaries.removeValue(forKey: id)
-        signatures.removeValue(forKey: id)
-        // Only a completed enumeration proves absence. A listing failure is
-        // unknown, not a verdict about a missing or unreadable transcript.
-        setStateLocked(id, to: unreadable ? .unreadable :
+        if ordered.isEmpty, !unreadable, !paths.isEmpty, !rescannedMissing {
+            // A disappeared hint/previous path is not a new enumeration verdict.
+            enumerateLocked()
+            resolveLocked(id, explicit: explicit, rescannedMissing: true)
+            return
+        }
+        if summaries.removeValue(forKey: id) != nil { engineContentDirty = true }
+        // A candidate with a failed verification is evidence, never absence.
+        setStateLocked(id, to: unreadable ? .unreadable : failure ??
             (awaiting.contains(id) ? .awaitingCreation :
-                (enumerationSucceeded ? .confirmedAbsent : .resolving)))
+                (enumerationSucceeded && ordered.isEmpty ? .confirmedAbsent : .resolving)))
+    }
+
+    private func missingFieldsLocked(_ id: String, row: SessionState?) -> Set<SessionCoreField> {
+        if let wanted { return wanted[id] ?? [] }
+        guard let row else { return [.agent, .directory, .title, .lastActiveAt] }
+        var fields = Set<SessionCoreField>()
+        if row.agent == nil { fields.insert(.agent) }
+        if row.directory == nil { fields.insert(.directory) }
+        if row.title == nil { fields.insert(.title) }
+        if row.lastActiveAt == nil { fields.insert(.lastActiveAt) }
+        return fields
+    }
+
+    /// The overlay owns completeness; the engine owns when to read a transcript.
+    public func setEnrichmentWanted(_ missing: [String: Set<SessionCoreField>]) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let previous = self.wanted
+            self.wanted = missing
+            for id in self.members {
+                if let old = previous?[id], !old.subtracting(missing[id] ?? []).isEmpty {
+                    self.resetEnrichmentLocked(id)
+                }
+                if missing[id]?.isEmpty != false { self.enrichmentTimers.removeValue(forKey: id)?.cancel() }
+                else if previous != nil && previous?[id]?.isEmpty != false && self.running {
+                    self.resetEnrichmentLocked(id)
+                    self.resolveLocked(id, explicit: true)
+                }
+            }
+            if self.running { self.publishLocked() }
+        }
+    }
+
+    private func resetEnrichmentLocked(_ id: String) {
+        enrichmentTimers.removeValue(forKey: id)?.cancel()
+        memberWork[id]?.delay = 1
+        memberWork[id]?.nextAttempt = .distantPast
+        memberWork[id]?.lastAttempt = nil
+    }
+
+    private func scheduleEnrichmentLocked(_ id: String, after delay: TimeInterval) {
+        guard enrichmentTimers[id] == nil else { return }
+        let timer = DispatchWorkItem { [weak self] in
+            guard let self, self.running else { return }
+            self.enrichmentTimers.removeValue(forKey: id)
+            self.resolveLocked(id)
+            self.publishLocked()
+        }
+        enrichmentTimers[id] = timer
+        queue.asyncAfter(deadline: .now() + max(0.01, delay), execute: timer)
+    }
+
+    /// Deterministic backoff checkpoint; tests can advance a clock without waiting minutes.
+    func reconcileEnrichment() {
+        queue.async { [weak self] in
+            guard let self, self.running else { return }
+            for id in self.members { self.resolveLocked(id) }
+            self.publishLocked()
+        }
+    }
+
+    public var metrics: EngineMetrics {
+        snapshotLock.lock(); defer { snapshotLock.unlock() }; return snapshotMetrics
     }
 
     private func reconcileFileLocked(_ url: URL) -> Bool {
@@ -624,9 +776,9 @@ public final class SessionWatcher: @unchecked Sendable {
         // Filename routing and validated hints are the only member discovery.
         // Outside writes never parse transcripts, read the DB, or publish state.
         for id in ids.sorted() {
-            let old = sessions[id]
+            let old = summaries[id]
             resolveLocked(id)
-            if old != sessions[id] { changed = true }
+            if old != summaries[id] { changed = true }
         }
         if store.agent == .codex, !requests.isEmpty {
             _ = readCandidateLocked(url, store: store)
@@ -634,8 +786,6 @@ public final class SessionWatcher: @unchecked Sendable {
         if !ids.isEmpty { snapshotLocked() }
         return changed
     }
-
-    private func refreshTitlesLocked() {}
 
     private func publishLocked() {
         snapshotLocked()
@@ -854,4 +1004,22 @@ private struct RootMapping {
         }
         return current.path
     }
+}
+
+/// Counters measure actual enrichment parses separately from identity reads.
+public struct EngineMetrics: Sendable {
+    public var parses: UInt64 = 0
+    public var verifications: UInt64 = 0
+    public var publications: UInt64 = 0
+    public var observations: UInt64 = 0
+}
+
+private struct MemberWork {
+    let path: String
+    var verified = false
+    var enrichmentFailed = false
+    var verificationFailure: MemberResolution?
+    var lastAttempt: FileSignature?
+    var nextAttempt = Date.distantPast
+    var delay: TimeInterval = 1
 }

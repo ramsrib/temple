@@ -67,6 +67,8 @@ func printRows(_ rows: [Session], compact: Bool = false) {
         case .resolving: resolution = "Resolving"
         case .awaitingCreation: resolution = "Awaiting creation"
         case .unreadable: resolution = "Transcript unreadable"
+        case .mismatch: resolution = "Transcript identity mismatch"
+        case .incomplete: resolution = "Transcript incomplete"
         case nil: resolution = "Unresolved"
         }
         print("\(agent)  \(project)  \(df.string(from: row.sortDate))  \(row.displayTitle)  [\(resolution)]")
@@ -95,7 +97,14 @@ if CommandLine.arguments.contains("--disk") {
                     lastActiveAt: summary.modifiedAt)
             }
         }
-        let rows = try database.sessionStates().map { Session(state: $0, resolution: snapshot.resolutions[$0.id]) }
+        let states = try database.sessionStates()
+        watcher.setEnrichmentWanted(Dictionary(uniqueKeysWithValues: states.compactMap { state in
+            var missing = Set<SessionCoreField>()
+            if state.agent == nil { missing.insert(.agent) }; if state.directory == nil { missing.insert(.directory) }
+            if state.title == nil { missing.insert(.title) }; if state.lastActiveAt == nil { missing.insert(.lastActiveAt) }
+            return missing.isEmpty ? nil : (state.id, missing)
+        }))
+        let rows = states.map { Session(state: $0, resolution: snapshot.resolutions[$0.id]) }
             .sorted { $0.sortDate == $1.sortDate ? $0.id < $1.id : $0.sortDate > $1.sortDate }
         printRows(searchQuery.map { SessionRowSearch.rank(rows, query: $0) } ?? rows, compact: true)
         fflush(stdout)

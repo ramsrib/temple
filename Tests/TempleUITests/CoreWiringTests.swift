@@ -50,7 +50,7 @@ final class CoreWiringTests: XCTestCase {
             XCTAssertTrue(model.pendingSessionOpens.isEmpty)
         }
         let file = projectDirectory.appendingPathComponent("wired-session.jsonl")
-        let json = #"{"type":"user","message":{"content":"hello"},"cwd":"/tmp/project","timestamp":"2026-01-01T00:00:00Z"}"#
+        let json = #"{"sessionId":"wired-session","type":"user","message":{"content":"hello"},"cwd":"/tmp/project","timestamp":"2026-01-01T00:00:00Z"}"#
         try json.write(to: file, atomically: true, encoding: .utf8)
         if injectEvents { watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemCreated)) }
 
@@ -158,9 +158,9 @@ final class CoreWiringTests: XCTestCase {
         let file = dir.appendingPathComponent("awaiting.jsonl")
         try "{".write(to: file, atomically: true, encoding: .utf8)
         watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemCreated))
-        try await waitFor { watcher.resolution(for: "awaiting") == .unreadable && model.pendingSessionOpens.isEmpty }
+        try await waitFor { watcher.resolution(for: "awaiting") == .incomplete && model.pendingSessionOpens.isEmpty }
         XCTAssertNil(model.openSessions.sessionKnown("awaiting"))
-        try #"{"type":"user","cwd":"/tmp/project","message":{"content":"late log"}}"#.write(to: file, atomically: true, encoding: .utf8)
+        try #"{"sessionId":"awaiting","type":"user","cwd":"/tmp/project","message":{"content":"late log"}}"#.write(to: file, atomically: true, encoding: .utf8)
         watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
         try await waitFor { model.openSessions.sessionKnown("awaiting") == true }
         XCTAssertTrue(model.openSessions.tabs.isEmpty, "A final failed open must not create a much later tab")
@@ -177,7 +177,7 @@ final class CoreWiringTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let file = directory.appendingPathComponent("member.jsonl")
-        try #"{"type":"user","cwd":"/tmp/project","message":{"content":"member"}}"#.write(to: file, atomically: true, encoding: .utf8)
+        try #"{"sessionId":"member","type":"user","cwd":"/tmp/project","message":{"content":"member"}}"#.write(to: file, atomically: true, encoding: .utf8)
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "member", via: .opened, agent: .claude, transcriptPath: file)
         let watcher = SessionWatcher(stores: [ClaudeSessionStore(root: root)], database: db, debounceInterval: 0.02)
