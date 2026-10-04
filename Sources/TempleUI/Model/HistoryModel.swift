@@ -924,10 +924,18 @@ public final class HistoryModel: ObservableObject {
                 lines.append(imported.count == 1 ? "The other one was imported." : "The other \(imported.count) were imported.")
             }
             importFailure = ImportFailure(
-                title: "Couldn't import \(failed.count) of \(attempted.count) sessions",
+                title: Self.importFailureTitle(failed: failed.count, attempted: attempted.count,
+                                               onlyTitle: failedTitles.first ?? ""),
                 message: lines.joined(separator: "\n"))
         }
         invalidate()
+    }
+
+    /// "Couldn't import 1 of 1 sessions" said less than the title would:
+    /// when nothing was imported, name the one session or count them all.
+    static func importFailureTitle(failed: Int, attempted: Int, onlyTitle: String) -> String {
+        guard failed == attempted else { return "Couldn't import \(failed) of \(attempted) sessions" }
+        return attempted == 1 ? "Couldn't import “\(onlyTitle)”" : "Couldn't import \(attempted) sessions"
     }
 
     /// Undo removes exactly the rows this import wrote — each by its id and

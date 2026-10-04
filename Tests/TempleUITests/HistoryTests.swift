@@ -698,10 +698,19 @@ final class HistoryTests: XCTestCase {
         await history.confirmImport(HistoryModel.importRequest(for: rows), undoManager: nil)
 
         let failure = try XCTUnwrap(history.importFailure)
-        XCTAssertEqual(failure.title, "Couldn't import 2 of 2 sessions")
+        XCTAssertEqual(failure.title, "Couldn't import 2 sessions")
         XCTAssertEqual(history.allRows.map(\.title), ["First", "Second"])
         XCTAssertTrue(failure.message.contains("First · Second"), "display titles, as the rows show")
         XCTAssertFalse(overlay.isTempleSession("a"))
+    }
+
+    func testImportFailureTitleNamesTheOneSessionAndCountsAWholeBatch() {
+        XCTAssertEqual(HistoryModel.importFailureTitle(failed: 1, attempted: 1, onlyTitle: "Fix auth"),
+                       "Couldn't import “Fix auth”")
+        XCTAssertEqual(HistoryModel.importFailureTitle(failed: 3, attempted: 3, onlyTitle: "Fix auth"),
+                       "Couldn't import 3 sessions")
+        XCTAssertEqual(HistoryModel.importFailureTitle(failed: 1, attempted: 4, onlyTitle: "Fix auth"),
+                       "Couldn't import 1 of 4 sessions")
     }
 
     // MARK: Undo
