@@ -413,6 +413,36 @@ final class HistoryHostKeyTests: XCTestCase {
 
     // MARK: Selection before emission, end to end
 
+    /// A Claude transcript named for one session that records another is
+    /// not that session's, end to end: History never lists it under the
+    /// file's name, so importing everything it shows cannot store the other
+    /// session's folder and title under that id — fills the engine makes
+    /// later only ever fill NULLs, so nothing would have repaired them.
+    func testAClaudeFileRecordingAnotherSessionIsNeitherListedNorImported() async throws {
+        let root = try tempRoot()
+        let project = root.appendingPathComponent("claude/-work-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let named = UUID().uuidString.lowercased(), recorded = UUID().uuidString.lowercased()
+        let good = UUID().uuidString.lowercased()
+        try claudeData(recorded, prompt: "Someone else's", cwd: "/elsewhere")
+            .write(to: project.appendingPathComponent("\(named).jsonl"))
+        try claudeData(good, prompt: "Mine", cwd: root.path).write(to: project.appendingPathComponent("\(good).jsonl"))
+        let source = LocalSessionSource(stores: [ClaudeSessionStore(root: root.appendingPathComponent("claude"))],
+                                        monitorChanges: false)
+        let hosts = registry([source])
+        let db = try TempleDB.inMemory()
+        let (history, _) = history(db, catalog: { hosts.catalog() })
+        await load(history)
+
+        XCTAssertEqual(history.allRows.map(\.sessionID), [good])
+        history.requestImport(history.allRows)
+        await history.confirmImport(undoManager: nil)
+        XCTAssertNil(try db.sessionState(named), "imported under the file's name")
+        XCTAssertNil(try db.sessionState(recorded))
+        XCTAssertEqual(try db.sessionState(good)?.title, "Mine")
+        XCTAssertFalse(try db.sessionStates().contains { $0.directory == "/elsewhere" })
+    }
+
     /// Import while the catalog is still streaming: the row History shows
     /// and imports for a Codex thread is the revert the CLI would resume,
     /// even though the older canonical rollout was modified more recently,

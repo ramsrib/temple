@@ -717,7 +717,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         if requests.values.allSatisfy(\.decided) { requests.removeAll(); seenCandidates.removeAll(); trimCandidateCacheLocked(); stopIfIdleLocked() }
     }
 
-    private static func isMissing(_ error: Error) -> Bool {
+    static func isMissing(_ error: Error) -> Bool {
         let e = error as NSError
         return (e.domain == NSCocoaErrorDomain && [NSFileReadNoSuchFileError, NSFileNoSuchFileError].contains(e.code)) ||
             (e.domain == NSPOSIXErrorDomain && e.code == Int(ENOENT))

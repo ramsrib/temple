@@ -74,8 +74,7 @@ struct LocalSessionCatalog: Sendable {
                 entries.append(Entry(modified: modified, parse: {
                     TranscriptCandidates.catalogPick(thread) { path in
                         guard let url = urls[path] else { return .missing }
-                        if let summary = parser(url) { return summary.id == thread.threadID ? .read(summary) : .failed }
-                        return Self.isGone(url) ? .missing : .failed
+                        return Self.attempt(url, thread: thread.threadID, store: incremental, parser: parser)
                     }
                 }))
             }
@@ -103,6 +102,36 @@ struct LocalSessionCatalog: Sendable {
 }
 
 extension LocalSessionCatalog {
+    /// How often a file that changed while it was read is read again.
+    static let readAttempts = 3
+
+    /// One of a thread's files, read the way the engine reads a member's: the
+    /// identity the file records is verified first, then its facts are
+    /// parsed, and both must come from one version of the file (stat'ed
+    /// before and after). A file's name is not its identity: Claude's facts
+    /// take the session id from the file name, so `a.jsonl` recording
+    /// session `b` would otherwise list — and import — as `a`, with `b`'s
+    /// folder and title. A file whose recorded identity is another session's,
+    /// or that records none, yields nothing for the thread.
+    static func attempt(_ url: URL, thread: String, store: any IncrementalSessionStore,
+                        parser: (URL) -> TranscriptSummary?) -> TranscriptCandidates.CatalogAttempt<TranscriptSummary> {
+        func failure(_ error: Error) -> TranscriptCandidates.CatalogAttempt<TranscriptSummary> {
+            LocalSessionSource.isMissing(error) || isGone(url) ? .missing : .failed
+        }
+        for _ in 0..<readAttempts {
+            let before: FileSignature
+            do { before = try FileSignature(url) } catch { return failure(error) }
+            let verdict: TranscriptVerification
+            do { verdict = try store.verifyIdentity(at: url, expectedID: thread) } catch { return failure(error) }
+            guard verdict == .verified else { return .failed }
+            guard let summary = parser(url), summary.id == thread else { return isGone(url) ? .missing : .failed }
+            let after: FileSignature
+            do { after = try FileSignature(url) } catch { return failure(error) }
+            if after == before { return .read(summary) }
+        }
+        return .failed
+    }
+
     /// Only `ENOENT`/`ENOTDIR` prove a file gone; a file that cannot be
     /// read or stat'ed for any other reason still exists as far as anyone
     /// knows.

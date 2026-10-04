@@ -25,7 +25,7 @@ final class LocalSessionCatalogTests: XCTestCase {
             let dir = root.appendingPathComponent("-p-\(session.project)", isDirectory: true)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let file = dir.appendingPathComponent("\(session.id).jsonl")
-            let line = #"{"type":"user","cwd":"/p/\#(session.project)","message":{"role":"user","content":"prompt \#(session.id)"}}"#
+            let line = #"{"type":"user","sessionId":"\#(session.id)","cwd":"/p/\#(session.project)","message":{"role":"user","content":"prompt \#(session.id)"}}"#
             try (line + "\n").write(to: file, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes(
                 [.modificationDate: now.addingTimeInterval(-session.age)], ofItemAtPath: file.path)
@@ -84,7 +84,8 @@ final class LocalSessionCatalogTests: XCTestCase {
     /// The tab cancels its read when it goes away. The reader must notice at
     /// the next batch, not parse the remaining thousands for nobody.
     func testCancellingTheConsumerStopsTheRead() async throws {
-        let store = SlowStore(count: 60)
+        let store = try SlowStore(count: 60)
+        defer { store.cleanup() }
         let firstBatch = expectation(description: "first batch")
         let consumer = Task {
             var fulfilled = false
@@ -232,18 +233,30 @@ private struct FailingStore: IncrementalSessionStore {
     func enumerateSessionFiles() throws -> [URL] { throw Self.error }
 }
 
+/// Real files, each recording its own session (the catalog verifies that
+/// before it parses), parsed slowly.
 private final class SlowStore: IncrementalSessionStore, @unchecked Sendable {
     let agent: Agent = .claude
     let count: Int
+    private let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("temple-catalog-slow-\(UUID().uuidString)", isDirectory: true)
     private let lock = NSLock()
     private var parsedCount = 0
     var parsed: Int { lock.lock(); defer { lock.unlock() }; return parsedCount }
 
-    init(count: Int) { self.count = count }
+    init(count: Int) throws {
+        self.count = count
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        for index in 0..<count {
+            try Data(#"{"type":"user","sessionId":"slow-\#(index)"}"#.utf8)
+                .write(to: root.appendingPathComponent("slow-\(index).jsonl"))
+        }
+    }
+    func cleanup() { try? FileManager.default.removeItem(at: root) }
 
     func loadSummaries() -> [TranscriptSummary] { [] }
     func sessionFileURLs() -> [URL] {
-        (0..<count).map { URL(fileURLWithPath: "/nonexistent/slow-\($0).jsonl") }
+        (0..<count).map { root.appendingPathComponent("slow-\($0).jsonl") }
     }
     func loadSummary(at fileURL: URL) -> TranscriptSummary? {
         Thread.sleep(forTimeInterval: 0.02)

@@ -483,6 +483,28 @@ class HostSessionSourceContract: XCTestCase {
         XCTAssertEqual(rows.map(\.locator), [canonical], "the older rollout stands in once the revert is gone")
     }
 
+    /// A file's name is not its identity. A Claude transcript named `a`
+    /// that records session `b` lists nothing — not `a` with `b`'s folder
+    /// and title, which an import would store under `a` for good — and one
+    /// that records no session yet lists nothing either, as a member's read
+    /// would refuse both. The same for a rollout whose header is another
+    /// thread's.
+    func test13dTheCatalogListsAThreadOnlyFromAFileThatRecordsIt() async throws {
+        let named = uuid(), recorded = uuid(), silent = uuid(), good = uuid()
+        try fixture.put(agent: .claude, name: "\(named).jsonl", data: claudeData(recorded, cwd: "/elsewhere", prompt: "Not yours"))
+        try fixture.put(agent: .claude, name: "\(silent).jsonl",
+                        data: Data(#"{"type":"user","cwd":"/silent","message":{"content":"No id"}}"#.utf8))
+        try plantClaude(good)
+        let rollout = uuid()
+        try fixture.put(agent: .codex, name: rolloutName(rollout), data: codexData(uuid()))
+        var all: [TranscriptSummary] = []
+        for try await batch in source.catalog(CatalogQuery()) {
+            if case .sessions(let summaries, _, _) = batch { all += summaries }
+        }
+        XCTAssertEqual(all.map(\.id), [good])
+        XCTAssertFalse(all.contains { $0.cwd == "/elsewhere" || $0.cwd == "/silent" })
+    }
+
     // MARK: 14 adoption
 
     func test14AdoptionNeedsExactlyOneEligibleHeader() async throws {

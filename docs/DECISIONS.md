@@ -1196,7 +1196,10 @@ files on this Mac, which a session on another machine will never have.
   concurrently and each batch names its host; a failed host reports itself.
   The local catalog chooses each thread's authoritative rollout by the same
   rule member resolution uses, before parsing, and shows nothing for a thread
-  whose chosen file is unreadable rather than an older rollout. History keys
+  whose chosen file is unreadable rather than an older rollout. A file is
+  read as a member's is, identity before facts: one named for a session
+  that records another, or none, shows nothing (a name is not an identity,
+  and an import's fills are never overwritten). History keys
   every row by `(host, agent, session id)`; a catalog row for an id that is a
   member on another host or as another agent is shown, not importable, with
   the reason.

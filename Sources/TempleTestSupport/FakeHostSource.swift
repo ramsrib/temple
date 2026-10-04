@@ -398,6 +398,11 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
                     locked {
                         guard let file = files[path] else { return .missing }
                         guard !file.unreadable else { return .failed }
+                        // The recorded identity decides, as for a member's
+                        // read: a file named for this thread that records
+                        // another session, or none, is not this thread's.
+                        guard let (lines, _) = try? Self.identityLines(file.data, scan: format.identityScan),
+                              format.identity(lines: lines, expecting: thread.threadID) == .verified else { return .failed }
                         counts.parses += 1
                         let locator = TranscriptLocator(host: host, path: path)
                         let window = TranscriptBytes.defaultWindow
