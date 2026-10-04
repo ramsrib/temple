@@ -41,7 +41,8 @@ enum WindowSnapshot {
         let directory = URL(fileURLWithPath: dir)
 
         // TEMPLE_SNAPSHOT_APPEARANCE=dark|light is honoured by
-        // `AppModel.effectiveTheme`, not here: setting `NSApp.appearance`
+        // `AppModel.effectiveTheme` (and, with no model, by
+        // `StartupFailureView`), not here: setting `NSApp.appearance`
         // directly was undone by the next `applyAppearance()` and contradicted
         // by RootView's `preferredColorScheme`, both of which read the theme.
 

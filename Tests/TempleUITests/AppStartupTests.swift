@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 import GRDB
 import TempleCore
 @testable import TempleUI
@@ -24,7 +25,8 @@ final class AppStartupTests: XCTestCase {
                             settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         }
         XCTAssertTrue(startup.updateRequired)
-        XCTAssertEqual(startup.failureMessage, "This Temple is older than the data it found. Update Temple to continue.")
+        XCTAssertEqual(startup.failure, .updateRequired)
+        XCTAssertEqual(startup.failure?.title, "Update Temple to continue")
         XCTAssertNil(startup.model)
         XCTAssertEqual(modelConstructions, 0, "settings, overlay and restore must never be constructed")
         XCTAssertTrue(factory.created.isEmpty, "no restored tab may launch an agent")
@@ -51,8 +53,43 @@ final class AppStartupTests: XCTestCase {
         XCTAssertNil(startup.model)
         XCTAssertEqual(modelConstructions, 0)
         XCTAssertFalse(startup.updateRequired)
-        XCTAssertTrue(startup.failureMessage?.hasPrefix("Temple couldn't open its data.") == true)
+        guard case .openFailed(let failedPath?, let reason)? = startup.failure else {
+            return XCTFail("unexpected \(String(describing: startup.failure))")
+        }
+        XCTAssertEqual(failedPath, path.path)
+        XCTAssertEqual(startup.failure?.title, "Temple couldn't open its data")
+        XCTAssertEqual(startup.failure?.details(version: "1.0", bundlePath: "/x"), "\(path.path)\n\(reason)",
+                       "the path, then the raw error as it came")
+        XCTAssertEqual(startup.failure?.revealURL()?.path, path.path, "it exists (as a directory), so it is what Finder shows")
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted(),
                        ["temple.sqlite", "temple.sqlite.migrate-lock"])
+    }
+
+    /// The update window names the copy that is running; Reveal in Finder is
+    /// offered only for a file whose folder exists, and shows the folder when
+    /// the file itself is gone.
+    func testFailureDetailsAndRevealTarget() {
+        XCTAssertEqual(StartupFailure.updateRequired.details(version: "0.4.0", bundlePath: "~/Downloads/Temple.app"),
+                       "Temple 0.4.0\n~/Downloads/Temple.app")
+        XCTAssertNil(StartupFailure.updateRequired.revealURL(fileExists: { _ in true }))
+        let failure = StartupFailure.openFailed(path: "/data/temple.sqlite", reason: "SQLite error 26: file is not a database")
+        XCTAssertEqual(failure.revealURL(fileExists: { _ in true })?.path, "/data/temple.sqlite")
+        XCTAssertEqual(failure.revealURL(fileExists: { $0 == "/data" })?.path, "/data")
+        XCTAssertNil(failure.revealURL(fileExists: { _ in false }), "no folder, no button")
+        XCTAssertNil(StartupFailure.openFailed(path: nil, reason: "x").revealURL(fileExists: { _ in true }))
+    }
+
+    /// A failure window has no model, so nothing drains and nothing asks: its
+    /// close button closes the last window, which quits — it must never leave
+    /// a windowless app with a menu bar and no New Window to get back.
+    func testWithoutAModelClosingTheWindowQuitsWithoutAsking() {
+        let delegate = TempleAppDelegate()
+        delegate.confirmQuitWhileWorking = { _ in XCTFail("nothing to ask about"); return false }
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 560, height: 340),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        XCTAssertTrue(delegate.approveCloseForQuit(window))
+        XCTAssertTrue(delegate.applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))
+        XCTAssertEqual(delegate.applicationShouldTerminate(NSApplication.shared), .terminateNow)
     }
 }

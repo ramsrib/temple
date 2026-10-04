@@ -44,6 +44,11 @@ struct TempleApp: App {
             StartupRootView(startup: startup, appDelegate: appDelegate, activateOnStart: true)
         }
         .commands { StartupCommands(startup: startup) }
+        // The window takes its size limits from the content: RootView's
+        // 900×600 minimum, or a startup-failure window's fixed size. (The
+        // default only honours the minimum, so a failure window opened at the
+        // last saved full-size frame.) The other entry point has the same line.
+        .windowResizability(.contentSize)
         .windowStyle(.hiddenTitleBar)
         // Unified toolbar: the tab chips live in the native title-bar band, so
         // the empty band keeps native double-click-to-zoom and window-drag

@@ -684,7 +684,7 @@ public final class AppModel: ObservableObject {
     /// RootView's `preferredColorScheme`, both of which read the setting.
     public var effectiveTheme: ThemePreference { Self.forcedTheme ?? settings.theme }
 
-    private static let forcedTheme: ThemePreference? = {
+    static let forcedTheme: ThemePreference? = {
         let env = ProcessInfo.processInfo.environment
         guard env["TEMPLE_SNAPSHOT_DIR"] != nil else { return nil }
         switch env["TEMPLE_SNAPSHOT_APPEARANCE"] {
