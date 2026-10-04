@@ -2,8 +2,10 @@
 # Integration regression check for the bundled SwiftUI @main, not SwiftPM.
 # Build with Scripts/build-app.sh first. Requires an unlocked macOS desktop,
 # System Events accessibility access, and the fixture made by demo-data.py.
-# Like make demo, the launch uses the real UserDefaults domain; the window and
-# split-view frames it autosaves there are put back as they were on exit.
+# The ⌘W step brings the failure window to the front for a moment: anything
+# typed then goes to it. Like make demo, the launch uses the real UserDefaults
+# domain; the window and split-view frames it autosaves there are put back as
+# they were on exit.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -146,5 +148,7 @@ APPLESCRIPT
 check_window "$DEMO/state" normal
 check_window "$CHECK_DIR/newer" newer-schema quit
 check_window "$CHECK_DIR/newer" newer-schema close-button
-check_window "$CHECK_DIR/broken" broken close-menu
 check_window "$CHECK_DIR/broken" broken quit
+# Last: the only step that brings a Temple to the front (⌘W needs a key
+# window), so nothing launched after it can catch the keystrokes it steals.
+check_window "$CHECK_DIR/broken" broken close-menu
