@@ -863,10 +863,13 @@ public final class HistoryModel: ObservableObject {
         // agents) are not both imported — the second is refused, with why.
         let outcomes = overlay.importPreparedEntries(attempted.map(\.0))
         var imported: [HistoryKey] = []
+        var incarnations: [HistoryKey: String] = [:]
         var failed: [(TranscriptSummary, Error)] = []
         for ((entry, session), outcome) in zip(attempted, outcomes) {
             switch outcome {
-            case .joined: imported.append(Self.key(entry))
+            case .joined(let incarnation):
+                imported.append(Self.key(entry))
+                incarnations[Self.key(entry)] = incarnation
             case .skipped: break
             case .failed(let error): failed.append((session, error))
             }
@@ -877,7 +880,7 @@ public final class HistoryModel: ObservableObject {
             markJustImported(imported)
             showNotice(Notice(text: imported.count == 1 ? "1 session imported" : "\(imported.count) sessions imported",
                               offersUndo: undoManager != nil))
-            registerUndo(undoManager, imported: imported,
+            registerUndo(undoManager, imported: imported, incarnations: incarnations,
                          sessions: attempted.map(\.1).filter { importedKeys.contains(HistoryKey($0)) },
                          entries: attempted.map(\.0).filter { importedKeys.contains(Self.key($0)) })
         }
@@ -904,11 +907,12 @@ public final class HistoryModel: ObservableObject {
     /// untouched import not running in a tab (`TempleDB.leave`). Redo imports
     /// what the undo removed. The pair re-registers itself, so ⌘Z / ⌘⇧Z
     /// bounce as often as the user likes.
-    private func registerUndo(_ undoManager: UndoManager?, imported keys: [HistoryKey], sessions: [TranscriptSummary], entries: [PreparedSessionImport]) {
+    private func registerUndo(_ undoManager: UndoManager?, imported keys: [HistoryKey], incarnations: [HistoryKey: String],
+                              sessions: [TranscriptSummary], entries: [PreparedSessionImport]) {
         guard let undoManager else { return }
         undoManager.registerUndo(withTarget: self) { [weak undoManager] model in
             MainActor.assumeIsolated {
-                let left = Set(model.undoImport(keys))
+                let left = Set(model.undoImport(keys, incarnations: incarnations))
                 guard let undoManager, !left.isEmpty else { return }
                 let back = sessions.filter { left.contains(HistoryKey($0)) }
                 undoManager.registerUndo(withTarget: model) { [weak undoManager] model in
@@ -925,15 +929,20 @@ public final class HistoryModel: ObservableObject {
         undoManager.setActionName("Import")
     }
 
-    /// Returns the rows whose sessions left Temple. Each leave carries the
-    /// host it was imported from, so a row another host holds under the same
-    /// id is never the one removed. A committed leave tells the live engine
-    /// itself (`TempleDB.observeLeaves`); nothing to re-read here.
+    /// Returns the rows whose sessions left Temple. Each leave names the
+    /// membership the import made — its host, agent and incarnation — so a
+    /// row another host holds under the same id, or one that left and joined
+    /// again since (another agent's file, or a re-import), is never the one
+    /// removed. A committed leave tells the live engine itself
+    /// (`TempleDB.observeLeaves`); nothing to re-read here.
     @discardableResult
-    func undoImport(_ keys: [HistoryKey]) -> [HistoryKey] {
+    func undoImport(_ keys: [HistoryKey], incarnations: [HistoryKey: String] = [:]) -> [HistoryKey] {
         let open = Set(keys.filter { hasOpenTab($0) })
         let candidates = keys.filter { !open.contains($0) }
-        let left = Set(overlay.leave(candidates.map { SessionKey(id: $0.sessionID, host: $0.host) }))
+        let left = Set(overlay.leave(candidates.map {
+            SessionOverlayStore.ImportedMembership(key: SessionKey(id: $0.sessionID, host: $0.host),
+                                                   agent: $0.agent, incarnation: incarnations[$0])
+        }))
         let leftKeys = candidates.filter { left.contains($0.sessionID) }
         justImported.subtract(leftKeys)
         showNotice(Notice(text: Self.undoNotice(total: keys.count, left: leftKeys.count,

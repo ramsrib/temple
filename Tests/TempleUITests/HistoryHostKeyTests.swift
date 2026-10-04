@@ -276,6 +276,42 @@ final class HistoryHostKeyTests: XCTestCase {
         XCTAssertNotNil(try row(history, HistoryKey(box)).member)
     }
 
+    /// An undo names the membership its import made. After the Claude row
+    /// left and the id joined again — as Codex's file, or the same Claude
+    /// file re-imported — undoing the original import leaves the new
+    /// membership alone, though it is an equally untouched import on the
+    /// same host.
+    func testUndoLeavesAMembershipThatReplacedTheImportedOne() async throws {
+        let claude = summary("replaced", agent: .claude, secondsAgo: 30), codex = summary("replaced", agent: .codex, secondsAgo: 60)
+        for replacement in [codex, claude] {
+            let db = try TempleDB.inMemory()
+            let (history, overlay) = history(db, catalog: events([(.local, [claude, codex])]))
+            await load(history)
+            let original = undoManager()
+            original.beginUndoGrouping()
+            await history.confirmImport(HistoryModel.importRequest(for: [claude]), undoManager: original)
+            original.endUndoGrouping()
+            let first = try XCTUnwrap(db.sessionState("replaced")?.incarnation)
+
+            XCTAssertEqual(overlay.leave([SessionKey(id: "replaced", host: .local)]), ["replaced"])
+            history.rebuild()
+            let again = undoManager()
+            again.beginUndoGrouping()
+            await history.confirmImport(HistoryModel.importRequest(for: [replacement]), undoManager: again)
+            again.endUndoGrouping()
+            XCTAssertEqual(try db.sessionState("replaced")?.agent, replacement.agent)
+            XCTAssertNotEqual(try db.sessionState("replaced")?.incarnation, first, "a rejoin is a new membership")
+
+            original.undo()
+
+            XCTAssertEqual(try db.sessionState("replaced")?.agent, replacement.agent, "\(replacement.agent): kept")
+            XCTAssertTrue(overlay.isTempleSession("replaced"))
+            XCTAssertEqual(history.notice?.text, "Import not undone · changed since")
+            again.undo()
+            XCTAssertNil(try db.sessionState("replaced"), "its own undo still takes it out")
+        }
+    }
+
     /// A tab on another host holding the same id does not keep this host's
     /// import from being undone.
     func testAnOpenTabCountsOnlyOnItsOwnHost() async throws {

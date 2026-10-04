@@ -288,7 +288,8 @@ public final class SessionOverlayStore: ObservableObject {
 
     /// What one import entry came to, in the order the entries were given.
     enum ImportOutcome {
-        case joined
+        /// With the membership's incarnation, so an undo names exactly it.
+        case joined(incarnation: String?)
         /// Already Temple's on its host before this import: left as it is.
         case skipped
         case failed(Error)
@@ -309,11 +310,12 @@ public final class SessionOverlayStore: ObservableObject {
             // rather than the import silently skipping it.
             guard !isMember(entry.id, on: entry.core.host) else { outcomes.append(.skipped); continue }
             do {
-                try db.join(sessionID: entry.id, via: .imported, agent: entry.agent, locator: entry.locator, core: entry.core)
+                let incarnation = try db.join(sessionID: entry.id, via: .imported, agent: entry.agent,
+                                              locator: entry.locator, core: entry.core)
                 // The same session twice in one batch joined once.
                 guard joined.insert(entry.id).inserted else { outcomes.append(.skipped); continue }
                 if let date = entry.core.lastActiveAt { activity[entry.id] = date }
-                outcomes.append(.joined)
+                outcomes.append(.joined(incarnation: incarnation))
             } catch {
                 TempleUILog.db.error("import failed for session \(entry.id, privacy: .public): \(String(describing: error), privacy: .public)")
                 outcomes.append(.failed(error))
@@ -363,15 +365,31 @@ public final class SessionOverlayStore: ObservableObject {
     /// still an untouched import. Returns the ids that left; the rest stay
     /// Temple's, holding whatever was decided about them since.
     public func leave(_ keys: [SessionKey]) -> [String] {
-        let left = keys.filter { key in
+        leave(keys.map { ImportedMembership(key: $0, agent: nil, incarnation: nil) })
+    }
+
+    /// One import as History captured it: the row's id and host, and the
+    /// agent and membership incarnation it joined with (nil: not checked).
+    struct ImportedMembership: Hashable {
+        let key: SessionKey
+        let agent: Agent?
+        let incarnation: String?
+    }
+
+    /// Undo of an import, narrowed to the membership that import made: a
+    /// row that has since left and joined again — as another agent, or as
+    /// the same file re-imported — is not the one undone.
+    func leave(_ imports: [ImportedMembership]) -> [String] {
+        let left = imports.filter { item in
+            let key = item.key
             guard templeSessions.contains(key.id) else { return false }
             do {
-                return try db.leave(sessionID: key.id, host: key.host)
+                return try db.leave(sessionID: key.id, host: key.host, agent: item.agent, incarnation: item.incarnation)
             } catch {
                 TempleUILog.db.error("leave failed for session \(key.id, privacy: .public): \(String(describing: error), privacy: .public)")
                 return false
             }
-        }.map(\.id)
+        }.map(\.key.id)
         if !left.isEmpty { templeSessions.subtract(left) }
         return left
     }

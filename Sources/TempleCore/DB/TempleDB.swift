@@ -442,11 +442,15 @@ public final class TempleDB: @unchecked Sendable {
     /// a different agent throws `agentConflict` — inside the same transaction,
     /// so nothing is written: an id is one session, and a second claim on it
     /// is refused, never merged. A row with no agent yet takes the incoming one.
+    /// Returns the membership's incarnation (a new one for a new row), read
+    /// in the same transaction, so a caller can later name exactly this
+    /// membership (`leave(…, incarnation:)`).
+    @discardableResult
     public func join(sessionID: String, via: JoinedVia, at: Date = Date(),
-                     agent: Agent? = nil, locator: TranscriptLocator? = nil, core: SessionCore? = nil) throws {
+                     agent: Agent? = nil, locator: TranscriptLocator? = nil, core: SessionCore? = nil) throws -> String? {
         let host = core?.host ?? .local
         if let locator, locator.host != host { throw TempleDBError.locatorHostMismatch }
-        let changed = try db.write { database -> (join: Bool, row: Bool) in
+        let changed = try db.write { database -> (join: Bool, row: Bool, incarnation: String?) in
             // Insert first: the write lock is taken before anything is read,
             // so a concurrent join on another connection cannot slip between
             // the check and the write.
@@ -454,8 +458,8 @@ public final class TempleDB: @unchecked Sendable {
                 sql: "INSERT INTO session_state (id, joined_via, joined_at, host) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
                 arguments: [sessionID, via.rawValue, at, host.rawValue])
             let inserted = database.changesCount > 0
-            guard let row = try Row.fetchOne(database, sql: "SELECT host, agent, transcript_path FROM session_state WHERE id = ?", arguments: [sessionID]) else {
-                return (false, false)
+            guard let row = try Row.fetchOne(database, sql: "SELECT host, agent, transcript_path, incarnation FROM session_state WHERE id = ?", arguments: [sessionID]) else {
+                return (false, false, nil)
             }
             let existingHost = HostID(rawValue: (row["host"] as String?) ?? "")
             guard existingHost == host else { throw TempleDBError.hostConflict(existing: existingHost) }
@@ -481,10 +485,11 @@ public final class TempleDB: @unchecked Sendable {
                                        core.title, core.lastActiveAt, sessionID, core.directory, core.title, core.lastActiveAt])
                 coreChanged = database.changesCount > 0
             }
-            return (inserted || hintChanged, inserted || hintChanged || coreChanged)
+            return (inserted || hintChanged, inserted || hintChanged || coreChanged, row["incarnation"])
         }
         if changed.join { committedJoin(sessionID, awaitingCreation: via == .created && agent == .claude && locator == nil) }
         if changed.row { committedRowChange(sessionID) }
+        return changed.incarnation
     }
 
     /// Undo of an import: the one write that removes membership. It deletes
@@ -496,19 +501,26 @@ public final class TempleDB: @unchecked Sendable {
     /// Returns
     /// whether the row went. ADR-023's "first join is kept" is untouched; a
     /// row that is undone was never kept.
+    ///
+    /// `agent` and `incarnation`, when given, narrow it to that membership:
+    /// a row that left and joined again (another agent's file under the same
+    /// id, or the same one re-imported) is a new membership, and an undo of
+    /// the old one leaves it alone.
     @discardableResult
-    public func leave(sessionID: String, host: HostID) throws -> Bool {
+    public func leave(sessionID: String, host: HostID, agent: Agent? = nil, incarnation: String? = nil) throws -> Bool {
         let left = try db.write { database in
             try database.execute(
                 sql: """
                     DELETE FROM session_state
                     WHERE id = ? AND host = ? AND joined_via = ?
+                      AND (? IS NULL OR agent IS ?) AND (? IS NULL OR incarnation IS ?)
                       AND pinned = 0 AND archived = 0
                       AND custom_name IS NULL AND color IS NULL
                       AND generated_title IS NULL AND last_opened_at IS NULL
                       AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
                     """,
-                arguments: [sessionID, host.rawValue, JoinedVia.imported.rawValue, sessionID]
+                arguments: [sessionID, host.rawValue, JoinedVia.imported.rawValue,
+                            agent?.rawValue, agent?.rawValue, incarnation, incarnation, sessionID]
             )
             return database.changesCount > 0
         }

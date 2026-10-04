@@ -56,6 +56,22 @@ final class DBTests: XCTestCase {
 
     /// Undo of an import deletes a row only while it says nothing but how the
     /// session joined; any later decision about the session keeps it.
+    /// A join hands back its membership's incarnation; a leave that names
+    /// an agent and incarnation removes only that membership.
+    func testLeaveNarrowedToAMembershipSparesARejoin() throws {
+        let db = try TempleDB.inMemory()
+        let first = try XCTUnwrap(try db.join(sessionID: "r", via: .imported, agent: .claude))
+        XCTAssertEqual(try db.join(sessionID: "r", via: .imported, agent: .claude), first, "a repeated join keeps it")
+        XCTAssertEqual(try db.sessionState("r")?.incarnation, first)
+        XCTAssertTrue(try db.leave(sessionID: "r", host: .local, agent: .claude, incarnation: first))
+        let second = try XCTUnwrap(try db.join(sessionID: "r", via: .imported, agent: .codex))
+        XCTAssertNotEqual(second, first)
+        XCTAssertFalse(try db.leave(sessionID: "r", host: .local, agent: .claude, incarnation: first))
+        XCTAssertFalse(try db.leave(sessionID: "r", host: .local, agent: .claude), "another agent's membership")
+        XCTAssertFalse(try db.leave(sessionID: "r", host: .local, agent: .codex, incarnation: first), "an earlier membership")
+        XCTAssertTrue(try db.leave(sessionID: "r", host: .local, agent: .codex, incarnation: second))
+    }
+
     func testLeaveDeletesOnlyAnUntouchedImportedRow() throws {
         let (db, _) = try database()
         try db.join(sessionID: "fresh", via: .imported, agent: .claude,
