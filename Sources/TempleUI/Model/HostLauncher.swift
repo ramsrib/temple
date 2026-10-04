@@ -278,7 +278,7 @@ final class LocalLaunchMarker: LaunchResultSource {
         switch fields.first {
         case "ok": return .directoryEstablished(folder)
         case "failed":
-            return .failed(.cdFailed, message: "Temple couldn't open the folder \(folder), so the agent didn't start.")
+            return .failed(.cdFailed, message: "Temple couldn't enter the folder \(folder).")
         default: return nil
         }
     }

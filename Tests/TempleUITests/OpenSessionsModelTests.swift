@@ -580,7 +580,7 @@ final class OpenSessionsModelTests: XCTestCase {
         // The owning host is asked after the exit (asynchronously).
         let deadline = Date().addingTimeInterval(2)
         while tab.missingWorkingDirectory == nil, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(tab.missingWorkingDirectoryMessage, "The folder \(directory.path) no longer exists")
+        XCTAssertEqual(tab.missingWorkingDirectoryMessage, "The folder \(directory.path) no longer exists.")
     }
 
     func testActivitySignalsTouchButQuietAgentsAndRefocusingDoNot() throws {

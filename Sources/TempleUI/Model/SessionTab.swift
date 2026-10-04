@@ -89,7 +89,7 @@ public final class SessionTab: ObservableObject, Identifiable {
     }
     @Published public var missingWorkingDirectory: String?
     public var missingWorkingDirectoryMessage: String? {
-        missingWorkingDirectory.map { "The folder \($0) no longer exists" }
+        missingWorkingDirectory.map { "The folder \($0) no longer exists." }
     }
     @Published public var isProvisional: Bool
     /// The user has sent this tab's agent something (Return). A new tab

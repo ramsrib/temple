@@ -68,7 +68,7 @@ final class LaunchEvidenceTests: XCTestCase {
         model.openSession(Fixture.session("s", project: "/p"))
         let tab = try XCTUnwrap(model.activeTab)
         let source = try XCTUnwrap(launcher.sources.last)
-        source.push(.failed(.cdFailed, message: "Temple couldn't open the folder /p, so the agent didn't start."))
+        source.push(.failed(.cdFailed, message: "Temple couldn't enter the folder /p."))
         source.notifyNow()
         try XCTUnwrap(factory.created.last).simulateExit(status: 1)
         XCTAssertTrue(model.tabs.contains { $0.id == tab.id }, "not auto-closed")

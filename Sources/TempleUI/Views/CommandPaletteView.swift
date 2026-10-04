@@ -238,7 +238,7 @@ private struct PaletteResultRow: View {
                 Text(model.displayTitle(session))
                     .font(.system(size: 13))
                     .lineLimit(1)
-                Text(session.project?.displayName ?? (openable ? "No project" : "Folder unknown · opens in History"))
+                Text(session.project?.displayName ?? (openable ? "No project" : "No folder on record · opens in History"))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
