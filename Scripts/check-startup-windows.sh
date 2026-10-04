@@ -47,34 +47,75 @@ with sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True) as source:
         newer.execute("INSERT INTO grdb_migrations(identifier) VALUES ('startup-window-future-schema')")
 PY
 
+# A directory where the database file should be: opening it fails with
+# SQLite's own error, and its folder exists, so Reveal in Finder is offered.
+mkdir -p "$CHECK_DIR/broken/temple.sqlite"
+
+# expected: normal | newer-schema | broken. action: how the failure window is
+# left — its Quit button, its red close button, or Window ▸ Close (⌘W). Each
+# must end the process: a failure window has no model and no New Window, so a
+# close that left the app running would leave a menu bar with no way back.
 check_window() {
-  local state="$1" expected="$2"
+  local state="$1" expected="$2" action="${3:-quit}"
   TEMPLE_CLAUDE_ROOT="$DEMO/claude-store" \
     TEMPLE_CODEX_ROOT="$DEMO/codex-store" \
     TEMPLE_STATE_DIR="$state" \
-    "$BINARY" > "$CHECK_DIR/$expected.log" 2>&1 &
+    "$BINARY" > "$CHECK_DIR/$expected-$action.log" 2>&1 &
   CHECK_PID=$!
   sleep 8
-  osascript - "$CHECK_PID" "$expected" <<'APPLESCRIPT'
+  osascript - "$CHECK_PID" "$expected" "$action" <<'APPLESCRIPT'
 on run argv
   set targetPID to (item 1 of argv) as integer
   set expected to item 2 of argv
+  -- Not "action": inside a System Events tell that names its AXAction class.
+  set how to item 3 of argv
   tell application "System Events"
+    -- A launch right after another Temple quit can take a moment to appear.
+    repeat 20 times
+      if exists (first process whose unix id is targetPID) then exit repeat
+      delay 0.5
+    end repeat
     tell (first process whose unix id is targetPID)
       if (count of windows) is not 1 then error expected & ": expected one window, got " & (count of windows)
       set windowNames to name of windows
-      if expected is "newer-schema" then
+      if expected is not "normal" then
         -- Query scalar values under the PID selector. System Events' returned
         -- UI references use process names, which are ambiguous with two Temples.
+        -- SwiftUI exposes no button titles here, so buttons are counted; they
+        -- are in view order, Quit last.
         set messages to value of every static text of group 1 of first window
-        if messages does not contain "This Temple is older than the data it found. Update Temple to continue." then error "newer-schema: missing update-required message"
-        if (count of buttons of group 1 of first window) is not 1 then error "newer-schema: missing Quit button"
-        -- No model means no Temple commands, but SwiftUI's default File ▸ New
-        -- Window (⌘N) would still open a second update-required window.
-        if exists menu bar item "File" of menu bar 1 then
-          if (name of every menu item of menu 1 of menu bar item "File" of menu bar 1) contains "New Window" then error "newer-schema: File menu offers New Window"
+        set buttonCount to count of buttons of group 1 of first window
+        if expected is "newer-schema" then
+          if messages does not contain "Update Temple to continue" then error "newer-schema: missing update-required title"
+          if buttonCount is not 1 then error "newer-schema: expected only Quit, got " & buttonCount & " buttons"
+        else
+          if messages does not contain "Temple couldn't open its data" then error "broken: missing couldn't-open title"
+          -- Reveal in Finder (its folder exists), Copy Details, Quit.
+          if buttonCount is not 3 then error "broken: expected 3 buttons, got " & buttonCount
         end if
-        click button 1 of group 1 of first window
+        if name of first window is not "Temple" then error expected & ": window is not titled Temple"
+        -- No model means no Temple commands, but SwiftUI's default File ▸ New
+        -- Window (⌘N) would still open a second failure window.
+        -- (With New Window gone the File menu is empty and SwiftUI drops it;
+        -- Close then lives in the Window menu.)
+        if (name of every menu bar item of menu bar 1) contains "File" then
+          if (name of every menu item of menu 1 of menu bar item "File" of menu bar 1) contains "New Window" then error expected & ": File menu offers New Window"
+        end if
+        -- The process may be gone before the click returns; whether it exited
+        -- is checked from the shell, so an error here proves nothing.
+        try
+          if how is "quit" then
+            click button buttonCount of group 1 of first window
+          else if how is "close-button" then
+            click (first button of first window whose subrole is "AXCloseButton")
+          else
+            -- ⌘W acts on the key window, so this one case brings Temple forward.
+            set frontmost to true
+            delay 0.5
+            click menu item "Close" of menu 1 of menu bar item "Window" of menu bar 1
+          end if
+        end try
+        return expected & " (" & how & "): " & windowNames
       else
         -- The same query must see Temple's own File menu, or the check above
         -- proves nothing.
@@ -85,14 +126,14 @@ on run argv
   end tell
 end run
 APPLESCRIPT
-  if [[ "$expected" == newer-schema ]]; then
-    # Quit must exit, including the no-AppModel termination path.
+  if [[ "$expected" != normal ]]; then
+    # Every way out must exit, including the no-AppModel termination path.
     for attempt in {1..50}; do
       if ! kill -0 "$CHECK_PID" 2>/dev/null; then break; fi
       sleep 0.1
     done
     if kill -0 "$CHECK_PID" 2>/dev/null; then
-      echo "error: update-required Quit did not terminate the app" >&2
+      echo "error: $expected window: $action did not terminate the app" >&2
       exit 1
     fi
   else
@@ -103,4 +144,7 @@ APPLESCRIPT
 }
 
 check_window "$DEMO/state" normal
-check_window "$CHECK_DIR/newer" newer-schema
+check_window "$CHECK_DIR/newer" newer-schema quit
+check_window "$CHECK_DIR/newer" newer-schema close-button
+check_window "$CHECK_DIR/broken" broken close-menu
+check_window "$CHECK_DIR/broken" broken quit
