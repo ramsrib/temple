@@ -17,7 +17,7 @@ public struct Session: Identifiable, Hashable, Sendable {
     public var project: ProjectKey? { directory.map { ProjectKey(host: host, path: $0) } }
     public var canResume: Bool { agent != nil && directory != nil }
     public var displayTitle: String {
-        state.customName ?? state.title ?? agent.map { "New \($0.displayName) session" } ?? "Untitled session"
+        state.customName ?? state.title ?? agent.map(\.newSessionTitle) ?? "Untitled session"
     }
     public var sortDate: Date { state.lastActiveAt ?? state.lastOpenedAt ?? state.joinedAt ?? .distantPast }
     public var transcript: TranscriptLocator? {

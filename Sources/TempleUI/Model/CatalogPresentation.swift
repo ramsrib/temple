@@ -4,7 +4,7 @@ import TempleCore
 extension TranscriptSummary {
     var catalogTitle: String {
         sharedTitleHint ?? recordedTitle ?? legacyTitleHint ?? firstPrompt ?? historyPrompt ?? laterPromptHint
-            ?? "New \(agent.displayName) session"
+            ?? agent.newSessionTitle
     }
     var catalogDirectory: String { cwd ?? directoryHint ?? "" }
 }

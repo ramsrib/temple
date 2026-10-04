@@ -295,8 +295,8 @@ final class SessionScopeTests: XCTestCase {
                          agent: agent, directory: "/row", title: title, lastActiveAt: active)
         }
         XCTAssertEqual(Session(state: row()).displayTitle, "Untitled session")
-        XCTAssertEqual(Session(state: row(agent: .claude)).displayTitle, "New Claude Code session")
         XCTAssertEqual(Session(state: row(agent: .codex)).displayTitle, "New Codex session")
+        XCTAssertEqual(Session(state: row(agent: .claude)).displayTitle, "New Claude session")
         XCTAssertEqual(Session(state: row(title: "Title", agent: .claude)).displayTitle, "Title")
         XCTAssertEqual(Session(state: row(name: "Custom", title: "Title", agent: .claude)).displayTitle, "Custom")
         let a = Date(timeIntervalSince1970: 1), b = Date(timeIntervalSince1970: 2), c = Date(timeIntervalSince1970: 3)

@@ -30,7 +30,7 @@ public enum SessionLauncher {
                 sessionID: uuid,
                 agent: .claude,
                 projectPath: projectPath,
-                title: "New Claude session",
+                title: Agent.claude.newSessionTitle,
                 command: TerminalCommand(argv: [claudePath, "--session-id", uuid], cwd: projectPath),
                 isProvisional: false)
         case .codex:
@@ -38,7 +38,7 @@ public enum SessionLauncher {
                 sessionID: nil,
                 agent: .codex,
                 projectPath: projectPath,
-                title: "New Codex session",
+                title: Agent.codex.newSessionTitle,
                 command: TerminalCommand(argv: [codexPath], cwd: projectPath),
                 isProvisional: true)
         }
