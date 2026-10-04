@@ -475,6 +475,48 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(app.history.allRows.last?.title, "New catalog member title")
     }
 
+    /// The rows an upgrade surfaces are archived from the selection bar in
+    /// one go, as one undo step, with the import's notice pattern. The bar
+    /// offers it only when every selected row can be archived.
+    func testHistoryArchivesTheWholeSelectionAsOneUndoableStep() async throws {
+        let app = try model([Fixture.row("a"), Fixture.row("b"), Fixture.row("c", project: "/p")])
+        app.overlay.togglePin("b")
+        app.history.catalog = { AsyncStream { $0.finish() } }
+        app.history.activate()
+        let deadline = Date().addingTimeInterval(2)
+        while (app.history.readState != .done || app.history.allRows.count < 3) && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        app.history.selectAll()
+        XCTAssertEqual(app.history.selectedRows.count, 3)
+
+        app.history.hasOpenTab = { $0.sessionID == "c" }
+        XCTAssertFalse(app.history.canArchiveSelection, "not when it would skip a row")
+        app.history.archiveSelected(undoManager: nil)
+        XCTAssertFalse(app.overlay.rows["a"]!.archived)
+        app.history.hasOpenTab = { _ in false }
+        XCTAssertTrue(app.history.canArchiveSelection)
+
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        undo.beginUndoGrouping()
+        app.history.archiveSelected(undoManager: undo)
+        undo.endUndoGrouping()
+        XCTAssertEqual(["a", "b", "c"].map { app.overlay.rows[$0]!.archived }, [true, true, true])
+        XCTAssertTrue(app.history.selection.isEmpty)
+        XCTAssertEqual(app.history.notice, HistoryModel.Notice(text: "3 sessions archived", offersUndo: true))
+        XCTAssertEqual(undo.undoActionName, "Archive Sessions")
+
+        undo.undo()
+        XCTAssertEqual(["a", "b", "c"].map { app.overlay.rows[$0]!.archived }, [false, false, false])
+        XCTAssertTrue(app.overlay.isPinned("b"), "the pin the archive dropped comes back")
+        XCTAssertEqual(app.history.notice, HistoryModel.Notice(text: "3 archives undone", offersUndo: false))
+
+        undo.redo()
+        XCTAssertEqual(["a", "b", "c"].map { app.overlay.rows[$0]!.archived }, [true, true, true])
+        XCTAssertEqual(app.history.notice?.text, "3 sessions archived")
+    }
+
     func testHistoryArchivesDirectorylessMembersWithUndo() throws {
         let app = try model([Fixture.row("unknown"), Fixture.row("project", project: "/p")])
         let undo = UndoManager()

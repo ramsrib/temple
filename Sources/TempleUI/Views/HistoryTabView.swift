@@ -426,6 +426,7 @@ struct HistoryTabView: View {
         let outside = selected.filter(\.canImport).count
         // A conflicting row's session is in Temple too, elsewhere.
         let inTemple = selected.count - outside
+        let archivable = history.canArchiveSelection
         return barChrome {
             HStack(spacing: 10) {
                 HStack(spacing: 0) {
@@ -445,6 +446,11 @@ struct HistoryTabView: View {
                 Spacer(minLength: 8)
                 Button("Deselect") { history.clearSelection() }
                     .controlSize(.regular)
+                if archivable {
+                    Button("Archive \(selected.count.formatted())") { history.archiveSelected(undoManager: undoManager) }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                }
                 if outside > 0 {
                     Button("Import \(outside.formatted())…") { history.requestImport() }
                         .buttonStyle(.borderedProminent)

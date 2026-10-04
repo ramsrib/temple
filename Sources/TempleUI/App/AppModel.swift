@@ -546,6 +546,7 @@ public final class AppModel: ObservableObject {
         }
         history.memberRows = { [weak self] in self?.sessions ?? [] }
         history.archiveMember = { [weak self] in self?.archiveSession($0, undoManager: $1) }
+        history.archiveMembers = { [weak self] in self?.archiveSessions($0, undoManager: $1, changed: $2) }
         history.openMember = { [weak self] in self?.openSessions.openSession($0) }
         var historyWasOpen = false
         openSessions.$tabs
@@ -984,13 +985,24 @@ public final class AppModel: ObservableObject {
     /// Undo Archive Session), with redo registered as the undo runs. The pin the
     /// archive dropped comes back with the session.
     public func archiveSession(_ id: String, undoManager: UndoManager?) {
-        let wasPinned = overlay.isPinned(id)
-        overlay.setArchived(true, sessionID: id)
-        registerUndo(undoManager, name: "Archive Session") { [overlay] in
-            overlay.setArchived(false, sessionID: id)
-            if wasPinned, !overlay.isPinned(id) { overlay.togglePin(id) }
+        archiveSessions([id], undoManager: undoManager)
+    }
+
+    /// Several at once (History's selection bar) as one undo step, by the
+    /// same path. `changed` hears each undo (false) and redo (true).
+    public func archiveSessions(_ ids: [String], undoManager: UndoManager?,
+                                changed: @escaping @MainActor (Bool) -> Void = { _ in }) {
+        let pinned = Set(ids.filter { overlay.isPinned($0) })
+        for id in ids { overlay.setArchived(true, sessionID: id) }
+        registerUndo(undoManager, name: ids.count == 1 ? "Archive Session" : "Archive Sessions") { [overlay] in
+            for id in ids {
+                overlay.setArchived(false, sessionID: id)
+                if pinned.contains(id), !overlay.isPinned(id) { overlay.togglePin(id) }
+            }
+            changed(false)
         } redo: { [overlay] in
-            overlay.setArchived(true, sessionID: id)
+            for id in ids { overlay.setArchived(true, sessionID: id) }
+            changed(true)
         }
     }
 

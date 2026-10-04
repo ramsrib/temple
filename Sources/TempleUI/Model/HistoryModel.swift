@@ -102,6 +102,9 @@ public final class HistoryModel: ObservableObject {
     /// as `opened` on the way (ADR-023).
     var openSession: (TranscriptSummary) -> Void = { _ in }
     var archiveMember: (String, UndoManager?) -> Void = { _, _ in }
+    /// Archive several members as one undoable step. `changed` hears each
+    /// undo (false) and redo (true), so the page can say what happened.
+    var archiveMembers: ([String], UndoManager?, _ changed: @escaping @MainActor (Bool) -> Void) -> Void = { _, _, _ in }
     /// Whether a session runs in an open tab on the row's host: undoing its
     /// import must not pull it out from under that tab.
     var hasOpenTab: (HistoryKey) -> Bool = { _ in false }
@@ -769,7 +772,7 @@ public final class HistoryModel: ObservableObject {
     // MARK: Opening
 
     /// Return / double-click. A tab is a process, so with two or more rows
-    /// selected Return opens nothing — Import is the only bulk verb.
+    /// selected Return opens nothing — Import and Archive are the bulk verbs.
     public func openSelected() {
         // Typing then Return at once opens the first match, not the row that
         // was selected before the typing.
@@ -786,6 +789,35 @@ public final class HistoryModel: ObservableObject {
     public func archive(_ session: HistoryRow, undoManager: UndoManager?) {
         guard canArchive(session), let member = session.member else { return }
         archiveMember(member.id, undoManager)
+    }
+
+    /// The selection bar offers Archive only when it would archive every
+    /// selected row: a bulk verb that silently skips some is worse than none.
+    public var canArchiveSelection: Bool {
+        let rows = selectedRows
+        return !rows.isEmpty && rows.allSatisfy(canArchive)
+    }
+
+    /// The selection bar's Archive N: the rows an upgrade surfaces (legacy,
+    /// transcript-less, folderless) are otherwise a click each. One undo step,
+    /// with the same notice and Undo the import uses.
+    public func archiveSelected(undoManager: UndoManager?) {
+        guard canArchiveSelection else { return }
+        let ids = selectedRows.compactMap { $0.member?.id }
+        clearSelection()
+        archiveMembers(ids, undoManager) { [weak self] archived in
+            self?.showNotice(Notice(text: archived ? Self.archivedNotice(ids.count) : Self.archiveUndoneNotice(ids.count),
+                                    offersUndo: archived && undoManager != nil))
+        }
+        showNotice(Notice(text: Self.archivedNotice(ids.count), offersUndo: undoManager != nil))
+    }
+
+    static func archivedNotice(_ count: Int) -> String {
+        count == 1 ? "1 session archived" : "\(count) sessions archived"
+    }
+
+    static func archiveUndoneNotice(_ count: Int) -> String {
+        count == 1 ? "Archive undone" : "\(count) archives undone"
     }
 
     public func open(_ session: HistoryRow) {
