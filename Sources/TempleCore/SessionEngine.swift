@@ -283,6 +283,9 @@ public actor SessionEngine: HostEngine {
             fresh.awaitingCreation = awaitingCreation
             fresh.resolution = awaitingCreation ? .awaitingCreation : .resolving
             members[id] = fresh
+            // The old membership's backoffs are not this one's to wait out.
+            deferred.removeValue(forKey: id); readDelays.removeValue(forKey: id)
+            churnDelays.removeValue(forKey: id); churnUntil.removeValue(forKey: id)
             snapshotDirty = true
             reindex(id)
             resolveAbsenceWaiters(id, absent: false)

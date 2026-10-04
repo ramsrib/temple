@@ -689,6 +689,33 @@ final class EngineMatrixTests: XCTestCase {
         try await waitUntil("filled") { try self.row(h, id)?.title != nil }
     }
 
+    /// A rejoin seen as a new incarnation while the old member is still
+    /// cached (both callbacks land after the rejoin) does not inherit the old
+    /// membership's churn backoff: the new one reads at once.
+    func testARejoinDuringAChurnBackoffDoesNotWaitOutTheOldDeadline() async throws {
+        let h = try harness(timers: false)
+        let id = uuid()
+        let path = claudePath(id)
+        h.source.write(path, agent: .claude, data: claudeData(id))
+        try join(h, id, path: path)
+        let fake = h.source
+        fake.readPhaseHook = { changed in fake.append(changed, Data("\n{}".utf8)) }
+        await h.engine.start()
+        try await waitUntil("first read churned") { h.source.counters.reads >= 1 }
+        try await settle()
+        fake.readPhaseHook = nil
+        let reads = h.source.counters.reads
+        let old = try XCTUnwrap(try row(h, id)?.incarnation)
+        XCTAssertTrue(try h.db.leave(sessionID: id, host: h.source.host))
+        try join(h, id, path: path)
+        let fresh = try XCTUnwrap(try row(h, id)?.incarnation)
+        XCTAssertNotEqual(old, fresh)
+        // No clock advance: the old deadline must not hold the new membership.
+        try await waitUntil("new membership read") { h.source.counters.reads > reads }
+        try await waitUntil("filled") { try self.row(h, id)?.title != nil }
+        XCTAssertEqual(h.writes.succeeded.map(\.incarnation), [fresh])
+    }
+
     /// `confirmAbsence` asked while an older listing is held: that listing's
     /// failure does not answer it; its own listing (complete, nothing
     /// there) does — true.
