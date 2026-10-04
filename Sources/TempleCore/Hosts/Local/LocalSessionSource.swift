@@ -3,7 +3,7 @@ import Foundation
 import CoreServices
 
 /// Local observation, selection, verification and enrichment. Registered interests
-/// come from the engine; this source never reads or writes Temple registeredIDship.
+/// come from the engine; this source never reads or writes Temple membership.
 public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics, @unchecked Sendable {
     public func directoryEvidence(_ path: String) -> DirectoryEvidence {
         var isDirectory: ObjCBool = false

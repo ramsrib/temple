@@ -13,7 +13,11 @@ public struct HistoryRow: Identifiable, Equatable, Sendable {
     public var id: String { member?.id ?? catalog!.id }
     public var title: String { member?.displayTitle ?? catalog!.catalogTitle }
     public var agent: Agent? { member != nil ? member?.agent : catalog?.agent }
-    public var project: ProjectKey? { member != nil ? member?.project : catalog.map { ProjectKey(host: $0.locator.host, path: $0.catalogDirectory) } }
+    public var project: ProjectKey? {
+        if let member { return member.project }
+        // No folder at all is "No project", not a key for the empty path ("/").
+        return catalog.flatMap { $0.catalogDirectory.isEmpty ? nil : ProjectKey(host: $0.locator.host, path: $0.catalogDirectory) }
+    }
     public var projectPath: String { project?.path ?? "" }
     public var updatedAt: Date { catalog?.modifiedAt ?? member!.sortDate }
     public var canResume: Bool { member?.canResume ?? (catalog != nil) }

@@ -135,7 +135,9 @@ public final class AppModel: ObservableObject {
     }
 
     /// Row recency stays live until initial resolution completes or the
-    /// startup deadline fires. Unseen projects and sessions then prepend.
+    /// startup deadline fires. A project or session first seen after that
+    /// takes its place by recency among the frozen ones: a new session lands
+    /// on top, but an old row that only now learned its folder does not.
     private var frozenProjectOrder: [ProjectKey] = []
     private var frozenSessionOrder: [ProjectKey: [String]] = [:]
     private var knownProjectKeys = Set<ProjectKey>()
@@ -143,14 +145,25 @@ public final class AppModel: ObservableObject {
 
     private func extendRowRanks() {
         guard sidebarRanksFrozen else { return }
+        let activity = Dictionary(rowProjects.map { ($0.key, $0.lastActivity) }, uniquingKeysWith: { first, _ in first })
         let keys = rowProjects.map(\.key).filter { !knownProjectKeys.contains($0) }
-        frozenProjectOrder.insert(contentsOf: keys, at: 0)
+        Self.place(keys, into: &frozenProjectOrder) { activity[$0] ?? .distantPast }
         knownProjectKeys.formUnion(keys)
         for project in rowProjects {
             let known = knownSessionIDs[project.key] ?? []
             let ids = project.sessions.map(\.id).filter { !known.contains($0) }
-            frozenSessionOrder[project.key, default: []].insert(contentsOf: ids, at: 0)
+            Self.place(ids, into: &frozenSessionOrder[project.key, default: []]) {
+                presentedByID[$0]?.sortDate ?? .distantPast
+            }
             knownSessionIDs[project.key, default: []].formUnion(ids)
+        }
+    }
+
+    /// Each newcomer goes before the first frozen entry less recent than it.
+    private static func place<Key>(_ newcomers: [Key], into order: inout [Key], date: (Key) -> Date) {
+        for key in newcomers.sorted(by: { date($0) > date($1) }) {
+            let when = date(key)
+            order.insert(key, at: order.firstIndex { date($0) < when } ?? order.endIndex)
         }
     }
 
@@ -435,7 +448,7 @@ public final class AppModel: ObservableObject {
             }
         }
         openSessions.sessionRow = { [weak self] id in
-            self?.sessions.first { $0.id == id }
+            self?.presentedByID[id]
         }
 
         // Sidebar highlight follows the active tab (UX "Select vs. open").
@@ -580,7 +593,9 @@ public final class AppModel: ObservableObject {
         openSessions.restore()
         retireIndexCacheOnce()
         indexSource.start { [weak self] snapshot in
-            self?.isLoading = false
+            // Every snapshot lands here; republishing an unchanged flag
+            // re-renders everything that observes the model.
+            if self?.isLoading == true { self?.isLoading = false }
             self?.receiveEngineSnapshot(snapshot)
         }
         // U10: follow macOS appearance live when theme == .system.
@@ -666,19 +681,19 @@ public final class AppModel: ObservableObject {
     }
 
     public func transcriptURL(for id: String) -> URL? {
-        sessions.first { $0.id == id }?.transcript?.localURL
+        presentedByID[id]?.transcript?.localURL
     }
 
     public func resumeArgv(for tab: SessionTab) -> [String] {
         guard let id = tab.sessionID else { return [] }
-        if let row = sessions.first(where: { $0.id == id }) { return SessionLauncher.resumeArgv(row) }
+        if let row = presentedByID[id] { return SessionLauncher.resumeArgv(row) }
         return tab.agent.resumeArgv(sessionID: id)
     }
 
     // MARK: Opening by id (palette / notifications)
 
     public func openSession(id: String) {
-        if let row = sessions.first(where: { $0.id == id }) {
+        if let row = presentedByID[id] {
             openSessions.openSession(row)
             return
         }
@@ -694,7 +709,7 @@ public final class AppModel: ObservableObject {
 
     /// Catalog actions prefer durable row facts when the session is a member.
     public func resumeArgv(for session: TranscriptSummary) -> [String] {
-        if let row = sessions.first(where: { $0.id == session.id }) {
+        if let row = presentedByID[session.id] {
             return SessionLauncher.resumeArgv(row)
         }
         return session.agent.resumeArgv(sessionID: session.id)
@@ -828,8 +843,8 @@ public final class AppModel: ObservableObject {
     /// Persist the WHOLE visible list — a move is a statement about where this
     /// project sits relative to all the others, and leaving half of them
     /// unplaced would let the frozen order pull them back past it — but never
-    /// at the expense of projects the user can't see right now. An archived or
-    /// noise-hidden project keeps the slot it was placed in: the visible paths
+    /// at the expense of projects the user can't see right now. An archived
+    /// project keeps the slot it was placed in: the visible paths
     /// are rewritten in their new order through the slots they already hold,
     /// hidden paths stay where they are, and visible paths placed for the first
     /// time go on the end. Otherwise archiving a project and moving any other

@@ -259,6 +259,22 @@ final class SearchFilterTests: XCTestCase {
         XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["s3", "s1", "s2"])
     }
 
+    /// After the freeze a newcomer takes its place by recency: an old legacy
+    /// row whose folder is filled in late does not jump to the top.
+    func testALateOldRowIsPlacedByRecencyNotPrepended() async throws {
+        let (model, overlay) = makeRowModel([Fixture.row("s1", project: "/p/a", updated: 20),
+            Fixture.row("s2", project: "/p/a", updated: 10), Fixture.row("b1", project: "/p/b", updated: 15)])
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["s1": .confirmedAbsent,
+            "s2": .confirmedAbsent, "b1": .confirmedAbsent], summaries: [:]))
+        XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
+        overlay.join("old", via: .imported, agent: .claude,
+                     core: SessionCore(directory: "/p/a", title: "Old", lastActiveAt: Date(timeIntervalSince1970: 5)))
+        XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["s1", "s2", "old"])
+        overlay.join("oldproject", via: .imported, agent: .claude,
+                     core: SessionCore(directory: "/p/old", title: "Old", lastActiveAt: Date(timeIntervalSince1970: 1)))
+        XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b", "/p/old"])
+    }
+
     func testPaletteEmptyQueryListsOpenSessionsOnlyByRecency() async {
         let a = Fixture.row("a1", project: "/p/a", updated: 50)
         let b = Fixture.row("b1", project: "/p/b", updated: 40)

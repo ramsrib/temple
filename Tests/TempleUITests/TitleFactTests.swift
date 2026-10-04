@@ -43,4 +43,11 @@ final class TitleFactTests: XCTestCase {
         XCTAssertEqual(HistoryRow(catalog: imported).title,
                        HistoryRow(member: Session(state: try XCTUnwrap(db.sessionState("imported"))), catalog: imported).title)
     }
+
+    func testACatalogRowWithNoFolderHasNoProject() {
+        let row = HistoryRow(catalog: TranscriptSummary(id: "x", agent: .codex,
+            locator: TranscriptLocator(localURL: URL(fileURLWithPath: "/tmp/x.jsonl")), modifiedAt: Date()))
+        XCTAssertNil(row.project, "not a key for the empty path, which reads \"/\"")
+        XCTAssertTrue(row.resumeArgv.isEmpty == false, "a catalog row resumes by id")
+    }
 }

@@ -731,19 +731,23 @@ private struct HistoryPageRow: View, Equatable {
             Button("Import into Temple…") { history.requestImport([session]) }
         }
         Divider()
-        Button("Copy resume command") {
-            copyToPasteboard(resumeArgv.joined(separator: " "))
+        // A row that cannot resume (no folder or agent) has no command.
+        if !resumeArgv.isEmpty {
+            Button("Copy resume command") {
+                copyToPasteboard(resumeArgv.joined(separator: " "))
+            }
         }
         Button("Copy session ID") { copyToPasteboard(session.id) }
         if let url = session.localURL {
             Button("Reveal session file in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
         }
         Divider()
-        if inTemple, !archived {
+        // The sidebar groups rows by folder: a row without one is not there.
+        if inTemple, !archived, session.project != nil {
             Button("Show in sidebar") { actions.showInSidebar(session.id) }
         }
-        Button("Show only \(session.project?.displayName ?? "No project")") {
-            if let project = session.project { history.showOnly(project: project) }
+        if let project = session.project {
+            Button("Show only \(project.displayName)") { history.showOnly(project: project) }
         }
     }
 

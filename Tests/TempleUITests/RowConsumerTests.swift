@@ -239,7 +239,10 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(app.displayProjects.map(\.path), ["/a", "/b"])
         app.overlay.observeLaunchDirectory("b", "/a")
         XCTAssertEqual(app.displayProjects.map(\.path), ["/a"])
-        XCTAssertEqual(app.displayProjects[0].sessions.map(\.id), ["b", "a"])
+        // A newcomer to a frozen group takes its place by recency (b: 30, a: 40).
+        XCTAssertEqual(app.displayProjects[0].sessions.map(\.id), ["a", "b"])
+        app.overlay.touch("b", at: Date(timeIntervalSince1970: 50))
+        XCTAssertEqual(app.displayProjects[0].sessions.map(\.id), ["a", "b"], "and then stays frozen")
         app.overlay.join("new", via: .created, agent: .claude, core: SessionCore(directory: "/new"))
         XCTAssertEqual(app.displayProjects.map(\.path), ["/new", "/a"])
     }
