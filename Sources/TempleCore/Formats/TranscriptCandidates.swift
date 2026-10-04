@@ -54,12 +54,23 @@ public enum TranscriptCandidates {
         return result
     }
 
-    /// The candidates a resolution may try: alternates only when there is no
-    /// selected file, or the selected file is proven missing. An unreadable,
-    /// incomplete or mismatched selected file never lets an older rollout load.
-    public static func permitted(_ assignments: [Assignment], selectedMissing: Bool) -> [Assignment] {
-        let hasSelected = assignments.contains { $0.role == .selected }
-        return assignments.filter { $0.role != .alternate || !hasSelected || selectedMissing }
+    /// The candidates a resolution may try, in `assign`'s order. Without a
+    /// selection, all of them. With one, the selection chain — the selected
+    /// file, then the alternates in the CLI's fallback order — ends at its
+    /// first file not proven missing: that file decides, and when it is
+    /// unreadable, incomplete or another session's, no older rollout loads
+    /// in its place. The same rule picks a catalog's file (`catalogPick`).
+    /// A hint is outside the chain and always permitted.
+    public static func permitted<Candidate>(_ candidates: [Candidate], role: (Candidate) -> CandidateRole,
+                                            missing: (Candidate) -> Bool) -> [Candidate] {
+        guard candidates.contains(where: { role($0) == .selected }) else { return candidates }
+        var chainOpen = true
+        return candidates.filter { candidate in
+            guard role(candidate) != .hinted else { return true }
+            guard chainOpen else { return false }
+            if !missing(candidate) { chainOpen = false }
+            return true
+        }
     }
 }
 
@@ -110,10 +121,11 @@ public extension TranscriptCandidates {
         }
     }
 
-    /// The thread's one summary, or nil. With a selection, the selected file
-    /// decides: an unreadable or incomplete selected file means nothing is
-    /// emitted — an older rollout is read only once the selected one is
-    /// proven missing (`permitted`). Without one, the first file that reads.
+    /// The thread's one summary, or nil. With a selection, the first file
+    /// not proven missing decides: when it is unreadable, incomplete or
+    /// another session's, nothing is emitted — an older rollout is read
+    /// only past files proven missing (`permitted`). Without one, the first
+    /// file that reads.
     static func catalogPick<Value>(_ thread: CatalogThread, attempt: (String) -> CatalogAttempt<Value>) -> Value? {
         for path in thread.paths {
             switch attempt(path) {

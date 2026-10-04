@@ -722,9 +722,9 @@ public actor SessionEngine: HostEngine {
             member.candidates = candidates
             members[id] = member
             reindex(id)
-            let hasSelected = candidates.contains { $0.role == .selected }
-            let selectedMissing = candidates.contains { $0.role == .selected && $0.stat == .missing }
-            let permitted = candidates.filter { $0.role != .alternate || !hasSelected || selectedMissing }
+            // Past a missing revert, the first rollout still there decides,
+            // as the catalog picks: an unreadable one stops the fallback.
+            let permitted = TranscriptCandidates.permitted(candidates, role: \.role, missing: { $0.stat == .missing })
             let present = permitted.filter { $0.stat != .missing }
             // Facts for anything but exactly the file version they were read
             // from are revoked (candidate replacement, or any change to it).

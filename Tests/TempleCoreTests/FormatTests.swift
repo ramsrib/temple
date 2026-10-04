@@ -77,18 +77,23 @@ final class FormatTests: XCTestCase {
         XCTAssertEqual(TranscriptCandidates.assign(id: thread, format: codex, listed: [other], hint: nil), [])
     }
 
-    func testAlternatesArePermittedOnlyWhenTheSelectedFileIsMissing() {
+    func testAlternatesArePermittedOnlyPastMissingFilesAndTheFirstSurvivorDecides() {
         let roles: [TranscriptCandidates.Assignment] = [.init(path: "r", role: .selected), .init(path: "h", role: .hinted),
-                                                        .init(path: "a", role: .alternate)]
-        XCTAssertEqual(TranscriptCandidates.permitted(roles, selectedMissing: false).map(\.path), ["r", "h"])
-        XCTAssertEqual(TranscriptCandidates.permitted(roles, selectedMissing: true).map(\.path), ["r", "h", "a"])
+                                                        .init(path: "a", role: .alternate), .init(path: "b", role: .alternate)]
+        func permitted(missing: Set<String>) -> [String] {
+            TranscriptCandidates.permitted(roles, role: \.role, missing: { missing.contains($0.path) }).map(\.path)
+        }
+        XCTAssertEqual(permitted(missing: []), ["r", "h"])
+        XCTAssertEqual(permitted(missing: ["r"]), ["r", "h", "a"], "the first surviving alternate decides; no further")
+        XCTAssertEqual(permitted(missing: ["r", "a"]), ["r", "h", "a", "b"])
+        XCTAssertEqual(permitted(missing: ["h"]), ["r", "h"], "a hint is outside the chain")
     }
 
     func testClaudeTriesTheHintFirstThenEveryFileNamedForTheSession() {
         let roles = TranscriptCandidates.assign(id: "id", format: claude,
             listed: ["/p/-b/id.jsonl", "/p/-a/id.jsonl", "/p/-a/other.jsonl"], hint: "/p/-b/id.jsonl")
         XCTAssertEqual(roles, [.init(path: "/p/-b/id.jsonl", role: .hinted), .init(path: "/p/-a/id.jsonl", role: .alternate)])
-        XCTAssertEqual(TranscriptCandidates.permitted(roles, selectedMissing: false), roles)
+        XCTAssertEqual(TranscriptCandidates.permitted(roles, role: \.role, missing: { _ in false }), roles)
     }
 
     // MARK: Identity

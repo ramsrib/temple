@@ -45,6 +45,8 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
     }
     private let lock = NSLock()
     private var files: [String: File] = [:]
+    /// Paths listings still name after their file went (`removeKeepingListing`).
+    private var staleListed: [String: Agent] = [:]
     private var shared: [Agent: [String: Data]] = [:]
     private var sharedRevisions: [Agent: UInt64] = [:]
     private var directories: Set<String> = []
@@ -88,6 +90,7 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
             let identity: UInt64
             if inPlace, let old = files[path] { identity = old.identity } else { identity = hasInodes ? nextIdentity : 0; nextIdentity += 1 }
             files[path] = File(agent: agent, data: data, modifiedAt: modifiedAt ?? clock, identity: identity)
+            staleListed.removeValue(forKey: path)
             return changeLocked(path, agent: agent)
         }
         emit(change)
@@ -122,6 +125,13 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
             return changeLocked(path, agent: file.agent)
         }
         change.map(emit)
+    }
+
+    /// The file goes, but listings still name it, and no change is
+    /// reported: a `find` that raced the delete, a filename map that missed
+    /// it. Its candidates stat as missing.
+    public func removeKeepingListing(_ path: String) {
+        locked { if let file = files.removeValue(forKey: path) { staleListed[path] = file.agent } }
     }
 
     public func setUnreadable(_ path: String, _ unreadable: Bool = true) {
@@ -178,6 +188,11 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
     /// How many change streams are open.
     public var subscribers: Int { locked { continuations.count } }
 
+    /// What a listing names for an agent: its files, and any stale entries.
+    private func listedPathsLocked(_ agent: Agent) -> [String] {
+        (files.filter { $0.value.agent == agent }.map(\.key) + staleListed.filter { $0.value == agent }.map(\.key)).sorted()
+    }
+
     private func changeLocked(_ path: String, agent: Agent) -> SourceChange {
         let id = TranscriptFormats.format(for: agent).name(path: path)?.threadID
         return .transcripts(ids: id.map { [$0] } ?? [], locators: [TranscriptLocator(host: host, path: path)])
@@ -222,8 +237,8 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
                 var list: [TranscriptCandidate] = []
                 for agent in Agent.allCases where request.agent == nil || request.agent == agent {
                     let format = TranscriptFormats.format(for: agent)
-                    let listed = brokenListings.contains(agent) ? [] : files.keys.sorted().filter { path in
-                        files[path]?.agent == agent && format.name(path: path)?.threadID == request.id
+                    let listed = brokenListings.contains(agent) ? [] : listedPathsLocked(agent).filter { path in
+                        format.name(path: path)?.threadID == request.id
                     }
                     // A hint is this agent's when its file is this agent's, or gone.
                     let hint = request.hint.flatMap { $0.host == host ? $0.path : nil }
@@ -381,10 +396,8 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
         let paths: [(Agent, String)] = locked {
             counts.roundTrips += 1
             counts.listings += 1
-            return files.keys.sorted().compactMap { path in
-                guard let agent = files[path]?.agent, query.agents.contains(agent), !brokenListings.contains(agent) else { return nil }
-                return (agent, path)
-            }
+            return Agent.allCases.filter { query.agents.contains($0) && !brokenListings.contains($0) }
+                .flatMap { agent in listedPathsLocked(agent).map { (agent, $0) } }
         }
         let broken = locked { brokenListings }
         let failed = Agent.allCases.filter { query.agents.contains($0) && broken.contains($0) }

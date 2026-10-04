@@ -608,6 +608,39 @@ final class EngineMatrixTests: XCTestCase {
         XCTAssertEqual(try row(h, id)?.transcriptPath, revert)
     }
 
+    /// A stale listing still names the newest revert, which is gone; the
+    /// next one is unreadable; the oldest rollout reads. Past the missing
+    /// file, the first rollout still there decides: the member is
+    /// unreadable and nothing of the oldest is published or persisted —
+    /// and the catalog, picking by the same rule, lists nothing for it.
+    func testPastAMissingRevertTheFirstSurvivingRolloutDecides() async throws {
+        let h = try harness()
+        let id = uuid()
+        let oldest = codexPath(id), next = codexPath(id, stamp: "2026-10-01T11-00-00")
+        let newest = codexPath(id, stamp: "2026-10-01T12-00-00")
+        h.source.write(oldest, agent: .codex, data: codexData(id, cwd: "/oldest", prompt: "Oldest"))
+        h.source.write(next, agent: .codex, data: codexData(id, cwd: "/next", prompt: "Next"))
+        h.source.setUnreadable(next)
+        h.source.write(newest, agent: .codex, data: codexData(id, cwd: "/newest", prompt: "Newest"))
+        h.source.removeKeepingListing(newest)
+        try join(h, id, agent: .codex)
+
+        await h.engine.start()
+        try await waitUntil("settled") { self.resolution(h, id) != nil && self.resolution(h, id) != .resolving }
+        try await settle()
+        XCTAssertEqual(resolution(h, id), .unreadable)
+        XCTAssertNil(h.recorder.latest?.facts[id])
+        XCTAssertNil(try row(h, id)?.directory, "the oldest rollout's folder was persisted")
+        XCTAssertNil(try row(h, id)?.title)
+        XCTAssertEqual(h.writes.attempted.count, 0)
+
+        var listed: [TranscriptSummary] = []
+        for try await batch in h.source.catalog(CatalogQuery()) {
+            if case .sessions(let rows, _, _) = batch { listed += rows }
+        }
+        XCTAssertEqual(listed.map(\.id), [], "the catalog stops at the unreadable rollout too")
+    }
+
     /// A listing that fails after the member left and rejoined (it was for
     /// the old membership) neither marks the new membership incomplete nor
     /// defers it; the new membership's own listing resolves it.
