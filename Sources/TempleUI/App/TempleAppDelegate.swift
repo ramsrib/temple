@@ -5,11 +5,7 @@ import AppKit
 /// quit mid-write.
 @MainActor
 public final class TempleAppDelegate: NSObject, NSApplicationDelegate {
-    public static let mainWindowID = "main"
     public weak var model: AppModel?
-    /// Installed by both @main scene bodies, where SwiftUI's openWindow action
-    /// is available. Consumed once after launch, including schema-failure startup.
-    public var openInitialWindow: (() -> Void)?
     var replyToTermination: (Bool) -> Void = { NSApp.reply(toApplicationShouldTerminate: $0) }
 
     /// Shown instead of the real alert in tests, which must not block on a modal.
@@ -45,15 +41,6 @@ public final class TempleAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
-        // With a conditional WindowGroup root, bundled SwiftUI can finish launch
-        // without requesting its content at all. A .task inside that content
-        // cannot repair the missing window. Wait until the scene is registered,
-        // then explicitly request it if no primary window was presented.
-        DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated {
-                self?.presentInitialWindowIfNeeded(windows: NSApp.windows)
-            }
-        }
         WindowSnapshot.installIfRequested()
         // Re-checked on every activation rather than installed once: SwiftUI owns
         // the delegate and may re-seat it, and a latch that lost the race would
@@ -86,15 +73,6 @@ public final class TempleAppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated { self?.sweepWindows() }
         }
-    }
-
-    func presentInitialWindowIfNeeded(windows: [NSWindow]) {
-        let request = openInitialWindow
-        openInitialWindow = nil
-        // Window lifetime, not visibility: hidden/minimized windows must not
-        // produce a second window. An auxiliary panel is not the primary one.
-        guard windows.allSatisfy({ $0 is NSPanel }) else { return }
-        request?()
     }
 
     private func sweepWindows() {

@@ -7,49 +7,6 @@ import TempleCore
 /// between a stray click on the red button and a working agent.
 @MainActor
 final class AppLifecycleTests: XCTestCase {
-    func testWindowlessLaunchRequestsThePrimaryWindowOnlyOnce() {
-        let delegate = TempleAppDelegate()
-        var requests = 0
-        delegate.openInitialWindow = { requests += 1 }
-
-        delegate.presentInitialWindowIfNeeded(windows: [])
-        delegate.presentInitialWindowIfNeeded(windows: [])
-
-        XCTAssertEqual(requests, 1)
-        XCTAssertNil(delegate.openInitialWindow)
-        XCTAssertNil(delegate.model, "the failure screen needs no AppModel")
-    }
-
-    func testHiddenPrimaryWindowDoesNotCreateADuplicateOnLaunch() {
-        _ = NSApplication.shared
-        let window = makeWindow()
-        defer { window.close() }
-        XCTAssertFalse(window.isVisible)
-        let delegate = TempleAppDelegate()
-        var requests = 0
-        delegate.openInitialWindow = { requests += 1 }
-
-        delegate.presentInitialWindowIfNeeded(windows: [window])
-        delegate.presentInitialWindowIfNeeded(windows: [])
-
-        XCTAssertEqual(requests, 0)
-        XCTAssertNil(delegate.openInitialWindow)
-    }
-
-    func testAuxiliaryPanelDoesNotPreventThePrimaryWindowOpening() {
-        _ = NSApplication.shared
-        let panel = NSPanel(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: true)
-        panel.isReleasedWhenClosed = false
-        defer { panel.close() }
-        let delegate = TempleAppDelegate()
-        var requests = 0
-        delegate.openInitialWindow = { requests += 1 }
-
-        delegate.presentInitialWindowIfNeeded(windows: [panel])
-
-        XCTAssertEqual(requests, 1)
-    }
-
     private func makeModel() -> AppModel {
         AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
                  indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),

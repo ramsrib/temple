@@ -14,7 +14,6 @@ import TempleTerminal
 @main
 struct TempleApp: App {
     @NSApplicationDelegateAdaptor(TempleAppDelegate.self) private var appDelegate
-    @Environment(\.openWindow) private var openWindow
     @StateObject private var startup: AppStartup
 
     init() {
@@ -39,21 +38,11 @@ struct TempleApp: App {
     }
 
     var body: some Scene {
-        let action = openWindow
-        let _ = appDelegate.openInitialWindow = { action(id: TempleAppDelegate.mainWindowID) }
-        WindowGroup("Temple", id: TempleAppDelegate.mainWindowID) {
-            if let model = startup.model {
-                RootView()
-                    .environmentObject(model)
-                    .frame(minWidth: 900, minHeight: 600)
-                    .task {
-                        appDelegate.model = model
-                        model.start()
-                    }
-            } else {
-                StartupFailureView(message: startup.failureMessage ?? "Unable to open Temple.")
-                    .frame(minWidth: 900, minHeight: 600)
-            }
+        // A stable id keys the saved window frame and sidebar width. Without
+        // one, SwiftUI keys them on the content's Swift type name, so any
+        // change to the root view's type resets both for every user.
+        WindowGroup(id: "main") {
+            StartupRootView(startup: startup, appDelegate: appDelegate)
         }
         .commands {
             if let model = startup.model { TempleCommands(model: model) }

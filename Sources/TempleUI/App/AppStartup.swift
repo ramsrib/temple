@@ -41,6 +41,44 @@ public final class AppStartup: ObservableObject {
     }
 }
 
+/// Keeps the scene's root concrete while choosing the validated startup content.
+/// A conditional directly in WindowGroup prevented the bundled app from opening
+/// its initial window. Keep the branch here; check-startup-windows.sh exercises
+/// both paths through the real bundled app's scene lifecycle.
+public struct StartupRootView: View {
+    private let startup: AppStartup
+    private let appDelegate: TempleAppDelegate
+    private let activateOnStart: Bool
+
+    public init(startup: AppStartup, appDelegate: TempleAppDelegate,
+                activateOnStart: Bool = false) {
+        self.startup = startup
+        self.appDelegate = appDelegate
+        self.activateOnStart = activateOnStart
+    }
+
+    public var body: some View {
+        Group {
+            if let model = startup.model {
+                RootView()
+                    .environmentObject(model)
+                    .task {
+                        appDelegate.model = model
+                        model.start()
+                        // Snapshot runs must not take focus from the user's work.
+                        if activateOnStart,
+                           ProcessInfo.processInfo.environment["TEMPLE_SNAPSHOT_DIR"] == nil {
+                            NSApplication.shared.activate()
+                        }
+                    }
+            } else {
+                StartupFailureView(message: startup.failureMessage ?? "Unable to open Temple.")
+            }
+        }
+        .frame(minWidth: 900, minHeight: 600)
+    }
+}
+
 /// A full-window replacement, outside RootView and its overlays/restore tasks.
 public struct StartupFailureView: View {
     private let message: String
