@@ -30,7 +30,6 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     private var roots: [RootMapping] = []
     private var files: [String: (URL, Agent)] = [:]
     private var pathsByID: [String: Set<String>] = [:]
-    private var selectedCodexPaths: [String: (path: String, key: String)] = [:]
     /// The source's coverage generation (`LocateResult.coverage`).
     private var generation: UInt64 = 0
     private let monitorChanges: Bool
@@ -174,7 +173,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         }
         streamID = nil
         rawPaths.removeAll()
-        files.removeAll(); pathsByID.removeAll(); selectedCodexPaths.removeAll()
+        files.removeAll(); pathsByID.removeAll()
         snapshotLocked()
     }
 
@@ -339,11 +338,6 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         guard files.removeValue(forKey: path) != nil, let id = store.filenameID(at: url) else { return }
         pathsByID[id]?.remove(path)
         if pathsByID[id]?.isEmpty == true { pathsByID.removeValue(forKey: id) }
-        if selectedCodexPaths[id]?.path == path {
-            // The thread's pick is gone: the next one takes its place.
-            selectedCodexPaths.removeValue(forKey: id)
-            for remaining in (pathsByID[id] ?? []).sorted() { _ = recordFilenameLocked(remaining, store: store) }
-        }
     }
 
     private func enumerateLocked(subtree: String? = nil) {
@@ -373,7 +367,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             }
         }
         files = next
-        pathsByID.removeAll(); selectedCodexPaths.removeAll()
+        pathsByID.removeAll()
         for (path, entry) in files {
             if let store = stores.first(where: { $0.agent == entry.1 }) { _ = recordFilenameLocked(path, store: store) }
         }
@@ -385,10 +379,6 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         let url = URL(fileURLWithPath: path)
         guard let id = store.filenameID(at: url) else { return nil }
         pathsByID[id, default: []].insert(path)
-        if store.agent == .codex, let key = store.rolloutSelectionKey(at: url) {
-            if let old = selectedCodexPaths[id], key < old.key || (key == old.key && path <= old.path) { return id }
-            selectedCodexPaths[id] = (path, key)
-        }
         return id
     }
 
