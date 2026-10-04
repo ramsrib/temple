@@ -187,10 +187,14 @@ public final class LocalHostLauncher: HostLauncher {
         // engine cutover replaces that path), and if the folder goes in the
         // gap the wrapper's own `cd` refuses to run the agent elsewhere.
         guard let marker = LocalLaunchMarker(directory: markerDirectory, folder: spec.directory) else {
-            // No marker, no evidence: launch the agent directly and record
-            // nothing from the tab rather than not launching at all.
+            // No marker, no evidence: the folder is recorded from nothing
+            // (no channel), but the wrapper still enters it itself, so the
+            // agent never runs anywhere else.
             TempleUILog.launch.error("launch marker unavailable; spawning without launch evidence")
-            return AgentLaunch(command: TerminalCommand(argv: argv, cwd: spec.directory), displayArgv: argv, result: nil)
+            let command = TerminalCommand(argv: ["/usr/bin/env", "/bin/sh", "-c", Self.unreportedWrapperScript, "temple-launch",
+                                                 spec.directory] + argv,
+                                          cwd: spec.directory)
+            return AgentLaunch(command: command, displayArgv: argv, result: nil)
         }
         let command = TerminalCommand(argv: ["/usr/bin/env", "/bin/sh", "-c", Self.wrapperScript, "temple-launch",
                                              spec.directory, marker.path] + argv,
@@ -198,7 +202,9 @@ public final class LocalHostLauncher: HostLauncher {
         return AgentLaunch(command: command, displayArgv: argv, result: LaunchResultChannel(source: marker))
     }
 
-    static let wrapperScript = #"cd -- "$1" || { printf 'failed\tcd\t%s\n' "$?" > "$2"; exit 1; }; printf 'ok\n' > "$2"; shift 2; exec "$@""#
+    nonisolated static let wrapperScript = #"cd -- "$1" || { printf 'failed\tcd\t%s\n' "$?" > "$2"; exit 1; }; printf 'ok\n' > "$2"; shift 2; exec "$@""#
+    /// The same enforcement with nothing reported: `cd` or exit, then exec.
+    nonisolated static let unreportedWrapperScript = #"cd -- "$1" || exit 1; shift; exec "$@""#
 }
 
 /// The local launch record: a file Temple creates (mode 0600, in its own

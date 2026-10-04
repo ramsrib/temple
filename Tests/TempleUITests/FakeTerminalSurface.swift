@@ -257,10 +257,15 @@ final class FolderAgnosticSource: HostSessionSource, @unchecked Sendable {
 
 extension TerminalCommand {
     private var isLocalLaunchWrapper: Bool {
-        argv.count > 7 && argv[0] == "/usr/bin/env" && argv[1] == "/bin/sh" && argv[4] == "temple-launch"
+        argv.count > 7 && argv[0] == "/usr/bin/env" && argv[1] == "/bin/sh" && argv[3] == LocalHostLauncher.wrapperScript
+    }
+    private var isUnreportedWrapper: Bool {
+        argv.count > 6 && argv[0] == "/usr/bin/env" && argv[1] == "/bin/sh" && argv[3] == LocalHostLauncher.unreportedWrapperScript
     }
     /// The agent's argv behind the local launch wrapper (the argv itself otherwise).
-    var agentArgv: [String] { isLocalLaunchWrapper ? Array(argv.dropFirst(7)) : argv }
-    var launchFolder: String? { isLocalLaunchWrapper ? argv[5] : nil }
+    var agentArgv: [String] {
+        isLocalLaunchWrapper ? Array(argv.dropFirst(7)) : isUnreportedWrapper ? Array(argv.dropFirst(6)) : argv
+    }
+    var launchFolder: String? { isLocalLaunchWrapper || isUnreportedWrapper ? argv[5] : nil }
     var launchMarker: String? { isLocalLaunchWrapper ? argv[6] : nil }
 }

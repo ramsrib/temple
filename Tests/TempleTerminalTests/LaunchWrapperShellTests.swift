@@ -120,4 +120,32 @@ final class LaunchWrapperShellTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: out + ".argv"))
         guard case .failed(.cdFailed, _)? = collect(try XCTUnwrap(launch.result)).first else { return XCTFail() }
     }
+
+    /// No marker can be made (here: its directory sits under a file). The
+    /// launch reports nothing, but the agent still never runs outside its folder.
+    func testWithoutAMarkerTheWrapperStillEntersTheFolderOrStops() throws {
+        let blocker = root.appendingPathComponent("not-a-directory")
+        try Data().write(to: blocker)
+        let probe = try probe()
+        let launcher = LocalHostLauncher(binaryPath: { _ in probe.path }, extraArgs: { _ in ["it's", "two words"] },
+                                         markerDirectory: blocker.appendingPathComponent("markers"))
+        let folder = root.appendingPathComponent("here it is")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let present = try launcher.prepare(AgentLaunchSpec(agent: .claude, mode: .new(sessionID: nil), directory: folder.path, host: .local))
+        XCTAssertNil(present.result, "nothing to report from")
+        XCTAssertEqual(Array(present.command.argv.prefix(4)), ["/usr/bin/env", "/bin/sh", "-c", LocalHostLauncher.unreportedWrapperScript],
+                       "never launched unwrapped")
+        XCTAssertEqual(present.displayArgv, [probe.path, "it's", "two words"])
+        let out = root.appendingPathComponent("out").path
+        XCTAssertEqual(try run(present, ghosttyCwd: root.path, extraEnv: ["PROBE_OUT": out]), 7)
+        XCTAssertEqual(try String(contentsOfFile: out + ".pwd", encoding: .utf8), folder.path + "\n")
+        let argv = try String(contentsOfFile: out + ".argv", encoding: .utf8).split(separator: "\0").map(String.init)
+        XCTAssertEqual(argv, ["it's", "two words"])
+
+        let gone = try launcher.prepare(AgentLaunchSpec(agent: .claude, mode: .new(sessionID: nil),
+                                                        directory: root.appendingPathComponent("gone").path, host: .local))
+        let goneOut = root.appendingPathComponent("gone-out").path
+        XCTAssertEqual(try run(gone, ghosttyCwd: root.path, extraEnv: ["PROBE_OUT": goneOut]), 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: goneOut + ".argv"), "the agent did not run elsewhere")
+    }
 }
