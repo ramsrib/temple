@@ -1231,7 +1231,7 @@ files on this Mac, which a session on another machine will never have.
   every legacy row whose transcript exists on the first launch, through the
   same path an import uses; there is no migration mode. A row that never
   resolves stays: no sidebar group without a directory, found by ⌘K, listed
-  in History under In Temple and tagged "Transcript missing" only once a
+  in History under In Temple and tagged "No transcript" only once a
   completed resolution says so, and archivable from there.
 
 **Known limitations, kept:** Claude's in-process id rotation (`/clear`,

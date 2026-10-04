@@ -643,7 +643,10 @@ private struct HistoryPageRow: View, Equatable {
                         .font(.system(size: 13))
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .foregroundStyle(inTemple ? Color.primary : Color.primary.opacity(0.72))
+                        // A member whose transcript is gone steps back like an
+                        // outside row: the state reads before the tag does.
+                        .foregroundStyle(inTemple && !session.transcriptMissing
+                                         ? Color.primary : Color.primary.opacity(0.72))
                     if let activity {
                         ActivityDot(state: activity)
                     }
@@ -693,7 +696,13 @@ private struct HistoryPageRow: View, Equatable {
     @ViewBuilder
     private func status(lit: Bool) -> some View {
         if session.transcriptMissing {
-            Text("Transcript missing").font(.system(size: 11)).foregroundStyle(.tertiary)
+            // One line in the fixed 84pt column: "Transcript missing" wrapped.
+            // The column is not widened; at 900pt that width comes out of titles.
+            Text("No transcript")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .help("The session file is no longer on disk. Opening it will fail; archive it from here.")
         } else if justImported {
             Text("Imported")
                 .font(.system(size: 11))
@@ -707,10 +716,10 @@ private struct HistoryPageRow: View, Equatable {
                 .help(membershipTooltip)
         } else if let conflict = session.conflict {
             // Its id is Temple's on another host or as another agent: shown
-            // as the catalog has it, and not importable from here.
-            Text("Import")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.quaternary)
+            // as the catalog has it, and not importable from here. The mark,
+            // faint, says "in Temple, just not from here" — a dimmed "Import"
+            // read as a disabled button worth trying again.
+            TempleMark(size: 14, tint: Color(nsColor: .quaternaryLabelColor))
                 .help(conflict.message)
         } else {
             Button("Import") { history.requestImport([session]) }
