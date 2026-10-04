@@ -114,6 +114,8 @@ public final class SessionTab: ObservableObject, Identifiable {
 
     /// An inert resume chip takes the latest row before its first spawn.
     /// Once a surface exists, its launch identity stays fixed.
+    func setLaunchCommand(_ command: TerminalCommand) { self.command = command }
+
     func prepareResume(_ session: Session, command: TerminalCommand) {
         guard surface == nil, isResume, let agent = session.agent, let directory = session.directory else { return }
         self.agent = agent

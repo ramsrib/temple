@@ -6,13 +6,14 @@ import TempleTerminalAPI
 public struct HostRegistry: Sendable {
     public struct Entry: Sendable {
         public let source: any HostSessionSource
-        public let commandWrapper: any HostCommandWrapper
-        public init(source: any HostSessionSource, commandWrapper: any HostCommandWrapper) {
-            self.source = source; self.commandWrapper = commandWrapper
+        public let launcher: any HostLauncher
+        public init(source: any HostSessionSource, launcher: any HostLauncher) {
+            self.source = source; self.launcher = launcher
         }
     }
     public let entries: [Entry]
-    public init(entries: [Entry] = [Entry(source: LocalSessionSource(), commandWrapper: LocalCommandWrapper())]) {
+    @MainActor public init(entries: [Entry]? = nil) {
+        let entries = entries ?? [Entry(source: LocalSessionSource(), launcher: LocalHostLauncher())]
         precondition(Set(entries.map { $0.source.host }).count == entries.count)
         self.entries = entries
     }

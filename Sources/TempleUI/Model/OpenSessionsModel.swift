@@ -38,13 +38,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     private let registry: ProcessRegistry
     private let reconciler: CodexAdopting
     private let persistence: TabPersistence
-    private let binaryPath: (Agent) -> String
-    private let extraArgs: (Agent) -> [String]
     private let defaultAgent: () -> Agent
     private let now: () -> Date
     /// "Is there anything wrong with how we'd launch this agent?" — asked at the
     /// moment a tab dies, never afterwards (see `SessionTab.commandWasSuspect`).
-    private let canLaunch: (Agent) -> Bool
     /// User-closed sessions only, oldest first. Process exits bypass this stack.
     private var closedTabs: [ClosedTabRecord] = []
     private static let closedTabLimit = 20
@@ -64,7 +61,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     /// Transitional lookup: legacy callers, restore and reopen prefer the durable row.
     public var sessionRow: (String) -> Session? = { _ in nil }
-    private let commandWrapperForHost: (HostID) -> (any HostCommandWrapper)?
+    private let launcherForHost: (HostID) -> (any HostLauncher)?
 
     /// Resolution updates retain the diagnosis interest after an early exit.
     public func refreshExitedResumeDiagnoses() {
@@ -104,18 +101,16 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                 canLaunch: @escaping (Agent) -> Bool = { _ in true },
                 now: @escaping () -> Date = Date.init,
                 commandWrapper: any HostCommandWrapper = LocalCommandWrapper(),
-                commandWrapperForHost: ((HostID) -> (any HostCommandWrapper)?)? = nil) {
-        self.commandWrapperForHost = commandWrapperForHost ?? { _ in commandWrapper }
+                launcherForHost: ((HostID) -> (any HostLauncher)?)? = nil) {
+        let local = LocalHostLauncher(binaryPath: binaryPath, extraArgs: extraArgs, canLaunch: canLaunch, wrapper: commandWrapper)
+        self.launcherForHost = launcherForHost ?? { $0.isLocal ? local : nil }
         self.surfaceFactory = surfaceFactory
         self.appearanceProvider = appearanceProvider
         self.runtime = runtime
         self.registry = registry
         self.reconciler = reconciler ?? NoopCodexReconciler()
         self.persistence = persistence ?? UserDefaultsTabPersistence()
-        self.binaryPath = binaryPath
-        self.extraArgs = extraArgs
         self.defaultAgent = defaultAgent
-        self.canLaunch = canLaunch
         self.now = now
         super.init()
     }
@@ -234,16 +229,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             activate(existing)
             return
         }
-        // Resolve the bare agent binary to the configured absolute path — a
-        // Finder-launched app has a minimal PATH, so `claude`/`codex` alone
-        // fails to spawn (instant exit → the tab would vanish).
-        var command = SessionLauncher.resume(session)
-        if !command.argv.isEmpty {
-            command.argv[0] = binaryPath(session.agent)
-            // Extra args right after the binary so they precede subcommands
-            // (`codex <flags> resume <id>`); claude accepts them anywhere.
-            command.argv.insert(contentsOf: extraArgs(session.agent), at: 1)
-        }
+        let command = SessionLauncher.resume(session)
         let tab = SessionTab(
             kind: .session,
             sessionID: session.id,
@@ -269,14 +255,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     @discardableResult
     public func newSession(agent: Agent, project: ProjectKey) -> SessionTab {
         let projectPath = project.path
-        var spec = SessionLauncher.newSession(
-            agent: agent,
-            projectPath: projectPath,
-            claudePath: binaryPath(.claude),
-            codexPath: binaryPath(.codex))
-        if !spec.command.argv.isEmpty {
-            spec.command.argv.insert(contentsOf: extraArgs(agent), at: 1)
-        }
+        let spec = SessionLauncher.newSession(agent: agent, projectPath: projectPath)
         let tab = SessionTab(
             kind: .session,
             sessionID: spec.sessionID,
@@ -374,11 +353,23 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     /// Spawn the surface for a session tab on first activation (lazy restore).
     private func ensureSurface(for tab: SessionTab) {
-        guard !isQuitting, tab.kind == .session, tab.surface == nil, let command = tab.command else { return }
-        guard let wrapper = commandWrapperForHost(tab.host) else {
-            TempleUILog.launch.notice("host has no launch wrapper: \(tab.host.rawValue, privacy: .public)")
+        guard !isQuitting, tab.kind == .session, tab.surface == nil, tab.command != nil else { return }
+        guard let launcher = launcherForHost(tab.host) else {
+            TempleUILog.launch.notice("host has no launcher: \(tab.host.rawValue, privacy: .public)")
             return
         }
+        let spec = AgentLaunchSpec(agent: tab.agent,
+            mode: tab.isResume ? .resume(sessionID: tab.sessionID!) : .new(sessionID: tab.sessionID),
+            directory: tab.projectPath, host: tab.host)
+        let command: TerminalCommand
+        do { command = try launcher.command(for: spec) }
+        catch {
+            TempleUILog.launch.error("command preparation failed: \(String(describing: error), privacy: .public)")
+            tab.commandWasSuspect = true
+            tab.activity = .exited(status: -1)
+            return
+        }
+        tab.setLaunchCommand(command)
         let surface = surfaceFactory.makeSurface(appearance: appearanceProvider())
         surface.delegate = self
         let spawnedAt = now()
@@ -395,7 +386,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         let launchDirectory = FileManager.default.fileExists(atPath: command.cwd, isDirectory: &isDirectory)
             && isDirectory.boolValue ? command.cwd : nil
         do {
-            try surface.start(TerminalIdentity.apply(to: wrapper.wrap(command)))
+            try surface.start(TerminalIdentity.apply(to: command))
         } catch {
             TempleUILog.launch.error("spawn failed: agent=\(tab.agent.rawValue, privacy: .public) argv0=\(command.argv.first ?? "?", privacy: .public) cwd=\(command.cwd, privacy: .public) error=\(String(describing: error), privacy: .public)")
             // A surface that won't even start is always the command's problem.
@@ -863,12 +854,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     }
 
     private func resumeCommand(agent: Agent, sessionID: String, cwd: String) -> TerminalCommand {
-        var argv = agent.resumeArgv(sessionID: sessionID)
-        if !argv.isEmpty {
-            argv[0] = binaryPath(agent)
-            argv.insert(contentsOf: extraArgs(agent), at: 1)
-        }
-        return TerminalCommand(argv: argv, cwd: cwd)
+        TerminalCommand(argv: agent.resumeArgv(sessionID: sessionID), cwd: cwd)
     }
 
     /// Rebuild the per-project tab set + order as **inert chips** (no surface
@@ -940,7 +926,7 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
                 // Freeze the verdict WITH the failure. The header shows the argv this
                 // tab launched with, so it must be judged by what we knew then — not
                 // by settings the user edits afterwards.
-                tab.commandWasSuspect = !canLaunch(tab.agent)
+                tab.commandWasSuspect = !(launcherForHost(tab.host)?.canLaunch(tab.agent) ?? false)
                 // Resumes only: a NEW tab's freshly minted id is legitimately
                 // absent from the index, and its early exit (auth, config)
                 // has nothing to do with id rotation.

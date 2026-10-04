@@ -310,7 +310,14 @@ public final class AppModel: ObservableObject {
         let uiState = UIStateStore(db: database)
         let registry = registry ?? DBProcessRegistry(db: database)
         let persistence = persistence ?? DBTabPersistence(db: database)
-        let hosts = hostRegistry ?? HostRegistry()
+        let toolchain = ToolchainModel()
+        toolchain.override = { [weak settings] in settings?.overridePath(for: $0) ?? "" }
+        toolchain.arguments = { [weak settings] in settings?.extraArgs(for: $0) ?? [] }
+        self.toolchain = toolchain
+
+        let hosts = hostRegistry ?? HostRegistry(entries: [.init(source: LocalSessionSource(),
+            launcher: LocalHostLauncher(binaryPath: { toolchain.launchPath(for: $0) },
+                extraArgs: { settings.extraArgs(for: $0) }, canLaunch: { toolchain.canLaunch($0) }))])
         self.hostRegistry = hosts
         let resolvedIndexSource = indexSource ?? WatcherIndexSource(engines: hosts.entries.map {
             SessionEngine(source: $0.source, database: database)
@@ -327,10 +334,6 @@ public final class AppModel: ObservableObject {
         self.notifications = NotificationController()
         self.history = HistoryModel(overlay: overlay, catalog: { hosts.catalog() })
 
-        let toolchain = ToolchainModel()
-        toolchain.override = { [weak settings] in settings?.overridePath(for: $0) ?? "" }
-        toolchain.arguments = { [weak settings] in settings?.extraArgs(for: $0) ?? [] }
-        self.toolchain = toolchain
 
         let runtime = SessionRuntimeController()
         let settingsRef = settings
@@ -343,11 +346,8 @@ public final class AppModel: ObservableObject {
             registry: registry,
             reconciler: reconciler,
             persistence: persistence,
-            binaryPath: { toolchain.launchPath(for: $0) },
-            extraArgs: { settingsRef.extraArgs(for: $0) },
             defaultAgent: { settingsRef.defaultAgent },
-            canLaunch: { toolchain.canLaunch($0) },
-            commandWrapperForHost: { hosts.entry(for: $0)?.commandWrapper })
+            launcherForHost: { hosts.entry(for: $0)?.launcher })
 
         // Now self is fully initialized — finish wiring the closures & observers.
         resolveAppearance = { [weak self] in

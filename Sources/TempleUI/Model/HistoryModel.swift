@@ -204,11 +204,11 @@ public final class HistoryModel: ObservableObject {
     var queryDebounce: TimeInterval = 0.12
 
     init(overlay: SessionOverlayStore,
-         catalog: @escaping () -> AsyncStream<CatalogBatch> = { HostRegistry().catalog() },
+         catalog: (() -> AsyncStream<CatalogBatch>)? = nil,
          pathExists: @escaping @Sendable (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
          now: @escaping () -> Date = Date.init) {
         self.overlay = overlay
-        self.catalog = catalog
+        self.catalog = catalog ?? HostRegistry().catalog
         self.pathExists = pathExists
         self.now = now
         // Membership, renames, retitles and archive state all show on the

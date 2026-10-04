@@ -14,17 +14,20 @@ final class RemoteHostSeamTests: XCTestCase {
                     core: SessionCore(directory: "/local", title: "Local facts"))
         let remoteSource = RemoteFixtureSource(host: remote)
         let localSource = RemoteFixtureSource(host: .local)
-        let wrapper = IdentityFixtureWrapper()
+        let launcher = RemoteFixtureLauncher()
         let hosts = HostRegistry(entries: [
-            .init(source: localSource, commandWrapper: LocalCommandWrapper()),
-            .init(source: remoteSource, commandWrapper: wrapper)
+            .init(source: localSource, launcher: LocalHostLauncher(binaryPath: { _ in "/mac/only/agent" })),
+            .init(source: remoteSource, launcher: launcher)
         ])
         let directory = URL(fileURLWithPath: "/private/tmp/temple-p6-remote-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let factory = FakeTerminalSurfaceFactory()
+        let settings = SettingsStore(defaults: Fixture.uniqueDefaults())
+        settings.claudePath = "/missing/local/claude"
+        settings.codexPath = "/missing/local/codex"
         let app = AppModel(surfaceFactory: factory, database: db,
-            settings: SettingsStore(defaults: Fixture.uniqueDefaults()), stateDirectory: directory, hostRegistry: hosts)
+            settings: settings, stateDirectory: directory, hostRegistry: hosts)
         app.start()
         let deadline = Date().addingTimeInterval(3)
         while app.sessions.first(where: { $0.id == "remote-row" })?.state.title == nil, Date() < deadline {
@@ -44,19 +47,37 @@ final class RemoteHostSeamTests: XCTestCase {
         XCTAssertEqual(localSource.requested, ["local-row"])
         XCTAssertEqual(app.sessions.first { $0.id == "local-row" }?.displayTitle, "Local facts")
         app.openSessions.openSession(row)
-        XCTAssertEqual(wrapper.calls, 1)
-        XCTAssertEqual(factory.created.last?.startedCommand?.argv, [app.toolchain.launchPath(for: .claude), "--dangerously-skip-permissions", "--resume", "remote-row"])
-        XCTAssertEqual(factory.created.last?.startedCommand?.cwd, "/remote/project")
+        XCTAssertEqual(launcher.specs.count, 1)
+        XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["remote-transport", "fake-host", "/remote/bin/claude", "--resume", "remote-row"])
+        XCTAssertEqual(factory.created.last?.startedCommand?.cwd, "/transport")
         XCTAssertEqual(app.openSessions.activeTab?.host, remote)
-        let catalog = TranscriptSummary(id: "catalog-only", agent: .claude,
-            locator: TranscriptLocator(host: remote, path: "opaque:catalog-only"),
-            modifiedAt: Date(), cwd: "/remote/catalog", firstPrompt: "Catalog")
+        var catalogRows: [TranscriptSummary] = []
+        for try await batch in remoteSource.catalog(CatalogQuery()) {
+            if case .sessions(let rows, _, _) = batch { catalogRows += rows }
+        }
+        let catalog = try XCTUnwrap(catalogRows.first)
         XCTAssertEqual(HistoryRow(catalog: catalog).project?.host, remote)
         app.openSessions.openSession(catalog)
         XCTAssertEqual(app.openSessions.activeTab?.host, remote)
-        XCTAssertEqual(wrapper.calls, 2)
+        XCTAssertEqual(launcher.specs.count, 2)
         XCTAssertEqual(try db.sessionState(catalog.id)?.host, remote)
-        XCTAssertEqual(factory.created.last?.startedCommand?.cwd, "/remote/catalog")
+        XCTAssertEqual(launcher.specs.last?.directory, "/remote/catalog")
+        let codex = app.openSessions.newSession(agent: .codex,
+            project: ProjectKey(host: remote, path: "/remote/new"))
+        let adoptionDeadline = Date().addingTimeInterval(3)
+        while codex.sessionID == nil, Date() < adoptionDeadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(codex.sessionID, "remote-adopted")
+        XCTAssertEqual(try db.sessionState("remote-adopted")?.host, remote)
+        XCTAssertEqual(launcher.specs.last?.mode, .new(sessionID: nil))
+        XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["remote-transport", "fake-host", "/remote/bin/codex"])
+        for surface in factory.created {
+            let command = try XCTUnwrap(surface.startedCommand)
+            XCTAssertFalse(command.argv.contains { $0.contains("/mac/") || $0.contains("/missing/local/") })
+            XCTAssertEqual(command.cwd, "/transport")
+        }
+        let localCommand = try XCTUnwrap(hosts.entry(for: .local)).launcher.command(for:
+            AgentLaunchSpec(agent: .claude, mode: .resume(sessionID: "local-row"), directory: "/local", host: .local))
+        XCTAssertEqual(localCommand.argv.first, "/mac/only/agent")
         // Fills do not replace facts on the next remote observation.
         remoteSource.sendChange()
         try await Task.sleep(for: .milliseconds(50))
@@ -88,19 +109,38 @@ private final class RemoteFixtureSource: HostSessionSource, @unchecked Sendable 
         return ResolutionBatch(generation: 1, results: results)
     }
     func release(_ ids: [String]) {}
-    func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error> { AsyncThrowingStream { $0.finish() } }
-    func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult { .none }
+    func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error> {
+        AsyncThrowingStream { stream in
+            if !host.isLocal {
+                let summary = TranscriptSummary(id: "catalog-only", agent: .claude,
+                    locator: TranscriptLocator(host: host, path: "opaque:catalog-only"),
+                    modifiedAt: Date(), cwd: "/remote/catalog", firstPrompt: "Catalog")
+                stream.yield(.sessions([summary], read: 1, total: 1))
+            }
+            stream.finish()
+        }
+    }
+    func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult {
+        .adopted(id: "remote-adopted", locator: TranscriptLocator(host: host, path: "opaque:remote-adopted"))
+    }
     func changes() -> AsyncThrowingStream<SourceChange, Error> {
         AsyncThrowingStream { lock.lock(); continuation = $0; lock.unlock() }
     }
     func sendChange() { lock.lock(); let stream = continuation; let values = Array(ids); lock.unlock(); stream?.yield(.sessions(values)) }
 }
 
-private final class IdentityFixtureWrapper: HostCommandWrapper, @unchecked Sendable {
-    private let lock = NSLock()
-    private var count = 0
-    var calls: Int { lock.lock(); defer { lock.unlock() }; return count }
-    func wrap(_ command: TerminalCommand) -> TerminalCommand {
-        lock.lock(); count += 1; lock.unlock(); return command
+@MainActor
+private final class RemoteFixtureLauncher: HostLauncher {
+    var specs: [AgentLaunchSpec] = []
+    func command(for spec: AgentLaunchSpec) throws -> TerminalCommand {
+        specs.append(spec)
+        let args: [String]
+        switch spec.mode {
+        case .resume(let id): args = Array(spec.agent.resumeArgv(sessionID: id).dropFirst())
+        case .new(let id): args = id.map { ["--session-id", $0] } ?? []
+        }
+        return TerminalCommand(argv: ["remote-transport", spec.host.rawValue, "/remote/bin/" + spec.agent.binaryName] + args,
+            cwd: "/transport")
     }
+    func canLaunch(_ agent: Agent) -> Bool { true }
 }
