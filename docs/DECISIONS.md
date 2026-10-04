@@ -1121,7 +1121,11 @@ files on this Mac, which a session on another machine will never have.
   30 s per session, never backwards, and quitting is not activity); a
   successful spawn in an existing directory records that directory as
   `tab`-sourced, replacing whatever was there. Copying a row into a restored
-  chip writes nothing. Every surface renders rows grouped by
+  chip writes nothing; a chip joins and records the open when it spawns.
+  Where the row lacks the agent or directory (every legacy row, on the first
+  launch), the chip's own saved tab facts stand in, so the spawn is a real
+  launch that records its folder; a chip neither can place says so on screen,
+  and a restored active one opens as soon as its row learns a folder. Every surface renders rows grouped by
   `ProjectKey(host, directory)`, and opening resumes from the row's agent,
   directory and id without waiting for a file.
 - **The transcript is enrichment, and parsers never invent.** A parser returns

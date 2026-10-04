@@ -130,8 +130,7 @@ final class OpenSessionsModelTests: XCTestCase {
         model.sessionRow = { _ in current }
         model.restore()
         let tab = try XCTUnwrap(model.tabs.first)
-        model.activate(tab)
-        XCTAssertTrue(factory.created.isEmpty, "A directoryless row cannot use the saved path to spawn")
+        XCTAssertTrue(factory.created.isEmpty)
         _ = try db.fillCoreFields(sessionID: "row", directory: "/filled", title: "Filled")
         current = Session(state: try XCTUnwrap(db.sessionState("row")))
         model.activate(tab)
@@ -164,7 +163,9 @@ final class OpenSessionsModelTests: XCTestCase {
         }
     }
 
-    func testDelayedChipActivationRejectsAnIncompleteRowThatAppearedAfterRestore() throws {
+    /// The row wins where it knows; where it does not, the chip's own saved
+    /// facts stand in, and the spawn records the folder on the row.
+    func testDelayedChipActivationCompletesAnIncompleteRowFromTheChip() throws {
         for missingAgent in [false, true] {
             let directory = try temporaryDirectory()
             let db = try TempleDB.inMemory()
@@ -179,14 +180,15 @@ final class OpenSessionsModelTests: XCTestCase {
             XCTAssertNil(try db.sessionState("legacy"))
             overlay.join("legacy", via: .imported, agent: missingAgent ? nil : .codex,
                 core: SessionCore(directory: missingAgent ? directory.path : nil))
-            let before = try db.sessionState("legacy")
             let tab = try XCTUnwrap(model.tabs.first)
             model.activate(tab)
             model.activate(tab)
-            XCTAssertTrue(factory.created.isEmpty)
-            XCTAssertFalse(tab.hasSurface)
-            XCTAssertNil(model.activeTabID)
-            XCTAssertEqual(try db.sessionState("legacy"), before, "Activation cannot fill missing facts from the chip")
+            XCTAssertEqual(factory.created.count, 1)
+            XCTAssertEqual(factory.created.first?.startedCommand?.argv, ["codex", "resume", "legacy"])
+            XCTAssertEqual(factory.created.first?.startedCommand?.cwd, directory.path)
+            XCTAssertEqual(model.activeTabID, tab.id)
+            XCTAssertEqual(try db.sessionState("legacy")?.directory, directory.path)
+            XCTAssertEqual(try db.sessionState("legacy")?.directorySource, .tab)
         }
     }
 

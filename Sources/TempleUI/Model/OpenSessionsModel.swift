@@ -19,6 +19,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     @Published public private(set) var tabs: [SessionTab] = []
     @Published public private(set) var activeTabID: SessionTab.ID? {
         didSet {
+            // Going anywhere else is the user's answer: the restored tab that
+            // could not open yet is no longer waited on.
+            if activeTabID != pendingRestoreActivation { pendingRestoreActivation = nil }
             guard let id = activeTabID, id != oldValue else { return }
             activationHistory.removeAll { $0 == id }
             activationHistory.append(id)
@@ -28,6 +31,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Tab ids in activation order, most recent last — the "where you came
     /// from" trail that closing a tab walks back (browser MRU, not first-tab).
     private var activationHistory: [SessionTab.ID] = []
+    /// The restored active tab, when its row could not say where to resume
+    /// it yet. It opens the moment the row can (`rowsChanged`), unless the
+    /// user has gone elsewhere in the meantime.
+    private var pendingRestoreActivation: SessionTab.ID?
     /// Derived from the active *session* tab; the Settings tab never changes it.
     @Published public private(set) var activeProjectKey: ProjectKey?
     public var activeProjectPath: String? { activeProjectKey?.path }
@@ -309,21 +316,14 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     // MARK: Activation & lazy surface spawn
 
     public func activate(_ tab: SessionTab) {
-        if tab.isResume, !tab.hasSurface, let sid = tab.sessionID, let row = sessionRow(sid) {
-            if row.canResume, let agent = row.agent, let directory = row.directory {
-                tab.prepareResume(row, command: resumeCommand(agent: agent, sessionID: sid, cwd: directory))
-            } else {
-                logNonOpenable(row)
-                return
-            }
-        }
+        let openable = prepareInertResume(tab)
         activeTabID = tab.id
         if tab.kind == .session {
             let projectChanged = activeProjectKey != tab.projectKey
             activeProjectKey = tab.projectKey
             lastActiveTabByProject[tab.projectKey] = tab.id
             touchProject(tab.projectKey)
-            ensureSurface(for: tab)
+            if openable { ensureSurface(for: tab) }
             // Keep the persisted active-project ordering current even when the
             // switch happens by focusing an already-open tab (no open/close).
             if projectChanged { persist() }
@@ -333,6 +333,43 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             if tab.activity == .needsAttention { tab.activity = .idle }
         }
         tab.surface?.focus()
+    }
+
+    /// An inert resume chip takes the latest row before its first spawn. The
+    /// row wins where it knows; where it does not, the tab's own facts stand
+    /// in — for a restored chip, the agent and folder its tab last ran with,
+    /// which is how a legacy row with no directory yet still resumes (and the
+    /// spawn then records that folder on the row). A chip neither can place
+    /// says so on screen instead of silently not opening.
+    private func prepareInertResume(_ tab: SessionTab) -> Bool {
+        guard tab.kind == .session, tab.isResume, !tab.hasSurface, let sid = tab.sessionID,
+              let row = sessionRow(sid) else { return true }
+        let agent = row.agent ?? tab.agent
+        guard let directory = row.directory ?? (tab.projectPath.isEmpty ? nil : tab.projectPath) else {
+            logNonOpenable(row)
+            tab.launchPreparationError = Self.unknownDirectoryMessage
+            tab.activity = .exited(status: -1)
+            return false
+        }
+        if tab.launchPreparationError == Self.unknownDirectoryMessage { tab.launchPreparationError = nil }
+        tab.prepareResume(row, agent: agent, directory: directory,
+                          command: resumeCommand(agent: agent, sessionID: sid, cwd: directory))
+        return true
+    }
+
+    static let unknownDirectoryMessage = "Temple doesn't know which folder this session ran in yet, so it can't resume it."
+
+    /// Rows changed: a restored active tab that could not open at launch
+    /// opens now, if its row has learned enough and the user is still on it.
+    public func rowsChanged() {
+        guard let id = pendingRestoreActivation else { return }
+        guard activeTabID == id, let tab = tabs.first(where: { $0.id == id }), !tab.hasSurface else {
+            pendingRestoreActivation = nil
+            return
+        }
+        guard let sid = tab.sessionID, let row = sessionRow(sid), row.directory != nil else { return }
+        pendingRestoreActivation = nil
+        activate(tab)
     }
 
     /// Hand the keyboard back to the active terminal — an overlay (⌘K, ⌘/) took
@@ -866,28 +903,20 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     public func restore() {
         let saved = persistence.load()
         guard !saved.isEmpty else { return }
+        // Copying a row into a chip writes nothing (ADR-029): no join and no
+        // "opened" here. A chip joins, and records that it was opened, when
+        // it spawns. Where the row lacks a fact (a legacy row has no
+        // directory until a transcript or a spawn supplies one), the tab's
+        // own persisted fact stands in; `activate` re-reads the row first.
         tabs = saved.map { p in
             let row = sessionRow(p.sessionID)
             let agent = row?.agent ?? p.resolvedAgent
             let directory = row?.directory ?? p.projectPath
-            let command: TerminalCommand?
-            if let row, !row.canResume {
-                logNonOpenable(row)
-                command = nil
-            } else {
-                command = resumeCommand(agent: agent, sessionID: p.sessionID, cwd: directory)
-            }
-            let tab = SessionTab(kind: .session, sessionID: p.sessionID, agent: agent,
-                                 projectPath: directory,
-                                 title: row.flatMap { $0.state.customName ?? $0.state.title } ?? p.title,
-                                 command: command, isResume: true, host: row?.host ?? .local)
-            return tab
-        }
-        for p in saved {
-            // A chip with no row joins only at spawn, after activation checks
-            // any membership that may have appeared since restore.
-            guard let row = sessionRow(p.sessionID) else { continue }
-            openedHandler?(p.sessionID, .opened, row.agent, nil, SessionCore(host: row.host))
+            return SessionTab(kind: .session, sessionID: p.sessionID, agent: agent,
+                              projectPath: directory,
+                              title: row.flatMap { $0.state.customName ?? $0.state.title } ?? p.title,
+                              command: resumeCommand(agent: agent, sessionID: p.sessionID, cwd: directory),
+                              isResume: true, host: row?.host ?? .local)
         }
         // Restore active project context without spawning anything.
         activeProjectKey = tabs.first?.projectKey
@@ -899,7 +928,11 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             activeTabID = nil
             return
         }
-        activate(tabs[activeIndex])
+        let active = tabs[activeIndex]
+        activate(active)
+        if !active.hasSurface, active.launchPreparationError == Self.unknownDirectoryMessage {
+            pendingRestoreActivation = active.id
+        }
     }
 }
 

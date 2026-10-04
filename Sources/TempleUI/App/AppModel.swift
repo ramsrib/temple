@@ -106,6 +106,7 @@ public final class AppModel: ObservableObject {
             .sorted(by: SessionRowProject.moreRecent)
         if projects != rowProjects { rowProjects = projects }
         extendRowRanks()
+        openSessions.rowsChanged()
     }
 
     private static func moreRecentRow(_ lhs: Session, _ rhs: Session) -> Bool {
@@ -559,8 +560,15 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    private func overlayTitle(tab: SessionTab) -> String {
-        if let sid = tab.sessionID, let row = sessions.first(where: { $0.id == sid }) { return row.displayTitle }
+    private func overlayTitle(tab: SessionTab) -> String { sessionTabTitle(tab) }
+
+    /// A session tab's name in chrome: the user's rename, then the title the
+    /// row recorded, then the tab's own title — which for a restored chip is
+    /// the title it was saved with, and for a new tab says what it is. The
+    /// row's placeholder ("New Claude session") never beats a real title.
+    private func sessionTabTitle(_ tab: SessionTab) -> String {
+        if let sid = tab.sessionID, let row = presentedByID[sid],
+           let title = row.state.customName ?? row.state.title { return title }
         return tab.title
     }
 
@@ -702,8 +710,8 @@ public final class AppModel: ObservableObject {
     /// the user's custom name wins; provisional tabs say they are starting.
     public func tabDisplayTitle(_ tab: SessionTab) -> String {
         if let utility = tab.kind.utilityTitle { return utility }
-        if let sid = tab.sessionID, let row = sessions.first(where: { $0.id == sid }) { return row.displayTitle }
-        return tab.isProvisional ? "\(tab.title) (starting…)" : tab.title
+        let title = sessionTabTitle(tab)
+        return tab.isProvisional ? "\(title) (starting…)" : title
     }
 
     public func projectName(_ key: ProjectKey) -> String { key.displayName }

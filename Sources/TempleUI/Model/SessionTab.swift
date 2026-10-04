@@ -119,7 +119,12 @@ public final class SessionTab: ObservableObject, Identifiable {
     func setLaunchCommand(_ command: TerminalCommand) { self.command = command }
 
     func prepareResume(_ session: Session, command: TerminalCommand) {
-        guard surface == nil, isResume, let agent = session.agent, let directory = session.directory else { return }
+        guard let agent = session.agent, let directory = session.directory else { return }
+        prepareResume(session, agent: agent, directory: directory, command: command)
+    }
+
+    func prepareResume(_ session: Session, agent: Agent, directory: String, command: TerminalCommand) {
+        guard surface == nil, isResume else { return }
         self.agent = agent
         self.host = session.host
         self.projectPath = directory
