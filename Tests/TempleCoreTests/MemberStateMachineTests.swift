@@ -64,6 +64,25 @@ final class MemberStateMachineTests: XCTestCase {
         XCTAssertEqual(watcher.metrics.publications, before.publications)
     }
 
+    func testFirstCompletenessMapClearsInferredEnrichment() async throws {
+        let (_, file, db, spy, clock, watcher) = try fixture(prompt: "A title")
+        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
+        let summary = try XCTUnwrap(watcher.publishedSnapshot?.summaries["member"])
+        _ = try db.fillCoreFields(sessionID: "member", agent: summary.agent, directory: summary.cwd,
+            title: summary.firstPrompt, lastActiveAt: summary.modifiedAt)
+        let observations = watcher.metrics.observations
+        watcher.setEnrichmentWanted([:])
+        try await wait { watcher.metrics.observations > observations }
+        let before = watcher.metrics
+        let parses = spy.parses
+        clock.advance(61)
+        try append(file)
+        watcher.reconcileEnrichment()
+        try await wait { watcher.metrics.observations > before.observations }
+        XCTAssertEqual(spy.parses, parses)
+        XCTAssertEqual(watcher.metrics.publications, before.publications)
+    }
+
     func testAPromptArrivingOnWrite12IsFilled() async throws {
         let (_, file, db, spy, clock, watcher) = try fixture()
         let task = try await start(watcher); defer { task.cancel(); watcher.stop() }

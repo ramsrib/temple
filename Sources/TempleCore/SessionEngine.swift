@@ -171,7 +171,9 @@ public final class SessionEngine: @unchecked Sendable {
         queue.async {
             let old = self.wanted; self.wanted = missing
             if self.running {
-                let changed = self.members.filter { old?[$0] != missing[$0] }
+                // The first explicit map replaces the source's inferred requests, even
+                // for completed rows omitted from both dictionaries.
+                let changed = self.members.filter { old == nil || old?[$0] != missing[$0] }
                 self.enqueueLocked(Set(changed))
             }
         }
