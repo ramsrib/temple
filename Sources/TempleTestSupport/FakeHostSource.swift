@@ -27,6 +27,12 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
     /// an operation in flight.
     public var readGate: FakeGate? { get { locked { gates.read } } set { locked { gates.read = newValue } } }
     public var locateGate: FakeGate? { get { locked { gates.locate } } set { locked { gates.locate = newValue } } }
+    /// Runs inside every read, after its bytes and before its closing stat,
+    /// without the host's lock: a test can change the file mid-read.
+    public var readPhaseHook: (@Sendable (String) -> Void)? {
+        get { locked { hook } } set { locked { hook = newValue } }
+    }
+    private var hook: (@Sendable (String) -> Void)?
 
     private struct File {
         var agent: Agent
@@ -215,45 +221,72 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
         }
     }
 
+    /// Like a transport, a read is several trips over the path — identity,
+    /// facts, a closing stat — with the host free to change in between (the
+    /// lock is not held across them; `readPhaseHook` runs between the bytes
+    /// and the stat). A read that straddled a change is retried, and one that
+    /// never settles throws `changedDuringRead`.
     public func read(_ locator: TranscriptLocator, agent: Agent, expecting id: String, facts: Bool) async throws -> TranscriptRead {
         await readGate?.wait()
-        return try locked {
-            counts.roundTrips += 1
-            counts.reads += 1
+        let format = TranscriptFormats.format(for: agent)
+        func current() throws -> File {
             guard !transportBroken else { throw TranscriptReadError.transport("fake transport down") }
             guard locator.host == host, let file = files[locator.path], file.agent == agent else { throw TranscriptReadError.missing }
             guard !file.unreadable else { throw TranscriptReadError.unreadable("permission denied") }
-            let format = TranscriptFormats.format(for: agent)
-            let (lines, scanned) = try Self.identityLines(file.data, scan: format.identityScan)
-            let verdict = format.identity(lines: lines, expecting: id)
+            return file
+        }
+        locked { counts.reads += 1 }
+        for _ in 0..<3 {
+            // Trip 1: identity.
+            let (identityVersion, verdict, scanned): (TranscriptSignature, TranscriptVerification, Int) = try locked {
+                counts.roundTrips += 1
+                let file = try current()
+                let (lines, scanned) = try Self.identityLines(file.data, scan: format.identityScan)
+                return (signature(file), format.identity(lines: lines, expecting: id), scanned)
+            }
             var bytes = scanned
             var summary: TranscriptSummary?
             var revision: UInt64?
+            var factsVersion = identityVersion
             if facts, verdict == .verified {
-                counts.parses += 1
-                let window = TranscriptBytes.defaultWindow
-                let head = file.data.prefix(window)
-                let tail = file.data.count > window ? file.data.suffix(min(window, file.data.count - window)) : nil
-                var input = TranscriptBytes(head: Data(head), tail: tail.map { Data($0) }, fileSize: file.data.count)
-                bytes += head.count + (tail?.count ?? 0)
-                let (shared, sharedRevision) = sharedFacts(agent)
-                revision = sharedRevision
-                let name = format.name(path: locator.path)
-                var result = format.facts(input, name: name, locator: locator, modifiedAt: file.modifiedAt, shared: shared)
-                if case .needsWiderHead(let size) = result {
+                // Trip 2: facts, from whatever the path holds now.
+                try locked {
                     counts.roundTrips += 1
-                    counts.widerReads += 1
-                    let wider = Data(file.data.prefix(size))
-                    bytes += wider.count
-                    input = input.with(widerHead: wider)
-                    result = format.facts(input, name: name, locator: locator, modifiedAt: file.modifiedAt, shared: shared)
+                    counts.parses += 1
+                    let file = try current()
+                    factsVersion = signature(file)
+                    let window = TranscriptBytes.defaultWindow
+                    let head = file.data.prefix(window)
+                    let tail = file.data.count > window ? file.data.suffix(min(window, file.data.count - window)) : nil
+                    var input = TranscriptBytes(head: Data(head), tail: tail.map { Data($0) }, fileSize: file.data.count)
+                    bytes += head.count + (tail?.count ?? 0)
+                    let (shared, sharedRevision) = sharedFacts(agent)
+                    revision = sharedRevision
+                    let name = format.name(path: locator.path)
+                    var result = format.facts(input, name: name, locator: locator, modifiedAt: file.modifiedAt, shared: shared)
+                    if case .needsWiderHead(let size) = result {
+                        counts.roundTrips += 1
+                        counts.widerReads += 1
+                        let wider = Data(file.data.prefix(size))
+                        bytes += wider.count
+                        input = input.with(widerHead: wider)
+                        result = format.facts(input, name: name, locator: locator, modifiedAt: file.modifiedAt, shared: shared)
+                    }
+                    if case .summary(let parsed) = result { summary = parsed }
                 }
-                if case .summary(let parsed) = result { summary = parsed }
             }
-            counts.bytesRead += bytes
-            return TranscriptRead(identity: verdict, summary: summary, signature: signature(file),
+            readPhaseHook?(locator.path)
+            // Trip 3: the closing stat.
+            let closing: TranscriptSignature = try locked {
+                counts.roundTrips += 1
+                counts.bytesRead += bytes
+                return signature(try current())
+            }
+            guard closing == identityVersion, closing == factsVersion else { continue }
+            return TranscriptRead(identity: verdict, summary: summary, signature: closing,
                                   bytesRead: bytes, sharedRevision: revision)
         }
+        throw TranscriptReadError.changedDuringRead
     }
 
     /// What a transport reading under `scan` would hand the format, and how much it read.

@@ -120,6 +120,8 @@ public enum TranscriptReadError: Error, Equatable {
     case missing
     case unreadable(String)
     case transport(String)
+    /// The file kept changing while it was read; nothing consistent to return.
+    case changedDuringRead
 }
 
 public enum LocateError: Error, Equatable {

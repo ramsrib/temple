@@ -891,33 +891,46 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         }
     }
 
+    /// How often a read retries a file that changed under it before giving up.
+    static let readAttempts = 3
+
+    /// Identity, facts and signature describe one version of the file: the
+    /// file is stat'ed before and after the bytes are read, and a read that
+    /// straddled a change (a replacement, an append, a rewrite) is retried,
+    /// never returned with one version's facts and another's signature.
     private func readNow(_ url: URL, store: any IncrementalSessionStore, expecting id: String, facts: Bool) throws -> TranscriptRead {
         func failure(_ error: Error) -> TranscriptReadError {
             Self.isMissing(error) ? .missing : .unreadable(error.localizedDescription)
         }
         readCounts.read()
-        do { _ = try FileSignature(url) } catch { throw failure(error) }
-        let identity: (verdict: TranscriptVerification, bytesRead: Int)
-        do { identity = try StoreIO.identity(at: url, format: store.format, expecting: id) }
-        catch { throw failure(error) }
-        var bytes = identity.bytesRead
-        var summary: TranscriptSummary?
-        var revision: UInt64?
-        if facts, identity.verdict == .verified {
-            // Facts and revision come as one value: whatever changes after
-            // this, these facts keep the revision they were read at.
-            let shared = store.sharedFactsSnapshot()
-            revision = shared.revision
-            readPhaseHook?(.sharedFactsAcquired, url)
-            let result = StoreIO.facts(at: url, format: store.format, shared: shared.facts)
-            readCounts.parse(wider: result.widerRead)
-            summary = result.summary
-            bytes += result.bytesRead
+        for _ in 0..<Self.readAttempts {
+            let before: FileSignature
+            do { before = try FileSignature(url) } catch { throw failure(error) }
+            let identity: (verdict: TranscriptVerification, bytesRead: Int)
+            do { identity = try StoreIO.identity(at: url, format: store.format, expecting: id) }
+            catch { throw failure(error) }
+            var bytes = identity.bytesRead
+            var summary: TranscriptSummary?
+            var revision: UInt64?
+            if facts, identity.verdict == .verified {
+                // Facts and revision come as one value: whatever changes after
+                // this, these facts keep the revision they were read at.
+                let shared = store.sharedFactsSnapshot()
+                revision = shared.revision
+                readPhaseHook?(.sharedFactsAcquired, url)
+                let result = StoreIO.facts(at: url, format: store.format, shared: shared.facts)
+                readCounts.parse(wider: result.widerRead)
+                summary = result.summary
+                bytes += result.bytesRead
+            }
+            readPhaseHook?(.bytesRead, url)
+            let after: FileSignature
+            do { after = try FileSignature(url) } catch { throw failure(error) }
+            guard after == before else { continue }
+            return TranscriptRead(identity: identity.verdict, summary: summary, signature: after.transcript,
+                                  bytesRead: bytes, sharedRevision: revision)
         }
-        let after: FileSignature
-        do { after = try FileSignature(url) } catch { throw failure(error) }
-        return TranscriptRead(identity: identity.verdict, summary: summary, signature: after.transcript,
-                              bytesRead: bytes, sharedRevision: revision)
+        throw TranscriptReadError.changedDuringRead
     }
 
     private static func candidateStat(_ path: String) -> CandidateStat {

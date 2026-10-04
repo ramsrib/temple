@@ -24,6 +24,11 @@ protocol SourceFixture: AnyObject {
     /// A path the agent's store would use for `name`, without creating it.
     func path(agent: Agent, name: String) -> String
     func breakListing(_ agent: Agent) throws
+    /// Replace the file once, mid-read: after the next read's bytes, before
+    /// its closing stat.
+    func replaceDuringNextRead(_ locator: TranscriptLocator, with data: Data) throws
+    /// Append to the file during every read from now on.
+    func appendDuringEveryRead(_ locator: TranscriptLocator) throws
     func breakTransport() throws
     func dropEvents() throws
     func setCodexHistory(_ data: Data) throws
@@ -261,6 +266,31 @@ class HostSessionSourceContract: XCTestCase {
             XCTFail("expected transport")
         } catch let error as TranscriptReadError {
             guard case .transport = error else { return XCTFail("\(error)") }
+        }
+    }
+
+    /// A file replaced while it is read is never reported with one
+    /// version's identity or facts and the other's signature.
+    func test07bAFileReplacedMidReadIsReadAgainNotReportedMixed() async throws {
+        let id = uuid()
+        let file = try plantClaude(id, prompt: "Old prompt")
+        try fixture.replaceDuringNextRead(file, with: claudeData(id, prompt: "A replacement, with a longer prompt"))
+        let read = try await source.read(file, agent: .claude, expecting: id, facts: true)
+        XCTAssertEqual(read.identity, .verified)
+        XCTAssertEqual(read.summary?.firstPrompt, "A replacement, with a longer prompt", "the facts are the replacement's")
+        let located = try await locate([LocateRequest(id: id, agent: .claude, refresh: true)])
+        XCTAssertEqual(located.candidates[id]?.first?.stat, .present(read.signature), "and so is the signature")
+    }
+
+    func test07cAFileThatNeverSettlesIsNotReported() async throws {
+        let id = uuid()
+        let file = try plantClaude(id)
+        try fixture.appendDuringEveryRead(file)
+        do {
+            _ = try await source.read(file, agent: .claude, expecting: id, facts: true)
+            XCTFail("expected changedDuringRead")
+        } catch {
+            XCTAssertEqual(error as? TranscriptReadError, .changedDuringRead)
         }
     }
 
@@ -636,6 +666,19 @@ private final class LocalFixture: SourceFixture {
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: directory.path)
         locked.append(directory)
     }
+    func replaceDuringNextRead(_ locator: TranscriptLocator, with data: Data) throws {
+        let once = Flag()
+        local.readPhaseHook = { phase, url in
+            guard phase == .bytesRead, url.path == locator.path, once.setOnce() else { return }
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+    func appendDuringEveryRead(_ locator: TranscriptLocator) throws {
+        local.readPhaseHook = { phase, url in
+            guard phase == .bytesRead, url.path == locator.path, let handle = try? FileHandle(forWritingTo: url) else { return }
+            _ = try? handle.seekToEnd(); try? handle.write(contentsOf: Data("\n{\"type\":\"assistant\"}".utf8)); try? handle.close()
+        }
+    }
     func breakTransport() throws { throw XCTSkip("a local host has no transport") }
     func dropEvents() throws { local.reconcileEvent(path: root.path, flags: UInt32(kFSEventStreamEventFlagKernelDropped)) }
     func setCodexHistory(_ data: Data) throws {
@@ -695,6 +738,17 @@ private final class FakeFixture: SourceFixture {
     func makeUnreadable(_ locator: TranscriptLocator) throws { fake.setUnreadable(locator.path) }
     func rewriteSameSize(_ locator: TranscriptLocator) throws { fake.append(locator.path, Data()) }
     func breakListing(_ agent: Agent) throws { fake.breakListing(agent) }
+    func replaceDuringNextRead(_ locator: TranscriptLocator, with data: Data) throws {
+        let once = Flag(), fake = self.fake
+        fake.readPhaseHook = { path in
+            guard path == locator.path, once.setOnce() else { return }
+            fake.write(path, agent: .claude, data: data)
+        }
+    }
+    func appendDuringEveryRead(_ locator: TranscriptLocator) throws {
+        let fake = self.fake
+        fake.readPhaseHook = { path in if path == locator.path { fake.append(path, Data("\n{}".utf8)) } }
+    }
     func breakTransport() throws { fake.breakTransport() }
     func dropEvents() throws { fake.dropEvents() }
     func setCodexHistory(_ data: Data) throws { fake.setShared(.codex, CodexFormat.historyInput, data) }
