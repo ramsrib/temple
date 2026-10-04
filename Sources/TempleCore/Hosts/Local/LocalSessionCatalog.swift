@@ -58,7 +58,7 @@ struct LocalSessionCatalog: Sendable {
             do {
                 files = try incremental.enumerateSessionFiles()
             } catch {
-                emit(.storeFailed(store.agent, message: error.localizedDescription))
+                emit(.storeFailed(agent: store.agent, message: error.localizedDescription))
                 continue
             }
             let parser = incremental.catalogParser()

@@ -105,9 +105,15 @@ public final class SessionEngine: @unchecked Sendable {
                                 guard let self, self.running, self.runID == token else { return }
                                 switch change {
                                 case .sessions(let ids): self.enqueueLocked(Set(ids).intersection(self.members))
-                                case .coverageReset(let generation):
-                                    self.advanceGenerationLocked(generation)
-                                case .sharedTitlesChanged: self.enqueueLocked(self.sharedTitleCandidatesLocked())
+                                // Raw observations take the same path: a member's
+                                // file changed, so it is resolved again (a source
+                                // that resolves internally finds nothing new).
+                                case .transcripts(let ids, _): self.enqueueLocked(ids.intersection(self.members))
+                                case .coverageReset(let coverage):
+                                    self.advanceGenerationLocked(coverage)
+                                // The revision is the next engine's concern; this one
+                                // re-resolves the members a shared title could fill.
+                                case .sharedFacts: self.enqueueLocked(self.sharedTitleCandidatesLocked())
                                 }
                             }
                         }
@@ -396,6 +402,17 @@ public struct EngineMetrics: Sendable {
     /// Full walks of every store's listing (startup, coverage resets, and
     /// anything else that cannot trust the filename map).
     public var enumerations: UInt64 = 0
+    /// Primitive calls: `locate` round trips, `read`s, and reads that needed a wider head.
+    public var locates: UInt64 = 0
+    public var reads: UInt64 = 0
+    public var widerReads: UInt64 = 0
+
+    public init(parses: UInt64 = 0, verifications: UInt64 = 0, publications: UInt64 = 0, observations: UInt64 = 0,
+                enumerations: UInt64 = 0, locates: UInt64 = 0, reads: UInt64 = 0, widerReads: UInt64 = 0) {
+        self.parses = parses; self.verifications = verifications; self.publications = publications
+        self.observations = observations; self.enumerations = enumerations
+        self.locates = locates; self.reads = reads; self.widerReads = widerReads
+    }
 }
 
 private final class EngineCancellation: @unchecked Sendable {

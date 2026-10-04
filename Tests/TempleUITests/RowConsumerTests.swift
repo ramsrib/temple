@@ -384,7 +384,7 @@ final class RowConsumerTests: XCTestCase {
         let app = try model(rows)
         app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["absent": .confirmedAbsent,
             "unreadable": .unreadable, "resolving": .resolving, "awaiting": .awaitingCreation], summaries: [:]))
-        try await read(app, events: [.storeFailed(.codex, message: "Failed scan")])
+        try await read(app, events: [.storeFailed(agent: .codex, message: "Failed scan")])
         XCTAssertEqual(app.history.allRows.count, 5)
         XCTAssertEqual(app.history.allRows.filter(\.transcriptMissing).map(\.id), ["absent"])
         XCTAssertTrue(app.history.allRows.allSatisfy { !$0.canResume })

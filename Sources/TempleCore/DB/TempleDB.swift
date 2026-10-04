@@ -368,6 +368,16 @@ public final class TempleDB: @unchecked Sendable {
         try TempleDB(database: DatabaseQueue())
     }
 
+    /// An in-memory database that reports every SQL statement it runs, for
+    /// tests that count writes (TempleTestSupport's `SQLTrace`).
+    public static func inMemory(tracing trace: @escaping @Sendable (String) -> Void) throws -> TempleDB {
+        var configuration = Configuration()
+        configuration.prepareDatabase { database in
+            database.trace { trace("\($0)") }
+        }
+        return try TempleDB(database: DatabaseQueue(configuration: configuration))
+    }
+
     public static func defaultPath() -> URL {
         TempleState.directory.appendingPathComponent("temple.sqlite")
     }

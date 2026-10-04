@@ -43,9 +43,11 @@ public struct CodexSessionStore: TranscriptSummaryStore {
 
     /// Titles and history prompts, re-read only when either file's
     /// signature (modification date, size, inode) changes.
-    func sharedFacts() -> SharedFacts {
-        let signature = [historyFile, sessionIndexFile].map(CodexSharedFactsCache.signature)
-        return shared.facts(for: signature) {
+    func sharedFacts() -> SharedFacts { sharedFactsSnapshot().facts }
+
+    public func sharedFactsSnapshot() -> (facts: SharedFacts, key: [SharedInputSignature]) {
+        let signature = sharedInputKey()
+        return (shared.facts(for: signature) {
             // Each file read once; both maps derive from that.
             var inputs: [String: Data] = [:]
             for (name, url) in [(CodexFormat.historyInput, historyFile), (CodexFormat.sessionIndexInput, sessionIndexFile)] {
@@ -53,7 +55,7 @@ public struct CodexSessionStore: TranscriptSummaryStore {
                 inputs[name] = try? Data(contentsOf: url)
             }
             return CodexFormat().sharedFacts(inputs)
-        }
+        }, signature)
     }
 
     public func catalogParser() -> @Sendable (URL) -> TranscriptSummary? { catalogSummaryParser() }
@@ -99,9 +101,8 @@ public struct CodexSessionStore: TranscriptSummaryStore {
 /// One read of the shared Codex files per change, for every parse until the
 /// next. Keyed by both files' signatures; a missing file has its own.
 final class CodexSharedFactsCache: @unchecked Sendable {
-    struct Signature: Equatable { let date: Date?; let size: Int?; let inode: UInt64? }
     private let lock = NSLock()
-    private var key: [Signature]?
+    private var key: [SharedInputSignature]?
     private var value = SharedFacts.empty
     private(set) var loads = 0
     private let readLock = NSLock()
@@ -110,13 +111,7 @@ final class CodexSharedFactsCache: @unchecked Sendable {
     var fileReads: Int { readLock.lock(); defer { readLock.unlock() }; return reads }
     func countRead() { readLock.lock(); reads += 1; readLock.unlock() }
 
-    static func signature(_ url: URL) -> Signature {
-        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-        return Signature(date: attributes?[.modificationDate] as? Date, size: attributes?[.size] as? Int,
-                         inode: (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value)
-    }
-
-    func facts(for signature: [Signature], load: () -> SharedFacts) -> SharedFacts {
+    func facts(for signature: [SharedInputSignature], load: () -> SharedFacts) -> SharedFacts {
         lock.lock(); defer { lock.unlock() }
         if key != signature {
             value = load(); key = signature; loads += 1

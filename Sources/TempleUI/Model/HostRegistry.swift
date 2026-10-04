@@ -29,8 +29,7 @@ public struct HostRegistry: Sendable {
                         }
                     } catch {
                         // A failed host cannot establish absence. History retains members.
-                        continuation.yield(.storeFailed(.claude, message: error.localizedDescription))
-                        continuation.yield(.storeFailed(.codex, message: error.localizedDescription))
+                        continuation.yield(.storeFailed(agent: nil, message: error.localizedDescription))
                     }
                 }
                 continuation.finish()

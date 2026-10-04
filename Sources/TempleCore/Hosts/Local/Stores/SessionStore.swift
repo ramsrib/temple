@@ -36,6 +36,11 @@ public protocol IncrementalSessionStore: SessionStore {
     /// A parser for many files in one read (`LocalSessionCatalog.stream`): any
     /// input shared by every file is read once, here, not once per file.
     func catalogParser() -> @Sendable (URL) -> TranscriptSummary?
+    /// The shared inputs' stat signatures (no read): what a shared-facts
+    /// revision is keyed by. Empty for an agent with none.
+    func sharedInputKey() -> [SharedInputSignature]
+    /// Shared facts with the key of the inputs they were read from.
+    func sharedFactsSnapshot() -> (facts: SharedFacts, key: [SharedInputSignature])
 
 }
 
@@ -76,6 +81,8 @@ public extension IncrementalSessionStore {
         return header.map { CodexRolloutCandidate(sessionID: $0.id, cwd: $0.cwd, createdAt: $0.createdAt, filePath: url) }
     }
     func metadataHeader(at url: URL) -> CodexRolloutCandidate? { try? adoptionHeader(at: url) }
+    func sharedInputKey() -> [SharedInputSignature] { sharedFactURLs.map(SharedInputSignature.init) }
+    func sharedFactsSnapshot() -> (facts: SharedFacts, key: [SharedInputSignature]) { (.empty, []) }
     func catalogParser() -> @Sendable (URL) -> TranscriptSummary? {
         let store = self
         return { store.loadSummary(at: $0) }
@@ -192,6 +199,44 @@ enum StoreIO {
         return nil
     }
 
+    /// `summary(at:)` with what it cost: bytes read, and whether a wider
+    /// head was needed. Nil summary for bytes that state no session.
+    static func facts(at url: URL, format: any TranscriptFormat, shared: SharedFacts)
+        -> (summary: TranscriptSummary?, bytesRead: Int, widerRead: Bool) {
+        let signature = fileSignature(url)
+        guard let bytes = transcriptBytes(url, fileSize: signature?.fileSize) else { return (nil, 0, false) }
+        var read = bytes.head.count + (bytes.tail?.count ?? 0)
+        let name = format.name(path: url.path)
+        let locator = TranscriptLocator(localURL: url)
+        let modifiedAt = signature?.modificationDate ?? modificationDate(url)
+        var facts = format.facts(bytes, name: name, locator: locator, modifiedAt: modifiedAt, shared: shared)
+        var wider = false
+        if case .needsWiderHead(let size) = facts {
+            let widerHead = readHeadData(url, maxBytes: size) ?? Data()
+            read += widerHead.count
+            wider = true
+            facts = format.facts(bytes.with(widerHead: widerHead), name: name, locator: locator,
+                                 modifiedAt: modifiedAt, shared: shared)
+        }
+        if case .summary(let summary) = facts { return (summary, read, wider) }
+        return (nil, read, wider)
+    }
+
+    /// Identity through the format, with the bytes the scan read.
+    static func identity(at url: URL, format: any TranscriptFormat, expecting id: String) throws
+        -> (verdict: TranscriptVerification, bytesRead: Int) {
+        switch format.identityScan {
+        case .firstLine(let maxBytes):
+            let line = try readFirstLine(url, maxBytes: maxBytes)
+            return (format.identity(lines: [line], expecting: id), line.count + 1)
+        case .lines(let maxBytes):
+            let lines = try IdentityLines(url, maxBytes: maxBytes)
+            let verdict = format.identity(lines: lines, expecting: id)
+            if let error = lines.error { throw error }
+            return (verdict, lines.bytesRead)
+        }
+    }
+
     /// Lines for a `.lines` identity scan: every complete line inside the
     /// first `maxBytes`, and the final unterminated line only when the end of
     /// the file came first. A read error ends the sequence and is kept.
@@ -202,6 +247,7 @@ enum StoreIO {
         private var read = 0
         private var finished = false
         private(set) var error: Error?
+        var bytesRead: Int { read }
 
         init(_ url: URL, maxBytes: Int) throws {
             handle = try FileHandle(forReadingFrom: url)
@@ -263,5 +309,19 @@ final class TranscriptSummaryCollector: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return summaries
+    }
+}
+
+/// A shared input's stat signature: modification date, size, file identity.
+/// A missing file has its own (all nil).
+public struct SharedInputSignature: Hashable, Sendable {
+    let date: Date?
+    let size: Int?
+    let inode: UInt64?
+    init(_ url: URL) {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        date = attributes?[.modificationDate] as? Date
+        size = attributes?[.size] as? Int
+        inode = (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value
     }
 }

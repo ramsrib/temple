@@ -1,0 +1,426 @@
+import Foundation
+import TempleCore
+
+/// An in-memory host for tests: transcripts are bytes at opaque paths, read
+/// through the same `TempleCore/Formats` every real host uses, so a test of
+/// the engine or the contract exercises the agent formats and nothing local.
+/// Every operation counts its round trips; failures and gates are scriptable.
+public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @unchecked Sendable {
+    public struct Counters: Equatable, Sendable {
+        /// Transport round trips, one per operation (plus one per wider head).
+        public var roundTrips = 0
+        public var locates = 0
+        /// Listing passes (each `locate` lists once, like one `find`).
+        public var listings = 0
+        public var reads = 0
+        public var parses = 0
+        public var widerReads = 0
+        public var bytesRead = 0
+    }
+
+    public let host: HostID
+    public let capabilities: Set<HostCapability> = [.liveChanges, .catalog]
+    /// Whether this host has file identities (inodes). Without them a
+    /// signature's identity is always 0.
+    public let hasInodes: Bool
+    /// Opened before a `read` or `locate` returns, when set — a test can hold
+    /// an operation in flight.
+    public var readGate: FakeGate? { get { locked { gates.read } } set { locked { gates.read = newValue } } }
+    public var locateGate: FakeGate? { get { locked { gates.locate } } set { locked { gates.locate = newValue } } }
+
+    private struct File {
+        var agent: Agent
+        var data: Data
+        var modifiedAt: Date
+        var identity: UInt64
+        var unreadable = false
+    }
+    private let lock = NSLock()
+    private var files: [String: File] = [:]
+    private var shared: [Agent: [String: Data]] = [:]
+    private var sharedRevisions: [Agent: UInt64] = [:]
+    private var directories: Set<String> = []
+    private var unsearchable: Set<String> = []
+    private var brokenListings: Set<Agent> = []
+    private var transportBroken = false
+    private var coverage: UInt64 = 1
+    private var nextIdentity: UInt64 = 1
+    private var clock = Date(timeIntervalSince1970: 1_800_000_000)
+    private var continuations: [UUID: AsyncThrowingStream<SourceChange, Error>.Continuation] = [:]
+    private var counts = Counters()
+    private var gates: (read: FakeGate?, locate: FakeGate?) = (nil, nil)
+
+    public init(host: HostID = HostID(rawValue: "fake-remote"), hasInodes: Bool = true) {
+        self.host = host
+        self.hasInodes = hasInodes
+    }
+
+    private func locked<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock(); defer { lock.unlock() }; return try body()
+    }
+
+    public var counters: Counters { locked { counts } }
+    public var isMonitoring: Bool { locked { !continuations.isEmpty } }
+    public var metrics: EngineMetrics {
+        let c = counters
+        return EngineMetrics(parses: UInt64(c.parses), locates: UInt64(c.locates), reads: UInt64(c.reads),
+                             widerReads: UInt64(c.widerReads))
+    }
+
+    // MARK: Scripting the host
+
+    /// Writes (or replaces) a transcript. A replacement is a new file — a new
+    /// identity — unless `inPlace`. The modification time advances a second
+    /// per write unless given.
+    @discardableResult
+    public func write(_ path: String, agent: Agent, data: Data, modifiedAt: Date? = nil, inPlace: Bool = false) -> TranscriptLocator {
+        let locator = TranscriptLocator(host: host, path: path)
+        let change: SourceChange = locked {
+            clock = clock.addingTimeInterval(1)
+            let identity: UInt64
+            if inPlace, let old = files[path] { identity = old.identity } else { identity = hasInodes ? nextIdentity : 0; nextIdentity += 1 }
+            files[path] = File(agent: agent, data: data, modifiedAt: modifiedAt ?? clock, identity: identity)
+            return changeLocked(path, agent: agent)
+        }
+        emit(change)
+        return locator
+    }
+
+    public func append(_ path: String, _ data: Data) {
+        let change: SourceChange? = locked {
+            guard var file = files[path] else { return nil }
+            clock = clock.addingTimeInterval(1)
+            file.data.append(data); file.modifiedAt = clock
+            files[path] = file
+            return changeLocked(path, agent: file.agent)
+        }
+        change.map(emit)
+    }
+
+    public func truncate(_ path: String, to size: Int) {
+        let change: SourceChange? = locked {
+            guard var file = files[path] else { return nil }
+            clock = clock.addingTimeInterval(1)
+            file.data = file.data.prefix(size); file.modifiedAt = clock
+            files[path] = file
+            return changeLocked(path, agent: file.agent)
+        }
+        change.map(emit)
+    }
+
+    public func remove(_ path: String) {
+        let change: SourceChange? = locked {
+            guard let file = files.removeValue(forKey: path) else { return nil }
+            return changeLocked(path, agent: file.agent)
+        }
+        change.map(emit)
+    }
+
+    public func setUnreadable(_ path: String, _ unreadable: Bool = true) {
+        locked { files[path]?.unreadable = unreadable }
+    }
+
+    /// Replaces one of an agent's shared inputs (nil removes it), bumping its revision.
+    public func setShared(_ agent: Agent, _ name: String, _ data: Data?) {
+        let revision: UInt64 = locked {
+            shared[agent, default: [:]][name] = data
+            sharedRevisions[agent, default: 0] += 1
+            return sharedRevisions[agent, default: 0]
+        }
+        emit(.sharedFacts(agent, revision: revision))
+    }
+
+    public func addDirectory(_ path: String) { locked { _ = directories.insert(path) } }
+    public func removeDirectory(_ path: String) { locked { _ = directories.remove(path) } }
+    /// Directories under this path cannot be checked: evidence is unknown.
+    public func makeUnsearchable(_ path: String) { locked { _ = unsearchable.insert(path) } }
+    public func breakListing(_ agent: Agent, _ broken: Bool = true) {
+        locked { if broken { brokenListings.insert(agent) } else { brokenListings.remove(agent) } }
+    }
+    public func breakTransport(_ broken: Bool = true) { locked { transportBroken = broken } }
+
+    /// What a dropped event stream (or a reconnect) does: coverage moves on.
+    public func dropEvents() {
+        let next: UInt64 = locked { coverage += 1; return coverage }
+        emit(.coverageReset(coverage: next))
+    }
+
+    private func changeLocked(_ path: String, agent: Agent) -> SourceChange {
+        let id = TranscriptFormats.format(for: agent).name(path: path)?.threadID
+        return .transcripts(ids: id.map { [$0] } ?? [], locators: [TranscriptLocator(host: host, path: path)])
+    }
+
+    private func emit(_ change: SourceChange) {
+        let targets = locked { Array(continuations.values) }
+        for continuation in targets { continuation.yield(change) }
+    }
+
+    private func signature(_ file: File) -> TranscriptSignature {
+        TranscriptSignature(modifiedAt: file.modifiedAt, size: file.data.count, identity: file.identity)
+    }
+
+    private func sharedFacts(_ agent: Agent) -> (SharedFacts, UInt64?) {
+        let format = TranscriptFormats.format(for: agent)
+        guard !format.sharedInputs.isEmpty else { return (.empty, nil) }
+        return (format.sharedFacts(shared[agent] ?? [:]), sharedRevisions[agent, default: 0])
+    }
+
+    // MARK: HostSessionSource
+
+    public func changes() -> AsyncThrowingStream<SourceChange, Error> {
+        let token = UUID()
+        return AsyncThrowingStream { continuation in
+            continuation.onTermination = { [weak self] _ in self?.locked { _ = self?.continuations.removeValue(forKey: token) } }
+            locked { continuations[token] = continuation }
+        }
+    }
+
+    public func locate(_ requests: [LocateRequest]) async throws -> LocateResult {
+        await locateGate?.wait()
+        return try locked {
+            counts.roundTrips += 1
+            counts.locates += 1
+            guard !transportBroken else { throw LocateError.transport("fake transport down") }
+            counts.listings += 1
+            var candidates: [String: [TranscriptCandidate]] = [:]
+            for request in requests {
+                var list: [TranscriptCandidate] = []
+                for agent in Agent.allCases where request.agent == nil || request.agent == agent {
+                    let format = TranscriptFormats.format(for: agent)
+                    let listed = brokenListings.contains(agent) ? [] : files.keys.sorted().filter { path in
+                        files[path]?.agent == agent && format.name(path: path)?.threadID == request.id
+                    }
+                    // A hint is this agent's when its file is this agent's, or gone.
+                    let hint = request.hint.flatMap { $0.host == host ? $0.path : nil }
+                        .flatMap { files[$0] == nil || files[$0]?.agent == agent ? $0 : nil }
+                    let hintPresent = hint.map { files[$0] != nil } ?? false
+                    for assignment in TranscriptCandidates.assign(id: request.id, format: format, listed: listed,
+                                                                 hint: hint, hintPresent: hintPresent) {
+                        let stat: CandidateStat
+                        if let file = files[assignment.path] { stat = file.unreadable ? .unreadable : .present(signature(file)) }
+                        else { stat = .missing }
+                        if assignment.role == .hinted, stat == .missing { continue }
+                        list.append(TranscriptCandidate(locator: TranscriptLocator(host: host, path: assignment.path),
+                                                        agent: agent, role: assignment.role, stat: stat))
+                    }
+                }
+                candidates[request.id] = list
+            }
+            var revisions: [Agent: UInt64] = [:]
+            for agent in Agent.allCases where !TranscriptFormats.format(for: agent).sharedInputs.isEmpty {
+                revisions[agent] = sharedRevisions[agent, default: 0]
+            }
+            return LocateResult(coverage: coverage, candidates: candidates,
+                                complete: Set(Agent.allCases).subtracting(brokenListings), sharedRevision: revisions)
+        }
+    }
+
+    public func read(_ locator: TranscriptLocator, agent: Agent, expecting id: String, facts: Bool) async throws -> TranscriptRead {
+        await readGate?.wait()
+        return try locked {
+            counts.roundTrips += 1
+            counts.reads += 1
+            guard !transportBroken else { throw TranscriptReadError.transport("fake transport down") }
+            guard locator.host == host, let file = files[locator.path], file.agent == agent else { throw TranscriptReadError.missing }
+            guard !file.unreadable else { throw TranscriptReadError.unreadable("permission denied") }
+            let format = TranscriptFormats.format(for: agent)
+            let (lines, scanned) = try Self.identityLines(file.data, scan: format.identityScan)
+            let verdict = format.identity(lines: lines, expecting: id)
+            var bytes = scanned
+            var summary: TranscriptSummary?
+            var revision: UInt64?
+            if facts, verdict == .verified {
+                counts.parses += 1
+                let window = TranscriptBytes.defaultWindow
+                let head = file.data.prefix(window)
+                let tail = file.data.count > window ? file.data.suffix(min(window, file.data.count - window)) : nil
+                var input = TranscriptBytes(head: Data(head), tail: tail.map { Data($0) }, fileSize: file.data.count)
+                bytes += head.count + (tail?.count ?? 0)
+                let (shared, sharedRevision) = sharedFacts(agent)
+                revision = sharedRevision
+                let name = format.name(path: locator.path)
+                var result = format.facts(input, name: name, locator: locator, modifiedAt: file.modifiedAt, shared: shared)
+                if case .needsWiderHead(let size) = result {
+                    counts.roundTrips += 1
+                    counts.widerReads += 1
+                    let wider = Data(file.data.prefix(size))
+                    bytes += wider.count
+                    input = input.with(widerHead: wider)
+                    result = format.facts(input, name: name, locator: locator, modifiedAt: file.modifiedAt, shared: shared)
+                }
+                if case .summary(let parsed) = result { summary = parsed }
+            }
+            counts.bytesRead += bytes
+            return TranscriptRead(identity: verdict, summary: summary, signature: signature(file),
+                                  bytesRead: bytes, sharedRevision: revision)
+        }
+    }
+
+    /// What a transport reading under `scan` would hand the format, and how much it read.
+    private static func identityLines(_ data: Data, scan: IdentityScan) throws -> ([Data], Int) {
+        switch scan {
+        case .firstLine(let maxBytes):
+            let prefix = data.prefix(maxBytes)
+            if let newline = prefix.firstIndex(of: 0x0a) { return ([Data(prefix[..<newline])], newline - prefix.startIndex + 1) }
+            guard data.count <= maxBytes else { throw TranscriptReadError.unreadable("header longer than \(maxBytes) bytes") }
+            return ([Data(prefix)], prefix.count)
+        case .lines(let maxBytes):
+            let prefix = data.prefix(maxBytes)
+            var parts = prefix.split(separator: 0x0a, omittingEmptySubsequences: false).map { Data($0) }
+            // The final piece is a line only if the file ended inside the scan.
+            if data.count >= maxBytes || prefix.last == 0x0a { parts.removeLast() }
+            return (parts, prefix.count)
+        }
+    }
+
+    public func directoryEvidence(_ path: String) async -> DirectoryEvidence {
+        locked {
+            if directories.contains(path) { return .exists }
+            if unsearchable.contains(where: { path.hasPrefix($0 + "/") }) { return .unknown }
+            return .missing
+        }
+    }
+
+    public func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task { [weak self] in
+                guard let self else { continuation.finish(); return }
+                let (failed, summaries) = self.catalogSnapshot(query)
+                for agent in failed { continuation.yield(.storeFailed(agent: agent, message: "fake listing failed")) }
+                continuation.yield(.listed(total: summaries.count))
+                var start = 0
+                while start < summaries.count {
+                    if Task.isCancelled { break }
+                    let end = min(start + query.batchSize, summaries.count)
+                    continuation.yield(.sessions(Array(summaries[start..<end]), read: end, total: summaries.count))
+                    start = end
+                    await Task.yield()
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// The agent's own pick per thread, parsed, newest first.
+    private func catalogSnapshot(_ query: CatalogQuery) -> (failed: [Agent], summaries: [TranscriptSummary]) {
+        let paths: [(Agent, String)] = locked {
+            counts.roundTrips += 1
+            counts.listings += 1
+            return files.keys.sorted().compactMap { path in
+                guard let agent = files[path]?.agent, query.agents.contains(agent), !brokenListings.contains(agent) else { return nil }
+                return (agent, path)
+            }
+        }
+        let broken = locked { brokenListings }
+        let failed = Agent.allCases.filter { query.agents.contains($0) && broken.contains($0) }
+        var byThread: [String: [(path: String, name: TranscriptName)]] = [:]
+        var unnamed: [(Agent, String)] = []
+        for (agent, path) in paths {
+            let format = TranscriptFormats.format(for: agent)
+            if let name = format.name(path: path) { byThread["\(agent.rawValue):\(name.threadID)", default: []].append((path, name)) }
+            else { unnamed.append((agent, path)) }
+        }
+        var chosen: [(Agent, String)] = unnamed
+        for (key, names) in byThread {
+            let agent = Agent(rawValue: String(key.prefix { $0 != ":" }))!
+            if let selected = TranscriptFormats.format(for: agent).select(names) { chosen.append((agent, selected)) }
+            else { chosen += names.map { (agent, $0.path) } }
+        }
+        var summaries: [TranscriptSummary] = []
+        for (agent, path) in chosen {
+            let locator = TranscriptLocator(host: host, path: path)
+            let parsed: TranscriptSummary? = locked {
+                guard let file = files[path], !file.unreadable else { return nil }
+                counts.parses += 1
+                let format = TranscriptFormats.format(for: agent)
+                let window = TranscriptBytes.defaultWindow
+                var input = TranscriptBytes(head: Data(file.data.prefix(window)),
+                                            tail: file.data.count > window ? Data(file.data.suffix(min(window, file.data.count - window))) : nil,
+                                            fileSize: file.data.count)
+                let (shared, _) = sharedFacts(agent)
+                var result = format.facts(input, name: format.name(path: path), locator: locator, modifiedAt: file.modifiedAt, shared: shared)
+                if case .needsWiderHead(let size) = result {
+                    counts.widerReads += 1
+                    input = input.with(widerHead: Data(file.data.prefix(size)))
+                    result = format.facts(input, name: format.name(path: path), locator: locator, modifiedAt: file.modifiedAt, shared: shared)
+                }
+                if case .summary(let summary) = result { return summary }
+                return nil
+            }
+            if let parsed { summaries.append(parsed) }
+        }
+        summaries.sort { lhs, rhs in
+            lhs.modifiedAt == rhs.modifiedAt ? lhs.id < rhs.id
+                : (query.newestFirst ? lhs.modifiedAt > rhs.modifiedAt : lhs.modifiedAt < rhs.modifiedAt)
+        }
+        return (failed, summaries)
+    }
+
+    /// Codex only: the one rollout header in the window for this folder.
+    public func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult {
+        try Task.checkCancellation()
+        return locked {
+            counts.roundTrips += 1
+            if transportBroken || brokenListings.contains(.codex) { return .incomplete }
+            let format = CodexFormat()
+            var matches: [(String, AdoptionCandidate)] = []
+            for (path, file) in files where file.agent == .codex {
+                let line = file.data.prefix { $0 != 0x0a }
+                do {
+                    guard let header = try format.header(firstLine: Data(line)) else { continue }
+                    if header.cwd == request.directory, abs(header.createdAt.timeIntervalSince(request.startedAt)) <= request.window {
+                        matches.append((path, header))
+                    }
+                } catch {
+                    if abs(file.modifiedAt.timeIntervalSince(request.startedAt)) <= request.window { return .incomplete }
+                }
+            }
+            switch matches.count {
+            case 0: return .none
+            case 1: return .adopted(id: matches[0].1.id, locator: TranscriptLocator(host: host, path: matches[0].0))
+            default: return .ambiguous
+            }
+        }
+    }
+}
+
+/// A one-shot gate: everything waiting on it resumes when it opens.
+public final class FakeGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private(set) public var arrivals = 0
+    public init() {}
+    public func wait() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            arrivals += 1
+            if isOpen { lock.unlock(); continuation.resume(); return }
+            waiters.append(continuation)
+            lock.unlock()
+        }
+    }
+    public func open() {
+        lock.lock(); isOpen = true; let pending = waiters; waiters.removeAll(); lock.unlock()
+        pending.forEach { $0.resume() }
+    }
+}
+
+/// Every SQL statement a traced database ran (`TempleDB.inMemory(tracing:)`).
+public final class SQLTrace: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+    public init() {}
+    public func record(_ statement: String) { lock.lock(); recorded.append(statement); lock.unlock() }
+    public var statements: [String] { lock.lock(); defer { lock.unlock() }; return recorded }
+    /// Statements that write session rows (`UPDATE session_state`).
+    public var sessionRowUpdates: Int { statements.filter { $0.uppercased().hasPrefix("UPDATE SESSION_STATE") }.count }
+    public func reset() { lock.lock(); recorded.removeAll(); lock.unlock() }
+
+    /// An in-memory database whose statements land in a new trace.
+    public static func database() throws -> (TempleDB, SQLTrace) {
+        let trace = SQLTrace()
+        return (try TempleDB.inMemory(tracing: { trace.record($0) }), trace)
+    }
+}

@@ -1,5 +1,6 @@
 import XCTest
 @testable import TempleCore
+import TempleTestSupport
 
 final class HostSessionSourceTests: XCTestCase {
     private func wait(_ condition: () -> Bool) async throws {
@@ -10,7 +11,7 @@ final class HostSessionSourceTests: XCTestCase {
 
     func testNewCoverageInvalidatesOtherMembersInEitherDeliveryOrder() async throws {
         for batchFirst in [false, true] {
-            let source = FakeHostSource(host: .local)
+            let source = ResolvingFakeSource(host: .local)
             let engine = SessionEngine(source: source, members: ["a", "b"])
             let stream = engine.start()
             defer { engine.stop(); withExtendedLifetime(stream) {} }
@@ -19,14 +20,14 @@ final class HostSessionSourceTests: XCTestCase {
             engine.requestResolution("a")
             try await wait { source.hasPending }
             if !batchFirst {
-                source.send(.coverageReset(2))
+                source.send(.coverageReset(coverage: 2))
                 try await wait { engine.publishedSnapshot?.generation == 2 }
             }
             source.gateNext()
             source.resumePending(ResolutionBatch(generation: 2, results: ["a": .absent]))
             try await wait { source.hasPending && engine.publishedSnapshot?.generation == 2 }
             XCTAssertEqual(engine.resolution(for: "b"), .resolving)
-            if batchFirst { source.send(.coverageReset(2)) }
+            if batchFirst { source.send(.coverageReset(coverage: 2)) }
             source.resumePending(ResolutionBatch(generation: 2, results: ["a": .absent, "b": .unreadable]))
             try await wait { engine.resolution(for: "b") == .unreadable }
             XCTAssertEqual(engine.publishedSnapshot?.generation, 2)
@@ -34,7 +35,7 @@ final class HostSessionSourceTests: XCTestCase {
     }
 
     func testQueuedResolveCannotRegisterALeftMember() async throws {
-        let source = FakeHostSource(host: .local)
+        let source = ResolvingFakeSource(host: .local)
         let engine = SessionEngine(source: source, members: ["a", "b"])
         let stream = engine.start()
         defer { engine.stop(); withExtendedLifetime(stream) {} }
@@ -53,7 +54,7 @@ final class HostSessionSourceTests: XCTestCase {
     }
 
     func testInFlightRegistrationIsReleasedAfterLeave() async throws {
-        let source = FakeHostSource(host: .local)
+        let source = ResolvingFakeSource(host: .local)
         let engine = SessionEngine(source: source, members: ["a", "b"])
         let stream = engine.start()
         defer { engine.stop(); withExtendedLifetime(stream) {} }
@@ -71,7 +72,7 @@ final class HostSessionSourceTests: XCTestCase {
     }
 
     func testTransportFailureNeverProvesAbsence() async throws {
-        let source = FakeHostSource(host: .local)
+        let source = ResolvingFakeSource(host: .local)
         source.fail = true
         let engine = SessionEngine(source: source, members: ["member"])
         let stream = engine.start()
@@ -89,7 +90,7 @@ final class HostSessionSourceTests: XCTestCase {
         let remote = HostID(rawValue: "fake")
         try db.join(sessionID: "local", via: .imported, core: SessionCore(host: .local))
         try db.join(sessionID: "remote", via: .imported, core: SessionCore(host: remote))
-        let source = FakeHostSource(host: remote)
+        let source = ResolvingFakeSource(host: remote)
         let engine = SessionEngine(source: source, database: db)
         let stream = engine.start()
         defer { engine.stop(); withExtendedLifetime(stream) {} }
@@ -106,7 +107,7 @@ final class HostSessionSourceTests: XCTestCase {
     }
 
     func testAStaleGenerationBatchIsDropped() async throws {
-        let source = FakeHostSource(host: .local)
+        let source = ResolvingFakeSource(host: .local)
         let engine = SessionEngine(source: source, members: ["member"])
         let stream = engine.start()
         defer { engine.stop(); withExtendedLifetime(stream) {} }
@@ -114,7 +115,7 @@ final class HostSessionSourceTests: XCTestCase {
         source.gateNext()
         engine.requestResolution("member")
         try await wait { source.hasPending }
-        source.send(.coverageReset(2))
+        source.send(.coverageReset(coverage: 2))
         try await wait { engine.publishedSnapshot?.generation == 2 }
         // A reply from the old coverage cannot replace the member's verdict.
         source.resumePending(ResolutionBatch(generation: 1, results: ["member": .mismatch]))
@@ -131,20 +132,65 @@ extension HostSessionSourceTests {
         try db.join(sessionID: "codex-untitled", via: .imported, agent: .codex)
         try db.join(sessionID: "codex-titled", via: .imported, agent: .codex, core: SessionCore(title: "Named"))
         try db.join(sessionID: "claude-untitled", via: .imported, agent: .claude)
-        let source = FakeHostSource(host: .local)
+        let source = ResolvingFakeSource(host: .local)
         let engine = SessionEngine(source: source, database: db)
         let stream = engine.start()
         defer { engine.stop(); withExtendedLifetime(stream) {} }
         try await wait { engine.resolution(for: "codex-titled") == .confirmedAbsent }
         let calls = source.callCount
-        source.send(.sharedTitlesChanged)
+        source.send(.sharedFacts(.codex, revision: 1))
         try await wait { source.callCount > calls }
         XCTAssertEqual(source.lastBatch, ["codex-untitled"])
+    }
+
+    /// The primitive change stream reaches the current engine too: a raw
+    /// observation of a member's file resolves that member again, and only it.
+    func testRawTranscriptEventsResolveOnlyTheMembersTheyName() async throws {
+        let source = ResolvingFakeSource(host: .local)
+        let engine = SessionEngine(source: source, members: ["member", "other"])
+        let stream = engine.start()
+        defer { engine.stop(); withExtendedLifetime(stream) {} }
+        try await wait { engine.resolution(for: "other") == .confirmedAbsent }
+        let calls = source.callCount
+        source.send(.transcripts(ids: ["member", "stranger"],
+                                 locators: [TranscriptLocator(host: .local, path: "/x/member.jsonl"), TranscriptLocator(host: .local, path: "/x/stranger.jsonl")]))
+        try await wait { source.callCount > calls }
+        XCTAssertEqual(source.lastBatch, ["member"])
+    }
+
+    /// A source that has not adopted the primitives says so, typed — never a crash.
+    func testUnadoptedPrimitivesThrowATypedUnsupportedError() async throws {
+        let source = ResolvingFakeSource(host: .local)
+        do {
+            _ = try await source.locate([LocateRequest(id: "x")])
+            XCTFail("expected unsupported")
+        } catch {
+            XCTAssertEqual(error as? HostSourceError, .unsupported("locate"))
+        }
+        do {
+            _ = try await source.read(TranscriptLocator(host: .local, path: "/x"), agent: .claude, expecting: "x", facts: false)
+            XCTFail("expected unsupported")
+        } catch {
+            XCTAssertEqual(error as? HostSourceError, .unsupported("read"))
+        }
+        let evidence: DirectoryEvidence = await source.directoryEvidence("/anywhere")
+        XCTAssertEqual(evidence, .unknown)
+    }
+
+    /// The traced database the cutover's no-stale-write tests count on.
+    func testATracedDatabaseCountsSessionRowWrites() throws {
+        let (db, trace) = try SQLTrace.database()
+        try db.join(sessionID: "s", via: .imported)
+        trace.reset()
+        XCTAssertEqual(try db.fillCoreFields(sessionID: "s", host: .local, title: "T"), .changed([.title]))
+        XCTAssertEqual(trace.sessionRowUpdates, 1)
+        XCTAssertEqual(try db.fillCoreFields(sessionID: "s", host: .local, title: "Other"), .unchanged)
+        XCTAssertEqual(trace.sessionRowUpdates, 1, "a NULL-only no-op writes nothing")
     }
 }
 
 /// No local paths, stores or parser dependency: usable by engine and UI seam tests.
-final class FakeHostSource: HostSessionSource, @unchecked Sendable {
+final class ResolvingFakeSource: HostSessionSource, @unchecked Sendable {
     let host: HostID
     let capabilities: Set<HostCapability> = [.liveChanges, .catalog]
     private let lock = NSLock()
@@ -190,7 +236,7 @@ final class FakeHostSource: HostSessionSource, @unchecked Sendable {
         AsyncThrowingStream { lock.lock(); continuation = $0; lock.unlock() }
     }
     func send(_ change: SourceChange) {
-        lock.lock(); if case .coverageReset(let value) = change { generation = value }
+        lock.lock(); if case .coverageReset(coverage: let value) = change { generation = value }
         let target = continuation; lock.unlock(); target?.yield(change)
     }
 }

@@ -69,7 +69,11 @@ let package = Package(
         // Dev harness executable (like templectl is for TempleCore).
         .executableTarget(name: "terminal-demo", dependencies: ["TempleTerminal", "TempleTerminalAPI"]),
 
-        .testTarget(name: "TempleCoreTests", dependencies: ["TempleCore"], exclude: ["Fixtures/session-state-v8.json", "Fixtures/session-state-v9.json", "Fixtures/format-golden.json"]),
+        // Test doubles shared by test targets (FakeHostSource, SQL tracing).
+        // Nothing in a product links it.
+        .target(name: "TempleTestSupport", dependencies: ["TempleCore"]),
+
+        .testTarget(name: "TempleCoreTests", dependencies: ["TempleCore", "TempleTestSupport"], exclude: ["Fixtures/session-state-v8.json", "Fixtures/session-state-v9.json", "Fixtures/format-golden.json"]),
         .testTarget(name: "TempleUITests", dependencies: ["TempleUI"]),
         .testTarget(name: "TempleTerminalTests", dependencies: ["TempleTerminal", "TempleUI"]),
     ]

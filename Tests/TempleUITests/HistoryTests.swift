@@ -304,7 +304,7 @@ final class HistoryTests: XCTestCase {
         history.activate()
         XCTAssertEqual(history.readState, .reading(read: 0, total: nil))
         continuation.yield(.listed(total: 3))
-        continuation.yield(.storeFailed(.codex, message: "permission denied"))
+        continuation.yield(.storeFailed(agent: .codex, message: "permission denied"))
         continuation.yield(.sessions([session("a", hoursAgo: 1)], read: 1, total: 3))
         await waitFor { history.allRows.count == 1 }
         XCTAssertEqual(history.readState, .reading(read: 1, total: 3))

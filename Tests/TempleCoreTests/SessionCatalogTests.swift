@@ -64,7 +64,7 @@ final class LocalSessionCatalogTests: XCTestCase {
 
         let events = await collect(catalog.stream())
 
-        XCTAssertTrue(events.contains(.storeFailed(.codex, message: FailingStore.error.localizedDescription)))
+        XCTAssertTrue(events.contains(.storeFailed(agent: .codex, message: FailingStore.error.localizedDescription)))
         let ids = events.flatMap { event -> [String] in
             if case .sessions(let sessions, _, _) = event { return sessions.map(\.id) }
             return []

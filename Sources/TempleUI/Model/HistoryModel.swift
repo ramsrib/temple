@@ -293,7 +293,10 @@ public final class HistoryModel: ObservableObject {
                 case .listed(let total):
                     self.readState = .reading(read: 0, total: total)
                 case .storeFailed(let agent, let message):
-                    failures.append(StoreFailure(agent: agent, message: message))
+                    // A host that failed as a whole failed for every agent.
+                    for agent in agent.map({ [$0] }) ?? Agent.allCases {
+                        failures.append(StoreFailure(agent: agent, message: message))
+                    }
                     self.storeFailures = failures
                 case .sessions(let batch, let read, let total):
                     // First (newest) file wins. The noise check — a stat per

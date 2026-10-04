@@ -5,10 +5,16 @@ import CoreServices
 /// Local observation, selection, verification and enrichment. Registered interests
 /// come from the engine; this source never reads or writes Temple membership.
 public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics, @unchecked Sendable {
-    public func directoryEvidence(_ path: String) -> DirectoryEvidence {
-        var isDirectory: ObjCBool = false
-        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
-            ? .exists : .missing
+    /// Only `ENOENT`/`ENOTDIR` (or a file where the folder should be) prove
+    /// a folder gone; anything else — a parent it may not search, an I/O
+    /// error — is unknown.
+    public func directoryEvidence(_ path: String) -> DirectoryEvidence { Self.evidence(path) }
+    public func directoryEvidence(_ path: String) async -> DirectoryEvidence { Self.evidence(path) }
+
+    static func evidence(_ path: String) -> DirectoryEvidence {
+        var info = stat()
+        if stat(path, &info) == 0 { return (info.st_mode & S_IFMT) == S_IFDIR ? .exists : .missing }
+        return errno == ENOENT || errno == ENOTDIR ? .missing : .unknown
     }
     public let host = HostID.local
     public let capabilities: Set<HostCapability> = [.liveChanges, .revealInFinder, .catalog]
@@ -52,6 +58,11 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     private var enumerationByAgent: [Agent: Bool] = [:]
     private var streamID: UUID?
     private var pendingPaths: Set<String> = []
+    /// Every transcript path observed since the last flush, member or not.
+    private var rawPaths: Set<String> = []
+    private let sharedRevisions = SharedRevisionTracker()
+    private var locateCount: UInt64 = 0
+    private let readCounts = ReadCounters()
     private var work: DispatchWorkItem?
     private var requests: [UUID: LocalAdoptionWindow] = [:]
     private var candidates: [String: CodexRolloutCandidate] = [:]
@@ -196,7 +207,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         if statesDirty { statesDirty = false; contentDirty = true }
         snapshotMonitoring = monitoring
         snapshotMetrics = EngineMetrics(parses: parseCount, verifications: verificationCount,
-            publications: 0, observations: observedCount, enumerations: enumerationCount)
+            publications: 0, observations: observedCount, enumerations: enumerationCount, locates: locateCount)
         snapshotLock.unlock()
     }
 
@@ -218,6 +229,9 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         // Arm before enumeration. Callbacks buffer behind the scan on this queue.
         armLocked()
         enumerateLocked()
+        for store in stores where !store.sharedFactURLs.isEmpty {
+            _ = sharedRevisions.revision(store.agent, key: store.sharedInputKey())
+        }
         if !requests.isEmpty {
             for requestID in requests.keys { scheduleAdoptionDeadlineLocked(requestID) }
             sweepCandidatesLocked()
@@ -245,6 +259,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         }
         streamID = nil
         pendingPaths.removeAll()
+        rawPaths.removeAll()
         files.removeAll(); pathsByID.removeAll(); memberIDsByPath.removeAll()
         hintPathsByID.removeAll(); selectedCodexPaths.removeAll()
         signatures.removeAll(); summaries.removeAll(); memberWork.removeAll()
@@ -372,6 +387,9 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             return
         }
         guard isTranscript else { return }
+        // Every transcript write is reported as an observation, member or not.
+        rawPaths.insert(path)
+        scheduleLocked()
         let hintedMember = memberIDsByPath[path]?.isEmpty == false
         let filenameMember = stores.contains { store in
             store.acceptsTranscript(url) && store.filenameID(at: url).map { registeredIDs.contains($0) } == true
@@ -387,6 +405,13 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     /// dropped (the backoff stands), and everyone else is left alone rather
     /// than re-resolved on every Codex prompt.
     private func sharedFactsChangedLocked() {
+        for store in stores where !store.sharedFactURLs.isEmpty {
+            let before = sharedRevisions.current(store.agent)
+            let revision = sharedRevisions.revision(store.agent, key: store.sharedInputKey())
+            if revision != before {
+                for continuation in changeContinuations.values { continuation.yield(.sharedFacts(store.agent, revision: revision)) }
+            }
+        }
         var touched = false
         for id in registeredIDs.sorted() {
             guard let interest = interests[id], interest.wanted.contains(.title) else { continue }
@@ -417,12 +442,16 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             guard let self, self.running else { return }
             self.work = nil
             let paths = self.pendingPaths; self.pendingPaths.removeAll()
+            let raw = self.rawPaths; self.rawPaths.removeAll()
             var changed = false
             for path in paths {
                 if self.reconcileFileLocked(URL(fileURLWithPath: path)) { changed = true }
             }
             if changed { self.publishLocked() }
             else { self.emitChangesLocked() }
+            // After the member work, so a consumer that resolves on these
+            // finds the source already up to date.
+            self.emitTranscriptsLocked(raw)
         }
         work = item
         queue.asyncAfter(deadline: .now() + debounceInterval, execute: item)
@@ -489,7 +518,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     private func recoverLocked(subtree: String? = nil, resetCoverage: Bool = false) {
         if resetCoverage {
             generation &+= 1; contentDirty = true
-            for continuation in changeContinuations.values { continuation.yield(.coverageReset(generation)) }
+            for continuation in changeContinuations.values { continuation.yield(.coverageReset(coverage: generation)) }
         }
         enumerateLocked(subtree: subtree)
         for id in registeredIDs {
@@ -735,7 +764,10 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     }
 
     public var metrics: EngineMetrics {
-        snapshotLock.lock(); defer { snapshotLock.unlock() }; return snapshotMetrics
+        snapshotLock.lock(); var result = snapshotMetrics; snapshotLock.unlock()
+        let reads = readCounts.values
+        result.reads = reads.reads; result.parses &+= reads.parses; result.widerReads = reads.wider
+        return result
     }
 
     private func reconcileFileLocked(_ url: URL) -> Bool {
@@ -762,6 +794,108 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     private func publishLocked() {
         snapshotLocked()
         emitChangesLocked()
+    }
+
+    private func emitTranscriptsLocked(_ paths: Set<String>) {
+        guard running, !paths.isEmpty else { return }
+        var ids: Set<String> = []
+        var locators: Set<TranscriptLocator> = []
+        for path in paths {
+            let url = URL(fileURLWithPath: path)
+            guard let store = stores.first(where: { $0.acceptsTranscript(url) }) else { continue }
+            if let id = store.filenameID(at: url) { ids.insert(id) }
+            locators.insert(TranscriptLocator(host: host, path: path))
+        }
+        guard !locators.isEmpty else { return }
+        for continuation in changeContinuations.values { continuation.yield(.transcripts(ids: ids, locators: locators)) }
+    }
+
+    // MARK: Primitives (the next engine's seam)
+
+    /// From the filename map — kept current by events and rebuilt on every
+    /// coverage reset while observing; listed on the spot when nothing
+    /// observes, or when a request asks for a refresh.
+    public func locate(_ requests: [LocateRequest]) async throws -> LocateResult {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<LocateResult, Error>) in
+            queue.async {
+                self.locateCount &+= 1
+                if !self.running || requests.contains(where: \.refresh) { self.enumerateLocked() }
+                var candidates: [String: [TranscriptCandidate]] = [:]
+                for request in requests {
+                    var list: [TranscriptCandidate] = []
+                    for store in self.stores where request.agent == nil || request.agent == store.agent {
+                        let listed = (self.pathsByID[request.id] ?? []).filter { self.files[$0]?.1 == store.agent }
+                        var hintPath: String?
+                        if let hint = request.hint, hint.host == self.host {
+                            let path = self.logicalPath(hint.path) ?? RootMapping.alias(hint.path)
+                            if store.acceptsTranscript(URL(fileURLWithPath: path)) { hintPath = path }
+                        }
+                        let hintPresent = hintPath.map { Self.candidateStat($0) != .missing } ?? false
+                        for assignment in TranscriptCandidates.assign(id: request.id, format: store.format, listed: listed.sorted(),
+                                                                     hint: hintPath, hintPresent: hintPresent) {
+                            let stat = Self.candidateStat(assignment.path)
+                            // A hint whose file is gone is no candidate (and walks nothing).
+                            if assignment.role == .hinted, stat == .missing { continue }
+                            list.append(TranscriptCandidate(locator: TranscriptLocator(host: self.host, path: assignment.path),
+                                                            agent: store.agent, role: assignment.role, stat: stat))
+                        }
+                    }
+                    candidates[request.id] = list
+                }
+                let complete = Set(self.stores.filter { self.enumerationByAgent[$0.agent] == true }.map(\.agent))
+                var shared: [Agent: UInt64] = [:]
+                for store in self.stores where !store.sharedFactURLs.isEmpty {
+                    shared[store.agent] = self.sharedRevisions.revision(store.agent, key: store.sharedInputKey())
+                }
+                self.snapshotLocked()
+                continuation.resume(returning: LocateResult(coverage: self.generation, candidates: candidates,
+                                                            complete: complete, sharedRevision: shared))
+            }
+        }
+    }
+
+    /// Off the source's queue, so reads run side by side.
+    public func read(_ locator: TranscriptLocator, agent: Agent, expecting id: String, facts: Bool) async throws -> TranscriptRead {
+        guard locator.host == host, let store = stores.first(where: { $0.agent == agent }) else {
+            throw TranscriptReadError.unreadable("not a \(agent.displayName) transcript on this Mac")
+        }
+        let url = locator.localURL ?? URL(fileURLWithPath: locator.path)
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(with: Result { try self.readNow(url, store: store, expecting: id, facts: facts) })
+            }
+        }
+    }
+
+    private func readNow(_ url: URL, store: any IncrementalSessionStore, expecting id: String, facts: Bool) throws -> TranscriptRead {
+        func failure(_ error: Error) -> TranscriptReadError {
+            Self.isMissing(error) ? .missing : .unreadable(error.localizedDescription)
+        }
+        readCounts.read()
+        do { _ = try FileSignature(url) } catch { throw failure(error) }
+        let identity: (verdict: TranscriptVerification, bytesRead: Int)
+        do { identity = try StoreIO.identity(at: url, format: store.format, expecting: id) }
+        catch { throw failure(error) }
+        var bytes = identity.bytesRead
+        var summary: TranscriptSummary?
+        var revision: UInt64?
+        if facts, identity.verdict == .verified {
+            let shared = store.sharedFactsSnapshot()
+            if !shared.key.isEmpty { revision = sharedRevisions.revision(store.agent, key: shared.key) }
+            let result = StoreIO.facts(at: url, format: store.format, shared: shared.facts)
+            readCounts.parse(wider: result.widerRead)
+            summary = result.summary
+            bytes += result.bytesRead
+        }
+        let after: FileSignature
+        do { after = try FileSignature(url) } catch { throw failure(error) }
+        return TranscriptRead(identity: identity.verdict, summary: summary, signature: after.transcript,
+                              bytesRead: bytes, sharedRevision: revision)
+    }
+
+    private static func candidateStat(_ path: String) -> CandidateStat {
+        do { return .present(try FileSignature(URL(fileURLWithPath: path)).transcript) }
+        catch { return isMissing(error) ? .missing : .unreadable }
     }
 
     public func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult {
@@ -964,6 +1098,7 @@ struct FileSignature: Equatable {
     let date: Date
     let size: Int
     let fileNumber: UInt64
+    var transcript: TranscriptSignature { TranscriptSignature(modifiedAt: date, size: size, identity: fileNumber) }
     init(_ url: URL) throws {
         let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
         date = attrs[.modificationDate] as? Date ?? .distantPast
@@ -995,6 +1130,31 @@ private struct RootMapping {
         }
         return current.path
     }
+}
+
+/// One revision per agent's shared inputs, bumped whenever their stat key
+/// changes; reads and listings take it under the same lock.
+final class SharedRevisionTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var keys: [Agent: [SharedInputSignature]] = [:]
+    private var revisions: [Agent: UInt64] = [:]
+    func revision(_ agent: Agent, key: [SharedInputSignature]) -> UInt64 {
+        lock.lock(); defer { lock.unlock() }
+        if let known = keys[agent], known != key { revisions[agent, default: 0] &+= 1 }
+        keys[agent] = key
+        return revisions[agent, default: 0]
+    }
+    func current(_ agent: Agent) -> UInt64 {
+        lock.lock(); defer { lock.unlock() }; return revisions[agent, default: 0]
+    }
+}
+
+private final class ReadCounters: @unchecked Sendable {
+    private let lock = NSLock()
+    private var reads: UInt64 = 0, parses: UInt64 = 0, wider: UInt64 = 0
+    func read() { lock.lock(); reads &+= 1; lock.unlock() }
+    func parse(wider isWider: Bool) { lock.lock(); parses &+= 1; if isWider { wider &+= 1 }; lock.unlock() }
+    var values: (reads: UInt64, parses: UInt64, wider: UInt64) { lock.lock(); defer { lock.unlock() }; return (reads, parses, wider) }
 }
 
 private struct MemberWork {
