@@ -62,3 +62,66 @@ public enum TranscriptCandidates {
         return assignments.filter { $0.role != .alternate || !hasSelected || selectedMissing }
     }
 }
+
+// MARK: - Catalog selection
+
+public extension TranscriptCandidates {
+    /// One thread of one agent in a host's listing, as a catalog reads it.
+    struct CatalogThread: Hashable, Sendable {
+        public let threadID: String
+        /// The files to try, in member resolution's order (`assign`): the
+        /// selected file first when the agent has a selection, then the
+        /// alternates.
+        public let paths: [String]
+        /// The agent selects among the thread's files (Codex). Then a file
+        /// is passed over only when it is proven missing; otherwise every
+        /// file is an alternate, tried until one reads (Claude).
+        public let hasSelection: Bool
+        public init(threadID: String, paths: [String], hasSelection: Bool) {
+            self.threadID = threadID; self.paths = paths; self.hasSelection = hasSelection
+        }
+    }
+
+    /// What reading one of a thread's files came to.
+    enum CatalogAttempt<Value> {
+        case read(Value)
+        /// The file is gone (proven, not merely unreadable).
+        case missing
+        /// The file exists and did not yield a summary of this thread:
+        /// unreadable, incomplete, unparseable, or another session's.
+        case failed
+    }
+
+    /// A catalog's threads, before anything is parsed: the listed files the
+    /// agent's names claim, grouped per thread with the same selection
+    /// function and tie-breaker as member resolution. A file whose name is
+    /// not one the agent writes is no thread's: resolution never lists it,
+    /// and neither does the catalog. Sorted by thread id.
+    static func catalogThreads(format: any TranscriptFormat, listed: [String]) -> [CatalogThread] {
+        var byThread: [String: [String]] = [:]
+        for path in Set(listed) {
+            guard let name = format.name(path: path) else { continue }
+            byThread[name.threadID, default: []].append(path)
+        }
+        return byThread.keys.sorted().map { id in
+            let assigned = assign(id: id, format: format, listed: byThread[id]!.sorted(), hint: nil)
+            return CatalogThread(threadID: id, paths: assigned.map(\.path),
+                                 hasSelection: assigned.first?.role == .selected)
+        }
+    }
+
+    /// The thread's one summary, or nil. With a selection, the selected file
+    /// decides: an unreadable or incomplete selected file means nothing is
+    /// emitted — an older rollout is read only once the selected one is
+    /// proven missing (`permitted`). Without one, the first file that reads.
+    static func catalogPick<Value>(_ thread: CatalogThread, attempt: (String) -> CatalogAttempt<Value>) -> Value? {
+        for path in thread.paths {
+            switch attempt(path) {
+            case .read(let value): return value
+            case .missing: continue
+            case .failed: if thread.hasSelection { return nil }
+            }
+        }
+        return nil
+    }
+}

@@ -35,7 +35,6 @@ struct LocalSessionCatalog: Sendable {
     }
 
     private struct Entry {
-        let url: URL?
         let modified: Date
         let parse: @Sendable () -> TranscriptSummary?
     }
@@ -50,7 +49,7 @@ struct LocalSessionCatalog: Sendable {
                 // A store that can only load wholesale still takes part; its
                 // sessions arrive pre-parsed and sort in with the rest.
                 for session in store.loadSummaries() {
-                    entries.append(Entry(url: nil, modified: session.modifiedAt, parse: { session }))
+                    entries.append(Entry(modified: session.modifiedAt, parse: { session }))
                 }
                 continue
             }
@@ -61,10 +60,21 @@ struct LocalSessionCatalog: Sendable {
                 emit(.storeFailed(agent: store.agent, message: error.localizedDescription))
                 continue
             }
+            // One entry per thread, its file chosen before anything is
+            // parsed, by member resolution's own rule: a thread never shows
+            // an older rollout while the one the agent would resume exists.
             let parser = incremental.catalogParser()
-            for url in files {
-                entries.append(Entry(url: url, modified: StoreIO.modificationDate(url),
-                                     parse: { parser(url) }))
+            let urls = Dictionary(files.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
+            for thread in TranscriptCandidates.catalogThreads(format: incremental.format, listed: Array(urls.keys)) {
+                let threadURLs = thread.paths.compactMap { urls[$0] }
+                let modified = threadURLs.map(StoreIO.modificationDate).max() ?? .distantPast
+                entries.append(Entry(modified: modified, parse: {
+                    TranscriptCandidates.catalogPick(thread) { path in
+                        guard let url = urls[path] else { return .missing }
+                        if let summary = parser(url) { return summary.id == thread.threadID ? .read(summary) : .failed }
+                        return Self.isGone(url) ? .missing : .failed
+                    }
+                }))
             }
         }
         entries.sort { newestFirst ? $0.modified > $1.modified : $0.modified < $1.modified }
@@ -86,6 +96,17 @@ struct LocalSessionCatalog: Sendable {
             if cancelled.isCancelled { return }
             emit(.sessions(sessions, read: start, total: total))
         }
+    }
+}
+
+extension LocalSessionCatalog {
+    /// Only `ENOENT`/`ENOTDIR` prove a file gone; a file that cannot be
+    /// read or stat'ed for any other reason still exists as far as anyone
+    /// knows.
+    static func isGone(_ url: URL) -> Bool {
+        var info = stat()
+        if stat(url.path, &info) == 0 { return false }
+        return errno == ENOENT || errno == ENOTDIR
     }
 }
 

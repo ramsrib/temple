@@ -318,6 +318,10 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
         AsyncThrowingStream { continuation in
             let task = Task { [weak self] in
                 guard let self else { continuation.finish(); return }
+                if self.locked({ self.transportBroken }) {
+                    continuation.finish(throwing: LocateError.transport("fake transport broken"))
+                    return
+                }
                 let (failed, summaries) = self.catalogSnapshot(query)
                 for agent in failed { continuation.yield(.storeFailed(agent: agent, message: "fake listing failed")) }
                 continuation.yield(.listed(total: summaries.count))
@@ -347,41 +351,35 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
         }
         let broken = locked { brokenListings }
         let failed = Agent.allCases.filter { query.agents.contains($0) && broken.contains($0) }
-        var byThread: [String: [(path: String, name: TranscriptName)]] = [:]
-        var unnamed: [(Agent, String)] = []
-        for (agent, path) in paths {
-            let format = TranscriptFormats.format(for: agent)
-            if let name = format.name(path: path) { byThread["\(agent.rawValue):\(name.threadID)", default: []].append((path, name)) }
-            else { unnamed.append((agent, path)) }
-        }
-        var chosen: [(Agent, String)] = unnamed
-        for (key, names) in byThread {
-            let agent = Agent(rawValue: String(key.prefix { $0 != ":" }))!
-            if let selected = TranscriptFormats.format(for: agent).select(names) { chosen.append((agent, selected)) }
-            else { chosen += names.map { (agent, $0.path) } }
-        }
+        // The same per-thread pick as the local catalog and member
+        // resolution, made before anything is parsed.
         var summaries: [TranscriptSummary] = []
-        for (agent, path) in chosen {
-            let locator = TranscriptLocator(host: host, path: path)
-            let parsed: TranscriptSummary? = locked {
-                guard let file = files[path], !file.unreadable else { return nil }
-                counts.parses += 1
-                let format = TranscriptFormats.format(for: agent)
-                let window = TranscriptBytes.defaultWindow
-                var input = TranscriptBytes(head: Data(file.data.prefix(window)),
-                                            tail: file.data.count > window ? Data(file.data.suffix(min(window, file.data.count - window))) : nil,
-                                            fileSize: file.data.count)
-                let (shared, _) = sharedFacts(agent)
-                var result = format.facts(input, name: format.name(path: path), locator: locator, modifiedAt: file.modifiedAt, shared: shared)
-                if case .needsWiderHead(let size) = result {
-                    counts.widerReads += 1
-                    input = input.with(widerHead: Data(file.data.prefix(size)))
-                    result = format.facts(input, name: format.name(path: path), locator: locator, modifiedAt: file.modifiedAt, shared: shared)
+        for agent in Agent.allCases {
+            let format = TranscriptFormats.format(for: agent)
+            for thread in TranscriptCandidates.catalogThreads(format: format, listed: paths.filter { $0.0 == agent }.map(\.1)) {
+                let picked = TranscriptCandidates.catalogPick(thread) { path -> TranscriptCandidates.CatalogAttempt<TranscriptSummary> in
+                    locked {
+                        guard let file = files[path] else { return .missing }
+                        guard !file.unreadable else { return .failed }
+                        counts.parses += 1
+                        let locator = TranscriptLocator(host: host, path: path)
+                        let window = TranscriptBytes.defaultWindow
+                        var input = TranscriptBytes(head: Data(file.data.prefix(window)),
+                                                    tail: file.data.count > window ? Data(file.data.suffix(min(window, file.data.count - window))) : nil,
+                                                    fileSize: file.data.count)
+                        let (shared, _) = sharedFacts(agent)
+                        var result = format.facts(input, name: format.name(path: path), locator: locator, modifiedAt: file.modifiedAt, shared: shared)
+                        if case .needsWiderHead(let size) = result {
+                            counts.widerReads += 1
+                            input = input.with(widerHead: Data(file.data.prefix(size)))
+                            result = format.facts(input, name: format.name(path: path), locator: locator, modifiedAt: file.modifiedAt, shared: shared)
+                        }
+                        if case .summary(let summary) = result, summary.id == thread.threadID { return .read(summary) }
+                        return .failed
+                    }
                 }
-                if case .summary(let summary) = result { return summary }
-                return nil
+                if let picked { summaries.append(picked) }
             }
-            if let parsed { summaries.append(parsed) }
         }
         summaries.sort { lhs, rhs in
             lhs.modifiedAt == rhs.modifiedAt ? lhs.id < rhs.id

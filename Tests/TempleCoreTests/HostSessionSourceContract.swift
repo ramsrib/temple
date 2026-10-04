@@ -455,6 +455,33 @@ class HostSessionSourceContract: XCTestCase {
         XCTAssertEqual(keys, ["2026-10-01T10-00-00-\(codexID)"])
     }
 
+    /// C9: the catalog picks a thread's file before parsing, by member
+    /// resolution's rule. The revert is the thread; an unreadable revert
+    /// means the thread shows nothing (never the older canonical rollout it
+    /// replaced); only once the revert is proven gone does the older one
+    /// stand in. A name the agent does not write is no thread's.
+    func test13cTheCatalogShowsTheSelectedRolloutOrNothing() async throws {
+        let thread = uuid()
+        let canonical = try plantCodex(thread)
+        let revert = try plantCodex(thread, name: rolloutName(thread, stamp: "2026-10-01T11-00-00", rollout: uuid()))
+        try plantCodex(uuid(), name: "rollout-not-a-canonical-name.jsonl")
+        func listed() async throws -> [TranscriptSummary] {
+            var all: [TranscriptSummary] = []
+            for try await batch in source.catalog(CatalogQuery(agents: [.codex])) {
+                if case .sessions(let summaries, _, _) = batch { all += summaries }
+            }
+            return all
+        }
+        var rows = try await listed()
+        XCTAssertEqual(rows.map(\.locator), [revert], "one row per thread: the revert, never the canonical file too")
+        try fixture.makeUnreadable(revert)
+        rows = try await listed()
+        XCTAssertEqual(rows.map(\.locator), [], "an unreadable selected file shows nothing, not the older rollout")
+        try fixture.remove(revert)
+        rows = try await listed()
+        XCTAssertEqual(rows.map(\.locator), [canonical], "the older rollout stands in once the revert is gone")
+    }
+
     // MARK: 14 adoption
 
     func test14AdoptionNeedsExactlyOneEligibleHeader() async throws {
