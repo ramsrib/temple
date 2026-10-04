@@ -18,10 +18,14 @@
 # Requires an unlocked desktop, like check-startup-windows.sh (set
 # TEMPLE_CHECK_ALLOW_LOCKED=1 to run it anyway: it drives no UI, but a run on
 # a locked session is evidence, not the check). Like `make demo`, the launch
-# still uses the real UserDefaults domain.
+# uses the real UserDefaults domain; the window and split-view frames it
+# autosaves there are put back as they were on exit.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=window-frame-prefs.sh
+source "$ROOT/Scripts/window-frame-prefs.sh"
+PREFS_DOMAIN=com.sriramb.temple
 BINARY="$ROOT/dist/Temple.app/Contents/MacOS/Temple"
 CTL="$ROOT/.build/debug/templectl"
 if [[ "$(ioreg -n Root -d1)" == *'"CGSSessionScreenIsLocked"=Yes'* && "${TEMPLE_CHECK_ALLOW_LOCKED:-}" != 1 ]]; then
@@ -38,9 +42,15 @@ cleanup() {
     kill "$APP_PID" 2>/dev/null || true
     wait "$APP_PID" 2>/dev/null || true
   fi
+  # Only after the launched app is dead: it can autosave geometry until then.
+  frame_prefs_restore "$PREFS_DOMAIN" "$CHECK_DIR/frame-prefs.plist" \
+    || echo "warning: window-frame preferences in $PREFS_DOMAIN were not fully restored" >&2
   rm -rf "$CHECK_DIR"
 }
 trap cleanup EXIT
+# The launch shares the real defaults domain; its window geometry is undone
+# on exit (Scripts/window-frame-prefs.sh). No other key is touched.
+frame_prefs_save "$PREFS_DOMAIN" "$CHECK_DIR/frame-prefs.plist"
 
 CLAUDE="$CHECK_DIR/claude-store"
 CODEX="$CHECK_DIR/codex-store"
