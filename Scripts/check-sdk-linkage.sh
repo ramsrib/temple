@@ -26,8 +26,12 @@ for binary in "$@"; do
     $1 == "cmd" { build = ($2 == "LC_BUILD_VERSION") }
     build && $1 == "platform" { platform = $2 }
     build && $1 == "sdk" { print platform, $2; build = 0 }')"
-  if [[ -z "$slices" ]]; then
-    echo "error: $(basename "$binary") records no LC_BUILD_VERSION" >&2; status=1; continue
+  # One build-version record per architecture: a slice with only the legacy
+  # LC_VERSION_MIN_MACOSX (or nothing) would otherwise be skipped silently.
+  archs="$(lipo -archs "$binary" | wc -w | tr -d ' ')"
+  records="$(printf '%s' "$slices" | grep -c . || true)"
+  if [[ "$records" != "$archs" ]]; then
+    echo "error: $(basename "$binary") has $archs architecture slice(s) but $records LC_BUILD_VERSION record(s)" >&2; status=1; continue
   fi
   while read -r platform got; do
     if [[ "$platform" != 1 && "$platform" != MACOS ]]; then
