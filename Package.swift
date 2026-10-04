@@ -3,9 +3,10 @@ import PackageDescription
 
 // Link the executables against the SDK they are built with, not the
 // deployment target. SwiftPM's Swift Build engine (the default since Swift
-// 6.4 / Xcode 27) links through `swiftc`, which gives clang the SDK as
-// `--sysroot`; clang reads an SDK's version only from `-isysroot` or SDKROOT,
-// so ld recorded 14.0 as the SDK. macOS then runs the binary with its
+// 6.4 / Xcode 27) runs the link with an environment of PATH only, so the
+// SDKROOT the `swift` shim exports never reaches clang, which derives the
+// SDK version only from `-isysroot` or SDKROOT, not the `--sysroot` swiftc
+// passes; ld then recorded 14.0 as the SDK. macOS then runs the binary with its
 // macOS 14 compatibility behaviour, under which the sidebar's scroll view
 // insets its clip view below the title bar *and* offsets the content by the
 // same 52pt: rows drew one and a half rows below where they took clicks, under
