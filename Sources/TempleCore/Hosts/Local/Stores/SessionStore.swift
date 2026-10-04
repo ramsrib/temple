@@ -319,10 +319,12 @@ public struct SharedInputSignature: Hashable, Sendable {
     let date: Date?
     let size: Int?
     let inode: UInt64?
+    /// One `lstat(2)`; a file that is not there has no signature fields.
     init(_ url: URL) {
-        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-        date = attributes?[.modificationDate] as? Date
-        size = attributes?[.size] as? Int
-        inode = (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else { date = nil; size = nil; inode = nil; return }
+        date = Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec) + TimeInterval(info.st_mtimespec.tv_nsec) / 1_000_000_000)
+        size = Int(info.st_size)
+        inode = UInt64(info.st_ino)
     }
 }

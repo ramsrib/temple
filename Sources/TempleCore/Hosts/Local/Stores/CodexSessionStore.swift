@@ -6,6 +6,8 @@ import Foundation
 public struct CodexSessionStore: TranscriptSummaryStore {
     public let agent: Agent = .codex
     let sessionsRoot: URL
+    /// `sessionsRoot` normalized once: every observed path is checked against it.
+    private let sessionsPrefix: String
     private let historyFile: URL
     private let sessionIndexFile: URL
     /// history.jsonl and session_index.jsonl, read once per change to either
@@ -19,6 +21,7 @@ public struct CodexSessionStore: TranscriptSummaryStore {
             ?? FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".codex", isDirectory: true)
         self.sessionsRoot = base.appendingPathComponent("sessions", isDirectory: true)
+        self.sessionsPrefix = SessionPaths.normalized(sessionsRoot.path) + "/"
         self.historyFile = base.appendingPathComponent("history.jsonl")
         self.sessionIndexFile = base.appendingPathComponent("session_index.jsonl")
     }
@@ -103,7 +106,7 @@ public struct CodexSessionStore: TranscriptSummaryStore {
 
     public func acceptsTranscript(_ url: URL) -> Bool {
         url.pathExtension == "jsonl" && url.lastPathComponent.hasPrefix("rollout-") &&
-            SessionPaths.normalized(url.path).hasPrefix(SessionPaths.normalized(sessionsRoot.path) + "/")
+            SessionPaths.normalized(url.path).hasPrefix(sessionsPrefix)
     }
 }
 

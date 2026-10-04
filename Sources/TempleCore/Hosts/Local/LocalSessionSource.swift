@@ -33,6 +33,8 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     /// The source's coverage generation (`LocateResult.coverage`).
     private var generation: UInt64 = 0
     private let monitorChanges: Bool
+    /// The shared inputs' paths (normalized once, not per event).
+    private let sharedFactPaths: Set<String>
     private var enumerationCount: UInt64 = 0
     private var snapshotMetrics = EngineMetrics()
 
@@ -75,6 +77,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         self.stores = stores
         self.debounceInterval = debounceInterval
         self.monitorChanges = monitorChanges
+        self.sharedFactPaths = Set(stores.flatMap(\.sharedFactURLs).map { SessionPaths.normalized($0.path) })
     }
 
     deinit {
@@ -238,7 +241,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         }
         guard let path else { return }
         let url = URL(fileURLWithPath: path)
-        if stores.contains(where: { $0.sharedFactURLs.contains { SessionPaths.normalized($0.path) == path } }) {
+        if sharedFactPaths.contains(path) {
             sharedFactsChangedLocked()
             return
         }
@@ -751,11 +754,16 @@ struct FileSignature: Equatable {
     let size: Int
     let fileNumber: UInt64
     var transcript: TranscriptSignature { TranscriptSignature(modifiedAt: date, size: size, identity: fileNumber) }
+    /// One `lstat(2)` — the attributes `FileManager.attributesOfItem` reports
+    /// for these fields (it does not follow a link either), without the
+    /// extended-attribute reads it adds on every call. A failure throws the
+    /// POSIX error, so a missing file is `ENOENT`.
     init(_ url: URL) throws {
-        let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
-        date = attrs[.modificationDate] as? Date ?? .distantPast
-        size = attrs[.size] as? Int ?? 0
-        fileNumber = (attrs[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        date = Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec) + TimeInterval(info.st_mtimespec.tv_nsec) / 1_000_000_000)
+        size = Int(info.st_size)
+        fileNumber = UInt64(info.st_ino)
     }
 }
 

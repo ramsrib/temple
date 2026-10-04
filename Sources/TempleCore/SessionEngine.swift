@@ -91,6 +91,9 @@ public actor SessionEngine: HostEngine {
     private var publishScheduled = false
     /// Facts were revoked since the last publication.
     private var revoked = false
+    /// A resolution, a fact or the member set changed since the last
+    /// publication; without it a publication is skipped unbuilt.
+    private var snapshotDirty = true
 
     // Publication.
     private var generation: UInt64 = 0
@@ -198,6 +201,7 @@ public actor SessionEngine: HostEngine {
                     reindex(row.id)
                 }
                 prestartAwaiting.removeAll()
+                snapshotDirty = true
             } catch {
                 // An empty snapshot, and the read is retried: a failed read
                 // proves nothing about membership.
@@ -260,6 +264,7 @@ public actor SessionEngine: HostEngine {
             member.awaitingCreation = awaitingCreation
             if awaitingCreation { member.resolution = .awaitingCreation }
             members[id] = member
+            snapshotDirty = true
             reindex(id)
             publishNow()
             enqueue([id])
@@ -272,6 +277,7 @@ public actor SessionEngine: HostEngine {
             fresh.awaitingCreation = awaitingCreation
             fresh.resolution = awaitingCreation ? .awaitingCreation : .resolving
             members[id] = fresh
+            snapshotDirty = true
             reindex(id)
             resolveAbsenceWaiters(id, absent: false)
             publishNow()
@@ -288,7 +294,7 @@ public actor SessionEngine: HostEngine {
         if awaitingCreation, !member.resolution.isLoaded { relocate = true }
         // Facts the row no longer needs leave the snapshot (a fill landed,
         // or another writer got there first).
-        if let facts = member.facts, let row = member.row, !facts.wouldChange(row) { member.facts = nil }
+        if let facts = member.facts, let row = member.row, !facts.wouldChange(row) { member.facts = nil; snapshotDirty = true }
         // A field filled elsewhere shortens the backoff of a parse that was
         // waiting behind it; it never re-reads a file already read.
         let rearm = !relocate && member.wanted.isStrictSubset(of: oldWanted) && !member.wanted.isEmpty && deferred[id] != nil
@@ -306,6 +312,7 @@ public actor SessionEngine: HostEngine {
     }
 
     private func removed(_ id: String) {
+        snapshotDirty = true
         pending.remove(id); explicit.remove(id); deferred.removeValue(forKey: id); readDelays.removeValue(forKey: id)
         churnDelays.removeValue(forKey: id)
         reindex(id)
@@ -386,6 +393,7 @@ public actor SessionEngine: HostEngine {
             member.facts = nil
             member.lastAttempt = nil
             revoked = true
+            snapshotDirty = true
         }
         members[id] = member
     }
@@ -607,6 +615,7 @@ public actor SessionEngine: HostEngine {
             for id in ids where members[id] != nil && members[id]?.opRevision == batch.revisions[id] {
                 if members[id]?.everSettled == false, members[id]?.awaitingCreation == false {
                     members[id]?.resolution = .incomplete
+                    snapshotDirty = true
                 }
                 deferred[id] = due
                 resolveAbsenceWaiters(id, absent: false)
@@ -859,6 +868,7 @@ public actor SessionEngine: HostEngine {
                 locator: next.locator, agent: next.agent, signature: next.signature, coverage: next.coverage,
                 sharedRevision: next.sharedRevision, summary: next.summary)
         }
+        if member.facts != next { snapshotDirty = true }
         member.facts = next
         member.issued = next
     }
@@ -970,7 +980,8 @@ public actor SessionEngine: HostEngine {
         } else {
             verdict = .incomplete
         }
-        if pass.loaded == nil, final { member.facts = nil }
+        if pass.loaded == nil, final, member.facts != nil { member.facts = nil; snapshotDirty = true }
+        if member.resolution != verdict { snapshotDirty = true }
         member.resolution = verdict
         if final || pass.loaded != nil { member.everSettled = true }
         members[id] = member
@@ -1031,7 +1042,8 @@ public actor SessionEngine: HostEngine {
 
     private func publishNow() {
         publishScheduled = false
-        guard running else { return }
+        guard running, snapshotDirty || published == nil else { return }
+        snapshotDirty = false
         let resolutions = members.mapValues(\.resolution)
         let facts = members.compactMapValues(\.facts)
         if let published, published.resolutions == resolutions, published.facts == facts { return }
