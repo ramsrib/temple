@@ -20,10 +20,10 @@ final class OpenSessionsModelTests: XCTestCase {
         let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
             runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
-            binaryPath: { "/configured/" + $0.binaryName }, extraArgs: { _ in ["--flag"] })
+            launcherForHost: { _ in LocalHostLauncher(binaryPath: { "/configured/" + $0.binaryName }, extraArgs: { _ in ["--flag"] }) })
         model.openSession(row(resolution: .confirmedAbsent))
         let command = try XCTUnwrap(factory.created.first?.startedCommand)
-        XCTAssertEqual(command.argv, ["/configured/codex", "--flag", "resume", "row"])
+        XCTAssertEqual(command.agentArgv, ["/configured/codex", "--flag", "resume", "row"])
         XCTAssertEqual(command.cwd, "/row-directory")
         XCTAssertEqual(model.activeTab?.title, "Row title")
         XCTAssertEqual(model.activeTab?.host, .local)
@@ -38,7 +38,7 @@ final class OpenSessionsModelTests: XCTestCase {
         model.sessionRow = { _ in self.row(agent: .claude) }
         model.openSession(Fixture.session("row", agent: .codex, project: "/transcript-cwd", title: "Transcript"))
         XCTAssertEqual(factory.created.first?.startedCommand?.cwd, "/row-directory")
-        XCTAssertEqual(factory.created.first?.startedCommand?.argv, ["claude", "--resume", "row"])
+        XCTAssertEqual(factory.created.first?.startedCommand?.agentArgv, ["claude", "--resume", "row"])
         XCTAssertEqual(model.activeTab?.title, "Row title")
     }
 
@@ -54,10 +54,27 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertEqual(joins, 0)
     }
 
-    func testTheLocalWrapperLeavesTheCommandAlone() {
-        let command = TerminalCommand(argv: ["codex", "resume", "id with spaces"],
-            cwd: "/a folder", env: ["CUSTOM": "value", "TERM_PROGRAM": "Own"])
-        XCTAssertEqual(LocalCommandWrapper().wrap(command), command)
+    func testTheLocalLaunchPassesTheAgentArgvPositionallyBehindTheWrapper() throws {
+        let markers = try temporaryDirectory()
+        let launcher = LocalHostLauncher(binaryPath: { _ in "/opt/my tools/codex" }, extraArgs: { _ in ["--flag='x'"] },
+                                         markerDirectory: markers)
+        let launch = try launcher.prepare(AgentLaunchSpec(agent: .codex, mode: .resume(sessionID: "id with spaces"),
+                                                          directory: "/a folder/it's here", host: .local))
+        XCTAssertEqual(launch.displayArgv, ["/opt/my tools/codex", "--flag='x'", "resume", "id with spaces"])
+        XCTAssertEqual(Array(launch.command.argv.prefix(6)),
+                       ["/usr/bin/env", "/bin/sh", "-c", LocalHostLauncher.wrapperScript, "temple-launch", "/a folder/it's here"])
+        XCTAssertEqual(launch.command.agentArgv, launch.displayArgv)
+        XCTAssertEqual(launch.command.cwd, "/a folder/it's here")
+        XCTAssertEqual(launch.command.env, [:], "the launcher adds no variables; the spawn applies identity")
+        let marker = try XCTUnwrap(launch.command.launchMarker)
+        XCTAssertTrue(marker.hasPrefix(markers.path + "/"))
+        let attributes = try FileManager.default.attributesOfItem(atPath: marker)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600, "created before the spawn, private")
+        XCTAssertEqual((attributes[.size] as? NSNumber)?.intValue, 0)
+        let channel = try XCTUnwrap(launch.result)
+        channel.cancel()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker), "the launcher's marker goes with the launch")
+        XCTAssertEqual(launcher.availability(.claude), .available)
     }
 
     func testOpenNoLongerWaitsForResolution() throws {
@@ -99,7 +116,7 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertEqual(tab.projectPath, "/row-directory")
         XCTAssertEqual(tab.host, .local)
         model.activate(tab)
-        XCTAssertEqual(factory.created.first?.startedCommand?.argv, ["codex", "resume", "row"])
+        XCTAssertEqual(factory.created.first?.startedCommand?.agentArgv, ["codex", "resume", "row"])
         model.closeTab(tab.id)
         model.reopenLastClosedTab()
         XCTAssertEqual(factory.created.count, 2)
@@ -158,6 +175,7 @@ final class OpenSessionsModelTests: XCTestCase {
             }
             XCTAssertEqual(factory.created.count, 1)
             XCTAssertEqual(factory.created.first?.startedCommand?.cwd, directory.path)
+            model.drainLaunchResults()
             XCTAssertEqual(try db.sessionState("legacy")?.directory, directory.path)
             XCTAssertEqual(try db.sessionState("legacy")?.joinedVia, .opened)
         }
@@ -184,9 +202,10 @@ final class OpenSessionsModelTests: XCTestCase {
             model.activate(tab)
             model.activate(tab)
             XCTAssertEqual(factory.created.count, 1)
-            XCTAssertEqual(factory.created.first?.startedCommand?.argv, ["codex", "resume", "legacy"])
+            XCTAssertEqual(factory.created.first?.startedCommand?.agentArgv, ["codex", "resume", "legacy"])
             XCTAssertEqual(factory.created.first?.startedCommand?.cwd, directory.path)
             XCTAssertEqual(model.activeTabID, tab.id)
+            model.drainLaunchResults()
             XCTAssertEqual(try db.sessionState("legacy")?.directory, directory.path)
             XCTAssertEqual(try db.sessionState("legacy")?.directorySource, .tab)
         }
@@ -225,14 +244,14 @@ final class OpenSessionsModelTests: XCTestCase {
         }
     }
 
-    func testCommandWrapperRunsExactlyOncePerSpawnAcrossAllOpenPaths() throws {
+    func testTheLauncherPreparesExactlyOncePerSpawnAcrossAllOpenPaths() throws {
         let factory = FakeTerminalSurfaceFactory()
-        let wrapper = CountingCommandWrapper()
+        let wrapper = CountingLauncher()
         let persistence = UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults())
         persistence.save([PersistedTab(sessionID: "restored", agent: .codex, projectPath: "/saved", title: "Saved")])
         let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
             runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
-            persistence: persistence, commandWrapper: wrapper)
+            persistence: persistence, launcherForHost: { _ in wrapper })
         model.restore()
         let restored = try XCTUnwrap(model.tabs.first)
         XCTAssertEqual(wrapper.count, 0)
@@ -258,12 +277,12 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertEqual(wrapper.count, factory.created.count)
     }
 
-    func testSpawnWrapsTheCommandBeforeApplyingTerminalIdentity() throws {
+    func testSpawnAppliesTerminalIdentityAfterTheLauncherPrepares() throws {
         let factory = FakeTerminalSurfaceFactory()
         let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
             runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
-            commandWrapper: ObservingCommandWrapper())
+            launcherForHost: { _ in ObservingLauncher() })
         model.openSession(row())
         let command = try XCTUnwrap(factory.created.first?.startedCommand)
         XCTAssertEqual(command.env["IDENTITY_AT_WRAP"], "absent")
@@ -377,6 +396,8 @@ final class OpenSessionsModelTests: XCTestCase {
         let overlay = SessionOverlayStore(db: db)
         let model = writerModel(db: db, overlay: overlay)
         model.openSession(Fixture.session("a", project: directory.path))
+        XCTAssertEqual(try db.sessionState("a")?.directory, "/transcript", "nothing is recorded until the launch reports the folder")
+        model.drainLaunchResults()
         XCTAssertEqual(try db.sessionState("a")?.directory, directory.path)
         XCTAssertEqual(try db.sessionState("a")?.directorySource, .tab)
         XCTAssertEqual(try db.sessionState("a")?.host, .local)
@@ -390,6 +411,7 @@ final class OpenSessionsModelTests: XCTestCase {
         let overlay = SessionOverlayStore(db: db)
         let model = writerModel(db: db, overlay: overlay)
         let tab = model.newSession(agent: .codex, projectPath: directory.path)
+        model.drainLaunchResults()   // the wrapper reports at spawn, long before adoption
         try FileManager.default.removeItem(at: directory)
         model.adopt(sessionID: "codex-id", for: tab.id)
         XCTAssertEqual(try db.sessionState("codex-id")?.directory, directory.path)
@@ -410,6 +432,7 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertEqual(try db.sessionState("a")?.directory, "/old")
         XCTAssertFalse(try XCTUnwrap(model.tabs.first).hasSurface)
         model.activate(try XCTUnwrap(model.tabs.first))
+        model.drainLaunchResults()
         XCTAssertEqual(try db.sessionState("a")?.directory, directory.path)
         XCTAssertEqual(try db.sessionState("a")?.directorySource, .tab)
     }
@@ -996,7 +1019,7 @@ final class OpenSessionsModelTests: XCTestCase {
         let tab = model.newSession(agent: .claude, projectPath: "/p/a")
         XCTAssertNotNil(tab.sessionID)
         XCTAssertFalse(tab.isProvisional)
-        XCTAssertTrue(tab.command?.argv.contains("--session-id") ?? false)
+        XCTAssertTrue(tab.displayArgv?.contains("--session-id") ?? false)
     }
 
     func testNewCodexSessionIsProvisionalThenAdopted() {
@@ -1181,8 +1204,8 @@ final class OpenSessionsModelTests: XCTestCase {
             appearanceProvider: { .default },
             runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
-            binaryPath: { _ in "/bin/claude" },
-            canLaunch: { _ in toolchainHealthy })
+            launcherForHost: { _ in LocalHostLauncher(binaryPath: { _ in "/bin/claude" },
+                availability: { _ in toolchainHealthy ? .available : .unavailable(reason: "doesn't run") }) })
 
         let tab = model.newSession(agent: .claude, projectPath: "/p/a")
         let surface = tab.surface as? FakeTerminalSurface
@@ -1201,8 +1224,8 @@ final class OpenSessionsModelTests: XCTestCase {
             appearanceProvider: { .default },
             runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
-            binaryPath: { _ in "/bin/claude" },
-            canLaunch: { _ in false })
+            launcherForHost: { _ in LocalHostLauncher(binaryPath: { _ in "/bin/claude" },
+                availability: { _ in .unavailable(reason: "not found") }) })
 
         let tab = model.newSession(agent: .claude, projectPath: "/p/a")
         (tab.surface as? FakeTerminalSurface)?.simulateExit(status: 1)
@@ -1217,8 +1240,7 @@ final class OpenSessionsModelTests: XCTestCase {
             appearanceProvider: { .default },
             runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
-            binaryPath: { _ in "/bin/claude" },
-            canLaunch: { _ in true },
+            launcherForHost: { _ in LocalHostLauncher(binaryPath: { _ in "/bin/claude" }) },
             directoryEvidence: directoryEvidence)
         model.sessionKnown = sessionKnown
         return model
@@ -1252,6 +1274,7 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertEqual(factory.created.count, 1)
         XCTAssertNil(tab.launchPreparationError)
         XCTAssertEqual(tab.activity, .running)
+        model.drainLaunchResults()
         XCTAssertEqual(recorded, [directory.path])
     }
 
@@ -1295,17 +1318,17 @@ final class OpenSessionsModelTests: XCTestCase {
             appearanceProvider: { .default },
             runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
-            binaryPath: { $0 == .codex ? "/bin/codex" : "/bin/claude" },
-            extraArgs: { $0 == .codex ? ["--dangerously-bypass-approvals-and-sandbox"] : ["--dangerously-skip-permissions"] })
+            launcherForHost: { _ in LocalHostLauncher(binaryPath: { $0 == .codex ? "/bin/codex" : "/bin/claude" },
+                extraArgs: { $0 == .codex ? ["--dangerously-bypass-approvals-and-sandbox"] : ["--dangerously-skip-permissions"] }) })
 
         let tab = model.newSession(agent: .claude, projectPath: "/p/a")
-        XCTAssertEqual(tab.command?.argv.prefix(2).map { $0 },
+        XCTAssertEqual(tab.displayArgv?.prefix(2).map { $0 },
                        ["/bin/claude", "--dangerously-skip-permissions"])
 
         model.openSession(Fixture.session("r1", agent: .codex, project: "/p/b"))
         let resumed = model.tabs.first { $0.sessionID == "r1" }
         // Flags precede the subcommand: codex <flags> resume <id>.
-        XCTAssertEqual(resumed?.command?.argv,
+        XCTAssertEqual(resumed?.displayArgv,
                        ["/bin/codex", "--dangerously-bypass-approvals-and-sandbox", "resume", "r1"])
     }
 }
@@ -1319,26 +1342,24 @@ final class ImmediateReconciler: TempleUI.CodexAdopting {
     }
 }
 
-private struct ObservingCommandWrapper: HostCommandWrapper {
-    func wrap(_ command: TerminalCommand) -> TerminalCommand {
-        var result = command
-        result.env["IDENTITY_AT_WRAP"] = command.env["TERM_PROGRAM"] ?? "absent"
-        return result
+@MainActor
+private final class ObservingLauncher: HostLauncher {
+    func prepare(_ spec: AgentLaunchSpec) throws -> AgentLaunch {
+        let argv = spec.agent.resumeArgv(sessionID: "x")
+        return AgentLaunch(command: TerminalCommand(argv: argv, cwd: spec.directory,
+                                                    env: ["IDENTITY_AT_WRAP": "absent"]),
+                           displayArgv: argv, result: nil)
     }
+    func availability(_ agent: Agent) -> LaunchAvailability { .available }
 }
 
-private final class CountingCommandWrapper: HostCommandWrapper, @unchecked Sendable {
-    private let lock = NSLock()
-    private var invocations = 0
-    var count: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return invocations
+@MainActor
+private final class CountingLauncher: HostLauncher {
+    private let inner = LocalHostLauncher()
+    private(set) var count = 0
+    func prepare(_ spec: AgentLaunchSpec) throws -> AgentLaunch {
+        count += 1
+        return try inner.prepare(spec)
     }
-    func wrap(_ command: TerminalCommand) -> TerminalCommand {
-        lock.lock()
-        invocations += 1
-        lock.unlock()
-        return LocalCommandWrapper().wrap(command)
-    }
+    func availability(_ agent: Agent) -> LaunchAvailability { .available }
 }

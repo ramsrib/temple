@@ -379,6 +379,26 @@ public final class ToolchainModel: ObservableObject {
         return resolution.chosen != nil
     }
 
+    /// This Mac's launcher's answer to "can this agent launch?" (`LocalHostLauncher`):
+    /// `canLaunch`, with the proof in the fewest words that stay true. The CLI's own
+    /// account of it is in Settings and the launcher's warning banner; a menu row is
+    /// the wrong place to quote a paragraph.
+    public func launchAvailability(_ agent: Agent) -> LaunchAvailability {
+        guard !canLaunch(agent) else { return .available }
+        if argumentComplaint(for: agent) != nil { return .unavailable(reason: "arguments rejected") }
+        if let check = overrideCheck(for: agent), !check.isUsable {
+            return .unavailable(reason: "command doesn't run")
+        }
+        // Found-but-broken is not missing: the shell reaches a `claude`, it just
+        // fails to run. Saying "not found" there sends the user hunting for an
+        // install they already have. `ToolchainResolution.problem` draws the same
+        // line, at length; this is the short form of it.
+        if let resolution = resolution(for: agent), !resolution.installs.isEmpty {
+            return .unavailable(reason: "doesn't run")
+        }
+        return .unavailable(reason: "not found")
+    }
+
     /// Problems worth interrupting the user for, as opposed to merely reporting in
     /// Settings.
     public func warnings(defaultAgent: Agent) -> [ToolchainWarning] {

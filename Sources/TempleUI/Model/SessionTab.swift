@@ -77,8 +77,19 @@ public final class SessionTab: ObservableObject, Identifiable {
     /// A tab that started a new session and closed before anything was sent.
     var startedNothing: Bool { kind == .session && !isResume && !inputSubmitted && sessionID != nil }
 
-    /// The command the surface spawns. `nil` for a utility tab.
+    /// The command the surface spawned; set at spawn, nil before (and for a
+    /// utility tab).
     public private(set) var command: TerminalCommand?
+    /// The agent's own argv for that spawn: what a failure header shows,
+    /// never a launcher's wrapper around it.
+    public private(set) var displayArgv: [String]?
+    /// What the current launch reports (the folder it entered, or why it
+    /// stopped before the agent ran). Owned by this tab: finished on exit,
+    /// cancelled on close.
+    var launchResult: LaunchResultChannel?
+    /// The launcher said the agent never started, and why. Shown regardless
+    /// of how long the process lived.
+    @Published public var launchFailure: LaunchFailure?
 
     /// Live terminal; `nil` for an inert restored chip or a utility tab.
     @Published public private(set) var surface: TerminalSurface?
@@ -104,7 +115,6 @@ public final class SessionTab: ObservableObject, Identifiable {
                 agent: Agent,
                 projectPath: String,
                 title: String,
-                command: TerminalCommand?,
                 isProvisional: Bool = false,
                 isResume: Bool = false,
                 host: HostID = .local) {
@@ -114,27 +124,31 @@ public final class SessionTab: ObservableObject, Identifiable {
         self.host = host
         self.projectPath = projectPath
         self.title = title
-        self.command = command
         self.isProvisional = isProvisional
         self.isResume = isResume
     }
 
-    /// An inert resume chip takes the latest row before its first spawn.
-    /// Once a surface exists, its launch identity stays fixed.
-    func setLaunchCommand(_ command: TerminalCommand) { self.command = command }
-
-    func prepareResume(_ session: Session, command: TerminalCommand) {
-        guard let agent = session.agent, let directory = session.directory else { return }
-        prepareResume(session, agent: agent, directory: directory, command: command)
+    /// What this spawn runs. Once a surface exists, its launch identity stays fixed.
+    func setLaunch(_ launch: AgentLaunch) {
+        command = launch.command
+        displayArgv = launch.displayArgv
+        launchResult?.cancel()
+        launchResult = launch.result
+        launchFailure = nil
     }
 
-    func prepareResume(_ session: Session, agent: Agent, directory: String, command: TerminalCommand) {
+    func prepareResume(_ session: Session) {
+        guard let agent = session.agent, let directory = session.directory else { return }
+        prepareResume(session, agent: agent, directory: directory)
+    }
+
+    /// An inert resume chip takes the latest row before its first spawn.
+    func prepareResume(_ session: Session, agent: Agent, directory: String) {
         guard surface == nil, isResume else { return }
         self.agent = agent
         self.host = session.host
         self.projectPath = directory
         self.title = session.state.customName ?? session.state.title ?? self.title
-        self.command = command
     }
 
     public var isUtility: Bool { kind != .session }
@@ -147,7 +161,8 @@ public final class SessionTab: ObservableObject, Identifiable {
 
     struct LaunchObservation {
         let at: Date
-        let directory: String?
+        /// Set only when the launch reported the folder it entered.
+        var directory: String?
     }
     /// Retained only after start succeeds; adoption can arrive much later.
     var launchObservation: LaunchObservation?
@@ -157,4 +172,10 @@ public final class SessionTab: ObservableObject, Identifiable {
         self.spawnedAt = at
         find.surface = surface
     }
+}
+
+/// A launch that stopped before the agent ran, as its launcher reported it.
+public struct LaunchFailure: Equatable, Sendable {
+    public let category: LaunchFailureCategory
+    public let message: String
 }

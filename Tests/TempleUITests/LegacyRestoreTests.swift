@@ -81,9 +81,11 @@ final class LegacyRestoreTests: XCTestCase {
         let surface = try XCTUnwrap(factory.created.first)
         XCTAssertEqual(factory.created.count, 1, "lazy restore: one agent, not the set")
         XCTAssertEqual(surface.startedCommand?.cwd, project)
-        XCTAssertTrue(surface.startedCommand?.argv.contains("pruned-claude") == true)
+        XCTAssertTrue(surface.startedCommand?.agentArgv.contains("pruned-claude") == true)
 
-        // The spawn is a real launch in an existing folder: it records it.
+        // The spawn is a real launch in an existing folder: it records it,
+        // once the launch reports entering it.
+        app.openSessions.drainLaunchResults()
         let resumed = try XCTUnwrap(db.sessionState("pruned-claude"))
         XCTAssertEqual(resumed.directory, project)
         XCTAssertEqual(resumed.directorySource, .tab)
@@ -103,7 +105,8 @@ final class LegacyRestoreTests: XCTestCase {
         let codex = try XCTUnwrap(factory.created.last)
         XCTAssertEqual(factory.created.count, 2)
         XCTAssertEqual(codex.startedCommand?.cwd, project)
-        XCTAssertEqual(codex.startedCommand?.argv.first.map { URL(fileURLWithPath: $0).lastPathComponent }, "codex")
+        XCTAssertEqual(codex.startedCommand?.agentArgv.first.map { URL(fileURLWithPath: $0).lastPathComponent }, "codex")
+        app.openSessions.drainLaunchResults()
         XCTAssertEqual(try db.sessionState("legacy-codex")?.directory, project)
     }
 

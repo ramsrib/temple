@@ -16,6 +16,7 @@ final class TranscriptBoundaryTests: XCTestCase {
         "TempleUI/App/WindowSnapshot.swift": "snapshot output directory",
         "TempleUI/App/SettingsKeysProbe.swift": "isolated settings probe",
         "TempleUI/Model/SettingsStore.swift": "user settings",
+        "TempleUI/Model/HostLauncher.swift": "per-launch result markers in Temple's own temp directory",
     ]
     private func violations(_ text: String, path: String) throws -> [String] {
         if path.hasPrefix("TempleCore/Hosts/Local/") { return [] }

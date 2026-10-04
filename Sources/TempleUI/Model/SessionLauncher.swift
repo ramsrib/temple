@@ -6,41 +6,27 @@ import TempleTerminalAPI
 /// (ADR-008, ADR-012 — agent + directory only, never git/worktree).
 public enum SessionLauncher {
 
-    /// The result of preparing a new session for launch.
+    /// The identity of a new session, before any host builds its command.
     public struct Spec: Equatable {
         public var sessionID: String?     // known immediately for Claude; nil (provisional) for Codex
         public var agent: Agent
         public var projectPath: String
         public var title: String
-        public var command: TerminalCommand
         public var isProvisional: Bool
     }
 
     /// Prepare a new session.
-    /// - Claude: mint a UUID → `claude --session-id <uuid>`; id known at once.
-    /// - Codex: launch bare `codex`; id is adopted later by the reconciler (U4).
-    public static func newSession(agent: Agent,
-                                  projectPath: String,
-                                  claudePath: String = "claude",
-                                  codexPath: String = "codex",
+    /// - Claude: mint a UUID (the launcher passes `--session-id`); id known at once.
+    /// - Codex: launch bare; the id is adopted later by the reconciler (U4).
+    public static func newSession(agent: Agent, projectPath: String,
                                   uuid: String = UUID().uuidString.lowercased()) -> Spec {
         switch agent {
         case .claude:
-            return Spec(
-                sessionID: uuid,
-                agent: .claude,
-                projectPath: projectPath,
-                title: Agent.claude.newSessionTitle,
-                command: TerminalCommand(argv: [claudePath, "--session-id", uuid], cwd: projectPath),
-                isProvisional: false)
+            return Spec(sessionID: uuid, agent: .claude, projectPath: projectPath,
+                        title: Agent.claude.newSessionTitle, isProvisional: false)
         case .codex:
-            return Spec(
-                sessionID: nil,
-                agent: .codex,
-                projectPath: projectPath,
-                title: Agent.codex.newSessionTitle,
-                command: TerminalCommand(argv: [codexPath], cwd: projectPath),
-                isProvisional: true)
+            return Spec(sessionID: nil, agent: .codex, projectPath: projectPath,
+                        title: Agent.codex.newSessionTitle, isProvisional: true)
         }
     }
 
@@ -49,10 +35,6 @@ public enum SessionLauncher {
         return agent.resumeArgv(sessionID: session.id)
     }
 
-    /// Resume an existing session (the primary action).
-    public static func resume(_ session: TranscriptSummary) -> TerminalCommand {
-        TerminalCommand(argv: session.agent.resumeArgv(sessionID: session.id), cwd: session.cwd ?? session.directoryHint ?? "")
-    }
 }
 
 /// Adopts a freshly-launched Codex session's real id (ADR-008 reconcile).

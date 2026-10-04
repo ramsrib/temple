@@ -71,6 +71,6 @@ let package = Package(
 
         .testTarget(name: "TempleCoreTests", dependencies: ["TempleCore"], exclude: ["Fixtures/session-state-v8.json", "Fixtures/session-state-v9.json", "Fixtures/format-golden.json"]),
         .testTarget(name: "TempleUITests", dependencies: ["TempleUI"]),
-        .testTarget(name: "TempleTerminalTests", dependencies: ["TempleTerminal"]),
+        .testTarget(name: "TempleTerminalTests", dependencies: ["TempleTerminal", "TempleUI"]),
     ]
 )

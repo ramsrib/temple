@@ -86,8 +86,10 @@ private struct SessionTerminalView: View {
     /// would send people to a screen that can't help, and train them to ignore the
     /// warning on the day the command really is at fault.
     private func launchFailure(status: Int32) -> some View {
-        let preparationError = tab.launchPreparationError
-        let argv = preparationError == nil ? tab.command?.argv ?? [] : []
+        // A launcher's own account of why the agent never ran stands in for
+        // a preparation error: the command was not at fault.
+        let preparationError = tab.launchPreparationError ?? tab.launchFailure?.message
+        let argv = preparationError == nil ? tab.displayArgv ?? [] : []
         // Frozen when the tab died — NOT re-derived from today's settings, which
         // would let an unrelated edit flip an old failure's verdict.
         let blameCommand = tab.commandWasSuspect

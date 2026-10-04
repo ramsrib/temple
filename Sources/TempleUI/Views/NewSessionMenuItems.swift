@@ -41,13 +41,18 @@ struct NewSessionMenuItems: View {
 
     @ViewBuilder
     private func row(_ agent: Agent) -> some View {
-        let launchable = model.toolchain.canLaunch(agent)
+        // The project's own host answers, never this Mac's toolchain for
+        // another machine.
+        let availability = model.hostRegistry.entry(for: project.host)?.launcher.availability(agent)
+            ?? .unavailable(reason: "no launcher for \(project.host.displayName)")
         Button {
             model.openSessions.newSession(agent: agent, project: project)
         } label: {
             Label {
-                Text(launchable ? agent.displayName
-                                : "\(agent.displayName) — \(problem(agent))")
+                switch availability {
+                case .available: Text(agent.displayName)
+                case .unavailable(let reason): Text("\(agent.displayName) — \(reason)")
+                }
             } icon: {
                 if let image = AgentIcon.menuImage(for: agent) {
                     Image(nsImage: image)
@@ -56,28 +61,10 @@ struct NewSessionMenuItems: View {
                 }
             }
         }
-        .disabled(!launchable)
+        .disabled(availability != .available)
         // The optional overload, so the row keeps one identity whether or not it
         // carries the shortcut.
         .keyboardShortcut(showsShortcut(agent) ? KeyboardShortcut("t") : nil)
-    }
-
-    /// Why we know this one won't run, in the fewest words that stay true. The
-    /// CLI's own account of it is in Settings and the launcher's warning banner;
-    /// a menu row is the wrong place to quote a paragraph.
-    private func problem(_ agent: Agent) -> String {
-        if model.toolchain.argumentComplaint(for: agent) != nil { return "arguments rejected" }
-        if let check = model.toolchain.overrideCheck(for: agent), !check.isUsable {
-            return "command doesn't run"
-        }
-        // Found-but-broken is not missing: the shell reaches a `claude`, it just
-        // fails to run. Saying "not found" there sends the user hunting for an
-        // install they already have. `ToolchainResolution.problem` draws the same
-        // line, at length; this is the short form of it.
-        if let resolution = model.toolchain.resolution(for: agent), !resolution.installs.isEmpty {
-            return "doesn't run"
-        }
-        return "not found"
     }
 
     /// `⌘T` is only the truth for the default agent in the *active* project.

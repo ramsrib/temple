@@ -115,16 +115,17 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                 registry: ProcessRegistry,
                 reconciler: CodexAdopting? = nil,
                 persistence: TabPersistence? = nil,
-                binaryPath: @escaping (Agent) -> String = { $0.binaryName },
-                extraArgs: @escaping (Agent) -> [String] = { _ in [] },
                 defaultAgent: @escaping () -> Agent = { .claude },
-                canLaunch: @escaping (Agent) -> Bool = { _ in true },
                 now: @escaping () -> Date = Date.init,
-                commandWrapper: any HostCommandWrapper = LocalCommandWrapper(),
                 launcherForHost: ((HostID) -> (any HostLauncher)?)? = nil,
                 directoryEvidence: ((ProjectKey) -> DirectoryEvidence)? = nil) {
-        let local = LocalHostLauncher(binaryPath: binaryPath, extraArgs: extraArgs, canLaunch: canLaunch, wrapper: commandWrapper)
-        self.launcherForHost = launcherForHost ?? { $0.isLocal ? local : nil }
+        if let launcherForHost {
+            self.launcherForHost = launcherForHost
+        } else {
+            // The registry owns launchers in the app (AppModel passes them in).
+            let local = LocalHostLauncher()
+            self.launcherForHost = { $0.isLocal ? local : nil }
+        }
         // The host registry owns directory evidence (AppModel passes it in).
         // Without it, nothing here can say a folder is gone.
         self.directoryEvidence = directoryEvidence ?? { _ in .unknown }
@@ -224,13 +225,12 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         }
         if let existing = sessionTab(withSessionID: session.id) {
             existing.transcriptHint = session.transcript
-            existing.prepareResume(session, command: resumeCommand(agent: agent, sessionID: session.id, cwd: directory))
+            existing.prepareResume(session)
             activate(existing)
             return
         }
         let tab = SessionTab(kind: .session, sessionID: session.id, agent: agent,
             projectPath: directory, title: session.displayTitle,
-            command: resumeCommand(agent: agent, sessionID: session.id, cwd: directory),
             isResume: true, host: session.host)
         tab.transcriptHint = session.transcript
         tabs.append(tab)
@@ -253,14 +253,12 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             activate(existing)
             return
         }
-        let command = SessionLauncher.resume(session)
         let tab = SessionTab(
             kind: .session,
             sessionID: session.id,
             agent: session.agent,
             projectPath: session.catalogDirectory,
             title: session.catalogTitle,
-            command: command,
             isResume: true, host: session.locator.host)
         tab.transcriptHint = session.locator
         tabs.append(tab)
@@ -286,7 +284,6 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             agent: spec.agent,
             projectPath: spec.projectPath,
             title: spec.title,
-            command: spec.command,
             isProvisional: spec.isProvisional, host: project.host)
         tabs.append(tab)
         if let sid = spec.sessionID {
@@ -375,8 +372,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             return false
         }
         if tab.launchPreparationError == Self.unknownDirectoryMessage { tab.launchPreparationError = nil }
-        tab.prepareResume(row, agent: agent, directory: directory,
-                          command: resumeCommand(agent: agent, sessionID: sid, cwd: directory))
+        tab.prepareResume(row, agent: agent, directory: directory)
         return true
     }
 
@@ -416,15 +412,11 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     /// Spawn the surface for a session tab on first activation (lazy restore).
     private func ensureSurface(for tab: SessionTab) {
-        guard !isQuitting, tab.kind == .session, tab.surface == nil, tab.command != nil else { return }
+        guard !isQuitting, tab.kind == .session, tab.surface == nil else { return }
         guard let launcher = launcherForHost(tab.host) else {
             TempleUILog.launch.notice("host has no launcher: \(tab.host.rawValue, privacy: .public)")
             return
         }
-        let spec = AgentLaunchSpec(agent: tab.agent,
-            mode: tab.isResume ? .resume(sessionID: tab.sessionID!) : .new(sessionID: tab.sessionID),
-            directory: tab.projectPath, host: tab.host)
-        let command: TerminalCommand
         tab.launchPreparationError = nil
         tab.commandWasSuspect = false
         tab.missingWorkingDirectory = nil
@@ -436,56 +428,72 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             tab.activity = .exited(status: -1)
             return
         }
-        // Only the owning host can establish the directory the agent uses.
-        let evidence = directoryEvidence(tab.projectKey)
         // A gone folder is not started anywhere else: the terminal would keep
         // Temple's own cwd and the agent would run, and record, in the wrong
         // place. Clicking the chip again re-checks, so a restored folder works.
-        guard evidence != .missing else {
-            TempleUILog.launch.notice("not spawning in a missing folder: \(tab.projectPath, privacy: .public)")
-            tab.launchPreparationError = "The folder \(tab.projectPath) no longer exists."
-            tab.activity = .exited(status: -1)
+        // (The owning host's synchronous evidence; a launcher that proves it
+        // in `prepare` is handled the same way below.)
+        guard directoryEvidence(tab.projectKey) != .missing else {
+            showMissingFolder(tab, tab.projectPath)
             return
         }
-        do { command = try launcher.command(for: spec) }
-        catch {
+        let spec = AgentLaunchSpec(agent: tab.agent,
+            mode: tab.isResume ? .resume(sessionID: tab.sessionID!) : .new(sessionID: tab.sessionID),
+            directory: tab.projectPath, host: tab.host)
+        let launch: AgentLaunch
+        do { launch = try launcher.prepare(spec) }
+        catch HostLaunchError.directoryMissing(let path) {
+            showMissingFolder(tab, path)
+            return
+        } catch {
             TempleUILog.launch.error("command preparation failed: \(String(describing: error), privacy: .public)")
             tab.launchPreparationError = error.localizedDescription
             tab.commandWasSuspect = true
             tab.activity = .exited(status: -1)
             return
         }
-        tab.setLaunchCommand(command)
         // A session Temple already has on another host is not run here.
         if let sid = tab.sessionID,
            let conflict = openedHandler?(SessionOpen(id: sid, host: tab.host, via: tab.isResume ? .opened : .created,
                                                      agent: tab.agent, locator: tab.transcriptHint)).conflict {
+            launch.result?.cancel()
             tab.launchPreparationError = conflict.message
             tab.activity = .exited(status: -1)
             return
         }
+        // The launcher armed its result before returning, so nothing the
+        // spawn reports can be missed; it is held until the spawn has started.
+        tab.setLaunch(launch)
         let surface = surfaceFactory.makeSurface(appearance: appearanceProvider())
         surface.delegate = self
         let spawnedAt = now()
         tab.attach(surface: surface, at: spawnedAt)
         // The shell should know it is in Temple, not in the library that
         // drives its PTY. A command's own variables still win.
-        let launchDirectory = evidence == .exists ? tab.projectPath : nil
         do {
-            try surface.start(TerminalIdentity.apply(to: command))
+            try surface.start(TerminalIdentity.apply(to: launch.command))
         } catch {
-            TempleUILog.launch.error("spawn failed: agent=\(tab.agent.rawValue, privacy: .public) argv0=\(command.argv.first ?? "?", privacy: .public) cwd=\(command.cwd, privacy: .public) error=\(String(describing: error), privacy: .public)")
+            TempleUILog.launch.error("spawn failed: agent=\(tab.agent.rawValue, privacy: .public) argv0=\(launch.displayArgv.first ?? "?", privacy: .public) cwd=\(launch.command.cwd, privacy: .public) error=\(String(describing: error), privacy: .public)")
+            tab.launchResult?.cancel()
+            tab.launchResult = nil
             // A surface that won't even start is always the command's problem.
             tab.commandWasSuspect = true
             diagnoseExit(tab)
             tab.activity = .exited(status: -1)
             return
         }
-        tab.launchObservation = SessionTab.LaunchObservation(at: spawnedAt, directory: launchDirectory)
-        if let sid = tab.sessionID {
-            if let launchDirectory { launchDirectoryHandler?(sid, tab.host, launchDirectory) }
-            if !isQuitting { touchHandler?(sid, tab.host, spawnedAt) }
+        // The folder is recorded only when the launch reports entering it
+        // (`handleLaunchEvent`), never from a start that merely returned.
+        tab.launchObservation = SessionTab.LaunchObservation(at: spawnedAt, directory: nil)
+        // From here on, what this launch reports reaches this tab — and only
+        // while it is still this tab's launch.
+        if let channel = launch.result {
+            channel.onEvent = { [weak self, weak tab, weak channel] event in
+                guard let self, let tab, let channel, tab.launchResult === channel else { return }
+                self.handleLaunchEvent(event, for: tab)
+            }
         }
+        if let sid = tab.sessionID, !isQuitting { touchHandler?(sid, tab.host, spawnedAt) }
         if case .running(let pid) = surface.processState, let sid = tab.sessionID {
             registry.register(pid: pid, sessionID: sid)
         }
@@ -495,6 +503,35 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         // treat a resting prompt as "still working".
         lastTitleChange[tab.id] = Date()
         scheduleSettle(for: tab)
+    }
+
+    /// Deliver whatever every live launch has reported so far, now. The exit
+    /// path does this per tab; tests use it to avoid waiting on file events.
+    func drainLaunchResults() {
+        for tab in tabs { tab.launchResult?.drain() }
+    }
+
+    private func showMissingFolder(_ tab: SessionTab, _ path: String) {
+        TempleUILog.launch.notice("not spawning in a missing folder: \(path, privacy: .public)")
+        tab.launchPreparationError = "The folder \(path) no longer exists."
+        tab.activity = .exited(status: -1)
+    }
+
+    /// What a launch reported. The folder becomes tab-sourced only here; a
+    /// launcher failure is kept for the exit to show, however long the
+    /// process lived.
+    private func handleLaunchEvent(_ event: LaunchEvent, for tab: SessionTab) {
+        switch event {
+        case .directoryEstablished(let directory):
+            guard tab.launchObservation != nil else { return }
+            tab.launchObservation?.directory = directory
+            if let sid = tab.sessionID { launchDirectoryHandler?(sid, tab.host, directory) }
+        case .failed(let category, let message):
+            TempleUILog.launch.notice("launch failed before the agent ran: \(category.rawValue, privacy: .public)")
+            tab.launchFailure = LaunchFailure(category: category, message: message)
+        case .finished:
+            break
+        }
     }
 
     // MARK: Activity settle (Item E)
@@ -607,7 +644,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             return
         }
         let tab = SessionTab(kind: kind, sessionID: nil, agent: .claude,
-                             projectPath: "", title: kind.utilityTitle ?? "", command: nil)
+                             projectPath: "", title: kind.utilityTitle ?? "")
         tabs.append(tab)
         activeTabID = tab.id
     }
@@ -725,10 +762,6 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                 agent: closed.agent,
                 projectPath: closed.projectPath,
                 title: closed.title,
-                command: resumeCommand(
-                    agent: closed.agent,
-                    sessionID: closed.sessionID,
-                    cwd: closed.projectPath),
                 isResume: true, host: closed.host
             )
             tabs.append(tab)
@@ -750,6 +783,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         let tab = tabs[index]
         awaitingExitDiagnosis.remove(tabID)
         cancelSettle(for: tabID)
+        // Nothing a closed tab's launch reports later can reach anyone.
+        tab.launchResult?.cancel()
+        tab.launchResult = nil
         if let sid = tab.sessionID { registry.unregister(sessionID: sid) }
         let wasActive = activeTabID == tabID
         tabs.remove(at: index)
@@ -951,10 +987,6 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         persistence.save(restorable)
     }
 
-    private func resumeCommand(agent: Agent, sessionID: String, cwd: String) -> TerminalCommand {
-        TerminalCommand(argv: agent.resumeArgv(sessionID: sessionID), cwd: cwd)
-    }
-
     /// Rebuild the per-project tab set + order as **inert chips** (no surface
     /// spawns until a chip is clicked). Call once at launch.
     public func restore() {
@@ -972,7 +1004,6 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             return SessionTab(kind: .session, sessionID: p.sessionID, agent: agent,
                               projectPath: directory,
                               title: row.flatMap { $0.state.customName ?? $0.state.title } ?? p.title,
-                              command: resumeCommand(agent: agent, sessionID: p.sessionID, cwd: directory),
                               isResume: true, host: row?.host ?? .local)
         }
         // Restore active project context without spawning anything.
@@ -1009,6 +1040,19 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
             if let sid = tab.sessionID { registry.register(pid: pid, sessionID: sid) }
         case .exited(let status):
             if let sid = tab.sessionID { touchHandler?(sid, tab.host, nil) }
+            // Whatever the launch reported is read now, before deciding: a
+            // launcher failure written just before the exit is not missed.
+            tab.launchResult?.finish()
+            tab.launchResult = nil
+            let userClosed = closingTabIDs.remove(tab.id) != nil
+            // The launcher said the agent never ran: that is the failure to
+            // show, however long the process lived, and the command was not
+            // at fault.
+            if !userClosed, tab.launchFailure != nil {
+                tab.commandWasSuspect = false
+                tab.activity = .exited(status: status)
+                return
+            }
             // Tab == process (ADR-010): a finished agent auto-closes its tab.
             // Exception: a process that dies within seconds of spawning (and
             // that the user did not close) almost certainly failed to launch
@@ -1016,11 +1060,11 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
             // tab so the terminal's error output is readable instead of
             // flashing and vanishing.
             let age = tab.spawnedAt.map { Date().timeIntervalSince($0) } ?? .infinity
-            if closingTabIDs.remove(tab.id) == nil, age < earlyExitGraceSeconds {
+            if !userClosed, age < earlyExitGraceSeconds {
                 // Freeze the verdict WITH the failure. The header shows the argv this
                 // tab launched with, so it must be judged by what we knew then — not
                 // by settings the user edits afterwards.
-                tab.commandWasSuspect = !(launcherForHost(tab.host)?.canLaunch(tab.agent) ?? false)
+                tab.commandWasSuspect = launcherForHost(tab.host)?.availability(tab.agent) != .available
                 // Resumes only: a NEW tab's freshly minted id is legitimately
                 // absent from the index, and its early exit (auth, config)
                 // has nothing to do with id rotation.

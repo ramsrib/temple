@@ -66,7 +66,10 @@ final class RemoteHostSeamTests: XCTestCase {
             var recorded: String?
             model.launchDirectoryHandler = { _, _, directory in recorded = directory }
             model.openSession(summary)
-            XCTAssertEqual(recorded, evidence == .exists ? path : nil)
+            model.drainLaunchResults()
+            // A host that cannot report where its launch ran records nothing,
+            // whatever its folder evidence says (D4: unknown stays unknown).
+            XCTAssertNil(recorded)
             XCTAssertFalse(model.activeTab?.commandWasSuspect ?? true)
             guard evidence != .missing else {
                 // The owning host says the folder is gone: nothing is started.
@@ -122,9 +125,12 @@ final class RemoteHostSeamTests: XCTestCase {
         XCTAssertEqual(localSource.requested, ["local-row"])
         XCTAssertEqual(app.sessions.first { $0.id == "local-row" }?.displayTitle, "Local facts")
         app.openSessions.openSession(row)
-        XCTAssertEqual(try db.sessionState(row.id)?.directorySource, .tab)
+        app.openSessions.drainLaunchResults()
+        // This host's launcher cannot report where it ran, so the folder stays
+        // the transcript's: a remote spawn never claims one (D4).
+        XCTAssertEqual(try db.sessionState(row.id)?.directorySource, .transcript)
         XCTAssertEqual(launcher.specs.count, 1)
-        XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["remote-transport", "fake-host", "/remote/bin/claude", "--resume", "remote-row"])
+        XCTAssertEqual(factory.created.last?.startedCommand?.agentArgv, ["remote-transport", "fake-host", "/remote/bin/claude", "--resume", "remote-row"])
         XCTAssertEqual(factory.created.last?.startedCommand?.cwd, "/transport")
         XCTAssertEqual(app.openSessions.activeTab?.host, remote)
         var catalogRows: [TranscriptSummary] = []
@@ -145,15 +151,16 @@ final class RemoteHostSeamTests: XCTestCase {
         XCTAssertEqual(codex.sessionID, "remote-adopted")
         XCTAssertEqual(try db.sessionState("remote-adopted")?.host, remote)
         XCTAssertEqual(launcher.specs.last?.mode, .new(sessionID: nil))
-        XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["remote-transport", "fake-host", "/remote/bin/codex"])
+        XCTAssertEqual(factory.created.last?.startedCommand?.agentArgv, ["remote-transport", "fake-host", "/remote/bin/codex"])
         for surface in factory.created {
             let command = try XCTUnwrap(surface.startedCommand)
             XCTAssertFalse(command.argv.contains { $0.contains("/mac/") || $0.contains("/missing/local/") })
             XCTAssertEqual(command.cwd, "/transport")
         }
-        let localCommand = try XCTUnwrap(hosts.entry(for: .local)).launcher.command(for:
+        let localLaunch = try XCTUnwrap(hosts.entry(for: .local)).launcher.prepare(
             AgentLaunchSpec(agent: .claude, mode: .resume(sessionID: "local-row"), directory: "/local", host: .local))
-        XCTAssertEqual(localCommand.argv.first, "/mac/only/agent")
+        XCTAssertEqual(localLaunch.displayArgv.first, "/mac/only/agent")
+        localLaunch.result?.cancel()
         // Fills do not replace facts on the next remote observation.
         remoteSource.sendChange()
         try await Task.sleep(for: .milliseconds(50))
@@ -295,6 +302,10 @@ private final class RemoteFixtureSource: HostSessionSource, @unchecked Sendable 
 @MainActor
 private final class RemoteFixtureLauncher: HostLauncher {
     var specs: [AgentLaunchSpec] = []
+    func prepare(_ spec: AgentLaunchSpec) throws -> AgentLaunch {
+        let command = try command(for: spec)
+        return AgentLaunch(command: command, displayArgv: command.argv, result: nil)
+    }
     func command(for spec: AgentLaunchSpec) throws -> TerminalCommand {
         specs.append(spec)
         let args: [String]
@@ -305,7 +316,7 @@ private final class RemoteFixtureLauncher: HostLauncher {
         return TerminalCommand(argv: ["remote-transport", spec.host.rawValue, "/remote/bin/" + spec.agent.binaryName] + args,
             cwd: "/transport")
     }
-    func canLaunch(_ agent: Agent) -> Bool { true }
+    func availability(_ agent: Agent) -> LaunchAvailability { .available }
 }
 
 @MainActor
@@ -314,9 +325,10 @@ private final class ThrowingFixtureLauncher: HostLauncher {
         var errorDescription: String? { "The host could not prepare this session." }
     }
     var shouldThrow = true
-    func command(for spec: AgentLaunchSpec) throws -> TerminalCommand {
+    func prepare(_ spec: AgentLaunchSpec) throws -> AgentLaunch {
         if shouldThrow { throw PreparationError() }
-        return TerminalCommand(argv: ["remote-transport"], cwd: "/transport")
+        return AgentLaunch(command: TerminalCommand(argv: ["remote-transport"], cwd: "/transport"),
+                           displayArgv: ["remote-transport"], result: nil)
     }
-    func canLaunch(_ agent: Agent) -> Bool { true }
+    func availability(_ agent: Agent) -> LaunchAvailability { .available }
 }

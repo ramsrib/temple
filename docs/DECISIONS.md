@@ -1155,7 +1155,15 @@ files on this Mac, which a session on another machine will never have.
   picks its own executable and arguments, so this Mac's detected `claude` path
   never reaches another machine. Directory existence is the owning host's
   evidence (exists, missing or unknown), and unknown neither hides a row nor
-  claims a folder is gone. A remote host is the same row with `host` set, an
+  claims a folder is gone. What a tab may record is the launch's own report:
+  `prepare` returns the command and a result channel, and only its
+  `.directoryEstablished`, after a started spawn, records the folder
+  tab-sourced. Locally the agent runs behind a `cd`-then-`exec` shell
+  wrapper that writes a per-launch marker, so it never runs in Temple's cwd
+  when its folder is gone, and the failure is shown whenever the process
+  exits. A launcher with no channel (a future ssh one, until it relays the
+  same report) records nothing; its command must still `cd` or exit, and a
+  remote new session's folder then comes from its transcript. A remote host is the same row with `host` set, an
   ssh-backed source and an ssh launcher; none of that ships here. The session id stays the
   key; `host` is an attribute.
 - **Older builds keep working on the file; newer ones stop this build.** v10

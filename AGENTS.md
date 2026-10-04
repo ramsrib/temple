@@ -223,9 +223,17 @@ during that refactor:
   Placeholders and Claude's lossy directory decode are display hints on
   `TranscriptSummary`; storing one makes a guess permanent, because fills only
   write NULL columns.
-- **Fills are NULL-only; the tab's directory wins.** Only an actual, successful
-  spawn in an existing directory records a directory (`tab`-sourced, replacing
-  any prior value). Copying a row into a restored chip writes nothing.
+- **Fills are NULL-only; the tab's directory wins.** Only a launch that
+  *reports* entering its folder records it (`tab`-sourced, replacing any prior
+  value): `HostLauncher.prepare` returns the command, the agent's own argv for
+  the failure header, and a `LaunchResultChannel`; the folder is written on
+  its `.directoryEstablished`, after the spawn started — never from a
+  preflight check, an exit code or `start()` returning. The local launcher
+  runs the agent behind `/usr/bin/env /bin/sh -c 'cd -- "$1" || …; exec "$@"'`
+  with positional arguments and a per-launch marker armed before the spawn;
+  a launcher failure (`.failed`) keeps the tab with its reason however long
+  the process lived. A host whose launcher returns no channel never records
+  a folder from a tab. Copying a row into a restored chip writes nothing.
 - **Absence needs evidence.** Only a completed enumeration is `absent`;
   `mismatch`, `unreadable`, a failed scan, a cancelled scan or a missing
   catalog entry never are. A remote transport failure must not be either.

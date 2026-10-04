@@ -47,6 +47,7 @@ final class AppLifecycleTests: XCTestCase {
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()), overlay: overlay)
         let tab = model.openSessions.newSession(agent: .codex, projectPath: NSTemporaryDirectory())
         let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
+        model.openSessions.drainLaunchResults()   // the wrapper reported the folder at spawn
         overlay.join("known", via: .created)
         overlay.touch("known", host: .local)
         XCTAssertNil(try db.sessionState("known")?.lastActiveAt)

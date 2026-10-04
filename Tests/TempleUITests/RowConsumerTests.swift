@@ -542,7 +542,7 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(app.transcriptURL(for: "local"), localURL)
         XCTAssertNil(app.transcriptURL(for: "remote"), "remote locators cannot reveal a local file")
         let tab = SessionTab(kind: .session, sessionID: "local", agent: .codex,
-            projectPath: "/wrong", title: "Old title", command: nil)
+            projectPath: "/wrong", title: "Old title")
         XCTAssertEqual(app.resumeArgv(for: tab), ["claude", "--resume", "local"])
         app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["local": .confirmedAbsent,
             "remote": .unreadable], summaries: [:]))

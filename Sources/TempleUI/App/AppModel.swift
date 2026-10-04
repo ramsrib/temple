@@ -332,7 +332,7 @@ public final class AppModel: ObservableObject {
 
         let hosts = hostRegistry ?? HostRegistry(entries: [.init(source: LocalSessionSource(),
             launcher: LocalHostLauncher(binaryPath: { toolchain.launchPath(for: $0) },
-                extraArgs: { settings.extraArgs(for: $0) }, canLaunch: { toolchain.canLaunch($0) }))])
+                extraArgs: { settings.extraArgs(for: $0) }, availability: { toolchain.launchAvailability($0) }))])
         self.hostRegistry = hosts
         let resolvedIndexSource = indexSource ?? WatcherIndexSource(engines: hosts.entries.map {
             SessionEngine(source: $0.source, database: database)

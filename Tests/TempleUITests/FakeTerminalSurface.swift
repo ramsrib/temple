@@ -37,10 +37,22 @@ final class FakeTerminalSurface: TerminalSurface {
         }
     }
 
+    /// What the local launch wrapper writes to its marker when this fake
+    /// "runs" it. By default it does what the shell would for a folder that
+    /// exists — `ok` — and writes nothing for one that does not (tests open
+    /// made-up paths); set a line to script a launcher failure.
+    var wrapperMarkerLine: String?? = nil
+
     func start(_ command: TerminalCommand) throws {
         startedCommand = command
         if let startError { throw startError }
         processState = .running(pid: 4242)
+        if let marker = command.launchMarker, let folder = command.launchFolder {
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory) && isDirectory.boolValue
+            let line: String? = wrapperMarkerLine ?? (exists ? "ok" : nil)
+            if let line { try? Data((line + "\n").utf8).write(to: URL(fileURLWithPath: marker)) }
+        }
     }
 
     func release() { releaseCount += 1 }
@@ -241,4 +253,14 @@ final class FolderAgnosticSource: HostSessionSource, @unchecked Sendable {
     func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error> { AsyncThrowingStream { $0.finish() } }
     func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult { .none }
     func changes() -> AsyncThrowingStream<SourceChange, Error> { AsyncThrowingStream { _ in } }
+}
+
+extension TerminalCommand {
+    private var isLocalLaunchWrapper: Bool {
+        argv.count > 7 && argv[0] == "/usr/bin/env" && argv[1] == "/bin/sh" && argv[4] == "temple-launch"
+    }
+    /// The agent's argv behind the local launch wrapper (the argv itself otherwise).
+    var agentArgv: [String] { isLocalLaunchWrapper ? Array(argv.dropFirst(7)) : argv }
+    var launchFolder: String? { isLocalLaunchWrapper ? argv[5] : nil }
+    var launchMarker: String? { isLocalLaunchWrapper ? argv[6] : nil }
 }
