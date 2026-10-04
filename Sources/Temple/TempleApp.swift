@@ -43,9 +43,7 @@ struct TempleApp: App {
         WindowGroup(id: "main") {
             StartupRootView(startup: startup, appDelegate: appDelegate, activateOnStart: true)
         }
-        .commands {
-            if let model = startup.model { TempleCommands(model: model) }
-        }
+        .commands { StartupCommands(startup: startup) }
         .windowStyle(.hiddenTitleBar)
         // Unified toolbar: the tab chips live in the native title-bar band, so
         // the empty band keeps native double-click-to-zoom and window-drag

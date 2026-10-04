@@ -59,7 +59,16 @@ on run argv
         set messages to value of every static text of group 1 of first window
         if messages does not contain "This Temple is older than the data it found. Update Temple to continue." then error "newer-schema: missing update-required message"
         if (count of buttons of group 1 of first window) is not 1 then error "newer-schema: missing Quit button"
+        -- No model means no Temple commands, but SwiftUI's default File ▸ New
+        -- Window (⌘N) would still open a second update-required window.
+        if exists menu bar item "File" of menu bar 1 then
+          if (name of every menu item of menu 1 of menu bar item "File" of menu bar 1) contains "New Window" then error "newer-schema: File menu offers New Window"
+        end if
         click button 1 of group 1 of first window
+      else
+        -- The same query must see Temple's own File menu, or the check above
+        -- proves nothing.
+        if (name of every menu item of menu 1 of menu bar item "File" of menu bar 1) does not contain "New Session" then error "normal: File menu lacks New Session"
       end if
       return expected & ": " & windowNames
     end tell

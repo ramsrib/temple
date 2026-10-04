@@ -60,6 +60,23 @@ public final class AppStartup: ObservableObject {
     }
 }
 
+/// The menu bar for whichever window startup produced. A failure window has
+/// no model and so no Temple commands — but SwiftUI's default File ▸ New
+/// Window (⌘N) would still open a second copy of it. Shared by both entry
+/// points, like `StartupRootView`.
+public struct StartupCommands: Commands {
+    private let startup: AppStartup
+    public init(startup: AppStartup) { self.startup = startup }
+
+    public var body: some Commands {
+        if let model = startup.model {
+            TempleCommands(model: model)
+        } else {
+            CommandGroup(replacing: .newItem) {}
+        }
+    }
+}
+
 /// Keeps the scene's root concrete while choosing the validated startup content.
 /// A conditional directly in WindowGroup prevented the bundled app from opening
 /// its initial window. Keep the branch here; check-startup-windows.sh exercises
