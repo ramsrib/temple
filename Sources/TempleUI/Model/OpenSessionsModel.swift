@@ -251,7 +251,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             projectPath: session.catalogDirectory,
             title: session.catalogTitle,
             command: command,
-            isResume: true)
+            isResume: true, host: session.locator.host)
         tab.transcriptHint = session.locator.localURL
         tabs.append(tab)
         activate(tab)

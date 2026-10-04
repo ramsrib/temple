@@ -48,6 +48,15 @@ final class RemoteHostSeamTests: XCTestCase {
         XCTAssertEqual(factory.created.last?.startedCommand?.argv, [app.toolchain.launchPath(for: .claude), "--dangerously-skip-permissions", "--resume", "remote-row"])
         XCTAssertEqual(factory.created.last?.startedCommand?.cwd, "/remote/project")
         XCTAssertEqual(app.openSessions.activeTab?.host, remote)
+        let catalog = TranscriptSummary(id: "catalog-only", agent: .claude,
+            locator: TranscriptLocator(host: remote, path: "opaque:catalog-only"),
+            modifiedAt: Date(), cwd: "/remote/catalog", firstPrompt: "Catalog")
+        XCTAssertEqual(HistoryRow(catalog: catalog).project?.host, remote)
+        app.openSessions.openSession(catalog)
+        XCTAssertEqual(app.openSessions.activeTab?.host, remote)
+        XCTAssertEqual(wrapper.calls, 2)
+        XCTAssertEqual(try db.sessionState(catalog.id)?.host, remote)
+        XCTAssertEqual(factory.created.last?.startedCommand?.cwd, "/remote/catalog")
         // Fills do not replace facts on the next remote observation.
         remoteSource.sendChange()
         try await Task.sleep(for: .milliseconds(50))
