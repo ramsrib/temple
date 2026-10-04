@@ -67,7 +67,6 @@ final class OpenSessionsModelTests: XCTestCase {
         let factory = FakeTerminalSurfaceFactory()
         let app = AppModel(surfaceFactory: factory, indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
             database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
-            stateDirectory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
             hostRegistry: Fixture.hostsWithoutFolderEvidence())
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["row": .resolving], summaries: [:]))
         app.openSession(id: "row")

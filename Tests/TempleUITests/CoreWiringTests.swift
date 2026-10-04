@@ -28,8 +28,7 @@ final class CoreWiringTests: XCTestCase {
             indexSource: source,
             database: database,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
-            overlay: SessionOverlayStore(db: database),
-            stateDirectory: root
+            overlay: SessionOverlayStore(db: database)
         )
         model.start()
 
@@ -139,7 +138,7 @@ final class CoreWiringTests: XCTestCase {
         defer { source.stop() }
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
             database: database, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
-            overlay: SessionOverlayStore(db: database), stateDirectory: root)
+            overlay: SessionOverlayStore(db: database))
         model.start()
         try await waitFor { !model.isLoading }
         XCTAssertEqual(model.openSessions.sessionKnown("pruned"), false)
@@ -176,7 +175,7 @@ final class CoreWiringTests: XCTestCase {
         defer { source.stop() }
         let overlay = SessionOverlayStore(db: db)
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
-            database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()), overlay: overlay, stateDirectory: root)
+            database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()), overlay: overlay)
         model.start()
         try await waitFor { model.openSessions.sessionKnown("member") == true }
         let loadedResolution = watcher.resolution(for: "member")

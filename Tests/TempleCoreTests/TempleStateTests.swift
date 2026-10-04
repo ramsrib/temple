@@ -2,6 +2,21 @@ import XCTest
 @testable import TempleCore
 
 final class TempleStateTests: XCTestCase {
+    /// Nothing in a test run may resolve to the installed app's state, with
+    /// or without TEMPLE_STATE_DIR.
+    func testTheSuiteNeverResolvesTheRealStateDirectory() {
+        let key = "TEMPLE_STATE_DIR"
+        let saved = ProcessInfo.processInfo.environment[key]
+        defer { if let saved { setenv(key, saved, 1) } else { unsetenv(key) } }
+        for value in [saved, nil] {
+            if let value { setenv(key, value, 1) } else { unsetenv(key) }
+            XCTAssertNotEqual(TempleState.canonicalPath(TempleState.directory),
+                              TempleState.canonicalPath(TempleState.defaultDirectory))
+            XCTAssertNotEqual(TempleState.canonicalPath(TempleDB.defaultPath().deletingLastPathComponent()),
+                              TempleState.canonicalPath(TempleState.defaultDirectory))
+        }
+    }
+
     /// What `templectl --import-all` gates on. Set, empty and the real
     /// directory spelled another way must all read as "not redirected".
     func testStateIsRedirectedOnlyToADirectoryOtherThanTheRealOne() {

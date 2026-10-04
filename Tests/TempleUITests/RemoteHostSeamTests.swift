@@ -102,7 +102,7 @@ final class RemoteHostSeamTests: XCTestCase {
         settings.claudePath = "/missing/local/claude"
         settings.codexPath = "/missing/local/codex"
         let app = AppModel(surfaceFactory: factory, database: db,
-            settings: settings, stateDirectory: directory, hostRegistry: hosts)
+            settings: settings, hostRegistry: hosts)
         app.start()
         let deadline = Date().addingTimeInterval(3)
         while app.sessions.first(where: { $0.id == "remote-row" })?.state.title == nil, Date() < deadline {

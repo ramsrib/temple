@@ -2,10 +2,17 @@ import Foundation
 
 public enum TempleState {
     public static var directory: URL {
-        let url = StoreIO.envRoot("TEMPLE_STATE_DIR") ?? defaultDirectory
+        let url = StoreIO.envRoot("TEMPLE_STATE_DIR") ?? (underTest ? testDirectory : defaultDirectory)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
+
+    /// A test process never reaches the real state: without an explicit
+    /// TEMPLE_STATE_DIR it gets a directory of its own under /tmp. XCTest is
+    /// loaded only into test bundles' processes, never into the app or tools.
+    private static let underTest = NSClassFromString("XCTestCase") != nil
+    private static let testDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("temple-test-state-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
 
     /// The real state directory, the one an installed Temple uses.
     public static var defaultDirectory: URL {

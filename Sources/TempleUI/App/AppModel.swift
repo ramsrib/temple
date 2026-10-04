@@ -301,7 +301,9 @@ public final class AppModel: ObservableObject {
     public let history: HistoryModel
 
     // Seams (Track C)
-    private let stateDirectory: URL?
+    /// Where the database lives; nil for an in-memory one. Startup
+    /// housekeeping happens beside it and nowhere else.
+    private let databaseDirectory: URL?
     private let indexSource: IndexSource
     public let hostRegistry: HostRegistry
 
@@ -315,7 +317,6 @@ public final class AppModel: ObservableObject {
                 database: TempleDB,
                 settings: SettingsStore? = nil,
                 overlay: SessionOverlayStore? = nil,
-                stateDirectory: URL? = nil,
                 hostRegistry: HostRegistry? = nil) {
         // Defaults that touch @MainActor types are built here (not as default
         // arguments, which evaluate in a nonisolated context).
@@ -344,7 +345,7 @@ public final class AppModel: ObservableObject {
         self.uiState = uiState
         self.sidebarVisibility = uiState.sidebarVisibility ?? .all
         self.indexSource = resolvedIndexSource
-        self.stateDirectory = stateDirectory
+        self.databaseDirectory = database.fileURL?.deletingLastPathComponent()
         self.notifications = NotificationController()
         self.history = HistoryModel(overlay: overlay, catalog: { hosts.catalog() },
             directoryEvidence: { hosts.entry(for: $0.host)?.source.directoryEvidence($0.path) ?? .unknown })
@@ -618,8 +619,10 @@ public final class AppModel: ObservableObject {
     /// path. It is removed once, not on every launch — an older Temple still
     /// installed beside this one rebuilds and relies on it, and deleting it
     /// each time would cold-start that build on every one of its launches.
+    /// It lives beside the database, so a model on an in-memory database
+    /// (every test that does not ask for a file) touches no state directory.
     private func retireIndexCacheOnce() {
-        let directory = stateDirectory ?? TempleState.directory
+        guard let directory = databaseDirectory else { return }
         let marker = directory.appendingPathComponent(".index-cache-retired")
         guard !FileManager.default.fileExists(atPath: marker.path) else { return }
         try? FileManager.default.removeItem(at: directory.appendingPathComponent("index-cache.json"))

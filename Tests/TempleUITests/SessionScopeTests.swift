@@ -233,7 +233,7 @@ final class SessionScopeTests: XCTestCase {
         let source = WatcherIndexSource(watcher: watcher)
         defer { source.stop() }
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source, database: db,
-            settings: SettingsStore(defaults: Fixture.uniqueDefaults()), stateDirectory: root)
+            settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         model.start()
         let initialDeadline = Date().addingTimeInterval(3)
         while (model.isLoading || model.sessions.first(where: { $0.id == initial })?.state.title == nil), Date() < initialDeadline {
@@ -268,7 +268,7 @@ final class SessionScopeTests: XCTestCase {
         let source = WatcherIndexSource(watcher: SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)]), database: db))
         defer { source.stop() }
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source, database: db,
-            settings: SettingsStore(defaults: Fixture.uniqueDefaults()), stateDirectory: root)
+            settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         model.start()
         let end = Date().addingTimeInterval(3)
         while (model.isLoading || model.sessions.first(where: { $0.id == "legacy" })?.state.title == nil), Date() < end {

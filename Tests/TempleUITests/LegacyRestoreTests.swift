@@ -70,8 +70,7 @@ final class LegacyRestoreTests: XCTestCase {
         let app = AppModel(surfaceFactory: factory,
                            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
                            database: db,
-                           settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
-                           stateDirectory: directory)
+                           settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         app.start()
 
         let tabs = app.openSessions.tabs
@@ -122,8 +121,7 @@ final class LegacyRestoreTests: XCTestCase {
         let factory = FakeTerminalSurfaceFactory()
         let app = AppModel(surfaceFactory: factory,
                            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
-                           database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
-                           stateDirectory: directory)
+                           database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         app.start()
         let tab = try XCTUnwrap(app.openSessions.activeTab)
         XCTAssertEqual(tab.sessionID, "unplaced")
@@ -147,8 +145,7 @@ final class LegacyRestoreTests: XCTestCase {
         let factory2 = FakeTerminalSurfaceFactory()
         let app2 = AppModel(surfaceFactory: factory2,
                             indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
-                            database: db2, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
-                            stateDirectory: directory)
+                            database: db2, settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         app2.start()
         app2.openSessions.activate(try XCTUnwrap(app2.openSessions.tabs.last))
         XCTAssertEqual(factory2.created.count, 1)

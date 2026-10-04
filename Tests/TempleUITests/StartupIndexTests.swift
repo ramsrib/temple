@@ -12,10 +12,12 @@ final class StartupIndexTests: XCTestCase {
         try Data("obsolete".utf8).write(to: cache)
         let sentinel = directory.appendingPathComponent("keep.json")
         try Data("keep".utf8).write(to: sentinel)
-        let db = try TempleDB.inMemory()
+        // Housekeeping happens beside the database, so the test's database
+        // is a file in the test's own directory.
+        let db = try TempleDB(path: directory.appendingPathComponent("temple.sqlite"))
         Fixture.join([Fixture.row("member", project: "/work", title: "Durable")], to: db)
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: DelayedIndexSource(),
-            database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()), stateDirectory: directory)
+            database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         model.start()
         XCTAssertFalse(FileManager.default.fileExists(atPath: cache.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: sentinel.path))
@@ -26,10 +28,26 @@ final class StartupIndexTests: XCTestCase {
         // must not be cold-started on every launch of its own.
         try Data("rebuilt by an older build".utf8).write(to: cache)
         let again = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: DelayedIndexSource(),
-            database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()), stateDirectory: directory)
+            database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         again.start()
         XCTAssertTrue(FileManager.default.fileExists(atPath: cache.path))
     }
+    /// A model on an in-memory database has no state directory: start()
+    /// must not reach one (before, with no directory injected, it deleted the
+    /// real state dir's cache and wrote a marker there).
+    func testAnInMemoryDatabaseTouchesNoStateDirectory() throws {
+        let marker = TempleState.directory.appendingPathComponent(".index-cache-retired")
+        try? FileManager.default.removeItem(at: marker)
+        let cache = TempleState.directory.appendingPathComponent("index-cache.json")
+        try Data("someone else's".utf8).write(to: cache)
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: DelayedIndexSource(),
+            database: try TempleDB.inMemory(), settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
+        model.start()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cache.path))
+    }
+
     func testTranscriptUpdateDoesNotOverwriteADurableTitle() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("temple-title-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -39,8 +57,7 @@ final class StartupIndexTests: XCTestCase {
         Fixture.join(first, to: db)
         let source = DelayedIndexSource()
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source, database: db,
-                             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
-                             stateDirectory: directory)
+                             settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         model.start()
         source.emit(first)
         source.emit(second)

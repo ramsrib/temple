@@ -1003,7 +1003,7 @@ final class HistoryUndoEngineTests: XCTestCase {
         defer { source.stop() }
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
                              database: database, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
-                             overlay: SessionOverlayStore(db: database), stateDirectory: root)
+                             overlay: SessionOverlayStore(db: database))
         model.start()
         try await waitFor { !model.isLoading }
         let row = catalogFixture(id: "imp", agent: .claude, projectPath: NSTemporaryDirectory(),

@@ -154,6 +154,8 @@ public struct OpenTabRecord: Codable, Equatable, Sendable {
 public final class TempleDB: @unchecked Sendable {
     private let db: DatabaseQueue
     public private(set) var isReadOnly = false
+    /// The database file; nil for an in-memory database.
+    public let fileURL: URL?
     private let observerLock = NSLock()
     private var joinObservers: [UUID: @Sendable (String, Bool) -> Void] = [:]
 
@@ -252,6 +254,7 @@ public final class TempleDB: @unchecked Sendable {
             at: path.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+        fileURL = path
         db = try Self.withMigrationLock(at: path, timeout: lockTimeout, onContention: onMigrationLockContention) {
             // The writer opens first, and nothing it does before checkSchema
             // writes: queue setup only reads sqlite_master. That read is also
@@ -306,6 +309,7 @@ public final class TempleDB: @unchecked Sendable {
         var configuration = Configuration()
         configuration.readonly = true
         isReadOnly = true
+        fileURL = path
         db = try DatabaseQueue(path: path.path, configuration: configuration)
         try Self.checkSchema(db)
     }
@@ -314,6 +318,7 @@ public final class TempleDB: @unchecked Sendable {
     // File-backed callers must use init(path:) so writer open is also locked.
     init(database: DatabaseQueue) throws {
         precondition(database.path == ":memory:", "File-backed databases require init(path:)")
+        fileURL = nil
         db = database
         try Self.migrateAndReconcile(db)
     }
