@@ -60,15 +60,22 @@ public enum TranscriptCandidates {
     /// first file not proven missing: that file decides, and when it is
     /// unreadable, incomplete or another session's, no older rollout loads
     /// in its place. The same rule picks a catalog's file (`catalogPick`).
-    /// A hint is outside the chain and always permitted.
+    /// A hint is outside the chain and always permitted. The chain is per
+    /// `group` (the agent): a row with no agent recorded is located in both
+    /// stores, and one agent's selection must not close the other's — a bad
+    /// Claude file does not hide a valid Codex rollout. Order is preserved.
     public static func permitted<Candidate>(_ candidates: [Candidate], role: (Candidate) -> CandidateRole,
-                                            missing: (Candidate) -> Bool) -> [Candidate] {
-        guard candidates.contains(where: { role($0) == .selected }) else { return candidates }
-        var chainOpen = true
+                                            missing: (Candidate) -> Bool,
+                                            group: (Candidate) -> AnyHashable = { _ in 0 }) -> [Candidate] {
+        let selecting = Set(candidates.filter { role($0) == .selected }.map(group))
+        guard !selecting.isEmpty else { return candidates }
+        var closed = Set<AnyHashable>()
         return candidates.filter { candidate in
             guard role(candidate) != .hinted else { return true }
-            guard chainOpen else { return false }
-            if !missing(candidate) { chainOpen = false }
+            let key = group(candidate)
+            guard selecting.contains(key) else { return true }   // this agent selects nothing
+            guard !closed.contains(key) else { return false }
+            if !missing(candidate) { closed.insert(key) }
             return true
         }
     }

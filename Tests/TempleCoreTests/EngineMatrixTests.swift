@@ -641,6 +641,23 @@ final class EngineMatrixTests: XCTestCase {
         XCTAssertEqual(listed.map(\.id), [], "the catalog stops at the unreadable rollout too")
     }
 
+    /// A row with no agent recorded is located in both stores. A Claude file
+    /// named for it that records another session must not close the Codex
+    /// selection chain: the valid Codex rollout still resolves and fills.
+    func testABadClaudeFileDoesNotHideAValidCodexRolloutForAnAgentlessRow() async throws {
+        let h = try harness()
+        let id = uuid()
+        h.source.write(claudePath(id), agent: .claude, data: claudeData(uuid(), cwd: "/wrong"))
+        h.source.write(codexPath(id), agent: .codex, data: codexData(id, cwd: "/codex", prompt: "From Codex"))
+        try join(h, id, agent: nil)
+
+        await h.engine.start()
+        try await waitUntil("loaded") { self.isLoaded(h, id) }
+        try await waitUntil("filled") { try self.row(h, id)?.directory != nil }
+        XCTAssertEqual(try row(h, id)?.directory, "/codex")
+        XCTAssertEqual(try row(h, id)?.agent, .codex)
+    }
+
     /// A listing that fails after the member left and rejoined (it was for
     /// the old membership) neither marks the new membership incomplete nor
     /// defers it; the new membership's own listing resolves it.

@@ -89,6 +89,20 @@ final class FormatTests: XCTestCase {
         XCTAssertEqual(permitted(missing: ["h"]), ["r", "h"], "a hint is outside the chain")
     }
 
+    /// The chain is per agent: a surviving Claude alternate (no selection of
+    /// its own) does not close Codex's chain, and vice versa.
+    func testTheSelectionChainIsPerAgent() {
+        struct C { let path: String; let role: CandidateRole; let agent: Agent }
+        let candidates = [C(path: "claude", role: .alternate, agent: .claude),
+                          C(path: "codex-new", role: .selected, agent: .codex),
+                          C(path: "codex-old", role: .alternate, agent: .codex)]
+        let permitted = TranscriptCandidates.permitted(candidates, role: \.role, missing: { _ in false },
+                                                       group: { AnyHashable($0.agent) }).map(\.path)
+        XCTAssertEqual(permitted, ["claude", "codex-new"])
+        let ungrouped = TranscriptCandidates.permitted(candidates, role: \.role, missing: { _ in false }).map(\.path)
+        XCTAssertEqual(ungrouped, ["claude"], "one chain for all agents hides the Codex selection")
+    }
+
     func testClaudeTriesTheHintFirstThenEveryFileNamedForTheSession() {
         let roles = TranscriptCandidates.assign(id: "id", format: claude,
             listed: ["/p/-b/id.jsonl", "/p/-a/id.jsonl", "/p/-a/other.jsonl"], hint: "/p/-b/id.jsonl")
