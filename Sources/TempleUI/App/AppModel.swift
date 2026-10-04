@@ -14,19 +14,29 @@ public final class AppModel: ObservableObject {
     public static let projectCap = 8
 
     // Data
-    /// Member presentation, independent of transcript availability. Touches keep
-    /// storage order after rank freeze; live-recency consumers sort on demand.
-    @Published public private(set) var sessions: [Session] = []
-    @Published public private(set) var rowProjects: [SessionRowProject] = []
+    /// Member presentation, independent of transcript availability, in the
+    /// order and grouping of the last build, with each row's current value.
+    /// After the rank freeze, activity moves no row and the rail shows none:
+    /// a recency-only change updates `presentedByID` alone — no build, no
+    /// publish — and consumers that show recency (the palette, the picker,
+    /// the launcher, the archive) read it here when they next draw.
+    public var sessions: [Session] { builtSessions.map { presentedByID[$0.id] ?? $0 } }
+    public var rowProjects: [SessionRowProject] {
+        builtRowProjects.map { project in
+            SessionRowProject(key: project.key, sessions: project.sessions.map { presentedByID[$0.id] ?? $0 })
+        }
+    }
+    /// The last build's result. Published by hand, and only when a build
+    /// changes it.
+    private var builtSessions: [Session] = []
+    private var builtRowProjects: [SessionRowProject] = []
     private var applyingEngineSnapshot = false
     private var ownershipChangedWhileApplying = false
     private var rowPresentationDirty = false
     /// Diagnostic work count, including builds whose values compare equal.
     private(set) var sessionPresentationBuildCount = 0
     private var rowPresentationScheduled = false
-    private var changedRowIDs = Set<String>()
     private var presentedByID: [String: Session] = [:]
-    private var recencyOnlyChanges = true
     private(set) var rowPresentationSortCount = 0
     private(set) var rowProjectBuildCount = 0
 
@@ -46,13 +56,7 @@ public final class AppModel: ObservableObject {
 
     func receiveEngineSnapshot(_ snapshot: EngineSnapshot) {
         if let latestEngineSnapshot, snapshot.generation < latestEngineSnapshot.generation { return }
-        let previous = latestEngineSnapshot?.resolutions ?? [:]
-        let resolutionsChanged = previous != snapshot.resolutions
-        if resolutionsChanged {
-            recencyOnlyChanges = false
-            changedRowIDs.formUnion(Set(previous.keys).union(snapshot.resolutions.keys)
-                .filter { previous[$0] != snapshot.resolutions[$0] })
-        }
+        let resolutionsChanged = latestEngineSnapshot?.resolutions != snapshot.resolutions
         latestEngineSnapshot = snapshot
         applyingEngineSnapshot = true
         overlay.applyFacts(snapshot.facts)
@@ -64,7 +68,7 @@ public final class AppModel: ObservableObject {
             engineSet.ownershipChanged()
         }
         if rowPresentationDirty || resolutionsChanged { rebuildSessions() }
-        if !sidebarRanksFrozen && sessions.allSatisfy({ row in
+        if !sidebarRanksFrozen && builtSessions.allSatisfy({ row in
             switch snapshot.resolutions[row.id] {
             case .loaded, .confirmedAbsent, .unreadable, .mismatch: return true
             default: return false
@@ -73,46 +77,41 @@ public final class AppModel: ObservableObject {
         openSessions.refreshExitedResumeDiagnoses()
     }
 
+    /// Facts, membership and resolution changes (and, before the freeze,
+    /// activity) use a full recomputation. There is no incremental sorted
+    /// sequence or project membership cache to maintain.
     private func rebuildSessions() {
         rowPresentationDirty = false
         sessionPresentationBuildCount += 1
-        let changed = changedRowIDs
-        changedRowIDs.removeAll(keepingCapacity: true)
-        let replaceValuesOnly = sidebarRanksFrozen && recencyOnlyChanges
-        recencyOnlyChanges = true
-        if replaceValuesOnly {
-            // Membership and grouping cannot change on this path. Preserve every
-            // position, even across separate turns of continuous activity.
-            for id in changed {
-                if let state = overlay.rows[id] {
-                    presentedByID[id] = Session(state: state, resolution: latestEngineSnapshot?.resolutions[id])
-                }
-            }
-            sessions = sessions.map { changed.contains($0.id) ? presentedByID[$0.id]! : $0 }
-            rowProjects = rowProjects.map { project in
-                guard project.sessions.contains(where: { changed.contains($0.id) }) else { return project }
-                return SessionRowProject(key: project.key, sessions: project.sessions.map {
-                    changed.contains($0.id) ? presentedByID[$0.id]! : $0
-                })
-            }
-            return
-        }
-
-        // Facts and membership changes use a full recomputation. There is no
-        // incremental sorted sequence or project membership cache to maintain.
         let rows = overlay.rows.values.map { Session(state: $0, resolution: latestEngineSnapshot?.resolutions[$0.id]) }
         rowPresentationSortCount += 1
         let next = rows.sorted(by: Self.moreRecentRow)
-        presentedByID = Dictionary(uniqueKeysWithValues: next.map { ($0.id, $0) })
-        if next != sessions { sessions = next }
         let grouped = Dictionary(grouping: next.filter { $0.project != nil }) { $0.project! }
         rowProjectBuildCount += grouped.count
         rowPresentationSortCount += 1
         let projects = grouped.map { SessionRowProject(key: $0.key, sessions: $0.value) }
             .sorted(by: SessionRowProject.moreRecent)
-        if projects != rowProjects { rowProjects = projects }
+        // Compared with what was last presented, current values included
+        // (so before `presentedByID` moves on): a build that reproduces it
+        // publishes nothing.
+        let sessionsChanged = next != sessions
+        let projectsChanged = projects != rowProjects
+        if sessionsChanged || projectsChanged { objectWillChange.send() }
+        presentedByID = Dictionary(uniqueKeysWithValues: next.map { ($0.id, $0) })
+        builtSessions = next
+        builtRowProjects = projects
         extendRowRanks()
         openSessions.rowsChanged()
+        if sessionsChanged { history.rowsChanged() }
+    }
+
+    /// After the freeze, activity moves no row and nothing the rail draws
+    /// shows it: the row's current value is kept for whoever reads it, and
+    /// nothing is rebuilt or published. A row not yet presented waits for
+    /// the build its own change already asked for.
+    private func applyRecency(_ id: String) {
+        guard presentedByID[id] != nil, let state = overlay.rows[id] else { return }
+        presentedByID[id] = Session(state: state, resolution: latestEngineSnapshot?.resolutions[id])
     }
 
     private static func moreRecentRow(_ lhs: Session, _ rhs: Session) -> Bool {
@@ -377,10 +376,12 @@ public final class AppModel: ObservableObject {
         overlay.rowChanges
             .sink { [weak self] change in
                 guard let self else { return }
+                if change.recencyOnly && self.sidebarRanksFrozen {
+                    self.applyRecency(change.id)
+                    return
+                }
                 self.rowPresentationDirty = true
-                self.changedRowIDs.insert(change.id)
                 if !change.recencyOnly {
-                    self.recencyOnlyChanges = false
                     // A row joined, left or moved host: the merge follows it
                     // (after the facts being applied, if any).
                     if self.applyingEngineSnapshot { self.ownershipChangedWhileApplying = true }
@@ -546,8 +547,6 @@ public final class AppModel: ObservableObject {
         history.memberRows = { [weak self] in self?.sessions ?? [] }
         history.archiveMember = { [weak self] in self?.archiveSession($0, undoManager: $1) }
         history.openMember = { [weak self] in self?.openSessions.openSession($0) }
-        $sessions.dropFirst().sink { [weak self] _ in self?.history.rowsChanged() }
-            .store(in: &cancellables)
         var historyWasOpen = false
         openSessions.$tabs
             .sink { [weak self] tabs in

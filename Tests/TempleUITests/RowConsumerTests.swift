@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 @testable import TempleUI
 import TempleCore
 
@@ -126,6 +127,9 @@ final class RowConsumerTests: XCTestCase {
         assertFrozenPresentation(app, order)
     }
 
+    /// Ported for B9: activity after the freeze used to rebuild (values only)
+    /// once per turn. It now builds nothing, and the current value is still
+    /// what every reader sees.
     func testContinuousTouchesAcrossTurnsNeverSortOrRegroupAfterFreeze() async throws {
         let app = try model([Fixture.row("a", project: "/a", updated: 30),
                              Fixture.row("a2", project: "/a", updated: 20), Fixture.row("b", project: "/b", updated: 10)])
@@ -140,8 +144,8 @@ final class RowConsumerTests: XCTestCase {
             let date = Date(timeIntervalSince1970: Double(100 + tick))
             app.overlay.touch(id, host: .local, at: date)
             await nextPresentationTurn()
-            XCTAssertEqual(app.sessions.first { $0.id == id }?.sortDate, date)
-            XCTAssertEqual(app.sessionPresentationBuildCount, builds + tick, "continuous activity must not starve publication")
+            XCTAssertEqual(app.sessions.first { $0.id == id }?.sortDate, date, "read on demand, current")
+            XCTAssertEqual(app.sessionPresentationBuildCount, builds)
             XCTAssertEqual(app.rowPresentationSortCount, sorts)
             XCTAssertEqual(app.rowProjectBuildCount, groups)
             assertFrozenPresentation(app, order)
@@ -212,7 +216,9 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(app.sessionPresentationBuildCount, builds)
         XCTAssertEqual(app.overlay.rows["b"]?.lastActiveAt, Date(timeIntervalSince1970: 200))
         await nextPresentationTurn()
-        XCTAssertEqual(app.sessionPresentationBuildCount, builds + 1)
+        // Ported for B9: the burst used to cost one coalesced build; after
+        // the freeze it costs none.
+        XCTAssertEqual(app.sessionPresentationBuildCount, builds)
         XCTAssertEqual(app.rowProjectBuildCount, groups)
         XCTAssertEqual(app.sessions.first { $0.id == "b" }?.sortDate, Date(timeIntervalSince1970: 200))
         XCTAssertEqual(app.displayProjects.map(\.path), ["/a", "/b"])
@@ -225,6 +231,135 @@ final class RowConsumerTests: XCTestCase {
         let afterRename = app.sessionPresentationBuildCount
         await nextPresentationTurn()
         XCTAssertEqual(app.sessionPresentationBuildCount, afterRename)
+    }
+
+    // MARK: B9 — no presentation rebuild that changes nothing shown
+
+    /// Counts what one action costs the presentation: builds, sorts, project
+    /// groupings and `AppModel.objectWillChange` emissions.
+    private final class PresentationCost {
+        private(set) var willChange = 0
+        private var cancellable: AnyCancellable?
+        let builds: Int, sorts: Int, groups: Int
+        private weak var app: AppModel?
+        @MainActor init(_ app: AppModel) {
+            self.app = app
+            builds = app.sessionPresentationBuildCount
+            sorts = app.rowPresentationSortCount
+            groups = app.rowProjectBuildCount
+            cancellable = app.objectWillChange.sink { [unowned self] _ in self.willChange += 1 }
+        }
+        @MainActor var addedBuilds: Int { (app?.sessionPresentationBuildCount ?? 0) - builds }
+        @MainActor var addedSorts: Int { (app?.rowPresentationSortCount ?? 0) - sorts }
+        @MainActor var addedGroups: Int { (app?.rowProjectBuildCount ?? 0) - groups }
+    }
+
+    /// Let forwarded publications from setup land before counting.
+    private func settle() async throws {
+        await nextPresentationTurn()
+        try await Task.sleep(for: .milliseconds(20))
+        await nextPresentationTurn()
+    }
+
+    /// The B9 acceptance: after the freeze, recency-only touches whose
+    /// displayed values do not change — across turns, through the coalesced
+    /// DB write, and a flush that finds nothing new — cost no build, sort or
+    /// grouping and emit no `objectWillChange`. Readers still get the
+    /// current values.
+    func testRecencyOnlyTouchesAfterTheFreezeRebuildAndPublishNothing() async throws {
+        let app = try model([Fixture.row("a", project: "/a", updated: 30),
+                             Fixture.row("a2", project: "/a", updated: 20), Fixture.row("b", project: "/b", updated: 10)])
+        freeze(app)
+        let order = [(key("/a"), ["a", "a2"]), (key("/b"), ["b"])]
+        try await settle()
+        let cost = PresentationCost(app)
+        for tick in 1...60 {
+            let id = ["b", "a", "a2"][tick % 3]
+            app.overlay.touch(id, host: .local, at: Date(timeIntervalSince1970: Double(100 + tick)))
+            if tick % 10 == 0 { await nextPresentationTurn() }
+            if tick % 20 == 0 { app.overlay.flushPendingTouches() }
+        }
+        app.overlay.flushPendingTouches()
+        try await settle()
+        XCTAssertEqual(cost.addedBuilds, 0)
+        XCTAssertEqual(cost.addedSorts, 0)
+        XCTAssertEqual(cost.addedGroups, 0)
+        XCTAssertEqual(cost.willChange, 0, "nothing the window draws changed")
+        assertFrozenPresentation(app, order)
+        // b (touched last, at 160) leads live recency; the rail stays frozen.
+        XCTAssertEqual(app.sessions.first { $0.id == "b" }?.sortDate, Date(timeIntervalSince1970: 160))
+        XCTAssertEqual(app.projectPickerResults("").map(\.path), ["/b", "/a"])
+        XCTAssertEqual(app.displayProjects.map(\.path), ["/a", "/b"])
+    }
+
+    /// The other half: one membership change, one fact change, one
+    /// resolution change each cost exactly one build (two sorts: the rows and
+    /// the projects), and are published.
+    func testOneMembershipFactOrResolutionChangeCostsExactlyOneBuild() async throws {
+        let app = try model([Fixture.row("a", project: "/a", updated: 30), Fixture.row("b", project: "/b", updated: 10)])
+        freeze(app)
+        try await settle()
+
+        var cost = PresentationCost(app)
+        XCTAssertTrue(app.overlay.join("new", via: .imported, agent: .claude, core: SessionCore(directory: "/new")).isJoined)
+        XCTAssertEqual(cost.addedBuilds, 1, "a join")
+        XCTAssertEqual(cost.addedSorts, 2)
+        XCTAssertGreaterThan(cost.willChange, 0)
+        XCTAssertEqual(app.displayProjects.map(\.path), ["/new", "/a", "/b"])
+        try await settle()
+
+        cost = PresentationCost(app)
+        XCTAssertEqual(app.overlay.leave([SessionKey(id: "new", host: .local)]), ["new"])
+        XCTAssertEqual(cost.addedBuilds, 1, "a leave")
+        XCTAssertGreaterThan(cost.willChange, 0)
+        try await settle()
+
+        cost = PresentationCost(app)
+        app.overlay.rename("b", to: "Renamed")
+        XCTAssertEqual(cost.addedBuilds, 1, "a fact (the name)")
+        XCTAssertGreaterThan(cost.willChange, 0)
+        XCTAssertEqual(app.sessions.first { $0.id == "b" }?.displayTitle, "Renamed")
+        try await settle()
+
+        cost = PresentationCost(app)
+        app.overlay.observeLaunchDirectory("b", host: .local, "/a")
+        XCTAssertEqual(cost.addedBuilds, 1, "a fact (the folder)")
+        XCTAssertEqual(app.displayProjects.map(\.path), ["/a"])
+        try await settle()
+
+        cost = PresentationCost(app)
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 2,
+            resolutions: ["a": .confirmedAbsent, "b": .loaded(TranscriptLocator(host: .local, path: "/tmp/b.jsonl"))]))
+        XCTAssertEqual(cost.addedBuilds, 1, "a resolution")
+        XCTAssertGreaterThan(cost.willChange, 0)
+        try await settle()
+
+        // A snapshot that changes nothing builds nothing.
+        cost = PresentationCost(app)
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 3,
+            resolutions: ["a": .confirmedAbsent, "b": .loaded(TranscriptLocator(host: .local, path: "/tmp/b.jsonl"))]))
+        XCTAssertEqual(cost.addedBuilds, 0)
+        XCTAssertEqual(cost.willChange, 0)
+    }
+
+    /// A fill from engine facts is one fact change: one build, however many
+    /// columns it writes.
+    func testAFillFromEngineFactsCostsExactlyOneBuild() async throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "a", via: .opened, agent: .claude, core: SessionCore(directory: "/a"))
+        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+            engines: [FakeEngine(CatalogFixtureIndex(projects: []))], database: db,
+            settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
+        freeze(app)
+        try await settle()
+        let summary = TranscriptSummary(id: "a", agent: .claude, locator: TranscriptLocator(host: .local, path: "/tmp/a.jsonl"),
+            modifiedAt: Date(timeIntervalSince1970: 50), cwd: "/a", firstPrompt: "Filled title")
+        let cost = PresentationCost(app)
+        app.receiveEngineSnapshot(.authorized(generation: 2, resolutions: ["a": .confirmedAbsent],
+                                              summaries: ["a": summary], in: db))
+        XCTAssertEqual(try db.sessionState("a")?.title, "Filled title")
+        XCTAssertEqual(cost.addedBuilds, 1)
+        XCTAssertEqual(app.sessions.first?.displayTitle, "Filled title")
     }
 
     func testPendingActivityIsIncludedWhenRanksFreezeAndDirectoriesStayImmediate() throws {

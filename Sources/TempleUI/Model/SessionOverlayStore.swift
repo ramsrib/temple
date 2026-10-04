@@ -40,8 +40,14 @@ public final class SessionOverlayStore: ObservableObject {
     /// Exactly the sessions that are Temple's: each write below joins its
     /// session first, and at the default session scope these are the only
     /// ones anything lists.
-    @Published public private(set) var rows: [String: SessionState]
+    ///
+    /// Not `@Published`: every working agent touches its row about once a
+    /// second, and a publish per touch re-rendered everything observing the
+    /// store. Any other change announces itself with `objectWillChange`;
+    /// every change, activity included, is on `rowChanges`.
+    public private(set) var rows: [String: SessionState]
     /// Emitted after a row changes, without making subscribers diff the whole store.
+    /// `recencyOnly`: nothing but `lastActiveAt` moved (no `objectWillChange`).
     struct RowChange { let id: String; let recencyOnly: Bool }
     let rowChanges = PassthroughSubject<RowChange, Never>()
     private var rowObserver: UUID?
@@ -129,13 +135,14 @@ public final class SessionOverlayStore: ObservableObject {
                     var previous = rows[id]
                     previous?.lastActiveAt = row.lastActiveAt
                     let recencyOnly = previous == row
+                    if !recencyOnly { objectWillChange.send() }
                     rows[id] = row
                     rowChanges.send(RowChange(id: id, recencyOnly: recencyOnly))
                 }
-            } else {
-                if rows.removeValue(forKey: id) != nil {
-                    rowChanges.send(RowChange(id: id, recencyOnly: false))
-                }
+            } else if rows[id] != nil {
+                objectWillChange.send()
+                rows.removeValue(forKey: id)
+                rowChanges.send(RowChange(id: id, recencyOnly: false))
             }
         } catch {
             TempleUILog.db.error("row refresh failed for session \(id, privacy: .public): \(String(describing: error), privacy: .public)")

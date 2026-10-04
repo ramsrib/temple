@@ -229,6 +229,13 @@ public final class HistoryModel: ObservableObject {
         overlay.objectWillChange
             .sink { [weak self] _ in self?.scheduleRebuild() }
             .store(in: &cancellables)
+        // Activity publishes nothing (`SessionOverlayStore.rows`), but a
+        // member standing alone shows its own activity time: check, and
+        // rebuild only if the page would change.
+        overlay.rowChanges
+            .filter(\.recencyOnly)
+            .sink { [weak self] _ in self?.scheduleRebuild() }
+            .store(in: &cancellables)
     }
 
     func rowsChanged() { scheduleRebuild() }
