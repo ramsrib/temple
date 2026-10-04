@@ -89,11 +89,11 @@ final class ArchiveTests: XCTestCase {
         XCTAssertTrue(overlay.isArchived("a1"))
 
         undo.beginUndoGrouping()
-        model.archiveProject("/p/b", undoManager: undo)
+        model.archiveProject(Fixture.key("/p/b"), undoManager: undo)
         undo.endUndoGrouping()
         XCTAssertEqual(undo.undoActionName, "Archive Project")
         undo.undo()
-        XCTAssertFalse(overlay.isProjectArchived("/p/b"))
+        XCTAssertFalse(overlay.isProjectArchived(Fixture.key("/p/b")))
     }
 
     func testRestoringIsUndoableToo() {
@@ -101,7 +101,7 @@ final class ArchiveTests: XCTestCase {
         let undo = UndoManager()
         undo.groupsByEvent = false
         overlay.setArchived(true, sessionID: "a1")
-        overlay.setProjectArchived(true, path: "/p/b")
+        overlay.setProjectArchived(true, key: Fixture.key("/p/b"))
 
         undo.beginUndoGrouping(); model.restoreSession("a1", undoManager: undo); undo.endUndoGrouping()
         XCTAssertFalse(overlay.isArchived("a1"))
@@ -109,11 +109,11 @@ final class ArchiveTests: XCTestCase {
         undo.undo()
         XCTAssertTrue(overlay.isArchived("a1"))
 
-        undo.beginUndoGrouping(); model.restoreProject("/p/b", undoManager: undo); undo.endUndoGrouping()
-        XCTAssertFalse(overlay.isProjectArchived("/p/b"))
+        undo.beginUndoGrouping(); model.restoreProject(Fixture.key("/p/b"), undoManager: undo); undo.endUndoGrouping()
+        XCTAssertFalse(overlay.isProjectArchived(Fixture.key("/p/b")))
         XCTAssertEqual(undo.undoActionName, "Restore Project")
         undo.undo()
-        XCTAssertTrue(overlay.isProjectArchived("/p/b"))
+        XCTAssertTrue(overlay.isProjectArchived(Fixture.key("/p/b")))
     }
 
     // MARK: Projects
@@ -121,7 +121,7 @@ final class ArchiveTests: XCTestCase {
     func testArchivingAProjectHidesItAndItsSessions() {
         let (model, overlay) = makeModel(twoProjects())
 
-        overlay.setProjectArchived(true, path: "/p/a")
+        overlay.setProjectArchived(true, key: Fixture.key("/p/a"))
 
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/b"])
         XCTAssertEqual(model.projectPickerResults("").map(\.path), ["/p/b"])
@@ -140,7 +140,7 @@ final class ArchiveTests: XCTestCase {
         overlay.setArchived(true, sessionID: "a1")
         XCTAssertTrue(model.archivedSessionResults("").isEmpty)
 
-        overlay.setProjectArchived(false, path: "/p/a")
+        overlay.setProjectArchived(false, key: Fixture.key("/p/a"))
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
         XCTAssertEqual(model.archivedSessionResults("").map(\.id), ["a1"])
     }
@@ -151,7 +151,7 @@ final class ArchiveTests: XCTestCase {
     /// the sessions inside it that match.
     func testArchiveGroupsMirrorTheSidebarShape() {
         let (model, overlay) = makeModel(twoProjects())
-        overlay.setProjectArchived(true, path: "/p/a")
+        overlay.setProjectArchived(true, key: Fixture.key("/p/a"))
         overlay.setArchived(true, sessionID: "b1")
 
         let groups = model.archiveGroups("")
@@ -179,8 +179,8 @@ final class ArchiveTests: XCTestCase {
             shared,
             twin,
         ])
-        overlay.setProjectArchived(true, path: "/p/a")
-        overlay.setProjectArchived(true, path: "/p/b")
+        overlay.setProjectArchived(true, key: Fixture.key("/p/a"))
+        overlay.setProjectArchived(true, key: Fixture.key("/p/b"))
 
         let groups = model.archiveGroups("")
         XCTAssertEqual(groups.flatMap(\.project.sessions).map(\.id), ["dup"])
@@ -192,18 +192,18 @@ final class ArchiveTests: XCTestCase {
         let database = try! TempleDB.inMemory()
         let (model, overlay) = makeModel(twoProjects(), database: database)
         // Reorder while both projects are visible, so the move is a real one.
-        model.moveProject("/p/a", after: "/p/b")
-        XCTAssertEqual(overlay.projectOrder, ["/p/b", "/p/a"])
+        model.moveProject(Fixture.key("/p/a"), after: Fixture.key("/p/b"))
+        XCTAssertEqual(overlay.projectKeyOrder.map(\.path), ["/p/b", "/p/a"])
         overlay.setArchived(true, sessionID: "a2")
-        overlay.setProjectArchived(true, path: "/p/b")
+        overlay.setProjectArchived(true, key: Fixture.key("/p/b"))
 
         let reloaded = SessionOverlayStore(db: database)
 
-        XCTAssertEqual(reloaded.archivedSessions, ["a2"])
-        XCTAssertEqual(reloaded.archivedProjects, ["/p/b"])
-        XCTAssertEqual(reloaded.projectOrder, ["/p/b", "/p/a"])
+        XCTAssertEqual(Set(reloaded.rows.values.filter(\.archived).map(\.id)), ["a2"])
+        XCTAssertEqual(Set(reloaded.archivedProjectKeys.map(\.path)), ["/p/b"])
+        XCTAssertEqual(reloaded.projectKeyOrder.map(\.path), ["/p/b", "/p/a"])
         XCTAssertTrue(reloaded.isArchived("a2"))
-        XCTAssertTrue(reloaded.isProjectArchived("/p/b"))
+        XCTAssertTrue(reloaded.isProjectArchived(Fixture.key("/p/b")))
     }
 
     /// Archived (or noise-hidden) projects are absent from the list a move acts
@@ -217,15 +217,15 @@ final class ArchiveTests: XCTestCase {
             Fixture.row("c1", project: "/p/c", updated: 10),
         ]
         let (model, overlay) = makeModel(index)
-        model.moveProject("/p/c", before: "/p/b")               // A, C, B
-        XCTAssertEqual(overlay.projectOrder, ["/p/a", "/p/c", "/p/b"])
+        model.moveProject(Fixture.key("/p/c"), before: Fixture.key("/p/b"))               // A, C, B
+        XCTAssertEqual(overlay.projectKeyOrder.map(\.path), ["/p/a", "/p/c", "/p/b"])
 
-        overlay.setProjectArchived(true, path: "/p/c")
-        model.moveProject("/p/b", before: "/p/a")               // visible: B, A
+        overlay.setProjectArchived(true, key: Fixture.key("/p/c"))
+        model.moveProject(Fixture.key("/p/b"), before: Fixture.key("/p/a"))               // visible: B, A
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/b", "/p/a"])
-        XCTAssertEqual(overlay.projectOrder, ["/p/b", "/p/c", "/p/a"])
+        XCTAssertEqual(overlay.projectKeyOrder.map(\.path), ["/p/b", "/p/c", "/p/a"])
 
-        overlay.setProjectArchived(false, path: "/p/c")
+        overlay.setProjectArchived(false, key: Fixture.key("/p/c"))
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/b", "/p/c", "/p/a"])
     }
 
@@ -250,19 +250,19 @@ final class ArchiveTests: XCTestCase {
         let (model, overlay) = makeModel(index)
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b", "/p/c"])
 
-        model.moveProject("/p/c", before: "/p/b")
+        model.moveProject(Fixture.key("/p/c"), before: Fixture.key("/p/b"))
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/c", "/p/b"])
-        XCTAssertEqual(overlay.projectOrder, ["/p/a", "/p/c", "/p/b"])
+        XCTAssertEqual(overlay.projectKeyOrder.map(\.path), ["/p/a", "/p/c", "/p/b"])
 
-        model.moveProject("/p/b", before: "/p/a")               // to the top
+        model.moveProject(Fixture.key("/p/b"), before: Fixture.key("/p/a"))               // to the top
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/b", "/p/a", "/p/c"])
 
-        model.moveProject("/p/b", after: "/p/c")                // to the bottom, dragging down
+        model.moveProject(Fixture.key("/p/b"), after: Fixture.key("/p/c"))                // to the bottom, dragging down
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/c", "/p/b"])
 
-        model.moveProject("/p/a", after: "/p/c")                // down past one
+        model.moveProject(Fixture.key("/p/a"), after: Fixture.key("/p/c"))                // down past one
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/c", "/p/a", "/p/b"])
-        XCTAssertEqual(model.orderedVisibleProjectPaths, ["/p/c", "/p/a", "/p/b"])
+        XCTAssertEqual(model.orderedVisibleProjectKeys.map(\.path), ["/p/c", "/p/a", "/p/b"])
     }
 
     /// A drag that ends off any target (released over the terminal, cancelled
@@ -271,14 +271,14 @@ final class ArchiveTests: XCTestCase {
     func testEndingAProjectDragClearsEveryPieceOfDragState() {
         let (model, _) = makeModel(twoProjects())
 
-        model.beginProjectDrag("/p/a")
-        model.projectDropSlot = .init(path: "/p/b", edge: .top)
+        model.beginProjectDrag(Fixture.key("/p/a"))
+        model.projectDropSlot = .init(key: Fixture.key("/p/b"), edge: .top)
         model.projectDropOwner = "/p/b#header"
-        XCTAssertEqual(model.draggedProjectPath, "/p/a")
+        XCTAssertEqual(model.draggedProjectKey?.path, "/p/a")
 
         model.endProjectDrag()
 
-        XCTAssertNil(model.draggedProjectPath)
+        XCTAssertNil(model.draggedProjectKey?.path)
         XCTAssertNil(model.projectDropSlot)
         XCTAssertNil(model.projectDropOwner)
     }
@@ -290,12 +290,12 @@ final class ArchiveTests: XCTestCase {
         ]
         let (model, overlay) = makeModel(index)
 
-        model.moveProject("/p/a", before: "/p/b")   // already directly above b
-        model.moveProject("/p/b", after: "/p/a")    // already directly below a
-        model.moveProject("/p/a", before: "/p/zzz") // unknown target
+        model.moveProject(Fixture.key("/p/a"), before: Fixture.key("/p/b"))   // already directly above b
+        model.moveProject(Fixture.key("/p/b"), after: Fixture.key("/p/a"))    // already directly below a
+        model.moveProject(Fixture.key("/p/a"), before: Fixture.key("/p/zzz")) // unknown target
 
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
-        XCTAssertTrue(overlay.projectOrder.isEmpty)
+        XCTAssertTrue(overlay.projectKeyOrder.map(\.path).isEmpty)
     }
 
     /// A project discovered after the user arranged the rail sorts ABOVE the
@@ -307,7 +307,7 @@ final class ArchiveTests: XCTestCase {
             Fixture.row("b1", project: "/p/b", updated: 20),
         ]
         let (model, overlay) = makeModel(index)
-        model.moveProject("/p/b", before: "/p/a")
+        model.moveProject(Fixture.key("/p/b"), before: Fixture.key("/p/a"))
 
         overlay.join("n1", via: .created, agent: .claude, core: SessionCore(directory: "/p/new", title: "Title", lastActiveAt: Date(timeIntervalSince1970: 50)))
 
@@ -321,7 +321,7 @@ final class ArchiveTests: XCTestCase {
         let index = twoProjects()
         let (model, overlay) = makeModel(index)
         overlay.setArchived(true, sessionID: "a1")
-        overlay.setProjectArchived(true, path: "/p/a")
+        overlay.setProjectArchived(true, key: Fixture.key("/p/a"))
 
         let session = index[0]
         model.openSessions.openSession(session)
@@ -332,7 +332,7 @@ final class ArchiveTests: XCTestCase {
         wait(for: [settled], timeout: 2)
 
         XCTAssertFalse(overlay.isArchived("a1"))
-        XCTAssertFalse(overlay.isProjectArchived("/p/a"))
+        XCTAssertFalse(overlay.isProjectArchived(Fixture.key("/p/a")))
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
     }
 
@@ -343,7 +343,7 @@ final class ArchiveTests: XCTestCase {
         let index = twoProjects()
         let (model, overlay) = makeModel(index)
         overlay.setArchived(true, sessionID: "a1")
-        overlay.setProjectArchived(true, path: "/p/a")
+        overlay.setProjectArchived(true, key: Fixture.key("/p/a"))
 
         model.openSessions.openSession(index[0])   // a1
         model.openSessions.openSession(index[2])   // b1, now active
@@ -354,7 +354,7 @@ final class ArchiveTests: XCTestCase {
 
         XCTAssertEqual(model.openSessions.activeTab?.sessionID, "b1")
         XCTAssertFalse(overlay.isArchived("a1"))
-        XCTAssertFalse(overlay.isProjectArchived("/p/a"))
+        XCTAssertFalse(overlay.isProjectArchived(Fixture.key("/p/a")))
     }
 
     /// Index churn is not a decision: a session resumed in some other terminal
@@ -364,7 +364,7 @@ final class ArchiveTests: XCTestCase {
         let database = try TempleDB.inMemory()
         let (model, overlay) = makeModel(index, database: database)
         overlay.setArchived(true, sessionID: "a1")
-        overlay.setProjectArchived(true, path: "/p/b")
+        overlay.setProjectArchived(true, key: Fixture.key("/p/b"))
 
         let summaries = ["a1", "b1"].map { id in
             TranscriptSummary(id: id, agent: .claude,
@@ -375,7 +375,7 @@ final class ArchiveTests: XCTestCase {
             summaries: Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0) }), in: database))
 
         XCTAssertTrue(overlay.isArchived("a1"))
-        XCTAssertTrue(overlay.isProjectArchived("/p/b"))
+        XCTAssertTrue(overlay.isProjectArchived(Fixture.key("/p/b")))
         XCTAssertEqual(model.displayProjects.flatMap(\.sessions).map(\.id), ["a2"])
     }
 

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import TempleCore
 
 enum RelativeTime {
     private static let formatter: RelativeDateTimeFormatter = {
@@ -23,7 +24,8 @@ func copyToPasteboard(_ string: String) {
 /// in: the sidebar only knows projects the agents have already run in, so every
 /// other entry point can offer nothing but what already exists.
 @MainActor
-func chooseProjectFolder(_ then: (String) -> Void) {
+/// The panel browses this Mac, so the folder is a local project.
+func chooseProjectFolder(_ then: (ProjectKey) -> Void) {
     let panel = NSOpenPanel()
     panel.canChooseDirectories = true
     panel.canChooseFiles = false
@@ -31,7 +33,7 @@ func chooseProjectFolder(_ then: (String) -> Void) {
     panel.prompt = "Open"
     panel.message = "Choose a project folder to start a session in"
     if panel.runModal() == .OK, let url = panel.url {
-        then(url.path)
+        then(ProjectKey(host: .local, path: url.path))
     }
 }
 

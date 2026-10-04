@@ -370,8 +370,8 @@ final class RowConsumerTests: XCTestCase {
             Fixture.row("prefix", project: "/other", title: "Auth cleanup"),
             Fixture.row("project", project: "/auth", title: "Else"),
             Fixture.row("agent", agent: .codex, title: "Else")]
-        XCTAssertEqual(RowSearch.rank(rows, query: "auth").map(\.id), ["exact", "prefix", "sub", "project"])
-        XCTAssertEqual(RowSearch.rank(rows, query: "codex").map(\.id), ["agent"])
+        XCTAssertEqual(SessionRowSearch.rank(rows, query: "auth").map(\.id), ["exact", "prefix", "sub", "project"])
+        XCTAssertEqual(SessionRowSearch.rank(rows, query: "codex").map(\.id), ["agent"])
     }
 
     func testPickerAndLauncherUseRowActivityWithoutTranscripts() async throws {

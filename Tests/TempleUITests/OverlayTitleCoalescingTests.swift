@@ -8,8 +8,12 @@ import TempleCore
 @MainActor
 final class OverlayTitleCoalescingTests: XCTestCase {
 
+    /// A store whose "s" is a member: a title is the row's, and only a
+    /// member has one.
     private func store() -> SessionOverlayStore {
-        SessionOverlayStore(db: try! TempleDB.inMemory())
+        let overlay = SessionOverlayStore(db: try! TempleDB.inMemory())
+        XCTAssertTrue(overlay.join("s", via: .opened).isJoined)
+        return overlay
     }
 
     func testCoreFillIsNotALegacyOverrideAndRetitleRecordsBothColumns() throws {

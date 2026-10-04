@@ -340,7 +340,7 @@ final class TabStripContainerView: NSView {
                                               constant: -Self.chipVerticalInset),
         ])
 
-        // `@Published` emits in willSet: `activeProjectPath` still names the
+        // `@Published` emits in willSet: `activeProjectKey` still names the
         // project being left, and `offset` is still its scroll position.
         let sessions = model.openSessions
         projectSwitch = sessions.$activeProjectKey.sink { [weak self, weak sessions] next in

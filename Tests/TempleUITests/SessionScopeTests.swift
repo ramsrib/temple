@@ -344,7 +344,7 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertEqual(model.pinnedSessions.map(\.id), ["t1"])
         XCTAssertEqual(model.paletteResults("one").map(\.id), ["t1"])
         XCTAssertEqual(model.projectPickerResults("").map(\.path), ["/p/temple"])
-        XCTAssertEqual(model.launcherDefaultProject, "/p/temple")
+        XCTAssertEqual(model.launcherDefaultProjectKey?.path, "/p/temple")
     }
 
     /// Archiving a project writes a project row, not one per session in it, so
@@ -353,7 +353,7 @@ final class SessionScopeTests: XCTestCase {
     func testTheArchiveBrowserIsScopedToo() {
         let (model, overlay) = makeModel(mixedIndex(), database: database(touching: ["t1"]))
         overlay.setArchived(true, sessionID: "t1")
-        overlay.setProjectArchived(true, path: "/p/outside")
+        overlay.setProjectArchived(true, key: Fixture.key("/p/outside"))
 
         XCTAssertEqual(model.archivedSessionResults("").map(\.id), ["t1"])
         XCTAssertTrue(model.archivedProjects.isEmpty)
@@ -379,7 +379,7 @@ final class SessionScopeTests: XCTestCase {
     func testANewClaudeSessionIsCreatedInTempleAsSoonAsItsIdIsMinted() throws {
         let database = try! TempleDB.inMemory()
         let (model, overlay) = makeModel(CatalogFixtureIndex(projects: []), database: database)
-        let tab = model.openSessions.newSession(agent: .claude, projectPath: "/p/new")
+        let tab = model.openSessions.newSession(agent: .claude, project: Fixture.key("/p/new"))
         let id = try XCTUnwrap(tab.sessionID)
         XCTAssertTrue(overlay.isTempleSession(id))
         XCTAssertEqual(try database.sessionState(id)?.joinedVia, .created)
@@ -388,9 +388,9 @@ final class SessionScopeTests: XCTestCase {
     func testANewCodexSessionIsCreatedInTempleWhenItsIdIsAdopted() throws {
         let database = try! TempleDB.inMemory()
         let (model, overlay) = makeModel(CatalogFixtureIndex(projects: []), database: database)
-        let tab = model.openSessions.newSession(agent: .codex, projectPath: "/p/new")
+        let tab = model.openSessions.newSession(agent: .codex, project: Fixture.key("/p/new"))
         XCTAssertNil(tab.sessionID)
-        XCTAssertTrue(overlay.templeSessions.isEmpty)
+        XCTAssertTrue(overlay.rows.isEmpty)
 
         model.openSessions.adopt(sessionID: "codex-id", for: tab.id)
         XCTAssertTrue(overlay.isTempleSession("codex-id"))
@@ -457,16 +457,18 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertFalse(overlay.isArchived("s"))
     }
 
-    /// A title shows at once but does not make a session Temple's on its own —
-    /// with the join failed, it is not written and membership stays honest.
-    func testATitleForASessionWhoseJoinFailedIsShownButNotAMember() throws {
+    /// A title does not make a session Temple's on its own — with the join
+    /// failed, it is not written, and with no row there is nothing to show it
+    /// on: membership and the title both follow the row.
+    func testATitleForASessionWhoseJoinFailedIsNeitherWrittenNorAMember() throws {
         let overlay = SessionOverlayStore(db: try unwritableDatabase())
         overlay.titleFlushDelay = 0
         XCTAssertFalse(overlay.join("s", via: .created).isJoined)
         overlay.recordGeneratedTitle("Fixing the build", for: "s")
         overlay.flushPendingTitles()
 
-        XCTAssertEqual(overlay.generatedTitle(for: "s"), "Fixing the build")
+        XCTAssertNil(overlay.generatedTitle(for: "s"))
+        XCTAssertNil(overlay.rows["s"])
         XCTAssertFalse(overlay.isTempleSession("s"))
     }
 

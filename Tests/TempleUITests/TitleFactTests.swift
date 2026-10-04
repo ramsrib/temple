@@ -40,7 +40,7 @@ final class TitleFactTests: XCTestCase {
         XCTAssertEqual(overlay.rows["codex"]?.title, "Named thread")
 
         let imported = summary("imported", agent: .claude, prompt: "First prompt", recorded: "Recorded summary")
-        XCTAssertTrue(overlay.importSessions([imported]).isEmpty)
+        XCTAssertEqual(overlay.import([imported]).map(\.label), ["joined"])
         XCTAssertEqual(try db.sessionState("imported")?.title, "Recorded summary")
         XCTAssertEqual(HistoryRow(catalog: imported).title,
                        HistoryRow(member: Session(state: try XCTUnwrap(db.sessionState("imported"))), catalog: imported).title)

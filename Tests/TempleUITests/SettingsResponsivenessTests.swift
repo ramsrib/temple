@@ -22,8 +22,8 @@ final class SettingsResponsivenessTests: XCTestCase {
                          database: try TempleDB.inMemory(),
                          settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
                          hostRegistry: Fixture.hostsWithoutFolderEvidence())
-        _ = model.openSessions.newSession(agent: .claude, projectPath: "/p/a")
-        _ = model.openSessions.newSession(agent: .codex, projectPath: "/p/b")
+        _ = model.openSessions.newSession(agent: .claude, project: Fixture.key("/p/a"))
+        _ = model.openSessions.newSession(agent: .codex, project: Fixture.key("/p/b"))
         model.objectWillChange.sink { [weak self] in self?.republished += 1 }.store(in: &cancellables)
         await settle()
     }

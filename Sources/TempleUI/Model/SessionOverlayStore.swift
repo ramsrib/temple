@@ -2,13 +2,6 @@ import Foundation
 import Combine
 import TempleCore
 
-struct PreparedSessionImport: Sendable {
-    let id: String
-    let agent: Agent
-    let locator: TranscriptLocator
-    let core: SessionCore
-}
-
 /// Why a join was refused: the id is already Temple's on another host, or
 /// already names another agent (`TempleDB.join`).
 public enum JoinConflict: Equatable, Sendable {
@@ -37,42 +30,30 @@ public enum JoinResult {
 /// App-state overlay the CLIs don't track: pins, custom names, color marks,
 /// archive state, and the manual project order (ADR-009).
 ///
-/// Values are cached in memory for synchronous SwiftUI reads and written
-/// through to TempleDB on mutation.
+/// The rows are the session: every per-session answer here (membership,
+/// pin, name, color, archive, title, activity) is read from `rows`, which
+/// the DB's committed-row observer keeps current. Only project state, which
+/// no row backs, is held beside them.
 @MainActor
 public final class SessionOverlayStore: ObservableObject {
     /// Full durable row state, including immediate in-memory activity.
+    /// Exactly the sessions that are Temple's: each write below joins its
+    /// session first, and at the default session scope these are the only
+    /// ones anything lists.
     @Published public private(set) var rows: [String: SessionState]
     /// Emitted after a row changes, without making subscribers diff the whole store.
     struct RowChange { let id: String; let recencyOnly: Bool }
     let rowChanges = PassthroughSubject<RowChange, Never>()
     private var rowObserver: UUID?
 
-    @Published public private(set) var pinned: Set<String>
-    @Published public private(set) var customNames: [String: String]
-    @Published public private(set) var colors: [String: String]
-    /// The last title each agent gave itself. Claude and Codex retitle their
-    /// terminal as the work moves on, but write that title nowhere on disk — so
-    /// Temple remembers it, and a session keeps the name it earned even after it
-    /// is closed and the app restarts.
-    @Published public private(set) var generatedTitles: [String: String]
-    /// Archived sessions and projects: hidden from every browse surface, found
-    /// again only in the ⌘⇧Y archive browser.
-    @Published public private(set) var archivedSessions: Set<String>
+    /// Archived projects: hidden from every browse surface, found again only
+    /// in the ⌘⇧Y archive browser. (An archived session is its row's flag.)
     @Published public private(set) var archivedProjectKeys: Set<ProjectKey>
-    public var archivedProjects: Set<String> { Set(archivedProjectKeys.filter { $0.host.isLocal }.map(\.path)) }
-    /// Temple's sessions: every one it started, opened, or had pinned, renamed,
-    /// colored or archived. Exactly the sessions with a row in the DB — each
-    /// write below joins its session first — and, at the default session
-    /// scope, the only ones anything lists.
-    @Published public private(set) var templeSessions: Set<String>
     /// The sidebar order the user arranged, outermost first. Only projects the
     /// user has actually placed appear here; everything else stays on the
     /// launch-frozen recency order.
     @Published public private(set) var projectKeyOrder: [ProjectKey]
-    public var projectOrder: [String] { projectKeyOrder.filter { $0.host.isLocal }.map(\.path) }
 
-    @Published public private(set) var lastActiveAt: [String: Date]
     private let now: () -> Date
     /// A cancellable one-shot scheduler; tests advance it without wall-clock waits.
     private let scheduleTouch: (TimeInterval, @escaping @MainActor () -> Void) -> () -> Void
@@ -103,31 +84,14 @@ public final class SessionOverlayStore: ObservableObject {
         self.scheduleFactRetry = scheduleFactRetry
         let states = (try? db.sessionStates()) ?? []
         self.rows = Dictionary(uniqueKeysWithValues: states.map { ($0.id, $0) })
-        self.lastActiveAt = Dictionary(uniqueKeysWithValues: states.compactMap { row in row.lastActiveAt.map { (row.id, $0) } })
+        // project_state is this Mac's (its host column is the deferred v12
+        // migration), so every stored project is a local key.
         let projects = (try? db.projectStates()) ?? []
-        self.pinned = Set(states.lazy.filter(\.pinned).map(\.id))
-        self.archivedSessions = Set(states.lazy.filter(\.archived).map(\.id))
-        self.templeSessions = Set(states.lazy.map(\.id))
         self.archivedProjectKeys = Set(projects.lazy.filter(\.archived).map { ProjectKey(host: .local, path: $0.path) })
         self.projectKeyOrder = projects
             .compactMap { state in state.position.map { ($0, state.path) } }
             .sorted { $0.0 < $1.0 }
             .map { ProjectKey(host: .local, path: $0.1) }
-        self.customNames = Dictionary(
-            uniqueKeysWithValues: states.compactMap { state in
-                state.customName.map { (state.id, $0) }
-            }
-        )
-        self.colors = Dictionary(
-            uniqueKeysWithValues: states.compactMap { state in
-                state.color.map { (state.id, $0) }
-            }
-        )
-        self.generatedTitles = Dictionary(
-            uniqueKeysWithValues: states.compactMap { state in
-                state.generatedTitle.map { (state.id, $0) }
-            }
-        )
         rowObserver = db.observeRowChanges { [weak self] id in
             if Thread.isMainThread {
                 MainActor.assumeIsolated { self?.refreshRow(id) }
@@ -161,7 +125,6 @@ public final class SessionOverlayStore: ObservableObject {
                 if let pending = pendingTouches[id] {
                     row.lastActiveAt = max(row.lastActiveAt ?? .distantPast, pending)
                 }
-                if lastActiveAt[id] != row.lastActiveAt { lastActiveAt[id] = row.lastActiveAt }
                 if rows[id] != row {
                     var previous = rows[id]
                     previous?.lastActiveAt = row.lastActiveAt
@@ -170,7 +133,6 @@ public final class SessionOverlayStore: ObservableObject {
                     rowChanges.send(RowChange(id: id, recencyOnly: recencyOnly))
                 }
             } else {
-                lastActiveAt.removeValue(forKey: id)
                 if rows.removeValue(forKey: id) != nil {
                     rowChanges.send(RowChange(id: id, recencyOnly: false))
                 }
@@ -237,14 +199,13 @@ public final class SessionOverlayStore: ObservableObject {
         self.init(db: try AppDatabase.open())
     }
 
-    public func isPinned(_ id: String) -> Bool { pinned.contains(id) }
+    public func isPinned(_ id: String) -> Bool { rows[id]?.pinned == true }
 
-    public func isTempleSession(_ id: String) -> Bool { templeSessions.contains(id) }
+    /// Membership is the row: one answer, from one place.
+    public func isTempleSession(_ id: String) -> Bool { rows[id] != nil }
 
-    /// A member whose row this host owns (a row not yet observed counts as this host's).
-    private func isMember(_ id: String, on host: HostID) -> Bool {
-        templeSessions.contains(id) && (rows[id]?.host ?? host) == host
-    }
+    /// A member whose row this host owns.
+    private func isMember(_ id: String, on host: HostID) -> Bool { rows[id]?.host == host }
 
     /// The session becomes Temple's, if it is not already. Called on every
     /// open; core facts fill only unknown fields. How it joined is recorded
@@ -268,8 +229,9 @@ public final class SessionOverlayStore: ObservableObject {
     public func join(_ id: String, via: JoinedVia, agent: Agent? = nil, locator: TranscriptLocator? = nil,
                      core: SessionCore = SessionCore()) -> JoinResult {
         do {
+            // The committed row reaches `rows` through the observer before
+            // this returns (the write is on the main actor).
             try db.join(sessionID: id, via: via, agent: agent, locator: locator, core: core)
-            templeSessions.insert(id)
             return .joined
         } catch TempleDBError.hostConflict(let host) {
             TempleUILog.db.notice("join refused for session \(id, privacy: .public): owned by host \(host.rawValue, privacy: .public)")
@@ -290,40 +252,7 @@ public final class SessionOverlayStore: ObservableObject {
 
     // MARK: Import (the History tab)
 
-    /// Bring sessions in without running them: one `.imported` join each,
-    /// with its transcript as the engine's hint, through the same committed
-    /// join every other way in uses — so each loads into the live index at
-    /// once. Membership publishes once for the whole batch, not per row. A
-    /// session that is already Temple's keeps its row as it is. Returns the
-    /// failures, keyed by id, with the error as thrown (ADR-023: not retried;
-    /// a failed session simply stays out).
-    public func importSessions(_ summaries: [TranscriptSummary]) -> [String: Error] {
-        importPreparedSessions(prepareImports(summaries))
-    }
-
-    /// The catalog row's own transcript facts, committed at join (NULL-only,
-    /// transcript-sourced). The engine verifies and enriches the member after
-    /// it joins, like any other; there is no second parse in between.
-    func prepareImports(_ sessions: [TranscriptSummary]) -> [PreparedSessionImport] {
-        sessions.filter { !isMember($0.id, on: $0.locator.host) }.map { summary in
-            PreparedSessionImport(id: summary.id, agent: summary.agent, locator: summary.locator,
-                core: SessionCore(filling: summary))
-        }
-    }
-
-    public func importCatalogSessions(_ sessions: [TranscriptSummary]) async -> [String: Error] {
-        importSessions(sessions)
-    }
-
-    func importPreparedSessions(_ entries: [PreparedSessionImport]) -> [String: Error] {
-        var failures: [String: Error] = [:]
-        for (entry, outcome) in zip(entries, importPreparedEntries(entries)) {
-            if case .failed(let error) = outcome, failures[entry.id] == nil { failures[entry.id] = error }
-        }
-        return failures
-    }
-
-    /// What one import entry came to, in the order the entries were given.
+    /// What one import came to, in the order the sessions were given.
     enum ImportOutcome {
         /// With the membership's incarnation, so an undo names exactly it.
         case joined(incarnation: String?)
@@ -332,35 +261,39 @@ public final class SessionOverlayStore: ObservableObject {
         case failed(Error)
     }
 
-    /// One outcome per entry. Two entries for one id (two hosts, or two
+    /// Bring catalog sessions in without running them: one `.imported` join
+    /// each, with its transcript as the engine's hint and the catalog row's
+    /// own facts committed at join (NULL-only, transcript-sourced), through
+    /// the same committed join every other way in uses. The engine verifies
+    /// and enriches the member after it joins, like any other; there is no
+    /// second parse in between. Not retried (ADR-023): a failed session
+    /// simply stays out, and says why.
+    ///
+    /// One outcome per session. Two entries for one id (two hosts, or two
     /// agents, listing it) are each attempted: the first joins, and the DB
     /// refuses the second with its reason (`hostConflict`/`agentConflict`)
     /// — never a silent skip that a caller would count as imported.
-    func importPreparedEntries(_ entries: [PreparedSessionImport]) -> [ImportOutcome] {
-        guard !Task.isCancelled else { return entries.map { _ in .failed(CancellationError()) } }
-        var outcomes: [ImportOutcome] = []
-        outcomes.reserveCapacity(entries.count)
+    func `import`(_ sessions: [TranscriptSummary]) -> [ImportOutcome] {
+        guard !Task.isCancelled else { return sessions.map { _ in .failed(CancellationError()) } }
+        // Membership as it stood before this import: an entry joined earlier
+        // in the batch does not make a later one for the same id a skip.
+        let before = rows
         var joined: Set<String> = []
-        var activity = lastActiveAt
-        for entry in entries {
+        return sessions.map { summary in
             // Another host's member is attempted, so its refusal is reported
             // rather than the import silently skipping it.
-            guard !isMember(entry.id, on: entry.core.host) else { outcomes.append(.skipped); continue }
+            guard before[summary.id]?.host != summary.locator.host else { return .skipped }
             do {
-                let incarnation = try db.join(sessionID: entry.id, via: .imported, agent: entry.agent,
-                                              locator: entry.locator, core: entry.core)
+                let incarnation = try db.join(sessionID: summary.id, via: .imported, agent: summary.agent,
+                                              locator: summary.locator, core: SessionCore(filling: summary))
                 // The same session twice in one batch joined once.
-                guard joined.insert(entry.id).inserted else { outcomes.append(.skipped); continue }
-                if let date = entry.core.lastActiveAt { activity[entry.id] = date }
-                outcomes.append(.joined(incarnation: incarnation))
+                guard joined.insert(summary.id).inserted else { return .skipped }
+                return .joined(incarnation: incarnation)
             } catch {
-                TempleUILog.db.error("import failed for session \(entry.id, privacy: .public): \(String(describing: error), privacy: .public)")
-                outcomes.append(.failed(error))
+                TempleUILog.db.error("import failed for session \(summary.id, privacy: .public): \(String(describing: error), privacy: .public)")
+                return .failed(error)
             }
         }
-        if !joined.isEmpty { templeSessions.formUnion(joined) }
-        if activity != lastActiveAt { lastActiveAt = activity }
-        return outcomes
     }
 
     public func observeLaunchDirectory(_ id: String, host: HostID, _ directory: String) {
@@ -372,10 +305,9 @@ public final class SessionOverlayStore: ObservableObject {
     /// session. Only a row owned by `host` moves: a tab on another host
     /// holding the same id changes nothing.
     public func touch(_ id: String, host: HostID, at: Date? = nil) {
-        guard isTempleSession(id), rows[id].map({ $0.host == host }) ?? true else { return }
-        let date = max(lastActiveAt[id] ?? .distantPast, at ?? now())
-        if lastActiveAt[id] != date { lastActiveAt[id] = date }
-        if var row = rows[id], row.lastActiveAt != date {
+        guard var row = rows[id], row.host == host else { return }
+        let date = max(row.lastActiveAt ?? .distantPast, at ?? now())
+        if row.lastActiveAt != date {
             row.lastActiveAt = date
             rows[id] = row
             rowChanges.send(RowChange(id: id, recencyOnly: true))
@@ -418,7 +350,7 @@ public final class SessionOverlayStore: ObservableObject {
     func leave(_ imports: [ImportedMembership]) -> [String] {
         let left = imports.filter { item in
             let key = item.key
-            guard templeSessions.contains(key.id) else { return false }
+            guard isTempleSession(key.id) else { return false }
             do {
                 return try db.leave(sessionID: key.id, host: key.host, agent: item.agent, incarnation: item.incarnation)
             } catch {
@@ -426,7 +358,6 @@ public final class SessionOverlayStore: ObservableObject {
                 return false
             }
         }.map(\.key.id)
-        if !left.isEmpty { templeSessions.subtract(left) }
         return left
     }
 
@@ -434,11 +365,9 @@ public final class SessionOverlayStore: ObservableObject {
     /// `TempleDB.discardUnstartedCreation`).
     @discardableResult
     public func discardUnstartedCreation(_ id: String, host: HostID) -> Bool {
-        guard templeSessions.contains(id) else { return false }
+        guard isTempleSession(id) else { return false }
         do {
-            guard try db.discardUnstartedCreation(sessionID: id, host: host) else { return false }
-            templeSessions.remove(id)
-            return true
+            return try db.discardUnstartedCreation(sessionID: id, host: host)
         } catch {
             TempleUILog.db.error("discard failed for session \(id, privacy: .public): \(String(describing: error), privacy: .public)")
             return false
@@ -457,13 +386,16 @@ public final class SessionOverlayStore: ObservableObject {
         }
     }
 
+    // Each setter writes its column; the committed row is what every reader
+    // then sees. A write that fails changes nothing on screen, rather than
+    // showing a state that would vanish at the next launch.
+
     public func togglePin(_ id: String) {
         guard joinForSetter(id) else { return }
-        if pinned.contains(id) { pinned.remove(id) } else { pinned.insert(id) }
-        try? db.setPinned(pinned.contains(id), sessionID: id)
+        try? db.setPinned(!isPinned(id), sessionID: id)
     }
 
-    public func isArchived(_ id: String) -> Bool { archivedSessions.contains(id) }
+    public func isArchived(_ id: String) -> Bool { rows[id]?.archived == true }
 
     /// Archiving drops the pin: a session cannot be both the one you always
     /// want in front of you and one you have put away. Unarchiving does not
@@ -471,60 +403,45 @@ public final class SessionOverlayStore: ObservableObject {
     /// click. The DB write clears the pin in the same statement.
     public func setArchived(_ archived: Bool, sessionID id: String) {
         guard joinForSetter(id) else { return }
-        if archived {
-            archivedSessions.insert(id)
-            pinned.remove(id)
-        } else {
-            archivedSessions.remove(id)
-        }
         try? db.setArchived(archived, sessionID: id)
     }
 
     public func isProjectArchived(_ key: ProjectKey) -> Bool { archivedProjectKeys.contains(key) }
-    public func isProjectArchived(_ path: String) -> Bool { isProjectArchived(ProjectKey(host: .local, path: path)) }
     public func setProjectArchived(_ archived: Bool, key: ProjectKey) {
         if archived { archivedProjectKeys.insert(key) } else { archivedProjectKeys.remove(key) }
         // Project-state host persistence is the explicitly deferred v12 migration.
         if key.host.isLocal { try? db.setProjectArchived(archived, path: key.path) }
     }
-    public func setProjectArchived(_ archived: Bool, path: String) { setProjectArchived(archived, key: ProjectKey(host: .local, path: path)) }
     public func setProjectKeyOrder(_ keys: [ProjectKey]) {
         projectKeyOrder = keys
         try? db.setProjectOrder(keys.filter { $0.host.isLocal }.map(\.path))
     }
-    public func setProjectOrder(_ paths: [String]) { setProjectKeyOrder(paths.map { ProjectKey(host: .local, path: $0) }) }
 
-    public func customName(for id: String) -> String? { customNames[id] }
+    public func customName(for id: String) -> String? { rows[id]?.customName }
 
     public func rename(_ id: String, to name: String) {
         guard joinForSetter(id) else { return }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            customNames.removeValue(forKey: id)
-        } else {
-            customNames[id] = trimmed
-        }
-        try? db.setCustomName(customNames[id], sessionID: id)
+        try? db.setCustomName(trimmed.isEmpty ? nil : trimmed, sessionID: id)
     }
 
-    public func color(for id: String) -> String? { colors[id] }
+    public func color(for id: String) -> String? { rows[id]?.color }
 
     public func setColor(_ name: String?, for id: String) {
         guard joinForSetter(id) else { return }
-        if let name {
-            colors[id] = name
-        } else {
-            colors.removeValue(forKey: id)
-        }
-        try? db.setColor(colors[id], sessionID: id)
+        try? db.setColor(name, sessionID: id)
     }
 
-    public func generatedTitle(for id: String) -> String? { generatedTitles[id] }
+    /// The last title the agent gave itself. Claude and Codex retitle their
+    /// terminal as the work moves on, but write that title nowhere on disk —
+    /// so the row remembers it, and a session keeps the name it earned even
+    /// after it is closed and the app restarts.
+    public func generatedTitle(for id: String) -> String? { rows[id]?.generatedTitle }
 
-    /// How long live retitles coalesce before one publish + DB write. Every
-    /// WORKING agent retitles about once a second, and `generatedTitles` is
-    /// @Published on a store the whole app observes — flushing per tick meant
-    /// a full re-render plus a synchronous DB write per title, per agent.
+    /// How long live retitles coalesce before one DB write (and so one row
+    /// change). Every WORKING agent retitles about once a second; flushing
+    /// per tick meant a full re-render plus a synchronous DB write per
+    /// title, per agent.
     var titleFlushDelay: TimeInterval = 1.0
     /// Latest unflushed title per session (last one in a window wins).
     private var pendingGeneratedTitles: [String: String] = [:]
@@ -541,8 +458,8 @@ public final class SessionOverlayStore: ObservableObject {
         // just what is published: a title that returns to the published value
         // mid-window must clear the pending intermediate, or the flush would
         // regress to it ("Ready" → "Thinking" → "Ready" must stay "Ready").
-        guard (pendingGeneratedTitles[id] ?? generatedTitles[id]) != trimmed else { return }
-        if generatedTitles[id] == trimmed {
+        guard (pendingGeneratedTitles[id] ?? generatedTitle(for: id)) != trimmed else { return }
+        if generatedTitle(for: id) == trimmed {
             pendingGeneratedTitles.removeValue(forKey: id)
             return
         }
@@ -570,13 +487,11 @@ public final class SessionOverlayStore: ObservableObject {
 
     private func flushGeneratedTitles() {
         titleFlushTask = nil
-        for (id, title) in pendingGeneratedTitles where generatedTitles[id] != title {
-            generatedTitles[id] = title
+        for (id, title) in pendingGeneratedTitles where generatedTitle(for: id) != title {
             // A title never makes a session Temple's: it only follows a join.
             // Every way into a tab joins first, so a title for a session that
-            // is not a member means that join failed; the title is shown but
-            // not written, rather than writing a row that forgets how the
-            // session joined.
+            // is not a member means that join failed; the title is dropped,
+            // rather than writing a row that forgets how the session joined.
             guard isTempleSession(id) else { continue }
             try? db.setTitle(title, sessionID: id, host: titleHosts[id] ?? .local)
         }
@@ -589,12 +504,5 @@ public final class SessionOverlayStore: ObservableObject {
     /// prompt and never catches up with a long session).
     public func displayTitle(for session: TranscriptSummary) -> String {
         customName(for: session.id) ?? generatedTitle(for: session.id) ?? session.catalogTitle
-    }
-
-    /// session id → the displayed title, for search (same precedence as
-    /// `displayTitle(for:)`): a session must be findable under the name the
-    /// list shows, not only under the file title nobody sees anymore.
-    public var displayTitleOverrides: [String: String] {
-        generatedTitles.merging(customNames) { _, custom in custom }
     }
 }

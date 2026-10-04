@@ -66,14 +66,14 @@ final class PersistenceAdapterTests: XCTestCase {
         let writer = SessionOverlayStore(db: db)
 
         writer.setColor("purple", for: "session")
-        XCTAssertEqual(writer.colors["session"], "purple")
+        XCTAssertEqual(writer.rows["session"]?.color, "purple")
         XCTAssertEqual(writer.color(for: "session"), "purple")
 
         let reader = SessionOverlayStore(db: db)
         XCTAssertEqual(reader.color(for: "session"), "purple")
 
         writer.setColor(nil, for: "session")
-        XCTAssertNil(writer.colors["session"])
+        XCTAssertNil(writer.rows["session"]?.color)
         XCTAssertNil(SessionOverlayStore(db: db).color(for: "session"))
     }
 

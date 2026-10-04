@@ -45,7 +45,7 @@ final class AppLifecycleTests: XCTestCase {
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
             engines: [FakeEngine(CatalogFixtureIndex(projects: []))], database: db,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()), overlay: overlay)
-        let tab = model.openSessions.newSession(agent: .codex, projectPath: NSTemporaryDirectory())
+        let tab = model.openSessions.newSession(agent: .codex, project: Fixture.key(NSTemporaryDirectory()))
         let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
         model.openSessions.drainLaunchResults()   // the wrapper reported the folder at spawn
         overlay.join("known", via: .created)
@@ -68,7 +68,7 @@ final class AppLifecycleTests: XCTestCase {
             XCTAssertTrue(returned)
             XCTAssertEqual(try? db.sessionState("known")?.lastActiveAt, at.addingTimeInterval(1))
             XCTAssertNil(try? db.sessionState("late-codex")?.lastActiveAt)
-            XCTAssertNil(overlay.lastActiveAt["late-codex"])
+            XCTAssertNil(overlay.rows["late-codex"]?.lastActiveAt)
             completed.fulfill()
         }
         XCTAssertEqual(delegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)

@@ -100,14 +100,13 @@ final class HistoryTests: XCTestCase {
     /// the member afterwards like any other. There is no second parse that
     /// serialized behind member resolution and dropped the row's facts when
     /// it came back empty.
-    func testImportCommitsTheCatalogRowsFactsWithoutReparsing() async throws {
+    func testImportCommitsTheCatalogRowsFactsWithoutReparsing() throws {
         let missing = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).jsonl")
         let row = catalogFixture(id: "catalog-facts", agent: .codex, projectPath: "/recorded",
             title: "Recorded prompt", createdAt: nil, updatedAt: Date(timeIntervalSince1970: 100), filePath: missing)
         let db = try TempleDB.inMemory()
         let overlay = SessionOverlayStore(db: db)
-        let failures = await overlay.importCatalogSessions([row])
-        XCTAssertTrue(failures.isEmpty)
+        XCTAssertEqual(overlay.import([row]).map(\.label), ["joined"])
         let state = try XCTUnwrap(db.sessionState(row.id))
         XCTAssertEqual(state.directory, "/recorded")
         XCTAssertEqual(state.directorySource, .transcript)
@@ -117,7 +116,7 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(state.joinedVia, .imported)
     }
 
-    func testCodexHistoryPromptFillsBothImportPaths() async throws {
+    func testCodexHistoryPromptFillsBothImportPaths() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let file = root.appendingPathComponent("sessions/rollout-history-only.jsonl")
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -131,15 +130,10 @@ final class HistoryTests: XCTestCase {
         let summary = try XCTUnwrap(store.loadSummaries().first)
         XCTAssertNil(summary.firstPrompt)
         XCTAssertEqual(summary.historyPrompt, "A recorded human prompt")
-        for legacyImport in [false, true] {
+        for imported in [summary, legacy] {
             let db = try TempleDB.inMemory()
             let overlay = SessionOverlayStore(db: db)
-            if legacyImport {
-                let failures = await overlay.importCatalogSessions([legacy])
-                XCTAssertTrue(failures.isEmpty)
-            } else {
-                XCTAssertTrue(overlay.importSessions([summary]).isEmpty)
-            }
+            XCTAssertEqual(overlay.import([imported]).map(\.label), ["joined"])
             let row = try XCTUnwrap(db.sessionState(summary.id))
             XCTAssertEqual(row.title, "A recorded human prompt")
             XCTAssertEqual(row.directory, "/recorded")
@@ -155,7 +149,7 @@ final class HistoryTests: XCTestCase {
         let summary = TranscriptSummary(id: "a", agent: .claude,
             locator: TranscriptLocator(host: .local, path: "/tmp/a.jsonl"),
             modifiedAt: date, cwd: "/cwd", firstPrompt: "First prompt", recordedTitle: "Different title")
-        XCTAssertTrue(overlay.importSessions([summary]).isEmpty)
+        XCTAssertEqual(overlay.import([summary]).map(\.label), ["joined"])
         let row = try XCTUnwrap(db.sessionState("a"))
         XCTAssertEqual(row.title, "Different title", "Claude's recorded summary is a title fact")
         XCTAssertNil(row.generatedTitle)
@@ -167,7 +161,7 @@ final class HistoryTests: XCTestCase {
         let changed = TranscriptSummary(id: "a", agent: .claude,
             locator: summary.locator, modifiedAt: date.addingTimeInterval(100),
             cwd: "/changed", firstPrompt: "Changed")
-        XCTAssertTrue(overlay.importSessions([changed]).isEmpty)
+        XCTAssertEqual(overlay.import([changed]).map(\.label), ["skipped"], "already Temple's: left as it is")
         XCTAssertEqual(try db.sessionState("a"), row)
         XCTAssertEqual(overlay.leave([SessionKey(id: "a", host: .local)]), ["a"], "fact fills remain undoable")
     }
@@ -180,7 +174,7 @@ final class HistoryTests: XCTestCase {
                 locator: TranscriptLocator(host: .local, path: "/tmp/absent.jsonl"),
                 modifiedAt: Date(timeIntervalSince1970: 100), directoryHint: "/lossy",
                 laterPromptHint: "Later prompt", legacyTitleHint: "Legacy")
-            XCTAssertTrue(overlay.importSessions([summary]).isEmpty)
+            XCTAssertEqual(overlay.import([summary]).map(\.label), ["joined"])
             let row = try XCTUnwrap(db.sessionState(summary.id))
             XCTAssertNil(row.title)
             XCTAssertNil(row.directory)
@@ -284,7 +278,7 @@ final class HistoryTests: XCTestCase {
                     session("outside", hoursAgo: 3)]
         let h = harness(rows, members: ["put-away", "project-away"])
         h.overlay.setArchived(true, sessionID: "put-away")
-        h.overlay.setProjectArchived(true, path: "/p/b")
+        h.overlay.setProjectArchived(true, key: Fixture.key("/p/b"))
 
         await load(h.history)
         h.history.scope = .inTemple
@@ -419,7 +413,7 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(ids(h.history.visibleRows), ["c-out", "x-out", "x-out-b", "x-beta"])
         h.history.agentFilter = .codex
         XCTAssertEqual(ids(h.history.visibleRows), ["x-out", "x-out-b", "x-beta"])
-        h.history.projectFilter = "/p/a"
+        h.history.projectKeyFilter = Fixture.key("/p/a")
         XCTAssertEqual(ids(h.history.visibleRows), ["x-out", "x-beta"])
         h.history.query = "alpha"
         XCTAssertEqual(ids(h.history.visibleRows), ["x-out"])
@@ -440,10 +434,10 @@ final class HistoryTests: XCTestCase {
         h.history.selectAll()
         XCTAssertEqual(h.history.selectedIDs, ["a", "b", "c"])
 
-        h.history.projectFilter = "/p/b"
+        h.history.projectKeyFilter = Fixture.key("/p/b")
         XCTAssertEqual(h.history.selectedIDs, ["c"])
 
-        h.history.projectFilter = nil
+        h.history.projectKeyFilter = nil
         h.history.click("b")
         h.history.click("c", modifier: .command)
         h.history.query = "Title"
@@ -503,7 +497,7 @@ final class HistoryTests: XCTestCase {
                     session("c", project: "/p/b", hoursAgo: 3)]
         let h = harness(rows)
         await load(h.history)
-        h.history.showOnly(project: "/p/b")
+        h.history.showOnly(project: Fixture.key("/p/b"))
 
         h.history.selectAll()
 
@@ -593,7 +587,7 @@ final class HistoryTests: XCTestCase {
     /// An archived project lists its sessions in the archive, so the copy
     /// must not promise a sidebar row.
     func testImportCopyForAnArchivedProjectSaysTheArchive() {
-        let archived: (String) -> Bool = { $0 == "/x/raven" }
+        let archived: (ProjectKey) -> Bool = { $0 == Fixture.key("/x/raven") }
         let one = HistoryModel.importRequest(
             for: [session("a", project: "/x/raven", title: "Fix flaky test", hoursAgo: 1)],
             isProjectArchived: archived)
@@ -611,15 +605,18 @@ final class HistoryTests: XCTestCase {
     func testImportCopyUsesTheDisplayedTitle() async throws {
         let rows = [session("a", project: "/p/raven", title: "first prompt", hoursAgo: 1)]
         let h = harness(rows)
+        // An outside session has no row, so nothing Temple holds retitles it:
+        // a stray retitle is not kept, and the row shows the parsed title.
         h.overlay.recordGeneratedTitle("Agent's title", for: "a")
         h.overlay.flushPendingTitles()
-        h.overlay.setProjectArchived(true, path: "/p/raven")
+        h.overlay.setProjectArchived(true, key: Fixture.key("/p/raven"))
         await load(h.history)
 
         h.history.requestImport(rows)
 
         let request = try XCTUnwrap(h.history.pendingImport)
-        XCTAssertEqual(request.title, "Import “Agent's title” into Temple?")
+        XCTAssertEqual(h.history.allRows.map(\.title), ["first prompt"])
+        XCTAssertEqual(request.title, "Import “first prompt” into Temple?")
         XCTAssertTrue(request.message.hasPrefix("It will appear in the archive under raven"))
     }
 
@@ -670,13 +667,16 @@ final class HistoryTests: XCTestCase {
                                    pathExists: { _ in true }, now: { [now] in now })
         await load(history)
 
+        // A retitle for a session with no row is not kept anywhere: the
+        // title is the row's, and an outside session has none.
         overlay.recordGeneratedTitle("Renamed by the agent", for: "b")
         overlay.flushPendingTitles()
         await history.confirmImport(HistoryModel.importRequest(for: rows), undoManager: nil)
 
         let failure = try XCTUnwrap(history.importFailure)
         XCTAssertEqual(failure.title, "Couldn't import 2 of 2 sessions")
-        XCTAssertTrue(failure.message.contains("First · Renamed by the agent"), "display titles, as the rows show")
+        XCTAssertEqual(history.allRows.map(\.title), ["First", "Second"])
+        XCTAssertTrue(failure.message.contains("First · Second"), "display titles, as the rows show")
         XCTAssertFalse(overlay.isTempleSession("a"))
     }
 
@@ -827,7 +827,7 @@ final class HistoryTabTests: XCTestCase {
         model.toggleHistory()
         XCTAssertTrue(model.historyActive)
         XCTAssertEqual(model.openSessions.tabs.filter { $0.kind == .history }.count, 1)
-        XCTAssertEqual(model.openSessions.activeProjectPath, "/p/a", "History is project-agnostic")
+        XCTAssertEqual(model.openSessions.activeProjectKey?.path, "/p/a", "History is project-agnostic")
         XCTAssertTrue(model.openSessions.visibleTabs.contains { $0.kind == .history })
 
         model.toggleHistory()
@@ -1115,3 +1115,14 @@ private final class CancelFlag: @unchecked Sendable {
     func set() { lock.lock(); value = true; lock.unlock() }
 }
 
+
+extension SessionOverlayStore.ImportOutcome {
+    /// The outcome's case, for assertions (the error is checked separately).
+    var label: String {
+        switch self {
+        case .joined: "joined"
+        case .skipped: "skipped"
+        case .failed(let error): "failed: \(error)"
+        }
+    }
+}

@@ -46,7 +46,6 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     private var pendingRestoreActivation: SessionTab.ID?
     /// Derived from the active *session* tab; the Settings tab never changes it.
     @Published public private(set) var activeProjectKey: ProjectKey?
-    public var activeProjectPath: String? { activeProjectKey?.path }
 
     // Dependencies (injected; all swappable for Track C/T).
     private let surfaceFactory: TerminalSurfaceFactory
@@ -282,11 +281,6 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     /// New empty session in a project with an explicit agent (`+` menu).
     @discardableResult
-    public func newSession(agent: Agent, projectPath: String) -> SessionTab {
-        newSession(agent: agent, project: ProjectKey(host: .local, path: projectPath))
-    }
-
-    @discardableResult
     public func newSession(agent: Agent, project: ProjectKey) -> SessionTab {
         let projectPath = project.path
         let spec = SessionLauncher.newSession(agent: agent, projectPath: projectPath)
@@ -316,9 +310,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// ⌘T / empty-tab: new session in the current (or given) project with the
     /// configured default agent (UX keyboard path — no menu).
     @discardableResult
-    public func newSessionDefaultAgent(projectPath: String? = nil) -> SessionTab? {
-        if let projectPath { return newSession(agent: defaultAgent(), projectPath: projectPath) }
-        guard let key = activeProjectKey else { return nil }
+    public func newSessionDefaultAgent(project: ProjectKey? = nil) -> SessionTab? {
+        guard let key = project ?? activeProjectKey else { return nil }
         return newSession(agent: defaultAgent(), project: key)
     }
 
@@ -831,7 +824,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             activeTabID = utility.id
         } else {
             activeTabID = nil
-            // Keep activeProjectPath so the launcher defaults to the last project.
+            // Keep activeProjectKey so the launcher defaults to the last project.
         }
     }
 
@@ -897,14 +890,12 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         }
     }
     /// Compatibility for legacy callers. Presentation uses host-aware keys.
-    public var openProjects: [String] { openProjectKeys.map(\.path) }
     private var lastActiveTabByProject: [ProjectKey: SessionTab.ID] = [:]
     public var projectKeysByRecency: [ProjectKey] {
         let open = Set(openProjectKeys)
         let recent = projectMRU.filter(open.contains)
         return recent + openProjectKeys.filter { !recent.contains($0) }
     }
-    public var projectsByRecency: [String] { projectKeysByRecency.map(\.path) }
     private var projectMRU: [ProjectKey] = []
     private func touchProject(_ key: ProjectKey) {
         projectMRU.removeAll { $0 == key }
@@ -916,7 +907,6 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         let remembered = lastActiveTabByProject[key].flatMap { id in inProject.first { $0.id == id } }
         activate(remembered ?? first)
     }
-    public func activateProject(_ path: String) { activateProject(ProjectKey(host: .local, path: path)) }
 
     public func selectNextProject() { cycleProject(by: 1) }
     public func selectPreviousProject() { cycleProject(by: -1) }

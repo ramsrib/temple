@@ -89,20 +89,20 @@ final class SearchFilterTests: XCTestCase {
 
         // Current project first, then the rest in the order you last used them —
         // NOT the order they were opened, which is what the sidebar shows.
-        XCTAssertEqual(model.switchableProjects, ["/p/notes", "/p/web", "/p/api"])
+        XCTAssertEqual(model.switchableProjectKeys.map(\.path), ["/p/notes", "/p/web", "/p/api"])
 
         // One press highlights the PREVIOUS project; releasing lands on it.
         model.advanceProjectSwitcher(by: 1)
-        XCTAssertEqual(model.projectSwitcherSelection, "/p/web")
+        XCTAssertEqual(model.projectSwitcherKeySelection?.path, "/p/web")
         model.commitProjectSwitcher()
-        XCTAssertEqual(model.openSessions.activeProjectPath, "/p/web")
+        XCTAssertEqual(model.openSessions.activeProjectKey?.path, "/p/web")
         XCTAssertFalse(model.projectSwitcherPresented)
 
         // ...and pressing again bounces straight back, because /p/notes is now
         // the most recent. That bounce is the whole point of the gesture.
         model.advanceProjectSwitcher(by: 1)
         model.commitProjectSwitcher()
-        XCTAssertEqual(model.openSessions.activeProjectPath, "/p/notes")
+        XCTAssertEqual(model.openSessions.activeProjectKey?.path, "/p/notes")
     }
 
     /// A project's last tab can exit while the switcher is up. With the selection
@@ -120,18 +120,18 @@ final class SearchFilterTests: XCTestCase {
         model.openSessions.openSession(Fixture.session("3", project: "/p/c", title: "t"))
 
         model.advanceProjectSwitcher(by: 1)                   // highlights /p/b
-        XCTAssertEqual(model.projectSwitcherSelection, "/p/b")
+        XCTAssertEqual(model.projectSwitcherKeySelection?.path, "/p/b")
 
         // /p/b's only tab exits while the switcher is up.
         let bTab = model.openSessions.tabs.first { $0.projectPath == "/p/b" }!
         model.openSessions.closeTab(bTab.id)
 
         model.commitProjectSwitcher()
-        XCTAssertEqual(model.openSessions.activeProjectPath, "/p/c",
+        XCTAssertEqual(model.openSessions.activeProjectKey?.path, "/p/c",
                        "must not land on a project that is no longer open, nor on whatever took its slot")
         XCTAssertFalse(model.projectSwitcherPresented)
         // ...and the closed project is forgotten, not kept forever in the MRU list.
-        XCTAssertFalse(model.switchableProjects.contains("/p/b"))
+        XCTAssertFalse(model.switchableProjectKeys.map(\.path).contains("/p/b"))
     }
 
     /// Opening the switcher from the home page (a click, no ⌘ held) must not be
@@ -144,13 +144,13 @@ final class SearchFilterTests: XCTestCase {
         let (model, _) = makeAppModel(index)
         model.openSessions.openSession(Fixture.session("1", project: "/p/a", title: "t"))
         model.openSessions.openSession(Fixture.session("2", project: "/p/b", title: "t"))
-        let active = model.openSessions.activeProjectPath
+        let active = model.openSessions.activeProjectKey?.path
 
         model.advanceProjectSwitcher(by: 1, heldCommand: false)
         model.commandReleasedForSwitcher()                     // e.g. ⌘ pressed for something else
 
         XCTAssertTrue(model.projectSwitcherPresented, "a click-opened switcher waits for Return or Esc")
-        XCTAssertEqual(model.openSessions.activeProjectPath, active)
+        XCTAssertEqual(model.openSessions.activeProjectKey?.path, active)
     }
 
     func testProjectSwitcherWalksAndCancels() {
@@ -163,20 +163,20 @@ final class SearchFilterTests: XCTestCase {
         for id in ["1", "2", "3"] {
             model.openSessions.openSession(Fixture.session(id, project: "/p/\(["1": "a", "2": "b", "3": "c"][id]!)", title: "t"))
         }
-        let active = model.openSessions.activeProjectPath
+        let active = model.openSessions.activeProjectKey?.path
 
         // Holding ⌘ and tapping P twice walks two along; wrapping is circular.
-        let order = model.switchableProjects
+        let order = model.switchableProjectKeys.map(\.path)
         model.advanceProjectSwitcher(by: 1)
         model.advanceProjectSwitcher(by: 1)
-        XCTAssertEqual(model.projectSwitcherSelection, order[2])
+        XCTAssertEqual(model.projectSwitcherKeySelection?.path, order[2])
         model.advanceProjectSwitcher(by: 1)
-        XCTAssertEqual(model.projectSwitcherSelection, order[0], "wraps back to where you started")
+        XCTAssertEqual(model.projectSwitcherKeySelection?.path, order[0], "wraps back to where you started")
 
         // Esc leaves you exactly where you were.
         model.cancelProjectSwitcher()
         XCTAssertFalse(model.projectSwitcherPresented)
-        XCTAssertEqual(model.openSessions.activeProjectPath, active)
+        XCTAssertEqual(model.openSessions.activeProjectKey?.path, active)
     }
 
     // MARK: Project cap

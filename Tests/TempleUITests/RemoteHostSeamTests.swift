@@ -179,9 +179,9 @@ final class RemoteHostSeamTests: XCTestCase {
         XCTAssertTrue(overlay.join("shared", via: .opened, core: SessionCore(host: remote)).isJoined)
         let summary = TranscriptSummary(id: "shared", agent: .codex, locator: TranscriptLocator(host: .local, path: "/l/x.jsonl"),
                                         modifiedAt: Date(), cwd: "/l", firstPrompt: "Local copy")
-        let failures = SessionOverlayStore(db: db).importPreparedSessions([PreparedSessionImport(
-            id: summary.id, agent: summary.agent, locator: summary.locator, core: SessionCore(filling: summary))])
-        XCTAssertEqual((failures["shared"] as? TempleDBError), .hostConflict(existing: remote))
+        let outcomes = SessionOverlayStore(db: db).import([summary])
+        guard case .failed(let error) = outcomes.first, outcomes.count == 1 else { return XCTFail("\(outcomes)") }
+        XCTAssertEqual(error as? TempleDBError, .hostConflict(existing: remote))
         XCTAssertEqual(try db.sessionState("shared")?.title, "Remote row")
         XCTAssertEqual(try db.sessionState("shared")?.host, remote)
     }
@@ -219,7 +219,7 @@ final class RemoteHostSeamTests: XCTestCase {
         model.openedHandler = { _ in result }
         var directories: [String] = []
         model.launchDirectoryHandler = { id, _, _ in directories.append(id) }
-        let tab = model.newSession(agent: .codex, projectPath: "/tmp")
+        let tab = model.newSession(agent: .codex, project: Fixture.key("/tmp"))
         XCTAssertTrue(tab.isProvisional)
         model.adopt(sessionID: "codex-dup", for: tab.id)
         XCTAssertNil(tab.sessionID)

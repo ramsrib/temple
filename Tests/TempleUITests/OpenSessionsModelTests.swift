@@ -255,7 +255,7 @@ final class OpenSessionsModelTests: XCTestCase {
         model.restore()
         let restored = try XCTUnwrap(model.tabs.first)
         XCTAssertEqual(wrapper.count, 0)
-        let fresh = model.newSession(agent: .claude, projectPath: "/new")
+        let fresh = model.newSession(agent: .claude, project: Fixture.key("/new"))
         XCTAssertEqual(wrapper.count, 1)
         model.activate(fresh)
         model.activate(fresh)
@@ -323,13 +323,13 @@ final class OpenSessionsModelTests: XCTestCase {
             let factory = FakeTerminalSurfaceFactory()
             factory.configure = { $0.startError = CocoaError(.executableNotLoadable) }
             let model = writerModel(db: db, overlay: overlay, factory: factory)
-            let tab = model.newSession(agent: agent, projectPath: directory.path)
+            let tab = model.newSession(agent: agent, project: Fixture.key(directory.path))
             if agent == .codex { model.adopt(sessionID: "codex-id", for: tab.id) }
             let row = try XCTUnwrap(db.sessionState(try XCTUnwrap(tab.sessionID)))
             XCTAssertNil(row.directory)
             XCTAssertNil(row.directorySource)
             XCTAssertNil(tab.launchObservation)
-            XCTAssertNil(overlay.lastActiveAt[row.id])
+            XCTAssertNil(overlay.rows[row.id]?.lastActiveAt)
         }
     }
 
@@ -342,7 +342,7 @@ final class OpenSessionsModelTests: XCTestCase {
                 let db = try TempleDB.inMemory()
                 let overlay = SessionOverlayStore(db: db)
                 let model = writerModel(db: db, overlay: overlay)
-                let tab = model.newSession(agent: agent, projectPath: cwd.path)
+                let tab = model.newSession(agent: agent, project: Fixture.key(cwd.path))
                 if agent == .codex { model.adopt(sessionID: "codex-id", for: tab.id) }
                 let row = try XCTUnwrap(db.sessionState(try XCTUnwrap(tab.sessionID)))
                 XCTAssertNil(row.directory)
@@ -357,11 +357,11 @@ final class OpenSessionsModelTests: XCTestCase {
         var date = Date(timeIntervalSince1970: 100)
         let overlay = SessionOverlayStore(db: db, now: { date }, scheduleTouch: { _, _ in {} })
         let model = writerModel(db: db, overlay: overlay, now: { date })
-        let tab = model.newSession(agent: .codex, projectPath: try temporaryDirectory().path)
+        let tab = model.newSession(agent: .codex, project: Fixture.key(try temporaryDirectory().path))
         date = Date(timeIntervalSince1970: 200)
         model.adopt(sessionID: "codex-id", for: tab.id)
         overlay.flushPendingTouches()
-        XCTAssertEqual(overlay.lastActiveAt["codex-id"], Date(timeIntervalSince1970: 100))
+        XCTAssertEqual(overlay.rows["codex-id"]?.lastActiveAt, Date(timeIntervalSince1970: 100))
         XCTAssertEqual(try db.sessionState("codex-id")?.lastActiveAt, Date(timeIntervalSince1970: 100))
     }
 
@@ -410,13 +410,13 @@ final class OpenSessionsModelTests: XCTestCase {
         let db = try TempleDB.inMemory()
         let overlay = SessionOverlayStore(db: db)
         let model = writerModel(db: db, overlay: overlay)
-        let tab = model.newSession(agent: .codex, projectPath: directory.path)
+        let tab = model.newSession(agent: .codex, project: Fixture.key(directory.path))
         model.drainLaunchResults()   // the wrapper reports at spawn, long before adoption
         try FileManager.default.removeItem(at: directory)
         model.adopt(sessionID: "codex-id", for: tab.id)
         XCTAssertEqual(try db.sessionState("codex-id")?.directory, directory.path)
         XCTAssertEqual(try db.sessionState("codex-id")?.directorySource, .tab)
-        XCTAssertNotNil(overlay.lastActiveAt["codex-id"])
+        XCTAssertNotNil(overlay.rows["codex-id"]?.lastActiveAt)
     }
 
     func testRestoredChipWritesNoDirectoryUntilItSpawns() throws {
@@ -447,7 +447,7 @@ final class OpenSessionsModelTests: XCTestCase {
             scheduled.append((delay, action)); return {}
         })
         overlay.touch("a", host: .local)
-        XCTAssertEqual(overlay.lastActiveAt["a"], date)
+        XCTAssertEqual(overlay.rows["a"]?.lastActiveAt, date)
         XCTAssertNil(try db.sessionState("a")?.lastActiveAt)
         date = Date(timeIntervalSince1970: 120)
         overlay.touch("a", host: .local)
@@ -456,7 +456,7 @@ final class OpenSessionsModelTests: XCTestCase {
         overlay.touch("b", host: .local)
         XCTAssertEqual(scheduled.count, 2, "each session owns a coalescing window")
         XCTAssertEqual(scheduled.map { $0.0 }, [30, 30])
-        XCTAssertEqual(overlay.lastActiveAt["a"], Date(timeIntervalSince1970: 120))
+        XCTAssertEqual(overlay.rows["a"]?.lastActiveAt, Date(timeIntervalSince1970: 120))
         scheduled[0].1()
         XCTAssertEqual(try db.sessionState("a")?.lastActiveAt, Date(timeIntervalSince1970: 120))
         XCTAssertNil(try db.sessionState("b")?.lastActiveAt)
@@ -472,7 +472,7 @@ final class OpenSessionsModelTests: XCTestCase {
         var date = Date(timeIntervalSince1970: 100)
         let overlay = SessionOverlayStore(db: db, now: { date }, scheduleTouch: { _, _ in {} })
         let model = writerModel(db: db, overlay: overlay, now: { date })
-        let tab = model.newSession(agent: .claude, projectPath: "/launch")
+        let tab = model.newSession(agent: .claude, project: Fixture.key("/launch"))
         let id = try XCTUnwrap(tab.sessionID)
         overlay.recordGeneratedTitle("Pending title", for: id)
         date = Date(timeIntervalSince1970: 200)
@@ -482,7 +482,7 @@ final class OpenSessionsModelTests: XCTestCase {
         model.surface(try XCTUnwrap(tab.surface), didChangeState: .exited(status: 0))
         model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
         model.surface(try XCTUnwrap(tab.surface), didUpdateTitle: "Shutdown")
-        XCTAssertEqual(overlay.lastActiveAt[id], Date(timeIntervalSince1970: 100))
+        XCTAssertEqual(overlay.rows[id]?.lastActiveAt, Date(timeIntervalSince1970: 100))
         XCTAssertEqual(try db.sessionState(id)?.lastActiveAt, Date(timeIntervalSince1970: 100))
         XCTAssertEqual(try db.sessionState(id)?.title, "Pending title")
     }
@@ -497,10 +497,10 @@ final class OpenSessionsModelTests: XCTestCase {
         let model = writerModel(db: db, overlay: overlay, persistence: persistence, now: { date.addingTimeInterval(50) })
         model.restore()
         overlay.flushPendingTouches()
-        XCTAssertEqual(overlay.lastActiveAt["a"], date)
+        XCTAssertEqual(overlay.rows["a"]?.lastActiveAt, date)
         XCTAssertEqual(try db.sessionState("a")?.lastActiveAt, date)
         model.activate(try XCTUnwrap(model.tabs.first))
-        XCTAssertEqual(overlay.lastActiveAt["a"], date.addingTimeInterval(50))
+        XCTAssertEqual(overlay.rows["a"]?.lastActiveAt, date.addingTimeInterval(50))
     }
 
     func testALateAbsentVerdictAnnotatesAnExitedTab() throws {
@@ -536,7 +536,7 @@ final class OpenSessionsModelTests: XCTestCase {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         var touched: [String] = []
         model.touchHandler = { id, _, _ in touched.append(id) }
-        let tab = model.newSession(agent: .claude, projectPath: "/p")
+        let tab = model.newSession(agent: .claude, project: Fixture.key("/p"))
         let id = try XCTUnwrap(tab.sessionID)
         let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
         XCTAssertEqual(touched, [id])
@@ -560,7 +560,7 @@ final class OpenSessionsModelTests: XCTestCase {
 
         XCTAssertEqual(model.tabs.count, 1)
         XCTAssertEqual(model.activeTab?.sessionID, "a")
-        XCTAssertEqual(model.activeProjectPath, "/p/a")
+        XCTAssertEqual(model.activeProjectKey?.path, "/p/a")
         XCTAssertNotNil(model.tabs.first?.surface)          // spawned on open
         XCTAssertEqual(factory.created.count, 1)
     }
@@ -585,12 +585,12 @@ final class OpenSessionsModelTests: XCTestCase {
         model.openSession(Fixture.session("b1", project: "/p/b"))
 
         // Active project is now /p/b → only its tab visible.
-        XCTAssertEqual(model.activeProjectPath, "/p/b")
+        XCTAssertEqual(model.activeProjectKey?.path, "/p/b")
         XCTAssertEqual(model.visibleTabs.map(\.sessionID), ["b1"])
 
         // Focusing an /p/a session swaps the bar back.
         model.openSession(Fixture.session("a1", project: "/p/a"))
-        XCTAssertEqual(model.activeProjectPath, "/p/a")
+        XCTAssertEqual(model.activeProjectKey?.path, "/p/a")
         XCTAssertEqual(Set(model.visibleTabs.compactMap(\.sessionID)), ["a1", "a2"])
     }
 
@@ -615,15 +615,15 @@ final class OpenSessionsModelTests: XCTestCase {
         model.openSession(Fixture.session("b1", project: "/p/b"))
 
         // Open in tab order, not recency — the switcher must not reshuffle.
-        XCTAssertEqual(model.openProjects, ["/p/a", "/p/b"])
+        XCTAssertEqual(model.openProjectKeys.map(\.path), ["/p/a", "/p/b"])
 
         // Last touched in /p/a was a1 (a2 was opened, then a1 refocused).
         model.openSession(Fixture.session("a1", project: "/p/a"))
-        model.activateProject("/p/b")
+        model.activateProject(Fixture.key("/p/b"))
         XCTAssertEqual(model.activeTab?.sessionID, "b1")
 
-        model.activateProject("/p/a")
-        XCTAssertEqual(model.activeProjectPath, "/p/a")
+        model.activateProject(Fixture.key("/p/a"))
+        XCTAssertEqual(model.activeProjectKey?.path, "/p/a")
         XCTAssertEqual(model.activeTab?.sessionID, "a1", "should return to the last session used there")
     }
 
@@ -632,13 +632,13 @@ final class OpenSessionsModelTests: XCTestCase {
         model.openSession(Fixture.session("a1", project: "/p/a"))
 
         model.selectNextProject()
-        XCTAssertEqual(model.activeProjectPath, "/p/a", "one project: cycling is a no-op")
+        XCTAssertEqual(model.activeProjectKey?.path, "/p/a", "one project: cycling is a no-op")
 
         model.openSession(Fixture.session("b1", project: "/p/b"))
         model.selectNextProject()
-        XCTAssertEqual(model.activeProjectPath, "/p/a", "wraps past the end")
+        XCTAssertEqual(model.activeProjectKey?.path, "/p/a", "wraps past the end")
         model.selectPreviousProject()
-        XCTAssertEqual(model.activeProjectPath, "/p/b", "wraps past the start")
+        XCTAssertEqual(model.activeProjectKey?.path, "/p/b", "wraps past the start")
     }
 
     func testCloseReturnsToPreviouslyActiveTabNotFirst() {
@@ -664,7 +664,7 @@ final class OpenSessionsModelTests: XCTestCase {
         model.closeTab(model.openTab(forSessionID: "b")!.id)
         // The previous tab lives in another project — return there anyway.
         XCTAssertEqual(model.activeTab?.sessionID, "a")
-        XCTAssertEqual(model.activeProjectPath, "/p/a")
+        XCTAssertEqual(model.activeProjectKey?.path, "/p/a")
     }
 
     func testCloseTabGracefullyRemovesTab() {
@@ -772,7 +772,7 @@ final class OpenSessionsModelTests: XCTestCase {
     func testClosingProvisionalTabDoesNotRecordReopenEntry() {
         let factory = FakeTerminalSurfaceFactory()
         let model = Fixture.openModel(factory: factory)
-        let provisional = model.newSession(agent: .codex, projectPath: "/p/a")
+        let provisional = model.newSession(agent: .codex, project: Fixture.key("/p/a"))
         XCTAssertNil(provisional.sessionID)
 
         model.closeTab(provisional.id)
@@ -800,12 +800,12 @@ final class OpenSessionsModelTests: XCTestCase {
         model.openSession(Fixture.session("a", project: "/p/a"))
         model.openSession(Fixture.session("b", project: "/p/b"))
         model.closeTab(model.openTab(forSessionID: "a")!.id)
-        XCTAssertEqual(model.activeProjectPath, "/p/b")
+        XCTAssertEqual(model.activeProjectKey?.path, "/p/b")
 
         model.reopenLastClosedTab()
 
         XCTAssertEqual(model.activeTab?.sessionID, "a")
-        XCTAssertEqual(model.activeProjectPath, "/p/a")
+        XCTAssertEqual(model.activeProjectKey?.path, "/p/a")
     }
 
     func testConfirmedPendingCloseRecordsReopenEntry() {
@@ -903,7 +903,7 @@ final class OpenSessionsModelTests: XCTestCase {
                                            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
                                            persistence: persistence)
         relaunched.restore()
-        XCTAssertEqual(relaunched.activeProjectPath, "/p/b")
+        XCTAssertEqual(relaunched.activeProjectKey?.path, "/p/b")
         XCTAssertEqual(relaunched.tabs.count, 3)
 
         // Switching back by focusing an existing tab also updates the record.
@@ -913,7 +913,7 @@ final class OpenSessionsModelTests: XCTestCase {
                                       runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
                                       persistence: persistence)
         again.restore()
-        XCTAssertEqual(again.activeProjectPath, "/p/a")
+        XCTAssertEqual(again.activeProjectKey?.path, "/p/a")
     }
 
     func testRestoreReopensTheTabYouWereLookingAt() {
@@ -1019,7 +1019,7 @@ final class OpenSessionsModelTests: XCTestCase {
 
     func testNewClaudeSessionKnowsIdImmediately() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
-        let tab = model.newSession(agent: .claude, projectPath: "/p/a")
+        let tab = model.newSession(agent: .claude, project: Fixture.key("/p/a"))
         XCTAssertNotNil(tab.sessionID)
         XCTAssertFalse(tab.isProvisional)
         XCTAssertTrue(tab.displayArgv?.contains("--session-id") ?? false)
@@ -1028,7 +1028,7 @@ final class OpenSessionsModelTests: XCTestCase {
     func testNewCodexSessionIsProvisionalThenAdopted() {
         let reconciler = ImmediateReconciler(id: "codex-123")
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory(), reconciler: reconciler)
-        let tab = model.newSession(agent: .codex, projectPath: "/p/a")
+        let tab = model.newSession(agent: .codex, project: Fixture.key("/p/a"))
         // ImmediateReconciler adopts synchronously.
         XCTAssertEqual(tab.sessionID, "codex-123")
         XCTAssertFalse(tab.isProvisional)
@@ -1144,7 +1144,7 @@ final class OpenSessionsModelTests: XCTestCase {
 
         // Switch back to /p/a (2 sessions): offset 0 is preserved (global, clamped).
         model.openSession(Fixture.session("a1", project: "/p/a"))
-        XCTAssertEqual(model.activeProjectPath, "/p/a")
+        XCTAssertEqual(model.activeProjectKey?.path, "/p/a")
         XCTAssertEqual(model.visibleTabs.first?.kind, .settings)
         XCTAssertEqual(model.visibleTabs.compactMap(\.sessionID), ["a1", "a2"])
     }
@@ -1210,7 +1210,7 @@ final class OpenSessionsModelTests: XCTestCase {
             launcherForHost: { _ in LocalHostLauncher(binaryPath: { _ in "/bin/claude" },
                 availability: { _ in toolchainHealthy ? .available : .unavailable(reason: "doesn't run") }, folderEvidence: { _ in .unknown }) })
 
-        let tab = model.newSession(agent: .claude, projectPath: "/p/a")
+        let tab = model.newSession(agent: .claude, project: Fixture.key("/p/a"))
         let surface = tab.surface as? FakeTerminalSurface
         surface?.simulateExit(status: 1)                 // dies while the toolchain is fine
 
@@ -1230,7 +1230,7 @@ final class OpenSessionsModelTests: XCTestCase {
             launcherForHost: { _ in LocalHostLauncher(binaryPath: { _ in "/bin/claude" },
                 availability: { _ in .unavailable(reason: "not found") }, folderEvidence: { _ in .unknown }) })
 
-        let tab = model.newSession(agent: .claude, projectPath: "/p/a")
+        let tab = model.newSession(agent: .claude, project: Fixture.key("/p/a"))
         (tab.surface as? FakeTerminalSurface)?.simulateExit(status: 1)
 
         XCTAssertTrue(tab.commandWasSuspect)
@@ -1311,7 +1311,7 @@ final class OpenSessionsModelTests: XCTestCase {
         // its early exit (auth, config, anything) is not a resume failure.
         let model = modelForResumeTests(sessionKnown: { _ in false })
 
-        let tab = model.newSession(agent: .claude, projectPath: "/p/a")
+        let tab = model.newSession(agent: .claude, project: Fixture.key("/p/a"))
         (tab.surface as? FakeTerminalSurface)?.simulateExit(status: 1)
 
         XCTAssertFalse(tab.resumeTargetMissing)
@@ -1326,7 +1326,7 @@ final class OpenSessionsModelTests: XCTestCase {
             launcherForHost: { _ in LocalHostLauncher(binaryPath: { $0 == .codex ? "/bin/codex" : "/bin/claude" },
                 extraArgs: { $0 == .codex ? ["--dangerously-bypass-approvals-and-sandbox"] : ["--dangerously-skip-permissions"] }, folderEvidence: { _ in .unknown }) })
 
-        let tab = model.newSession(agent: .claude, projectPath: "/p/a")
+        let tab = model.newSession(agent: .claude, project: Fixture.key("/p/a"))
         XCTAssertEqual(tab.displayArgv?.prefix(2).map { $0 },
                        ["/bin/claude", "--dangerously-skip-permissions"])
 

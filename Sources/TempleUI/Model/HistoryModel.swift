@@ -150,10 +150,6 @@ public final class HistoryModel: ObservableObject {
     @Published public var scope: HistoryScope = .all { didSet { if scope != oldValue { filtersChanged() } } }
     @Published public var agentFilter: Agent? { didSet { if agentFilter != oldValue { filtersChanged() } } }
     @Published public var projectKeyFilter: ProjectKey? { didSet { if projectKeyFilter != oldValue { filtersChanged() } } }
-    public var projectFilter: String? {
-        get { projectKeyFilter?.path }
-        set { projectKeyFilter = newValue.map { ProjectKey(host: .local, path: $0) } }
-    }
 
 
     @Published public private(set) var selection: Set<HistoryKey> = []
@@ -212,18 +208,20 @@ public final class HistoryModel: ObservableObject {
     var importedDuration: TimeInterval = 2
     var queryDebounce: TimeInterval = 0.12
 
+    /// `catalog` and `directoryEvidence` are the host registry's (AppModel
+    /// wires them); `pathExists` is a test's stand-in for this Mac's
+    /// directory evidence. With neither, every folder is unknown, never
+    /// missing.
     init(overlay: SessionOverlayStore,
-         catalog: (() -> AsyncStream<HostCatalogEvent>)? = nil,
+         catalog: @escaping () -> AsyncStream<HostCatalogEvent>,
          pathExists: (@Sendable (String) -> Bool)? = nil,
          directoryEvidence: (@Sendable (ProjectKey) async -> DirectoryEvidence)? = nil,
          now: @escaping () -> Date = Date.init) {
         self.overlay = overlay
-        self.catalog = catalog ?? { HostRegistry().catalog() }
-        let local = LocalSessionSource()
+        self.catalog = catalog
         self.directoryEvidence = directoryEvidence ?? { key in
-            guard key.host.isLocal else { return .unknown }
-            if let pathExists { return pathExists(key.path) ? .exists : .missing }
-            return await local.directoryEvidence(key.path)
+            guard key.host.isLocal, let pathExists else { return .unknown }
+            return pathExists(key.path) ? .exists : .missing
         }
         self.now = now
         // Membership, renames, retitles and archive state all show on the
@@ -778,7 +776,6 @@ public final class HistoryModel: ObservableObject {
 
 
     public func showOnly(project key: ProjectKey) { projectKeyFilter = key }
-    public func showOnly(project path: String) { showOnly(project: ProjectKey(host: .local, path: path)) }
 
     // MARK: Import
 
@@ -803,19 +800,23 @@ public final class HistoryModel: ObservableObject {
 
     /// A project that is archived lists its sessions in the archive (⌘⇧Y),
     /// not the sidebar — so the copy says so rather than promise a sidebar
-    /// row that never appears.
+    /// row that never appears. Projects are keyed by the host the session
+    /// lives on: the same path on another host is another project.
     static func importRequest(for sessions: [TranscriptSummary],
                               title: (TranscriptSummary) -> String = { $0.catalogTitle },
-                              isProjectArchived: (String) -> Bool = { _ in false }) -> ImportRequest {
-        var counts: [String: Int] = [:]
-        for session in sessions { counts[session.catalogDirectory, default: 0] += 1 }
-        let paths = counts.sorted { lhs, rhs in
+                              isProjectArchived: (ProjectKey) -> Bool = { _ in false }) -> ImportRequest {
+        var counts: [ProjectKey: Int] = [:]
+        for session in sessions {
+            counts[ProjectKey(host: session.locator.host, path: session.catalogDirectory), default: 0] += 1
+        }
+        let keys = counts.sorted { lhs, rhs in
             if lhs.value != rhs.value { return lhs.value > rhs.value }
-            return projectName(lhs.key) == projectName(rhs.key) ? lhs.key < rhs.key
-                : projectName(lhs.key) < projectName(rhs.key)
+            let (left, right) = (projectName(lhs.key.path), projectName(rhs.key.path))
+            guard left == right else { return left < right }
+            return lhs.key.path == rhs.key.path ? lhs.key.host.rawValue < rhs.key.host.rawValue : lhs.key.path < rhs.key.path
         }.map(\.key)
-        let sidebar = paths.filter { !isProjectArchived($0) }.map(projectName)
-        let archive = paths.filter(isProjectArchived).map(projectName)
+        let sidebar = keys.filter { !isProjectArchived($0) }.map { projectName($0.path) }
+        let archive = keys.filter(isProjectArchived).map { projectName($0.path) }
         var places: [String] = []
         if !sidebar.isEmpty { places.append("in the sidebar under \(projectList(sidebar))") }
         if !archive.isEmpty {
@@ -861,28 +862,24 @@ public final class HistoryModel: ObservableObject {
         pendingImport = nil
         let sessions = request.sessions.filter(isImportable)
         guard !sessions.isEmpty else { return }
-        finishImport(overlay.prepareImports(sessions), sessions: sessions, undoManager: undoManager)
+        finishImport(sessions, undoManager: undoManager)
     }
 
-    private func finishImport(_ prepared: [PreparedSessionImport], sessions: [TranscriptSummary], undoManager: UndoManager?) {
-        // Redo replays entries captured earlier: skip any that joined since.
-        let entries = prepared.filter { !overlay.isTempleSession($0.id) }
-        let byKey = Dictionary(sessions.map { (HistoryKey($0), $0) }, uniquingKeysWith: { first, _ in first })
-        let attempted = entries.compactMap { entry -> (PreparedSessionImport, TranscriptSummary)? in
-            byKey[Self.key(entry)].map { (entry, $0) }
-        }
+    private func finishImport(_ sessions: [TranscriptSummary], undoManager: UndoManager?) {
+        // Redo replays rows captured earlier: skip any that joined since.
+        let attempted = sessions.filter { !overlay.isTempleSession($0.id) }
         guard !attempted.isEmpty else { return }
         // One outcome per row: two rows sharing an id (two hosts, two
         // agents) are not both imported — the second is refused, with why.
-        let outcomes = overlay.importPreparedEntries(attempted.map(\.0))
+        let outcomes = overlay.import(attempted)
         var imported: [HistoryKey] = []
         var incarnations: [HistoryKey: String] = [:]
         var failed: [(TranscriptSummary, Error)] = []
-        for ((entry, session), outcome) in zip(attempted, outcomes) {
+        for (session, outcome) in zip(attempted, outcomes) {
             switch outcome {
             case .joined(let incarnation):
-                imported.append(Self.key(entry))
-                incarnations[Self.key(entry)] = incarnation
+                imported.append(HistoryKey(session))
+                incarnations[HistoryKey(session)] = incarnation
             case .skipped: break
             case .failed(let error): failed.append((session, error))
             }
@@ -894,8 +891,7 @@ public final class HistoryModel: ObservableObject {
             showNotice(Notice(text: imported.count == 1 ? "1 session imported" : "\(imported.count) sessions imported",
                               offersUndo: undoManager != nil))
             registerUndo(undoManager, imported: imported, incarnations: incarnations,
-                         sessions: attempted.map(\.1).filter { importedKeys.contains(HistoryKey($0)) },
-                         entries: attempted.map(\.0).filter { importedKeys.contains(Self.key($0)) })
+                         sessions: attempted.filter { importedKeys.contains(HistoryKey($0)) })
         }
         if !failed.isEmpty {
             let failedTitles = failed.map { overlay.displayTitle(for: $0.0) }
@@ -911,17 +907,13 @@ public final class HistoryModel: ObservableObject {
         invalidate()
     }
 
-    private static func key(_ entry: PreparedSessionImport) -> HistoryKey {
-        HistoryKey(host: entry.locator.host, agent: entry.agent, sessionID: entry.id)
-    }
-
     /// Undo removes exactly the rows this import wrote — each by its id and
     /// the host it was imported from — and only while each is still an
     /// untouched import not running in a tab (`TempleDB.leave`). Redo imports
     /// what the undo removed. The pair re-registers itself, so ⌘Z / ⌘⇧Z
     /// bounce as often as the user likes.
     private func registerUndo(_ undoManager: UndoManager?, imported keys: [HistoryKey], incarnations: [HistoryKey: String],
-                              sessions: [TranscriptSummary], entries: [PreparedSessionImport]) {
+                              sessions: [TranscriptSummary]) {
         guard let undoManager else { return }
         undoManager.registerUndo(withTarget: self) { [weak undoManager] model in
             MainActor.assumeIsolated {
@@ -931,9 +923,9 @@ public final class HistoryModel: ObservableObject {
                 undoManager.registerUndo(withTarget: model) { [weak undoManager] model in
                     MainActor.assumeIsolated {
                         // Redo must register its inverse synchronously inside UndoManager's
-                        // callback. Reuse the facts captured by the original import.
-                        model.finishImport(entries.filter { left.contains(Self.key($0)) },
-                                           sessions: back, undoManager: undoManager)
+                        // callback. The catalog rows captured by the original import carry
+                        // the same facts it committed.
+                        model.finishImport(back, undoManager: undoManager)
                     }
                 }
                 undoManager.setActionName("Import")

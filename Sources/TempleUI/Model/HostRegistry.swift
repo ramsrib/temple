@@ -12,10 +12,14 @@ public struct HostRegistry: Sendable {
         }
     }
     public let entries: [Entry]
-    @MainActor public init(entries: [Entry]? = nil) {
-        let entries = entries ?? [Entry(source: LocalSessionSource(), launcher: LocalHostLauncher())]
+    public init(entries: [Entry]) {
         precondition(Set(entries.map { $0.source.host }).count == entries.count)
         self.entries = entries
+    }
+    /// This Mac, launched by `launcher`. The registry is the one owner of the
+    /// local source: nothing else in the app constructs one.
+    @MainActor public init(localLauncher: (any HostLauncher)? = nil) {
+        self.init(entries: [Entry(source: LocalSessionSource(), launcher: localLauncher ?? LocalHostLauncher())])
     }
     public func entry(for host: HostID) -> Entry? { entries.first { $0.source.host == host } }
     /// Every host's catalog at once, each event tagged with its host. Hosts

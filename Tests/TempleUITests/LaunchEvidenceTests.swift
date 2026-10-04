@@ -126,7 +126,7 @@ final class LaunchEvidenceTests: XCTestCase {
             let (model, _) = model(launcher)
             var recorded: [String: String] = [:]
             model.launchDirectoryHandler = { id, _, path in recorded[id] = path }
-            let tab = model.newSession(agent: .codex, projectPath: "/p")
+            let tab = model.newSession(agent: .codex, project: Fixture.key("/p"))
             let source = try XCTUnwrap(launcher.sources.last)
             if reportFirst { source.push(.directoryEstablished("/p")); source.notifyNow() }
             XCTAssertTrue(recorded.isEmpty, "no id yet")

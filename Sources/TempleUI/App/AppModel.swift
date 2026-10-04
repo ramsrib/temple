@@ -217,8 +217,8 @@ public final class AppModel: ObservableObject {
     /// default agent. The menu item, the key handler and the project
     /// switcher's "Open project…" all come through here.
     public func openProjectFolder() {
-        chooseProjectFolder { path in
-            openSessions.newSessionDefaultAgent(projectPath: path)
+        chooseProjectFolder { project in
+            openSessions.newSessionDefaultAgent(project: project)
         }
     }
 
@@ -235,10 +235,6 @@ public final class AppModel: ObservableObject {
     /// last tab can exit while the switcher is up, and an index into a list that
     /// shrank under you lands on the wrong project (or silently on none).
     @Published public var projectSwitcherKeySelection: ProjectKey?
-    public var projectSwitcherSelection: String? {
-        get { projectSwitcherKeySelection?.path }
-        set { projectSwitcherKeySelection = newValue.map { ProjectKey(host: .local, path: $0) } }
-    }
     /// True when ⌘ was down as the switcher opened. Only then does releasing ⌘
     /// commit — otherwise opening it from the home page (mouse, no ⌘ held) would
     /// be committed by the next unrelated modifier press.
@@ -337,9 +333,9 @@ public final class AppModel: ObservableObject {
         toolchain.arguments = { [weak settings] in settings?.extraArgs(for: $0) ?? [] }
         self.toolchain = toolchain
 
-        let hosts = hostRegistry ?? HostRegistry(entries: [.init(source: LocalSessionSource(),
-            launcher: LocalHostLauncher(binaryPath: { toolchain.launchPath(for: $0) },
-                extraArgs: { settings.extraArgs(for: $0) }, availability: { toolchain.launchAvailability($0) }))])
+        let hosts = hostRegistry ?? HostRegistry(localLauncher: LocalHostLauncher(
+            binaryPath: { toolchain.launchPath(for: $0) },
+            extraArgs: { settings.extraArgs(for: $0) }, availability: { toolchain.launchAvailability($0) }))
         self.hostRegistry = hosts
         let engineSet = EngineSet(engines: engines ?? hosts.entries.map {
             SessionEngine(source: $0.source, database: database)
@@ -747,7 +743,6 @@ public final class AppModel: ObservableObject {
         openSessions.activeProjectKey
             ?? visibleRowProjects.first?.key
     }
-    public var launcherDefaultProject: String? { launcherDefaultProjectKey?.path }
 
     // MARK: Sidebar data (U1)
 
@@ -796,14 +791,9 @@ public final class AppModel: ObservableObject {
     /// half-list.
     public var orderedVisibleProjectKeys: [ProjectKey] { sidebarProjects(matching: "").map(\.key) }
 
-    public var orderedVisibleProjectPaths: [String] {
-        orderedVisibleProjectKeys.filter { $0.host.isLocal }.map(\.path)
-    }
-
     /// The project header being dragged, from grab to drop. Drop targets read
     /// it to refuse a project dropped onto itself; the header in hand dims.
     @Published public private(set) var draggedProjectKey: ProjectKey?
-    public var draggedProjectPath: String? { draggedProjectKey?.path }
     private var projectDragWatch: Timer?
 
     /// A header drag begins. SwiftUI's drop delegates report enters, moves and
@@ -812,7 +802,6 @@ public final class AppModel: ObservableObject {
     /// the "a drag is in flight" flag outlive the drag. So the drag is watched
     /// from the source side: the button coming up, wherever that happens, ends
     /// it. Common modes, because AppKit runs a drag in the event-tracking mode.
-    public func beginProjectDrag(_ path: String) { beginProjectDrag(ProjectKey(host: .local, path: path)) }
     public func beginProjectDrag(_ key: ProjectKey) {
         endProjectDrag()
         draggedProjectKey = key
@@ -845,7 +834,6 @@ public final class AppModel: ObservableObject {
         public var path: String { key.path }
         public let edge: Edge
         public init(key: ProjectKey, edge: Edge) { self.key = key; self.edge = edge }
-        public init(path: String, edge: Edge) { self.init(key: ProjectKey(host: .local, path: path), edge: edge) }
     }
     @Published public var projectDropSlot: ProjectDropSlot?
     /// Which drop target row last wrote the slot. Every row of a project shares
@@ -854,8 +842,6 @@ public final class AppModel: ObservableObject {
     public var projectDropOwner: String?
 
     /// Drop on a project's header: the dragged project lands just above it.
-    public func moveProject(_ path: String, before target: String) { moveProject(ProjectKey(host: .local, path: path), before: ProjectKey(host: .local, path: target)) }
-    public func moveProject(_ path: String, after target: String) { moveProject(ProjectKey(host: .local, path: path), after: ProjectKey(host: .local, path: target)) }
     public func moveProject(_ key: ProjectKey, before target: ProjectKey) { place(key) { $0.firstIndex(of: target) } }
     public func moveProject(_ key: ProjectKey, after target: ProjectKey) { place(key) { $0.firstIndex(of: target).map { $0 + 1 } } }
     private func place(_ key: ProjectKey, slot: ([ProjectKey]) -> Int?) {
@@ -953,7 +939,7 @@ public final class AppModel: ObservableObject {
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return rows.filter { open.contains($0.id) }.sorted(by: Self.moreRecentRow)
         }
-        let ranked = RowSearch.rank(rows, query: query)
+        let ranked = SessionRowSearch.rank(rows, query: query)
         return ranked.filter { open.contains($0.id) } + ranked.filter { !open.contains($0.id) }
     }
 
@@ -1002,7 +988,6 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    public func archiveProject(_ path: String, undoManager: UndoManager?) { archiveProject(ProjectKey(host: .local, path: path), undoManager: undoManager) }
     public func archiveProject(_ key: ProjectKey, undoManager: UndoManager?) {
         overlay.setProjectArchived(true, key: key)
         registerUndo(undoManager, name: "Archive Project") { [overlay] in
@@ -1023,7 +1008,6 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    public func restoreProject(_ path: String, undoManager: UndoManager?) { restoreProject(ProjectKey(host: .local, path: path), undoManager: undoManager) }
     public func restoreProject(_ key: ProjectKey, undoManager: UndoManager?) {
         overlay.setProjectArchived(false, key: key)
         registerUndo(undoManager, name: "Restore Project") { [overlay] in
@@ -1061,12 +1045,12 @@ public final class AppModel: ObservableObject {
 
     public func archivedProjectResults(_ query: String) -> [SessionRowProject] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return archivedProjects.filter { q.isEmpty || $0.path.localizedCaseInsensitiveContains(q) || !RowSearch.rank($0.sessions, query: q).isEmpty }
+        return archivedProjects.filter { q.isEmpty || $0.path.localizedCaseInsensitiveContains(q) || !SessionRowSearch.rank($0.sessions, query: q).isEmpty }
     }
 
     public func archivedSessionResults(_ query: String) -> [Session] {
         let rows = sessions.filter { $0.state.archived && !($0.project.map { overlay.isProjectArchived($0) } ?? false) }
-        return query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? rows.sorted(by: Self.moreRecentRow) : RowSearch.rank(rows, query: query)
+        return query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? rows.sorted(by: Self.moreRecentRow) : SessionRowSearch.rank(rows, query: query)
     }
 
     public struct ArchiveGroup: Identifiable, Equatable {
@@ -1082,7 +1066,7 @@ public final class AppModel: ObservableObject {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         func matching(_ project: SessionRowProject) -> [Session] {
             if q.isEmpty || project.path.localizedCaseInsensitiveContains(q) { return project.sessions }
-            return RowSearch.rank(project.sessions, query: q)
+            return SessionRowSearch.rank(project.sessions, query: q)
         }
         let whole = archivedProjects.compactMap { project -> ArchiveGroup? in
             let rows = matching(project)
@@ -1196,7 +1180,6 @@ public final class AppModel: ObservableObject {
     /// What the switcher walks: the projects you have work open in, most recently
     /// used first — the same set the app switcher shows for running apps.
     public var switchableProjectKeys: [ProjectKey] { openSessions.projectKeysByRecency }
-    public var switchableProjects: [String] { switchableProjectKeys.map(\.path) }
 
     /// ⌘P pressed. First press opens the switcher already on the PREVIOUS project,
     /// so a tap-and-release bounces between two projects the way ⌘⇥ does; further

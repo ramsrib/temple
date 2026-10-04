@@ -202,6 +202,8 @@ final class InMemoryDefaults: UserDefaults {
 
 @MainActor
 enum Fixture {
+    /// A project on `host` (this Mac unless said otherwise).
+    static func key(_ path: String, host: HostID = .local) -> ProjectKey { ProjectKey(host: host, path: path) }
     static func session(_ id: String, agent: Agent = .claude, project: String,
                         title: String = "Title", updated: TimeInterval = 0) -> TranscriptSummary {
         catalogFixture(id: id, agent: agent, projectPath: project, title: title,

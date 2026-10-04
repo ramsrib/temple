@@ -129,12 +129,12 @@ final class TabSwitcherTests: XCTestCase {
     /// switches the strip to its project.
     func testCommitSwitchesProjectWhenThePreviousTabLivesElsewhere() {
         let model = modelWithThreeTabs()
-        XCTAssertEqual(model.openSessions.activeProjectPath, "/p/web")
+        XCTAssertEqual(model.openSessions.activeProjectKey?.path, "/p/web")
 
         model.advanceTabSwitcher(by: 1)   // previous tab is "2" in /p/api
         model.commitTabSwitcher()
         XCTAssertEqual(model.openSessions.activeTab?.sessionID, "2")
-        XCTAssertEqual(model.openSessions.activeProjectPath, "/p/api")
+        XCTAssertEqual(model.openSessions.activeProjectKey?.path, "/p/api")
     }
 
     func testTabSwitcherWalksWrapsAndCancels() {
@@ -257,11 +257,11 @@ final class TabSwitcherTests: XCTestCase {
         model.advanceProjectSwitcher(by: 1)
         model.commitProjectSwitcher()
         XCTAssertFalse(model.projectSwitcherPresented)
-        XCTAssertEqual(model.openSessions.activeProjectPath, "/p/web",
+        XCTAssertEqual(model.openSessions.activeProjectKey?.path, "/p/web",
                        "no project switch while ⌘ is held")
 
         model.flagsChangedForDeferredLanding([])
-        XCTAssertEqual(model.openSessions.activeProjectPath, "/p/api")
+        XCTAssertEqual(model.openSessions.activeProjectKey?.path, "/p/api")
     }
 
     func testTabSwitcherIsMutuallyExclusiveWithTheOtherPanels() {

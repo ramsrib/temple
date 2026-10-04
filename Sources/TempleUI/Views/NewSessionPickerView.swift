@@ -115,8 +115,8 @@ struct NewSessionPickerView: View {
     private func chooseFolder() {
         let agent = model.newSessionPickerAgent
         model.newSessionPickerPresented = false
-        chooseProjectFolder { path in
-            model.openSessions.newSession(agent: agent, projectPath: path)
+        chooseProjectFolder { project in
+            model.openSessions.newSession(agent: agent, project: project)
         }
     }
 }
