@@ -142,6 +142,62 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(store.catalogParser()(file)?.title, "shared title")
     }
 
+    /// A prompt seen only in the tail of a large file may be any later turn:
+    /// the bytes between head and tail were never read.
+    func testAClaudePromptFoundOnlyInTheTailIsAHintNotTheFirstPrompt() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("project/claude-id.jsonl")
+        let filler = String(repeating: "x", count: 1000)
+        var lines = [#"{"type":"system","sessionId":"claude-id","cwd":"/work"}"#]
+        lines += Array(repeating: "{\"type\":\"assistant\",\"sessionId\":\"claude-id\",\"message\":{\"content\":\"\(filler)\"}}", count: 200)
+        lines.append(#"{"type":"user","sessionId":"claude-id","message":{"content":"A later turn"}}"#)
+        try writeTranscript(lines.joined(separator: "\n"), at: file)
+        let summary = try XCTUnwrap(ClaudeSessionStore(root: root).loadSummary(at: file))
+        XCTAssertNil(summary.firstPrompt)
+        XCTAssertEqual(summary.laterPromptHint, "A later turn")
+    }
+
+    func testClaudeIdentityVerificationReadsABoundedPrefix() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("project/claude-id.jsonl")
+        let untyped = String(repeating: "{\"note\":\"\(String(repeating: "y", count: 500))\"}\n", count: 2200)
+        try writeTranscript(untyped + #"{"type":"user","sessionId":"claude-id"}"#, at: file)
+        let store = ClaudeSessionStore(root: root)
+        XCTAssertEqual(try store.verifyIdentity(at: file, expectedID: "claude-id"), .incomplete)
+        try writeTranscript(#"{"type":"user","sessionId":"claude-id"}"#, at: file)
+        XCTAssertEqual(try store.verifyIdentity(at: file, expectedID: "claude-id"), .verified)
+    }
+
+    /// Parsing accepted a header with only `session_id`; verification
+    /// demanded `id`, so such a member could load in History and never verify.
+    func testCodexVerificationReadsTheThreadIDTheParserReads() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("sessions/rollout-codex.jsonl")
+        try writeTranscript(#"{"type":"session_meta","payload":{"session_id":"codex-id","cwd":"/work"}}"#, at: file)
+        let store = CodexSessionStore(root: root)
+        XCTAssertEqual(store.loadSummary(at: file)?.id, "codex-id")
+        XCTAssertEqual(try store.verifyIdentity(at: file, expectedID: "codex-id"), .verified)
+        XCTAssertEqual(try store.verifyIdentity(at: file, expectedID: "other"), .mismatch)
+    }
+
+    func testCodexSharedFilesAreReadOncePerChange() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("sessions/rollout-codex.jsonl")
+        try writeTranscript(#"{"type":"session_meta","payload":{"id":"codex-id","cwd":"/work"}}"#, at: file)
+        let history = root.appendingPathComponent("history.jsonl")
+        try writeTranscript(#"{"session_id":"codex-id","ts":10,"text":"First"}"#, at: history)
+        let store = CodexSessionStore(root: root)
+        for _ in 0..<3 { XCTAssertEqual(store.loadSummary(at: file)?.historyPrompt, "First") }
+        XCTAssertEqual(store.shared.loads, 1)
+        try writeTranscript(#"{"session_id":"codex-id","ts":5,"text":"Earlier, found later"}"#, at: history)
+        XCTAssertEqual(store.loadSummary(at: file)?.historyPrompt, "Earlier, found later")
+        XCTAssertEqual(store.shared.loads, 2)
+    }
+
     func testCodexSummaryIncludesOnlyRecordedHistoryPromptsAsFacts() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

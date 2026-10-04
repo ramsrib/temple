@@ -1010,6 +1010,7 @@ private final class EngineCountingStore: IncrementalSessionStore, @unchecked Sen
     init(_ inner: any IncrementalSessionStore) { self.inner = inner }
     var agent: Agent { inner.agent }
     var watchedURLs: [URL] { inner.watchedURLs }
+    var sharedFactURLs: [URL] { inner.sharedFactURLs }
     func loadSummaries() -> [TranscriptSummary] { XCTFail("engine must never load the full store"); return [] }
     func sessionFileURLs() -> [URL] { inner.sessionFileURLs() }
     func enumerateSessionFiles() throws -> [URL] {

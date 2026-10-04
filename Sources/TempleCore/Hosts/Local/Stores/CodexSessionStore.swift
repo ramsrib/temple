@@ -8,6 +8,9 @@ public struct CodexSessionStore: TranscriptSummaryStore {
     let sessionsRoot: URL
     private let historyFile: URL
     private let sessionIndexFile: URL
+    /// history.jsonl and session_index.jsonl, read once per change to either
+    /// file rather than twice for every rollout parsed.
+    let shared = CodexSharedFactsCache()
 
     public init(root: URL? = nil) {
         // TEMPLE_CODEX_ROOT: see ClaudeSessionStore.
@@ -21,9 +24,9 @@ public struct CodexSessionStore: TranscriptSummaryStore {
     }
 
     public var watchedURLs: [URL] { [sessionsRoot.deletingLastPathComponent(), sessionsRoot] }
+    public var sharedFactURLs: [URL] { [historyFile, sessionIndexFile] }
     public func loadSummaries() -> [TranscriptSummary] {
-        let titles = loadTitles()
-        let historyPrompts = loadSharedPrompts()
+        let (titles, historyPrompts) = sharedFacts()
         let files = sessionFileURLs()
         let collector = TranscriptSummaryCollector()
         DispatchQueue.concurrentPerform(iterations: files.count) { index in
@@ -35,14 +38,21 @@ public struct CodexSessionStore: TranscriptSummaryStore {
     }
 
     public func loadSummary(at fileURL: URL) -> TranscriptSummary? {
-        parse(file: fileURL, sharedTitles: loadTitles(), historyPrompts: loadSharedPrompts())
+        let (titles, historyPrompts) = sharedFacts()
+        return parse(file: fileURL, sharedTitles: titles, historyPrompts: historyPrompts)
+    }
+
+    /// Titles and history prompts, re-read only when either file's
+    /// signature (modification date, size, inode) changes.
+    func sharedFacts() -> (titles: [String: String], historyPrompts: [String: String]) {
+        let signature = [historyFile, sessionIndexFile].map(CodexSharedFactsCache.signature)
+        return shared.facts(for: signature) { (loadTitles(), loadSharedPrompts()) }
     }
 
     public func catalogParser() -> @Sendable (URL) -> TranscriptSummary? { catalogSummaryParser() }
 
     public func catalogSummaryParser() -> @Sendable (URL) -> TranscriptSummary? {
-        let titles = loadTitles()
-        let historyPrompts = loadSharedPrompts()
+        let (titles, historyPrompts) = sharedFacts()
         let store = self
         return { store.parse(file: $0, sharedTitles: titles, historyPrompts: historyPrompts) }
     }
@@ -131,11 +141,21 @@ public struct CodexSessionStore: TranscriptSummaryStore {
         guard type == "session_meta" else { return nil }
         guard let payload = object["payload"] as? [String: Any] else { throw CocoaError(.fileReadCorruptFile) }
         guard !Self.isSubagentThread(payload) else { return nil }
-        guard let id = (payload["id"] as? String) ?? (payload["session_id"] as? String), !id.isEmpty,
+        guard let id = Self.threadID(payload),
               let cwd = payload["cwd"] as? String,
               let date = StoreIO.parseDate((payload["timestamp"] as? String) ?? (object["timestamp"] as? String))
         else { throw CocoaError(.fileReadCorruptFile) }
         return CodexRolloutCandidate(sessionID: id, cwd: cwd, createdAt: date, filePath: url)
+    }
+
+    /// The one reading of a rollout header's thread id, shared by parsing,
+    /// identity verification and adoption so they cannot disagree. `id` is
+    /// the thread's own; `session_id` is the ROOT thread's — equal to `id` for
+    /// a thread a person started, but a subagent's names its parent, so it is
+    /// only a fallback for headers that carry no `id`.
+    static func threadID(_ payload: [String: Any]) -> String? {
+        guard let id = (payload["id"] as? String) ?? (payload["session_id"] as? String), !id.isEmpty else { return nil }
+        return id
     }
 
     /// A thread spawned by another agent (`source.subagent.thread_spawn`, with
@@ -157,11 +177,7 @@ public struct CodexSessionStore: TranscriptSummaryStore {
               (firstObject["type"] as? String) == "session_meta",
               let payload = firstObject["payload"] as? [String: Any],
               !Self.isSubagentThread(payload),
-              // The thread's own id. `session_id` is the ROOT thread's: equal to
-              // `id` for a thread a person started, but a subagent's names its
-              // parent — reading it first filed every subagent under its parent.
-              let id = (payload["id"] as? String) ?? (payload["session_id"] as? String),
-              !id.isEmpty
+              let id = Self.threadID(payload)
         else { return nil }
 
         let cwd = payload["cwd"] as? String
@@ -318,5 +334,31 @@ public struct CodexSessionStore: TranscriptSummaryStore {
             earliest[id] = (ts, text)
         }
         return earliest.mapValues(\.text)
+    }
+}
+
+/// One read of the shared Codex files per change, for every parse until the
+/// next. Keyed by both files' signatures; a missing file has its own.
+final class CodexSharedFactsCache: @unchecked Sendable {
+    struct Signature: Equatable { let date: Date?; let size: Int?; let inode: UInt64? }
+    private let lock = NSLock()
+    private var key: [Signature]?
+    private var value: (titles: [String: String], historyPrompts: [String: String]) = ([:], [:])
+    private(set) var loads = 0
+
+    static func signature(_ url: URL) -> Signature {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return Signature(date: attributes?[.modificationDate] as? Date, size: attributes?[.size] as? Int,
+                         inode: (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value)
+    }
+
+    func facts(for signature: [Signature],
+               load: () -> (titles: [String: String], historyPrompts: [String: String]))
+        -> (titles: [String: String], historyPrompts: [String: String]) {
+        lock.lock(); defer { lock.unlock() }
+        if key != signature {
+            value = load(); key = signature; loads += 1
+        }
+        return value
     }
 }

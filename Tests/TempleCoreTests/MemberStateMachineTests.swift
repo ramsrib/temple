@@ -296,6 +296,42 @@ final class MemberStateMachineTests: XCTestCase {
         XCTAssertEqual(watcher.resolution(for: "pruned"), .confirmedAbsent)
     }
 
+    /// The rollout does not change when history.jsonl records the member's
+    /// prompt, so the attempt gate on the rollout's signature used to make
+    /// the title unreachable until the rollout was written again.
+    func testASharedHistoryPromptCompletesACodexTitleWithoutTheRolloutChanging() async throws {
+        let (root, file, db, spy, clock, watcher) = try fixture(agent: .codex)
+        try db.join(sessionID: "complete", via: .imported, agent: .claude,
+            core: SessionCore(directory: "/w", title: "Done", lastActiveAt: Date()))
+        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
+        try await wait { watcher.publishedSnapshot?.summaries["member"] != nil }
+        XCTAssertNil(watcher.publishedSnapshot?.summaries["member"]?.historyPrompt)
+        watcher.setEnrichmentWanted(["member": [.title]])
+        let parses = spy.parses
+        clock.advance(61)
+        let history = root.appendingPathComponent("history.jsonl")
+        try Data("{\"session_id\":\"member\",\"ts\":1,\"text\":\"Recorded later\"}".utf8).write(to: history)
+        watcher.reconcileEvent(path: history.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
+        try await wait { watcher.publishedSnapshot?.summaries["member"]?.historyPrompt == "Recorded later" }
+        XCTAssertEqual(spy.parses, parses + 1)
+        XCTAssertEqual(watcher.resolution(for: "member"), .loaded(file))
+    }
+
+    /// Filling one field shortens the backoff; it does not re-read a file
+    /// that has not changed.
+    func testAFieldFillDoesNotReparseAnUnchangedFile() async throws {
+        let (_, _, db, spy, _, watcher) = try fixture()
+        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
+        try await wait { watcher.publishedSnapshot?.summaries["member"] != nil }
+        watcher.setEnrichmentWanted(["member": [.directory, .title, .lastActiveAt, .agent]])
+        let parses = spy.parses
+        let observations = watcher.metrics.observations
+        _ = try db.fillCoreFields(sessionID: "member", directory: "/work")
+        watcher.setEnrichmentWanted(["member": [.title, .lastActiveAt, .agent]])
+        try await wait { watcher.metrics.observations > observations }
+        XCTAssertEqual(spy.parses, parses)
+    }
+
     func testClaudeVerifiesTheFirstTypedLineCarryingAnID() async throws {
         let (_, file, _, _, _, watcher) = try fixture(complete: true)
         try "{\"sessionId\":\"untyped\"}\n{\"type\":\"summary\"}\n{\"type\":\"user\",\"sessionId\":\"member\"}\n{\"type\":\"user\",\"sessionId\":\"other\"}".write(to: file, atomically: false, encoding: .utf8)
@@ -328,6 +364,7 @@ private final class P5SpyStore: IncrementalSessionStore, @unchecked Sendable {
     }
     var agent: Agent { inner.agent }
     var watchedURLs: [URL] { inner.watchedURLs }
+    var sharedFactURLs: [URL] { inner.sharedFactURLs }
     func loadSummaries() -> [TranscriptSummary] { XCTFail("No full-store parse"); return [] }
     func loadSummary(at fileURL: URL) -> TranscriptSummary? {
         lock.lock(); parseCount += 1; lock.unlock()

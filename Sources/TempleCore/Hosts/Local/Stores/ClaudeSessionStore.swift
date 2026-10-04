@@ -81,6 +81,9 @@ public struct ClaudeSessionStore: TranscriptSummaryStore {
         var anyUserTitle: String? // first user text of any kind (fallback)
         var topLevelTitle: String? // legacy fallback from any record
         var queuedPrompt: String?
+        // A prompt found only in the tail may be any later turn: the bytes
+        // between head and tail were never read. It is a display hint.
+        var tailPrompt: String?
         var validTypedLine = false
         var count = 0
         var model: String?
@@ -88,7 +91,8 @@ public struct ClaudeSessionStore: TranscriptSummaryStore {
         var branch: String?
         var summary: String?
 
-        for segment in segments {
+        for (segmentIndex, segment) in segments.enumerated() {
+            let inHead = segmentIndex == 0
             for line in segment.split(separator: "\n") {
                 guard let obj = StoreIO.jsonObject(line) else { continue }
                 let type = obj["type"] as? String
@@ -99,9 +103,9 @@ public struct ClaudeSessionStore: TranscriptSummaryStore {
                 }
                 if let value = obj["content"] as? String, !value.isEmpty {
                     if topLevelTitle == nil { topLevelTitle = value }
-                    if queuedPrompt == nil, type == "queue-operation",
-                       (obj["operation"] as? String) == "enqueue" {
-                        queuedPrompt = value
+                    if type == "queue-operation", (obj["operation"] as? String) == "enqueue" {
+                        if inHead { if queuedPrompt == nil { queuedPrompt = value } }
+                        else if tailPrompt == nil { tailPrompt = value }
                     }
                 }
                 if type == "user" || type == "assistant" {
@@ -112,8 +116,9 @@ public struct ClaudeSessionStore: TranscriptSummaryStore {
                             preview = StoreIO.cleanTitle(text, cap: 160)
                             if type == "user" {
                                 if anyUserTitle == nil { anyUserTitle = text }
-                                if humanTitle == nil, Self.isLikelyHumanPrompt(text) {
-                                    humanTitle = text
+                                if Self.isLikelyHumanPrompt(text) {
+                                    if inHead { if humanTitle == nil { humanTitle = text } }
+                                    else if tailPrompt == nil { tailPrompt = text }
                                 }
                             }
                         }
@@ -131,7 +136,7 @@ public struct ClaudeSessionStore: TranscriptSummaryStore {
         // Synthetic user messages and arbitrary top-level content can title the
         // legacy index, but only human messages and enqueues state a prompt.
         let firstPrompt = humanTitle ?? queuedPrompt
-        let legacyTitle = humanTitle ?? anyUserTitle ?? topLevelTitle
+        let legacyTitle = humanTitle ?? tailPrompt ?? anyUserTitle ?? topLevelTitle
 
         return TranscriptSummary(
             id: id,
@@ -147,6 +152,7 @@ public struct ClaudeSessionStore: TranscriptSummaryStore {
             lastMessagePreview: preview,
             recordedTitle: summary,
             directoryHint: cwd == nil ? Self.decodeDirName(encodedDirName) : nil,
+            laterPromptHint: firstPrompt == nil ? tailPrompt.map { StoreIO.cleanTitle($0) } : nil,
             legacyTitleHint: legacyTitle.map { StoreIO.cleanTitle($0) }
         )
     }

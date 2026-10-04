@@ -144,6 +144,26 @@ final class HostSessionSourceTests: XCTestCase {
     }
 }
 
+extension HostSessionSourceTests {
+    /// Shared session titles can complete only a Codex member still missing
+    /// one; re-resolving every member on every Codex prompt bought nothing.
+    func testSharedTitleChangesReResolveOnlyUntitledCodexMembers() async throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "codex-untitled", via: .imported, agent: .codex)
+        try db.join(sessionID: "codex-titled", via: .imported, agent: .codex, core: SessionCore(title: "Named"))
+        try db.join(sessionID: "claude-untitled", via: .imported, agent: .claude)
+        let source = FakeHostSource(host: .local)
+        let engine = SessionEngine(source: source, database: db)
+        let stream = engine.start()
+        defer { engine.stop(); withExtendedLifetime(stream) {} }
+        try await wait { engine.resolution(for: "codex-titled") == .confirmedAbsent }
+        let calls = source.callCount
+        source.send(.sharedTitlesChanged)
+        try await wait { source.callCount > calls }
+        XCTAssertEqual(source.lastBatch, ["codex-untitled"])
+    }
+}
+
 /// No local paths, stores or parser dependency: usable by engine and UI seam tests.
 final class FakeHostSource: HostSessionSource, @unchecked Sendable {
     let host: HostID
@@ -156,6 +176,8 @@ final class FakeHostSource: HostSessionSource, @unchecked Sendable {
     private var registered: Set<String> = []
     private var calls = 0
     var callCount: Int { lock.lock(); defer { lock.unlock() }; return calls }
+    private var batches: [[String]] = []
+    var lastBatch: [String] { lock.lock(); defer { lock.unlock() }; return batches.last ?? [] }
     var registeredIDs: Set<String> { lock.lock(); defer { lock.unlock() }; return registered }
     private var gated = false
     private var pending: CheckedContinuation<ResolutionBatch, Error>?
@@ -173,6 +195,7 @@ final class FakeHostSource: HostSessionSource, @unchecked Sendable {
     func resolve(_ requests: [ResolutionRequest]) async throws -> ResolutionBatch {
         try await withCheckedThrowingContinuation { waiting in
             lock.lock(); calls += 1; ids.formUnion(requests.map(\.id)); registered.formUnion(requests.map(\.id))
+            batches.append(requests.map(\.id).sorted())
             if gated { gated = false; pending = waiting; lock.unlock(); return }
             let batch = ResolutionBatch(generation: generation,
                 results: Dictionary(uniqueKeysWithValues: requests.map { ($0.id, ResolutionResult.absent) }))

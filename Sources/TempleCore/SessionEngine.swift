@@ -107,7 +107,7 @@ public final class SessionEngine: @unchecked Sendable {
                                 case .sessions(let ids): self.enqueueLocked(Set(ids).intersection(self.members))
                                 case .coverageReset(let generation):
                                     self.advanceGenerationLocked(generation)
-                                case .sharedTitlesChanged: self.enqueueLocked(self.members)
+                                case .sharedTitlesChanged: self.enqueueLocked(self.sharedTitleCandidatesLocked())
                                 }
                             }
                         }
@@ -121,6 +121,16 @@ public final class SessionEngine: @unchecked Sendable {
                 }
                 self.enqueueLocked(self.members, includeEmpty: true)
             }
+        }
+    }
+    /// Shared session titles can only complete a Codex member still missing
+    /// its title; nobody else is re-resolved for them.
+    private func sharedTitleCandidatesLocked() -> Set<String> {
+        members.filter { id in
+            let row = try? database?.sessionState(id)
+            if let agent = row?.agent, agent != .codex { return false }
+            if let wanted { return wanted[id]?.contains(.title) == true }
+            return row?.title == nil
         }
     }
     public func stop() { queue.async { [weak self = self] in self?.stopLocked() } }

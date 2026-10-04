@@ -5,7 +5,8 @@ Creates 1,355 Claude logs, 2,761 Codex logs and 337 member rows (164 logs
 present, 173 missing, 86 of those still hinting at a pruned path) under
 /private/tmp. Never reads personal stores or runs
 Temple. Each run gets APFS clonefiles of this seed, one member append at 4/s,
-and one non-member Codex append at 2/s. Logs/counters remain for inspection.
+one non-member Codex append at 2/s, and one Codex history.jsonl prompt at 1/s
+(each re-announces shared titles to every member). Logs/counters remain for inspection.
 Every invocation first rejects a disabled-watcher negative control; measured
 runs require active monitoring and delivered member observations.
 Usage: Scripts/bench-member-engine.py [--seconds 60] [--runs 2]
@@ -185,7 +186,8 @@ for run in range(-1, args.runs):
                                     samples[-1]['wall_seconds'] > publication_time[0])
         member=Path(str(files[('codex',0)][1]).replace(str(seed),str(directory)))
         outside=Path(str(files[('codex',100)][1]).replace(str(seed),str(directory)))
-        writes=[0,0]
+        history=directory/'codex/history.jsonl'
+        writes=[0,0,0]
         start=time.monotonic()
         for tick in range(int(seconds*4)):
             deadline=start+tick/4
@@ -198,6 +200,10 @@ for run in range(-1, args.runs):
                 with outside.open('a') as output:
                     output.write(json.dumps({'type':'event_msg','payload':{'type':'agent_message','message':f'outside {tick}'}})+'\n')
                 writes[1]+=1
+            if tick % 4 == 0:
+                with history.open('a') as output:
+                    output.write(json.dumps({'session_id':files[('codex',200)][0],'ts':10000+tick,'text':f'prompt {tick}'})+'\n')
+                writes[2]+=1
         # Allow final FSEvents delivery, then require a fresh metric sample.
         end_sample=wait_for_sample(lambda: samples[-1]['wall_seconds'] >=
                                   start_sample['wall_seconds'] + seconds + 1, timeout=5)
@@ -218,6 +224,7 @@ for run in range(-1, args.runs):
         window=[s for s in samples if s['wall_seconds'] >= start_sample['wall_seconds']]
         report={'run':run+1,'core_state':'upgrade (NULL fields)' if run==0 else 'filled',
                 'duration_seconds':elapsed,'member_writes':writes[0],'nonmember_writes':writes[1],
+                'history_writes':writes[2],
                 'monitoring':all(s['monitoring'] for s in window),
                 'startup_parses':start_sample['parses'],'startup_verifications':start_sample['verifications'],
                 'startup_publications':start_sample['publications'],

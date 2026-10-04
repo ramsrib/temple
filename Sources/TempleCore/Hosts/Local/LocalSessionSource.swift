@@ -124,9 +124,12 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
                         self.interests[id] = request
                         self.registeredIDs.insert(id)
                         if request.awaitingCreation { self.awaiting.insert(id) }
+                        // A fill shrinks what is wanted but changes nothing in the
+                        // file: it shortens the backoff, never re-reads the file.
                         let filled = previous.map { !$0.wanted.subtracting(request.wanted).isEmpty } ?? false
-                        if request.explicit || previous == nil || filled { self.resetEnrichmentLocked(id) }
-                        self.resolveLocked(id, explicit: request.explicit || filled)
+                        if request.explicit || previous == nil { self.resetEnrichmentLocked(id) }
+                        else if filled { self.resetBackoffLocked(id) }
+                        self.resolveLocked(id, explicit: request.explicit)
                         if request.explicit && (self.states[id] == .confirmedAbsent || self.states[id] == .resolving) {
                             self.enumerateLocked(); self.resolveLocked(id, explicit: true)
                         }
@@ -342,12 +345,8 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         }
         guard let path else { return }
         let url = URL(fileURLWithPath: path)
-        if ["history.jsonl", "session_index.jsonl"].contains(url.lastPathComponent),
-           stores.contains(where: { store in
-               guard let codex = store as? CodexSessionStore else { return false }
-               return SessionPaths.normalized(codex.sessionsRoot.deletingLastPathComponent().path) == url.deletingLastPathComponent().path
-           }) {
-            for continuation in changeContinuations.values { continuation.yield(.sharedTitlesChanged) }
+        if stores.contains(where: { $0.sharedFactURLs.contains { SessionPaths.normalized($0.path) == path } }) {
+            sharedFactsChangedLocked()
             return
         }
         // Codex sqlite/WAL/log traffic is rejected before stat or resolution.
@@ -378,6 +377,24 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         guard hintedMember || filenameMember || (stores.contains { $0.agent == .codex && $0.acceptsTranscript(url) } && !requests.isEmpty) else { return }
         pendingPaths.insert(path)
         scheduleLocked()
+    }
+
+    /// history.jsonl or session_index.jsonl changed. Only a Codex member
+    /// still wanting a title can gain anything from it, and its own rollout
+    /// is unchanged — so the attempt recorded against that rollout is
+    /// dropped (the backoff stands), and everyone else is left alone rather
+    /// than re-resolved on every Codex prompt.
+    private func sharedFactsChangedLocked() {
+        var touched = false
+        for id in registeredIDs.sorted() {
+            guard let interest = interests[id], interest.wanted.contains(.title) else { continue }
+            let agent = interest.agent ?? memberWork[id].flatMap { files[$0.path]?.1 }
+            guard agent == .codex else { continue }
+            memberWork[id]?.lastAttempt = nil
+            resolveLocked(id)
+            touched = true
+        }
+        if touched { publishLocked() }
     }
 
     private func logicalPath(_ raw: String) -> String? {
@@ -676,6 +693,15 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
 
     private func missingFieldsLocked(_ id: String, row: ResolutionRequest?) -> Set<SessionCoreField> {
         row?.wanted ?? []
+    }
+
+    /// The next attempt may come at once, but only for a file whose
+    /// signature differs from the last one read: an unchanged file is not
+    /// read again.
+    private func resetBackoffLocked(_ id: String) {
+        enrichmentTimers.removeValue(forKey: id)?.cancel()
+        memberWork[id]?.delay = 1
+        memberWork[id]?.nextAttempt = .distantPast
     }
 
     private func resetEnrichmentLocked(_ id: String) {

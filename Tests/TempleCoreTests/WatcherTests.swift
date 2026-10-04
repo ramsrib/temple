@@ -224,6 +224,7 @@ private final class MidWriteRacingStore: IncrementalSessionStore, @unchecked Sen
 
     var agent: Agent { inner.agent }
     var watchedURLs: [URL] { inner.watchedURLs }
+    var sharedFactURLs: [URL] { inner.sharedFactURLs }
     func loadSummaries() -> [TranscriptSummary] { inner.loadSummaries() }
     func sessionFileURLs() -> [URL] { inner.sessionFileURLs() }
 

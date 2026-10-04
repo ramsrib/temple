@@ -28,6 +28,9 @@ public protocol IncrementalSessionStore: SessionStore {
     /// Codex resume priority from the canonical filename (timestamp + rollout ID).
     func rolloutSelectionKey(at url: URL) -> String?
     func acceptsTranscript(_ url: URL) -> Bool
+    /// Files outside any transcript whose contents feed every summary
+    /// (Codex's history.jsonl and session_index.jsonl).
+    var sharedFactURLs: [URL] { get }
     func adoptionHeader(at url: URL) throws -> CodexRolloutCandidate?
     func metadataHeader(at url: URL) -> CodexRolloutCandidate?
     /// A parser for many files in one read (`LocalSessionCatalog.stream`): any
@@ -48,21 +51,26 @@ public extension IncrementalSessionStore {
             guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   obj["type"] as? String == "session_meta",
                   let payload = obj["payload"] as? [String: Any],
-                  let id = payload["id"] as? String, !id.isEmpty else { return .incomplete }
+                  let id = CodexSessionStore.threadID(payload) else { return .incomplete }
             return id == expectedID ? .verified : .mismatch
         }
         // Claude can have untyped records before the first typed sessionId.
-        // Stream lines rather than making verification depend on the head window.
+        // Stream lines rather than making verification depend on the head
+        // window, but only so far: a file with no typed id in its first
+        // megabyte is unverified, not read to the end.
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var pending = Data()
+        var read = 0
         func identity(_ line: Data) -> TranscriptVerification? {
             guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
                   obj["type"] is String, let id = obj["sessionId"] as? String else { return nil }
             return id == expectedID ? .verified : .mismatch
         }
         while true {
+            guard read < StoreIO.identityScanBytes else { return .incomplete }
             let chunk = try handle.read(upToCount: 64 * 1024) ?? Data()
+            read += chunk.count
             if chunk.isEmpty { return identity(pending) ?? .incomplete }
             pending.append(chunk)
             while let newline = pending.firstIndex(of: 0x0a) {
@@ -79,6 +87,7 @@ public extension IncrementalSessionStore {
     }
     func filenameID(at url: URL) -> String? { url.deletingPathExtension().lastPathComponent }
     func rolloutSelectionKey(at url: URL) -> String? { nil }
+    var sharedFactURLs: [URL] { [] }
     func acceptsTranscript(_ url: URL) -> Bool {
         url.pathExtension == "jsonl" && !url.pathComponents.contains("subagents")
     }
@@ -124,6 +133,8 @@ enum SessionPaths {
 
 enum StoreIO {
     static let readWindowBytes = 64 * 1024
+    /// How far identity verification reads before calling a file unverified.
+    static let identityScanBytes = 1024 * 1024
 
     /// Read only the first `maxBytes` of a file — enough for metadata + the
     /// first prompt, without loading multi-MB session logs into memory.
