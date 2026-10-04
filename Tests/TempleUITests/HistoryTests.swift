@@ -112,6 +112,26 @@ final class HistoryTests: XCTestCase {
         XCTAssertNil(try db.sessionState("different-id"))
     }
 
+    func testCancelledCatalogImportStopsSubmittingAndDoesNotJoin() async throws {
+        let db = try TempleDB.inMemory()
+        let overlay = SessionOverlayStore(db: db)
+        let firstWave = expectation(description: "four readers started")
+        firstWave.expectedFulfillmentCount = 4
+        let probe = ImportReaderProbe(firstWave: firstWave)
+        overlay.importSummaryReader = { probe.read($0) }
+        let rows = (0..<12).map { session("cancelled-import-\($0)", hoursAgo: Double($0)) }
+        let task = Task { await overlay.importCatalogSessions(rows) }
+        await fulfillment(of: [firstWave], timeout: 3)
+        task.cancel()
+        for _ in rows { probe.release.signal() }
+        let failures = await task.value
+        XCTAssertEqual(probe.count, 4)
+        XCTAssertEqual(failures.count, rows.count)
+        XCTAssertTrue(failures.values.allSatisfy { $0 is CancellationError })
+        XCTAssertTrue(overlay.templeSessions.isEmpty)
+        XCTAssertTrue(try db.sessionStates().isEmpty)
+    }
+
     func testImportParsesOffMainWithBoundedConcurrencyAndRechecksMembership() async throws {
         let db = try TempleDB.inMemory()
         let overlay = SessionOverlayStore(db: db)

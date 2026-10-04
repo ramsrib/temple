@@ -16,14 +16,12 @@ final class TranscriptBoundaryTests: XCTestCase {
         "TempleUI/App/WindowSnapshot.swift": "snapshot output directory",
         "TempleUI/App/SettingsKeysProbe.swift": "isolated settings probe",
         "TempleUI/Model/SettingsStore.swift": "user settings",
-        "TempleUI/Model/OpenSessionsModel.swift": "working-directory launch/exit observations",
-        "TempleUI/Model/HistoryModel.swift": "project-folder existence for nonmember noise"
     ]
     private func violations(_ text: String, path: String) throws -> [String] {
         if path.hasPrefix("TempleCore/Hosts/Local/") { return [] }
         // Usage is account-local, explicitly scoped out in §3 (CodexUsageReader).
         if path.hasPrefix("TempleCore/Usage/") { return [] }
-        let transcript = #"\bStoreIO\b|\bFSEventStream\w*|\b(?:loadSummary|loadSummaries|catalogParser|verifyIdentity|enumerateSessionFiles|sessionFileURLs|adoptionHeader|metadataHeader)\s*\(|TEMPLE_(?:CLAUDE|CODEX)_ROOT|\.claude/|\.codex/|"\.(?:claude|codex)""#
+        let transcript = #"\b(?:ClaudeSessionStore|CodexSessionStore|SessionStore|IncrementalSessionStore|TranscriptSummaryStore|SessionPaths|LocalSessionCatalog)\b|\bStoreIO\b|\bFSEventStream\w*|\b(?:loadSummary|loadSummaries|catalogParser|verifyIdentity|enumerateSessionFiles|sessionFileURLs|adoptionHeader|metadataHeader)\s*\(|TEMPLE_(?:CLAUDE|CODEX)_ROOT|\.claude/|\.codex/|"\.(?:claude|codex)""#
         let filesystem = #"\b(?:FileManager|FileHandle)\b|\b(?:String|Data)\s*\(\s*contentsOf"#
         let transcriptPattern = try NSRegularExpression(pattern: transcript)
         let filePattern = try NSRegularExpression(pattern: filesystem)
@@ -57,12 +55,14 @@ final class TranscriptBoundaryTests: XCTestCase {
     }
     func testTheAuditRejectsTranscriptAccessEvenInANonTranscriptIOFile() throws {
         for code in ["CodexSessionStore().loadSummary(at: url)", "StoreIO.readFirstLine(url)",
+                     "CodexSessionStore().loadTitles()", "CodexSessionStore().loadSharedPrompts()",
+                     "CodexSessionStore().catalogSummaryParser()", "let store: any TranscriptSummaryStore",
                      "FSEventStreamCreate(nil)", "root.appendingPathComponent(\".claude/projects\")",
                      "ProcessInfo.processInfo.environment[\"TEMPLE_CODEX_ROOT\"]"] {
             XCTAssertFalse(try violations(code, path: "TempleUI/App/AppModel.swift").isEmpty)
         }
         XCTAssertFalse(try violations("StoreIO.envRoot(\"TEMPLE_STATE_DIR\"); StoreIO.readFirstLine(url)", path: "TempleCore/TempleState.swift").isEmpty)
         XCTAssertFalse(try violations("Data(contentsOf: url)", path: "TempleCore/Unexpected.swift").isEmpty)
-        XCTAssertTrue(try violations("FileManager.default.fileExists(atPath: cwd)", path: "TempleUI/Model/OpenSessionsModel.swift").isEmpty)
+        XCTAssertTrue(try violations("FileManager.default.fileExists(atPath: cwd)", path: "TempleCore/SessionFilter.swift").isEmpty)
     }
 }

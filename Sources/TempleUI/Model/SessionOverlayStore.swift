@@ -230,38 +230,46 @@ public final class SessionOverlayStore: ObservableObject {
     func prepareImports(_ sessions: [TranscriptSummary]) async -> [PreparedSessionImport] {
         let sessions = sessions.filter { !templeSessions.contains($0.id) }
         let read = importSummaryReader
-        return await Task.detached(priority: .userInitiated) {
-            await withTaskGroup(of: (Int, PreparedSessionImport).self) { group in
-                var next = 0
-                var results: [Int: PreparedSessionImport] = [:]
-                func enqueue(_ index: Int) {
-                    let session = sessions[index]
-                    group.addTask {
-                        let summary = await read(session)
-                        let facts = summary?.id == session.id && summary?.locator.host == session.locator.host ? summary : nil
-                        return (index, PreparedSessionImport(id: session.id, agent: session.agent,
-                            path: session.locator.localURL, core: SessionCore(host: session.locator.host, directory: facts?.cwd,
-                                directorySource: facts?.cwd == nil ? nil : .transcript,
-                                title: facts?.firstPrompt ?? facts?.historyPrompt, lastActiveAt: facts?.modifiedAt)))
-                    }
+        guard !Task.isCancelled else { return [] }
+        return await withTaskGroup(of: (Int, PreparedSessionImport?).self) { group in
+            var next = 0
+            var results: [Int: PreparedSessionImport] = [:]
+            func enqueue(_ index: Int) {
+                let session = sessions[index]
+                group.addTask(priority: .userInitiated) {
+                    guard !Task.isCancelled else { return (index, nil) }
+                    let summary = await read(session)
+                    guard !Task.isCancelled else { return (index, nil) }
+                    let facts = summary?.id == session.id && summary?.locator.host == session.locator.host ? summary : nil
+                    return (index, PreparedSessionImport(id: session.id, agent: session.agent,
+                        path: session.locator.localURL, core: SessionCore(host: session.locator.host, directory: facts?.cwd,
+                            directorySource: facts?.cwd == nil ? nil : .transcript,
+                            title: facts?.firstPrompt ?? facts?.historyPrompt, lastActiveAt: facts?.modifiedAt)))
                 }
-                while next < min(4, sessions.count) { enqueue(next); next += 1 }
-                while let (index, entry) = await group.next() {
-                    results[index] = entry
-                    if next < sessions.count { enqueue(next); next += 1 }
-                }
-                return sessions.indices.compactMap { results[$0] }
             }
-        }.value
+            while next < min(4, sessions.count), !Task.isCancelled { enqueue(next); next += 1 }
+            while let (index, entry) = await group.next() {
+                guard !Task.isCancelled else { group.cancelAll(); return [] }
+                results[index] = entry
+                if next < sessions.count { enqueue(next); next += 1 }
+            }
+            return Task.isCancelled ? [] : sessions.indices.compactMap { results[$0] }
+        }
     }
 
     public func importCatalogSessions(_ sessions: [TranscriptSummary]) async -> [String: Error] {
         let entries = await prepareImports(sessions)
+        guard !Task.isCancelled else { return cancellationFailures(sessions.map(\.id)) }
         return importPreparedSessions(entries)
     }
 
     func importPreparedSessions(_ entries: [PreparedSessionImport]) -> [String: Error] {
-        importCore(entries.map { ($0.id, $0.agent, $0.path, $0.core) })
+        guard !Task.isCancelled else { return cancellationFailures(entries.map(\.id)) }
+        return importCore(entries.map { ($0.id, $0.agent, $0.path, $0.core) })
+    }
+
+    private func cancellationFailures(_ ids: [String]) -> [String: Error] {
+        Dictionary(ids.map { ($0, CancellationError() as Error) }, uniquingKeysWith: { first, _ in first })
     }
 
     private func importCore(_ entries: [(String, Agent, URL?, SessionCore)]) -> [String: Error] {

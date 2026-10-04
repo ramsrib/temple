@@ -753,6 +753,7 @@ public final class HistoryModel: ObservableObject {
         let sessions = request.sessions.filter { !isInTemple($0.id) }
         guard !sessions.isEmpty else { return }
         let entries = await overlay.prepareImports(sessions)
+        guard !Task.isCancelled else { return }
         finishImport(entries, sessions: sessions, undoManager: undoManager)
     }
 
