@@ -898,6 +898,27 @@ public final class AppModel: ObservableObject {
         return ranked.filter { open.contains($0.id) } + ranked.filter { !open.contains($0.id) }
     }
 
+    /// A palette row can open when its tab is already there or its row knows
+    /// the agent and folder to resume in.
+    public func canOpenFromPalette(_ session: Session) -> Bool {
+        openSessions.openTab(forSessionID: session.id) != nil || session.canResume
+    }
+
+    /// Return on a palette row. A row with no folder cannot be resumed — it
+    /// used to close the palette and do nothing — so it goes to History,
+    /// narrowed to that one session, where it can be seen and archived.
+    public func openPaletteResult(_ session: Session) {
+        commandPalettePresented = false
+        if let tab = openSessions.openTab(forSessionID: session.id) {
+            openSessions.activate(tab)
+        } else if session.canResume {
+            openSessions.openSession(session)
+        } else {
+            history.query = session.id
+            openSessions.openHistory()
+        }
+    }
+
     /// The index can surface the same session id under more than one project
     /// (the pre-recency palette silently uniqued through a Dictionary). Lists
     /// keyed by id — ForEach identity, selection maps — must never see a

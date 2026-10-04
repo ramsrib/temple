@@ -115,8 +115,7 @@ struct CommandPaletteView: View {
             return
         }
         guard results.indices.contains(selection) else { return }
-        model.openSessions.openSession(results[selection])
-        model.commandPalettePresented = false
+        model.openPaletteResult(results[selection])
     }
 
     private func searchHistory() {
@@ -161,16 +160,20 @@ private struct PaletteResultRow: View {
     @State private var hovering = false
 
     var body: some View {
+        // A row with no folder opens History instead of a tab: it says so,
+        // dimmed, rather than looking like a session Return would resume.
+        let openable = model.canOpenFromPalette(session)
         HStack(spacing: 10) {
             if let agent = session.agent { AgentBadge(agent: agent, size: 14) }
             VStack(alignment: .leading, spacing: 1) {
                 Text(model.displayTitle(session))
                     .font(.system(size: 13))
                     .lineLimit(1)
-                Text(session.project?.displayName ?? "No project")
+                Text(session.project?.displayName ?? (openable ? "No project" : "Folder unknown · opens in History"))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
+            .opacity(openable ? 1 : 0.55)
             Spacer()
         }
         .padding(.horizontal, 14)
