@@ -308,6 +308,17 @@ public final class SessionOverlayStore: ObservableObject {
         return left
     }
 
+    /// A created session whose tab closed unused (see
+    /// `TempleDB.discardUnstartedCreation`).
+    public func discardUnstartedCreation(_ id: String) {
+        guard templeSessions.contains(id) else { return }
+        do {
+            if try db.discardUnstartedCreation(sessionID: id) { templeSessions.remove(id) }
+        } catch {
+            TempleUILog.db.error("discard failed for session \(id, privacy: .public): \(String(describing: error), privacy: .public)")
+        }
+    }
+
     /// The session was opened in a tab. Written for members only (it never
     /// joins one), so an import undone later can tell the session was used:
     /// `TempleDB.leave` keeps a row opened since.

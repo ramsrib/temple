@@ -71,6 +71,11 @@ public final class SessionTab: ObservableObject, Identifiable {
         missingWorkingDirectory.map { "The folder \($0) no longer exists" }
     }
     @Published public var isProvisional: Bool
+    /// The user has sent this tab's agent something (Return). A new tab
+    /// closed before that started no conversation.
+    var inputSubmitted = false
+    /// A tab that started a new session and closed before anything was sent.
+    var startedNothing: Bool { kind == .session && !isResume && !inputSubmitted && sessionID != nil }
 
     /// The command the surface spawns. `nil` for a utility tab.
     public private(set) var command: TerminalCommand?

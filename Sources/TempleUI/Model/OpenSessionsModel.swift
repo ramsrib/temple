@@ -64,6 +64,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// `.opened` for one resumed or restored. AppModel makes it a Temple session.
     public var openedHandler: ((_ sessionID: String, _ via: JoinedVia, _ agent: Agent?, _ transcriptPath: URL?, _ core: SessionCore) -> Void)?
     public var touchHandler: ((String, Date?) -> Void)?
+    /// A new session's tab went away before anything was sent to it.
+    public var unstartedHandler: ((String) -> Void)?
     public var launchDirectoryHandler: ((String, String) -> Void)?
     private var awaitingExitDiagnosis: Set<SessionTab.ID> = []
 
@@ -619,7 +621,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Settings tab are removed immediately.
     public func closeTab(_ tabID: SessionTab.ID) {
         guard !isQuitting, let tab = tabs.first(where: { $0.id == tabID }) else { return }
-        if tab.kind == .session, let sessionID = tab.sessionID {
+        // ⌘⇧T cannot resume a conversation that was never started.
+        if tab.kind == .session, let sessionID = tab.sessionID, !tab.startedNothing {
             touchHandler?(sessionID, nil)
             closedTabs.append(ClosedTabRecord(
                 host: tab.host,
@@ -679,7 +682,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                 }
                 continue  // genuinely reopened by another route — spent
             }
-            if let row = sessionRow(closed.sessionID) {
+            // A row that cannot place itself yet reopens from the closed
+            // tab's own facts, as a restored chip does (activate re-reads it).
+            if let row = sessionRow(closed.sessionID), row.canResume {
                 openSession(row)
                 return
             }
@@ -725,6 +730,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         }
         if wasActive { selectNeighbor(removedIndex: index, removedProject: tab.projectKey, wasUtility: tab.isUtility) }
         persist()
+        // After persist: the row must no longer be in a restorable tab.
+        if tab.startedNothing, let sid = tab.sessionID { unstartedHandler?(sid) }
     }
 
     private func selectNeighbor(removedIndex: Int, removedProject: ProjectKey, wasUtility: Bool) {
@@ -1030,6 +1037,7 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
     /// The user submitted a prompt (Return) → the agent is now working (Item E).
     public func surfaceDidSubmitInput(_ surface: TerminalSurface) {
         guard !isQuitting, let tab = tab(for: surface), tab.kind == .session else { return }
+        tab.inputSubmitted = true
         if let sid = tab.sessionID { touchHandler?(sid, nil) }
         tab.activity = .running
         // Restart the settle clock so it can decay again once work finishes.

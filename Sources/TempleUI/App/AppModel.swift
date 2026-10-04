@@ -414,6 +414,13 @@ public final class AppModel: ObservableObject {
             }
         }
         openSessions.touchHandler = { [weak self] id, at in self?.overlay.touch(id, at: at) }
+        // ⌘T then close without typing: the minted id never got a transcript,
+        // and its row would read "New Claude session" forever. Only the
+        // engine's awaiting-creation verdict proves there is no transcript.
+        openSessions.unstartedHandler = { [weak self] id in
+            guard let self, self.latestEngineSnapshot?.resolutions[id] == .awaitingCreation else { return }
+            self.overlay.discardUnstartedCreation(id)
+        }
         openSessions.launchDirectoryHandler = { [weak self] id, cwd in
             self?.overlay.observeLaunchDirectory(id, cwd)
         }

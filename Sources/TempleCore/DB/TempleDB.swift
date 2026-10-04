@@ -445,6 +445,33 @@ public final class TempleDB: @unchecked Sendable {
         return left
     }
 
+    /// A session Temple created whose tab closed before anything was sent:
+    /// the row goes only while it still says nothing beyond that creation —
+    /// never pinned, named, colored or archived, and in no restorable tab.
+    /// A terminal title alone does not keep it (an idle agent titles itself).
+    /// The caller decides that no transcript exists. Returns whether it went.
+    @discardableResult
+    public func discardUnstartedCreation(sessionID: String) throws -> Bool {
+        let left = try db.write { database in
+            try database.execute(
+                sql: """
+                    DELETE FROM session_state
+                    WHERE id = ? AND joined_via = ?
+                      AND pinned = 0 AND archived = 0
+                      AND custom_name IS NULL AND color IS NULL
+                      AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
+                    """,
+                arguments: [sessionID, JoinedVia.created.rawValue, sessionID]
+            )
+            return database.changesCount > 0
+        }
+        if left {
+            committedLeave(sessionID)
+            committedRowChange(sessionID)
+        }
+        return left
+    }
+
     /// Hints never insert membership or change provenance, and do not trigger a
     /// second resolution after the engine has already parsed this file.
     public func updateTranscriptHint(sessionID: String, agent: Agent, path: URL) throws {
