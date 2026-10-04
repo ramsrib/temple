@@ -83,6 +83,10 @@ public actor SessionEngine: HostEngine {
     /// Per member: the delay before a read that found its file changing
     /// (changed during the read, or not the listed version) is tried again.
     private var churnDelays: [String: TimeInterval] = [:]
+    /// Per member: no read before this time (the churn backoff). Events
+    /// still revoke at once; their work waits for it. Explicit refresh,
+    /// and an accepted read, lift it.
+    private var churnUntil: [String: Date] = [:]
     /// Which members a transcript locator concerns (their hint and listed
     /// candidates), so an event costs a lookup, not a scan of every member.
     private var byLocator: [TranscriptLocator: Set<String>] = [:]
@@ -173,6 +177,7 @@ public actor SessionEngine: HostEngine {
         changesTask?.cancel(); changesTask = nil
         timerTask?.cancel(); timerTask = nil; timerDue = nil
         pending.removeAll(); explicit.removeAll(); deferred.removeAll(); readDelays.removeAll(); churnDelays.removeAll()
+        churnUntil.removeAll()
         byLocator.removeAll(); indexed.removeAll()
         membershipRetryAt = nil; membershipLoaded = false
         members.removeAll(); prestartAwaiting.removeAll()
@@ -231,6 +236,7 @@ public actor SessionEngine: HostEngine {
         member.resetBudget()
         member.failures.removeAll()
         members[id] = member
+        churnUntil.removeValue(forKey: id)   // an explicit open does not wait
         invalidate(id)
         explicit.insert(id)
         enqueue([id])
@@ -320,6 +326,7 @@ public actor SessionEngine: HostEngine {
         snapshotDirty = true
         pending.remove(id); explicit.remove(id); deferred.removeValue(forKey: id); readDelays.removeValue(forKey: id)
         churnDelays.removeValue(forKey: id)
+        churnUntil.removeValue(forKey: id)
         reindex(id)
         resolveAbsenceWaiters(id, absent: false)
         publishNow()
@@ -363,6 +370,15 @@ public actor SessionEngine: HostEngine {
     /// a test can deliver them late — after a leave and a rejoin, say.
     nonisolated func holdDatabaseCallbacks() { relay.hold() }
     nonisolated func releaseDatabaseCallbacks(reversed: Bool = false) { relay.release(reversed: reversed) }
+
+    /// Starts (or extends) the member's churn backoff.
+    private func holdForChurn(_ id: String) {
+        let delay = churnDelays[id] ?? 0.25
+        churnDelays[id] = min(8, delay * 2)
+        churnUntil[id] = now().addingTimeInterval(delay)
+        deferred[id] = churnUntil[id]
+        scheduleTimer()
+    }
 
     // MARK: Locator index
 
@@ -413,7 +429,14 @@ public actor SessionEngine: HostEngine {
 
     private func enqueue(_ ids: Set<String>) {
         guard running, membershipLoaded else { return }
-        let live = ids.filter { members[$0] != nil }
+        var live = ids.filter { members[$0] != nil }
+        // A member waiting out a churn backoff stays deferred to its
+        // deadline, however many events arrive meanwhile.
+        let time = now()
+        let held = live.filter { (churnUntil[$0] ?? .distantPast) > time }
+        for id in held { deferred[id] = churnUntil[id] }
+        if !held.isEmpty { scheduleTimer() }
+        live.subtract(held)
         guard !live.isEmpty else { return }
         for id in live { deferred.removeValue(forKey: id) }
         pending.formUnion(live)
@@ -476,7 +499,7 @@ public actor SessionEngine: HostEngine {
         defer { publishIfRevoked() }
         switch change {
         case .transcripts(let ids, let locators):
-            var affected = ids.intersection(members.keys)
+            var affected = Set(ids.filter { members[$0] != nil })
             for locator in locators { affected.formUnion(byLocator[locator] ?? []) }
             guard !affected.isEmpty else { return }
             counters.observations &+= UInt64(affected.count)
@@ -488,6 +511,10 @@ public actor SessionEngine: HostEngine {
             // listing decides, and an append to the same file is a stat.
             for id in affected {
                 guard let member = members[id] else { continue }
+                // Work under way is superseded by a change to its file: the
+                // file is changing under the reads, so the next one waits
+                // out a short, growing delay (the churn backoff).
+                if member.pass != nil { holdForChurn(id) }
                 if member.guardsFacts {
                     invalidate(id)
                     members[id]?.verified = nil
@@ -546,6 +573,10 @@ public actor SessionEngine: HostEngine {
         let epoch: UInt64
         let requests: [LocateRequest]
         let revisions: [String: UInt64]
+        /// The membership each request was for: a member that left and
+        /// rejoined starts its revisions again, so the revision alone is not
+        /// its identity.
+        let incarnations: [String: String?]
     }
 
     private static func drain(source: any HostSessionSource, epoch: UInt64, engine box: WeakEngine) async {
@@ -592,21 +623,31 @@ public actor SessionEngine: HostEngine {
         }
         var requests: [LocateRequest] = []
         var revisions: [String: UInt64] = [:]
+        var incarnations: [String: String?] = [:]
+        let time = now()
         while requests.isEmpty, !pending.isEmpty {
             let ids = Array(pending.sorted().prefix(256))
             pending.subtract(ids)
             for id in ids {
                 guard let member = members[id] else { continue }
+                // Queued before its churn backoff began: it waits for it
+                // (an explicit request does not).
+                if !explicit.contains(id), let until = churnUntil[id], until > time {
+                    deferred[id] = until
+                    scheduleTimer()
+                    continue
+                }
                 let refresh = explicit.remove(id) != nil
                 members[id]?.pendingExplicit = refresh
                 requests.append(LocateRequest(id: id, agent: member.agent, hint: member.hint, refresh: refresh))
                 revisions[id] = member.opRevision
+                incarnations[id] = .some(member.incarnation)
             }
         }
         guard !requests.isEmpty else { draining = false; drainTask = nil; return nil }
         counters.locates &+= 1
         mirror.setCounters(counters)
-        return LocateBatch(epoch: epoch, requests: requests, revisions: revisions)
+        return LocateBatch(epoch: epoch, requests: requests, revisions: revisions, incarnations: incarnations)
     }
 
     /// The first read for each member that needs one; every other member of
@@ -627,7 +668,7 @@ public actor SessionEngine: HostEngine {
             // Only members this listing was still for: one that left,
             // rejoined or was asked for again since is queued anew, and its
             // own listing answers for it (and for any absence waiter).
-            for id in ids where members[id] != nil && members[id]?.opRevision == batch.revisions[id] {
+            for id in ids where isCurrent(id, batch, batch.revisions) {
                 if members[id]?.everSettled == false, members[id]?.awaitingCreation == false {
                     members[id]?.resolution = .incomplete
                     snapshotDirty = true
@@ -657,7 +698,7 @@ public actor SessionEngine: HostEngine {
                 // re-armed; members outside this batch are located again,
                 // and this batch — listed under the new coverage — goes on.
                 for id in members.keys {
-                    let current = members[id]?.opRevision == batch.revisions[id]
+                    let current = isCurrent(id, batch, batch.revisions)
                     members[id]?.resetBudget()
                     members[id]?.failures.removeAll()
                     members[id]?.verified = nil
@@ -671,7 +712,7 @@ public actor SessionEngine: HostEngine {
         complete = located.complete
         var reads: [(String, ReadPlan)] = []
         for id in ids {
-            guard var member = members[id], member.opRevision == revisions[id] else { continue }
+            guard isCurrent(id, batch, revisions), var member = members[id] else { continue }
             let candidates = located.candidates[id] ?? []
             member.candidates = candidates
             members[id] = member
@@ -694,14 +735,21 @@ public actor SessionEngine: HostEngine {
                     member = members[id]!
                 }
             }
-            member.pass = Pass(epoch: batch.epoch, opRevision: member.opRevision, coverage: coverage,
-                               explicit: member.pendingExplicit, queue: present)
+            member.pass = Pass(epoch: batch.epoch, opRevision: member.opRevision, incarnation: member.incarnation,
+                               coverage: coverage, explicit: member.pendingExplicit, queue: present)
             member.pendingExplicit = false
             members[id] = member
             if let plan = step(id, after: nil) { reads.append((id, plan)) }
         }
         publishIfRevoked()
         return reads
+    }
+
+    /// Whether this listing was for the member as it is now: the same
+    /// membership, with nothing having invalidated it since.
+    private func isCurrent(_ id: String, _ batch: LocateBatch, _ revisions: [String: UInt64]) -> Bool {
+        guard let member = members[id], let incarnation = batch.incarnations[id] else { return false }
+        return member.incarnation == incarnation && member.opRevision == revisions[id]
     }
 
     private func endPass(epoch: UInt64) {
@@ -719,15 +767,17 @@ public actor SessionEngine: HostEngine {
         /// The pass it was issued for: a result is accepted only by that pass.
         let epoch: UInt64
         let opRevision: UInt64
+        let incarnation: String?
     }
 
     /// Takes the outcome of the previous read (if any), then decides the
     /// next one — or settles the member and returns nil.
     private func step(_ id: String, after previous: (ReadPlan, Result<TranscriptRead, Error>)?) -> ReadPlan? {
-        guard running, var member = members[id], var pass = member.pass,
-              pass.epoch == runEpoch, pass.opRevision == member.opRevision, pass.coverage == coverage else { return nil }
+        guard running, var member = members[id], var pass = member.pass, pass.epoch == runEpoch,
+              pass.incarnation == member.incarnation, pass.opRevision == member.opRevision,
+              pass.coverage == coverage else { return nil }
         if let (plan, outcome) = previous {
-            guard plan.epoch == pass.epoch, plan.opRevision == pass.opRevision,
+            guard plan.epoch == pass.epoch, plan.incarnation == pass.incarnation, plan.opRevision == pass.opRevision,
                   pass.queue.first?.locator == plan.locator else { return nil }
             pass.queue.removeFirst()
             counters.reads &+= 1
@@ -789,6 +839,7 @@ public actor SessionEngine: HostEngine {
             }
             readDelays.removeValue(forKey: id)
             churnDelays.removeValue(forKey: id)
+            churnUntil.removeValue(forKey: id)
             switch read.identity {
             case .verified:
                 if member.verified?.locator != plan.locator { member.enrichmentFailed = false }
@@ -910,6 +961,13 @@ public actor SessionEngine: HostEngine {
                       signature.identity == current.signature.identity, signature.size > current.signature.size {
                 // A complete member's transcript appended to (same file,
                 // grown): nothing to protect, nothing to read.
+                // Accepted limitation (decided): a file rewritten in place
+                // to ANOTHER session and grown on the same inode stays
+                // loaded here. Header evidence on every append would bring
+                // back the per-append read this path exists to avoid; no
+                // agent CLI rewrites a transcript into another session in
+                // place; and a complete member holds no facts, so nothing
+                // of the other session can reach its row.
                 member.verified = (locator, signature)
                 verified = true
             } else {
@@ -958,7 +1016,7 @@ public actor SessionEngine: HostEngine {
             member.delay = min(60, member.delay * 2)
         }
         return .read(ReadPlan(locator: locator, agent: candidate.agent, facts: parse, signature: signature,
-                              epoch: pass.epoch, opRevision: pass.opRevision))
+                              epoch: pass.epoch, opRevision: pass.opRevision, incarnation: pass.incarnation))
     }
 
     /// Facts for this membership as the engine stands now, or nil when the
@@ -1008,10 +1066,7 @@ public actor SessionEngine: HostEngine {
         if final || pass.loaded != nil { member.everSettled = true }
         members[id] = member
         if pass.churned {
-            let delay = churnDelays[id] ?? 0.25
-            churnDelays[id] = min(8, delay * 2)
-            deferred[id] = now().addingTimeInterval(delay)
-            scheduleTimer()
+            holdForChurn(id)
         } else if pass.requeue {
             enqueue([id])
         }
@@ -1148,6 +1203,7 @@ private struct Member {
 private struct Pass {
     let epoch: UInt64
     var opRevision: UInt64
+    let incarnation: String?
     let coverage: UInt64
     let explicit: Bool
     var queue: [TranscriptCandidate]

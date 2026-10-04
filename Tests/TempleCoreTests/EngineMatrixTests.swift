@@ -99,13 +99,16 @@ final class EngineMatrixTests: XCTestCase {
     }
 
     /// `consume: false` leaves the snapshots to the test (no automatic writes).
+    /// `timers: false` never lets the engine's own timers fire: the test
+    /// moves the clock and runs due work itself (`reconcileEnrichment`).
     func harness(host: HostID = remote, hasInodes: Bool = true, database: TempleDB? = nil, trace: SQLTrace? = nil,
-                 consume: Bool = true) throws -> Harness {
+                 consume: Bool = true, timers: Bool = true) throws -> Harness {
         let source = FakeHostSource(host: host, hasInodes: hasInodes)
         let (db, trace) = try database.map { ($0, trace ?? SQLTrace()) } ?? SQLTrace.database()
         let clock = Clock()
         let engine = SessionEngine(source: source, database: db, now: { clock.now },
                                    sleep: { duration in
+                                       guard timers else { try await Task.sleep(for: .seconds(3600)); return }
                                        try await Task.sleep(for: .milliseconds(15))
                                        clock.advance(duration)
                                    })
@@ -628,6 +631,62 @@ final class EngineMatrixTests: XCTestCase {
                        "the old membership's failed listing marked the new one")
         try await waitUntil("filled") { try self.row(h, id)?.title != nil }
         XCTAssertEqual(h.writes.succeeded.map(\.incarnation), [fresh])
+    }
+
+    /// The leave callback removes the member before the rejoin is seen: the
+    /// new membership starts its revisions again, and a listing held from
+    /// the old one (failing) must still not count for it.
+    func testAFailedListingFromBeforeALeaveDoesNotCountForTheRejoinedMember() async throws {
+        let h = try harness()
+        let id = uuid()
+        h.source.write(claudePath(id), agent: .claude, data: claudeData(id))
+        try join(h, id, path: claudePath(id))
+        let gate = holdListings(h)
+        await h.engine.start()
+        try await waitUntil("listing held") { gate.arrivals == 1 }
+        h.source.failNextLocates(1)
+        XCTAssertTrue(try h.db.leave(sessionID: id, host: h.source.host))
+        try await waitUntil("member removed") { h.recorder.latest?.resolutions[id] == nil && h.recorder.latest != nil }
+        try join(h, id, path: claudePath(id))
+        let fresh = try XCTUnwrap(try row(h, id)?.incarnation)
+        try await waitUntil("rejoined") { h.recorder.latest?.resolutions[id] != nil }
+        let mark = h.recorder.snapshots.count
+        gate.open()
+        try await waitUntil("loaded") { self.isLoaded(h, id) }
+        XCTAssertFalse(h.recorder.snapshots[mark...].contains { $0.resolutions[id] == .incomplete },
+                       "the old membership's listing counted for the new one")
+        try await waitUntil("filled") { try self.row(h, id)?.title != nil }
+        XCTAssertEqual(h.writes.succeeded.map(\.incarnation), [fresh])
+    }
+
+    /// A file that changes under every read waits out its backoff however
+    /// many events arrive meanwhile: events revoke, reads follow the
+    /// schedule (here: none until the test runs the due work).
+    func testContinuousEventsDuringAChurnBackoffDoNotTriggerReads() async throws {
+        let h = try harness(timers: false)
+        let id = uuid()
+        let path = claudePath(id)
+        h.source.write(path, agent: .claude, data: claudeData(id))
+        try join(h, id, path: path)
+        let fake = h.source
+        fake.readPhaseHook = { changed in fake.append(changed, Data("\n{}".utf8)) }
+        await h.engine.start()
+        try await waitUntil("first read churned") { h.source.counters.reads >= 1 }
+        try await settle()
+        let reads = h.source.counters.reads
+        for n in 0..<50 {
+            fake.append(path, Data("\n{\"n\":\(n)}".utf8))
+            try await Task.sleep(for: .milliseconds(4))
+        }
+        try await settle(300)
+        XCTAssertEqual(h.source.counters.reads, reads, "events during the backoff read nothing")
+        XCTAssertGreaterThan(h.source.counters.locates, 0)
+        // The deadline passes: exactly one more read.
+        fake.readPhaseHook = nil
+        h.clock.advance(1)
+        await h.engine.reconcileEnrichment()
+        try await waitUntil("read at the deadline") { h.source.counters.reads == reads + 1 }
+        try await waitUntil("filled") { try self.row(h, id)?.title != nil }
     }
 
     /// `confirmAbsence` asked while an older listing is held: that listing's
@@ -1222,6 +1281,44 @@ final class Flag: @unchecked Sendable {
     func set() { lock.lock(); value = true; lock.unlock() }
     /// True the first time only.
     func setOnce() -> Bool { lock.lock(); defer { lock.unlock() }; let first = !value; value = true; return first }
+}
+
+/// Each id is claimed immediately before its own write: a write that ran
+/// first, and whose observers delivered newer facts or a revocation for
+/// another id, leaves nothing superseded to be written after it.
+final class FactCommitterClaimTests: XCTestCase {
+    private func facts(_ db: TempleDB, _ id: String, cwd: String, revision: UInt64) throws -> AuthorizedFacts {
+        let locator = TranscriptLocator(host: .local, path: "/tmp/\(id).jsonl")
+        return AuthorizedFacts(authorization: .init(runEpoch: 1, opRevision: revision, incarnation: try XCTUnwrap(try db.sessionState(id)?.incarnation)),
+            locator: locator, agent: .claude, signature: TranscriptSignature(modifiedAt: Date(timeIntervalSince1970: 1), size: 1, identity: 1),
+            coverage: 1, sharedRevision: nil,
+            summary: TranscriptSummary(id: id, agent: .claude, locator: locator, modifiedAt: Date(timeIntervalSince1970: 1), cwd: cwd))
+    }
+
+    func testFactsReplacedOrRevokedDuringAnotherIDsWriteAreNotWrittenStale() throws {
+        for revoke in [false, true] {
+            let (db, _) = try SQLTrace.database()
+            for id in ["a", "b"] { try db.join(sessionID: id, via: .imported) }
+            let a = try facts(db, "a", cwd: "/a", revision: 1)
+            let bOld = try facts(db, "b", cwd: "/b-old", revision: 1), bNew = try facts(db, "b", cwd: "/b-new", revision: 2)
+            let persister = FactPersister(database: db)
+            final class Box: @unchecked Sendable { var committer: FactCommitter?; var done = false }
+            let box = Box()
+            box.committer = FactCommitter(persist: { id, facts in
+                let outcome = try persister.persist(id, facts)
+                if id == "a", !box.done {
+                    // a's write delivers the next snapshot before returning.
+                    box.done = true
+                    box.committer?.receive(revoke ? ["a": a] : ["a": a, "b": bNew])
+                }
+                return outcome
+            })
+            box.committer?.receive(["a": a, "b": bOld])
+            XCTAssertEqual(try db.sessionState("a")?.directory, "/a")
+            XCTAssertEqual(try db.sessionState("b")?.directory, revoke ? nil : "/b-new",
+                           revoke ? "revoked facts were written" : "superseded facts were written")
+        }
+    }
 }
 
 /// The committer must never hold its lock across a write: the write's

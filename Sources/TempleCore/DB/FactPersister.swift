@@ -99,32 +99,44 @@ public final class FactCommitter: @unchecked Sendable {
     /// as it was, then persists every newly authorized entry once.
     @discardableResult
     public func receive(_ facts: [String: AuthorizedFacts]) -> [Outcome] {
-        let attempts: [(String, AuthorizedFacts)] = locked {
+        let ids: [String] = locked {
             current = facts
             for (id, entry) in pending where facts[id] != entry.facts { pending.removeValue(forKey: id) }
             for (id, entry) in applied where facts[id] != entry { applied.removeValue(forKey: id) }
-            return facts.keys.sorted().compactMap { id in claimLocked(id).map { (id, $0) } }
+            return facts.keys.sorted()
         }
-        return attempts.flatMap { attempt($0.0, $0.1, delay: 1) }
+        // Each id is claimed only immediately before its own write, against
+        // the latest facts received: a write that ran first (and whose
+        // observers delivered newer facts, or revoked these) cannot leave a
+        // superseded claim behind to be written after it.
+        var outcomes: [Outcome] = []
+        for id in ids {
+            guard let entry = locked({ claimLocked(id) }) else { continue }
+            outcomes += attempt(id, entry, delay: 1)
+        }
+        return outcomes
     }
 
-    /// Retries every pending write that is due and still current.
+    /// Retries every pending write that is due and still current, each
+    /// re-checked immediately before it runs.
     @discardableResult
     public func retryDue() -> [Outcome] {
-        let attempts: [(String, AuthorizedFacts, TimeInterval)] = locked {
-            let time = now()
-            var due: [(String, AuthorizedFacts, TimeInterval)] = []
-            for id in pending.keys.sorted() {
-                guard let entry = pending[id], entry.due <= time, !inFlight.contains(id) else { continue }
+        let time = now()
+        let ids: [String] = locked { pending.filter { $0.value.due <= time }.keys.sorted() }
+        var outcomes: [Outcome] = []
+        for id in ids {
+            let claim: (AuthorizedFacts, TimeInterval)? = locked {
+                guard let entry = pending[id], entry.due <= time, !inFlight.contains(id) else { return nil }
                 pending.removeValue(forKey: id)
                 // Revoked since it failed: never written late.
-                guard current[id] == entry.facts else { continue }
+                guard current[id] == entry.facts else { return nil }
                 inFlight.insert(id)
-                due.append((id, entry.facts, min(60, entry.delay * 2)))
+                return (entry.facts, min(60, entry.delay * 2))
             }
-            return due
+            guard let (facts, delay) = claim else { continue }
+            outcomes += attempt(id, facts, delay: delay)
         }
-        return attempts.flatMap { attempt($0.0, $0.1, delay: $0.2) }
+        return outcomes
     }
 
     /// When the earliest pending retry is due (nil: nothing pending).
