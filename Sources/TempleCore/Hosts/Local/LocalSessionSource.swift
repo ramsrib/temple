@@ -634,8 +634,9 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             let summary = store.loadSummary(at: entry.0)
             do {
                 guard try FileSignature(entry.0) == signature else {
-                    // Nothing from either read is accepted across a concurrent write.
-                    work.verified = false
+                    // Nothing from this read is accepted across a concurrent write,
+                    // but identity stands: a replacement or truncation shows up as
+                    // an inode or size change on the next pass and re-verifies there.
                     memberWork[id] = work
                     pendingPaths.insert(path); scheduleLocked(); return
                 }
