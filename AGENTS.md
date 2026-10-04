@@ -234,6 +234,10 @@ during that refactor:
   login shell, state dir, DB, usage meter). Add to the allowlist only for I/O
   that is not about transcripts; route anything that is through
   `HostSessionSource`.
+- **Hosts build their own commands.** Launch from an `AgentLaunchSpec` through
+  the row's host's `HostLauncher`; never build a command with this Mac's
+  toolchain and hand it to another host. Directory checks go to the owning
+  host too, and "unknown" must not be treated as "missing".
 - **Schema changes stay additive until remote ships.** Builds before ADR-029
   have no newer-schema guard, so a dropped or retyped column breaks the
   installed app running beside a dev build on the same file. `generated_title`

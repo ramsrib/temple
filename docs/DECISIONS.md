@@ -1142,10 +1142,14 @@ files on this Mac, which a session on another machine will never have.
   awaiting creation, unreadable, incomplete or mismatch, and a transport
   failure never proves absence. All transcript I/O lives under
   `Sources/TempleCore/Hosts/Local/`, enforced by an allowlist audit test.
-  `SessionEngine` is host-agnostic, one per host from `HostRegistry`, and
-  launch commands pass through that host's `HostCommandWrapper` (identity on
-  this Mac). A remote host is the same row with `host` set, an ssh-backed
-  source and an ssh wrapper; none of that ships here. The session id stays the
+  `SessionEngine` is host-agnostic, one per host from `HostRegistry`. Each
+  registry entry also carries a `HostLauncher`, which builds the command from
+  intent (`AgentLaunchSpec`: agent, new or resume, id, directory): the host
+  picks its own executable and arguments, so this Mac's detected `claude` path
+  never reaches another machine. Directory existence is the owning host's
+  evidence (exists, missing or unknown), and unknown neither hides a row nor
+  claims a folder is gone. A remote host is the same row with `host` set, an
+  ssh-backed source and an ssh launcher; none of that ships here. The session id stays the
   key; `host` is an attribute.
 - **Older builds keep working on the file; newer ones stop this build.** v10
   only adds columns and keeps `generated_title`, written alongside `title` and
