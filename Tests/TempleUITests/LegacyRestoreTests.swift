@@ -156,4 +156,30 @@ final class LegacyRestoreTests: XCTestCase {
         XCTAssertEqual(factory2.created.count, 1, "no surprise spawn after the user moved on")
         XCTAssertEqual(app2.openSessions.activeTab?.sessionID, "other")
     }
+
+    /// No membership row at all is no licence to spawn with an empty folder:
+    /// neither an orphan restored chip nor a catalog session without one.
+    func testWithoutARowAnEmptyFolderStillDoesNotSpawn() throws {
+        let db = try TempleDB.inMemory()
+        DBTabPersistence(db: db).save([
+            PersistedTab(sessionID: "orphan", agent: .claude, projectPath: "", title: "Orphan", isActive: true)])
+        let factory = FakeTerminalSurfaceFactory()
+        let app = AppModel(surfaceFactory: factory,
+                           indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
+                           database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
+        app.start()
+        let orphan = try XCTUnwrap(app.openSessions.activeTab)
+        XCTAssertEqual(orphan.sessionID, "orphan")
+        XCTAssertTrue(factory.created.isEmpty)
+        XCTAssertEqual(orphan.launchPreparationError, OpenSessionsModel.unknownDirectoryMessage)
+        XCTAssertNil(try db.sessionState("orphan"), "nothing spawned, so nothing joined")
+
+        let homeless = TranscriptSummary(id: "homeless", agent: .codex,
+            locator: TranscriptLocator(localURL: URL(fileURLWithPath: "/tmp/homeless.jsonl")), modifiedAt: Date())
+        app.openSessions.openSession(homeless)
+        let tab = try XCTUnwrap(app.openSessions.activeTab)
+        XCTAssertEqual(tab.sessionID, "homeless")
+        XCTAssertTrue(factory.created.isEmpty)
+        XCTAssertEqual(tab.launchPreparationError, OpenSessionsModel.unknownDirectoryMessage)
+    }
 }

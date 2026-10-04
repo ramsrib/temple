@@ -408,6 +408,14 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         tab.launchPreparationError = nil
         tab.commandWasSuspect = false
         tab.missingWorkingDirectory = nil
+        // Every spawn needs a folder, row or no row: an empty cwd starts the
+        // agent in Temple's own working directory. An orphan restored chip
+        // or a catalog session that never recorded one stops here.
+        guard !tab.projectPath.isEmpty else {
+            tab.launchPreparationError = Self.unknownDirectoryMessage
+            tab.activity = .exited(status: -1)
+            return
+        }
         // Only the owning host can establish the directory the agent uses.
         let evidence = directoryEvidence(tab.projectKey)
         // A gone folder is not started anywhere else: the terminal would keep
