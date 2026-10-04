@@ -50,7 +50,7 @@ if CommandLine.arguments.contains("--import-all") {
                     transcriptPath: session.locator.localURL,
                     core: SessionCore(host: session.locator.host, directory: session.cwd,
                                       directorySource: session.cwd == nil ? nil : .transcript,
-                                      title: session.firstPrompt ?? session.historyPrompt, lastActiveAt: session.modifiedAt))
+                                      title: session.titleFact, lastActiveAt: session.modifiedAt))
         imported += 1
     }
     print("imported \(imported) sessions")
@@ -85,10 +85,7 @@ func printRows(_ rows: [Session], compact: Bool = false) {
     }
 }
 
-func catalogTitle(_ summary: TranscriptSummary) -> String {
-    summary.sharedTitleHint ?? summary.recordedTitle ?? summary.legacyTitleHint ?? summary.firstPrompt
-        ?? summary.historyPrompt ?? summary.laterPromptHint ?? "New \(summary.agent.displayName) session"
-}
+func catalogTitle(_ summary: TranscriptSummary) -> String { summary.catalogTitle }
 
 if CommandLine.arguments.contains("--disk") {
     let catalog = SessionFilter.filtered(try await readCatalog(), includeNoise: includeNoise)
@@ -189,7 +186,7 @@ if CommandLine.arguments.contains("--disk") {
         if !database.isReadOnly {
             for summary in snapshot.summaries.values {
                 _ = try database.fillCoreFields(sessionID: summary.id, expectedHost: summary.locator.host,
-                    agent: summary.agent, directory: summary.cwd, title: summary.firstPrompt ?? summary.historyPrompt,
+                    agent: summary.agent, directory: summary.cwd, title: summary.titleFact,
                     lastActiveAt: summary.modifiedAt)
             }
         }

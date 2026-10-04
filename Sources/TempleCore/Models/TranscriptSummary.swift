@@ -17,9 +17,11 @@ public struct TranscriptSummary: Hashable, Sendable {
     public let messageCount: Int?
     public let lastMessagePreview: String?
     public let originator: String?
+    /// Codex's shared title for the thread: its earliest history.jsonl
+    /// prompt, else the session_index.jsonl thread name. Both are recorded by
+    /// the CLI, so this is a title fact (see `titleFact`).
+    public let sharedTitle: String?
     /// Claude's recorded summary title, distinct from the first prompt.
-    /// Display-only shared thread title; never a core fill.
-    public let sharedTitleHint: String?
     public let recordedTitle: String?
     /// Display-only hints, never persisted: Claude's lossy directory decode
     /// and Codex's prompt from a later part of the rollout.
@@ -44,7 +46,7 @@ public struct TranscriptSummary: Hashable, Sendable {
         lastMessagePreview: String? = nil,
         originator: String? = nil,
         recordedTitle: String? = nil,
-        sharedTitleHint: String? = nil,
+        sharedTitle: String? = nil,
         directoryHint: String? = nil,
         laterPromptHint: String? = nil,
         legacyTitleHint: String? = nil
@@ -63,9 +65,24 @@ public struct TranscriptSummary: Hashable, Sendable {
         self.lastMessagePreview = lastMessagePreview
         self.originator = originator
         self.recordedTitle = recordedTitle
-        self.sharedTitleHint = sharedTitleHint
+        self.sharedTitle = sharedTitle
         self.directoryHint = directoryHint
         self.laterPromptHint = laterPromptHint
         self.legacyTitleHint = legacyTitleHint
     }
+}
+
+public extension TranscriptSummary {
+    /// The title a transcript can give a row: only what the CLI recorded —
+    /// Claude's summary, Codex's shared title, the first prompt, the history
+    /// prompt — never a hint or a placeholder. The one chain every fill and
+    /// import writes, and the head of what History and templectl display.
+    var titleFact: String? { recordedTitle ?? sharedTitle ?? firstPrompt ?? historyPrompt }
+
+    /// A catalog row's title: the recorded facts first, then display hints,
+    /// then the agent's placeholder. Shown, never stored.
+    var catalogTitle: String { titleFact ?? legacyTitleHint ?? laterPromptHint ?? agent.newSessionTitle }
+
+    /// A catalog row's folder, including Claude's lossy decode as a hint.
+    var catalogDirectory: String { cwd ?? directoryHint ?? "" }
 }

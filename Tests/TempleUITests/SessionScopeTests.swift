@@ -33,7 +33,7 @@ final class SessionScopeTests: XCTestCase {
         TranscriptSummary(id: id, agent: .claude,
             locator: TranscriptLocator(host: .local, path: "/private/tmp/\(id).jsonl"),
             modifiedAt: Date(timeIntervalSince1970: time), cwd: cwd, firstPrompt: prompt,
-            recordedTitle: "Recorded hint", directoryHint: "/lossy-hint",
+            directoryHint: "/lossy-hint",
             laterPromptHint: "Later hint", legacyTitleHint: "Legacy hint")
     }
 
@@ -78,20 +78,23 @@ final class SessionScopeTests: XCTestCase {
         try assertLegacyTitleSurvivesFill(agent: .codex, title: "Codex shared title")
     }
 
+    /// Recorded titles are facts: the fill writes the title History shows,
+    /// rather than demoting it to the first prompt.
+
     private func assertLegacyTitleSurvivesFill(agent: Agent, title: String) throws {
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "legacy", via: .imported)
         let facts = TranscriptSummary(id: "legacy", agent: agent,
             locator: TranscriptLocator(host: .local, path: "/private/tmp/legacy.jsonl"),
             modifiedAt: Date(timeIntervalSince1970: 100), cwd: "/project", firstPrompt: "First prompt",
-            recordedTitle: title)
+            recordedTitle: agent == .claude ? title : nil, sharedTitle: agent == .codex ? title : nil)
         let legacy = facts
         let overlay = SessionOverlayStore(db: db)
         overlay.fillMissingCoreFields(from: facts)
         for store in [overlay, SessionOverlayStore(db: db)] {
             XCTAssertNil(store.generatedTitle(for: "legacy"))
             XCTAssertEqual(store.displayTitle(for: legacy), title)
-            XCTAssertEqual(Session(state: try XCTUnwrap(store.rows["legacy"])).displayTitle, "First prompt")
+            XCTAssertEqual(Session(state: try XCTUnwrap(store.rows["legacy"])).displayTitle, title)
         }
         // A genuine agent retitle remains a legacy override after reconstruction.
         overlay.recordGeneratedTitle("OSC retitle", for: "legacy")
@@ -225,10 +228,6 @@ final class SessionScopeTests: XCTestCase {
         let history = root.appendingPathComponent("history.jsonl")
         let firstLine = "{\"session_id\":\"\(initial)\",\"ts\":10,\"text\":\"First recorded prompt\"}"
         try firstLine.write(to: history, atomically: true, encoding: .utf8)
-        // The late history prompt will not change the legacy display title.
-        // The engine must still publish its new fact for row filling.
-        try "{\"id\":\"\(late)\",\"thread_name\":\"Late recorded prompt\"}"
-            .write(to: root.appendingPathComponent("session_index.jsonl"), atomically: true, encoding: .utf8)
         let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02), database: db)
         let cache = root.appendingPathComponent("cache.json")
         let source = WatcherIndexSource(watcher: watcher)

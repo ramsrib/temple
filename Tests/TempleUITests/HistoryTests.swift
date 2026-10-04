@@ -197,7 +197,7 @@ final class HistoryTests: XCTestCase {
             modifiedAt: date, cwd: "/cwd", firstPrompt: "First prompt", recordedTitle: "Different title")
         XCTAssertTrue(overlay.importSessions([summary]).isEmpty)
         let row = try XCTUnwrap(db.sessionState("a"))
-        XCTAssertEqual(row.title, "First prompt")
+        XCTAssertEqual(row.title, "Different title", "Claude's recorded summary is a title fact")
         XCTAssertNil(row.generatedTitle)
         XCTAssertEqual(row.directory, "/cwd")
         XCTAssertEqual(row.directorySource, .transcript)
@@ -266,7 +266,7 @@ final class HistoryTests: XCTestCase {
         h.history.requestImport()
         await h.history.confirmImport(undoManager: nil)
         let row = try XCTUnwrap(h.database.sessionState(summary.id))
-        XCTAssertEqual(row.title, summary.firstPrompt)
+        XCTAssertEqual(row.title, "Display summary", "the row takes the title History showed")
         XCTAssertEqual(row.directory, summary.cwd)
         XCTAssertEqual(try XCTUnwrap(row.lastActiveAt).timeIntervalSince1970,
                        summary.modifiedAt.timeIntervalSince1970, accuracy: 0.001)

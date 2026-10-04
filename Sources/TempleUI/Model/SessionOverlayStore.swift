@@ -156,11 +156,11 @@ public final class SessionOverlayStore: ObservableObject {
               let missing = missingCoreFields[summary.id] else { return }
         let supplied = Set<SessionCoreField>([.agent, .lastActiveAt])
             .union(summary.cwd == nil ? [] : [.directory])
-            .union((summary.firstPrompt ?? summary.historyPrompt) == nil ? [] : [.title])
+            .union(summary.titleFact == nil ? [] : [.title])
         guard !missing.isDisjoint(with: supplied) else { return }
         do {
             let changed = try db.fillCoreFields(sessionID: summary.id, expectedHost: summary.locator.host, agent: summary.agent,
-                directory: summary.cwd, title: summary.firstPrompt ?? summary.historyPrompt, lastActiveAt: summary.modifiedAt)
+                directory: summary.cwd, title: summary.titleFact, lastActiveAt: summary.modifiedAt)
             // Changed rows refresh synchronously through the committed observer.
             // Reconcile a no-op too: another writer may already have filled it.
             if changed.isEmpty { refreshRow(summary.id) }
@@ -216,7 +216,7 @@ public final class SessionOverlayStore: ObservableObject {
         importCore(summaries.map { ($0.id, $0.agent, $0.locator.localURL,
             SessionCore(host: $0.locator.host, directory: $0.cwd,
                 directorySource: $0.cwd == nil ? nil : .transcript,
-                title: $0.firstPrompt ?? $0.historyPrompt, lastActiveAt: $0.modifiedAt)) })
+                title: $0.titleFact, lastActiveAt: $0.modifiedAt)) })
     }
 
     /// Revalidate catalog facts before committing an import. Parsing is bounded to four
@@ -244,7 +244,7 @@ public final class SessionOverlayStore: ObservableObject {
                     return (index, PreparedSessionImport(id: session.id, agent: session.agent,
                         path: session.locator.localURL, core: SessionCore(host: session.locator.host, directory: facts?.cwd,
                             directorySource: facts?.cwd == nil ? nil : .transcript,
-                            title: facts?.firstPrompt ?? facts?.historyPrompt, lastActiveAt: facts?.modifiedAt)))
+                            title: facts?.titleFact, lastActiveAt: facts?.modifiedAt)))
                 }
             }
             while next < min(4, sessions.count), !Task.isCancelled { enqueue(next); next += 1 }

@@ -274,10 +274,11 @@ final class StoreTests: XCTestCase {
         let lastSummary = #"{"type":"summary","summary":"  last   summary "}"#
         let cases: [(id: String, lines: [String], prompt: String?, title: String, count: Int, recorded: String?)] = [
             ("human", [system, queued, synthetic, human, laterHuman], "human prompt", "human prompt", 4, nil),
-            ("synthetic", [system, queued, synthetic], "queued prompt", "<command-name>/help</command-name>", 2, nil),
+            // A recorded prompt outranks synthetic text, which is only a hint.
+            ("synthetic", [system, queued, synthetic], "queued prompt", "queued prompt", 2, nil),
             ("synthetic-only", [synthetic], nil, "<command-name>/help</command-name>", 2, nil),
             ("queued", [queued], "queued prompt", "queued prompt", 1, nil),
-            ("system-before-queue", [system, queued], "queued prompt", "status", 1, nil),
+            ("system-before-queue", [system, queued], "queued prompt", "queued prompt", 1, nil),
             ("dequeue", [#"{"type":"queue-operation","operation":"dequeue","content":"removed"}"#], nil, "removed", 1, nil),
             ("summaries", [queued, synthetic, human, firstSummary, lastSummary], "human prompt", "last summary", 3, "last summary"),
             ("summary-only", [firstSummary, lastSummary], nil, "last summary", 1, "last summary"),

@@ -145,7 +145,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
                             if let summary {
                                 missing.remove(.agent); missing.remove(.lastActiveAt)
                                 if summary.cwd != nil { missing.remove(.directory) }
-                                if summary.firstPrompt != nil || summary.historyPrompt != nil { missing.remove(.title) }
+                                if summary.titleFact != nil { missing.remove(.title) }
                             }
                             results[id] = .loaded(locator, summary, missing)
                         case .confirmedAbsent: results[id] = .absent

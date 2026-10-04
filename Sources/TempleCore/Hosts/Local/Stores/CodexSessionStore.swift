@@ -253,7 +253,7 @@ public struct CodexSessionStore: TranscriptSummaryStore {
             messageCount: count > 0 ? count : nil,
             lastMessagePreview: preview,
             originator: payload["originator"] as? String,
-            sharedTitleHint: sharedTitles[id],
+            sharedTitle: sharedTitles[id],
             laterPromptHint: tailFallbackTitle
         )
     }

@@ -256,8 +256,8 @@ names) to influence the CLI's own display.
 > private `state_5.sqlite` `threads` table; see SESSION-FORMATS.md.
 
 > **Since ADR-029 (2026-10-03):** the row's own `title` is what shows: the
-> agent's terminal title as it runs, filled once from the first prompt (or
-> Codex's `history.jsonl` prompt) when Temple has none.
+> agent's terminal title as it runs, filled once from the transcript's
+> recorded title facts (`titleFact`) when Temple has none.
 
 ---
 
@@ -1131,8 +1131,10 @@ files on this Mac, which a session on another machine will never have.
 - **The transcript is enrichment, and parsers never invent.** A parser returns
   nil for what a file does not state; "(untitled)", "(no prompt)", "(unknown)"
   and Claude's lossy directory decode are display hints, never stored. A row's
-  NULL field is filled once from a transcript's facts (cwd, first prompt or
-  Codex `history.jsonl` prompt, mtime), with the fill checked against the
+  NULL field is filled once from a transcript's facts (cwd, mtime, and one
+  title chain, `TranscriptSummary.titleFact`: Claude's recorded summary,
+  Codex's shared title, the first prompt, the history prompt — the same chain
+  History and templectl show before any hint), with the fill checked against the
   row's host inside the write; a filled field is never overwritten by a file.
 - **The engine verifies, then enriches, then stats.** Per member: locate,
   verify identity (re-run on a new path, inode, truncation or revert

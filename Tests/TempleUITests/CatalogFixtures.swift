@@ -14,7 +14,7 @@ func catalogFixture(id: String, agent: Agent, projectPath: String, title: String
 }
 
 extension TranscriptSummary {
-    var title: String { sharedTitleHint ?? recordedTitle ?? legacyTitleHint ?? firstPrompt ?? historyPrompt ?? laterPromptHint ?? (agent == .claude ? "(untitled)" : "(no prompt)") }
+    var title: String { titleFact ?? legacyTitleHint ?? laterPromptHint ?? (agent == .claude ? "(untitled)" : "(no prompt)") }
     var projectPath: String { cwd ?? directoryHint ?? "(unknown)" }
     var updatedAt: Date { modifiedAt }
     var filePath: URL { locator.localURL! }
