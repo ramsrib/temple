@@ -447,9 +447,10 @@ public final class TempleDB: @unchecked Sendable {
 
     /// A session Temple created whose tab closed before anything was sent:
     /// the row goes only while it still says nothing beyond that creation —
-    /// never pinned, named, colored or archived, and in no restorable tab.
-    /// A terminal title alone does not keep it (an idle agent titles itself).
-    /// The caller decides that no transcript exists. Returns whether it went.
+    /// never pinned, named, colored or archived, in no restorable tab, and
+    /// never given a transcript path. A terminal title alone does not keep it
+    /// (an idle agent titles itself). The caller must also have a completed,
+    /// fresh absence verdict for it. Returns whether it went.
     @discardableResult
     public func discardUnstartedCreation(sessionID: String) throws -> Bool {
         let left = try db.write { database in
@@ -457,6 +458,7 @@ public final class TempleDB: @unchecked Sendable {
                 sql: """
                     DELETE FROM session_state
                     WHERE id = ? AND joined_via = ?
+                      AND transcript_path IS NULL
                       AND pinned = 0 AND archived = 0
                       AND custom_name IS NULL AND color IS NULL
                       AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)

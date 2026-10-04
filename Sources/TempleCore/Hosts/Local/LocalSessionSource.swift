@@ -123,7 +123,9 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
                         let previous = self.interests[id]
                         self.interests[id] = request
                         self.registeredIDs.insert(id)
-                        if request.awaitingCreation { self.awaiting.insert(id) }
+                        // The engine owns "awaiting creation"; mirror it both ways,
+                        // or a stale entry here would keep answering for it.
+                        if request.awaitingCreation { self.awaiting.insert(id) } else { self.awaiting.remove(id) }
                         // A fill shrinks what is wanted but changes nothing in the
                         // file: it shortens the backoff, never re-reads the file.
                         let filled = previous.map { !$0.wanted.subtracting(request.wanted).isEmpty } ?? false

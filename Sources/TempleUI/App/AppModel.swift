@@ -428,11 +428,18 @@ public final class AppModel: ObservableObject {
         }
         openSessions.touchHandler = { [weak self] id, at in self?.overlay.touch(id, at: at) }
         // ⌘T then close without typing: the minted id never got a transcript,
-        // and its row would read "New Claude session" forever. Only the
-        // engine's awaiting-creation verdict proves there is no transcript.
+        // and its row would read "New Claude session" forever. The tab's
+        // process is gone by now; only a fresh, completed absence from the
+        // owning engine lets the row go — never a cached verdict. When in
+        // doubt the stray row stays: deleting one the user cares about is
+        // the worse mistake.
         openSessions.unstartedHandler = { [weak self] id in
-            guard let self, self.latestEngineSnapshot?.resolutions[id] == .awaitingCreation else { return }
-            self.overlay.discardUnstartedCreation(id)
+            guard let self, let host = self.overlay.rows[id]?.host,
+                  let engine = (self.indexSource as? WatcherIndexSource)?.engine(for: host) else { return }
+            Task { @MainActor [weak self] in
+                guard await engine.confirmAbsence(id), let self else { return }
+                self.overlay.discardUnstartedCreation(id)
+            }
         }
         openSessions.launchDirectoryHandler = { [weak self] id, cwd in
             self?.overlay.observeLaunchDirectory(id, cwd)

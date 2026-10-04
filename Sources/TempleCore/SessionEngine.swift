@@ -304,6 +304,50 @@ public final class SessionEngine: @unchecked Sendable {
         observers.values.forEach { $0.yield(next) }
         stateObservers.values.forEach { $0.yield(states) }
     }
+    /// A fresh answer to "does this member have no transcript at all?" — not
+    /// the published verdict, which can be a cached awaiting-creation or an
+    /// absence from an older listing. The member stops awaiting creation and
+    /// is resolved explicitly, which makes the local source walk its stores
+    /// again before it can say absent. True only for a completed absence at
+    /// the current coverage; incomplete, unreadable, a failed walk, a stale
+    /// generation or a member that left all answer false.
+    public func confirmAbsence(_ id: String) async -> Bool {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                guard self.running, self.members.contains(id) else { continuation.resume(returning: false); return }
+                self.awaiting.remove(id)
+                let token = self.runID
+                let revision = self.revisions[id, default: 0]
+                let row = try? self.database?.sessionState(id)
+                if self.database != nil && row?.host != self.host { continuation.resume(returning: false); return }
+                let request = ResolutionRequest(id: id, agent: row?.agent,
+                    hint: row?.transcriptPath.map { TranscriptLocator(host: self.host, path: $0) },
+                    wanted: self.wanted?[id] ?? [], awaitingCreation: false, explicit: true)
+                let preceding = self.workTask
+                let operation = UUID()
+                self.workTask = Task { [weak self = self, source = self.source] in
+                    defer { self?.queue.async { [weak self = self] in self?.workTasks.removeValue(forKey: operation) } }
+                    await preceding?.value
+                    let batch = try? await source.resolve([request])
+                    guard let self else { continuation.resume(returning: false); return }
+                    self.queue.async {
+                        var absent = false
+                        if let batch, self.running, self.runID == token, self.members.contains(id),
+                           self.revisions[id, default: 0] == revision, batch.generation >= self.generation,
+                           case .absent? = batch.results[id] {
+                            absent = true
+                            self.states[id] = .confirmedAbsent
+                            self.summaries.removeValue(forKey: id)
+                            self.publishLocked()
+                        }
+                        continuation.resume(returning: absent)
+                    }
+                }
+                self.workTasks[operation] = self.workTask
+            }
+        }
+    }
+
     public func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult {
         let cancellation = EngineCancellation()
         let token = UUID()

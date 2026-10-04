@@ -310,12 +310,16 @@ public final class SessionOverlayStore: ObservableObject {
 
     /// A created session whose tab closed unused (see
     /// `TempleDB.discardUnstartedCreation`).
-    public func discardUnstartedCreation(_ id: String) {
-        guard templeSessions.contains(id) else { return }
+    @discardableResult
+    public func discardUnstartedCreation(_ id: String) -> Bool {
+        guard templeSessions.contains(id) else { return false }
         do {
-            if try db.discardUnstartedCreation(sessionID: id) { templeSessions.remove(id) }
+            guard try db.discardUnstartedCreation(sessionID: id) else { return false }
+            templeSessions.remove(id)
+            return true
         } catch {
             TempleUILog.db.error("discard failed for session \(id, privacy: .public): \(String(describing: error), privacy: .public)")
+            return false
         }
     }
 
