@@ -965,8 +965,12 @@ public final class AppModel: ObservableObject {
 
     /// History, narrowed to one session: where a row with no folder can be
     /// seen and archived (⌘K's Return on such a row, a folderless chip's
-    /// "Show in History").
+    /// "Show in History"). Filters left from an earlier visit give way —
+    /// "Not in Temple", another agent or project would hide the session.
     public func showInHistory(sessionID: String) {
+        history.scope = .all
+        history.agentFilter = nil
+        history.projectKeyFilter = nil
         history.query = sessionID
         openSessions.openHistory()
     }

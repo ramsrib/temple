@@ -190,6 +190,32 @@ final class LegacyRestoreTests: XCTestCase {
         XCTAssertEqual(app.history.query, "unplaced")
     }
 
+    /// "Show in History" from a History already narrowed — to sessions not
+    /// in Temple, another agent, another project — must not hide the very
+    /// session it was sent to find: those filters give way to the id.
+    func testShowInHistoryClearsFiltersThatWouldHideTheSession() async throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "unplaced", via: .opened, agent: .codex)
+        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+                           engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
+                           database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
+        app.history.catalog = { AsyncStream { $0.finish() } }
+        app.start()
+        app.history.scope = .notInTemple
+        app.history.agentFilter = .claude
+        app.history.projectKeyFilter = ProjectKey(host: .local, path: "/somewhere/else")
+
+        app.showInHistory(sessionID: "unplaced")
+        app.history.activate()
+        for _ in 0..<200 where app.history.readState != .done { try await Task.sleep(nanoseconds: 5_000_000) }
+
+        XCTAssertEqual(app.history.query, "unplaced")
+        XCTAssertEqual(app.history.scope, .all)
+        XCTAssertNil(app.history.agentFilter)
+        XCTAssertNil(app.history.projectKeyFilter)
+        XCTAssertEqual(app.history.visibleRows.map(\.sessionID), ["unplaced"])
+    }
+
     /// No membership row at all is no licence to spawn with an empty folder:
     /// neither an orphan restored chip nor a catalog session without one.
     func testWithoutARowAnEmptyFolderStillDoesNotSpawn() throws {
