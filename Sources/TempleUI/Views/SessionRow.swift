@@ -22,6 +22,7 @@ struct SessionRow: View {
     /// Only an *open* tab has activity worth a dot; a closed session shows none.
     private var activity: ActivityState? { openTab?.activity }
     private var isPinned: Bool { model.overlay.isPinned(session.id) }
+    private var transcriptMissing: Bool { session.transcriptConfirmedMissing }
     private var colorMark: Color? {
         model.overlay.color(for: session.id).flatMap {
             TabColorMark(rawValue: $0)?.color
@@ -38,7 +39,7 @@ struct SessionRow: View {
                 // session is open or under the pointer, so open tabs stand out.
                 if let agent = session.agent {
                     AgentBadge(agent: agent, size: 13)
-                        .opacity(openTab != nil || hovering ? 1 : 0.55)
+                        .opacity(transcriptMissing ? 0.35 : openTab != nil || hovering ? 1 : 0.55)
                 }
                 Text(model.displayTitle(session))
                     // Medium on the highlighted row — the same "you are here"
@@ -53,7 +54,11 @@ struct SessionRow: View {
                     // went mid-grey in dark mode. The step is weak near white
                     // in dark mode by nature; there the activity dot and the
                     // badge at full colour are what say "open".
-                    .foregroundStyle(openTab != nil || hovering ? Color.primary : Color.primary.opacity(0.82))
+                    // A row whose transcript is gone steps back further: it
+                    // still opens (and fails, and says why), but should not
+                    // look like a session that would resume.
+                    .foregroundStyle(transcriptMissing ? Color.primary.opacity(0.5)
+                                     : openTab != nil || hovering ? Color.primary : Color.primary.opacity(0.82))
                 if isPinned {
                     Image(systemName: "pin.fill")
                         .font(.system(size: 8))
@@ -98,6 +103,7 @@ struct SessionRow: View {
         }
         .buttonStyle(.plain)
         .onHover { rawHovering = $0 }
+        .help(transcriptMissing ? "Transcript missing: the session file is no longer on disk" : "")
         .frame(height: 32)
         .contextMenu { contextMenu }
         .alert("Rename session", isPresented: $renaming) {

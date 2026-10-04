@@ -59,7 +59,7 @@ public struct HistoryRow: Identifiable, Equatable, Sendable {
     /// Outside Temple and free to join from this row.
     public var canImport: Bool { member == nil && conflict == nil }
     public var canResume: Bool { conflict == nil && (member?.canResume ?? (catalog != nil)) }
-    public var transcriptMissing: Bool { catalog == nil && member?.resolution == .confirmedAbsent }
+    public var transcriptMissing: Bool { catalog == nil && member?.transcriptConfirmedMissing == true }
     public var localURL: URL? { catalog?.locator.localURL ?? member?.transcript?.localURL }
     public var gitBranch: String? { catalog?.gitBranch }
     public var model: String? { catalog?.model }

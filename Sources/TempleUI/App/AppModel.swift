@@ -987,6 +987,16 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    /// A dead tab whose transcript is gone (the failure header's Archive):
+    /// the tab goes first — a row is never archived from under its own tab —
+    /// then the row, by the same undoable path the sidebar uses. Undo brings
+    /// the row back, not the dead tab.
+    public func closeAndArchive(_ tab: SessionTab, undoManager: UndoManager?) {
+        guard let id = tab.sessionID else { return }
+        openSessions.closeTab(tab.id)
+        archiveSession(id, undoManager: undoManager)
+    }
+
     public func archiveProject(_ key: ProjectKey, undoManager: UndoManager?) {
         overlay.setProjectArchived(true, key: key)
         registerUndo(undoManager, name: "Archive Project") { [overlay] in

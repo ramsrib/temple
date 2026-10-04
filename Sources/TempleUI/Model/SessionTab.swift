@@ -66,6 +66,27 @@ public final class SessionTab: ObservableObject, Identifiable {
     /// and the resume that fails is Temple's, built from its persisted id.
     /// Frozen at death, same reasoning as `commandWasSuspect`.
     @Published public var resumeTargetMissing = false
+    /// Was the row already confirmed transcript-less when this tab spawned?
+    /// Then the failure is no mystery: the file is gone, and the header says
+    /// so instead of offering /resume or /clear as the likely story. Frozen
+    /// at spawn, like the verdicts above.
+    @Published public var resumeTargetAbsentAtLaunch = false
+    /// The header's line for a resume no transcript carries, split by what
+    /// Temple knew before it launched.
+    public var resumeTargetMissingMessage: String? {
+        guard resumeTargetMissing else { return nil }
+        if resumeTargetAbsentAtLaunch {
+            let resumer = agent == .claude ? "Claude" : agent.displayName
+            return "This session's transcript is no longer on disk, so \(resumer) has nothing to resume. "
+                + "Archive it, or import a newer file from History."
+        }
+        return "No transcript on disk carries this ID. It was deleted or pruned, or the conversation continued "
+            + "under a new ID after /resume or /clear — check the sidebar."
+    }
+    /// The header offers Archive: the row is provably transcript-less.
+    public var offersArchiveForMissingTranscript: Bool {
+        resumeTargetMissing && resumeTargetAbsentAtLaunch && sessionID != nil
+    }
     @Published public var missingWorkingDirectory: String?
     public var missingWorkingDirectoryMessage: String? {
         missingWorkingDirectory.map { "The folder \($0) no longer exists" }

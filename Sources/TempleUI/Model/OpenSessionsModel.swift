@@ -425,6 +425,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         tab.launchPreparationError = nil
         tab.commandWasSuspect = false
         tab.missingWorkingDirectory = nil
+        tab.resumeTargetMissing = false
+        tab.resumeTargetAbsentAtLaunch = tab.isResume
+            && tab.sessionID.flatMap(sessionRow)?.transcriptConfirmedMissing == true
         // Every spawn needs a folder, row or no row: an empty cwd starts the
         // agent in Temple's own working directory. An orphan restored chip
         // or a catalog session that never recorded one stops here.

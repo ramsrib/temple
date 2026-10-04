@@ -101,6 +101,57 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertEqual(app.openSessions.sessionKnown("row"), false)
     }
 
+    /// A row the engine already proved transcript-less is dimmed in the
+    /// sidebar, and its failed resume says the file is gone and offers
+    /// Archive — which closes the dead tab and archives undoably. One that
+    /// was not known gone at launch keeps the hedged copy, deletion first.
+    func testAKnownMissingTranscriptSaysSoAndOffersArchive() throws {
+        let db = try TempleDB.inMemory()
+        for id in ["pruned", "unknown"] {
+            try db.join(sessionID: id, via: .imported, agent: .claude,
+                core: SessionCore(directory: "/row-directory", title: "Stored \(id)"))
+        }
+        let factory = FakeTerminalSurfaceFactory()
+        let app = AppModel(surfaceFactory: factory, engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
+            database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+            hostRegistry: Fixture.hostsWithoutFolderEvidence())
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["pruned": .confirmedAbsent,
+                                                                               "unknown": .resolving]))
+        let rows = Dictionary(uniqueKeysWithValues: app.sessions.map { ($0.id, $0) })
+        XCTAssertEqual(rows["pruned"]?.transcriptConfirmedMissing, true, "the sidebar dims this row")
+        XCTAssertEqual(rows["unknown"]?.transcriptConfirmedMissing, false, "still resolving is not missing")
+
+        app.openSession(id: "pruned")
+        let pruned = try XCTUnwrap(app.openSessions.activeTab)
+        XCTAssertTrue(pruned.resumeTargetAbsentAtLaunch)
+        app.openSessions.surface(try XCTUnwrap(pruned.surface), didChangeState: .exited(status: 1))
+        XCTAssertEqual(pruned.resumeTargetMissingMessage,
+                       "This session's transcript is no longer on disk, so Claude has nothing to resume. "
+                       + "Archive it, or import a newer file from History.")
+        XCTAssertTrue(pruned.offersArchiveForMissingTranscript)
+
+        app.openSession(id: "unknown")
+        let unknown = try XCTUnwrap(app.openSessions.activeTab)
+        XCTAssertFalse(unknown.resumeTargetAbsentAtLaunch)
+        app.openSessions.surface(try XCTUnwrap(unknown.surface), didChangeState: .exited(status: 1))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["pruned": .confirmedAbsent,
+                                                                               "unknown": .confirmedAbsent]))
+        XCTAssertEqual(unknown.resumeTargetMissingMessage,
+                       "No transcript on disk carries this ID. It was deleted or pruned, or the conversation "
+                       + "continued under a new ID after /resume or /clear — check the sidebar.")
+        XCTAssertFalse(unknown.offersArchiveForMissingTranscript, "Temple did not know before it launched")
+
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        undo.beginUndoGrouping()
+        app.closeAndArchive(pruned, undoManager: undo)
+        undo.endUndoGrouping()
+        XCTAssertNil(app.openSessions.openTab(forSessionID: "pruned"), "the dead tab goes first")
+        XCTAssertEqual(app.overlay.rows["pruned"]?.archived, true)
+        undo.undo()
+        XCTAssertEqual(app.overlay.rows["pruned"]?.archived, false, "undo brings the row back")
+    }
+
     func testRestoreAndReopenPreferTheRowAndKeepRestoreInert() throws {
         let factory = FakeTerminalSurfaceFactory()
         let defaults = Fixture.uniqueDefaults()

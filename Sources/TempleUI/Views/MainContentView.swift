@@ -51,6 +51,7 @@ struct MainContentView: View {
 private struct SessionTerminalView: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var tab: SessionTab
+    @Environment(\.undoManager) private var undoManager
 
     var body: some View {
         VStack(spacing: 0) {
@@ -136,12 +137,13 @@ private struct SessionTerminalView: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if tab.resumeTargetMissing {
-                    // States only what the index proves (no transcript carries
-                    // this id) and the most common cause — it must not promise
-                    // the conversation survives, because a pruned or deleted
-                    // transcript produces this same verdict.
-                    Text("No session on disk has this ID. If you used /resume or /clear in this tab, the conversation continued under a different ID — check the sidebar.")
+                if let message = tab.resumeTargetMissingMessage {
+                    // States only what the engine proves (no transcript carries
+                    // this id). When the row was already known transcript-less
+                    // before the launch, that is the whole story; otherwise a
+                    // deletion or prune leads, ahead of the /resume and /clear
+                    // rotation, and nothing promises the conversation survives.
+                    Text(message)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -150,6 +152,10 @@ private struct SessionTerminalView: View {
             Spacer(minLength: 8)
             if blameCommand && preparationError == nil {
                 Button("Settings") { model.openSessions.openSettings(focusing: tab.agent) }
+                    .buttonStyle(.link)
+                    .font(.system(size: 12))
+            } else if tab.offersArchiveForMissingTranscript {
+                Button("Archive") { model.closeAndArchive(tab, undoManager: undoManager) }
                     .buttonStyle(.link)
                     .font(.system(size: 12))
             }

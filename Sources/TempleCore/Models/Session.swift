@@ -20,6 +20,9 @@ public struct Session: Identifiable, Hashable, Sendable {
         state.customName ?? state.title ?? agent.map(\.newSessionTitle) ?? "Untitled session"
     }
     public var sortDate: Date { state.lastActiveAt ?? state.lastOpenedAt ?? state.joinedAt ?? .distantPast }
+    /// The engine finished looking and no transcript carries this id: the
+    /// row stays, but nothing on disk can resume it (pruned, or deleted).
+    public var transcriptConfirmedMissing: Bool { resolution == .confirmedAbsent }
     public var transcript: TranscriptLocator? {
         guard case .loaded(let locator) = resolution, locator.host == host else { return nil }
         return locator
