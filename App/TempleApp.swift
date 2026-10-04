@@ -14,6 +14,7 @@ import TempleTerminal
 @main
 struct TempleApp: App {
     @NSApplicationDelegateAdaptor(TempleAppDelegate.self) private var appDelegate
+    @Environment(\.openWindow) private var openWindow
     @StateObject private var startup: AppStartup
 
     init() {
@@ -38,7 +39,9 @@ struct TempleApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        let action = openWindow
+        let _ = appDelegate.openInitialWindow = { action(id: TempleAppDelegate.mainWindowID) }
+        WindowGroup("Temple", id: TempleAppDelegate.mainWindowID) {
             if let model = startup.model {
                 RootView()
                     .environmentObject(model)
