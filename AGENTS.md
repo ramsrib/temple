@@ -211,3 +211,30 @@ back. Two consequences, both load-bearing:
   its version. So the pre-flight argument check can **prove a failure but never a
   success** — there is no "arguments OK" tick, and there must not be one. What
   pre-flight can't catch, the launch-failure header in `MainContentView` does.
+
+## The row is the session — never build a surface from a transcript
+
+Since ADR-029 every surface renders `session_state` rows (`Session`, grouped by
+`ProjectKey(host, directory)`). Transcripts only fill a row's missing facts and
+verify identity. Rules that each prevent a bug that shipped or nearly did
+during that refactor:
+
+- **Parsers never invent.** A fact the file does not state is nil.
+  Placeholders and Claude's lossy directory decode are display hints on
+  `TranscriptSummary`; storing one makes a guess permanent, because fills only
+  write NULL columns.
+- **Fills are NULL-only; the tab's directory wins.** Only an actual, successful
+  spawn in an existing directory records a directory (`tab`-sourced, replacing
+  any prior value). Copying a row into a restored chip writes nothing.
+- **Absence needs evidence.** Only a completed enumeration is `absent`;
+  `mismatch`, `unreadable`, a failed scan, a cancelled scan or a missing
+  catalog entry never are. A remote transport failure must not be either.
+- **Transcript I/O lives under `Sources/TempleCore/Hosts/Local/`.** An audit
+  test enforces it with an explicit allowlist for unrelated I/O (toolchain,
+  login shell, state dir, DB, usage meter). Add to the allowlist only for I/O
+  that is not about transcripts; route anything that is through
+  `HostSessionSource`.
+- **Schema changes stay additive until remote ships.** Builds before ADR-029
+  have no newer-schema guard, so a dropped or retyped column breaks the
+  installed app running beside a dev build on the same file. `generated_title`
+  is still dual-written for them.

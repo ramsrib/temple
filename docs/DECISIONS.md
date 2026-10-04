@@ -128,6 +128,10 @@ from any terminal-parsing fragility and is most of the app's value.
 > sessions *exist*, but which of them Temple *shows* is Temple's own record —
 > the rows in its DB — not the index.
 
+> **Since ADR-029 (2026-10-03):** the sidebar is not built from these files at
+> all. Rows are Temple's `session_state` records; a transcript fills a row's
+> missing facts once and is otherwise read only to verify identity.
+
 - **Claude Code** → `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`. One file per
   session; filename stem = session id; the *true* `cwd` is a field inside the
   file (the dir-name encoding is lossy — collides on paths with `-`/spaces —
@@ -193,6 +197,11 @@ authority — it can be rebuilt from disk at any time.
 > the DB now empties the default sidebar until sessions are opened again. The
 > rest of this ADR stands.
 
+> **Since ADR-029 (2026-10-03):** the DB is also the authority for a session's
+> core fields (directory, title, last activity, host). The files remain the
+> truth for what a session contains, and fill a field only where Temple has
+> none.
+
 > v0 note: `TempleCore` currently derives everything directly from disk with no
 > DB. The DB lands when we add pins/tab-restore/process-registry (Phase 2–3).
 
@@ -245,6 +254,10 @@ names) to influence the CLI's own display.
 > in one, after a rename.
 > The rule above still holds for what Temple launches. Codex keeps titles in its
 > private `state_5.sqlite` `threads` table; see SESSION-FORMATS.md.
+
+> **Since ADR-029 (2026-10-03):** the row's own `title` is what shows: the
+> agent's terminal title as it runs, filled once from the first prompt (or
+> Codex's `history.jsonl` prompt) when Temple has none.
 
 ---
 
@@ -966,7 +979,7 @@ hidden tabs). It is a larger change across four files; it goes through the
 same door if it applies and measures.
 
 ## ADR-027 — Temple indexes only its own sessions, and hears about them through FSEvents
-**Date:** 2026-10-02 · **Status:** Accepted
+**Date:** 2026-10-02 · **Status:** Accepted; the launch cache and per-write parsing are superseded by ADR-029
 
 Temple 0.3.3 after two hours: 5,220 open files, 4,106 of them session logs, one
 `O_EVTONLY` watch per `.jsonl` on disk (Claude 1,354 with subagents, Codex
@@ -1053,7 +1066,7 @@ scan of recent Codex logs, and continuation following (`←` / `/bg`, ADR-023),
 which is still to be built; the event classifier is where it lands.
 
 ## ADR-028 — History is a tab over the whole disk, and the one way in
-**Date:** 2026-10-02 · **Status:** Accepted
+**Date:** 2026-10-02 · **Status:** Accepted; Temple's rows no longer take a live-index copy (ADR-029)
 
 With *All on disk* gone (ADR-027), sessions run elsewhere are on no surface,
 and ADR-023's "imported" join had no way to happen. The ⌘Y overlay also read
@@ -1085,3 +1098,102 @@ as a search box over Temple's own sessions, not as history.
   never kept.
 - **⌘K stays the quick switcher over Temple's sessions.** When it finds
   nothing it offers "Search history for …", which opens the tab searching.
+
+---
+
+## ADR-029 — The row is the session; the transcript is enrichment
+**Date:** 2026-10-03 · **Status:** Accepted; amends ADR-007, ADR-009, ADR-011, ADR-027, ADR-028
+
+Temple began as a browser over the CLIs' stores (ADR-007), so a sidebar row
+was a parsed transcript. ADR-023 made membership Temple's own record and
+ADR-027 parsed members only, but a row was still assembled from the file and
+merely let through by its `session_state` row: a member whose transcript could
+not be read had no row at all (ADR-027 counted 173 of 337 members without a
+log on disk). The plumbing outlived the premise, and it tied every surface to
+files on this Mac, which a session on another machine will never have.
+
+**Decisions.**
+
+- **The `session_state` row is the session.** `v10-session-core` adds `host`,
+  `directory` (with `directory_source`), `title` and `last_active_at`. Temple
+  writes them: the agent's terminal title becomes the title; spawn, retitle,
+  input, exit and close are activity (in memory at once, on disk at most every
+  30 s per session, never backwards, and quitting is not activity); a
+  successful spawn in an existing directory records that directory as
+  `tab`-sourced, replacing whatever was there. Copying a row into a restored
+  chip writes nothing. Every surface renders rows grouped by
+  `ProjectKey(host, directory)`, and opening resumes from the row's agent,
+  directory and id without waiting for a file.
+- **The transcript is enrichment, and parsers never invent.** A parser returns
+  nil for what a file does not state; "(untitled)", "(no prompt)", "(unknown)"
+  and Claude's lossy directory decode are display hints, never stored. A row's
+  NULL field is filled once from a transcript's facts (cwd, first prompt or
+  Codex `history.jsonl` prompt, mtime), with the fill checked against the
+  row's host inside the write; a filled field is never overwritten by a file.
+- **The engine verifies, then enriches, then stats.** Per member: locate,
+  verify identity (re-run on a new path, inode, truncation or revert
+  selection), and parse only while the row still lacks a field, backing off
+  1 s → 60 s; a write to a member with nothing missing is a stat and publishes
+  nothing. `mismatch` and `unreadable` never become `absent`; only a completed
+  enumeration proves absence. `index-cache.json` is gone: SQLite is the fast
+  launch path, and the sidebar draws from it before the engine runs.
+- **One semantic seam per host.** `HostSessionSource` resolves, catalogs,
+  adopts and reports changes for one host; its results say loaded, absent,
+  awaiting creation, unreadable, incomplete or mismatch, and a transport
+  failure never proves absence. All transcript I/O lives under
+  `Sources/TempleCore/Hosts/Local/`, enforced by an allowlist audit test.
+  `SessionEngine` is host-agnostic, one per host from `HostRegistry`, and
+  launch commands pass through that host's `HostCommandWrapper` (identity on
+  this Mac). A remote host is the same row with `host` set, an ssh-backed
+  source and an ssh wrapper; none of that ships here. The session id stays the
+  key; `host` is an attribute.
+- **Older builds keep working on the file; newer ones stop this build.** v10
+  only adds columns and keeps `generated_title`, written alongside `title` and
+  reconciled on open (open-time only: an older process's later writes arrive
+  on the next open). A database carrying a migration this build does not know
+  is neither migrated nor written: both entry points show an update-required
+  window before any model, overlay or tab restore exists, and `templectl`
+  exits non-zero. Probe, open, check, migration and reconcile run under a
+  cross-process lock (`<db>.migrate-lock`), so a future incompatible
+  migration cannot land in the gap. Builds before this one have neither
+  guard, which is why v10 is additive; `v11-project-host` (host in
+  `project_state`/`open_tabs` keys) waits for remote, with process exclusion
+  as its precondition.
+- **Recency is Temple's activity, not the file's.** A session resumed in
+  another terminal does not move here, as it already did not un-archive
+  (ADR-017). History still shows the disk's time: it is the disk's view.
+- **Members are not noise.** The noise filter classifies non-members in
+  History only. A member whose directory is gone keeps its row; the resume
+  banner says the folder no longer exists, on its own line.
+- **Legacy rows are completed from facts, and the rest are kept.** v10 copies
+  `generated_title` to `title` and nothing else. The standing fill completes
+  every legacy row whose transcript exists on the first launch, through the
+  same path an import uses; there is no migration mode. A row that never
+  resolves stays: no sidebar group without a directory, found by ⌘K, listed
+  in History under In Temple and tagged "Transcript missing" only once a
+  completed resolution says so, and archivable from there.
+
+**Known limitations, kept:** Claude's in-process id rotation (`/clear`,
+in-session `/resume`) is not followed, so titles and activity land on the
+tab's original row; a rebind is now a row write and is next. Codex adoption
+still correlates cwd and time, not process identity, and stays noncommittal
+when in doubt. The Codex usage meter reads the local store only.
+
+**Measured** with `templectl --watch --metrics` (`Scripts/bench-member-engine.py`)
+on synthetic APFS clones shaped like ADR-027's (337 members, 164 with a log;
+1,355 Claude and 2,761 Codex logs), one member written 4×/s and one outside
+Codex log 2×/s, over 60 s, with the harness rejecting any run whose watcher
+delivered no events:
+
+| | upgrade (fields NULL) | filled |
+|---|---|---|
+| parses at startup | 164 | 0 |
+| parses / publications while writing | 0 / 0 | 0 / 0 |
+| CPU | 0.65% of a core | 0.62% |
+| open files | 12 | 12 |
+| first engine publication | 5.3 s | 0.25 s |
+| rows readable from SQLite | 0.01 s | 0.01 s |
+
+Synthetic stores and a debug build, so not directly comparable with ADR-027's
+real-store figures; they show the shape (no work per member write once filled),
+not a benchmark result to quote.
