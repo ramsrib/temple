@@ -248,6 +248,32 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(app.displayProjects.map(\.path), ["/new", "/a"])
     }
 
+    /// Another host's catalog entry for the same id is not this member's
+    /// row: the member stands alone and shows its own activity time, so a
+    /// touch must still reach the page.
+    func testAStandaloneMemberBesideAConflictingCatalogEntryShowsItsTouches() async throws {
+        let app = try model([Fixture.row("shared", project: "/p", updated: 20)])
+        let elsewhere = TranscriptSummary(id: "shared", agent: .claude,
+            locator: TranscriptLocator(host: HostID(rawValue: "box"), path: "opaque:shared"),
+            modifiedAt: Date(timeIntervalSince1970: 5), cwd: "/p", firstPrompt: "Box copy")
+        app.history.catalog = { AsyncStream { c in
+            c.yield(.sessions([elsewhere], read: 1, total: 1), host: elsewhere.locator.host); c.finish()
+        } }
+        app.history.activate()
+        let deadline = Date().addingTimeInterval(2)
+        while app.history.readState != .done && Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        await nextPresentationTurn()
+        let member = try XCTUnwrap(app.history.allRows.first { $0.member != nil })
+        XCTAssertNil(member.catalog, "the box's entry does not attach to this Mac's member")
+        XCTAssertEqual(app.history.allRows.count, 2)
+        let builds = app.history.rebuildCount
+        app.overlay.touch("shared", host: .local, at: Date(timeIntervalSince1970: 400))
+        await nextPresentationTurn()
+        await nextPresentationTurn()
+        XCTAssertEqual(app.history.rebuildCount, builds + 1)
+        XCTAssertEqual(app.history.allRows.first { $0.member != nil }?.updatedAt, Date(timeIntervalSince1970: 400))
+    }
+
     func testHistoryDoesNotRebuildForCatalogMemberTouchBursts() async throws {
         let app = try model([Fixture.row("catalog", project: "/p", updated: 20),
                              Fixture.row("missing", updated: 10)])

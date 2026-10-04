@@ -110,12 +110,7 @@ public final class HistoryModel: ObservableObject {
     /// The disk as last read, one entry per host, agent and session id. Each
     /// host's catalog already picked one file per thread (the one the agent
     /// would resume), so nothing here chooses between files.
-    /// Assigned whole (once per batch), so its id set is recomputed once.
-    private var diskByKey: [HistoryKey: TranscriptSummary] = [:] {
-        didSet { diskSessionIDs = Set(diskByKey.keys.map(\.sessionID)) }
-    }
-    /// Which session ids the disk lists, on any host, for any agent.
-    private var diskSessionIDs: Set<String> = []
+    private var diskByKey: [HistoryKey: TranscriptSummary] = [:]
     /// Temple's own copies come from the live index — fresher titles and
     /// times. Kept as delivered; keyed by id only when a rebuild needs it.
     var memberRows: () -> [Session] = { [] }
@@ -193,11 +188,13 @@ public final class HistoryModel: ObservableObject {
     private var presentedMembers: Set<Session> = []
     private var presentedArchivedProjects: Set<ProjectKey> = []
 
-    /// Catalog members use disk time. Activity alone cannot change anything
-    /// History presents, so it must not trigger a catalog union and sort.
+    /// Members attached to a catalog row use disk time. Activity alone
+    /// cannot change anything such a row presents, so it must not trigger a
+    /// catalog union and sort. A member standing alone — no catalog row, or
+    /// only another host's or agent's — shows its own activity time.
     private var presentationMembers: Set<Session> {
         Set(currentMembers.map { member in
-            guard diskSessionIDs.contains(member.id) else { return member }
+            guard attachesToCatalog(member.state) else { return member }
             var state = member.state
             state.lastActiveAt = nil
             return Session(state: state, resolution: member.resolution)
@@ -417,6 +414,17 @@ public final class HistoryModel: ObservableObject {
             return key.agent == nil || key.agent == agent ? .member : .conflict(.agent(agent))
         }
         return otherAgentListed ? .conflict(.host(member.host)) : .member
+    }
+
+    /// Whether `rebuild` attaches this member to a catalog row: the same
+    /// rule, asked from the member's side.
+    private func attachesToCatalog(_ member: SessionState) -> Bool {
+        let agents = member.agent.map { [$0] } ?? Agent.allCases
+        return agents.contains { agent in
+            let key = HistoryKey(host: member.host, agent: agent, sessionID: member.id)
+            return diskByKey[key] != nil
+                && Self.standing(of: key, member: member, otherAgentListed: otherAgentListed(key)) == .member
+        }
     }
 
     private func otherAgentListed(_ key: HistoryKey) -> Bool {
