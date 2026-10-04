@@ -9,12 +9,29 @@ import TempleCore
 /// click opens a fresh terminal (no prompt input).
 struct LauncherView: View {
     @EnvironmentObject var model: AppModel
+    /// The recent list is ordered by activity, which AppModel does not
+    /// publish after the rank freeze (B9): it redraws itself when it changes.
+    @StateObject private var recency = RecencyRefresh()
 
-    private let recentLimit = 5
+    private static let recentLimit = 5
 
-    private var recentProjects: [SessionRowProject] {
-        // Recent member projects, ordered by Temple row activity.
+    private var recentProjects: [SessionRowProject] { Self.recentProjects(model) }
+
+    /// Recent member projects, ordered by Temple row activity.
+    static func recentProjects(_ model: AppModel) -> [SessionRowProject] {
         Array(model.visibleRowProjects.prefix(recentLimit))
+    }
+
+    /// One recent row as drawn, as far as activity can change it.
+    struct RecentLine: Hashable {
+        let key: ProjectKey
+        let time: String
+    }
+
+    /// What the recent list shows that activity can change: which projects,
+    /// in which order, and each one's time.
+    static func recentPresentation(_ model: AppModel) -> [RecentLine] {
+        recentProjects(model).map { RecentLine(key: $0.key, time: RelativeTime.string(from: $0.lastActivity)) }
     }
 
     var body: some View {
@@ -25,6 +42,11 @@ struct LauncherView: View {
                 toolchainWarnings
                 getStarted
                 if !recentProjects.isEmpty { recent }
+            }
+            .onAppear {
+                recency.watch(model.overlay) { [weak model] in
+                    AnyHashable(model.map(Self.recentPresentation) ?? [])
+                }
             }
             .frame(maxWidth: 560, alignment: .leading)
             .padding(.horizontal, 44)

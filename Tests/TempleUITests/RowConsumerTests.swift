@@ -292,6 +292,48 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(app.displayProjects.map(\.path), ["/a", "/b"])
     }
 
+    /// The surfaces that do show recency redraw themselves on activity —
+    /// AppModel still publishes nothing. The launcher's recent projects and
+    /// the archive's order are what those views draw; each one's refresh
+    /// fires when that changes and stays quiet when it does not.
+    func testVisibleRecencyConsumersRefreshThemselvesWhileTheModelStaysSilent() async throws {
+        let app = try model([Fixture.row("a", project: "/a", updated: 30),
+                             Fixture.row("b", project: "/b", updated: 20), Fixture.row("b2", project: "/b", updated: 10),
+                             Fixture.row("c", project: "/c", updated: 5)])
+        freeze(app)
+        app.archiveSession("b2", undoManager: nil)
+        app.archiveSession("c", undoManager: nil)
+        try await settle()
+        // Default scheduling: the check runs a turn later, after every
+        // subscriber (AppModel included) has taken the change.
+        let launcher = RecencyRefresh()
+        launcher.watch(app.overlay) { AnyHashable(LauncherView.recentPresentation(app)) }
+        let archive = RecencyRefresh()
+        archive.watch(app.overlay) { AnyHashable(ArchiveView.presentation(app)) }
+        XCTAssertEqual(LauncherView.recentProjects(app).map(\.path), ["/a", "/b"])
+        XCTAssertEqual(ArchiveView.presentation(app).map(\.id), ["session:b2", "session:c"])
+        let cost = PresentationCost(app)
+
+        app.overlay.touch("b", host: .local, at: Date(timeIntervalSince1970: 100))
+        await nextPresentationTurn()
+        XCTAssertEqual(launcher.revision, 1, "the recent list reordered: it redraws")
+        XCTAssertEqual(LauncherView.recentProjects(app).map(\.path), ["/b", "/a"])
+        XCTAssertEqual(archive.revision, 0, "nothing archived moved")
+        app.overlay.touch("b", host: .local, at: Date(timeIntervalSince1970: 101))
+        await nextPresentationTurn()
+        XCTAssertEqual(launcher.revision, 1, "same order, same times: no redraw")
+
+        app.overlay.touch("c", host: .local, at: Date(timeIntervalSince1970: 200))
+        await nextPresentationTurn()
+        XCTAssertEqual(archive.revision, 1, "the archive reordered: it reloads")
+        XCTAssertEqual(ArchiveView.presentation(app).map(\.id), ["session:c", "session:b2"])
+        XCTAssertEqual(launcher.revision, 1, "an archived session is not on the launcher")
+
+        try await settle()
+        XCTAssertEqual(cost.willChange, 0)
+        XCTAssertEqual(cost.addedBuilds, 0)
+    }
+
     /// The other half: one membership change, one fact change, one
     /// resolution change each cost exactly one build (two sorts: the rows and
     /// the projects), and are published.

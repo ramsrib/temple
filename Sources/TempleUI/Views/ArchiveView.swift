@@ -26,6 +26,26 @@ struct ArchiveView: View {
     /// otherwise fire hover and snap the highlight straight back.
     @State private var lastKeyMove = Date.distantPast
     @FocusState private var fieldFocused: Bool
+    /// Order and times follow activity, which AppModel does not publish after
+    /// the rank freeze (B9): the panel reloads itself when they change.
+    @StateObject private var recency = RecencyRefresh()
+
+    /// One archive line as drawn, as far as activity can change it.
+    struct Line: Hashable {
+        let id: String
+        let time: String?
+    }
+
+    /// What the whole archive shows that activity can change: which rows,
+    /// in which order, and each session's time.
+    static func presentation(_ model: AppModel) -> [Line] {
+        model.archiveGroups("").flatMap { group -> [Line] in
+            let header = group.wholeProject ? [Line(id: Entry.project(group.project).id, time: nil)] : []
+            return header + group.project.sessions.map {
+                Line(id: Entry.session($0).id, time: RelativeTime.string(from: $0.sortDate))
+            }
+        }
+    }
 
     /// One keyboard-selectable line: a whole-project group's header, or a
     /// session row. Headers of groups that merely contain archived sessions
@@ -60,6 +80,7 @@ struct ArchiveView: View {
         .panelChrome()
         .onAppear {
             reload()
+            recency.watch(model.overlay) { [weak model] in AnyHashable(model.map(Self.presentation) ?? []) }
             FieldFocus.claim { fieldFocused = true }
         }
         .onDisappear { model.openSessions.focusActiveTerminal() }
@@ -67,6 +88,7 @@ struct ArchiveView: View {
         // The rows are @State, so a row update — or a restore from this very
         // panel — needs an explicit refresh. Selection sticks to its row's id.
         .onChange(of: model.sessions) { _, _ in reloadPreservingSelection() }
+        .onChange(of: recency.revision) { _, _ in reloadPreservingSelection() }
         .onReceive(model.overlay.objectWillChange
             .receive(on: DispatchQueue.main)) { _ in reloadPreservingSelection() }
         .onKeyPress(.downArrow) { move(1); return .handled }
