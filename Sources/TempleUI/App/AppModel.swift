@@ -533,8 +533,8 @@ public final class AppModel: ObservableObject {
         history.openSession = { [weak self] session in
             self?.openSessions.openSession(session)
         }
-        history.hasOpenTab = { [weak self] id in
-            self?.openSessions.openTab(forSessionID: id) != nil
+        history.hasOpenTab = { [weak self] key in
+            self?.openSessions.openTab(forSessionID: key.sessionID)?.host == key.host
         }
         history.memberRows = { [weak self] in self?.sessions ?? [] }
         history.archiveMember = { [weak self] in self?.archiveSession($0, undoManager: $1) }

@@ -55,7 +55,7 @@ final class RemoteHostSeamTests: XCTestCase {
             key.host.isLocal ? .missing : .unknown
         }
         XCTAssertEqual(classified.kept.map(\.id), [summary.id])
-        XCTAssertEqual(classified.noise, [local.id])
+        XCTAssertEqual(classified.noise, [HistoryKey(local)])
         XCTAssertEqual(classified.exists.count, 2)
         for evidence in [DirectoryEvidence.exists, .unknown, .missing] {
             let factory = FakeTerminalSurfaceFactory()

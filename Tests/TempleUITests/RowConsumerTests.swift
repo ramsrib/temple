@@ -254,12 +254,12 @@ final class RowConsumerTests: XCTestCase {
         try await read(app, events: [.sessions([Fixture.session("catalog", project: "/p", updated: 5)], read: 1, total: 1)])
         await nextPresentationTurn()
         let builds = app.history.rebuildCount
-        let chronology = app.history.allRows.map(\.id)
+        let chronology = app.history.allRows.map(\.sessionID)
         for tick in 1...100 { app.overlay.touch("catalog", host: .local, at: Date(timeIntervalSince1970: Double(100 + tick))) }
         await nextPresentationTurn()
         await nextPresentationTurn()
         XCTAssertEqual(app.history.rebuildCount, builds)
-        XCTAssertEqual(app.history.allRows.map(\.id), chronology)
+        XCTAssertEqual(app.history.allRows.map(\.sessionID), chronology)
         XCTAssertEqual(app.history.allRows.last?.updatedAt, Date(timeIntervalSince1970: 5))
         // An absent member DOES use row time, while titles still update for both.
         app.overlay.touch("missing", host: .local, at: Date(timeIntervalSince1970: 400))
@@ -279,7 +279,7 @@ final class RowConsumerTests: XCTestCase {
         for member in app.sessions {
             let row = HistoryRow(member: member)
             XCTAssertTrue(app.history.canArchive(row))
-            app.history.hasOpenTab = { $0 == member.id }
+            app.history.hasOpenTab = { $0.sessionID == member.id }
             XCTAssertFalse(app.history.canArchive(row))
             app.history.archive(row, undoManager: undo)
             XCTAssertFalse(app.overlay.rows[member.id]!.archived)
@@ -386,7 +386,7 @@ final class RowConsumerTests: XCTestCase {
             "unreadable": .unreadable, "resolving": .resolving, "awaiting": .awaitingCreation], summaries: [:]))
         try await read(app, events: [.storeFailed(agent: .codex, message: "Failed scan")])
         XCTAssertEqual(app.history.allRows.count, 5)
-        XCTAssertEqual(app.history.allRows.filter(\.transcriptMissing).map(\.id), ["absent"])
+        XCTAssertEqual(app.history.allRows.filter(\.transcriptMissing).map(\.sessionID), ["absent"])
         XCTAssertTrue(app.history.allRows.allSatisfy { !$0.canResume })
         app.history.scope = .inTemple
         app.history.openSelected()
@@ -394,14 +394,14 @@ final class RowConsumerTests: XCTestCase {
         // A stale absence cannot replace newer unresolved evidence.
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["unknown": .confirmedAbsent], summaries: [:]))
         app.history.rebuild()
-        XCTAssertFalse(app.history.allRows.first { $0.id == "unknown" }!.transcriptMissing)
+        XCTAssertFalse(app.history.allRows.first { $0.sessionID == "unknown" }!.transcriptMissing)
         // Cancelling a later scan leaves the member union and its evidence intact.
         app.history.catalog = { AsyncStream { _ in } }
         app.history.refresh()
         app.history.deactivate()
         app.history.rebuild()
         XCTAssertEqual(app.history.allRows.count, 5)
-        XCTAssertEqual(app.history.allRows.filter(\.transcriptMissing).map(\.id), ["absent"])
+        XCTAssertEqual(app.history.allRows.filter(\.transcriptMissing).map(\.sessionID), ["absent"])
     }
 
     func testHistoryUnionsMembersWithTheUnfilteredCatalog() async throws {
@@ -413,21 +413,21 @@ final class RowConsumerTests: XCTestCase {
         let noisy = Fixture.session("noisy-outside", project: "/", title: "Noise", updated: 20)
         let outside = Fixture.session("outside", project: NSTemporaryDirectory(), title: "Outside", updated: 30)
         try await read(app, events: [.sessions([disk, noisy, outside], read: 3, total: 3)])
-        XCTAssertEqual(Set(app.history.allRows.map(\.id)), ["member", "missing", "outside"])
+        XCTAssertEqual(Set(app.history.allRows.map(\.sessionID)), ["member", "missing", "outside"])
         XCTAssertEqual(app.history.inTempleCount, 2)
-        let member = try XCTUnwrap(app.history.allRows.first { $0.id == "member" })
+        let member = try XCTUnwrap(app.history.allRows.first { $0.sessionID == "member" })
         XCTAssertEqual(member.title, "Durable title")
         XCTAssertEqual(member.updatedAt, disk.updatedAt)
         XCTAssertEqual(member.gitBranch, "catalog-branch")
         XCTAssertEqual(member.lastMessagePreview, "Catalog preview")
         XCTAssertFalse(member.transcriptMissing)
-        XCTAssertEqual(app.history.allRows.first { $0.id == "missing" }?.updatedAt, Date(timeIntervalSince1970: 50))
-        XCTAssertFalse(app.history.allRows.first { $0.id == "missing" }!.transcriptMissing)
+        XCTAssertEqual(app.history.allRows.first { $0.sessionID == "missing" }?.updatedAt, Date(timeIntervalSince1970: 50))
+        XCTAssertFalse(app.history.allRows.first { $0.sessionID == "missing" }!.transcriptMissing)
         // The noisy disk entry was retained, so a later join reveals its disk facts.
         app.overlay.join("noisy-outside", via: .imported, agent: .claude,
             core: SessionCore(directory: "/", title: "New member", lastActiveAt: Date(timeIntervalSince1970: 200)))
         app.history.rebuild()
-        let joined = try XCTUnwrap(app.history.allRows.first { $0.id == "noisy-outside" })
+        let joined = try XCTUnwrap(app.history.allRows.first { $0.sessionID == "noisy-outside" })
         XCTAssertEqual(joined.updatedAt, noisy.updatedAt)
         XCTAssertEqual(joined.title, "New member")
         XCTAssertEqual(app.history.inTempleCount, 3)

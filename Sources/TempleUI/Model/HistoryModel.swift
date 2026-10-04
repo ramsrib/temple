@@ -37,9 +37,13 @@ public final class HistoryModel: ObservableObject {
         case done
     }
 
-    public struct StoreFailure: Equatable, Sendable {
+    public struct StoreFailure: Hashable, Sendable {
+        public let host: HostID
         public let agent: Agent
         public let message: String
+        public init(host: HostID, agent: Agent, message: String) {
+            self.host = host; self.agent = agent; self.message = message
+        }
     }
 
     /// What the confirmation sheet says and imports. Built when asked, so the
@@ -91,26 +95,33 @@ public final class HistoryModel: ObservableObject {
     /// Runs off the main actor: the noise check stats each project once a read.
     private let directoryEvidence: @Sendable (ProjectKey) -> DirectoryEvidence
     private let now: () -> Date
-    /// The full-disk read. Replaceable so tests feed events by hand.
-    var catalog: () -> AsyncStream<CatalogBatch>
+    /// The full-disk read of every host. Replaceable so tests feed events by hand.
+    var catalog: () -> AsyncStream<HostCatalogEvent>
     /// Open (or focus) a session in a tab. Opening an outside session joins it
     /// as `opened` on the way (ADR-023).
     var openSession: (TranscriptSummary) -> Void = { _ in }
-    /// Whether a session runs in an open tab: undoing its import must not
-    /// pull it out from under that tab.
     var archiveMember: (String, UndoManager?) -> Void = { _, _ in }
-    var hasOpenTab: (String) -> Bool = { _ in false }
+    /// Whether a session runs in an open tab on the row's host: undoing its
+    /// import must not pull it out from under that tab.
+    var hasOpenTab: (HistoryKey) -> Bool = { _ in false }
 
     // MARK: Snapshot
 
-    /// The disk as last read: deduped by id, first (newest) file wins.
-    private var diskByID: [String: TranscriptSummary] = [:]
+    /// The disk as last read, one entry per host, agent and session id. Each
+    /// host's catalog already picked one file per thread (the one the agent
+    /// would resume), so nothing here chooses between files.
+    /// Assigned whole (once per batch), so its id set is recomputed once.
+    private var diskByKey: [HistoryKey: TranscriptSummary] = [:] {
+        didSet { diskSessionIDs = Set(diskByKey.keys.map(\.sessionID)) }
+    }
+    /// Which session ids the disk lists, on any host, for any agent.
+    private var diskSessionIDs: Set<String> = []
     /// Temple's own copies come from the live index — fresher titles and
     /// times. Kept as delivered; keyed by id only when a rebuild needs it.
     var memberRows: () -> [Session] = { [] }
     var openMember: (Session) -> Void = { _ in }
-    private var noiseIDs: Set<String> = []
-    private var joinedByID: [String: SessionState] = [:]
+    private var noiseKeys: Set<HistoryKey> = []
+    private var joinedByKey: [HistoryKey: SessionState] = [:]
 
     @Published public private(set) var readState: ReadState = .idle
     @Published public private(set) var lastUpdated: Date?
@@ -149,11 +160,11 @@ public final class HistoryModel: ObservableObject {
     }
 
 
-    @Published public private(set) var selection: Set<String> = []
+    @Published public private(set) var selection: Set<HistoryKey> = []
     /// The row the keyboard is on: arrows move from it, ⇧ extends to it.
-    @Published public private(set) var cursorID: String?
+    @Published public private(set) var cursorID: HistoryKey?
     /// Where a ⇧-extension is measured from.
-    private var anchorID: String?
+    private var anchorID: HistoryKey?
     /// Bumped when the list should bring the cursor into view.
     @Published public private(set) var scrollRequest = 0
     /// Bumped by ⌘F: the view moves keyboard focus into the search field.
@@ -168,7 +179,7 @@ public final class HistoryModel: ObservableObject {
     @Published public var importFailure: ImportFailure?
     @Published public private(set) var notice: Notice?
     /// Rows whose status column reads "Imported" for a moment.
-    @Published public private(set) var justImported: Set<String> = []
+    @Published public private(set) var justImported: Set<HistoryKey> = []
 
     /// Select the first row once there is one — on open, and after a filter
     /// change: arrows and Return work without a click.
@@ -186,7 +197,7 @@ public final class HistoryModel: ObservableObject {
     /// History presents, so it must not trigger a catalog union and sort.
     private var presentationMembers: Set<Session> {
         Set(currentMembers.map { member in
-            guard diskByID[member.id] != nil else { return member }
+            guard diskSessionIDs.contains(member.id) else { return member }
             var state = member.state
             state.lastActiveAt = nil
             return Session(state: state, resolution: member.resolution)
@@ -204,12 +215,12 @@ public final class HistoryModel: ObservableObject {
     var queryDebounce: TimeInterval = 0.12
 
     init(overlay: SessionOverlayStore,
-         catalog: (() -> AsyncStream<CatalogBatch>)? = nil,
+         catalog: (() -> AsyncStream<HostCatalogEvent>)? = nil,
          pathExists: (@Sendable (String) -> Bool)? = nil,
          directoryEvidence: (@Sendable (ProjectKey) -> DirectoryEvidence)? = nil,
          now: @escaping () -> Date = Date.init) {
         self.overlay = overlay
-        self.catalog = catalog ?? HostRegistry().catalog
+        self.catalog = catalog ?? { HostRegistry().catalog() }
         let local = LocalSessionSource()
         self.directoryEvidence = directoryEvidence ?? { key in
             guard key.host.isLocal else { return .unknown }
@@ -254,9 +265,9 @@ public final class HistoryModel: ObservableObject {
     /// The tab closed: its view state goes with it.
     public func reset() {
         deactivate()
-        diskByID = [:]
-        noiseIDs = []
-        joinedByID = [:]
+        diskByKey = [:]
+        noiseKeys = []
+        joinedByKey = [:]
         storeFailures = []
         lastUpdated = nil
         readState = .idle
@@ -278,52 +289,73 @@ public final class HistoryModel: ObservableObject {
     }
 
     /// ⌘R, and every activation. A read already running is replaced.
+    /// Every host is read at once; progress is the sum over the hosts heard
+    /// from, and a host that fails says so for itself only.
     public func refresh() {
         readTask?.cancel()
         readState = .reading(read: 0, total: nil)
         let stream = catalog()
         let directoryEvidence = directoryEvidence
         readTask = Task { [weak self] in
-            var seen: Set<String> = []
+            var seen: Set<HistoryKey> = []
             var failures: [StoreFailure] = []
             var exists: [ProjectKey: DirectoryEvidence] = [:]
+            var progress: [HostID: (read: Int, total: Int?)] = [:]
+            func summed() -> ReadState {
+                let read = progress.values.reduce(0) { $0 + $1.read }
+                let total: Int? = progress.values.contains { $0.total == nil } ? nil
+                    : progress.values.reduce(0) { $0 + ($1.total ?? 0) }
+                return .reading(read: read, total: total)
+            }
             for await event in stream {
                 guard let self, !Task.isCancelled else { return }
-                switch event {
+                let host = event.host
+                switch event.batch {
                 case .listed(let total):
-                    self.readState = .reading(read: 0, total: total)
+                    progress[host] = (0, total)
+                    self.readState = summed()
                 case .storeFailed(let agent, let message):
-                    // A host that failed as a whole failed for every agent.
+                    // A host that failed as a whole failed for every agent,
+                    // and has nothing more to read.
                     for agent in agent.map({ [$0] }) ?? Agent.allCases {
-                        failures.append(StoreFailure(agent: agent, message: message))
+                        failures.append(StoreFailure(host: host, agent: agent, message: message))
+                    }
+                    if agent == nil {
+                        let read = progress[host]?.read ?? 0
+                        progress[host] = (read, read)
+                        self.readState = summed()
                     }
                     self.storeFailures = failures
                 case .sessions(let batch, let read, let total):
-                    // First (newest) file wins. The noise check — a stat per
-                    // project, memoised across the read — runs off the main
-                    // actor, a batch at a time so the order is kept.
-                    let fresh = batch.filter { seen.insert($0.id).inserted }
+                    // One summary per host, agent and id by the catalog's own
+                    // selection. The noise check — a stat per project,
+                    // memoised across the read — runs off the main actor, a
+                    // batch at a time so the order is kept.
+                    let fresh = batch.filter { $0.locator.host == host }
                     let known = exists
                     let sorted = await Task.detached(priority: .userInitiated) {
                         Self.classify(fresh, exists: known, directoryEvidence: directoryEvidence)
                     }.value
                     guard !Task.isCancelled else { return }
                     exists = sorted.exists
+                    var disk = self.diskByKey
                     for session in fresh {
-                        self.diskByID[session.id] = session
-                        self.noiseIDs.remove(session.id)
+                        let key = HistoryKey(session)
+                        seen.insert(key)
+                        disk[key] = session
+                        self.noiseKeys.remove(key)
                     }
-                    self.noiseIDs.formUnion(sorted.noise)
-                    self.readState = .reading(read: read, total: total)
+                    self.diskByKey = disk
+                    self.noiseKeys.formUnion(sorted.noise)
+                    progress[host] = (read, total)
+                    self.readState = summed()
                     self.rebuild()
                 }
             }
             guard let self, !Task.isCancelled else { return }
             // Gone from disk since the last read: drop it now the read is whole.
-            self.diskByID = self.diskByID.filter { seen.contains($0.key) }
+            self.diskByKey = self.diskByKey.filter { seen.contains($0.key) }
             self.storeFailures = failures
-            self.joinedByID = Dictionary(self.currentMembers.map { ($0.id, $0.state) },
-                                         uniquingKeysWith: { first, _ in first })
             self.lastUpdated = self.now()
             self.readState = .done
             self.readTask = nil
@@ -335,10 +367,10 @@ public final class HistoryModel: ObservableObject {
     /// the per-project existence answers so far in and out.
     nonisolated static func classify(_ sessions: [TranscriptSummary], exists: [ProjectKey: DirectoryEvidence],
                                      directoryEvidence: (ProjectKey) -> DirectoryEvidence)
-        -> (kept: [TranscriptSummary], noise: [String], exists: [ProjectKey: DirectoryEvidence]) {
+        -> (kept: [TranscriptSummary], noise: [HistoryKey], exists: [ProjectKey: DirectoryEvidence]) {
         var exists = exists
         var kept: [TranscriptSummary] = []
-        var noise: [String] = []
+        var noise: [HistoryKey] = []
         for session in sessions {
             let isNoise = SessionFilter.isNoise(session) { path in
                 let key = ProjectKey(host: session.locator.host, path: path)
@@ -347,22 +379,59 @@ public final class HistoryModel: ObservableObject {
                 exists[key] = result
                 return result != .missing
             }
-            if isNoise { noise.append(session.id) } else { kept.append(session) }
+            if isNoise { noise.append(HistoryKey(session)) } else { kept.append(session) }
         }
         return (kept, noise, exists)
     }
 
     // MARK: Derived
 
-    public func isInTemple(_ id: String) -> Bool { overlay.rows[id] != nil }
+    /// The row is a member's: its catalog entry (if any) matched the
+    /// member's host and agent.
+    public func isInTemple(_ row: HistoryRow) -> Bool { row.isMember }
 
     /// In Temple and put away (the session, or its whole project).
     public func isArchived(_ session: HistoryRow) -> Bool {
-        isInTemple(session.id)
-            && (overlay.isArchived(session.id) || (session.project.map { overlay.isProjectArchived($0) } ?? false))
+        isInTemple(session)
+            && (overlay.isArchived(session.sessionID) || (session.project.map { overlay.isProjectArchived($0) } ?? false))
     }
 
-    public func joinedState(_ id: String) -> SessionState? { joinedByID[id] }
+    public func joinedState(_ key: HistoryKey) -> SessionState? { joinedByKey[key] }
+
+    /// How a catalog entry stands against Temple's membership, which is
+    /// keyed by the session id alone.
+    enum Standing: Equatable {
+        case outside
+        case member
+        case conflict(JoinConflict)
+    }
+
+    /// A member attaches to a catalog entry only when the host and the
+    /// member's known agent both match. An agentless (legacy) member on the
+    /// same host attaches when exactly one agent lists the id there; when
+    /// two do, which one it is cannot be told, so neither attaches.
+    static func standing(of key: HistoryKey, member: SessionState?, otherAgentListed: Bool) -> Standing {
+        guard let member else { return .outside }
+        guard member.host == key.host else { return .conflict(.host(member.host)) }
+        if let agent = member.agent {
+            return key.agent == nil || key.agent == agent ? .member : .conflict(.agent(agent))
+        }
+        return otherAgentListed ? .conflict(.host(member.host)) : .member
+    }
+
+    private func otherAgentListed(_ key: HistoryKey) -> Bool {
+        Agent.allCases.contains { agent in
+            agent != key.agent && diskByKey[HistoryKey(host: key.host, agent: agent, sessionID: key.sessionID)] != nil
+        }
+    }
+
+    /// The live answer for an import: against the rows as they are now,
+    /// not as the page last drew them.
+    private func isImportable(_ summary: TranscriptSummary) -> Bool {
+        let key = HistoryKey(summary)
+        return Self.standing(of: key, member: overlay.rows[summary.id],
+                             otherAgentListed: otherAgentListed(key)) == .outside
+    }
 
     /// Search or a filter is narrowing the page ("Showing 47 of 3,810").
     public var isNarrowed: Bool {
@@ -415,16 +484,32 @@ public final class HistoryModel: ObservableObject {
         presentedArchivedProjects = overlay.archivedProjectKeys
         needsRebuild = false
         let members = Dictionary(currentMembers.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let temple = Set(members.keys)
-        var rows = diskByID.values.compactMap { disk -> HistoryRow? in
-            if let member = members[disk.id] { return HistoryRow(member: member, catalog: disk) }
-            return noiseIDs.contains(disk.id) ? nil : HistoryRow(catalog: disk)
+        var attached: Set<String> = []
+        var rows: [HistoryRow] = []
+        rows.reserveCapacity(diskByKey.count + members.count)
+        for (key, disk) in diskByKey {
+            let member = members[key.sessionID]
+            switch Self.standing(of: key, member: member?.state, otherAgentListed: otherAgentListed(key)) {
+            case .member:
+                rows.append(HistoryRow(member: member, catalog: disk))
+                attached.insert(key.sessionID)
+            case .conflict(let conflict):
+                if !noiseKeys.contains(key) { rows.append(HistoryRow(catalog: disk, conflict: conflict)) }
+            case .outside:
+                if !noiseKeys.contains(key) { rows.append(HistoryRow(catalog: disk)) }
+            }
         }
-        rows += members.values.filter { diskByID[$0.id] == nil }.map { HistoryRow(member: $0) }
-        joinedByID = Dictionary(members.values.map { ($0.id, $0.state) }, uniquingKeysWith: { first, _ in first })
-        rows.sort { $0.updatedAt == $1.updatedAt ? $0.id < $1.id : $0.updatedAt > $1.updatedAt }
+        rows += members.values.filter { !attached.contains($0.id) }.map { HistoryRow(member: $0) }
+        joinedByKey = Dictionary(rows.compactMap { row in row.member.map { (row.id, $0.state) } },
+                                 uniquingKeysWith: { first, _ in first })
+        rows.sort { lhs, rhs in
+            guard lhs.updatedAt == rhs.updatedAt else { return lhs.updatedAt > rhs.updatedAt }
+            if lhs.sessionID != rhs.sessionID { return lhs.sessionID < rhs.sessionID }
+            if lhs.host != rhs.host { return lhs.host.rawValue < rhs.host.rawValue }
+            return (lhs.agent?.rawValue ?? "") < (rhs.agent?.rawValue ?? "")
+        }
         assign(\.allRows, rows)
-        assign(\.inTempleCount, rows.reduce(0) { $0 + (temple.contains($1.id) ? 1 : 0) })
+        assign(\.inTempleCount, rows.reduce(0) { $0 + ($1.isMember ? 1 : 0) })
         var agents: [Agent: Int] = [:]
         var projectCounts: [ProjectKey: Int] = [:]
         for row in rows {
@@ -440,8 +525,8 @@ public final class HistoryModel: ObservableObject {
         let visible = rows.filter { session in
             switch scope {
             case .all: break
-            case .inTemple: if !temple.contains(session.id) { return false }
-            case .notInTemple: if temple.contains(session.id) { return false }
+            case .inTemple: if !session.isMember { return false }
+            case .notInTemple: if session.isMember { return false }
             }
             if let agentFilter, session.agent != agentFilter { return false }
             if let projectKeyFilter, session.project != projectKeyFilter { return false }
@@ -476,7 +561,7 @@ public final class HistoryModel: ObservableObject {
         if session.projectPath.localizedCaseInsensitiveContains(needle) { return true }
         if let branch = session.gitBranch, branch.localizedCaseInsensitiveContains(needle) { return true }
         if let preview = session.lastMessagePreview, preview.localizedCaseInsensitiveContains(needle) { return true }
-        return session.id.lowercased().hasPrefix(needle.lowercased())
+        return session.sessionID.lowercased().hasPrefix(needle.lowercased())
     }
 
     /// Every filter change — search included — clears the selection and puts
@@ -518,7 +603,7 @@ public final class HistoryModel: ObservableObject {
 
     public enum ClickModifier { case none, command, shift }
 
-    public func click(_ id: String, modifier: ClickModifier = .none) {
+    public func click(_ id: HistoryKey, modifier: ClickModifier = .none) {
         wantsInitialSelection = false
         switch modifier {
         case .none:
@@ -533,13 +618,13 @@ public final class HistoryModel: ObservableObject {
         }
     }
 
-    private func select(only id: String) {
+    private func select(only id: HistoryKey) {
         selection = [id]
         anchorID = id
         cursorID = id
     }
 
-    private func range(from start: String, to end: String) -> Set<String> {
+    private func range(from start: HistoryKey, to end: HistoryKey) -> Set<HistoryKey> {
         let ids = visibleRows.map(\.id)
         guard let a = ids.firstIndex(of: start), let b = ids.firstIndex(of: end) else { return [end] }
         return Set(ids[min(a, b)...max(a, b)])
@@ -585,7 +670,7 @@ public final class HistoryModel: ObservableObject {
         moveCursor(to: id, extend: extend)
     }
 
-    private func moveCursor(to id: String, extend: Bool) {
+    private func moveCursor(to id: HistoryKey, extend: Bool) {
         wantsInitialSelection = false
         if extend {
             selection = range(from: anchorID ?? cursorID ?? id, to: id)
@@ -617,7 +702,7 @@ public final class HistoryModel: ObservableObject {
 
     /// What the bulk Import would bring in.
     public var selectedOutsideRows: [TranscriptSummary] {
-        selectedRows.filter { !isInTemple($0.id) }.compactMap(\.catalog)
+        selectedRows.filter(\.canImport).compactMap(\.catalog)
     }
 
     /// Esc: clear search → clear selection → leave (the caller goes back to
@@ -653,12 +738,12 @@ public final class HistoryModel: ObservableObject {
     }
 
     public func canArchive(_ session: HistoryRow) -> Bool {
-        isInTemple(session.id) && !isArchived(session) && !hasOpenTab(session.id)
+        isInTemple(session) && !isArchived(session) && !hasOpenTab(session.id)
     }
 
     public func archive(_ session: HistoryRow, undoManager: UndoManager?) {
-        guard canArchive(session) else { return }
-        archiveMember(session.id, undoManager)
+        guard canArchive(session), let member = session.member else { return }
+        archiveMember(member.id, undoManager)
     }
 
     public func open(_ session: HistoryRow) {
@@ -668,7 +753,7 @@ public final class HistoryModel: ObservableObject {
     }
 
     public func open(_ session: TranscriptSummary) { openSession(session) }
-    public func requestImport(_ rows: [HistoryRow]) { requestImport(rows.compactMap(\.catalog)) }
+    public func requestImport(_ rows: [HistoryRow]) { requestImport(rows.filter(\.canImport).compactMap(\.catalog)) }
 
 
     public func showOnly(project key: ProjectKey) { projectKeyFilter = key }
@@ -680,7 +765,7 @@ public final class HistoryModel: ObservableObject {
     /// Temple are left out of the count and the copy; nothing to import, no
     /// sheet.
     public func requestImport(_ sessions: [TranscriptSummary]? = nil) {
-        let candidates = (sessions ?? selectedRows.compactMap(\.catalog)).filter { !isInTemple($0.id) }
+        let candidates = (sessions ?? selectedOutsideRows).filter(isImportable)
         guard !candidates.isEmpty else { return }
         pendingImport = makeImportRequest(for: candidates)
     }
@@ -753,7 +838,7 @@ public final class HistoryModel: ObservableObject {
     public func confirmImport(_ request: ImportRequest? = nil, undoManager: UndoManager?) async {
         guard let request = request ?? pendingImport else { return }
         pendingImport = nil
-        let sessions = request.sessions.filter { !isInTemple($0.id) }
+        let sessions = request.sessions.filter(isImportable)
         guard !sessions.isEmpty else { return }
         finishImport(overlay.prepareImports(sessions), sessions: sessions, undoManager: undoManager)
     }
@@ -765,8 +850,7 @@ public final class HistoryModel: ObservableObject {
         let sessions = sessions.filter { ids.contains($0.id) }
         guard !sessions.isEmpty else { return }
         let failures = overlay.importPreparedSessions(entries)
-        let imported = sessions.map(\.id).filter { failures[$0] == nil }
-        refreshJoinedStates()
+        let imported = sessions.filter { failures[$0.id] == nil }.map(HistoryKey.init)
         clearSelection()
         if !imported.isEmpty {
             markJustImported(imported)
@@ -788,23 +872,24 @@ public final class HistoryModel: ObservableObject {
         invalidate()
     }
 
-    /// Undo removes exactly the rows this import wrote, and only while each is
-    /// still an untouched import not running in a tab (`TempleDB.leave`).
-    /// Redo imports what the undo removed. The pair re-registers itself, so
-    /// ⌘Z / ⌘⇧Z bounce as often as the user likes.
-    private func registerUndo(_ undoManager: UndoManager?, imported ids: [String], sessions: [TranscriptSummary], entries: [PreparedSessionImport]) {
+    /// Undo removes exactly the rows this import wrote — each by its id and
+    /// the host it was imported from — and only while each is still an
+    /// untouched import not running in a tab (`TempleDB.leave`). Redo imports
+    /// what the undo removed. The pair re-registers itself, so ⌘Z / ⌘⇧Z
+    /// bounce as often as the user likes.
+    private func registerUndo(_ undoManager: UndoManager?, imported keys: [HistoryKey], sessions: [TranscriptSummary], entries: [PreparedSessionImport]) {
         guard let undoManager else { return }
         undoManager.registerUndo(withTarget: self) { [weak undoManager] model in
             MainActor.assumeIsolated {
-                let hosts = Dictionary(entries.map { ($0.id, $0.core.host) }, uniquingKeysWith: { first, _ in first })
-                let left = model.undoImport(ids.map { SessionKey(id: $0, host: hosts[$0] ?? .local) })
+                let left = Set(model.undoImport(keys))
                 guard let undoManager, !left.isEmpty else { return }
-                let back = sessions.filter { left.contains($0.id) }
+                let back = sessions.filter { left.contains(HistoryKey($0)) }
+                let backIDs = Set(back.map(\.id))
                 undoManager.registerUndo(withTarget: model) { [weak undoManager] model in
                     MainActor.assumeIsolated {
                         // Redo must register its inverse synchronously inside UndoManager's
                         // callback. Reuse the facts captured by the original import.
-                        model.finishImport(entries.filter { left.contains($0.id) },
+                        model.finishImport(entries.filter { backIDs.contains($0.id) },
                                            sessions: back, undoManager: undoManager)
                     }
                 }
@@ -814,21 +899,22 @@ public final class HistoryModel: ObservableObject {
         undoManager.setActionName("Import")
     }
 
-    /// Returns the ids that left Temple. A committed leave tells the live
-    /// engine itself (`TempleDB.observeLeaves`); nothing to re-read here.
+    /// Returns the rows whose sessions left Temple. Each leave carries the
+    /// host it was imported from, so a row another host holds under the same
+    /// id is never the one removed. A committed leave tells the live engine
+    /// itself (`TempleDB.observeLeaves`); nothing to re-read here.
     @discardableResult
-    func undoImport(_ keys: [SessionKey]) -> [String] {
-        let ids = keys.map(\.id)
-        let open = Set(ids.filter { hasOpenTab($0) })
-        let candidates = keys.filter { !open.contains($0.id) }
-        let left = overlay.leave(candidates)
-        refreshJoinedStates()
-        justImported.subtract(left)
-        showNotice(Notice(text: Self.undoNotice(total: ids.count, left: left.count,
-                                                open: open.count, changed: candidates.count - left.count),
+    func undoImport(_ keys: [HistoryKey]) -> [HistoryKey] {
+        let open = Set(keys.filter { hasOpenTab($0) })
+        let candidates = keys.filter { !open.contains($0) }
+        let left = Set(overlay.leave(candidates.map { SessionKey(id: $0.sessionID, host: $0.host) }))
+        let leftKeys = candidates.filter { left.contains($0.sessionID) }
+        justImported.subtract(leftKeys)
+        showNotice(Notice(text: Self.undoNotice(total: keys.count, left: leftKeys.count,
+                                                open: open.count, changed: candidates.count - leftKeys.count),
                           offersUndo: false))
         invalidate()
-        return left
+        return leftKeys
     }
 
     /// What the undo did, and why anything it did not undo stayed: running in
@@ -847,12 +933,7 @@ public final class HistoryModel: ObservableObject {
         return "\(head) · \(reasons.joined(separator: ", ")), kept"
     }
 
-    private func refreshJoinedStates() {
-        joinedByID = Dictionary(currentMembers.map { ($0.id, $0.state) },
-                                uniquingKeysWith: { first, _ in first })
-    }
-
-    private func markJustImported(_ ids: [String]) {
+    private func markJustImported(_ ids: [HistoryKey]) {
         justImported.formUnion(ids)
         importedTask?.cancel()
         let delay = importedDuration

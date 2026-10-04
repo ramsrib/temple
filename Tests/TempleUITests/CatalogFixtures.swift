@@ -1,5 +1,6 @@
 import Foundation
 import TempleCore
+@testable import TempleUI
 
 // Explicit transcript facts for isolated catalog fixtures.
 func catalogFixture(id: String, agent: Agent, projectPath: String, title: String,
@@ -40,4 +41,12 @@ struct CatalogFixtureIndex {
     var snapshot: EngineSnapshot { EngineSnapshot(generation: 1,
         resolutions: Dictionary(uniqueKeysWithValues: allSessions.map { ($0.id, .loaded($0.filePath)) }),
         summaries: Dictionary(uniqueKeysWithValues: allSessions.map { ($0.id, $0) })) }
+}
+
+/// Hand-fed catalog streams speak for this Mac unless a test names a host.
+extension AsyncStream.Continuation where Element == HostCatalogEvent {
+    @discardableResult
+    func yield(_ batch: CatalogBatch, host: HostID = .local) -> YieldResult {
+        yield(HostCatalogEvent(host: host, batch: batch))
+    }
 }

@@ -18,18 +18,30 @@ public struct HostRegistry: Sendable {
         self.entries = entries
     }
     public func entry(for host: HostID) -> Entry? { entries.first { $0.source.host == host } }
-    func catalog() -> AsyncStream<CatalogBatch> {
-        AsyncStream { continuation in
+    /// Every host's catalog at once, each event tagged with its host. Hosts
+    /// are read concurrently, so a slow or dead one holds up no other; a host
+    /// whose read throws reports `.storeFailed(agent: nil, …)` for itself and
+    /// the rest carry on. Ending the consumer cancels every read.
+    public func catalog(_ query: CatalogQuery = CatalogQuery()) -> AsyncStream<HostCatalogEvent> {
+        let sources = entries.map(\.source).filter { $0.capabilities.contains(.catalog) }
+        return AsyncStream { continuation in
             let task = Task {
-                for entry in entries where entry.source.capabilities.contains(.catalog) {
-                    do {
-                        for try await batch in entry.source.catalog(CatalogQuery()) {
-                            guard !Task.isCancelled else { continuation.finish(); return }
-                            continuation.yield(batch)
+                await withTaskGroup(of: Void.self) { group in
+                    for source in sources {
+                        group.addTask {
+                            let host = source.host
+                            do {
+                                for try await batch in source.catalog(query) {
+                                    guard !Task.isCancelled else { return }
+                                    continuation.yield(HostCatalogEvent(host: host, batch: batch))
+                                }
+                            } catch {
+                                // A failed host cannot establish absence. History retains members.
+                                guard !Task.isCancelled else { return }
+                                continuation.yield(HostCatalogEvent(host: host,
+                                    batch: .storeFailed(agent: nil, message: error.localizedDescription)))
+                            }
                         }
-                    } catch {
-                        // A failed host cannot establish absence. History retains members.
-                        continuation.yield(.storeFailed(agent: nil, message: error.localizedDescription))
                     }
                 }
                 continuation.finish()
@@ -37,4 +49,11 @@ public struct HostRegistry: Sendable {
             continuation.onTermination = { _ in task.cancel() }
         }
     }
+}
+
+/// One host's catalog batch, as `HostRegistry.catalog` delivers it.
+public struct HostCatalogEvent: Equatable, Sendable {
+    public let host: HostID
+    public let batch: CatalogBatch
+    public init(host: HostID, batch: CatalogBatch) { self.host = host; self.batch = batch }
 }

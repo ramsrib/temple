@@ -7,6 +7,18 @@ import TempleCore
 /// The History tab's model: a snapshot of the whole disk joined with Temple's
 /// membership, the page's search and filters over it, native-style
 /// selection, and import with its undo.
+/// The tests below each use one host and one agent per id, so a session id
+/// names its row.
+@MainActor
+private extension HistoryModel {
+    var selectedIDs: Set<String> { Set(selection.map(\.sessionID)) }
+    var cursorSessionID: String? { cursorID?.sessionID }
+    var justImportedIDs: Set<String> { Set(justImported.map(\.sessionID)) }
+    func row(_ id: String) -> HistoryRow { allRows.first { $0.sessionID == id }! }
+    func click(_ id: String, modifier: ClickModifier = .none) { click(row(id).id, modifier: modifier) }
+    func isInTemple(_ id: String) -> Bool { isInTemple(row(id)) }
+}
+
 @MainActor
 final class HistoryTests: XCTestCase {
     private var calendar: Calendar = {
@@ -28,7 +40,7 @@ final class HistoryTests: XCTestCase {
                      lastMessagePreview: preview, gitBranch: branch)
     }
 
-    private static func stream(_ events: [CatalogBatch]) -> AsyncStream<CatalogBatch> {
+    private static func stream(_ events: [CatalogBatch]) -> AsyncStream<HostCatalogEvent> {
         AsyncStream { continuation in
             for event in events { continuation.yield(event) }
             continuation.finish()
@@ -82,7 +94,7 @@ final class HistoryTests: XCTestCase {
     }
 
     private func ids(_ rows: [TranscriptSummary]) -> [String] { rows.map(\.id) }
-    private func ids(_ rows: [HistoryRow]) -> [String] { rows.map(\.id) }
+    private func ids(_ rows: [HistoryRow]) -> [String] { rows.map(\.sessionID) }
 
     /// The catalog row's facts are committed at join; the engine verifies
     /// the member afterwards like any other. There is no second parse that
@@ -255,16 +267,6 @@ final class HistoryTests: XCTestCase {
         XCTAssertNotNil(h.history.lastUpdated)
     }
 
-    func testDuplicateIDsAreDedupedFirstFileWins() async {
-        let first = session("dup", title: "Newest copy", hoursAgo: 1)
-        let second = session("dup", project: "/p/b", title: "Older copy", hoursAgo: 5)
-        let h = harness([first, second])
-
-        await load(h.history)
-
-        XCTAssertEqual(h.history.allRows.map(\.title), ["Newest copy"])
-    }
-
     func testTempleRowsUseRowTitleAndCatalogTime() async {
         let disk = session("mine", title: "First prompt", hoursAgo: 5)
         let h = harness([disk], members: ["mine"])
@@ -296,8 +298,8 @@ final class HistoryTests: XCTestCase {
     func testStreamingShowsRowsBeforeTheReadEndsAndRecordsStoreFailures() async {
         let database = try! TempleDB.inMemory()
         let overlay = SessionOverlayStore(db: database)
-        var continuation: AsyncStream<CatalogBatch>.Continuation!
-        let stream = AsyncStream<CatalogBatch> { continuation = $0 }
+        var continuation: AsyncStream<HostCatalogEvent>.Continuation!
+        let stream = AsyncStream<HostCatalogEvent> { continuation = $0 }
         let history = HistoryModel(overlay: overlay, catalog: { stream },
                                    pathExists: { _ in true }, now: { [now] in now })
 
@@ -308,8 +310,8 @@ final class HistoryTests: XCTestCase {
         continuation.yield(.sessions([session("a", hoursAgo: 1)], read: 1, total: 3))
         await waitFor { history.allRows.count == 1 }
         XCTAssertEqual(history.readState, .reading(read: 1, total: 3))
-        XCTAssertEqual(history.storeFailures, [.init(agent: .codex, message: "permission denied")])
-        XCTAssertEqual(history.selection, ["a"], "the first row is selected as soon as there is one")
+        XCTAssertEqual(history.storeFailures, [.init(host: .local, agent: .codex, message: "permission denied")])
+        XCTAssertEqual(history.selectedIDs, ["a"], "the first row is selected as soon as there is one")
 
         // A later batch can hold rows NEWER than the selected one (stores are
         // read one after another): they land above it, and the selection stays.
@@ -318,8 +320,8 @@ final class HistoryTests: XCTestCase {
         continuation.finish()
         await waitFor { history.readState == .done }
         XCTAssertEqual(ids(history.allRows), ["newer", "a", "b"])
-        XCTAssertEqual(history.selection, ["a"], "later batches never move the selection")
-        XCTAssertEqual(history.cursorID, "a")
+        XCTAssertEqual(history.selectedIDs, ["a"], "later batches never move the selection")
+        XCTAssertEqual(history.cursorSessionID, "a")
     }
 
     /// The noise check stats a project directory per read: off the main
@@ -350,7 +352,7 @@ final class HistoryTests: XCTestCase {
         let overlay = SessionOverlayStore(db: database)
         var reads: [[TranscriptSummary]] = [[session("a", hoursAgo: 1), session("gone", hoursAgo: 2)],
                                        [session("a", hoursAgo: 1)]]
-        var pending: AsyncStream<CatalogBatch>.Continuation?
+        var pending: AsyncStream<HostCatalogEvent>.Continuation?
         let cancelled = CancelFlag()
         let history = HistoryModel(overlay: overlay, catalog: {
             AsyncStream { continuation in
@@ -394,7 +396,7 @@ final class HistoryTests: XCTestCase {
         h.history.query = "watch"
         XCTAssertEqual(ids(h.history.visibleRows), ["t1", "t2", "t3", "y1", "y2"])
         XCTAssertEqual(h.history.groups.map(\.title), ["Today", "Yesterday"], "day grouping survives search")
-        XCTAssertEqual(h.history.groups[0].sessions.map(\.id), ["t1", "t2", "t3"])
+        XCTAssertEqual(h.history.groups[0].sessions.map(\.sessionID), ["t1", "t2", "t3"])
         XCTAssertTrue(h.history.isNarrowed)
 
         h.history.query = "ABC1"
@@ -436,16 +438,16 @@ final class HistoryTests: XCTestCase {
         let h = harness(rows)
         await load(h.history)
         h.history.selectAll()
-        XCTAssertEqual(h.history.selection, ["a", "b", "c"])
+        XCTAssertEqual(h.history.selectedIDs, ["a", "b", "c"])
 
         h.history.projectFilter = "/p/b"
-        XCTAssertEqual(h.history.selection, ["c"])
+        XCTAssertEqual(h.history.selectedIDs, ["c"])
 
         h.history.projectFilter = nil
         h.history.click("b")
         h.history.click("c", modifier: .command)
         h.history.query = "Title"
-        XCTAssertEqual(h.history.selection, ["a"])
+        XCTAssertEqual(h.history.selectedIDs, ["a"])
     }
 
     // MARK: Selection
@@ -456,25 +458,25 @@ final class HistoryTests: XCTestCase {
         await load(h.history)
 
         h.history.click("r1")
-        XCTAssertEqual(h.history.selection, ["r1"])
+        XCTAssertEqual(h.history.selectedIDs, ["r1"])
         h.history.click("r3", modifier: .command)
-        XCTAssertEqual(h.history.selection, ["r1", "r3"])
+        XCTAssertEqual(h.history.selectedIDs, ["r1", "r3"])
         h.history.click("r3", modifier: .command)
-        XCTAssertEqual(h.history.selection, ["r1"])
+        XCTAssertEqual(h.history.selectedIDs, ["r1"])
         h.history.click("r1")
         h.history.click("r4", modifier: .shift)
-        XCTAssertEqual(h.history.selection, ["r1", "r2", "r3", "r4"])
+        XCTAssertEqual(h.history.selectedIDs, ["r1", "r2", "r3", "r4"])
 
         h.history.click("r2")
         h.history.moveCursor(by: 1, extend: true)
         h.history.moveCursor(by: 1, extend: true)
-        XCTAssertEqual(h.history.selection, ["r2", "r3", "r4"])
+        XCTAssertEqual(h.history.selectedIDs, ["r2", "r3", "r4"])
         h.history.moveCursor(by: 1)
-        XCTAssertEqual(h.history.selection, ["r5"])
+        XCTAssertEqual(h.history.selectedIDs, ["r5"])
         h.history.moveCursor(by: 5)
-        XCTAssertEqual(h.history.cursorID, "r5", "the cursor stops at the end")
+        XCTAssertEqual(h.history.cursorSessionID, "r5", "the cursor stops at the end")
         h.history.moveCursorToEnd(top: true)
-        XCTAssertEqual(h.history.selection, ["r0"])
+        XCTAssertEqual(h.history.selectedIDs, ["r0"])
     }
 
     func testOptionArrowsJumpByDay() async {
@@ -486,14 +488,14 @@ final class HistoryTests: XCTestCase {
         h.history.click("t2")
 
         h.history.moveCursorByDay(forward: true)
-        XCTAssertEqual(h.history.cursorID, "y1")
+        XCTAssertEqual(h.history.cursorSessionID, "y1")
         h.history.moveCursorByDay(forward: true)
-        XCTAssertEqual(h.history.cursorID, "o1")
+        XCTAssertEqual(h.history.cursorSessionID, "o1")
         h.history.click("y2")
         h.history.moveCursorByDay(forward: false)
-        XCTAssertEqual(h.history.cursorID, "y1", "up first lands on the day's own first row")
+        XCTAssertEqual(h.history.cursorSessionID, "y1", "up first lands on the day's own first row")
         h.history.moveCursorByDay(forward: false)
-        XCTAssertEqual(h.history.cursorID, "t1")
+        XCTAssertEqual(h.history.cursorSessionID, "t1")
     }
 
     func testSelectAllTakesOnlyTheCurrentView() async {
@@ -505,7 +507,7 @@ final class HistoryTests: XCTestCase {
 
         h.history.selectAll()
 
-        XCTAssertEqual(h.history.selection, ["b", "c"])
+        XCTAssertEqual(h.history.selectedIDs, ["b", "c"])
     }
 
     func testReturnOpensOneRowAndNothingForSeveral() async {
@@ -540,14 +542,14 @@ final class HistoryTests: XCTestCase {
         let h = harness(rows)
         h.history.queryDebounce = 10   // never fires on its own in this test
         await load(h.history)
-        XCTAssertEqual(h.history.selection, ["a"])
+        XCTAssertEqual(h.history.selectedIDs, ["a"])
 
         h.history.draft = "Bet"
         XCTAssertEqual(h.history.query, "", "still debouncing")
         XCTAssertEqual(h.history.escape(), .clearedSearch, "Esc within the debounce clears the search…")
         XCTAssertEqual(h.history.draft, "")
         XCTAssertEqual(h.history.query, "")
-        XCTAssertEqual(h.history.selection, ["a"], "…and does not clear the selection")
+        XCTAssertEqual(h.history.selectedIDs, ["a"], "…and does not clear the selection")
 
         h.history.draft = "Bet"
         h.history.openSelected()
@@ -641,7 +643,7 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(try h.database.sessionState("in")?.joinedVia, .opened, "an existing row keeps its join")
         XCTAssertTrue(h.overlay.isTempleSession("o1"))
         XCTAssertTrue(h.history.selection.isEmpty)
-        XCTAssertEqual(h.history.justImported, ["o1", "o2"])
+        XCTAssertEqual(h.history.justImportedIDs, ["o1", "o2"])
         XCTAssertEqual(h.history.notice?.text, "2 sessions imported")
         XCTAssertEqual(h.history.inTempleCount, 3)
     }
@@ -690,7 +692,7 @@ final class HistoryTests: XCTestCase {
         let rows = [session("keep-named", hoursAgo: 1), session("plain", hoursAgo: 2),
                     session("in-tab", hoursAgo: 3), session("was-in", hoursAgo: 4)]
         let h = harness(rows, members: ["was-in"])
-        h.history.hasOpenTab = { $0 == "in-tab" }
+        h.history.hasOpenTab = { $0.sessionID == "in-tab" }
         await load(h.history)
         let manager = undoManager()
 

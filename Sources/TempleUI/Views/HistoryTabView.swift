@@ -112,7 +112,7 @@ struct HistoryTabView: View {
                 readingLine(read: read, total: total)
                     .padding(.top, 8)
             }
-            ForEach(history.storeFailures, id: \.agent) { failure in
+            ForEach(history.storeFailures, id: \.self) { failure in
                 failureBanner(failure)
                     .padding(.top, 8)
             }
@@ -264,11 +264,12 @@ struct HistoryTabView: View {
 
     /// Surfaces the store's error as thrown; never diagnoses it (AGENTS.md).
     private func failureBanner(_ failure: HistoryModel.StoreFailure) -> some View {
-        let failed = Set(history.storeFailures.map(\.agent))
+        let failed = Set(history.storeFailures.filter { $0.host == failure.host }.map(\.agent))
         let others = Agent.allCases.filter { !failed.contains($0) }
-        let shown = others.reduce(0) { $0 + (history.agentCounts[$1] ?? 0) }
+        let shown = history.allRows.filter { $0.host == failure.host && $0.agent.map(others.contains) == true }.count
         let names = others.map(\.displayName).joined(separator: " and ")
-        var text = "Couldn't read the \(failure.agent.displayName) session store: \(failure.message)"
+        let place = failure.host.isLocal ? "" : " on \(failure.host.displayName)"
+        var text = "Couldn't read the \(failure.agent.displayName) session store\(place): \(failure.message)"
         if !others.isEmpty { text += " Showing \(shown.formatted()) \(names) sessions." }
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
@@ -346,15 +347,20 @@ struct HistoryTabView: View {
         }
     }
 
-    static func headroomID(_ id: String) -> String { "headroom:" + id }
+    /// The row's scroll target one header above it; distinct from the row's own id.
+    struct Headroom: Hashable { let key: HistoryKey }
+    static func headroomID(_ key: HistoryKey) -> Headroom { Headroom(key: key) }
 
     /// A row's inputs as plain values, so a row re-renders only when what it
     /// shows changed — not on every arrow press, streamed batch, notice tick
     /// or live-index publish that re-runs this body.
     private func row(_ session: HistoryRow) -> HistoryPageRow {
-        let inTemple = history.isInTemple(session.id)
+        let inTemple = history.isInTemple(session)
         let archived = history.isArchived(session)
-        let openTab = model.openSessions.openTab(forSessionID: session.id)
+        // Only the row Temple's member is attached to wears its tab, color
+        // and joined state: another host's or agent's row with the same id
+        // is not that session.
+        let openTab = inTemple ? model.openSessions.openTab(forSessionID: session.sessionID).flatMap { $0.host == session.host ? $0 : nil } : nil
         return HistoryPageRow(
             session: session,
             title: session.title,
@@ -364,7 +370,7 @@ struct HistoryTabView: View {
             archived: archived,
             justImported: history.justImported.contains(session.id),
             activity: openTab?.activity,
-            colorMark: TabColorMark.color(for: session.id, in: model),
+            colorMark: inTemple ? TabColorMark.color(for: session.sessionID, in: model) : nil,
             membershipTooltip: Self.membershipTooltip(history.joinedState(session.id)),
             actions: HistoryRowActions(history: history, showInSidebar: { [weak model] id in
                 model?.showInSidebar(id)
@@ -417,7 +423,8 @@ struct HistoryTabView: View {
 
     private var selectionBar: some View {
         let selected = history.selectedRows
-        let outside = selected.filter { !history.isInTemple($0.id) }.count
+        let outside = selected.filter(\.canImport).count
+        // A conflicting row's session is in Temple too, elsewhere.
         let inTemple = selected.count - outside
         return barChrome {
             HStack(spacing: 10) {
@@ -698,6 +705,13 @@ private struct HistoryPageRow: View, Equatable {
         } else if inTemple {
             TempleMark(size: 14, tint: lit ? .primary : .secondary)
                 .help(membershipTooltip)
+        } else if let conflict = session.conflict {
+            // Its id is Temple's on another host or as another agent: shown
+            // as the catalog has it, and not importable from here.
+            Text("Import")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.quaternary)
+                .help(conflict.message)
         } else {
             Button("Import") { history.requestImport([session]) }
                 .buttonStyle(.plain)
@@ -713,7 +727,7 @@ private struct HistoryPageRow: View, Equatable {
         if let model = session.model { details.append(model) }
         if let count = session.messageCount { details.append("\(count) messages") }
         if let url = session.localURL { details.append((url.path as NSString).abbreviatingWithTildeInPath) }
-        return [session.lastMessagePreview, details.joined(separator: " · ")]
+        return [session.conflict?.message, session.lastMessagePreview, details.joined(separator: " · ")]
             .compactMap { $0 }
             .joined(separator: "\n")
     }
@@ -727,7 +741,10 @@ private struct HistoryPageRow: View, Equatable {
         if history.canArchive(session) {
             Button("Archive session") { history.archive(session, undoManager: undoManager) }
         }
-        if !inTemple {
+        if let conflict = session.conflict {
+            Button("Import into Temple…") {}.disabled(true)
+            Text(conflict.message)
+        } else if !inTemple {
             Button("Import into Temple…") { history.requestImport([session]) }
         }
         Divider()
@@ -737,14 +754,14 @@ private struct HistoryPageRow: View, Equatable {
                 copyToPasteboard(resumeArgv.joined(separator: " "))
             }
         }
-        Button("Copy session ID") { copyToPasteboard(session.id) }
+        Button("Copy session ID") { copyToPasteboard(session.sessionID) }
         if let url = session.localURL {
             Button("Reveal session file in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
         }
         Divider()
         // The sidebar groups rows by folder: a row without one is not there.
         if inTemple, !archived, session.project != nil {
-            Button("Show in sidebar") { actions.showInSidebar(session.id) }
+            Button("Show in sidebar") { actions.showInSidebar(session.sessionID) }
         }
         if let project = session.project {
             Button("Show only \(project.displayName)") { history.showOnly(project: project) }
