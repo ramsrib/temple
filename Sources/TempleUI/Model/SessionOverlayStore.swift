@@ -279,33 +279,49 @@ public final class SessionOverlayStore: ObservableObject {
     }
 
     func importPreparedSessions(_ entries: [PreparedSessionImport]) -> [String: Error] {
-        guard !Task.isCancelled else { return cancellationFailures(entries.map(\.id)) }
-        return importCore(entries.map { ($0.id, $0.agent, $0.locator, $0.core) })
-    }
-
-    private func cancellationFailures(_ ids: [String]) -> [String: Error] {
-        Dictionary(ids.map { ($0, CancellationError() as Error) }, uniquingKeysWith: { first, _ in first })
-    }
-
-    private func importCore(_ entries: [(String, Agent, TranscriptLocator, SessionCore)]) -> [String: Error] {
         var failures: [String: Error] = [:]
+        for (entry, outcome) in zip(entries, importPreparedEntries(entries)) {
+            if case .failed(let error) = outcome, failures[entry.id] == nil { failures[entry.id] = error }
+        }
+        return failures
+    }
+
+    /// What one import entry came to, in the order the entries were given.
+    enum ImportOutcome {
+        case joined
+        /// Already Temple's on its host before this import: left as it is.
+        case skipped
+        case failed(Error)
+    }
+
+    /// One outcome per entry. Two entries for one id (two hosts, or two
+    /// agents, listing it) are each attempted: the first joins, and the DB
+    /// refuses the second with its reason (`hostConflict`/`agentConflict`)
+    /// — never a silent skip that a caller would count as imported.
+    func importPreparedEntries(_ entries: [PreparedSessionImport]) -> [ImportOutcome] {
+        guard !Task.isCancelled else { return entries.map { _ in .failed(CancellationError()) } }
+        var outcomes: [ImportOutcome] = []
+        outcomes.reserveCapacity(entries.count)
         var joined: Set<String> = []
         var activity = lastActiveAt
-        // Another host's member is attempted, so its refusal is reported
-        // rather than the import silently skipping it.
-        for (id, agent, locator, core) in entries where !isMember(id, on: core.host) && !joined.contains(id) {
+        for entry in entries {
+            // Another host's member is attempted, so its refusal is reported
+            // rather than the import silently skipping it.
+            guard !isMember(entry.id, on: entry.core.host) else { outcomes.append(.skipped); continue }
             do {
-                try db.join(sessionID: id, via: .imported, agent: agent, locator: locator, core: core)
-                joined.insert(id)
-                if let date = core.lastActiveAt { activity[id] = date }
+                try db.join(sessionID: entry.id, via: .imported, agent: entry.agent, locator: entry.locator, core: entry.core)
+                // The same session twice in one batch joined once.
+                guard joined.insert(entry.id).inserted else { outcomes.append(.skipped); continue }
+                if let date = entry.core.lastActiveAt { activity[entry.id] = date }
+                outcomes.append(.joined)
             } catch {
-                TempleUILog.db.error("import failed for session \(id, privacy: .public): \(String(describing: error), privacy: .public)")
-                failures[id] = error
+                TempleUILog.db.error("import failed for session \(entry.id, privacy: .public): \(String(describing: error), privacy: .public)")
+                outcomes.append(.failed(error))
             }
         }
         if !joined.isEmpty { templeSessions.formUnion(joined) }
         if activity != lastActiveAt { lastActiveAt = activity }
-        return failures
+        return outcomes
     }
 
     public func observeLaunchDirectory(_ id: String, host: HostID, _ directory: String) {

@@ -194,6 +194,51 @@ final class HistoryHostKeyTests: XCTestCase {
         XCTAssertEqual(try row(both, HistoryKey(codex)).conflict, .agent(.claude))
     }
 
+    // MARK: Bulk import of rows sharing an id
+
+    /// Two outside rows share an id — two hosts, or two agents on one host.
+    /// A bulk import joins the first and refuses the second with its reason:
+    /// one imported, one failure, one key marked and one key undoable.
+    func testABulkImportOfRowsSharingAnIDImportsOneAndRefusesTheOther() async throws {
+        let cases: [(first: TranscriptSummary, second: TranscriptSummary, reason: String)] = [
+            (summary("pair", host: .local, secondsAgo: 30), summary("pair", host: remote, secondsAgo: 60),
+             "Already in Temple on this Mac."),
+            (summary("pair", agent: .codex, secondsAgo: 30), summary("pair", agent: .claude, secondsAgo: 60),
+             "Already in Temple as a Codex session."),
+        ]
+        for (first, second, reason) in cases {
+            let db = try TempleDB.inMemory()
+            let (history, overlay) = history(db, catalog: events([(first.locator.host, [first]), (second.locator.host, [second])]))
+            await load(history)
+            history.selectAll()
+            history.requestImport()
+            let request = try XCTUnwrap(history.pendingImport)
+            XCTAssertEqual(request.sessions.map(HistoryKey.init), [HistoryKey(first), HistoryKey(second)])
+            let manager = undoManager()
+            manager.beginUndoGrouping()
+            await history.confirmImport(request, undoManager: manager)
+            manager.endUndoGrouping()
+
+            XCTAssertEqual(history.notice?.text, "1 session imported")
+            XCTAssertEqual(history.justImported, [HistoryKey(first)])
+            let failure = try XCTUnwrap(history.importFailure, reason)
+            XCTAssertEqual(failure.title, "Couldn't import 1 of 2 sessions")
+            XCTAssertTrue(failure.message.contains(reason), failure.message)
+            XCTAssertTrue(failure.message.contains("The other one was imported."))
+            XCTAssertEqual(history.inTempleCount, 1)
+            XCTAssertNotNil(try row(history, HistoryKey(first)).member)
+            XCTAssertNotNil(try row(history, HistoryKey(second)).conflict)
+
+            manager.undo()
+            XCTAssertNil(try db.sessionState("pair"))
+            XCTAssertEqual(history.notice?.text, "Import undone", "the undo held only the one key that joined")
+            manager.redo()
+            XCTAssertEqual(try db.sessionState("pair")?.host, first.locator.host)
+            XCTAssertEqual(try db.sessionState("pair")?.agent, first.agent)
+            XCTAssertTrue(overlay.isTempleSession("pair"))
+        }
+    }
+
     // MARK: Undo carries the host
 
     /// An import from this Mac is undone after the same id joined from

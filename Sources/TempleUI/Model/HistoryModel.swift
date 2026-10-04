@@ -854,30 +854,49 @@ public final class HistoryModel: ObservableObject {
     private func finishImport(_ prepared: [PreparedSessionImport], sessions: [TranscriptSummary], undoManager: UndoManager?) {
         // Redo replays entries captured earlier: skip any that joined since.
         let entries = prepared.filter { !overlay.isTempleSession($0.id) }
-        let ids = Set(entries.map(\.id))
-        let sessions = sessions.filter { ids.contains($0.id) }
-        guard !sessions.isEmpty else { return }
-        let failures = overlay.importPreparedSessions(entries)
-        let imported = sessions.filter { failures[$0.id] == nil }.map(HistoryKey.init)
+        let byKey = Dictionary(sessions.map { (HistoryKey($0), $0) }, uniquingKeysWith: { first, _ in first })
+        let attempted = entries.compactMap { entry -> (PreparedSessionImport, TranscriptSummary)? in
+            byKey[Self.key(entry)].map { (entry, $0) }
+        }
+        guard !attempted.isEmpty else { return }
+        // One outcome per row: two rows sharing an id (two hosts, two
+        // agents) are not both imported — the second is refused, with why.
+        let outcomes = overlay.importPreparedEntries(attempted.map(\.0))
+        var imported: [HistoryKey] = []
+        var failed: [(TranscriptSummary, Error)] = []
+        for ((entry, session), outcome) in zip(attempted, outcomes) {
+            switch outcome {
+            case .joined: imported.append(Self.key(entry))
+            case .skipped: break
+            case .failed(let error): failed.append((session, error))
+            }
+        }
         clearSelection()
         if !imported.isEmpty {
+            let importedKeys = Set(imported)
             markJustImported(imported)
             showNotice(Notice(text: imported.count == 1 ? "1 session imported" : "\(imported.count) sessions imported",
                               offersUndo: undoManager != nil))
-            registerUndo(undoManager, imported: imported, sessions: sessions, entries: entries)
+            registerUndo(undoManager, imported: imported,
+                         sessions: attempted.map(\.1).filter { importedKeys.contains(HistoryKey($0)) },
+                         entries: attempted.map(\.0).filter { importedKeys.contains(Self.key($0)) })
         }
-        if !failures.isEmpty {
-            let failedTitles = sessions.filter { failures[$0.id] != nil }.map(overlay.displayTitle(for:))
-            let errors = Set(failures.values.map { $0.localizedDescription }).sorted()
+        if !failed.isEmpty {
+            let failedTitles = failed.map { overlay.displayTitle(for: $0.0) }
+            let errors = Set(failed.map { $0.1.localizedDescription }).sorted()
             var lines = errors + [failedTitles.joined(separator: " · ")]
             if !imported.isEmpty {
                 lines.append(imported.count == 1 ? "The other one was imported." : "The other \(imported.count) were imported.")
             }
             importFailure = ImportFailure(
-                title: "Couldn't import \(failures.count) of \(sessions.count) sessions",
+                title: "Couldn't import \(failed.count) of \(attempted.count) sessions",
                 message: lines.joined(separator: "\n"))
         }
         invalidate()
+    }
+
+    private static func key(_ entry: PreparedSessionImport) -> HistoryKey {
+        HistoryKey(host: entry.locator.host, agent: entry.agent, sessionID: entry.id)
     }
 
     /// Undo removes exactly the rows this import wrote — each by its id and
@@ -892,12 +911,11 @@ public final class HistoryModel: ObservableObject {
                 let left = Set(model.undoImport(keys))
                 guard let undoManager, !left.isEmpty else { return }
                 let back = sessions.filter { left.contains(HistoryKey($0)) }
-                let backIDs = Set(back.map(\.id))
                 undoManager.registerUndo(withTarget: model) { [weak undoManager] model in
                     MainActor.assumeIsolated {
                         // Redo must register its inverse synchronously inside UndoManager's
                         // callback. Reuse the facts captured by the original import.
-                        model.finishImport(entries.filter { backIDs.contains($0.id) },
+                        model.finishImport(entries.filter { left.contains(Self.key($0)) },
                                            sessions: back, undoManager: undoManager)
                     }
                 }
