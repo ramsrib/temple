@@ -30,6 +30,10 @@ public struct TranscriptSummary: Hashable, Sendable {
     /// Claude's legacy title selection, including synthetic and top-level content.
     /// Display-only: it may not describe a prompt at all.
     public let legacyTitleHint: String?
+    /// Codex's resume priority from the rollout's file name (see
+    /// `TranscriptName.selectionKey`); nil for Claude and for a file whose
+    /// name is not canonical.
+    public let selectionKey: String?
 
     public init(
         id: String,
@@ -49,7 +53,8 @@ public struct TranscriptSummary: Hashable, Sendable {
         sharedTitle: String? = nil,
         directoryHint: String? = nil,
         laterPromptHint: String? = nil,
-        legacyTitleHint: String? = nil
+        legacyTitleHint: String? = nil,
+        selectionKey: String? = nil
     ) {
         self.id = id
         self.agent = agent
@@ -69,6 +74,7 @@ public struct TranscriptSummary: Hashable, Sendable {
         self.directoryHint = directoryHint
         self.laterPromptHint = laterPromptHint
         self.legacyTitleHint = legacyTitleHint
+        self.selectionKey = selectionKey
     }
 }
 

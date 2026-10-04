@@ -48,9 +48,7 @@ if CommandLine.arguments.contains("--import-all") {
     for session in sessions where try db.sessionState(session.id) == nil {
         try db.join(sessionID: session.id, via: .imported, agent: session.agent,
                     transcriptPath: session.locator.localURL,
-                    core: SessionCore(host: session.locator.host, directory: session.cwd,
-                                      directorySource: session.cwd == nil ? nil : .transcript,
-                                      title: session.titleFact, lastActiveAt: session.modifiedAt))
+                    core: SessionCore(filling: session))
         imported += 1
     }
     print("imported \(imported) sessions")
@@ -185,9 +183,10 @@ if CommandLine.arguments.contains("--disk") {
         }
         if !database.isReadOnly {
             for summary in snapshot.summaries.values {
-                _ = try database.fillCoreFields(sessionID: summary.id, expectedHost: summary.locator.host,
-                    agent: summary.agent, directory: summary.cwd, title: summary.titleFact,
-                    lastActiveAt: summary.modifiedAt)
+                let core = SessionCore(filling: summary)
+                _ = try database.fillCoreFields(sessionID: summary.id, expectedHost: core.host,
+                    agent: summary.agent, directory: core.directory, title: core.title,
+                    lastActiveAt: core.lastActiveAt)
             }
         }
         let states = try database.sessionStates()

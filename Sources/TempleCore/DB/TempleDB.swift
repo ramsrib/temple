@@ -51,6 +51,15 @@ public struct SessionCore: Sendable {
         self.host = host; self.directory = directory; self.directorySource = directorySource
         self.title = title; self.lastActiveAt = lastActiveAt
     }
+
+    /// What a transcript can tell a row: its host, its recorded folder
+    /// (transcript-sourced), its title fact and its modification time. The
+    /// one mapping every fill and import uses; nil stays nil.
+    public init(filling summary: TranscriptSummary) {
+        self.init(host: summary.locator.host, directory: summary.cwd,
+                  directorySource: summary.cwd == nil ? nil : .transcript,
+                  title: summary.titleFact, lastActiveAt: summary.modifiedAt)
+    }
 }
 
 public enum SessionCoreField: Hashable, Sendable {

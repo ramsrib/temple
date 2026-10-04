@@ -39,44 +39,21 @@ public protocol IncrementalSessionStore: SessionStore {
 
 }
 
-public enum TranscriptVerification: Equatable, Sendable {
-    case verified, incomplete, mismatch
-}
-
 public extension IncrementalSessionStore {
+    /// The pure format behind this store's agent; every reading of a file's
+    /// name, identity, header and facts goes through it.
+    var format: any TranscriptFormat { TranscriptFormats.format(for: agent) }
+
     /// Identity is independent of enrichment. No shared history is opened here.
     func verifyIdentity(at url: URL, expectedID: String) throws -> TranscriptVerification {
-        if agent == .codex {
-            let data = try StoreIO.readFirstLine(url)
-            guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  obj["type"] as? String == "session_meta",
-                  let payload = obj["payload"] as? [String: Any],
-                  let id = CodexSessionStore.threadID(payload) else { return .incomplete }
-            return id == expectedID ? .verified : .mismatch
-        }
-        // Claude can have untyped records before the first typed sessionId.
-        // Stream lines rather than making verification depend on the head
-        // window, but only so far: a file with no typed id in its first
-        // megabyte is unverified, not read to the end.
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var pending = Data()
-        var read = 0
-        func identity(_ line: Data) -> TranscriptVerification? {
-            guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-                  obj["type"] is String, let id = obj["sessionId"] as? String else { return nil }
-            return id == expectedID ? .verified : .mismatch
-        }
-        while true {
-            guard read < StoreIO.identityScanBytes else { return .incomplete }
-            let chunk = try handle.read(upToCount: 64 * 1024) ?? Data()
-            read += chunk.count
-            if chunk.isEmpty { return identity(pending) ?? .incomplete }
-            pending.append(chunk)
-            while let newline = pending.firstIndex(of: 0x0a) {
-                if let result = identity(Data(pending.prefix(upTo: newline))) { return result }
-                pending.removeSubrange(...newline)
-            }
+        switch format.identityScan {
+        case .firstLine(let maxBytes):
+            return format.identity(lines: [try StoreIO.readFirstLine(url, maxBytes: maxBytes)], expecting: expectedID)
+        case .lines(let maxBytes):
+            let lines = try StoreIO.IdentityLines(url, maxBytes: maxBytes)
+            let verdict = format.identity(lines: lines, expecting: expectedID)
+            if let error = lines.error { throw error }
+            return verdict
         }
     }
 
@@ -85,16 +62,20 @@ public extension IncrementalSessionStore {
         let prefix = SessionPaths.normalized(subtree.path)
         return try enumerateSessionFiles().filter { SessionPaths.normalized($0.path).hasPrefix(prefix + "/") }
     }
-    func filenameID(at url: URL) -> String? { url.deletingPathExtension().lastPathComponent }
-    func rolloutSelectionKey(at url: URL) -> String? { nil }
+    func filenameID(at url: URL) -> String? { format.name(path: url.path)?.threadID }
+    func rolloutSelectionKey(at url: URL) -> String? { format.name(path: url.path)?.selectionKey }
     var sharedFactURLs: [URL] { [] }
     func acceptsTranscript(_ url: URL) -> Bool {
         url.pathExtension == "jsonl" && !url.pathComponents.contains("subagents")
     }
+    /// Nil proves an exclusion. Invalid/partial eligible metadata throws, so
+    /// adoption cannot mistake a failed read for a noncompeting rollout.
     func adoptionHeader(at url: URL) throws -> CodexRolloutCandidate? {
-        metadataHeader(at: url)
+        guard agent == .codex else { return nil }
+        let header = try format.header(firstLine: StoreIO.readFirstLine(url, maxBytes: CodexFormat.headerLineBytes))
+        return header.map { CodexRolloutCandidate(sessionID: $0.id, cwd: $0.cwd, createdAt: $0.createdAt, filePath: url) }
     }
-    func metadataHeader(at url: URL) -> CodexRolloutCandidate? { nil }
+    func metadataHeader(at url: URL) -> CodexRolloutCandidate? { try? adoptionHeader(at: url) }
     func catalogParser() -> @Sendable (URL) -> TranscriptSummary? {
         let store = self
         return { store.loadSummary(at: $0) }
@@ -105,10 +86,8 @@ public extension IncrementalSessionStore {
 /// Fact-producing stores used by catalog and member enrichment.
 public protocol TranscriptSummaryStore: IncrementalSessionStore {
     func catalogSummaryParser() -> @Sendable (URL) -> TranscriptSummary?
-    func loadSharedPrompts() -> [String: String]
 }
 public extension TranscriptSummaryStore {
-    func loadSharedPrompts() -> [String: String] { [:] }
     func catalogSummaryParser() -> @Sendable (URL) -> TranscriptSummary? { catalogParser() }
 }
 
@@ -132,17 +111,18 @@ enum SessionPaths {
 // MARK: - Shared file/JSON helpers
 
 enum StoreIO {
-    static let readWindowBytes = 64 * 1024
-    /// How far identity verification reads before calling a file unverified.
-    static let identityScanBytes = 1024 * 1024
+    static let readWindowBytes = TranscriptBytes.defaultWindow
 
     /// Read only the first `maxBytes` of a file — enough for metadata + the
     /// first prompt, without loading multi-MB session logs into memory.
     static func readHead(_ url: URL, maxBytes: Int = readWindowBytes) -> String? {
+        readHeadData(url, maxBytes: maxBytes).map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    static func readHeadData(_ url: URL, maxBytes: Int = readWindowBytes) -> Data? {
         guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? fh.close() }
-        let data = (try? fh.read(upToCount: maxBytes)) ?? Data()
-        return String(decoding: data, as: UTF8.self)
+        return (try? fh.read(upToCount: maxBytes)) ?? Data()
     }
 
     /// Read one JSONL header, never decoding the rest of the prefix or file.
@@ -166,43 +146,86 @@ enum StoreIO {
 
     /// Read at most the last `maxBytes`, keeping large logs memory-bounded.
     static func readTail(_ url: URL, maxBytes: Int = readWindowBytes) -> String? {
+        readTailData(url, maxBytes: maxBytes).map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    static func readTailData(_ url: URL, maxBytes: Int = readWindowBytes) -> Data? {
         guard maxBytes > 0, let fh = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? fh.close() }
         guard let end = try? fh.seekToEnd() else { return nil }
         let start = end > UInt64(maxBytes) ? end - UInt64(maxBytes) : 0
         do {
             try fh.seek(toOffset: start)
-            let data = try fh.readToEnd() ?? Data()
-            return String(decoding: data, as: UTF8.self)
+            return try fh.readToEnd() ?? Data()
         } catch {
             return nil
         }
     }
 
-    /// Bounded JSONL lines from the head and tail, avoiding double-counting
-    /// when the whole file fits inside one read window.
-    static func boundedLines(_ url: URL) -> [Substring] {
-        (boundedSegments(url) ?? []).flatMap { $0.split(separator: "\n") }
+    /// The bytes a format reads: a head and, only for files larger than the
+    /// head window, a non-overlapping tail (for files between one and two
+    /// windows, just the remainder). Nil when the file cannot be opened.
+    static func transcriptBytes(_ url: URL, fileSize: Int? = nil, maxBytes: Int = readWindowBytes) -> TranscriptBytes? {
+        guard maxBytes > 0, let head = readHeadData(url, maxBytes: maxBytes) else { return nil }
+        let size = fileSize ?? ((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? head.count)
+        guard size > maxBytes else { return TranscriptBytes(head: head, tail: nil, fileSize: size, window: maxBytes) }
+        let tailBytes = min(maxBytes, max(0, size - maxBytes))
+        let tail = tailBytes > 0 ? readTailData(url, maxBytes: tailBytes) : nil
+        return TranscriptBytes(head: head, tail: tail, fileSize: size, window: maxBytes)
     }
 
-    /// Returns a head and, only for files larger than the head window, a
-    /// non-overlapping tail. Keeping the segments separate avoids reparsing or
-    /// double-counting overlapping lines in medium-sized files.
-    static func boundedSegments(
-        _ url: URL,
-        fileSize: Int? = nil,
-        maxBytes: Int = readWindowBytes
-    ) -> [String]? {
-        guard maxBytes > 0, let head = readHead(url, maxBytes: maxBytes) else { return nil }
-        let size = fileSize ?? ((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? head.utf8.count)
-        guard size > maxBytes else { return [head] }
+    /// One transcript's facts through its format: a bounded read, and at most
+    /// one wider head when the format asks for it.
+    static func summary(at url: URL, format: any TranscriptFormat, shared: SharedFacts) -> TranscriptSummary? {
+        let signature = fileSignature(url)
+        guard let bytes = transcriptBytes(url, fileSize: signature?.fileSize) else { return nil }
+        let name = format.name(path: url.path)
+        let locator = TranscriptLocator(localURL: url)
+        let modifiedAt = signature?.modificationDate ?? modificationDate(url)
+        var facts = format.facts(bytes, name: name, locator: locator, modifiedAt: modifiedAt, shared: shared)
+        if case .needsWiderHead(let wider) = facts {
+            let widerHead = readHeadData(url, maxBytes: wider) ?? Data()
+            facts = format.facts(bytes.with(widerHead: widerHead), name: name, locator: locator,
+                                 modifiedAt: modifiedAt, shared: shared)
+        }
+        if case .summary(let summary) = facts { return summary }
+        return nil
+    }
 
-        // Never overlap the bytes already represented by the head. For files
-        // between one and two windows this reads only the remaining bytes.
-        let remaining = max(0, size - maxBytes)
-        let tailBytes = min(maxBytes, remaining)
-        guard tailBytes > 0, let tail = readTail(url, maxBytes: tailBytes) else { return [head] }
-        return [head, tail]
+    /// Lines for a `.lines` identity scan: every complete line inside the
+    /// first `maxBytes`, and the final unterminated line only when the end of
+    /// the file came first. A read error ends the sequence and is kept.
+    final class IdentityLines: Sequence, IteratorProtocol {
+        private let handle: FileHandle
+        private let cap: Int
+        private var pending = Data()
+        private var read = 0
+        private var finished = false
+        private(set) var error: Error?
+
+        init(_ url: URL, maxBytes: Int) throws {
+            handle = try FileHandle(forReadingFrom: url)
+            cap = maxBytes
+        }
+        deinit { try? handle.close() }
+
+        func next() -> Data? {
+            while !finished {
+                if let newline = pending.firstIndex(of: 0x0a) {
+                    let line = Data(pending.prefix(upTo: newline))
+                    pending.removeSubrange(...newline)
+                    return line
+                }
+                guard read < cap else { finished = true; return nil }
+                let chunk: Data
+                do { chunk = try handle.read(upToCount: 64 * 1024) ?? Data() }
+                catch { self.error = error; finished = true; return nil }
+                read += chunk.count
+                if chunk.isEmpty { finished = true; return pending }
+                pending.append(chunk)
+            }
+            return nil
+        }
     }
 
     static func modificationDate(_ url: URL) -> Date {
@@ -223,26 +246,6 @@ enum StoreIO {
         return (date, size)
     }
 
-    /// Parse one JSONL line into a dictionary; nil on malformed input.
-    static func jsonObject(_ line: Substring) -> [String: Any]? {
-        guard let data = line.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) else { return nil }
-        return obj as? [String: Any]
-    }
-
-    static func parseDate(_ s: String?) -> Date? {
-        guard let s else { return nil }
-        return (try? isoWithFraction.parse(s)) ?? (try? isoPlain.parse(s))
-    }
-
-    /// Collapse whitespace and cap length for a one-line title.
-    static func cleanTitle(_ s: String, cap: Int = 200) -> String {
-        let collapsed = s.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        return collapsed.count > cap ? String(collapsed.prefix(cap)) + "…" : collapsed
-    }
-
-    private static let isoWithFraction = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
-    private static let isoPlain = Date.ISO8601FormatStyle(includingFractionalSeconds: false)
 }
 
 /// Locked sink for parallel transcript parsing.

@@ -26,11 +26,11 @@ public struct CodexSessionStore: TranscriptSummaryStore {
     public var watchedURLs: [URL] { [sessionsRoot.deletingLastPathComponent(), sessionsRoot] }
     public var sharedFactURLs: [URL] { [historyFile, sessionIndexFile] }
     public func loadSummaries() -> [TranscriptSummary] {
-        let (titles, historyPrompts) = sharedFacts()
+        let shared = sharedFacts()
         let files = sessionFileURLs()
         let collector = TranscriptSummaryCollector()
         DispatchQueue.concurrentPerform(iterations: files.count) { index in
-            if let summary = parse(file: files[index], sharedTitles: titles, historyPrompts: historyPrompts) {
+            if let summary = StoreIO.summary(at: files[index], format: CodexFormat(), shared: shared) {
                 collector.append(summary)
             }
         }
@@ -38,36 +38,29 @@ public struct CodexSessionStore: TranscriptSummaryStore {
     }
 
     public func loadSummary(at fileURL: URL) -> TranscriptSummary? {
-        let (titles, historyPrompts) = sharedFacts()
-        return parse(file: fileURL, sharedTitles: titles, historyPrompts: historyPrompts)
+        StoreIO.summary(at: fileURL, format: CodexFormat(), shared: sharedFacts())
     }
 
     /// Titles and history prompts, re-read only when either file's
     /// signature (modification date, size, inode) changes.
-    func sharedFacts() -> (titles: [String: String], historyPrompts: [String: String]) {
+    func sharedFacts() -> SharedFacts {
         let signature = [historyFile, sessionIndexFile].map(CodexSharedFactsCache.signature)
         return shared.facts(for: signature) {
-            // Each file read and parsed once; both maps derive from that.
-            let history = loadHistoryTitles()
-            return (Self.titles(names: loadIndexThreadNames(), history: history), Self.prompts(history))
+            // Each file read once; both maps derive from that.
+            var inputs: [String: Data] = [:]
+            for (name, url) in [(CodexFormat.historyInput, historyFile), (CodexFormat.sessionIndexInput, sessionIndexFile)] {
+                shared.countRead()
+                inputs[name] = try? Data(contentsOf: url)
+            }
+            return CodexFormat().sharedFacts(inputs)
         }
     }
 
     public func catalogParser() -> @Sendable (URL) -> TranscriptSummary? { catalogSummaryParser() }
 
     public func catalogSummaryParser() -> @Sendable (URL) -> TranscriptSummary? {
-        let (titles, historyPrompts) = sharedFacts()
-        let store = self
-        return { store.parse(file: $0, sharedTitles: titles, historyPrompts: historyPrompts) }
-    }
-
-    public func loadSharedPrompts() -> [String: String] { Self.prompts(loadHistoryTitles()) }
-
-    private static func prompts(_ history: [String: String]) -> [String: String] {
-        history.compactMapValues { text in
-            let cleaned = StoreIO.cleanTitle(text)
-            return cleaned.isEmpty ? nil : cleaned
-        }
+        let shared = sharedFacts()
+        return { StoreIO.summary(at: $0, format: CodexFormat(), shared: shared) }
     }
 
     public func sessionFileURLs() -> [URL] { (try? enumerateSessionFiles()) ?? [] }
@@ -101,252 +94,6 @@ public struct CodexSessionStore: TranscriptSummaryStore {
         url.pathExtension == "jsonl" && url.lastPathComponent.hasPrefix("rollout-") &&
             SessionPaths.normalized(url.path).hasPrefix(SessionPaths.normalized(sessionsRoot.path) + "/")
     }
-
-    public func filenameID(at url: URL) -> String? { Self.rolloutName(at: url)?.threadID }
-    public func rolloutSelectionKey(at url: URL) -> String? { Self.rolloutName(at: url)?.selectionKey }
-
-    private static func rolloutName(at url: URL) -> (threadID: String, selectionKey: String)? {
-        // Mirrors upstream rollout_file_name.rs: timestamp, stable thread ID,
-        // and an optional distinct rollout ID for thread/revert.
-        let name = url.lastPathComponent
-        guard name.hasPrefix("rollout-"), name.hasSuffix(".jsonl") else { return nil }
-        let core = name.dropFirst(8).dropLast(6)
-        guard core.count >= 20 else { return nil }
-        let stamp = Array(core.prefix(20).utf8)
-        guard stamp.count == 20, stamp[4] == 45, stamp[7] == 45, stamp[10] == 84,
-              stamp[13] == 45, stamp[16] == 45, stamp[19] == 45 else { return nil }
-        let digitOffsets = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18]
-        guard digitOffsets.allSatisfy({ (48...57).contains(stamp[$0]) }) else { return nil }
-        func number(_ range: Range<Int>) -> Int { range.reduce(0) { $0 * 10 + Int(stamp[$1] - 48) } }
-        let year = number(0..<4), month = number(5..<7), day = number(8..<10)
-        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
-        let days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-        guard (1...12).contains(month), (1...days[month - 1]).contains(day),
-              number(11..<13) < 24, number(14..<16) < 60, number(17..<19) < 60 else { return nil }
-        let ids = core.dropFirst(20).split(separator: "_", omittingEmptySubsequences: false)
-        guard (1...2).contains(ids.count), let thread = UUID(uuidString: String(ids[0])) else { return nil }
-        guard let rollout = ids.count == 2 ? UUID(uuidString: String(ids[1])) : thread else { return nil }
-        return (thread.uuidString.lowercased(), String(core.prefix(19)) + "-" + rollout.uuidString.lowercased())
-    }
-
-    private func metadataObject(at url: URL) throws -> [String: Any] {
-        let data = try StoreIO.readFirstLine(url)
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        return object
-    }
-
-    public func metadataHeader(at url: URL) -> CodexRolloutCandidate? { try? adoptionHeader(at: url) }
-
-    /// Nil proves an exclusion. Invalid/partial eligible metadata throws, so
-    /// adoption cannot mistake a failed read for a noncompeting rollout.
-    public func adoptionHeader(at url: URL) throws -> CodexRolloutCandidate? {
-        let object = try metadataObject(at: url)
-        guard let type = object["type"] as? String else { throw CocoaError(.fileReadCorruptFile) }
-        guard type == "session_meta" else { return nil }
-        guard let payload = object["payload"] as? [String: Any] else { throw CocoaError(.fileReadCorruptFile) }
-        guard !Self.isSubagentThread(payload) else { return nil }
-        guard let id = Self.threadID(payload),
-              let cwd = payload["cwd"] as? String,
-              let date = StoreIO.parseDate((payload["timestamp"] as? String) ?? (object["timestamp"] as? String))
-        else { throw CocoaError(.fileReadCorruptFile) }
-        return CodexRolloutCandidate(sessionID: id, cwd: cwd, createdAt: date, filePath: url)
-    }
-
-    /// The one reading of a rollout header's thread id, shared by parsing,
-    /// identity verification and adoption so they cannot disagree. `id` is
-    /// the thread's own; `session_id` is the ROOT thread's — equal to `id` for
-    /// a thread a person started, but a subagent's names its parent, so it is
-    /// only a fallback for headers that carry no `id`.
-    static func threadID(_ payload: [String: Any]) -> String? {
-        guard let id = (payload["id"] as? String) ?? (payload["session_id"] as? String), !id.isEmpty else { return nil }
-        return id
-    }
-
-    /// A thread spawned by another agent (`source.subagent.thread_spawn`, with
-    /// the parent in `parent_thread_id`) has a rollout of its own, but it is
-    /// not a session anyone opens: like Claude's `<session>/subagents/`
-    /// transcripts, it belongs to its parent and is left out of the index.
-    static func isSubagentThread(_ payload: [String: Any]) -> Bool {
-        if let source = payload["source"] as? [String: Any], source["subagent"] != nil { return true }
-        return (payload["thread_source"] as? String) == "subagent"
-    }
-
-    private func parse(file: URL, sharedTitles: [String: String] = [:],
-                       historyPrompts: [String: String] = [:]) -> TranscriptSummary? {
-        let signature = StoreIO.fileSignature(file)
-        guard let segments = StoreIO.boundedSegments(file, fileSize: signature?.fileSize),
-              let head = segments.first,
-              let firstLine = head.split(separator: "\n").first,
-              let firstObject = StoreIO.jsonObject(firstLine),
-              (firstObject["type"] as? String) == "session_meta",
-              let payload = firstObject["payload"] as? [String: Any],
-              !Self.isSubagentThread(payload),
-              let id = Self.threadID(payload)
-        else { return nil }
-
-        let cwd = payload["cwd"] as? String
-        let createdAt = StoreIO.parseDate(
-            (payload["timestamp"] as? String) ?? (firstObject["timestamp"] as? String))
-        var count = 0
-        var model = payload["model_provider"] as? String
-        var preview: String?
-        var fallbackTitle: String?
-        var tailFallbackTitle: String?
-        let git = payload["git"] as? [String: Any]
-        let branch = git?["branch"] as? String
-
-        for (segmentIndex, segment) in segments.enumerated() {
-            for (lineIndex, line) in segment.split(separator: "\n").enumerated() {
-                let obj: [String: Any]?
-                if segmentIndex == 0 && lineIndex == 0 {
-                    obj = firstObject
-                } else {
-                    obj = StoreIO.jsonObject(line)
-                }
-                guard let obj, let item = obj["payload"] as? [String: Any] else { continue }
-                if let value = item["model"] as? String { model = value }
-                let type = obj["type"] as? String
-                let role = item["role"] as? String
-                let payloadType = item["type"] as? String
-                let isTurn = role == "user" || role == "assistant" ||
-                    payloadType == "user_message" || payloadType == "agent_message"
-                if isTurn && type != "session_meta" {
-                    count += 1
-                    if let text = Self.text(from: item), !text.isEmpty {
-                        preview = StoreIO.cleanTitle(text, cap: 160)
-                        // `user_message` events hold the typed prompt; the
-                        // role-user response_items also carry injected
-                        // AGENTS.md instructions, so they can't title. Only
-                        // the head segment can claim the FIRST prompt — a
-                        // tail match in a large file may be a later turn, so
-                        // it is kept as a last resort behind the deep scan.
-                        if payloadType == "user_message" {
-                            let cleaned = StoreIO.cleanTitle(text)
-                            if !cleaned.isEmpty {
-                                if segmentIndex == 0 {
-                                    if fallbackTitle == nil { fallbackTitle = cleaned }
-                                } else if tailFallbackTitle == nil {
-                                    tailFallbackTitle = cleaned
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // `codex exec` sessions record their prompt behind the injected
-        // instruction blobs — routinely past the 64 KB head window — so when
-        // nothing recorded a title, pay for one wider read to find it. Past
-        // even that cap, a later prompt from the tail beats "(no prompt)".
-        if fallbackTitle == nil {
-            fallbackTitle = Self.firstUserMessage(in: file)
-        }
-
-        return TranscriptSummary(
-            id: id,
-            agent: .codex,
-            locator: TranscriptLocator(localURL: file),
-            modifiedAt: signature?.modificationDate ?? StoreIO.modificationDate(file),
-            cwd: cwd,
-            firstPrompt: fallbackTitle,
-            historyPrompt: historyPrompts[id],
-            createdAt: createdAt,
-            gitBranch: branch,
-            model: model,
-            messageCount: count > 0 ? count : nil,
-            lastMessagePreview: preview,
-            originator: payload["originator"] as? String,
-            sharedTitle: sharedTitles[id],
-            laterPromptHint: tailFallbackTitle
-        )
-    }
-
-    /// One deep read per still-untitled session (bounded; the instruction
-    /// blobs preceding a prompt are large but nowhere near this cap).
-    private static let promptScanBytes = 1024 * 1024
-
-    private static func firstUserMessage(in file: URL) -> String? {
-        guard let head = StoreIO.readHead(file, maxBytes: promptScanBytes) else { return nil }
-        for line in head.split(separator: "\n") {
-            guard let obj = StoreIO.jsonObject(line),
-                  let item = obj["payload"] as? [String: Any],
-                  (item["type"] as? String) == "user_message",
-                  let text = Self.text(from: item) else { continue }
-            let cleaned = StoreIO.cleanTitle(text)
-            if !cleaned.isEmpty { return cleaned }
-        }
-        return nil
-    }
-
-    private static func text(from payload: [String: Any]) -> String? {
-        if let text = payload["text"] as? String { return text }
-        if let message = payload["message"] as? String { return message }
-        if let content = payload["content"] as? String { return content }
-        if let content = payload["content"] as? [[String: Any]] {
-            return content.compactMap { ($0["text"] as? String) ?? ($0["input_text"] as? String) }
-                .first(where: { !$0.isEmpty })
-        }
-        return nil
-    }
-
-    /// Best recorded title per session, already cleaned. The interactive
-    /// TUI's history.jsonl prompt wins over the app-server's session_index
-    /// thread name; `codex exec` sessions appear in neither file, so parse()
-    /// falls back to the prompt inside the rollout itself. Entries that clean
-    /// to nothing (e.g. a lone-space prompt) are dropped so the next source
-    /// gets its turn.
-    public func loadTitles() -> [String: String] {
-        Self.titles(names: loadIndexThreadNames(), history: loadHistoryTitles())
-    }
-
-    private static func titles(names: [String: String], history: [String: String]) -> [String: String] {
-        var titles: [String: String] = [:]
-        for source in [names, history] {
-            for (id, text) in source {
-                let cleaned = StoreIO.cleanTitle(text)
-                if !cleaned.isEmpty { titles[id] = cleaned }
-            }
-        }
-        return titles
-    }
-
-    /// Map `id → thread_name` from session_index.jsonl (written by app-server
-    /// clients such as IDE companions; last entry per id wins).
-    private func loadIndexThreadNames() -> [String: String] {
-        shared.countRead()
-        guard let content = try? String(contentsOf: sessionIndexFile, encoding: .utf8) else {
-            return [:]
-        }
-        var names: [String: String] = [:]
-        for line in content.split(separator: "\n") {
-            guard let obj = StoreIO.jsonObject(line),
-                  let id = obj["id"] as? String,
-                  let name = obj["thread_name"] as? String else { continue }
-            names[id] = name
-        }
-        return names
-    }
-
-    /// Map `session_id → earliest prompt text` from history.jsonl.
-    private func loadHistoryTitles() -> [String: String] {
-        shared.countRead()
-        guard let content = try? String(contentsOf: historyFile, encoding: .utf8) else {
-            return [:]
-        }
-        var earliest: [String: (ts: Double, text: String)] = [:]
-        for line in content.split(separator: "\n") {
-            guard let obj = StoreIO.jsonObject(line),
-                  let id = obj["session_id"] as? String,
-                  let text = obj["text"] as? String else { continue }
-            let ts = (obj["ts"] as? Double) ?? .greatestFiniteMagnitude
-            if let existing = earliest[id], existing.ts <= ts { continue }
-            earliest[id] = (ts, text)
-        }
-        return earliest.mapValues(\.text)
-    }
 }
 
 /// One read of the shared Codex files per change, for every parse until the
@@ -355,7 +102,7 @@ final class CodexSharedFactsCache: @unchecked Sendable {
     struct Signature: Equatable { let date: Date?; let size: Int?; let inode: UInt64? }
     private let lock = NSLock()
     private var key: [Signature]?
-    private var value: (titles: [String: String], historyPrompts: [String: String]) = ([:], [:])
+    private var value = SharedFacts.empty
     private(set) var loads = 0
     private let readLock = NSLock()
     private var reads = 0
@@ -369,9 +116,7 @@ final class CodexSharedFactsCache: @unchecked Sendable {
                          inode: (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value)
     }
 
-    func facts(for signature: [Signature],
-               load: () -> (titles: [String: String], historyPrompts: [String: String]))
-        -> (titles: [String: String], historyPrompts: [String: String]) {
+    func facts(for signature: [Signature], load: () -> SharedFacts) -> SharedFacts {
         lock.lock(); defer { lock.unlock() }
         if key != signature {
             value = load(); key = signature; loads += 1

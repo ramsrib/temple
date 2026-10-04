@@ -152,15 +152,16 @@ public final class SessionOverlayStore: ObservableObject {
     /// Only recorded facts fill NULL core fields; complete rows never hit SQLite.
     /// Partial rows also skip writes until a summary supplies a missing fact.
     public func fillMissingCoreFields(from summary: TranscriptSummary) {
-        guard let row = rows[summary.id], row.host == summary.locator.host,
+        let core = SessionCore(filling: summary)
+        guard let row = rows[summary.id], row.host == core.host,
               let missing = missingCoreFields[summary.id] else { return }
         let supplied = Set<SessionCoreField>([.agent, .lastActiveAt])
-            .union(summary.cwd == nil ? [] : [.directory])
-            .union(summary.titleFact == nil ? [] : [.title])
+            .union(core.directory == nil ? [] : [.directory])
+            .union(core.title == nil ? [] : [.title])
         guard !missing.isDisjoint(with: supplied) else { return }
         do {
-            let changed = try db.fillCoreFields(sessionID: summary.id, expectedHost: summary.locator.host, agent: summary.agent,
-                directory: summary.cwd, title: summary.titleFact, lastActiveAt: summary.modifiedAt)
+            let changed = try db.fillCoreFields(sessionID: summary.id, expectedHost: core.host, agent: summary.agent,
+                directory: core.directory, title: core.title, lastActiveAt: core.lastActiveAt)
             // Changed rows refresh synchronously through the committed observer.
             // Reconcile a no-op too: another writer may already have filled it.
             if changed.isEmpty { refreshRow(summary.id) }
@@ -222,9 +223,7 @@ public final class SessionOverlayStore: ObservableObject {
     func prepareImports(_ sessions: [TranscriptSummary]) -> [PreparedSessionImport] {
         sessions.filter { !templeSessions.contains($0.id) }.map { summary in
             PreparedSessionImport(id: summary.id, agent: summary.agent, path: summary.locator.localURL,
-                core: SessionCore(host: summary.locator.host, directory: summary.cwd,
-                    directorySource: summary.cwd == nil ? nil : .transcript,
-                    title: summary.titleFact, lastActiveAt: summary.modifiedAt))
+                core: SessionCore(filling: summary))
         }
     }
 

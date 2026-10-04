@@ -1,0 +1,1928 @@
+[
+  {
+    "file" : "claude\/-work-project\/minimal.jsonl",
+    "filenameID" : "minimal",
+    "header" : "nil",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "id" : "minimal",
+      "modifiedAt" : "1700000001.0",
+      "path" : "claude\/-work-project\/minimal.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/untyped.jsonl",
+    "filenameID" : "untyped",
+    "header" : "nil",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "claude\/-work-project\/empty.jsonl",
+    "filenameID" : "empty",
+    "header" : "nil",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "claude\/-work-project\/full.jsonl",
+    "filenameID" : "full",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "createdAt" : "1767225600.1230001",
+      "cwd" : "\/work\/project",
+      "firstPrompt" : "first prompt",
+      "gitBranch" : "feature",
+      "id" : "full",
+      "lastMessagePreview" : "answer one",
+      "legacyTitleHint" : "first prompt",
+      "messageCount" : "2",
+      "model" : "claude-opus",
+      "modifiedAt" : "1700000004.0",
+      "path" : "claude\/-work-project\/full.jsonl",
+      "recordedTitle" : "second summary"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/synthetic.jsonl",
+    "filenameID" : "synthetic",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "firstPrompt" : "real prompt",
+      "id" : "synthetic",
+      "lastMessagePreview" : "real prompt",
+      "legacyTitleHint" : "real prompt",
+      "messageCount" : "5",
+      "modifiedAt" : "1700000005.0",
+      "path" : "claude\/-work-project\/synthetic.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/synthetic-only.jsonl",
+    "filenameID" : "synthetic-only",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "id" : "synthetic-only",
+      "lastMessagePreview" : "<bash-input>ls<\/bash-input>",
+      "legacyTitleHint" : "<bash-input>ls<\/bash-input>",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000006.0",
+      "path" : "claude\/-work-project\/synthetic-only.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/queued.jsonl",
+    "filenameID" : "queued",
+    "header" : "nil",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "firstPrompt" : "queued prompt",
+      "id" : "queued",
+      "legacyTitleHint" : "queued prompt",
+      "modifiedAt" : "1700000007.0",
+      "path" : "claude\/-work-project\/queued.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/content-array.jsonl",
+    "filenameID" : "content-array",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "firstPrompt" : "array prompt",
+      "id" : "content-array",
+      "lastMessagePreview" : "array prompt",
+      "legacyTitleHint" : "array prompt",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000008.0",
+      "path" : "claude\/-work-project\/content-array.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/top-level-content.jsonl",
+    "filenameID" : "top-level-content",
+    "header" : "nil",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "id" : "top-level-content",
+      "legacyTitleHint" : "status line",
+      "modifiedAt" : "1700000009.0",
+      "path" : "claude\/-work-project\/top-level-content.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/top-model.jsonl",
+    "filenameID" : "top-model",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "id" : "top-model",
+      "model" : "later-untyped",
+      "modifiedAt" : "1700000010.0",
+      "path" : "claude\/-work-project\/top-model.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/malformed.jsonl",
+    "filenameID" : "malformed",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "firstPrompt" : "after garbage",
+      "id" : "malformed",
+      "lastMessagePreview" : "after garbage",
+      "legacyTitleHint" : "after garbage",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000011.0",
+      "path" : "claude\/-work-project\/malformed.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/crlf.jsonl",
+    "filenameID" : "crlf",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch"
+  },
+  {
+    "file" : "claude\/-Users-me-my-project\/dir-hint.jsonl",
+    "filenameID" : "dir-hint",
+    "header" : "nil",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/Users\/me\/my\/project",
+      "id" : "dir-hint",
+      "modifiedAt" : "1700000013.0",
+      "path" : "claude\/-Users-me-my-project\/dir-hint.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/dotted.name.jsonl",
+    "filenameID" : "dotted.name",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "firstPrompt" : "dots",
+      "id" : "dotted.name",
+      "lastMessagePreview" : "dots",
+      "legacyTitleHint" : "dots",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000014.0",
+      "path" : "claude\/-work-project\/dotted.name.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/mismatch.jsonl",
+    "filenameID" : "mismatch",
+    "header" : "nil",
+    "identity" : "mismatch",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "firstPrompt" : "x",
+      "id" : "mismatch",
+      "lastMessagePreview" : "x",
+      "legacyTitleHint" : "x",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000015.0",
+      "path" : "claude\/-work-project\/mismatch.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/untyped-id-first.jsonl",
+    "filenameID" : "untyped-id-first",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "id" : "untyped-id-first",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000016.0",
+      "path" : "claude\/-work-project\/untyped-id-first.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/typed-no-id-first.jsonl",
+    "filenameID" : "typed-no-id-first",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "id" : "typed-no-id-first",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000017.0",
+      "path" : "claude\/-work-project\/typed-no-id-first.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/eof-no-newline.jsonl",
+    "filenameID" : "eof-no-newline",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "id" : "eof-no-newline",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000018.0",
+      "path" : "claude\/-work-project\/eof-no-newline.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/bad-utf8-content.jsonl",
+    "filenameID" : "bad-utf8-content",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "firstPrompt" : "café",
+      "id" : "bad-utf8-content",
+      "lastMessagePreview" : "café",
+      "legacyTitleHint" : "café",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000019.0",
+      "path" : "claude\/-work-project\/bad-utf8-content.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/tail-only.jsonl",
+    "filenameID" : "tail-only",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "cwd" : "\/work",
+      "id" : "tail-only",
+      "lastMessagePreview" : "A later turn",
+      "laterPromptHint" : "A later turn",
+      "legacyTitleHint" : "A later turn",
+      "messageCount" : "123",
+      "modifiedAt" : "1700000020.0",
+      "path" : "claude\/-work-project\/tail-only.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/tail-queue.jsonl",
+    "filenameID" : "tail-queue",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "id" : "tail-queue",
+      "lastMessagePreview" : "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff…",
+      "laterPromptHint" : "queued late",
+      "legacyTitleHint" : "queued late",
+      "messageCount" : "122",
+      "modifiedAt" : "1700000021.0",
+      "path" : "claude\/-work-project\/tail-queue.jsonl",
+      "recordedTitle" : "late summary"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/medium.jsonl",
+    "filenameID" : "medium",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "firstPrompt" : "head prompt",
+      "id" : "medium",
+      "lastMessagePreview" : "medium tail",
+      "legacyTitleHint" : "head prompt",
+      "messageCount" : "91",
+      "modifiedAt" : "1700000022.0",
+      "path" : "claude\/-work-project\/medium.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/straddle.jsonl",
+    "filenameID" : "straddle",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "id" : "straddle",
+      "lastMessagePreview" : "after straddle",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000023.0",
+      "path" : "claude\/-work-project\/straddle.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/exact.jsonl",
+    "filenameID" : "exact",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "firstPrompt" : "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee…",
+      "id" : "exact",
+      "lastMessagePreview" : "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee…",
+      "legacyTitleHint" : "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee…",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000024.0",
+      "path" : "claude\/-work-project\/exact.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/beyond-cap.jsonl",
+    "filenameID" : "beyond-cap",
+    "header" : "nil",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "id" : "beyond-cap",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000025.0",
+      "path" : "claude\/-work-project\/beyond-cap.jsonl"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/many-turns.jsonl",
+    "filenameID" : "many-turns",
+    "header" : "nil",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "firstPrompt" : "turn 0",
+      "id" : "many-turns",
+      "lastMessagePreview" : "reply 39",
+      "legacyTitleHint" : "turn 0",
+      "messageCount" : "40",
+      "model" : "m39",
+      "modifiedAt" : "1700000026.0",
+      "path" : "claude\/-work-project\/many-turns.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-minimal.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "id" : "c-minimal",
+      "modifiedAt" : "1700000027.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-minimal.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-session-id.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-sid",
+      "modifiedAt" : "1700000028.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-session-id.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-both.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-own",
+      "modifiedAt" : "1700000029.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-both.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-sub-source.jsonl",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch"
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-sub-thread.jsonl",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch"
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-not-meta.jsonl",
+    "header" : "nil",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-untyped.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-malformed.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-empty.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-leading-newline.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/lead",
+      "id" : "c-lead",
+      "modifiedAt" : "1700000036.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-leading-newline.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-full.jsonl",
+    "header" : "c-full|\/work\/project|1767225600.0|true",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1767225600.0",
+      "cwd" : "\/work\/project",
+      "firstPrompt" : "the prompt",
+      "gitBranch" : "dev",
+      "id" : "c-full",
+      "lastMessagePreview" : "via text",
+      "messageCount" : "6",
+      "model" : "gpt-5",
+      "modifiedAt" : "1700000037.0",
+      "originator" : "codex-tui",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-full.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-top-timestamp.jsonl",
+    "header" : "c-top|\/w|1770091506.789|true",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1770091506.789",
+      "cwd" : "\/w",
+      "id" : "c-top",
+      "modifiedAt" : "1700000038.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-top-timestamp.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-wide.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "wide prompt",
+      "id" : "c-wide",
+      "lastMessagePreview" : "wide prompt",
+      "laterPromptHint" : "wide prompt",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000039.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-wide.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-beyond.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-beyond",
+      "lastMessagePreview" : "last",
+      "laterPromptHint" : "tail prompt",
+      "messageCount" : "2",
+      "modifiedAt" : "1700000040.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-beyond.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-bare.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-bare",
+      "lastMessagePreview" : "instructions only",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000041.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-bare.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-medium.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "medium prompt",
+      "id" : "c-medium",
+      "lastMessagePreview" : "medium prompt",
+      "laterPromptHint" : "medium prompt",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000042.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-medium.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-crlf.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch"
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-no-cwd.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1767225600.0",
+      "id" : "c-nocwd",
+      "modifiedAt" : "1700000044.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-no-cwd.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-no-time.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-notime",
+      "modifiedAt" : "1700000045.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-no-time.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-no-type-field.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-no-payload.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-overlong.jsonl",
+    "header" : "throws",
+    "identity" : "throws",
+    "identityOther" : "throws"
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-empty-id.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl",
+    "filenameID" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
+    "header" : "0199a213-81c0-7800-8aa1-bbab2a035a53|\/w|1790848800.0|true",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "selectionKey" : "2026-10-01T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1790848800.0",
+      "cwd" : "\/w",
+      "firstPrompt" : "canonical",
+      "id" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
+      "lastMessagePreview" : "canonical",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000050.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-2026-10-01T11-00-00-0199A213-81C0-7800-8AA1-BBAB2A035A54_0199a213-81c0-7800-8aa1-bbab2a0aaaaa.jsonl",
+    "filenameID" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    "header" : "0199a213-81c0-7800-8aa1-bbab2a035a54|\/w|1790852400.0|true",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "selectionKey" : "2026-10-01T11-00-00-0199a213-81c0-7800-8aa1-bbab2a0aaaaa",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1790852400.0",
+      "cwd" : "\/w",
+      "id" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
+      "modifiedAt" : "1700000051.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-2026-10-01T11-00-00-0199A213-81C0-7800-8AA1-BBAB2A035A54_0199a213-81c0-7800-8aa1-bbab2a0aaaaa.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-2026-02-30T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
+      "modifiedAt" : "1700000052.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-2026-02-30T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-2024-02-29T23-59-59-0199a213-81c0-7800-8aa1-bbab2a035a54.jsonl",
+    "filenameID" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "selectionKey" : "2024-02-29T23-59-59-0199a213-81c0-7800-8aa1-bbab2a035a54",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
+      "modifiedAt" : "1700000053.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-2024-02-29T23-59-59-0199a213-81c0-7800-8aa1-bbab2a035a54.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-not-a-uuid.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "x",
+      "modifiedAt" : "1700000054.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-not-a-uuid.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-hist.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "rollout prompt",
+      "id" : "c-hist",
+      "lastMessagePreview" : "rollout prompt",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000055.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-hist.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-index.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-index",
+      "modifiedAt" : "1700000056.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-index.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-blank-hist.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-blank",
+      "modifiedAt" : "1700000057.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-blank-hist.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-content-array.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "array text",
+      "id" : "c-array",
+      "lastMessagePreview" : "array text",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000058.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-content-array.jsonl"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-minimal.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "id" : "c-minimal",
+      "modifiedAt" : "1700000059.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-minimal.jsonl"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-session-id.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-sid",
+      "modifiedAt" : "1700000060.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-session-id.jsonl"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-both.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-own",
+      "modifiedAt" : "1700000061.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-both.jsonl"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-sub-source.jsonl",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch"
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-sub-thread.jsonl",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch"
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-not-meta.jsonl",
+    "header" : "nil",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-untyped.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-malformed.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-empty.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-leading-newline.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/lead",
+      "id" : "c-lead",
+      "modifiedAt" : "1700000068.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-leading-newline.jsonl"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-full.jsonl",
+    "header" : "c-full|\/work\/project|1767225600.0|true",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1767225600.0",
+      "cwd" : "\/work\/project",
+      "firstPrompt" : "the prompt",
+      "gitBranch" : "dev",
+      "historyPrompt" : "earliest full",
+      "id" : "c-full",
+      "lastMessagePreview" : "via text",
+      "messageCount" : "6",
+      "model" : "gpt-5",
+      "modifiedAt" : "1700000069.0",
+      "originator" : "codex-tui",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-full.jsonl",
+      "sharedTitle" : "earliest full"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-top-timestamp.jsonl",
+    "header" : "c-top|\/w|1770091506.789|true",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1770091506.789",
+      "cwd" : "\/w",
+      "id" : "c-top",
+      "modifiedAt" : "1700000070.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-top-timestamp.jsonl"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-wide.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "wide prompt",
+      "id" : "c-wide",
+      "lastMessagePreview" : "wide prompt",
+      "laterPromptHint" : "wide prompt",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000071.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-wide.jsonl"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-beyond.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-beyond",
+      "lastMessagePreview" : "last",
+      "laterPromptHint" : "tail prompt",
+      "messageCount" : "2",
+      "modifiedAt" : "1700000072.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-beyond.jsonl"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-bare.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-bare",
+      "lastMessagePreview" : "instructions only",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000073.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-bare.jsonl"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-medium.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "medium prompt",
+      "id" : "c-medium",
+      "lastMessagePreview" : "medium prompt",
+      "laterPromptHint" : "medium prompt",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000074.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-medium.jsonl"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-crlf.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch"
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-no-cwd.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1767225600.0",
+      "id" : "c-nocwd",
+      "modifiedAt" : "1700000076.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-no-cwd.jsonl"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-no-time.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-notime",
+      "modifiedAt" : "1700000077.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-no-time.jsonl"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-no-type-field.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-no-payload.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-overlong.jsonl",
+    "header" : "throws",
+    "identity" : "throws",
+    "identityOther" : "throws"
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-empty-id.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl",
+    "filenameID" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
+    "header" : "0199a213-81c0-7800-8aa1-bbab2a035a53|\/w|1790848800.0|true",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "selectionKey" : "2026-10-01T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1790848800.0",
+      "cwd" : "\/w",
+      "firstPrompt" : "canonical",
+      "historyPrompt" : "thread a prompt",
+      "id" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
+      "lastMessagePreview" : "canonical",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000082.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl",
+      "sharedTitle" : "thread a prompt"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-2026-10-01T11-00-00-0199A213-81C0-7800-8AA1-BBAB2A035A54_0199a213-81c0-7800-8aa1-bbab2a0aaaaa.jsonl",
+    "filenameID" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    "header" : "0199a213-81c0-7800-8aa1-bbab2a035a54|\/w|1790852400.0|true",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "selectionKey" : "2026-10-01T11-00-00-0199a213-81c0-7800-8aa1-bbab2a0aaaaa",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1790852400.0",
+      "cwd" : "\/w",
+      "id" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
+      "modifiedAt" : "1700000083.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-2026-10-01T11-00-00-0199A213-81C0-7800-8AA1-BBAB2A035A54_0199a213-81c0-7800-8aa1-bbab2a0aaaaa.jsonl"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-2026-02-30T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "historyPrompt" : "thread a prompt",
+      "id" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
+      "modifiedAt" : "1700000084.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-2026-02-30T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl",
+      "sharedTitle" : "thread a prompt"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-2024-02-29T23-59-59-0199a213-81c0-7800-8aa1-bbab2a035a54.jsonl",
+    "filenameID" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "selectionKey" : "2024-02-29T23-59-59-0199a213-81c0-7800-8aa1-bbab2a035a54",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
+      "modifiedAt" : "1700000085.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-2024-02-29T23-59-59-0199a213-81c0-7800-8aa1-bbab2a035a54.jsonl"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-not-a-uuid.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "x",
+      "modifiedAt" : "1700000086.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-not-a-uuid.jsonl"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-hist.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "rollout prompt",
+      "historyPrompt" : "history first",
+      "id" : "c-hist",
+      "lastMessagePreview" : "rollout prompt",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000087.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-hist.jsonl",
+      "sharedTitle" : "history first"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-index.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-index",
+      "modifiedAt" : "1700000088.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-index.jsonl",
+      "sharedTitle" : "companion thread"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-blank-hist.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-blank",
+      "modifiedAt" : "1700000089.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-blank-hist.jsonl",
+      "sharedTitle" : "blank falls to index"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-content-array.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "array text",
+      "id" : "c-array",
+      "lastMessagePreview" : "array text",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000090.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-content-array.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-minimal.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "id" : "c-minimal",
+      "modifiedAt" : "1700000091.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-minimal.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-session-id.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-sid",
+      "modifiedAt" : "1700000092.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-session-id.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-both.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-own",
+      "modifiedAt" : "1700000093.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-both.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-sub-source.jsonl",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch"
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-sub-thread.jsonl",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch"
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-not-meta.jsonl",
+    "header" : "nil",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-untyped.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-malformed.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-empty.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-leading-newline.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/lead",
+      "id" : "c-lead",
+      "modifiedAt" : "1700000100.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-leading-newline.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-full.jsonl",
+    "header" : "c-full|\/work\/project|1767225600.0|true",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1767225600.0",
+      "cwd" : "\/work\/project",
+      "firstPrompt" : "the prompt",
+      "gitBranch" : "dev",
+      "id" : "c-full",
+      "lastMessagePreview" : "via text",
+      "messageCount" : "6",
+      "model" : "gpt-5",
+      "modifiedAt" : "1700000101.0",
+      "originator" : "codex-tui",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-full.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-top-timestamp.jsonl",
+    "header" : "c-top|\/w|1770091506.789|true",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1770091506.789",
+      "cwd" : "\/w",
+      "id" : "c-top",
+      "modifiedAt" : "1700000102.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-top-timestamp.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-wide.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "wide prompt",
+      "id" : "c-wide",
+      "lastMessagePreview" : "wide prompt",
+      "laterPromptHint" : "wide prompt",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000103.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-wide.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-beyond.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-beyond",
+      "lastMessagePreview" : "last",
+      "laterPromptHint" : "tail prompt",
+      "messageCount" : "2",
+      "modifiedAt" : "1700000104.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-beyond.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-bare.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-bare",
+      "lastMessagePreview" : "instructions only",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000105.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-bare.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-medium.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "medium prompt",
+      "id" : "c-medium",
+      "lastMessagePreview" : "medium prompt",
+      "laterPromptHint" : "medium prompt",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000106.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-medium.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-crlf.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch"
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-no-cwd.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1767225600.0",
+      "id" : "c-nocwd",
+      "modifiedAt" : "1700000108.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-no-cwd.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-no-time.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-notime",
+      "modifiedAt" : "1700000109.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-no-time.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-no-type-field.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-no-payload.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-overlong.jsonl",
+    "header" : "throws",
+    "identity" : "throws",
+    "identityOther" : "throws"
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-empty-id.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl",
+    "filenameID" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
+    "header" : "0199a213-81c0-7800-8aa1-bbab2a035a53|\/w|1790848800.0|true",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "selectionKey" : "2026-10-01T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1790848800.0",
+      "cwd" : "\/w",
+      "firstPrompt" : "canonical",
+      "id" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
+      "lastMessagePreview" : "canonical",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000114.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-2026-10-01T11-00-00-0199A213-81C0-7800-8AA1-BBAB2A035A54_0199a213-81c0-7800-8aa1-bbab2a0aaaaa.jsonl",
+    "filenameID" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    "header" : "0199a213-81c0-7800-8aa1-bbab2a035a54|\/w|1790852400.0|true",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "selectionKey" : "2026-10-01T11-00-00-0199a213-81c0-7800-8aa1-bbab2a0aaaaa",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1790852400.0",
+      "cwd" : "\/w",
+      "id" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
+      "modifiedAt" : "1700000115.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-2026-10-01T11-00-00-0199A213-81C0-7800-8AA1-BBAB2A035A54_0199a213-81c0-7800-8aa1-bbab2a0aaaaa.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-2026-02-30T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
+      "modifiedAt" : "1700000116.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-2026-02-30T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-2024-02-29T23-59-59-0199a213-81c0-7800-8aa1-bbab2a035a54.jsonl",
+    "filenameID" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "selectionKey" : "2024-02-29T23-59-59-0199a213-81c0-7800-8aa1-bbab2a035a54",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
+      "modifiedAt" : "1700000117.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-2024-02-29T23-59-59-0199a213-81c0-7800-8aa1-bbab2a035a54.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-not-a-uuid.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "x",
+      "modifiedAt" : "1700000118.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-not-a-uuid.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-hist.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "rollout prompt",
+      "id" : "c-hist",
+      "lastMessagePreview" : "rollout prompt",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000119.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-hist.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-index.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-index",
+      "modifiedAt" : "1700000120.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-index.jsonl",
+      "sharedTitle" : "only the index"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-blank-hist.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-blank",
+      "modifiedAt" : "1700000121.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-blank-hist.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-content-array.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "array text",
+      "id" : "c-array",
+      "lastMessagePreview" : "array text",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000122.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-content-array.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-minimal.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "id" : "c-minimal",
+      "modifiedAt" : "1700000123.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-minimal.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-session-id.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-sid",
+      "modifiedAt" : "1700000124.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-session-id.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-both.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-own",
+      "modifiedAt" : "1700000125.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-both.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-sub-source.jsonl",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch"
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-sub-thread.jsonl",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch"
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-not-meta.jsonl",
+    "header" : "nil",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-untyped.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-malformed.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-empty.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-leading-newline.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/lead",
+      "id" : "c-lead",
+      "modifiedAt" : "1700000132.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-leading-newline.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-full.jsonl",
+    "header" : "c-full|\/work\/project|1767225600.0|true",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1767225600.0",
+      "cwd" : "\/work\/project",
+      "firstPrompt" : "the prompt",
+      "gitBranch" : "dev",
+      "id" : "c-full",
+      "lastMessagePreview" : "via text",
+      "messageCount" : "6",
+      "model" : "gpt-5",
+      "modifiedAt" : "1700000133.0",
+      "originator" : "codex-tui",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-full.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-top-timestamp.jsonl",
+    "header" : "c-top|\/w|1770091506.789|true",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1770091506.789",
+      "cwd" : "\/w",
+      "id" : "c-top",
+      "modifiedAt" : "1700000134.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-top-timestamp.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-wide.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "wide prompt",
+      "id" : "c-wide",
+      "lastMessagePreview" : "wide prompt",
+      "laterPromptHint" : "wide prompt",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000135.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-wide.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-beyond.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-beyond",
+      "lastMessagePreview" : "last",
+      "laterPromptHint" : "tail prompt",
+      "messageCount" : "2",
+      "modifiedAt" : "1700000136.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-beyond.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-bare.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-bare",
+      "lastMessagePreview" : "instructions only",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000137.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-bare.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-medium.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "medium prompt",
+      "id" : "c-medium",
+      "lastMessagePreview" : "medium prompt",
+      "laterPromptHint" : "medium prompt",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000138.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-medium.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-crlf.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch"
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-no-cwd.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1767225600.0",
+      "id" : "c-nocwd",
+      "modifiedAt" : "1700000140.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-no-cwd.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-no-time.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-notime",
+      "modifiedAt" : "1700000141.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-no-time.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-no-type-field.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-no-payload.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-overlong.jsonl",
+    "header" : "throws",
+    "identity" : "throws",
+    "identityOther" : "throws"
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-empty-id.jsonl",
+    "header" : "throws",
+    "identity" : "incomplete",
+    "identityOther" : "incomplete"
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl",
+    "filenameID" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
+    "header" : "0199a213-81c0-7800-8aa1-bbab2a035a53|\/w|1790848800.0|true",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "selectionKey" : "2026-10-01T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1790848800.0",
+      "cwd" : "\/w",
+      "firstPrompt" : "canonical",
+      "id" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
+      "lastMessagePreview" : "canonical",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000146.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-2026-10-01T11-00-00-0199A213-81C0-7800-8AA1-BBAB2A035A54_0199a213-81c0-7800-8aa1-bbab2a0aaaaa.jsonl",
+    "filenameID" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    "header" : "0199a213-81c0-7800-8aa1-bbab2a035a54|\/w|1790852400.0|true",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "selectionKey" : "2026-10-01T11-00-00-0199a213-81c0-7800-8aa1-bbab2a0aaaaa",
+    "summary" : {
+      "agent" : "codex",
+      "createdAt" : "1790852400.0",
+      "cwd" : "\/w",
+      "id" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
+      "modifiedAt" : "1700000147.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-2026-10-01T11-00-00-0199A213-81C0-7800-8AA1-BBAB2A035A54_0199a213-81c0-7800-8aa1-bbab2a0aaaaa.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-2026-02-30T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
+      "modifiedAt" : "1700000148.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-2026-02-30T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-2024-02-29T23-59-59-0199a213-81c0-7800-8aa1-bbab2a035a54.jsonl",
+    "filenameID" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "selectionKey" : "2024-02-29T23-59-59-0199a213-81c0-7800-8aa1-bbab2a035a54",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
+      "modifiedAt" : "1700000149.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-2024-02-29T23-59-59-0199a213-81c0-7800-8aa1-bbab2a035a54.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-not-a-uuid.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "x",
+      "modifiedAt" : "1700000150.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-not-a-uuid.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-hist.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "rollout prompt",
+      "id" : "c-hist",
+      "lastMessagePreview" : "rollout prompt",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000151.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-hist.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-index.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-index",
+      "modifiedAt" : "1700000152.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-index.jsonl",
+      "sharedTitle" : "index beside bad history"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-blank-hist.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "id" : "c-blank",
+      "modifiedAt" : "1700000153.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-blank-hist.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-content-array.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "array text",
+      "id" : "c-array",
+      "lastMessagePreview" : "array text",
+      "messageCount" : "1",
+      "modifiedAt" : "1700000154.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-content-array.jsonl"
+    }
+  }
+]

@@ -443,23 +443,23 @@ final class StoreTests: XCTestCase {
     }
 
     func testClaudeTextExtractionFromString() {
-        XCTAssertEqual(ClaudeSessionStore.text(from: "hello"), "hello")
+        XCTAssertEqual(ClaudeFormat.text(from: "hello"), "hello")
     }
 
     func testClaudeTextExtractionFromContentArray() {
         let content: [[String: Any]] = [["type": "text", "text": "build me a thing"]]
-        XCTAssertEqual(ClaudeSessionStore.text(from: content), "build me a thing")
+        XCTAssertEqual(ClaudeFormat.text(from: content), "build me a thing")
     }
 
     func testDecodeDirNameIsBestEffort() {
         XCTAssertEqual(
-            ClaudeSessionStore.decodeDirName("-Users-sriram-Projects-active-raven"),
+            ClaudeFormat.decodeDirName("-Users-sriram-Projects-active-raven"),
             "/Users/sriram/Projects/active/raven")
     }
 
     func testCleanTitleCollapsesAndCaps() {
-        XCTAssertEqual(StoreIO.cleanTitle("  a\n  b\tc "), "a b c")
-        XCTAssertEqual(StoreIO.cleanTitle(String(repeating: "x", count: 300)).count, 201)
+        XCTAssertEqual(TranscriptText.cleanTitle("  a\n  b\tc "), "a b c")
+        XCTAssertEqual(TranscriptText.cleanTitle(String(repeating: "x", count: 300)).count, 201)
     }
 
     func testIndexGroupsByProjectPath() {
