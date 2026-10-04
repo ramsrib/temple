@@ -57,8 +57,19 @@ frame_prefs_restore() {
   # a file first, so a failed snapshot or diff is an error, not "no changes".
   if ! frame_prefs__snapshot "$domain" > "$current" || ! /usr/bin/python3 - "$file" "$current" > "$ops" <<'PY'
 import plistlib, sys
-with open(sys.argv[1], "rb") as f: saved = plistlib.load(f)
-with open(sys.argv[2], "rb") as f: now = plistlib.load(f)
+PREFIXES = ("NSWindow Frame ", "NSSplitView Subview Frames ")
+def load_frames(path):
+    with open(path, "rb") as f: value = plistlib.load(f)
+    # Only a dictionary of frame keys is a snapshot; anything else (a list,
+    # an unrelated key) would make the ops below touch keys they must not.
+    if not isinstance(value, dict) or not all(isinstance(k, str) and k.startswith(PREFIXES) for k in value):
+        sys.exit("frame snapshot is not a dictionary of window-frame keys: " + path)
+    return value
+saved = load_frames(sys.argv[1])
+now = load_frames(sys.argv[2])
+def canonical(value):
+    # Type-exact: True != 1 and 1 != 1.0 in a plist, though Python's == says so.
+    return plistlib.dumps(value, fmt=plistlib.FMT_XML, sort_keys=True)
 def fragment(value):
     xml = plistlib.dumps(value, fmt=plistlib.FMT_XML).decode()
     return xml.split('<plist version="1.0">', 1)[1].rsplit("</plist>", 1)[0].strip()
@@ -67,7 +78,7 @@ for key in sorted(now):
     if key not in saved:
         out.write(b"delete\0" + key.encode() + b"\0")
 for key in sorted(saved):
-    if now.get(key) != saved[key]:
+    if key not in now or canonical(now[key]) != canonical(saved[key]):
         out.write(b"write\0" + key.encode() + b"\0" + fragment(saved[key]).encode() + b"\0")
 PY
   then
@@ -149,6 +160,22 @@ frame_prefs__self_test() {
   if frame_prefs_restore "$domain" "$dir/corrupt.plist" 2>/dev/null; then check "corrupt snapshot fails" "failure" "success"
   else check "corrupt snapshot fails" "failure" "failure"; fi
   check "corrupt snapshot writes nothing" "{{100, 200}, {800, 600}}" "$(read_or_none "NSWindow Frame main-AppWindow-1")"
+  # A valid plist of the wrong shape (a list, or an unrelated key) is refused
+  # before any op: it must neither delete frame keys nor write fontSize.
+  printf '%s' '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><array/></plist>' > "$dir/list.plist"
+  if frame_prefs_restore "$domain" "$dir/list.plist" 2>/dev/null; then check "list snapshot refused" "failure" "success"
+  else check "list snapshot refused" "failure" "failure"; fi
+  check "list snapshot deletes nothing" "{{100, 200}, {800, 600}}" "$(read_or_none "NSWindow Frame main-AppWindow-1")"
+  printf '%s' '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>fontSize</key><integer>99</integer></dict></plist>' > "$dir/foreign.plist"
+  if frame_prefs_restore "$domain" "$dir/foreign.plist" 2>/dev/null; then check "foreign-key snapshot refused" "failure" "success"
+  else check "foreign-key snapshot refused" "failure" "failure"; fi
+  check "foreign-key snapshot leaves fontSize" "15" "$(read_or_none fontSize)"
+  # Type-exact restore: an integer 1 that became boolean true comes back as an integer.
+  defaults write "$domain" "NSWindow Frame typed" -integer 1
+  frame_prefs_save "$domain" "$dir/typed.plist"
+  defaults write "$domain" "NSWindow Frame typed" -bool true
+  frame_prefs_restore "$domain" "$dir/typed.plist"
+  check "integer restored over a boolean" "Type is integer" "$(type_or_none "NSWindow Frame typed")"
   # No saved file (the script died before saving): restore touches nothing.
   defaults write "$domain" "NSWindow Frame main-AppWindow-3" '<string>{{3, 3}, {3, 3}}</string>'
   frame_prefs_restore "$domain" "$dir/never-saved.plist"

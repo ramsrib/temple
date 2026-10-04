@@ -30,7 +30,7 @@ final class ModuleBoundaryTests: XCTestCase {
     /// `@_exported`, `@preconcurrency`, `@_implementationOnly`, or a scoped
     /// `import struct TempleLocalHost.X`.
     private static let importPattern = try! NSRegularExpression(
-        pattern: #"^\s*(?:@\w+(?:\([^)]*\))?\s+)*import\s+(?:(?:typealias|struct|class|enum|protocol|let|var|func|actor)\s+)?TempleLocalHost\b"#,
+        pattern: #"(?:^|;)\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:public|package|internal|fileprivate|private)\s+)?import\s+(?:(?:typealias|struct|class|enum|protocol|let|var|func|actor)\s+)?TempleLocalHost\b"#,
         options: [.anchorsMatchLines])
 
     /// Filesystem reach a pure format must not have.
@@ -78,7 +78,9 @@ final class ModuleBoundaryTests: XCTestCase {
     func testTheDetectorsCatchWhatTheyClaim() {
         for code in ["import TempleLocalHost", "@testable import TempleLocalHost", "  @_exported import TempleLocalHost",
                      "@preconcurrency import TempleLocalHost", "import struct TempleLocalHost.LocalSessionSource",
-                     "import Foundation\nimport TempleLocalHost\n"] {
+                     "import Foundation\nimport TempleLocalHost\n", "public import TempleLocalHost",
+                     "internal import TempleLocalHost", "@preconcurrency package import TempleLocalHost",
+                     "import Foundation; import TempleLocalHost"] {
             XCTAssertTrue(Self.importsLocalHost(code), code)
         }
         for code in ["import TempleCore", "// import TempleLocalHost is reserved for LocalHost.swift",
