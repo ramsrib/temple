@@ -631,7 +631,8 @@ private struct HistoryPageRow: View, Equatable {
     var body: some View {
         HStack(spacing: 10) {
             HStack(spacing: 10) {
-                Text(Self.timeFormatter.string(from: session.updatedAt))
+                // No time for a row with no date (grouped under "Unknown date").
+                Text(session.updatedAt == .distantPast ? "" : Self.timeFormatter.string(from: session.updatedAt))
                     .font(.system(size: 11).monospacedDigit())
                     .foregroundStyle(.tertiary)
                     .frame(width: 44, alignment: .leading)

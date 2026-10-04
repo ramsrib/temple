@@ -94,14 +94,19 @@ enum HistoryRowGrouping {
         var result: [HistoryRowDayGroup] = []
 
         for session in sessions {
-            let day = calendar.startOfDay(for: session.updatedAt)
+            // A legacy member with no date at all (`Session.sortDate`) sorts
+            // last; it gets a group that says so, not "Jan 1, 0001".
+            let undated = session.updatedAt == .distantPast
+            let day = undated ? Date.distantPast : calendar.startOfDay(for: session.updatedAt)
             if result.last?.day == day {
                 result[result.count - 1].sessions.append(session)
                 continue
             }
 
             let title: String
-            if day == today {
+            if undated {
+                title = "Unknown date"
+            } else if day == today {
                 title = "Today"
             } else if day == yesterday {
                 title = "Yesterday"

@@ -238,6 +238,25 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(groups.flatMap(\.sessions).map(\.id), sessions.map(\.id))
     }
 
+    /// A pre-v8 row made by a setter has no joined_at, and with no open and
+    /// no transcript to fill last_active_at it has no date at all. It sorts
+    /// last and is grouped as undated, never "Jan 1, 0001".
+    func testRowsWithNoDateAtAllGroupUnderUnknownDate() {
+        func undated(_ id: String) -> HistoryRow {
+            HistoryRow(member: Session(state: SessionState(id: id, pinned: false, archived: false, customName: nil,
+                color: nil, generatedTitle: nil, lastOpenedAt: nil, joinedVia: nil, joinedAt: nil,
+                agent: .claude, host: .local, directory: nil, directorySource: nil, title: "Legacy \(id)",
+                lastActiveAt: nil), resolution: .confirmedAbsent))
+        }
+        let rows = [HistoryRow(catalog: session("dated", hoursAgo: 1)), undated("a"), undated("b")]
+        XCTAssertEqual(rows[1].updatedAt, .distantPast)
+
+        let groups = HistoryRowGrouping.groups(rows, calendar: calendar, now: now)
+
+        XCTAssertEqual(groups.map(\.title), ["Today", "Unknown date"])
+        XCTAssertEqual(groups[1].sessions.map(\.sessionID), ["a", "b"])
+    }
+
     // MARK: Snapshot
 
     func testTheSnapshotListsEveryNonNoiseSessionNewestFirstAndMarksMembership() async {
