@@ -57,6 +57,8 @@ public final class SessionTab: ObservableObject, Identifiable {
     /// and a bad-argv failure quietly loses its explanation; break them and a healthy
     /// failure suddenly gets blamed for something that hadn't happened yet.
     @Published public var commandWasSuspect = false
+    /// A launcher can fail before there is a terminal to display its error.
+    @Published public var launchPreparationError: String?
     /// Did this tab die resuming a session id that no transcript on disk
     /// carries? Claude rotates ids INSIDE a live process (/resume continues an
     /// older conversation under its own id; /clear starts a fresh one), so the

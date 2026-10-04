@@ -6,6 +6,44 @@ import TempleTerminalAPI
 
 @MainActor
 final class RemoteHostSeamTests: XCTestCase {
+    func testThrowingLauncherRetainsFailureWithoutSurfaceAndCanReopen() throws {
+        let remote = HostID(rawValue: "throwing-host")
+        let launcher = ThrowingFixtureLauncher()
+        let factory = FakeTerminalSurfaceFactory()
+        let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
+            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+            persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
+            launcherForHost: { $0 == remote ? launcher : nil })
+        let summary = TranscriptSummary(id: "unjoined", agent: .claude,
+            locator: TranscriptLocator(host: remote, path: "opaque:unjoined"),
+            modifiedAt: Date(), cwd: "/remote/project")
+        model.openSession(summary)
+        let tab = try XCTUnwrap(model.activeTab)
+        XCTAssertEqual(model.tabs.count, 1)
+        XCTAssertEqual(tab.activity, .exited(status: -1))
+        XCTAssertEqual(tab.launchPreparationError, "The host could not prepare this session.")
+        XCTAssertNil(tab.surface)
+        XCTAssertTrue(factory.created.isEmpty)
+        model.closeActiveTab()
+        XCTAssertTrue(model.tabs.isEmpty)
+        model.reopenLastClosedTab()
+        let reopened = try XCTUnwrap(model.activeTab)
+        XCTAssertNotEqual(reopened.id, tab.id)
+        XCTAssertEqual(reopened.host, remote)
+        XCTAssertEqual(reopened.activity, .exited(status: -1))
+        XCTAssertEqual(reopened.launchPreparationError, tab.launchPreparationError)
+        XCTAssertNil(reopened.surface)
+        XCTAssertTrue(factory.created.isEmpty)
+        launcher.shouldThrow = false
+        model.activate(reopened)
+        XCTAssertNil(reopened.launchPreparationError)
+        XCTAssertFalse(reopened.commandWasSuspect)
+        XCTAssertTrue(reopened.hasSurface)
+        XCTAssertEqual(reopened.activity, .running)
+        model.closeActiveTab()
+        XCTAssertTrue(model.tabs.isEmpty)
+    }
+
     func testRemoteDirectoryEvidenceDoesNotConsultTheMac() throws {
         let remote = HostID(rawValue: "remote-directory")
         let path = "/not-on-this-mac/project"
@@ -173,6 +211,19 @@ private final class RemoteFixtureLauncher: HostLauncher {
         }
         return TerminalCommand(argv: ["remote-transport", spec.host.rawValue, "/remote/bin/" + spec.agent.binaryName] + args,
             cwd: "/transport")
+    }
+    func canLaunch(_ agent: Agent) -> Bool { true }
+}
+
+@MainActor
+private final class ThrowingFixtureLauncher: HostLauncher {
+    struct PreparationError: LocalizedError {
+        var errorDescription: String? { "The host could not prepare this session." }
+    }
+    var shouldThrow = true
+    func command(for spec: AgentLaunchSpec) throws -> TerminalCommand {
+        if shouldThrow { throw PreparationError() }
+        return TerminalCommand(argv: ["remote-transport"], cwd: "/transport")
     }
     func canLaunch(_ agent: Agent) -> Bool { true }
 }

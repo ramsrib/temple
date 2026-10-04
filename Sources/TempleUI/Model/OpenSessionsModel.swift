@@ -3,6 +3,7 @@ import TempleCore
 import TempleTerminalAPI
 
 struct ClosedTabRecord {
+    let host: HostID
     let sessionID: String
     let agent: Agent
     let projectPath: String
@@ -364,9 +365,12 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             mode: tab.isResume ? .resume(sessionID: tab.sessionID!) : .new(sessionID: tab.sessionID),
             directory: tab.projectPath, host: tab.host)
         let command: TerminalCommand
+        tab.launchPreparationError = nil
+        tab.commandWasSuspect = false
         do { command = try launcher.command(for: spec) }
         catch {
             TempleUILog.launch.error("command preparation failed: \(String(describing: error), privacy: .public)")
+            tab.launchPreparationError = error.localizedDescription
             tab.commandWasSuspect = true
             tab.activity = .exited(status: -1)
             return
@@ -569,6 +573,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         if tab.kind == .session, let sessionID = tab.sessionID {
             touchHandler?(sessionID, nil)
             closedTabs.append(ClosedTabRecord(
+                host: tab.host,
                 sessionID: sessionID,
                 agent: tab.agent,
                 projectPath: tab.projectPath,
@@ -639,7 +644,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                     agent: closed.agent,
                     sessionID: closed.sessionID,
                     cwd: closed.projectPath),
-                isResume: true
+                isResume: true, host: closed.host
             )
             tabs.append(tab)
             activate(tab)

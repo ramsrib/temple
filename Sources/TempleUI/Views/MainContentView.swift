@@ -39,20 +39,12 @@ struct MainContentView: View {
         }
     }
 
-    @ViewBuilder
     private func terminal(for tab: SessionTab) -> some View {
-        if tab.surface != nil {
-            // `SessionTab` is an ObservableObject: the banner below keys off
-            // `tab.activity`, which flips *after* the view first renders (the agent
-            // dies a moment after spawning). Reading it from here would never
-            // re-render — the subview has to subscribe.
-            SessionTerminalView(tab: tab)
-                .id(tab.id)
-        } else {
-            // Active tab without a surface (restored chip just clicked) — spawn it.
-            Color.clear.onAppear { model.openSessions.activate(tabID: tab.id) }
-        }
+        // Subscribe even before a surface exists: preparation can fail first.
+        SessionTerminalView(tab: tab)
+            .id(tab.id)
     }
+
 }
 
 /// A session's terminal, with a header that appears if the agent failed to launch.
@@ -73,6 +65,11 @@ private struct SessionTerminalView: View {
                     .overlay(alignment: .topTrailing) {
                         TerminalFindOverlay(find: tab.find)
                     }
+            } else {
+                Color.clear.onAppear {
+                    guard tab.launchPreparationError == nil else { return }
+                    model.openSessions.activate(tabID: tab.id)
+                }
             }
         }
     }
@@ -89,7 +86,8 @@ private struct SessionTerminalView: View {
     /// would send people to a screen that can't help, and train them to ignore the
     /// warning on the day the command really is at fault.
     private func launchFailure(status: Int32) -> some View {
-        let argv = tab.command?.argv ?? []
+        let preparationError = tab.launchPreparationError
+        let argv = preparationError == nil ? tab.command?.argv ?? [] : []
         // Frozen when the tab died — NOT re-derived from today's settings, which
         // would let an unrelated edit flip an old failure's verdict.
         let blameCommand = tab.commandWasSuspect
@@ -106,8 +104,16 @@ private struct SessionTerminalView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(blameCommand ? Color.red : Color.orange)
             VStack(alignment: .leading, spacing: 2) {
-                Text(blameCommand ? "\(exited) — it failed to start." : "\(exited).")
+                Text(preparationError != nil ? "\(tab.agent.displayName) failed to start."
+                     : blameCommand ? "\(exited) — it failed to start." : "\(exited).")
                     .font(.system(size: 12, weight: .medium))
+                if let preparationError {
+                    Text(preparationError)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 if !argv.isEmpty {
                     Text(argv.joined(separator: " "))
                         .font(.system(size: 11, design: .monospaced))
@@ -117,7 +123,7 @@ private struct SessionTerminalView: View {
                 }
                 // Nothing here points at the terminal: it is directly below, in view,
                 // with the agent's own error in it. Say what to DO, or say nothing.
-                if blameCommand {
+                if blameCommand && preparationError == nil {
                     Text("Check the command and arguments in Settings.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
@@ -140,7 +146,7 @@ private struct SessionTerminalView: View {
                 }
             }
             Spacer(minLength: 8)
-            if blameCommand {
+            if blameCommand && preparationError == nil {
                 Button("Settings") { model.openSessions.openSettings(focusing: tab.agent) }
                     .buttonStyle(.link)
                     .font(.system(size: 12))
