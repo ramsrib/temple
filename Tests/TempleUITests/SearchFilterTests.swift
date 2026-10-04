@@ -339,6 +339,43 @@ final class SearchFilterTests: XCTestCase {
         XCTAssertTrue(model.paletteResults("databases").isEmpty)
     }
 
+    /// After the freeze a touch reorders the open-session palette without a
+    /// redraw. Return must open the session the highlight is drawn on, not
+    /// whichever one slid into its row.
+    func testATouchBetweenDrawAndReturnStillOpensTheHighlightedSession() async {
+        let a = Fixture.row("a", project: "/p/a", updated: 50)
+        let b = Fixture.row("b", project: "/p/b", updated: 40)
+        let (model, _) = makeRowModel([a, b])
+        model.openSessions.openSession(b)
+        model.openSessions.openSession(a)
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent]))
+        XCTAssertTrue(model.sidebarRanksFrozen)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        let drawn = CommandPaletteView.results("", model: model)
+        var cursor = PaletteCursor()
+        cursor.anchor(in: drawn)
+        let highlighted = try! XCTUnwrap(drawn.first)
+        XCTAssertEqual(cursor.index(in: drawn), 0)
+        // The user is on the other session's tab, so opening the highlighted
+        // one is a visible change.
+        let other = highlighted.id == "a" ? "b" : "a"
+        model.openSessions.activate(model.openSessions.openTab(forSessionID: other)!)
+        XCTAssertEqual(model.openSessions.activeTab?.sessionID, other)
+
+        // The other session works on: its touch reorders the list unseen.
+        model.overlay.touch(other, host: .local, at: Date(timeIntervalSince1970: 9_000_000_000))
+        XCTAssertEqual(CommandPaletteView.results("", model: model).first?.id, other, "the list moved under the highlight")
+
+        CommandPaletteView.submit(cursor, query: "", model: model)
+        XCTAssertEqual(model.openSessions.activeTab?.sessionID, highlighted.id)
+        // And the next draw lights the same session, wherever it now sits.
+        let redrawn = CommandPaletteView.results("", model: model)
+        XCTAssertEqual(cursor.selected(in: redrawn)?.id, highlighted.id)
+        XCTAssertEqual(cursor.index(in: redrawn), 1)
+    }
+
     func testPaletteEmptyQueryBreaksRecencyTiesByID() async {
         let b = Fixture.row("b", project: "/p/a", updated: 10)
         let a = Fixture.row("a", project: "/p/b", updated: 10)

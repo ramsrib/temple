@@ -6,17 +6,37 @@ import TempleCore
 struct CommandPaletteView: View {
     @EnvironmentObject var model: AppModel
     @State private var query = ""
-    @State private var selection = 0
+    @State private var cursor = PaletteCursor()
+    /// Activity reorders the open-session list without AppModel publishing
+    /// (B9): the open palette redraws itself when what it shows would change.
+    @StateObject private var recency = RecencyRefresh()
     @FocusState private var fieldFocused: Bool
 
-    private var results: [Session] {
+    private var results: [Session] { Self.results(query, model: model) }
+
+    static func results(_ query: String, model: AppModel) -> [Session] {
         Array(model.paletteResults(query).prefix(40))
+    }
+
+    /// Return: the highlighted session — found by its id in the results as
+    /// they are now, so a reorder since the last draw cannot swap it for
+    /// another; with no results, the query goes to History.
+    static func submit(_ cursor: PaletteCursor, query: String, model: AppModel) {
+        let results = results(query, model: model)
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if results.isEmpty, !trimmed.isEmpty {
+            model.searchHistory(trimmed)
+            return
+        }
+        guard let session = cursor.selected(in: results) else { return }
+        model.openPaletteResult(session)
     }
 
     var body: some View {
         // One ranking pass per render: the palette re-renders on every title
         // tick while it's open, and a typed query ranks the whole index.
         let results = self.results
+        let selection = cursor.index(in: results)
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -25,7 +45,10 @@ struct CommandPaletteView: View {
                     .font(.system(size: 16))
                     .focused($fieldFocused)
                     .onSubmit(openSelected)
-                    .onChange(of: query) { selection = 0 }
+                    .onChange(of: query) {
+                        cursor = PaletteCursor()
+                        cursor.anchor(in: self.results)
+                    }
                 if !query.isEmpty {
                     Button {
                         query = ""
@@ -63,7 +86,7 @@ struct CommandPaletteView: View {
                             ForEach(Array(results.enumerated()), id: \.element.id) { idx, session in
                                 PaletteResultRow(session: session,
                                                  selected: idx == selection) {
-                                    selection = idx
+                                    cursor.select(session)
                                     openSelected()
                                 }
                                 .frame(height: Self.rowHeight)
@@ -75,10 +98,8 @@ struct CommandPaletteView: View {
                     // only past the cap.
                     .frame(height: min(CGFloat(results.count) * Self.rowHeight, 340))
                     .thinScrollers()
-                    .onChange(of: selection) {
-                        if results.indices.contains(selection) {
-                            proxy.scrollTo(results[selection].id, anchor: .center)
-                        }
+                    .onChange(of: cursor) {
+                        if let id = cursor.selectedID { proxy.scrollTo(id, anchor: .center) }
                     }
                 }
             }
@@ -88,7 +109,17 @@ struct CommandPaletteView: View {
         // The terminal (a raw AppKit view) holds the window's first responder and
         // SwiftUI focus can't take it — so ⌘K used to open a field that never
         // received a keystroke, while everything typed went to the agent.
-        .onAppear { FieldFocus.claim { fieldFocused = true } }
+        .onAppear {
+            // The highlight is a session from the first draw on, never "row 0".
+            cursor.anchor(in: results)
+            recency.watch(model.overlay) { [weak model] in
+                AnyHashable(model.map { Self.results("", model: $0).map(\.id) } ?? [])
+            }
+            FieldFocus.claim { fieldFocused = true }
+        }
+        // A redraw can drop the highlighted session (its tab closed): the
+        // highlight moves to a row that is listed, and Return follows it.
+        .onChange(of: results.map(\.id)) { cursor.anchor(in: results) }
         // Closing hands the keyboard back to the agent we took it from.
         .onDisappear { model.openSessions.focusActiveTerminal() }
         .onKeyPress(.downArrow) { move(1); return .handled }
@@ -100,8 +131,7 @@ struct CommandPaletteView: View {
     private static let rowHeight: CGFloat = 46
 
     private func move(_ delta: Int) {
-        guard !results.isEmpty else { return }
-        selection = max(0, min(results.count - 1, selection + delta))
+        cursor.move(delta, in: results)
     }
 
     private var trimmedQuery: String {
@@ -109,17 +139,39 @@ struct CommandPaletteView: View {
     }
 
     private func openSelected() {
-        let results = self.results
-        if results.isEmpty, !trimmedQuery.isEmpty {
-            searchHistory()
-            return
-        }
-        guard results.indices.contains(selection) else { return }
-        model.openPaletteResult(results[selection])
+        Self.submit(cursor, query: query, model: model)
     }
 
     private func searchHistory() {
         model.searchHistory(trimmedQuery)
+    }
+}
+
+/// The palette's highlight, held as a session id rather than a row index:
+/// the list can reorder between a draw and Return (activity after the rank
+/// freeze redraws nothing), and an index would then open whichever session
+/// slid into that row. The highlight drawn and the session Return opens are
+/// both `selected(in:)` of the same id.
+struct PaletteCursor: Equatable {
+    private(set) var selectedID: String?
+
+    /// The highlighted row: the selected session where it is listed, else the first.
+    func index(in results: [Session]) -> Int? {
+        guard !results.isEmpty else { return nil }
+        return selectedID.flatMap { id in results.firstIndex { $0.id == id } } ?? 0
+    }
+
+    func selected(in results: [Session]) -> Session? { index(in: results).map { results[$0] } }
+
+    /// Pin the highlight to the session it is drawn on (the first row when
+    /// nothing listed is selected).
+    mutating func anchor(in results: [Session]) { selectedID = selected(in: results)?.id }
+
+    mutating func select(_ session: Session) { selectedID = session.id }
+
+    mutating func move(_ delta: Int, in results: [Session]) {
+        guard let current = index(in: results) else { return }
+        selectedID = results[max(0, min(results.count - 1, current + delta))].id
     }
 }
 
