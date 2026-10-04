@@ -437,8 +437,9 @@ public final class AppModel: ObservableObject {
             guard let self, let host = self.overlay.rows[id]?.host,
                   let engine = (self.indexSource as? WatcherIndexSource)?.engine(for: host) else { return }
             Task { @MainActor [weak self] in
-                guard await engine.confirmAbsence(id), let self else { return }
-                self.overlay.discardUnstartedCreation(id)
+                guard await engine.confirmAbsence(id), let self,
+                      self.overlay.discardUnstartedCreation(id) else { return }
+                self.openSessions.forgetClosedTabs(sessionID: id)
             }
         }
         openSessions.launchDirectoryHandler = { [weak self] id, cwd in

@@ -56,6 +56,12 @@ final class UnstartedSessionTests: XCTestCase {
         XCTAssertNil(try db.sessionState(abandonedID), "a title alone does not keep it")
         XCTAssertFalse(app.overlay.isTempleSession(abandonedID))
         XCTAssertNotNil(try db.sessionState(usedID), "something was sent: it stays")
+        app.openSessions.reopenLastClosedTab()
+        XCTAssertEqual(app.openSessions.activeTab?.sessionID, usedID)
+        app.openSessions.closeTab(try XCTUnwrap(app.openSessions.activeTab).id)
+        app.openSessions.reopenLastClosedTab()
+        app.openSessions.reopenLastClosedTab()
+        XCTAssertNotEqual(app.openSessions.activeTab?.sessionID, abandonedID, "nothing to reopen for a discarded row")
     }
 
     /// A listing that fails proves nothing, whatever the snapshot said.
@@ -103,6 +109,9 @@ final class UnstartedSessionTests: XCTestCase {
         app.openSessions.closeTab(pinned.id)
         await quiesce()
         XCTAssertNotNil(try db.sessionState(pinnedID))
+        // Unused, but kept: it still reopens.
+        app.openSessions.reopenLastClosedTab()
+        XCTAssertEqual(app.openSessions.activeTab?.sessionID, pinnedID)
 
         try db.join(sessionID: "hinted", via: .created, agent: .claude,
                     transcriptPath: URL(fileURLWithPath: "/gone/hinted.jsonl"))

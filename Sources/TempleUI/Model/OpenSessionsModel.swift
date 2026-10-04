@@ -621,8 +621,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Settings tab are removed immediately.
     public func closeTab(_ tabID: SessionTab.ID) {
         guard !isQuitting, let tab = tabs.first(where: { $0.id == tabID }) else { return }
-        // ⌘⇧T cannot resume a conversation that was never started.
-        if tab.kind == .session, let sessionID = tab.sessionID, !tab.startedNothing {
+        if tab.kind == .session, let sessionID = tab.sessionID {
             touchHandler?(sessionID, nil)
             closedTabs.append(ClosedTabRecord(
                 host: tab.host,
@@ -705,6 +704,13 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             persist()
             return
         }
+    }
+
+    /// The session's row was discarded (it never started): ⌘⇧T has nothing
+    /// to resume for it. Records are dropped only then — a row that was kept
+    /// (pinned, named, a transcript found) still reopens.
+    public func forgetClosedTabs(sessionID: String) {
+        closedTabs.removeAll { $0.sessionID == sessionID }
     }
 
     private func removeTab(_ tabID: SessionTab.ID) {
