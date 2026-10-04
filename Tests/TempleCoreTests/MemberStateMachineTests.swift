@@ -102,7 +102,9 @@ final class MemberStateMachineTests: XCTestCase {
         tasks.append(Task { for await snapshot in stream { committer.receive(snapshot.facts) } })
     }
 
-    func testAMemberWriteWithNothingMissingIsAStatNotAParse() async throws {
+    /// A write to a member with nothing missing re-verifies its identity
+    /// (any change does) but parses nothing and publishes nothing.
+    func testAMemberWriteWithNothingMissingIsAnIdentityReadNotAParse() async throws {
         let (_, file, _, _, watcher, _) = try fixture(row: .complete)
         try await start(watcher)
         XCTAssertEqual(watcher.resolution(for: "member"), .loaded(file))
@@ -110,7 +112,7 @@ final class MemberStateMachineTests: XCTestCase {
         let before = watcher.metrics
         try append(file)
         try await written(watcher, file)
-        XCTAssertEqual(watcher.metrics.factReads, 0); XCTAssertEqual(watcher.metrics.reads, 1)
+        XCTAssertEqual(watcher.metrics.factReads, 0); XCTAssertEqual(watcher.metrics.reads, 2)
         XCTAssertEqual(watcher.metrics.parses, 0)
         XCTAssertEqual(watcher.metrics.publications, before.publications)
     }
@@ -159,7 +161,7 @@ final class MemberStateMachineTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(50))
         // t=0,1,3,7,15,31. There is no lifetime attempt limit.
         XCTAssertEqual(watcher.metrics.factReads, 6)
-        XCTAssertEqual(watcher.metrics.reads, 6, "appends never re-verify identity")
+        XCTAssertEqual(watcher.metrics.reads, 241, "every write re-verifies identity; parses only on the budget")
     }
 
     func testAnExplicitRequestRunsWithAnUnchangedSignature() async throws {
@@ -225,8 +227,8 @@ final class MemberStateMachineTests: XCTestCase {
         let before = watcher.metrics.factReads
         watcher.reconcileEvent(path: root.path, flags: UInt32(kFSEventStreamEventFlagKernelDropped))
         try await wait { watcher.metrics.factReads == before + 1 }
-        XCTAssertEqual(watcher.metrics.reads, watcher.metrics.factReads,
-                       "Coverage resets enrichment without an identity-only re-read of a stable file")
+        XCTAssertEqual(watcher.metrics.reads, watcher.metrics.factReads + 1,
+                       "the write's re-verification, then the reset's parse — no other read")
     }
 
     func testAPartialFillResolvesADeferredSignatureWithoutAnotherWrite() async throws {
@@ -270,7 +272,8 @@ final class MemberStateMachineTests: XCTestCase {
         let recorded = Recorded()
         let stream = watcher.snapshots()
         tasks.append(Task { for await snapshot in stream { recorded.append(snapshot) } })
-        try await start(watcher)
+        await watcher.start()
+        try await wait { watcher.metrics.reads >= 1 }
         for _ in 0..<240 {
             clock.advance(0.25)
             try append(file)
@@ -283,7 +286,7 @@ final class MemberStateMachineTests: XCTestCase {
     }
 
     func testAnIdentityReadRacingAReplacementNeverPublishesLoaded() async throws {
-        let (_, file, _, _, watcher, source) = try fixture(row: .complete)
+        let (_, file, _, clock, watcher, source) = try fixture(row: .complete)
         let once = Flag()
         source.readPhaseHook = { phase, url in
             guard phase == .bytesRead, once.setOnce() else { return }
@@ -293,7 +296,13 @@ final class MemberStateMachineTests: XCTestCase {
         let stream = watcher.snapshots()
         tasks.append(Task { for await snapshot in stream { recorded.append(snapshot) } })
         await watcher.start()
-        try await wait { watcher.resolution(for: "member") == .mismatch }
+        // The read saw another file than the listing did: it is retried
+        // after a short delay (run here by the test's clock).
+        try await wait {
+            clock.advance(1)
+            await watcher.reconcileEnrichment()
+            return watcher.resolution(for: "member") == .mismatch
+        }
         XCTAssertFalse(recorded.all.contains { $0.resolutions["member"] == .loaded(file) })
         XCTAssertEqual(watcher.metrics.factReads, 0)
         XCTAssertGreaterThanOrEqual(watcher.metrics.reads, 1)

@@ -161,6 +161,11 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
     }
     private var readFailures: (count: Int, error: TranscriptReadError)?
 
+    /// The next `count` locates throw a transport error once they run (after
+    /// any gate), whatever the transport's state.
+    public func failNextLocates(_ count: Int) { locked { locateFailures = count } }
+    private var locateFailures = 0
+
     /// Ends every open change stream (a dropped connection), with an error
     /// or without one. A consumer is expected to subscribe again.
     public func endChanges(throwing error: Error? = nil) {
@@ -209,6 +214,7 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
             counts.roundTrips += 1
             counts.locates += 1
             counts.locatedIDs.append(requests.map(\.id).sorted())
+            if locateFailures > 0 { locateFailures -= 1; throw LocateError.transport("fake transport dropped") }
             guard !transportBroken else { throw LocateError.transport("fake transport down") }
             counts.listings += 1
             var candidates: [String: [TranscriptCandidate]] = [:]

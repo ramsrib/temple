@@ -116,8 +116,10 @@ final class EngineMatrixTests: XCTestCase {
         let stream = engine.snapshots()
         tasks.append(Task {
             for await snapshot in stream {
-                recorder.append(snapshot)
+                // Received before it is recorded: a test that sees a
+                // snapshot recorded knows the consumer has it.
                 if consume { committer.receive(snapshot.facts) }
+                recorder.append(snapshot)
             }
         })
         return Harness(source: source, db: db, trace: trace, engine: engine, clock: clock, writes: writes,
@@ -143,6 +145,27 @@ final class EngineMatrixTests: XCTestCase {
             guard Date() < deadline else { XCTFail("timed out: \(message)"); return }
             try await Task.sleep(for: .milliseconds(10))
         }
+    }
+
+    /// Waits for a condition at most `timeout`, without failing: for what
+    /// the code under test should do, where the old code never would.
+    func briefly(_ timeout: TimeInterval = 1, _ condition: () async throws -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while try await !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    }
+
+    /// Holds every listing from now on until the returned gate opens.
+    func holdListings(_ h: Harness) -> FakeGate {
+        let gate = FakeGate()
+        h.source.locateGate = gate
+        return gate
+    }
+
+    /// The failed write's retry comes due now, while the listing that would
+    /// follow the invalidation is still held.
+    func retryNow(_ h: Harness) {
+        h.clock.advance(5)
+        h.committer.retryDue()
     }
 
     /// Lets queued work run without a condition to wait for.
@@ -481,28 +504,150 @@ final class EngineMatrixTests: XCTestCase {
         }, "the verified member never lost its verdict")
     }
 
-    /// 15. On a host without inodes a same-size rewrite is re-verified; with
-    /// inodes a same-size touch is not.
-    func testIdentityZeroSameSizeRewriteReverifiesAndATouchWithInodesDoesNot() async throws {
-        for hasInodes in [false, true] {
+    /// 15. A transcript rewritten in place — same size, same inode where
+    /// the host has inodes, different bytes — is a different transcript:
+    /// the facts issued for the old bytes are revoked at once (a retry of
+    /// their failed write, due while the next listing is held, writes
+    /// nothing), identity is verified again and the row is filled from the
+    /// new bytes.
+    func testASameSizeRewriteRevokesFactsAndFillsFromTheNewBytes() async throws {
+        for hasInodes in [true, false] {
             let h = try harness(hasInodes: hasInodes)
             let id = uuid()
-            let data = claudeData(id)
-            h.source.write(claudePath(id), agent: .claude, data: data)
+            h.source.write(claudePath(id), agent: .claude, data: claudeData(id, cwd: "/aaaa", prompt: "First"))
             try join(h, id, path: claudePath(id))
-            try complete(h, id)
+            h.writes.failNext(1)
             await h.engine.start()
-            try await waitUntil("loaded") { self.isLoaded(h, id) }
-            try await settle()
+            try await waitUntil("first write failed") { h.writes.attempted.count == 1 }
             let reads = h.source.counters.reads
-            let locates = h.source.counters.locates
-            h.source.write(claudePath(id), agent: .claude, data: data, inPlace: true)
-            try await waitUntil("relocated") { h.source.counters.locates > locates }
-            try await settle()
-            XCTAssertEqual(h.source.counters.reads, hasInodes ? reads : reads + 1, "hasInodes: \(hasInodes)")
-            XCTAssertTrue(isLoaded(h, id))
+            let listings = holdListings(h)
+            let rewritten = claudeData(id, cwd: "/bbbb", prompt: "Secnd")
+            XCTAssertEqual(rewritten.count, claudeData(id, cwd: "/aaaa", prompt: "First").count)
+            h.source.write(claudePath(id), agent: .claude, data: rewritten, inPlace: true)
+            try await briefly { h.recorder.latest?.facts[id] == nil }
+            retryNow(h)
+            XCTAssertNil(try row(h, id)?.directory, "hasInodes: \(hasInodes): the old bytes' facts were written")
+            listings.open()
+            try await waitUntil("filled from the new bytes") { try self.row(h, id)?.directory != nil }
+            XCTAssertEqual(try row(h, id)?.directory, "/bbbb", "hasInodes: \(hasInodes)")
+            XCTAssertEqual(try row(h, id)?.title, "Secnd")
+            XCTAssertGreaterThan(h.source.counters.reads, reads, "identity read again")
             await h.engine.stop()
         }
+    }
+
+    /// The same rewrite naming another session (same size, same inode):
+    /// nothing from either version is written, and the verdict is mismatch.
+    func testASameSizeRewriteToAnotherSessionWritesNothing() async throws {
+        let h = try harness()
+        let id = uuid(), other = uuid()
+        h.source.write(claudePath(id), agent: .claude, data: claudeData(id, cwd: "/mine"))
+        try join(h, id, path: claudePath(id))
+        h.writes.failNext(1)
+        await h.engine.start()
+        try await waitUntil("first write failed") { h.writes.attempted.count == 1 }
+        let listings = holdListings(h)
+        h.source.write(claudePath(id), agent: .claude, data: claudeData(other, cwd: "/mine"), inPlace: true)
+        try await briefly { h.recorder.latest?.facts[id] == nil }
+        retryNow(h)
+        listings.open()
+        try await waitUntil("mismatch") { self.resolution(h, id) == .mismatch }
+        try await settle()
+        XCTAssertNil(try row(h, id)?.directory)
+        XCTAssertTrue(h.writes.succeeded.isEmpty)
+    }
+
+    /// Truncated, then grown past its old size with new bytes (same inode):
+    /// the old facts are never written, the new ones are.
+    func testTruncateThenGrowRevokesFactsAndFillsFromTheNewBytes() async throws {
+        let h = try harness()
+        let id = uuid()
+        h.source.write(claudePath(id), agent: .claude, data: claudeData(id, cwd: "/old", prompt: "Old"))
+        try join(h, id, path: claudePath(id))
+        h.writes.failNext(1)
+        await h.engine.start()
+        try await waitUntil("first write failed") { h.writes.attempted.count == 1 }
+        let listings = holdListings(h)
+        h.source.truncate(claudePath(id), to: 0)
+        h.source.append(claudePath(id), claudeData(id, cwd: "/grown/much/longer", prompt: "Regrown"))
+        try await briefly { h.recorder.latest?.facts[id] == nil }
+        retryNow(h)
+        XCTAssertNil(try row(h, id)?.directory, "the old bytes' facts were written")
+        listings.open()
+        try await waitUntil("filled") { try self.row(h, id)?.directory != nil }
+        XCTAssertEqual(try row(h, id)?.directory, "/grown/much/longer")
+        XCTAssertEqual(try row(h, id)?.title, "Regrown")
+    }
+
+    /// A newer revert appears after a failed write of the old rollout's
+    /// facts; the retry comes due while the listing that would show the
+    /// revert is held: the old rollout's folder and title are never
+    /// persisted, and the revert's are.
+    func testARevertAfterAFailedWriteNeverPersistsTheOldRollout() async throws {
+        let h = try harness()
+        let id = uuid()
+        let old = codexPath(id), revert = codexPath(id, stamp: "2026-10-01T11-00-00")
+        h.source.write(old, agent: .codex, data: codexData(id, cwd: "/old", prompt: "Old"))
+        try join(h, id, agent: .codex, path: old)
+        h.writes.failNext(1)
+        await h.engine.start()
+        try await waitUntil("first write failed") { h.writes.attempted.count == 1 }
+        let listings = holdListings(h)
+        h.source.write(revert, agent: .codex, data: codexData(id, cwd: "/new", prompt: "New"))
+        try await briefly { h.recorder.latest?.facts[id] == nil }
+        retryNow(h)
+        XCTAssertNil(try row(h, id)?.directory, "the old rollout's folder was persisted")
+        XCTAssertNil(try row(h, id)?.title)
+        listings.open()
+        try await waitUntil("filled") { try self.row(h, id)?.directory != nil }
+        XCTAssertEqual(try row(h, id)?.directory, "/new")
+        XCTAssertEqual(try row(h, id)?.title, "New")
+        XCTAssertEqual(try row(h, id)?.transcriptPath, revert)
+    }
+
+    /// A listing that fails after the member left and rejoined (it was for
+    /// the old membership) neither marks the new membership incomplete nor
+    /// defers it; the new membership's own listing resolves it.
+    func testAFailedListingForAnOldMembershipLeavesTheNewOneAlone() async throws {
+        let h = try harness()
+        let id = uuid()
+        h.source.write(claudePath(id), agent: .claude, data: claudeData(id))
+        try join(h, id, path: claudePath(id))
+        let gate = holdListings(h)
+        await h.engine.start()
+        try await waitUntil("listing held") { gate.arrivals == 1 }
+        h.source.failNextLocates(1)
+        XCTAssertTrue(try h.db.leave(sessionID: id, host: h.source.host))
+        try join(h, id, path: claudePath(id))
+        let fresh = try XCTUnwrap(try row(h, id)?.incarnation)
+        try await waitUntil("rejoin seen") { (await h.engine.operationRevision(id) ?? 0) > 0 }
+        let mark = h.recorder.snapshots.count
+        gate.open()
+        try await waitUntil("loaded") { self.isLoaded(h, id) }
+        XCTAssertFalse(h.recorder.snapshots[mark...].contains { $0.resolutions[id] == .incomplete },
+                       "the old membership's failed listing marked the new one")
+        try await waitUntil("filled") { try self.row(h, id)?.title != nil }
+        XCTAssertEqual(h.writes.succeeded.map(\.incarnation), [fresh])
+    }
+
+    /// `confirmAbsence` asked while an older listing is held: that listing's
+    /// failure does not answer it; its own listing (complete, nothing
+    /// there) does — true.
+    func testAFailedOlderListingDoesNotAnswerANewerAbsenceCheck() async throws {
+        let h = try harness()
+        let id = uuid()
+        try join(h, id)
+        await h.engine.start()
+        try await waitUntil("absent") { self.resolution(h, id) == .confirmedAbsent }
+        let gate = holdListings(h)
+        await h.engine.requestResolution(id)
+        try await waitUntil("listing held") { gate.arrivals == 1 }
+        h.source.failNextLocates(1)
+        let answer = Task { await h.engine.confirmAbsence(id) }
+        try await waitUntil("asked") { (await h.engine.operationRevision(id) ?? 0) >= 2 }
+        gate.open()
+        let absent = await answer.value
+        XCTAssertTrue(absent, "the older listing's failure answered the newer check")
     }
 
     /// 16. Round trips: one listing for a batch, one read per member that
@@ -524,17 +669,19 @@ final class EngineMatrixTests: XCTestCase {
             XCTAssertEqual(h.source.counters.locates, 1)
             XCTAssertEqual(h.source.counters.reads, 5)
             XCTAssertEqual(h.source.counters.parses, 0)
-            // A write to a complete member: one locate, no read.
+            // A write to a complete member: one locate and one identity
+            // read (any change re-verifies), no parse.
             h.source.append(claudePath(ids[0]), Data("\n{}".utf8))
             try await waitUntil("relocated") { h.source.counters.locates == 2 }
             try await settle()
-            XCTAssertEqual(h.source.counters.reads, 5)
+            XCTAssertEqual(h.source.counters.reads, 6)
+            XCTAssertEqual(h.source.counters.parses, 0)
             // A write to a non-member: nothing.
             let outside = uuid()
             h.source.write(claudePath(outside), agent: .claude, data: claudeData(outside))
             try await settle()
             XCTAssertEqual(h.source.counters.locates, 2)
-            XCTAssertEqual(h.source.counters.reads, 5)
+            XCTAssertEqual(h.source.counters.reads, 6)
             await h.engine.stop()
         }
         // Members with NULL fields: one locate + N reads with facts.
@@ -586,6 +733,7 @@ final class EngineMatrixTests: XCTestCase {
             try await waitUntil("\(kind): first attempt failed") { h.writes.attempted.count == 1 }
             let stale = h.writes.attempted[0].authorization
             XCTAssertNil(try row(h, id)?.directory)
+            let listings = holdListings(h)
             switch kind {
             case .coverageReset:
                 h.source.dropEvents()
@@ -609,17 +757,18 @@ final class EngineMatrixTests: XCTestCase {
                 XCTAssertTrue(try h.db.leave(sessionID: id, host: h.source.host))
                 try join(h, id, path: path)
             }
-            // Revoked as far as the consumer has seen: its pending retry is gone.
-            try await waitUntil("\(kind): revoked") { h.committer.pendingIDs.isEmpty }
-            // The failed write's retry comes due: revoked, never written.
-            h.clock.advance(5)
-            h.committer.retryDue()
+            // The revocation is published by the invalidation itself, not by
+            // the (held) listing that follows it. The failed write's retry
+            // comes due while that listing is still held: nothing is written.
+            try await briefly { h.recorder.latest?.facts[id] == nil }
+            retryNow(h)
+            XCTAssertNil(try row(h, id)?.directory, "\(kind): stale facts written while the listing was held")
+            XCTAssertNil(try row(h, id)?.title, "\(kind)")
+            listings.open()
             try await waitUntil("\(kind): filled") { try self.row(h, id)?.directory != nil }
             try await settle()
             XCTAssertFalse(h.writes.succeeded.contains { $0.authorization == stale }, "\(kind): stale facts written")
-            // A replacement rollout read behind the parse budget is first
-            // offered as a hint (path and agent), then with its facts.
-            XCTAssertEqual(h.writes.succeeded.count, kind == .candidateReplacement ? 2 : 1, "\(kind)")
+            XCTAssertEqual(h.writes.succeeded.count, 1, "\(kind)")
             XCTAssertEqual(h.writes.attempted.filter { $0.authorization == stale }.count, 1, "\(kind)")
             if kind == .candidateReplacement { XCTAssertEqual(try row(h, id)?.directory, "/after") }
             if kind == .sharedFacts { XCTAssertEqual(try row(h, id)?.title, "After") }
