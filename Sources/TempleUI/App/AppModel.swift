@@ -1014,6 +1014,16 @@ public final class AppModel: ObservableObject {
     /// the tab goes first — a row is never archived from under its own tab —
     /// then the row, by the same undoable path the sidebar uses. Undo brings
     /// the row back, not the dead tab.
+    /// A chip that cannot open for want of a folder offers Archive in its
+    /// header when its session is Temple's: History will not archive a
+    /// session with an open tab, so the header's Archive closes the chip
+    /// first (`closeAndArchive`).
+    public func offersArchiveForUnknownDirectory(_ tab: SessionTab) -> Bool {
+        guard tab.launchPreparationError == OpenSessionsModel.unknownDirectoryMessage,
+              let id = tab.sessionID else { return false }
+        return overlay.isTempleSession(id)
+    }
+
     public func closeAndArchive(_ tab: SessionTab, undoManager: UndoManager?) {
         guard let id = tab.sessionID else { return }
         openSessions.closeTab(tab.id)

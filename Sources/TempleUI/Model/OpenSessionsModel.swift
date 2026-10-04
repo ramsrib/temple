@@ -384,7 +384,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     }
 
     static let unknownDirectoryMessage = "Temple hasn't found which folder this session ran in, so it can't resume it. "
-        + "It opens by itself if the folder turns up; otherwise find it in History and archive it."
+        + "It opens by itself if the folder turns up; otherwise archive it."
 
     /// Rows changed: the tab on screen that could not open for want of a
     /// folder opens now, if its row has learned one and the user is still on it.

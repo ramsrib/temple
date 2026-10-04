@@ -159,9 +159,14 @@ private struct SessionTerminalView: View {
                     .buttonStyle(.link)
                     .font(.system(size: 12))
             } else if tab.launchPreparationError == OpenSessionsModel.unknownDirectoryMessage, let sid = tab.sessionID {
-                Button("Show in History") { model.showInHistory(sessionID: sid) }
-                    .buttonStyle(.link)
-                    .font(.system(size: 12))
+                HStack(spacing: 12) {
+                    if model.offersArchiveForUnknownDirectory(tab) {
+                        Button("Archive") { model.closeAndArchive(tab, undoManager: undoManager) }
+                    }
+                    Button("Show in History") { model.showInHistory(sessionID: sid) }
+                }
+                .buttonStyle(.link)
+                .font(.system(size: 12))
             }
         }
         .padding(.horizontal, 14)

@@ -190,6 +190,41 @@ final class LegacyRestoreTests: XCTestCase {
         XCTAssertEqual(app.history.query, "unplaced")
     }
 
+    /// A folderless chip's message ends "otherwise archive it", and History
+    /// will not archive a session with an open tab: so the header offers
+    /// Archive itself, which closes the chip and archives undoably. A chip
+    /// for a session Temple does not hold has nothing to archive.
+    func testAFolderlessChipOffersArchiveThatClosesItAndUndoes() throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "unplaced", via: .opened, agent: .codex)
+        DBTabPersistence(db: db).save([
+            PersistedTab(sessionID: "unplaced", agent: .codex, projectPath: "", title: "T", isActive: true),
+            PersistedTab(sessionID: "orphan", agent: .claude, projectPath: "", title: "Orphan")])
+        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+                           engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
+                           database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
+        app.start()
+        let chip = try XCTUnwrap(app.openSessions.tabs.first { $0.sessionID == "unplaced" })
+        XCTAssertEqual(chip.launchPreparationError,
+                       "Temple hasn't found which folder this session ran in, so it can't resume it. "
+                       + "It opens by itself if the folder turns up; otherwise archive it.")
+        XCTAssertTrue(app.offersArchiveForUnknownDirectory(chip))
+        let orphan = try XCTUnwrap(app.openSessions.tabs.first { $0.sessionID == "orphan" })
+        app.openSessions.activate(orphan)
+        XCTAssertEqual(orphan.launchPreparationError, OpenSessionsModel.unknownDirectoryMessage)
+        XCTAssertFalse(app.offersArchiveForUnknownDirectory(orphan), "not Temple's: nothing to archive")
+
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        undo.beginUndoGrouping()
+        app.closeAndArchive(chip, undoManager: undo)
+        undo.endUndoGrouping()
+        XCTAssertNil(app.openSessions.openTab(forSessionID: "unplaced"), "the chip closes first")
+        XCTAssertEqual(app.overlay.rows["unplaced"]?.archived, true)
+        undo.undo()
+        XCTAssertEqual(app.overlay.rows["unplaced"]?.archived, false)
+    }
+
     /// "Show in History" from a History already narrowed — to sessions not
     /// in Temple, another agent, another project — must not hide the very
     /// session it was sent to find: those filters give way to the id.
