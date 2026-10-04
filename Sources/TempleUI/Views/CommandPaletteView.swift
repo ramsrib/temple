@@ -19,16 +19,25 @@ struct CommandPaletteView: View {
     }
 
     /// Return: the highlighted session — found by its id in the results as
-    /// they are now, so a reorder since the last draw cannot swap it for
-    /// another; with no results, the query goes to History.
+    /// they are now, uncapped, so neither a reorder since the last draw nor
+    /// activity pushing it past the 40-row cap can swap it for another. A
+    /// highlighted session that is no longer listed at all opens nothing:
+    /// the redraw moves the highlight, and the next Return follows it.
+    /// With no results, the query goes to History.
     static func submit(_ cursor: PaletteCursor, query: String, model: AppModel) {
-        let results = results(query, model: model)
+        let all = model.paletteResults(query)
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if results.isEmpty, !trimmed.isEmpty {
+        if all.isEmpty, !trimmed.isEmpty {
             model.searchHistory(trimmed)
             return
         }
-        guard let session = cursor.selected(in: results) else { return }
+        let session: Session?
+        if let id = cursor.selectedID {
+            session = all.first { $0.id == id }
+        } else {
+            session = all.first
+        }
+        guard let session else { return }
         model.openPaletteResult(session)
     }
 
@@ -48,6 +57,7 @@ struct CommandPaletteView: View {
                     .onChange(of: query) {
                         cursor = PaletteCursor()
                         cursor.anchor(in: self.results)
+                        watchRecency()
                     }
                 if !query.isEmpty {
                     Button {
@@ -112,9 +122,7 @@ struct CommandPaletteView: View {
         .onAppear {
             // The highlight is a session from the first draw on, never "row 0".
             cursor.anchor(in: results)
-            recency.watch(model.overlay) { [weak model] in
-                AnyHashable(model.map { Self.results("", model: $0).map(\.id) } ?? [])
-            }
+            watchRecency()
             FieldFocus.claim { fieldFocused = true }
         }
         // A redraw can drop the highlighted session (its tab closed): the
@@ -136,6 +144,15 @@ struct CommandPaletteView: View {
 
     private var trimmedQuery: String {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Watch what this query shows: a typed search reorders by activity too
+    /// (ties in rank), not only the open-session list. Restarted per query.
+    private func watchRecency() {
+        let query = self.query
+        recency.watch(model.overlay) { [weak model] in
+            AnyHashable(model.map { Self.results(query, model: $0).map(\.id) } ?? [])
+        }
     }
 
     private func openSelected() {

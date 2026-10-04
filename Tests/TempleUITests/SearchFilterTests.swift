@@ -376,6 +376,35 @@ final class SearchFilterTests: XCTestCase {
         XCTAssertEqual(cursor.index(in: redrawn), 1)
     }
 
+    /// Activity pushes the highlighted session past the 40-row cap between
+    /// the draw and Return: Return still opens it, never the new first row.
+    func testReturnOpensTheHighlightedSessionEvenWhenActivityPushesItPastTheCap() async {
+        let rows = (0..<41).map { n in
+            Fixture.row(String(format: "s%02d", n), project: "/p/\(n)", title: "session \(n)",
+                        updated: TimeInterval(1_000 - n))
+        }
+        let (model, _) = makeRowModel(rows)
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions:
+            Dictionary(uniqueKeysWithValues: rows.map { ($0.id, MemberResolution.confirmedAbsent) })))
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        let drawn = CommandPaletteView.results("session", model: model)
+        XCTAssertEqual(drawn.count, 40)
+        var cursor = PaletteCursor()
+        cursor.select(try! XCTUnwrap(drawn.last))
+        let highlighted = drawn.last!.id
+        // The 41st session works on and moves ahead of the highlighted one,
+        // which falls to row 41 — outside what the palette lists.
+        let hidden = try! XCTUnwrap(model.paletteResults("session").last { !drawn.map(\.id).contains($0.id) })
+        model.overlay.touch(hidden.id, host: .local, at: Date(timeIntervalSince1970: 9_000_000_000))
+        XCTAssertFalse(CommandPaletteView.results("session", model: model).contains { $0.id == highlighted },
+                       "the highlighted session left the capped list")
+
+        CommandPaletteView.submit(cursor, query: "session", model: model)
+        XCTAssertEqual(model.openSessions.activeTab?.sessionID, highlighted)
+    }
+
     func testPaletteEmptyQueryBreaksRecencyTiesByID() async {
         let b = Fixture.row("b", project: "/p/a", updated: 10)
         let a = Fixture.row("a", project: "/p/b", updated: 10)
