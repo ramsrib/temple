@@ -15,7 +15,7 @@ final class OverlayTitleCoalescingTests: XCTestCase {
     func testCoreFillIsNotALegacyOverrideAndRetitleRecordsBothColumns() throws {
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "s", via: .imported)
-        try db.fillCoreFields(sessionID: "s", title: "First prompt")
+        try db.fillCoreFields(sessionID: "s", host: .local, title: "First prompt")
         let overlay = SessionOverlayStore(db: db)
         XCTAssertNil(overlay.generatedTitle(for: "s"))
         XCTAssertEqual(overlay.rows["s"]?.title, "First prompt")

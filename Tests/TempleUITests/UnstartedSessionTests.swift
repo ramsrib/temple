@@ -114,8 +114,8 @@ final class UnstartedSessionTests: XCTestCase {
         XCTAssertEqual(app.openSessions.activeTab?.sessionID, pinnedID)
 
         try db.join(sessionID: "hinted", via: .created, agent: .claude,
-                    transcriptPath: URL(fileURLWithPath: "/gone/hinted.jsonl"))
-        XCTAssertFalse(try db.discardUnstartedCreation(sessionID: "hinted"))
+                    locator: TranscriptLocator(localURL: URL(fileURLWithPath: "/gone/hinted.jsonl")))
+        XCTAssertFalse(try db.discardUnstartedCreation(sessionID: "hinted", host: .local))
         XCTAssertNotNil(try db.sessionState("hinted"))
     }
 }

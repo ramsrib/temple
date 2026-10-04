@@ -100,7 +100,7 @@ final class HostSessionSourceTests: XCTestCase {
         try db.join(sessionID: "next-remote", via: .imported, core: SessionCore(host: remote))
         try await wait { engine.resolution(for: "next-remote") != nil }
         XCTAssertEqual(source.requestedIDs, ["remote", "next-remote"])
-        _ = try db.leave(sessionID: "next-remote")
+        _ = try db.leave(sessionID: "next-remote", host: remote)
         try await wait { engine.resolution(for: "next-remote") == nil }
         XCTAssertEqual(source.releasedIDs, ["next-remote"])
     }

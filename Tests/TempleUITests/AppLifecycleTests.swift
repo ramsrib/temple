@@ -23,7 +23,7 @@ final class AppLifecycleTests: XCTestCase {
             return { cancelled = true }
         })
         overlay.join("a", via: .created)
-        overlay.touch("a")
+        overlay.touch("a", host: .local)
         overlay.recordGeneratedTitle("Pending", for: "a")
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
             indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])), database: db,
@@ -48,14 +48,14 @@ final class AppLifecycleTests: XCTestCase {
         let tab = model.openSessions.newSession(agent: .codex, projectPath: NSTemporaryDirectory())
         let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
         overlay.join("known", via: .created)
-        overlay.touch("known")
+        overlay.touch("known", host: .local)
         XCTAssertNil(try db.sessionState("known")?.lastActiveAt)
         surface.onGracefulExit = { [weak model] in
             XCTAssertTrue(model?.openSessions.isQuitting == true)
             XCTAssertEqual(try? db.sessionState("known")?.lastActiveAt, at, "initial flush precedes drain")
             model?.openSessions.adopt(sessionID: "late-codex", for: tab.id)
             // Simulate a store write already queued at the initial flush barrier.
-            overlay.touch("known", at: at.addingTimeInterval(1))
+            overlay.touch("known", host: .local, at: at.addingTimeInterval(1))
         }
         let delegate = TempleAppDelegate()
         delegate.model = model

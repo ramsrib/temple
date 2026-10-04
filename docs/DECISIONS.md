@@ -1171,9 +1171,12 @@ files on this Mac, which a session on another machine will never have.
   a hot journal a crash left behind, and a read-only probe would fail on it
   every launch. Any other open failure shows a "couldn't open its data"
   window, never an in-memory database that silently forgets. Builds before this one have neither
-  guard, which is why v10 is additive; `v11-project-host` (host in
-  `project_state`/`open_tabs` keys) waits for remote, with process exclusion
-  as its precondition.
+  guard, which is why v10 is additive. `v11-session-incarnation` is additive
+  too: an opaque membership identity per row, backfilled and set by an
+  insert trigger, so every insertion path — this build's join, a setter, an
+  older build's own SQL — gets one, and a rejoin after a leave gets a new
+  one. `v12-project-host` (host in `project_state`/`open_tabs` keys) waits
+  for remote, with process exclusion as its precondition.
 - **Recency is Temple's activity, not the file's.** A session resumed in
   another terminal does not move here, as it already did not un-archive
   (ADR-017). History still shows the disk's time: it is the disk's view.

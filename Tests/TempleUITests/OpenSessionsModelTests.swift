@@ -46,7 +46,7 @@ final class OpenSessionsModelTests: XCTestCase {
         let factory = FakeTerminalSurfaceFactory()
         let model = Fixture.openModel(factory: factory)
         var joins = 0
-        model.openedHandler = { _, _, _, _, _ in joins += 1 }
+        model.openedHandler = { _ in joins += 1; return .joined }
         model.openSession(row(directory: nil))
         model.openSession(row(agent: nil))
         XCTAssertTrue(factory.created.isEmpty)
@@ -131,7 +131,7 @@ final class OpenSessionsModelTests: XCTestCase {
         model.restore()
         let tab = try XCTUnwrap(model.tabs.first)
         XCTAssertTrue(factory.created.isEmpty)
-        _ = try db.fillCoreFields(sessionID: "row", directory: "/filled", title: "Filled")
+        _ = try db.fillCoreFields(sessionID: "row", host: .local, directory: "/filled", title: "Filled")
         current = Session(state: try XCTUnwrap(db.sessionState("row")))
         model.activate(tab)
         XCTAssertEqual(factory.created.first?.startedCommand?.cwd, "/filled")
@@ -279,12 +279,13 @@ final class OpenSessionsModelTests: XCTestCase {
             registry: InMemoryProcessRegistry(),
             persistence: persistence ?? UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()), now: now,
             directoryEvidence: Fixture.existingFoldersOnly)
-        model.openedHandler = { id, via, agent, path, core in
-            overlay.join(id, via: via, agent: agent, transcriptPath: path, core: core)
-            if via == .opened { overlay.recordOpened(id) }
+        model.openedHandler = { open in
+            let result = overlay.join(open.id, via: open.via, agent: open.agent, locator: open.locator, core: SessionCore(host: open.host))
+            if open.via == .opened { overlay.recordOpened(open.id, host: open.host) }
+            return result
         }
-        model.touchHandler = { overlay.touch($0, at: $1) }
-        model.launchDirectoryHandler = { overlay.observeLaunchDirectory($0, $1) }
+        model.touchHandler = { overlay.touch($0, host: $1, at: $2) }
+        model.launchDirectoryHandler = { overlay.observeLaunchDirectory($0, host: $1, $2) }
         return model
     }
 
@@ -356,11 +357,11 @@ final class OpenSessionsModelTests: XCTestCase {
             callbacks.append { if !cancelled.contains(index) { callback() } }
             return { cancelled.insert(index) }
         })
-        overlay.touch("a")
+        overlay.touch("a", host: .local)
         overlay.flushPendingTouches()
         XCTAssertEqual(cancelled, [0])
         date = Date(timeIntervalSince1970: 200)
-        overlay.touch("a")
+        overlay.touch("a", host: .local)
         callbacks[0]()
         XCTAssertEqual(try db.sessionState("a")?.lastActiveAt, Date(timeIntervalSince1970: 100))
         callbacks[1]()
@@ -379,7 +380,7 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertEqual(try db.sessionState("a")?.directory, directory.path)
         XCTAssertEqual(try db.sessionState("a")?.directorySource, .tab)
         XCTAssertEqual(try db.sessionState("a")?.host, .local)
-        try db.fillCoreFields(sessionID: "a", directory: "/later-transcript")
+        try db.fillCoreFields(sessionID: "a", host: .local, directory: "/later-transcript")
         XCTAssertEqual(try db.sessionState("a")?.directory, directory.path)
     }
 
@@ -422,14 +423,14 @@ final class OpenSessionsModelTests: XCTestCase {
         let overlay = SessionOverlayStore(db: db, now: { date }, scheduleTouch: { delay, action in
             scheduled.append((delay, action)); return {}
         })
-        overlay.touch("a")
+        overlay.touch("a", host: .local)
         XCTAssertEqual(overlay.lastActiveAt["a"], date)
         XCTAssertNil(try db.sessionState("a")?.lastActiveAt)
         date = Date(timeIntervalSince1970: 120)
-        overlay.touch("a")
+        overlay.touch("a", host: .local)
         date = Date(timeIntervalSince1970: 110)
-        overlay.touch("a")
-        overlay.touch("b")
+        overlay.touch("a", host: .local)
+        overlay.touch("b", host: .local)
         XCTAssertEqual(scheduled.count, 2, "each session owns a coalescing window")
         XCTAssertEqual(scheduled.map { $0.0 }, [30, 30])
         XCTAssertEqual(overlay.lastActiveAt["a"], Date(timeIntervalSince1970: 120))
@@ -437,8 +438,8 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertEqual(try db.sessionState("a")?.lastActiveAt, Date(timeIntervalSince1970: 120))
         XCTAssertNil(try db.sessionState("b")?.lastActiveAt)
         date = Date(timeIntervalSince1970: 130)
-        overlay.touch("a")
-        try db.touch(sessionID: "a", at: Date(timeIntervalSince1970: 200))
+        overlay.touch("a", host: .local)
+        try db.touch(sessionID: "a", host: .local, at: Date(timeIntervalSince1970: 200))
         overlay.flushPendingTouches()
         XCTAssertEqual(try db.sessionState("a")?.lastActiveAt, Date(timeIntervalSince1970: 200))
     }
@@ -508,7 +509,7 @@ final class OpenSessionsModelTests: XCTestCase {
     func testActivitySignalsTouchButQuietAgentsAndRefocusingDoNot() throws {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         var touched: [String] = []
-        model.touchHandler = { id, _ in touched.append(id) }
+        model.touchHandler = { id, _, _ in touched.append(id) }
         let tab = model.newSession(agent: .claude, projectPath: "/p")
         let id = try XCTUnwrap(tab.sessionID)
         let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
@@ -571,7 +572,7 @@ final class OpenSessionsModelTests: XCTestCase {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.openSession(Fixture.session("a", project: "/p/a"))
         var recorded: [String: String] = [:]
-        model.titleHandler = { recorded[$0] = $1 }
+        model.titleHandler = { recorded[$0] = $2 }
 
         let surface = try! XCTUnwrap(model.tabs.first?.surface)
         model.surface(surface, didUpdateTitle: "Fixing the shift+enter encoding")
@@ -1235,9 +1236,9 @@ final class OpenSessionsModelTests: XCTestCase {
             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
             directoryEvidence: Fixture.localDirectoryEvidence)
         var recorded: [String] = []
-        model.launchDirectoryHandler = { _, path in recorded.append(path) }
+        model.launchDirectoryHandler = { _, _, path in recorded.append(path) }
         var joined: [String] = []
-        model.openedHandler = { id, _, _, _, _ in joined.append(id) }
+        model.openedHandler = { open in joined.append(open.id); return .joined }
         model.openSession(Fixture.session("gone", project: directory.path))
         let tab = try XCTUnwrap(model.activeTab)
         XCTAssertTrue(factory.created.isEmpty, "nothing runs in Temple's own cwd instead")

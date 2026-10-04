@@ -2,6 +2,15 @@ import SwiftUI
 import TempleCore
 import TempleTerminalAPI
 
+/// A tab now runs (or adopted) this session; the handler makes it Temple's.
+public struct SessionOpen {
+    public let id: String
+    public let host: HostID
+    public let via: JoinedVia
+    public let agent: Agent?
+    public let locator: TranscriptLocator?
+}
+
 struct ClosedTabRecord {
     let host: HostID
     let sessionID: String
@@ -58,15 +67,17 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     public var attentionHandler: ((SessionTab, _ title: String, _ body: String) -> Void)?
     /// The agent retitled itself (sessionID, title) — AppModel persists it so the
     /// sidebar/palette show it, live and after the session closes.
-    public var titleHandler: ((_ sessionID: String, _ title: String) -> Void)?
+    public var titleHandler: ((_ sessionID: String, _ host: HostID, _ title: String) -> Void)?
     /// A tab now runs this session: `.created` for one started here (a minted
     /// Claude id, or the Codex id adopted for a session this model launched),
     /// `.opened` for one resumed or restored. AppModel makes it a Temple session.
-    public var openedHandler: ((_ sessionID: String, _ via: JoinedVia, _ agent: Agent?, _ transcriptPath: URL?, _ core: SessionCore) -> Void)?
-    public var touchHandler: ((String, Date?) -> Void)?
+    /// A refusal (the id is Temple's on another host) stops the spawn, or
+    /// keeps an adopting tab provisional; a failed write does not.
+    public var openedHandler: ((SessionOpen) -> JoinResult)?
+    public var touchHandler: ((_ sessionID: String, _ host: HostID, _ at: Date?) -> Void)?
     /// A new session's tab went away before anything was sent to it.
-    public var unstartedHandler: ((String) -> Void)?
-    public var launchDirectoryHandler: ((String, String) -> Void)?
+    public var unstartedHandler: ((_ sessionID: String, _ host: HostID) -> Void)?
+    public var launchDirectoryHandler: ((_ sessionID: String, _ host: HostID, _ directory: String) -> Void)?
     private var awaitingExitDiagnosis: Set<SessionTab.ID> = []
 
     /// Transitional lookup: legacy callers, restore and reopen prefer the durable row.
@@ -212,7 +223,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             return
         }
         if let existing = sessionTab(withSessionID: session.id) {
-            existing.transcriptHint = session.transcript?.localURL
+            existing.transcriptHint = session.transcript
             existing.prepareResume(session, command: resumeCommand(agent: agent, sessionID: session.id, cwd: directory))
             activate(existing)
             return
@@ -221,7 +232,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             projectPath: directory, title: session.displayTitle,
             command: resumeCommand(agent: agent, sessionID: session.id, cwd: directory),
             isResume: true, host: session.host)
-        tab.transcriptHint = session.transcript?.localURL
+        tab.transcriptHint = session.transcript
         tabs.append(tab)
         activate(tab)
         persist()
@@ -238,7 +249,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             return
         }
         if let existing = sessionTab(withSessionID: session.id) {
-            existing.transcriptHint = session.locator.localURL
+            existing.transcriptHint = session.locator
             activate(existing)
             return
         }
@@ -251,7 +262,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             title: session.catalogTitle,
             command: command,
             isResume: true, host: session.locator.host)
-        tab.transcriptHint = session.locator.localURL
+        tab.transcriptHint = session.locator
         tabs.append(tab)
         activate(tab)
         persist()
@@ -278,7 +289,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             command: spec.command,
             isProvisional: spec.isProvisional, host: project.host)
         tabs.append(tab)
-        if let sid = spec.sessionID { openedHandler?(sid, .created, spec.agent, nil, SessionCore(host: project.host)) }
+        if let sid = spec.sessionID {
+            _ = openedHandler?(SessionOpen(id: sid, host: project.host, via: .created, agent: spec.agent, locator: nil))
+        }
         if spec.isProvisional {
             // Codex: adopt the real id once its rollout file appears (ADR-008).
             reconciler.reconcile(host: tab.host, projectPath: projectPath, startedAt: Date()) { [weak self, weak tab] id in
@@ -303,12 +316,19 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Codex reconcile seam (ADR-008): rebind a provisional tab to its real id.
     public func adopt(sessionID: String, for tabID: SessionTab.ID) {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
+        // Join before binding: an id Temple already has on another host is
+        // never bound to this tab, which stays provisional.
+        let open = SessionOpen(id: sessionID, host: tab.host, via: .created, agent: .codex,
+                               locator: reconciler.transcriptPath(for: sessionID).map(TranscriptLocator.init(localURL:)))
+        if let conflict = openedHandler?(open).conflict {
+            TempleUILog.launch.notice("adoption refused for \(sessionID, privacy: .public): \(conflict.message, privacy: .public)")
+            return
+        }
         tab.sessionID = sessionID
         tab.isProvisional = false
-        openedHandler?(sessionID, .created, .codex, reconciler.transcriptPath(for: sessionID), SessionCore(host: tab.host))
         if let launch = tab.launchObservation {
-            if let directory = launch.directory { launchDirectoryHandler?(sessionID, directory) }
-            if !isQuitting { touchHandler?(sessionID, launch.at) }
+            if let directory = launch.directory { launchDirectoryHandler?(sessionID, tab.host, directory) }
+            if !isQuitting { touchHandler?(sessionID, tab.host, launch.at) }
         }
         if case .running(let pid) = tab.surface?.processState ?? .notStarted {
             registry.register(pid: pid, sessionID: sessionID)
@@ -436,16 +456,20 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             return
         }
         tab.setLaunchCommand(command)
+        // A session Temple already has on another host is not run here.
+        if let sid = tab.sessionID,
+           let conflict = openedHandler?(SessionOpen(id: sid, host: tab.host, via: tab.isResume ? .opened : .created,
+                                                     agent: tab.agent, locator: tab.transcriptHint)).conflict {
+            tab.launchPreparationError = conflict.message
+            tab.activity = .exited(status: -1)
+            return
+        }
         let surface = surfaceFactory.makeSurface(appearance: appearanceProvider())
         surface.delegate = self
         let spawnedAt = now()
         tab.attach(surface: surface, at: spawnedAt)
         // The shell should know it is in Temple, not in the library that
         // drives its PTY. A command's own variables still win.
-        if let sid = tab.sessionID {
-            openedHandler?(sid, tab.isResume ? .opened : .created, tab.agent,
-                           tab.transcriptHint, SessionCore(host: tab.host))
-        }
         let launchDirectory = evidence == .exists ? tab.projectPath : nil
         do {
             try surface.start(TerminalIdentity.apply(to: command))
@@ -459,8 +483,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         }
         tab.launchObservation = SessionTab.LaunchObservation(at: spawnedAt, directory: launchDirectory)
         if let sid = tab.sessionID {
-            if let launchDirectory { launchDirectoryHandler?(sid, launchDirectory) }
-            if !isQuitting { touchHandler?(sid, spawnedAt) }
+            if let launchDirectory { launchDirectoryHandler?(sid, tab.host, launchDirectory) }
+            if !isQuitting { touchHandler?(sid, tab.host, spawnedAt) }
         }
         if case .running(let pid) = surface.processState, let sid = tab.sessionID {
             registry.register(pid: pid, sessionID: sid)
@@ -630,7 +654,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     public func closeTab(_ tabID: SessionTab.ID) {
         guard !isQuitting, let tab = tabs.first(where: { $0.id == tabID }) else { return }
         if tab.kind == .session, let sessionID = tab.sessionID {
-            touchHandler?(sessionID, nil)
+            touchHandler?(sessionID, tab.host, nil)
             closedTabs.append(ClosedTabRecord(
                 host: tab.host,
                 sessionID: sessionID,
@@ -745,7 +769,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         if wasActive { selectNeighbor(removedIndex: index, removedProject: tab.projectKey, wasUtility: tab.isUtility) }
         persist()
         // After persist: the row must no longer be in a restorable tab.
-        if tab.startedNothing, let sid = tab.sessionID { unstartedHandler?(sid) }
+        if tab.startedNothing, let sid = tab.sessionID { unstartedHandler?(sid, tab.host) }
     }
 
     private func selectNeighbor(removedIndex: Int, removedProject: ProjectKey, wasUtility: Bool) {
@@ -984,7 +1008,7 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
             tab.activity = .running
             if let sid = tab.sessionID { registry.register(pid: pid, sessionID: sid) }
         case .exited(let status):
-            if let sid = tab.sessionID { touchHandler?(sid, nil) }
+            if let sid = tab.sessionID { touchHandler?(sid, tab.host, nil) }
             // Tab == process (ADR-010): a finished agent auto-closes its tab.
             // Exception: a process that dies within seconds of spawning (and
             // that the user did not close) almost certainly failed to launch
@@ -1012,11 +1036,11 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
 
     public func surface(_ surface: TerminalSurface, didUpdateTitle title: String) {
         guard !isQuitting, let tab = tab(for: surface), !title.isEmpty else { return }
-        if tab.title != title, let sid = tab.sessionID { touchHandler?(sid, nil) }
+        if tab.title != title, let sid = tab.sessionID { touchHandler?(sid, tab.host, nil) }
         tab.title = title
         // Agents retitle themselves as the work moves on, and record that title
         // nowhere on disk — hand it up so the sidebar and ⌘K can keep it.
-        if let sid = tab.sessionID { titleHandler?(sid, title) }
+        if let sid = tab.sessionID { titleHandler?(sid, tab.host, title) }
         // Item E: a live-updating title means the agent is working — keep the
         // settle heuristic from prematurely idling it.
         lastTitleChange[tab.id] = Date()
@@ -1052,7 +1076,7 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
     public func surfaceDidSubmitInput(_ surface: TerminalSurface) {
         guard !isQuitting, let tab = tab(for: surface), tab.kind == .session else { return }
         tab.inputSubmitted = true
-        if let sid = tab.sessionID { touchHandler?(sid, nil) }
+        if let sid = tab.sessionID { touchHandler?(sid, tab.host, nil) }
         tab.activity = .running
         // Restart the settle clock so it can decay again once work finishes.
         lastTitleChange[tab.id] = Date()

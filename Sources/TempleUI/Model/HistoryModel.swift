@@ -793,7 +793,8 @@ public final class HistoryModel: ObservableObject {
         guard let undoManager else { return }
         undoManager.registerUndo(withTarget: self) { [weak undoManager] model in
             MainActor.assumeIsolated {
-                let left = model.undoImport(ids)
+                let hosts = Dictionary(entries.map { ($0.id, $0.core.host) }, uniquingKeysWith: { first, _ in first })
+                let left = model.undoImport(ids.map { SessionKey(id: $0, host: hosts[$0] ?? .local) })
                 guard let undoManager, !left.isEmpty else { return }
                 let back = sessions.filter { left.contains($0.id) }
                 undoManager.registerUndo(withTarget: model) { [weak undoManager] model in
@@ -813,9 +814,10 @@ public final class HistoryModel: ObservableObject {
     /// Returns the ids that left Temple. A committed leave tells the live
     /// engine itself (`TempleDB.observeLeaves`); nothing to re-read here.
     @discardableResult
-    func undoImport(_ ids: [String]) -> [String] {
+    func undoImport(_ keys: [SessionKey]) -> [String] {
+        let ids = keys.map(\.id)
         let open = Set(ids.filter { hasOpenTab($0) })
-        let candidates = ids.filter { !open.contains($0) }
+        let candidates = keys.filter { !open.contains($0.id) }
         let left = overlay.leave(candidates)
         refreshJoinedStates()
         justImported.subtract(left)

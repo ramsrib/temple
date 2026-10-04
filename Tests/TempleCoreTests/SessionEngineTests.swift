@@ -105,7 +105,7 @@ final class SessionEngineTests: XCTestCase {
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         XCTAssertTrue(store.parses.isEmpty)
-        try db.join(sessionID: "existing", via: .opened, agent: .claude, transcriptPath: file)
+        try db.join(sessionID: "existing", via: .opened, agent: .claude, locator: TranscriptLocator(localURL: file))
         try await eventually { recorder.latest.count == 1 }
         XCTAssertEqual(try db.sessionState("existing")?.transcriptPath, file.path)
         try db.join(sessionID: "existing", via: .opened)
@@ -124,16 +124,16 @@ final class SessionEngineTests: XCTestCase {
         let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
-        try db.join(sessionID: "imported", via: .imported, agent: .claude, transcriptPath: imported)
-        try db.join(sessionID: "pinned", via: .imported, agent: .claude, transcriptPath: pinned)
+        try db.join(sessionID: "imported", via: .imported, agent: .claude, locator: TranscriptLocator(localURL: imported))
+        try db.join(sessionID: "pinned", via: .imported, agent: .claude, locator: TranscriptLocator(localURL: pinned))
         try db.setPinned(true, sessionID: "pinned")
         try await eventually { recorder.latest.count == 2 }
 
-        XCTAssertTrue(try db.leave(sessionID: "imported"))
+        XCTAssertTrue(try db.leave(sessionID: "imported", host: .local))
         try await eventually { Set(recorder.latest.map(\.id)) == ["pinned"] }
         XCTAssertNil(watcher.resolution(for: "imported"))
 
-        XCTAssertFalse(try db.leave(sessionID: "pinned"))
+        XCTAssertFalse(try db.leave(sessionID: "pinned", host: .local))
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(Set(recorder.latest.map(\.id)), ["pinned"])
     }
@@ -142,12 +142,12 @@ final class SessionEngineTests: XCTestCase {
         let root = try root()
         let file = try claude(root, id: "reimported")
         let db = try TempleDB.inMemory()
-        try db.join(sessionID: "reimported", via: .imported, agent: .claude, transcriptPath: file)
+        try db.join(sessionID: "reimported", via: .imported, agent: .claude, locator: TranscriptLocator(localURL: file))
         let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
-        XCTAssertTrue(try db.leave(sessionID: "reimported"))
-        try db.join(sessionID: "reimported", via: .imported, agent: .claude, transcriptPath: file)
+        XCTAssertTrue(try db.leave(sessionID: "reimported", host: .local))
+        try db.join(sessionID: "reimported", via: .imported, agent: .claude, locator: TranscriptLocator(localURL: file))
         // Force the callback order: resolution of the new commit, then the
         // delayed invalidation from the old leave, irrespective of DB delivery.
         watcher.requestResolution("reimported")
@@ -164,7 +164,7 @@ final class SessionEngineTests: XCTestCase {
         let file = try claude(root, id: "kept")
         let queue = try DatabaseQueue()
         let db = try TempleDB(database: queue)
-        try db.join(sessionID: "kept", via: .imported, agent: .claude, transcriptPath: file)
+        try db.join(sessionID: "kept", via: .imported, agent: .claude, locator: TranscriptLocator(localURL: file))
         let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
@@ -274,7 +274,7 @@ final class SessionEngineTests: XCTestCase {
         let project = outside.deletingLastPathComponent()
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "missing", via: .opened, agent: .claude,
-                    transcriptPath: project.appendingPathComponent("missing.jsonl"))
+                    locator: TranscriptLocator(localURL: project.appendingPathComponent("missing.jsonl")))
         let store = EngineCountingStore(ClaudeSessionStore(root: root))
         store.failEnumeration = true
         let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), database: db)
@@ -298,8 +298,8 @@ final class SessionEngineTests: XCTestCase {
         let id = UUID().uuidString.lowercased()
         let file = try rollout(root, id: id, at: Date(), filenameID: UUID().uuidString.lowercased())
         let db = try TempleDB.inMemory()
-        try db.join(sessionID: id, via: .opened, agent: .codex, transcriptPath: file)
-        try db.join(sessionID: "wrong", via: .opened, agent: .codex, transcriptPath: file)
+        try db.join(sessionID: id, via: .opened, agent: .codex, locator: TranscriptLocator(localURL: file))
+        try db.join(sessionID: "wrong", via: .opened, agent: .codex, locator: TranscriptLocator(localURL: file))
         let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
@@ -537,7 +537,7 @@ final class SessionEngineTests: XCTestCase {
             let wrong = validFirst ? "f0000000-0000-0000-0000-000000000000" : "10000000-0000-0000-0000-000000000000"
             let file = try rollout(root, id: valid, at: Date())
             let db = try TempleDB.inMemory()
-            for id in [valid, wrong] { try db.join(sessionID: id, via: .opened, agent: .codex, transcriptPath: file) }
+            for id in [valid, wrong] { try db.join(sessionID: id, via: .opened, agent: .codex, locator: TranscriptLocator(localURL: file)) }
             let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02), database: db)
             let recorder = try await start(watcher)
             let handle = try FileHandle(forWritingTo: file)
@@ -730,7 +730,7 @@ final class SessionEngineTests: XCTestCase {
         let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         let otherProcess = try TempleDB(path: path)
-        try otherProcess.join(sessionID: "external", via: .imported, agent: .claude, transcriptPath: file)
+        try otherProcess.join(sessionID: "external", via: .imported, agent: .claude, locator: TranscriptLocator(localURL: file))
         watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertTrue(recorder.latest.isEmpty)
@@ -797,7 +797,7 @@ final class SessionEngineTests: XCTestCase {
         try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(1000)], ofItemAtPath: original.path)
         try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-1000)], ofItemAtPath: selected.path)
         let db = try TempleDB.inMemory()
-        try db.join(sessionID: thread, via: .opened, agent: .codex, transcriptPath: original)
+        try db.join(sessionID: thread, via: .opened, agent: .codex, locator: TranscriptLocator(localURL: original))
         let store = EngineCountingStore(CodexSessionStore(root: root))
         let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
@@ -828,7 +828,7 @@ final class SessionEngineTests: XCTestCase {
         let selected = original.deletingLastPathComponent().appendingPathComponent("rollout-2026-10-02T00-00-01-\(thread)_10000000-0000-0000-0000-000000000000.jsonl")
         try Data("{".utf8).write(to: selected)
         let db = try TempleDB.inMemory()
-        try db.join(sessionID: thread, via: .opened, agent: .codex, transcriptPath: original)
+        try db.join(sessionID: thread, via: .opened, agent: .codex, locator: TranscriptLocator(localURL: original))
         let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
@@ -938,7 +938,7 @@ final class SessionEngineTests: XCTestCase {
         let listings = store.enumerations
         let reverted = original.deletingLastPathComponent().appendingPathComponent("rollout-2026-10-02T00-00-01-\(thread)_10000000-0000-0000-0000-000000000000.jsonl")
         try Data(contentsOf: original).write(to: reverted)
-        try db.join(sessionID: thread, via: .created, agent: .codex, transcriptPath: reverted)
+        try db.join(sessionID: thread, via: .created, agent: .codex, locator: TranscriptLocator(localURL: reverted))
         try await eventually { recorder.latest.first?.filePath == reverted }
         XCTAssertEqual(store.enumerations, listings)
         XCTAssertNil(store.parses[original.deletingPathExtension().lastPathComponent])
@@ -967,7 +967,7 @@ final class SessionEngineTests: XCTestCase {
         let row = try XCTUnwrap(upgraded.sessionState("legacy"))
         XCTAssertTrue(row.pinned); XCTAssertEqual(row.joinedVia, .opened)
         XCTAssertNil(row.agent); XCTAssertNil(row.transcriptPath)
-        try upgraded.join(sessionID: "legacy", via: .imported, agent: .claude, transcriptPath: URL(fileURLWithPath: "/tmp/legacy.jsonl"))
+        try upgraded.join(sessionID: "legacy", via: .imported, agent: .claude, locator: TranscriptLocator(localURL: URL(fileURLWithPath: "/tmp/legacy.jsonl")))
         XCTAssertEqual(try upgraded.sessionState("legacy")?.joinedVia, .opened)
         XCTAssertEqual(try upgraded.sessionState("legacy")?.agent, .claude)
     }

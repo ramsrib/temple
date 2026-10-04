@@ -236,7 +236,7 @@ final class SearchFilterTests: XCTestCase {
             Fixture.row("b1", project: "/p/b", updated: 10)])
         model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a1": .confirmedAbsent, "b1": .confirmedAbsent], summaries: [:]))
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
-        overlay.touch("b1", at: Date(timeIntervalSince1970: 50))
+        overlay.touch("b1", host: .local, at: Date(timeIntervalSince1970: 50))
         await withCheckedContinuation { continuation in
             DispatchQueue.main.async { continuation.resume() }
         }
@@ -250,7 +250,7 @@ final class SearchFilterTests: XCTestCase {
             Fixture.row("s2", project: "/p/a", updated: 10)])
         model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["s1": .confirmedAbsent, "s2": .confirmedAbsent], summaries: [:]))
         XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["s1", "s2"])
-        overlay.touch("s2", at: Date(timeIntervalSince1970: 50))
+        overlay.touch("s2", host: .local, at: Date(timeIntervalSince1970: 50))
         await withCheckedContinuation { continuation in
             DispatchQueue.main.async { continuation.resume() }
         }
@@ -349,8 +349,8 @@ final class SearchFilterTests: XCTestCase {
 
         model.openSessions.openSession(b)
         model.openSessions.openSession(a)
-        model.overlay.touch("a", at: Date(timeIntervalSince1970: 9_000_000_000))
-        model.overlay.touch("b", at: Date(timeIntervalSince1970: 9_000_000_000))
+        model.overlay.touch("a", host: .local, at: Date(timeIntervalSince1970: 9_000_000_000))
+        model.overlay.touch("b", host: .local, at: Date(timeIntervalSince1970: 9_000_000_000))
         await withCheckedContinuation { continuation in
             DispatchQueue.main.async { continuation.resume() }
         }

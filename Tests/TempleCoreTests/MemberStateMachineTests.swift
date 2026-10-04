@@ -14,7 +14,7 @@ final class MemberStateMachineTests: XCTestCase {
         let file = dir.appendingPathComponent(agent == .claude ? "member.jsonl" : "rollout-member.jsonl")
         try write(file, agent: agent, id: "member", prompt: prompt)
         let db = try TempleDB.inMemory()
-        try db.join(sessionID: "member", via: .imported, agent: agent, transcriptPath: file,
+        try db.join(sessionID: "member", via: .imported, agent: agent, locator: TranscriptLocator(localURL: file),
             core: complete ? SessionCore(directory: "/work", title: "Complete", lastActiveAt: Date()) : nil)
         let store = P5SpyStore(agent == .claude ? ClaudeSessionStore(root: root) : CodexSessionStore(root: root))
         let clock = P5Clock()
@@ -70,7 +70,7 @@ final class MemberStateMachineTests: XCTestCase {
         let (_, file, db, spy, clock, watcher) = try fixture(prompt: "A title")
         let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
         let summary = try XCTUnwrap(watcher.publishedSnapshot?.summaries["member"])
-        _ = try db.fillCoreFields(sessionID: "member", agent: summary.agent, directory: summary.cwd,
+        _ = try db.fillCoreFields(sessionID: "member", host: .local, agent: summary.agent, directory: summary.cwd,
             title: summary.firstPrompt, lastActiveAt: summary.modifiedAt)
         let observations = watcher.metrics.observations
         watcher.setEnrichmentWanted([:])
@@ -99,7 +99,7 @@ final class MemberStateMachineTests: XCTestCase {
             try await wait { spy.parses > before }
         }
         let summary = try XCTUnwrap(watcher.publishedSnapshot?.summaries["member"])
-        _ = try db.fillCoreFields(sessionID: "member", agent: summary.agent, directory: summary.cwd,
+        _ = try db.fillCoreFields(sessionID: "member", host: .local, agent: summary.agent, directory: summary.cwd,
             title: summary.firstPrompt, lastActiveAt: summary.modifiedAt)
         watcher.setEnrichmentWanted([:])
         XCTAssertEqual(try db.sessionState("member")?.title, "Twelfth prompt")
@@ -199,13 +199,13 @@ final class MemberStateMachineTests: XCTestCase {
         watcher.reconcileEnrichment()
         try await wait { watcher.metrics.observations > observations }
         XCTAssertEqual(spy.parses, 1, "Changed signature is deferred behind the first deadline")
-        _ = try db.fillCoreFields(sessionID: "member", directory: "/work")
+        _ = try db.fillCoreFields(sessionID: "member", host: .local, directory: "/work")
         watcher.setEnrichmentWanted(["member": [.title]])
         // No clock advance, reconciliation or further write: the fill must re-arm work.
         try await wait { watcher.publishedSnapshot?.summaries["member"]?.firstPrompt == "Soon" }
         XCTAssertEqual(spy.parses, 2)
         let summary = try XCTUnwrap(watcher.publishedSnapshot?.summaries["member"])
-        _ = try db.fillCoreFields(sessionID: "member", title: summary.firstPrompt)
+        _ = try db.fillCoreFields(sessionID: "member", host: .local, title: summary.firstPrompt)
         XCTAssertEqual(try db.sessionState("member")?.title, "Soon")
     }
 
@@ -281,7 +281,7 @@ final class MemberStateMachineTests: XCTestCase {
         // directory creations as root events, which rescan legitimately.
         let (root, _, db, _, _, watcher) = try fixture(agent: .codex, complete: true, monitorChanges: false)
         let gone = root.appendingPathComponent("sessions/rollout-pruned.jsonl")
-        try db.join(sessionID: "pruned", via: .imported, agent: .codex, transcriptPath: gone)
+        try db.join(sessionID: "pruned", via: .imported, agent: .codex, locator: TranscriptLocator(localURL: gone))
         let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
         try await wait { watcher.resolution(for: "pruned") == .confirmedAbsent }
         let before = watcher.metrics
@@ -326,7 +326,7 @@ final class MemberStateMachineTests: XCTestCase {
         watcher.setEnrichmentWanted(["member": [.directory, .title, .lastActiveAt, .agent]])
         let parses = spy.parses
         let observations = watcher.metrics.observations
-        _ = try db.fillCoreFields(sessionID: "member", directory: "/work")
+        _ = try db.fillCoreFields(sessionID: "member", host: .local, directory: "/work")
         watcher.setEnrichmentWanted(["member": [.title, .lastActiveAt, .agent]])
         try await wait { watcher.metrics.observations > observations }
         XCTAssertEqual(spy.parses, parses)

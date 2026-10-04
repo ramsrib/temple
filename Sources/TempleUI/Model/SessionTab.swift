@@ -90,7 +90,7 @@ public final class SessionTab: ObservableObject, Identifiable {
     /// Retains the per-tab delegate so the surface's `weak delegate` stays alive.
     var coordinator: AnyObject?
     /// Optional join hint, consumed at spawn; it never supplies launch facts.
-    var transcriptHint: URL?
+    var transcriptHint: TranscriptLocator?
 
     /// Was this tab spawned to RESUME an existing conversation (sidebar open,
     /// relaunch restore) rather than to start a fresh one? Only a resume can

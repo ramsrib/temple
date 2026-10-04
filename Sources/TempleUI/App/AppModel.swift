@@ -410,41 +410,44 @@ public final class AppModel: ObservableObject {
         }
         // The agent renamed itself → remember it, so the sidebar and ⌘K track a
         // long session instead of showing the prompt it opened with an hour ago.
-        openSessions.titleHandler = { [weak self] sessionID, title in
-            self?.overlay.recordGeneratedTitle(title, for: sessionID)
+        openSessions.titleHandler = { [weak self] sessionID, host, title in
+            self?.overlay.recordGeneratedTitle(title, for: sessionID, host: host)
         }
         // Whatever a tab runs is a Temple session from then on — including one
         // resumed from elsewhere, which is how it joins the sidebar.
-        openSessions.openedHandler = { [weak self] sessionID, via, agent, path, core in
-            guard let self else { return }
-            self.overlay.join(sessionID, via: via, agent: agent, transcriptPath: path, core: core)
+        openSessions.openedHandler = { [weak self] open in
+            guard let self else { return .joined }
+            let result = self.overlay.join(open.id, via: open.via, agent: open.agent, locator: open.locator,
+                                           core: SessionCore(host: open.host))
+            guard result.conflict == nil else { return result }
             // Durably: History's Undo Import must keep a session that was
             // opened since, even once its tab is closed (TempleDB.leave
             // keeps a row with last_opened_at set).
-            if via == .opened { self.overlay.recordOpened(sessionID) }
-            if let engine = (self.indexSource as? WatcherIndexSource)?.engine(for: core.host) {
-                if case .loaded = engine.resolution(for: sessionID) { return }
-                engine.requestResolution(sessionID)
+            if open.via == .opened { self.overlay.recordOpened(open.id, host: open.host) }
+            if let engine = (self.indexSource as? WatcherIndexSource)?.engine(for: open.host) {
+                if case .loaded = engine.resolution(for: open.id) { return result }
+                engine.requestResolution(open.id)
             }
+            return result
         }
-        openSessions.touchHandler = { [weak self] id, at in self?.overlay.touch(id, at: at) }
+        openSessions.touchHandler = { [weak self] id, host, at in self?.overlay.touch(id, host: host, at: at) }
         // ⌘T then close without typing: the minted id never got a transcript,
         // and its row would read "New Claude session" forever. The tab's
         // process is gone by now; only a fresh, completed absence from the
         // owning engine lets the row go — never a cached verdict. When in
         // doubt the stray row stays: deleting one the user cares about is
         // the worse mistake.
-        openSessions.unstartedHandler = { [weak self] id in
-            guard let self, let host = self.overlay.rows[id]?.host,
+        openSessions.unstartedHandler = { [weak self] id, host in
+            guard let self, self.overlay.rows[id]?.host == host,
                   let engine = (self.indexSource as? WatcherIndexSource)?.engine(for: host) else { return }
             Task { @MainActor [weak self] in
                 guard await engine.confirmAbsence(id), let self,
-                      self.overlay.discardUnstartedCreation(id) else { return }
+                      self.overlay.discardUnstartedCreation(id, host: host) else { return }
                 self.openSessions.forgetClosedTabs(sessionID: id)
             }
         }
-        openSessions.launchDirectoryHandler = { [weak self] id, cwd in
-            self?.overlay.observeLaunchDirectory(id, cwd)
+        openSessions.launchDirectoryHandler = { [weak self] id, host, cwd in
+            self?.overlay.observeLaunchDirectory(id, host: host, cwd)
         }
         // A resume failure uses this member's completed resolution. A newly
         // launched or unreadable transcript never acquires a missing verdict.

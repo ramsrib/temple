@@ -11,3 +11,8 @@ public struct HostID: Hashable, Codable, Sendable, RawRepresentable {
 
     public var isLocal: Bool { self == .local }
 }
+
+public extension HostID {
+    /// How a host is named in the interface: "this Mac" for the local host.
+    var displayName: String { isLocal ? "this Mac" : rawValue }
+}

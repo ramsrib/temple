@@ -157,7 +157,7 @@ final class HistoryTests: XCTestCase {
             cwd: "/changed", firstPrompt: "Changed")
         XCTAssertTrue(overlay.importSessions([changed]).isEmpty)
         XCTAssertEqual(try db.sessionState("a"), row)
-        XCTAssertEqual(overlay.leave(["a"]), ["a"], "fact fills remain undoable")
+        XCTAssertEqual(overlay.leave([SessionKey(id: "a", host: .local)]), ["a"], "fact fills remain undoable")
     }
 
     func testImportNeverPersistsPlaceholders() throws {

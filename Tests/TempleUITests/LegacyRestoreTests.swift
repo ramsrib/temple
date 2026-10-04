@@ -129,7 +129,7 @@ final class LegacyRestoreTests: XCTestCase {
         XCTAssertEqual(tab.launchPreparationError, OpenSessionsModel.unknownDirectoryMessage)
         XCTAssertEqual(tab.activity, .exited(status: -1), "the failure header shows instead of nothing")
 
-        try db.fillCoreFields(sessionID: "unplaced", directory: directory.path)
+        try db.fillCoreFields(sessionID: "unplaced", host: .local, directory: directory.path)
         XCTAssertEqual(factory.created.count, 1, "opens once the row knows where")
         XCTAssertEqual(factory.created.first?.startedCommand?.cwd, directory.path)
         XCTAssertNil(tab.launchPreparationError)
@@ -149,7 +149,7 @@ final class LegacyRestoreTests: XCTestCase {
         app2.start()
         app2.openSessions.activate(try XCTUnwrap(app2.openSessions.tabs.last))
         XCTAssertEqual(factory2.created.count, 1)
-        try db2.fillCoreFields(sessionID: "unplaced", directory: directory.path)
+        try db2.fillCoreFields(sessionID: "unplaced", host: .local, directory: directory.path)
         XCTAssertEqual(factory2.created.count, 1, "no surprise spawn after the user moved on")
         XCTAssertEqual(app2.openSessions.activeTab?.sessionID, "other")
     }

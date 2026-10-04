@@ -64,7 +64,7 @@ final class RemoteHostSeamTests: XCTestCase {
                 persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
                 launcherForHost: { _ in RemoteFixtureLauncher() }, directoryEvidence: { _ in evidence })
             var recorded: String?
-            model.launchDirectoryHandler = { _, directory in recorded = directory }
+            model.launchDirectoryHandler = { _, _, directory in recorded = directory }
             model.openSession(summary)
             XCTAssertEqual(recorded, evidence == .exists ? path : nil)
             XCTAssertFalse(model.activeTab?.commandWasSuspect ?? true)
@@ -159,6 +159,92 @@ final class RemoteHostSeamTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(try db.sessionState(row.id)?.title, "Remote prompt")
         await withCheckedContinuation { continuation in app.drainForQuit { continuation.resume() } }
+    }
+
+    // MARK: Duplicate ids across hosts (0b)
+
+    func testTheOverlayRefusesAJoinForAnotherHostsRowAndAnImportReportsIt() throws {
+        let db = try TempleDB.inMemory()
+        let remote = HostID(rawValue: "box")
+        try db.join(sessionID: "shared", via: .imported, agent: .codex, core: SessionCore(host: remote, title: "Remote row"))
+        let overlay = SessionOverlayStore(db: db)
+        XCTAssertEqual(overlay.join("shared", via: .opened, agent: .codex).conflict, .host(remote))
+        XCTAssertEqual(overlay.join("shared", via: .opened, agent: .claude, core: SessionCore(host: remote)).conflict, .agent(.codex))
+        XCTAssertTrue(overlay.join("shared", via: .opened, core: SessionCore(host: remote)).isJoined)
+        let summary = TranscriptSummary(id: "shared", agent: .codex, locator: TranscriptLocator(host: .local, path: "/l/x.jsonl"),
+                                        modifiedAt: Date(), cwd: "/l", firstPrompt: "Local copy")
+        let failures = SessionOverlayStore(db: db).importPreparedSessions([PreparedSessionImport(
+            id: summary.id, agent: summary.agent, locator: summary.locator, core: SessionCore(filling: summary))])
+        XCTAssertEqual((failures["shared"] as? TempleDBError), .hostConflict(existing: remote))
+        XCTAssertEqual(try db.sessionState("shared")?.title, "Remote row")
+        XCTAssertEqual(try db.sessionState("shared")?.host, remote)
+    }
+
+    func testATabRefusedAtJoinStartsNothingAndSaysWhere() throws {
+        let remote = HostID(rawValue: "box")
+        let factory = FakeTerminalSurfaceFactory()
+        let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
+            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+            persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
+            launcherForHost: { _ in RemoteFixtureLauncher() }, directoryEvidence: { _ in .exists })
+        var opens: [SessionOpen] = []
+        model.openedHandler = { open in opens.append(open); return .refused(.host(remote)) }
+        var touched: [String] = []
+        model.touchHandler = { id, _, _ in touched.append(id) }
+        model.openSession(TranscriptSummary(id: "dup", agent: .claude, locator: TranscriptLocator(host: .local, path: "/l/dup.jsonl"),
+                                            modifiedAt: Date(), cwd: "/l"))
+        let tab = try XCTUnwrap(model.activeTab)
+        XCTAssertEqual(opens.map(\.id), ["dup"])
+        XCTAssertEqual(opens.first?.host, .local)
+        XCTAssertEqual(opens.first?.locator, TranscriptLocator(host: .local, path: "/l/dup.jsonl"))
+        XCTAssertTrue(factory.created.isEmpty, "no spawn for a session another host owns")
+        XCTAssertEqual(tab.launchPreparationError, "Already in Temple on box.")
+        XCTAssertEqual(tab.activity, .exited(status: -1))
+        XCTAssertTrue(touched.isEmpty)
+    }
+
+    func testARefusedAdoptionKeepsTheTabProvisional() throws {
+        let remote = HostID(rawValue: "box")
+        let model = OpenSessionsModel(surfaceFactory: FakeTerminalSurfaceFactory(), appearanceProvider: { .default },
+            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+            persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
+            directoryEvidence: { _ in .exists })
+        var result: JoinResult = .refused(.host(remote))
+        model.openedHandler = { _ in result }
+        var directories: [String] = []
+        model.launchDirectoryHandler = { id, _, _ in directories.append(id) }
+        let tab = model.newSession(agent: .codex, projectPath: "/tmp")
+        XCTAssertTrue(tab.isProvisional)
+        model.adopt(sessionID: "codex-dup", for: tab.id)
+        XCTAssertNil(tab.sessionID)
+        XCTAssertTrue(tab.isProvisional)
+        XCTAssertTrue(directories.isEmpty)
+        result = .joined
+        model.adopt(sessionID: "codex-own", for: tab.id)
+        XCTAssertEqual(tab.sessionID, "codex-own")
+        XCTAssertFalse(tab.isProvisional)
+    }
+
+    func testTabWritesCarryTheTabsHostSoAnotherHostsRowIsLeftAlone() async throws {
+        let db = try TempleDB.inMemory()
+        let remote = HostID(rawValue: "box")
+        try db.join(sessionID: "r", via: .imported, core: SessionCore(host: remote, title: "Remote"))
+        let overlay = SessionOverlayStore(db: db)
+        overlay.titleFlushDelay = 0
+        overlay.touch("r", host: .local, at: Date(timeIntervalSince1970: 2_000_000_000))
+        overlay.observeLaunchDirectory("r", host: .local, "/local")
+        overlay.recordGeneratedTitle("Local tab title", for: "r", host: .local)
+        overlay.flushPendingTitles()
+        overlay.flushPendingTouches()
+        overlay.recordOpened("r", host: .local)
+        let row = try XCTUnwrap(db.sessionState("r"))
+        XCTAssertEqual(row.title, "Remote")
+        XCTAssertNil(row.lastActiveAt)
+        XCTAssertNil(row.directory)
+        XCTAssertNil(row.lastOpenedAt)
+        XCTAssertNil(overlay.rows["r"]?.lastActiveAt)
+        XCTAssertEqual(overlay.leave([SessionKey(id: "r", host: .local)]), [])
+        XCTAssertEqual(overlay.leave([SessionKey(id: "r", host: remote)]), ["r"])
     }
 }
 

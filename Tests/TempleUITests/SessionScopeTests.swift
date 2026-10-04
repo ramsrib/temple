@@ -113,7 +113,7 @@ final class SessionScopeTests: XCTestCase {
         DispatchQueue.global().async {
             defer { committed.signal() }
             do {
-                XCTAssertTrue(try db.leave(sessionID: "legacy"))
+                XCTAssertTrue(try db.leave(sessionID: "legacy", host: .local))
                 try db.join(sessionID: "legacy", via: .imported, core: SessionCore(host: remote))
             } catch { XCTFail("leave/rejoin failed: \(error)") }
         }
@@ -130,7 +130,7 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertNil(row.lastActiveAt)
         XCTAssertEqual(overlay.rows["legacy"], row)
         // A fact from the expected host can still fill the same row.
-        XCTAssertEqual(try db.fillCoreFields(sessionID: "legacy", expectedHost: remote, title: "Remote prompt"), [.title])
+        XCTAssertEqual(try db.fillCoreFields(sessionID: "legacy", host: remote, title: "Remote prompt"), .changed([.title]))
     }
 
     func testCompleteRowBurstsDoNotRebuildPresentation() throws {
@@ -200,9 +200,9 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertTrue(session.canResume)
         XCTAssertNil(session.transcript)
         XCTAssertEqual(model.rowProjects.count, 1)
-        try db.setTitle("Changed by row observer", sessionID: "missing")
+        try db.setTitle("Changed by row observer", sessionID: "missing", host: HostID(rawValue: "remote"))
         XCTAssertEqual(overlay.rows["missing"]?.title, "Changed by row observer")
-        overlay.touch("missing", at: Date(timeIntervalSince1970: 500))
+        overlay.touch("missing", host: HostID(rawValue: "remote"), at: Date(timeIntervalSince1970: 500))
         let end = Date().addingTimeInterval(2)
         while model.sessions.first(where: { $0.id == "missing" })?.sortDate != Date(timeIntervalSince1970: 500), Date() < end {
             try await Task.sleep(for: .milliseconds(10))
@@ -223,7 +223,7 @@ final class SessionScopeTests: XCTestCase {
             let file = sessionDirectory.appendingPathComponent("rollout-2026-10-03T00-00-00-\(id).jsonl")
             try "{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(id)\",\"cwd\":\"/recorded\"}}"
                 .write(to: file, atomically: true, encoding: .utf8)
-            try db.join(sessionID: id, via: .imported, agent: .codex, transcriptPath: file)
+            try db.join(sessionID: id, via: .imported, agent: .codex, locator: TranscriptLocator(localURL: file))
         }
         let history = root.appendingPathComponent("history.jsonl")
         let firstLine = "{\"session_id\":\"\(initial)\",\"ts\":10,\"text\":\"First recorded prompt\"}"
@@ -283,7 +283,7 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertEqual(model.sessions.first(where: { $0.id == "missing" })?.resolution, .confirmedAbsent)
         let filled = try XCTUnwrap(db.sessionState("legacy"))
         let activity = try XCTUnwrap(filled.lastActiveAt)
-        model.overlay.touch("legacy", at: activity.addingTimeInterval(-100))
+        model.overlay.touch("legacy", host: .local, at: activity.addingTimeInterval(-100))
         XCTAssertEqual(model.overlay.rows["legacy"]?.lastActiveAt, filled.lastActiveAt)
     }
 
@@ -440,7 +440,7 @@ final class SessionScopeTests: XCTestCase {
     /// writing a row that forgets how the session joined.
     func testAFailedJoinLeavesTheSessionOutAndStopsTheSetter() throws {
         let overlay = SessionOverlayStore(db: try unwritableDatabase())
-        XCTAssertFalse(overlay.join("s", via: .opened))
+        XCTAssertFalse(overlay.join("s", via: .opened).isJoined)
         XCTAssertFalse(overlay.isTempleSession("s"))
 
         overlay.togglePin("s")
@@ -459,7 +459,7 @@ final class SessionScopeTests: XCTestCase {
     func testATitleForASessionWhoseJoinFailedIsShownButNotAMember() throws {
         let overlay = SessionOverlayStore(db: try unwritableDatabase())
         overlay.titleFlushDelay = 0
-        XCTAssertFalse(overlay.join("s", via: .created))
+        XCTAssertFalse(overlay.join("s", via: .created).isJoined)
         overlay.recordGeneratedTitle("Fixing the build", for: "s")
         overlay.flushPendingTitles()
 
@@ -482,7 +482,7 @@ final class SessionScopeTests: XCTestCase {
         var lock: OpaquePointer?
         XCTAssertEqual(sqlite3_open(url.path, &lock), SQLITE_OK)
         XCTAssertEqual(sqlite3_exec(lock, "BEGIN EXCLUSIVE", nil, nil, nil), SQLITE_OK)
-        XCTAssertFalse(overlay.join("s", via: .created))
+        XCTAssertFalse(overlay.join("s", via: .created).isJoined)
         overlay.togglePin("s")
         XCTAssertFalse(overlay.isTempleSession("s"))
         XCTAssertFalse(overlay.isPinned("s"))

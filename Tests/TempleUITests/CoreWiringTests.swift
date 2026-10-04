@@ -168,7 +168,7 @@ final class CoreWiringTests: XCTestCase {
         let file = directory.appendingPathComponent("member.jsonl")
         try #"{"sessionId":"member","type":"user","cwd":"/tmp/project","message":{"content":"member"}}"#.write(to: file, atomically: true, encoding: .utf8)
         let db = try TempleDB.inMemory()
-        try db.join(sessionID: "member", via: .opened, agent: .claude, transcriptPath: file)
+        try db.join(sessionID: "member", via: .opened, agent: .claude, locator: TranscriptLocator(localURL: file))
         let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: db)
         let cache = root.appendingPathComponent("cache.json")
         let source = WatcherIndexSource(watcher: watcher)

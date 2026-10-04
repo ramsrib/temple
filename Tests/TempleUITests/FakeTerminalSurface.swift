@@ -207,7 +207,7 @@ enum Fixture {
     static func join(_ index: CatalogFixtureIndex, to database: TempleDB) {
         for session in index.allSessions {
             try! database.join(sessionID: session.id, via: .imported,
-                               agent: session.agent, transcriptPath: session.filePath,
+                               agent: session.agent, locator: TranscriptLocator(localURL: session.filePath),
                                core: SessionCore(directory: session.projectPath, directorySource: .transcript,
                                                  title: session.title, lastActiveAt: session.updatedAt))
         }

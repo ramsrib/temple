@@ -26,14 +26,40 @@ public enum TempleDBError: Error, Equatable, LocalizedError {
     case newerSchema
     /// Another opener held the migration lock past the wait limit.
     case migrationLockTimeout
+    /// The session id is already Temple's on another host. Ids are the key,
+    /// so a second host offering the same id is refused, never merged.
+    case hostConflict(existing: HostID)
+    /// The row already names a different agent for this id.
+    case agentConflict(existing: Agent)
+    /// A join's transcript locator names a different host than its core facts.
+    case locatorHostMismatch
 
     public static let updateRequiredMessage = "This Temple is older than the data it found. Update Temple to continue."
     public var errorDescription: String? {
         switch self {
         case .newerSchema: Self.updateRequiredMessage
         case .migrationLockTimeout: "Another Temple process kept the database locked."
+        case .hostConflict(let host): "Already in Temple on \(host.displayName)."
+        case .agentConflict(let agent): "Already in Temple as a \(agent.displayName) session."
+        case .locatorHostMismatch: "The transcript is on a different host than the session."
         }
     }
+}
+
+/// What a guarded write did. Only `.ownershipMismatch` means the row the
+/// writer meant is gone (left, rejoined, or on another host); `.unchanged`
+/// is a legitimate NULL-only no-op.
+public enum SessionWriteOutcome: Equatable, Sendable {
+    case changed(Set<SessionCoreField>)
+    case unchanged
+    case ownershipMismatch
+}
+
+/// A session row's identity at the DB boundary: the id and the host that owns it.
+public struct SessionKey: Hashable, Sendable {
+    public let id: String
+    public let host: HostID
+    public init(id: String, host: HostID) { self.id = id; self.host = host }
 }
 
 /// Core facts supplied at join. Launch directory observations are a separate,
@@ -87,19 +113,24 @@ public struct SessionState: Codable, Hashable, Sendable {
     public let directorySource: DirectorySource?
     public let title: String?
     public var lastActiveAt: Date?
+    /// This membership's identity: set by the database on every insert (a
+    /// rejoin after a leave is a new row, so a new value), kept by repeated
+    /// joins. Opaque; nil only for a row read from a pre-v11 file.
+    public let incarnation: String?
 
     public init(id: String, pinned: Bool, archived: Bool, customName: String?, color: String?,
                 generatedTitle: String?, lastOpenedAt: Date?, joinedVia: JoinedVia?, joinedAt: Date?,
                 agent: Agent? = nil, transcriptPath: String? = nil,
                 host: HostID = .local, directory: String? = nil,
                 directorySource: DirectorySource? = nil, title: String? = nil,
-                lastActiveAt: Date? = nil) {
+                lastActiveAt: Date? = nil, incarnation: String? = nil) {
         self.id = id; self.pinned = pinned; self.archived = archived
         self.customName = customName; self.color = color; self.generatedTitle = generatedTitle
         self.lastOpenedAt = lastOpenedAt; self.joinedVia = joinedVia; self.joinedAt = joinedAt
         self.agent = agent; self.transcriptPath = transcriptPath
         self.host = host; self.directory = directory; self.directorySource = directorySource
         self.title = title; self.lastActiveAt = lastActiveAt
+        self.incarnation = incarnation
     }
 
     public init(from decoder: any Decoder) throws {
@@ -120,6 +151,7 @@ public struct SessionState: Codable, Hashable, Sendable {
         directorySource = try c.decodeIfPresent(DirectorySource.self, forKey: .directorySource)
         title = try c.decodeIfPresent(String.self, forKey: .title)
         lastActiveAt = try c.decodeIfPresent(Date.self, forKey: .lastActiveAt)
+        incarnation = try c.decodeIfPresent(String.self, forKey: .incarnation)
     }
 }
 
@@ -377,14 +409,16 @@ public final class TempleDB: @unchecked Sendable {
         }
     }
 
-    public func setGeneratedTitle(_ title: String?, sessionID: String) throws {
-        try setTitle(title, sessionID: sessionID)
+    public func setGeneratedTitle(_ title: String?, sessionID: String, host: HostID) throws {
+        try setTitle(title, sessionID: sessionID, host: host)
     }
 
-    public func setTitle(_ title: String?, sessionID: String) throws {
-        try updateState(sessionID) { database in
-            try database.execute(sql: "UPDATE session_state SET title = ?, generated_title = ? WHERE id = ? AND (title IS NOT ? OR generated_title IS NOT ?)",
-                                 arguments: [title, title, sessionID, title, title])
+    /// The agent's own retitle, from a tab on `host`. A row owned by another
+    /// host is left alone.
+    public func setTitle(_ title: String?, sessionID: String, host: HostID) throws {
+        try updateState(sessionID, host: host) { database in
+            try database.execute(sql: "UPDATE session_state SET title = ?, generated_title = ? WHERE id = ? AND host = ? AND (title IS NOT ? OR generated_title IS NOT ?)",
+                                 arguments: [title, title, sessionID, host.rawValue, title, title])
         }
     }
 
@@ -392,21 +426,37 @@ public final class TempleDB: @unchecked Sendable {
     /// session that already has a row keeps the way it came in, and one from
     /// before that was recorded stays unknown rather than being
     /// credited to whatever touched it next.
+    ///
+    /// The row's host is `core.host` (this Mac when there is no core). A row
+    /// already owned by another host throws `hostConflict`, and one that names
+    /// a different agent throws `agentConflict` — inside the same transaction,
+    /// so nothing is written: an id is one session, and a second claim on it
+    /// is refused, never merged. A row with no agent yet takes the incoming one.
     public func join(sessionID: String, via: JoinedVia, at: Date = Date(),
-                     agent: Agent? = nil, transcriptPath: URL? = nil, core: SessionCore? = nil) throws {
+                     agent: Agent? = nil, locator: TranscriptLocator? = nil, core: SessionCore? = nil) throws {
+        let host = core?.host ?? .local
+        if let locator, locator.host != host { throw TempleDBError.locatorHostMismatch }
         let changed = try db.write { database -> (join: Bool, row: Bool) in
-            let old = try Row.fetchOne(database, sql: "SELECT * FROM session_state WHERE id = ?", arguments: [sessionID])
-            let inserted = old == nil
+            // Insert first: the write lock is taken before anything is read,
+            // so a concurrent join on another connection cannot slip between
+            // the check and the write.
             try database.execute(
                 sql: "INSERT INTO session_state (id, joined_via, joined_at, host) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
-                arguments: [sessionID, via.rawValue, at, core?.host.rawValue ?? HostID.local.rawValue])
-            let oldAgent: String? = old?["agent"]
-            let oldPath: String? = old?["transcript_path"]
-            let hintChanged = (agent != nil && agent?.rawValue != oldAgent) ||
-                (transcriptPath != nil && transcriptPath?.path != oldPath)
+                arguments: [sessionID, via.rawValue, at, host.rawValue])
+            let inserted = database.changesCount > 0
+            guard let row = try Row.fetchOne(database, sql: "SELECT host, agent, transcript_path FROM session_state WHERE id = ?", arguments: [sessionID]) else {
+                return (false, false)
+            }
+            let existingHost = HostID(rawValue: (row["host"] as String?) ?? "")
+            guard existingHost == host else { throw TempleDBError.hostConflict(existing: existingHost) }
+            let oldAgent = (row["agent"] as String?).flatMap(Agent.init(rawValue:))
+            if let oldAgent, let agent, oldAgent != agent { throw TempleDBError.agentConflict(existing: oldAgent) }
+            let oldPath: String? = row["transcript_path"]
+            let hintChanged = (agent != nil && agent != oldAgent) ||
+                (locator != nil && locator?.path != oldPath)
             if hintChanged {
                 try database.execute(sql: "UPDATE session_state SET agent = COALESCE(?, agent), transcript_path = COALESCE(?, transcript_path) WHERE id = ?",
-                                     arguments: [agent?.rawValue, transcriptPath?.path, sessionID])
+                                     arguments: [agent?.rawValue, locator?.path, sessionID])
             }
             var coreChanged = false
             if let core {
@@ -423,7 +473,7 @@ public final class TempleDB: @unchecked Sendable {
             }
             return (inserted || hintChanged, inserted || hintChanged || coreChanged)
         }
-        if changed.join { committedJoin(sessionID, awaitingCreation: via == .created && agent == .claude && transcriptPath == nil) }
+        if changed.join { committedJoin(sessionID, awaitingCreation: via == .created && agent == .claude && locator == nil) }
         if changed.row { committedRowChange(sessionID) }
     }
 
@@ -437,18 +487,18 @@ public final class TempleDB: @unchecked Sendable {
     /// whether the row went. ADR-023's "first join is kept" is untouched; a
     /// row that is undone was never kept.
     @discardableResult
-    public func leave(sessionID: String) throws -> Bool {
+    public func leave(sessionID: String, host: HostID) throws -> Bool {
         let left = try db.write { database in
             try database.execute(
                 sql: """
                     DELETE FROM session_state
-                    WHERE id = ? AND joined_via = ?
+                    WHERE id = ? AND host = ? AND joined_via = ?
                       AND pinned = 0 AND archived = 0
                       AND custom_name IS NULL AND color IS NULL
                       AND generated_title IS NULL AND last_opened_at IS NULL
                       AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
                     """,
-                arguments: [sessionID, JoinedVia.imported.rawValue, sessionID]
+                arguments: [sessionID, host.rawValue, JoinedVia.imported.rawValue, sessionID]
             )
             return database.changesCount > 0
         }
@@ -466,18 +516,18 @@ public final class TempleDB: @unchecked Sendable {
     /// (an idle agent titles itself). The caller must also have a completed,
     /// fresh absence verdict for it. Returns whether it went.
     @discardableResult
-    public func discardUnstartedCreation(sessionID: String) throws -> Bool {
+    public func discardUnstartedCreation(sessionID: String, host: HostID) throws -> Bool {
         let left = try db.write { database in
             try database.execute(
                 sql: """
                     DELETE FROM session_state
-                    WHERE id = ? AND joined_via = ?
+                    WHERE id = ? AND host = ? AND joined_via = ?
                       AND transcript_path IS NULL
                       AND pinned = 0 AND archived = 0
                       AND custom_name IS NULL AND color IS NULL
                       AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
                     """,
-                arguments: [sessionID, JoinedVia.created.rawValue, sessionID]
+                arguments: [sessionID, host.rawValue, JoinedVia.created.rawValue, sessionID]
             )
             return database.changesCount > 0
         }
@@ -489,48 +539,66 @@ public final class TempleDB: @unchecked Sendable {
     }
 
     /// Hints never insert membership or change provenance, and do not trigger a
-    /// second resolution after the engine has already parsed this file.
-    public func updateTranscriptHint(sessionID: String, agent: Agent, path: URL) throws {
-        try updateTranscriptHint(sessionID: sessionID, agent: agent, locator: TranscriptLocator(localURL: path))
+    /// second resolution after the engine has already parsed this file. The
+    /// row must be owned by the locator's host (and, when given, be the same
+    /// membership `incarnation`); otherwise nothing is written.
+    @discardableResult
+    public func updateTranscriptHint(sessionID: String, incarnation: String? = nil, agent: Agent,
+                                     locator: TranscriptLocator) throws -> SessionWriteOutcome {
+        let outcome = try db.write { database -> SessionWriteOutcome in
+            let owner = Self.ownership(sessionID, host: locator.host, incarnation: incarnation)
+            guard let row = try Row.fetchOne(database, sql: "SELECT agent, transcript_path FROM session_state WHERE \(owner.sql)",
+                                             arguments: owner.arguments) else { return .ownershipMismatch }
+            let agentChanged = (row["agent"] as String?) != agent.rawValue
+            guard agentChanged || (row["transcript_path"] as String?) != locator.path else { return .unchanged }
+            try database.execute(sql: "UPDATE session_state SET agent = ?, transcript_path = ? WHERE \(owner.sql)",
+                                 arguments: [agent.rawValue, locator.path] + owner.arguments)
+            return .changed(agentChanged ? [.agent] : [])
+        }
+        if case .changed = outcome { committedRowChange(sessionID) }
+        return outcome
     }
 
-    public func updateTranscriptHint(sessionID: String, agent: Agent, locator: TranscriptLocator) throws {
-        let changed = try db.write { database in
-            try database.execute(sql: "UPDATE session_state SET agent = ?, transcript_path = ? WHERE id = ? AND (agent IS NOT ? OR transcript_path IS NOT ?)",
-                                 arguments: [agent.rawValue, locator.path, sessionID, agent.rawValue, locator.path])
-            return database.changesCount > 0
+    /// The row was opened in a tab on `host`.
+    public func recordOpened(sessionID: String, host: HostID, at: Date = Date()) throws {
+        try updateState(sessionID, host: host) { database in
+            try database.execute(sql: "UPDATE session_state SET last_opened_at = ? WHERE id = ? AND host = ? AND last_opened_at IS NOT ?",
+                                 arguments: [at, sessionID, host.rawValue, at])
         }
-        if changed { committedRowChange(sessionID) }
     }
 
-    public func recordOpened(sessionID: String, at: Date = Date()) throws {
-        try updateState(sessionID) { database in
-            try database.execute(sql: "UPDATE session_state SET last_opened_at = ? WHERE id = ? AND last_opened_at IS NOT ?",
-                                 arguments: [at, sessionID, at])
+    /// The predicate a guarded write uses: this id, owned by this host, and
+    /// — when the writer knows it — this membership.
+    private static func ownership(_ id: String, host: HostID, incarnation: String?) -> (sql: String, arguments: StatementArguments) {
+        if let incarnation {
+            return ("id = ? AND host = ? AND incarnation = ?", [id, host.rawValue, incarnation])
         }
+        return ("id = ? AND host = ?", [id, host.rawValue])
+    }
+
+    private static func state(_ row: Row) -> SessionState {
+        SessionState(
+            id: row["id"],
+            pinned: row["pinned"],
+            archived: row["archived"],
+            customName: row["custom_name"],
+            color: row["color"],
+            generatedTitle: row["generated_title"],
+            lastOpenedAt: row["last_opened_at"],
+            joinedVia: (row["joined_via"] as String?).flatMap(JoinedVia.init(rawValue:)),
+            joinedAt: row["joined_at"],
+            agent: (row["agent"] as String?).flatMap(Agent.init(rawValue:)),
+            transcriptPath: row["transcript_path"],
+            host: HostID(rawValue: (row["host"] as String?) ?? ""), directory: row["directory"],
+            directorySource: (row["directory_source"] as String?).flatMap(DirectorySource.init(rawValue:)),
+            title: row["title"], lastActiveAt: row["last_active_at"],
+            incarnation: row["incarnation"]
+        )
     }
 
     public func sessionState(_ sessionID: String) throws -> SessionState? {
         try db.read { database in
-            guard let row = try Row.fetchOne(database, sql: "SELECT * FROM session_state WHERE id = ?", arguments: [sessionID]) else {
-                return nil
-            }
-            return SessionState(
-                id: row["id"],
-                pinned: row["pinned"],
-                archived: row["archived"],
-                customName: row["custom_name"],
-                color: row["color"],
-                generatedTitle: row["generated_title"],
-                lastOpenedAt: row["last_opened_at"],
-                joinedVia: (row["joined_via"] as String?).flatMap(JoinedVia.init(rawValue:)),
-                joinedAt: row["joined_at"],
-                agent: (row["agent"] as String?).flatMap(Agent.init(rawValue:)),
-                transcriptPath: row["transcript_path"],
-                host: HostID(rawValue: (row["host"] as String?) ?? ""), directory: row["directory"],
-                directorySource: (row["directory_source"] as String?).flatMap(DirectorySource.init(rawValue:)),
-                title: row["title"], lastActiveAt: row["last_active_at"]
-            )
+            try Row.fetchOne(database, sql: "SELECT * FROM session_state WHERE id = ?", arguments: [sessionID]).map(Self.state)
         }
     }
 
@@ -544,33 +612,18 @@ public final class TempleDB: @unchecked Sendable {
                 ? "SELECT * FROM session_state WHERE host = ? ORDER BY id"
                 : "SELECT * FROM session_state ORDER BY id"
             let arguments: StatementArguments = hasHost && host != nil ? [host!.rawValue] : []
-            return try Row.fetchAll(database, sql: sql, arguments: arguments).map { row in
-                SessionState(
-                    id: row["id"],
-                    pinned: row["pinned"],
-                    archived: row["archived"],
-                    customName: row["custom_name"],
-                    color: row["color"],
-                    generatedTitle: row["generated_title"],
-                    lastOpenedAt: row["last_opened_at"],
-                    joinedVia: (row["joined_via"] as String?).flatMap(JoinedVia.init(rawValue:)),
-                    joinedAt: row["joined_at"],
-                    agent: (row["agent"] as String?).flatMap(Agent.init(rawValue:)),
-                    transcriptPath: row["transcript_path"],
-                    host: HostID(rawValue: (row["host"] as String?) ?? ""), directory: row["directory"],
-                    directorySource: (row["directory_source"] as String?).flatMap(DirectorySource.init(rawValue:)),
-                    title: row["title"], lastActiveAt: row["last_active_at"]
-                )
-            }
+            return try Row.fetchAll(database, sql: sql, arguments: arguments).map(Self.state)
         }
     }
 
-    /// Actual launch observations replace even a previous tab's directory.
-    public func observeLaunchDirectory(sessionID: String, _ directory: String) throws {
+    /// Actual launch observations replace even a previous tab's directory,
+    /// for a row owned by the host the tab ran on.
+    public func observeLaunchDirectory(sessionID: String, host: HostID, _ directory: String) throws {
         let result = try db.write { database -> (changed: Bool, priorDirectory: String?) in
-            let prior = try String.fetchOne(database, sql: "SELECT directory FROM session_state WHERE id = ?", arguments: [sessionID])
-            try database.execute(sql: "UPDATE session_state SET directory = ?, directory_source = 'tab' WHERE id = ? AND (directory IS NOT ? OR directory_source IS NOT 'tab')",
-                                 arguments: [directory, sessionID, directory])
+            let prior = try String.fetchOne(database, sql: "SELECT directory FROM session_state WHERE id = ? AND host = ?",
+                                            arguments: [sessionID, host.rawValue])
+            try database.execute(sql: "UPDATE session_state SET directory = ?, directory_source = 'tab' WHERE id = ? AND host = ? AND (directory IS NOT ? OR directory_source IS NOT 'tab')",
+                                 arguments: [directory, sessionID, host.rawValue, directory])
             return (database.changesCount > 0, prior)
         }
         if result.changed {
@@ -582,35 +635,42 @@ public final class TempleDB: @unchecked Sendable {
     }
 
     /// Transcript facts fill NULLs only. Does not insert membership or dual-write
-    /// generated_title, so a titled import can still be undone. The host is checked
-    /// in the transaction: queued facts cannot fill a row rejoined on another host.
+    /// generated_title, so a titled import can still be undone. Ownership is
+    /// checked in the transaction — the host, and the membership incarnation
+    /// when the writer has one — so queued facts cannot fill a row that left
+    /// and rejoined, here or on another host.
     @discardableResult
-    public func fillCoreFields(sessionID: String, expectedHost: HostID = .local, agent: Agent? = nil, directory: String? = nil,
-                               title: String? = nil, lastActiveAt: Date? = nil) throws -> Set<SessionCoreField> {
-        let changed = try db.write { database -> Set<SessionCoreField> in
-            guard let row = try Row.fetchOne(database, sql: "SELECT * FROM session_state WHERE id = ? AND host = ?", arguments: [sessionID, expectedHost.rawValue]) else { return [] }
+    public func fillCoreFields(sessionID: String, host: HostID, incarnation: String? = nil, agent: Agent? = nil,
+                               directory: String? = nil, title: String? = nil,
+                               lastActiveAt: Date? = nil) throws -> SessionWriteOutcome {
+        let outcome = try db.write { database -> SessionWriteOutcome in
+            let owner = Self.ownership(sessionID, host: host, incarnation: incarnation)
+            guard let row = try Row.fetchOne(database, sql: "SELECT * FROM session_state WHERE \(owner.sql)", arguments: owner.arguments) else {
+                return .ownershipMismatch
+            }
             var fields: Set<SessionCoreField> = []
             if (row["agent"] as String?) == nil && agent != nil { fields.insert(.agent) }
             if (row["directory"] as String?) == nil && directory != nil { fields.insert(.directory) }
             if (row["title"] as String?) == nil && title != nil { fields.insert(.title) }
             if (row["last_active_at"] as Date?) == nil && lastActiveAt != nil { fields.insert(.lastActiveAt) }
-            guard !fields.isEmpty else { return [] }
+            guard !fields.isEmpty else { return .unchanged }
             try database.execute(sql: """
                 UPDATE session_state SET agent = COALESCE(agent, ?),
                     directory_source = CASE WHEN directory IS NULL AND ? IS NOT NULL THEN 'transcript' ELSE directory_source END,
                     directory = COALESCE(directory, ?), title = COALESCE(title, ?),
-                    last_active_at = COALESCE(last_active_at, ?) WHERE id = ? AND host = ?
-                """, arguments: [agent?.rawValue, directory, directory, title, lastActiveAt, sessionID, expectedHost.rawValue])
-            return fields
+                    last_active_at = COALESCE(last_active_at, ?) WHERE \(owner.sql)
+                """, arguments: [agent?.rawValue, directory, directory, title, lastActiveAt] + owner.arguments)
+            return .changed(fields)
         }
-        if !changed.isEmpty { committedRowChange(sessionID) }
-        return changed
+        if case .changed = outcome { committedRowChange(sessionID) }
+        return outcome
     }
 
-    public func touch(sessionID: String, at: Date = Date()) throws {
+    /// Activity from a tab on `host`; never backwards.
+    public func touch(sessionID: String, host: HostID, at: Date = Date()) throws {
         let changed = try db.write { database in
-            try database.execute(sql: "UPDATE session_state SET last_active_at = MAX(COALESCE(last_active_at, ?), ?) WHERE id = ? AND (last_active_at IS NULL OR last_active_at < ?)",
-                                 arguments: [at, at, sessionID, at])
+            try database.execute(sql: "UPDATE session_state SET last_active_at = MAX(COALESCE(last_active_at, ?), ?) WHERE id = ? AND host = ? AND (last_active_at IS NULL OR last_active_at < ?)",
+                                 arguments: [at, at, sessionID, host.rawValue, at])
             return database.changesCount > 0
         }
         if changed { committedRowChange(sessionID) }
@@ -788,9 +848,9 @@ public final class TempleDB: @unchecked Sendable {
     /// Setters can create membership. Insert and update commit together so a
     /// failed update neither leaves an empty row nor sends a premature callback.
     /// The update's predicate must exclude unchanged values.
-    private func updateState(_ sessionID: String, _ update: (Database) throws -> Void) throws {
+    private func updateState(_ sessionID: String, host: HostID = .local, _ update: (Database) throws -> Void) throws {
         let result = try db.write { database in
-            try database.execute(sql: "INSERT OR IGNORE INTO session_state (id) VALUES (?)", arguments: [sessionID])
+            try database.execute(sql: "INSERT OR IGNORE INTO session_state (id, host) VALUES (?, ?)", arguments: [sessionID, host.rawValue])
             let inserted = database.changesCount > 0
             try update(database)
             return (inserted: inserted, changed: inserted || database.changesCount > 0)
@@ -888,6 +948,23 @@ public final class TempleDB: @unchecked Sendable {
                 table.add(column: "last_active_at", .datetime)
             }
             try database.execute(sql: "UPDATE session_state SET title = generated_title WHERE title IS NULL")
+        }
+        // Membership identity (ADR-029). Every row, however it is inserted —
+        // join, a setter's INSERT OR IGNORE, an older build's own SQL — gets
+        // an opaque value from the trigger; existing rows get one here. A
+        // repeated join keeps it; a rejoin after a leave is a new row.
+        migrator.registerMigration("v11-session-incarnation") { database in
+            try database.alter(table: "session_state") { table in
+                table.add(column: "incarnation", .text)
+            }
+            try database.execute(sql: "UPDATE session_state SET incarnation = lower(hex(randomblob(16))) WHERE incarnation IS NULL")
+            try database.execute(sql: """
+                CREATE TRIGGER session_state_incarnation AFTER INSERT ON session_state
+                WHEN NEW.incarnation IS NULL
+                BEGIN
+                    UPDATE session_state SET incarnation = lower(hex(randomblob(16))) WHERE rowid = NEW.rowid;
+                END
+                """)
         }
         return migrator
     }
