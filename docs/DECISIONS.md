@@ -1147,8 +1147,10 @@ files on this Mac, which a session on another machine will never have.
 - **One semantic seam per host.** `HostSessionSource` resolves, catalogs,
   adopts and reports changes for one host; its results say loaded, absent,
   awaiting creation, unreadable, incomplete or mismatch, and a transport
-  failure never proves absence. All transcript I/O lives under
-  `Sources/TempleCore/Hosts/Local/`, enforced by an allowlist audit test.
+  failure never proves absence. Local transcript I/O is the `TempleLocalHost`
+  module; its stores are internal and `LocalSessionSource` is its only public
+  type; `TempleUI` imports it in one composition file (a test asserts the
+  import list; it cannot police new Foundation reads — that is a review rule).
   `SessionEngine` is host-agnostic, one per host from `HostRegistry`. Each
   registry entry also carries a `HostLauncher`, which builds the command from
   intent (`AgentLaunchSpec`: agent, new or resume, id, directory): the host

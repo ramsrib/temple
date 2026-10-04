@@ -1,19 +1,20 @@
 import Foundation
+import TempleCore
 
 /// Explicit, on-demand disk history. No watcher, membership, or retained cache.
 struct LocalSessionCatalog: Sendable {
     private let stores: [any SessionStore]
-    public init(stores: [any SessionStore] = [ClaudeSessionStore(), CodexSessionStore()]) {
+    init(stores: [any SessionStore] = [ClaudeSessionStore(), CodexSessionStore()]) {
         self.stores = stores
     }
-    public func load() -> [TranscriptSummary] {
+    func load() -> [TranscriptSummary] {
         FileDescriptorLimit.ensureRaised()
         return stores.flatMap { $0.loadSummaries() }.sorted { $0.modifiedAt > $1.modifiedAt }
     }
 
     /// What a streamed read reports, in order: one `listed`, any number of
     /// `storeFailed` and `sessions`, then the stream finishes.
-    public typealias Event = CatalogBatch
+    typealias Event = CatalogBatch
 
     /// The whole disk, newest first, a batch at a time — for a page that wants
     /// rows on screen before the last of ~4,000 logs is parsed. Files are
@@ -21,7 +22,7 @@ struct LocalSessionCatalog: Sendable {
     /// first batch is the most recent work. Off the caller's thread; ending
     /// the consumer's iteration (or cancelling its task) stops the read at the
     /// next batch boundary.
-    public func stream(batchSize: Int = 200, newestFirst: Bool = true) -> AsyncStream<Event> {
+    func stream(batchSize: Int = 200, newestFirst: Bool = true) -> AsyncStream<Event> {
         let stores = self.stores
         let size = max(1, batchSize)
         return AsyncStream { continuation in

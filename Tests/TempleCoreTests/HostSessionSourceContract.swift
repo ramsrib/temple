@@ -2,6 +2,7 @@ import XCTest
 import CoreServices
 @testable import TempleCore
 import TempleTestSupport
+@testable import TempleLocalHost
 
 /// A host under test, with the means to change what is on it.
 protocol SourceFixture: AnyObject {

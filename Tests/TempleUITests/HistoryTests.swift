@@ -3,6 +3,7 @@ import AppKit
 import Combine
 @testable import TempleUI
 import TempleCore
+@testable import TempleLocalHost
 
 /// The History tab's model: a snapshot of the whole disk joined with Temple's
 /// membership, the page's search and filters over it, native-style

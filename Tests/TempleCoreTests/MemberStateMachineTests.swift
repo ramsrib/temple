@@ -1,6 +1,7 @@
 import XCTest
 import CoreServices
 @testable import TempleCore
+@testable import TempleLocalHost
 
 /// The engine's per-member state machine over this Mac's source: verify,
 /// enrich only while the row lacks something, back off, re-verify on a new

@@ -1,5 +1,6 @@
 import CoreServices
 @testable import TempleCore
+@testable import TempleLocalHost
 
 extension SessionEngine {
     /// Delivers a filesystem event to a local source as FSEvents would.

@@ -1,5 +1,6 @@
 import Foundation
 @testable import TempleCore
+@testable import TempleLocalHost
 
 /// Transcript shapes for the format characterization (`FormatGoldenTests`).
 /// Every branch the agent formats take is represented: head/tail windows,

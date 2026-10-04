@@ -21,6 +21,13 @@ let package = Package(
         // Pure logic — no AppKit/SwiftUI (ADR-006).
         .target(name: "TempleCore", dependencies: [.product(name: "GRDB", package: "GRDB.swift")]),
 
+        // This Mac's transcripts: the local stores, byte reads, FSEvents and
+        // the shared-facts cache behind `LocalSessionSource`, its one public
+        // type. The pure agent formats stay in TempleCore/Formats, where a
+        // remote host reuses them. TempleUI names it in one composition file
+        // (`Hosts/LocalHost.swift`); templectl imports it directly.
+        .target(name: "TempleLocalHost", dependencies: ["TempleCore"]),
+
         // Terminal seam (PLAN.md "Decoupling interfaces"): TerminalSurface
         // protocol + stub. Imports AppKit; free of ghostty and TempleCore.
         .target(name: "TempleTerminalAPI"),
@@ -29,7 +36,7 @@ let package = Package(
         // (executables can't be imported cleanly). Bundles the agent brand icons.
         .target(
             name: "TempleUI",
-            dependencies: ["TempleCore", "TempleTerminalAPI"],
+            dependencies: ["TempleCore", "TempleLocalHost", "TempleTerminalAPI"],
             resources: [.process("Resources")]
         ),
 
@@ -38,7 +45,7 @@ let package = Package(
         .executableTarget(name: "Temple", dependencies: ["TempleUI", "TempleTerminal"]),
 
         // CLI that prints the real project → session index.
-        .executableTarget(name: "templectl", dependencies: ["TempleCore"]),
+        .executableTarget(name: "templectl", dependencies: ["TempleCore", "TempleLocalHost"]),
 
         // Track T — libghostty engine.
         // Prebuilt embeddable artifact from Scripts/build-ghostty.sh (see
@@ -73,8 +80,8 @@ let package = Package(
         // Nothing in a product links it.
         .target(name: "TempleTestSupport", dependencies: ["TempleCore"]),
 
-        .testTarget(name: "TempleCoreTests", dependencies: ["TempleCore", "TempleTestSupport"], exclude: ["Fixtures/session-state-v8.json", "Fixtures/session-state-v9.json", "Fixtures/format-golden.json"]),
-        .testTarget(name: "TempleUITests", dependencies: ["TempleUI", "TempleTestSupport"]),
+        .testTarget(name: "TempleCoreTests", dependencies: ["TempleCore", "TempleLocalHost", "TempleTestSupport"], exclude: ["Fixtures/session-state-v8.json", "Fixtures/session-state-v9.json", "Fixtures/format-golden.json"]),
+        .testTarget(name: "TempleUITests", dependencies: ["TempleUI", "TempleLocalHost", "TempleTestSupport"]),
         .testTarget(name: "TempleTerminalTests", dependencies: ["TempleTerminal", "TempleUI"]),
     ]
 )

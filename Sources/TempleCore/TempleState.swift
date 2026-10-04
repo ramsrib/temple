@@ -1,8 +1,14 @@
 import Foundation
 
 public enum TempleState {
+    /// `TEMPLE_STATE_DIR`, tilde-expanded; unset or empty is no override.
+    static var environmentOverride: URL? {
+        guard let path = ProcessInfo.processInfo.environment["TEMPLE_STATE_DIR"], !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)
+    }
+
     public static var directory: URL {
-        let url = StoreIO.envRoot("TEMPLE_STATE_DIR") ?? (underTest ? testDirectory : defaultDirectory)
+        let url = environmentOverride ?? (underTest ? testDirectory : defaultDirectory)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
@@ -25,7 +31,7 @@ public enum TempleState {
     /// neither is a path that resolves to it, so a tool that must never write
     /// real state can gate on this rather than on the variable being set.
     public static var isRedirected: Bool {
-        guard let override = StoreIO.envRoot("TEMPLE_STATE_DIR") else { return false }
+        guard let override = environmentOverride else { return false }
         return canonicalPath(override) != canonicalPath(defaultDirectory)
     }
 

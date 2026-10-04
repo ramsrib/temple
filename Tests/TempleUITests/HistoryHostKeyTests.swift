@@ -4,6 +4,7 @@ import AppKit
 import TempleCore
 import TempleTerminalAPI
 import TempleTestSupport
+@testable import TempleLocalHost
 
 /// History across hosts and agents (Track B C9/C10/D3/E3): every row is
 /// keyed by host, agent and session id; a member attaches only to the row

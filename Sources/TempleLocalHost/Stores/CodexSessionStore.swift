@@ -1,10 +1,11 @@
 import Dispatch
 import Foundation
+import TempleCore
 
 /// Reads Codex sessions from `~/.codex/sessions/**/rollout-*.jsonl`, titling them
 /// from `~/.codex/history.jsonl`. See SESSION-FORMATS.md.
-public struct CodexSessionStore: TranscriptSummaryStore {
-    public let agent: Agent = .codex
+struct CodexSessionStore: TranscriptSummaryStore {
+    let agent: Agent = .codex
     let sessionsRoot: URL
     /// `sessionsRoot` normalized once: every observed path is checked against it.
     private let sessionsPrefix: String
@@ -14,7 +15,7 @@ public struct CodexSessionStore: TranscriptSummaryStore {
     /// file rather than twice for every rollout parsed.
     let shared = CodexSharedFactsCache()
 
-    public init(root: URL? = nil) {
+    init(root: URL? = nil) {
         // TEMPLE_CODEX_ROOT: see ClaudeSessionStore.
         let base = root
             ?? StoreIO.envRoot("TEMPLE_CODEX_ROOT")
@@ -26,9 +27,9 @@ public struct CodexSessionStore: TranscriptSummaryStore {
         self.sessionIndexFile = base.appendingPathComponent("session_index.jsonl")
     }
 
-    public var watchedURLs: [URL] { [sessionsRoot.deletingLastPathComponent(), sessionsRoot] }
-    public var sharedFactURLs: [URL] { [historyFile, sessionIndexFile] }
-    public func loadSummaries() -> [TranscriptSummary] {
+    var watchedURLs: [URL] { [sessionsRoot.deletingLastPathComponent(), sessionsRoot] }
+    var sharedFactURLs: [URL] { [historyFile, sessionIndexFile] }
+    func loadSummaries() -> [TranscriptSummary] {
         let shared = sharedFacts()
         let files = sessionFileURLs()
         let collector = TranscriptSummaryCollector()
@@ -40,7 +41,7 @@ public struct CodexSessionStore: TranscriptSummaryStore {
         return collector.result()
     }
 
-    public func loadSummary(at fileURL: URL) -> TranscriptSummary? {
+    func loadSummary(at fileURL: URL) -> TranscriptSummary? {
         StoreIO.summary(at: fileURL, format: CodexFormat(), shared: sharedFacts())
     }
 
@@ -50,7 +51,7 @@ public struct CodexSessionStore: TranscriptSummaryStore {
 
     /// The shared facts and the revision they belong to, as one value: the
     /// cache owns both, so a reader holding old facts keeps their revision.
-    public func sharedFactsSnapshot() -> (facts: SharedFacts, revision: UInt64?) {
+    func sharedFactsSnapshot() -> (facts: SharedFacts, revision: UInt64?) {
         let snapshot = shared.snapshot(currentKey: sharedInputKey) {
             // Each file read once; both maps derive from that.
             var inputs: [String: Data] = [:]
@@ -63,25 +64,25 @@ public struct CodexSessionStore: TranscriptSummaryStore {
         return (snapshot.facts, snapshot.revision)
     }
 
-    public var sharedTransfers: Int { shared.fileReads }
+    var sharedTransfers: Int { shared.fileReads }
 
     /// The inputs' current revision, from a stat of each; nothing is read.
-    public func sharedRevision() -> UInt64? { shared.revision(currentKey: sharedInputKey) }
+    func sharedRevision() -> UInt64? { shared.revision(currentKey: sharedInputKey) }
 
     private func sharedInputKey() -> [SharedInputSignature] { sharedFactURLs.map(SharedInputSignature.init) }
 
-    public func catalogParser() -> @Sendable (URL) -> TranscriptSummary? { catalogSummaryParser() }
+    func catalogParser() -> @Sendable (URL) -> TranscriptSummary? { catalogSummaryParser() }
 
-    public func catalogSummaryParser() -> @Sendable (URL) -> TranscriptSummary? {
+    func catalogSummaryParser() -> @Sendable (URL) -> TranscriptSummary? {
         let shared = sharedFacts()
         return { StoreIO.summary(at: $0, format: CodexFormat(), shared: shared) }
     }
 
-    public func sessionFileURLs() -> [URL] { (try? enumerateSessionFiles()) ?? [] }
+    func sessionFileURLs() -> [URL] { (try? enumerateSessionFiles()) ?? [] }
 
-    public func enumerateSessionFiles() throws -> [URL] { try enumerateRollouts(in: sessionsRoot) }
+    func enumerateSessionFiles() throws -> [URL] { try enumerateRollouts(in: sessionsRoot) }
 
-    public func enumerateSessionFiles(in subtree: URL) throws -> [URL] {
+    func enumerateSessionFiles(in subtree: URL) throws -> [URL] {
         let path = SessionPaths.normalized(subtree.path)
         let prefix = SessionPaths.normalized(sessionsRoot.path)
         if path == prefix || prefix.hasPrefix(path + "/") { return try enumerateSessionFiles() }
@@ -104,7 +105,7 @@ public struct CodexSessionStore: TranscriptSummaryStore {
         return files
     }
 
-    public func acceptsTranscript(_ url: URL) -> Bool {
+    func acceptsTranscript(_ url: URL) -> Bool {
         url.pathExtension == "jsonl" && url.lastPathComponent.hasPrefix("rollout-") &&
             SessionPaths.normalized(url.path).hasPrefix(sessionsPrefix)
     }

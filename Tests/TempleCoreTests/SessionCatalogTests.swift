@@ -1,6 +1,7 @@
 import XCTest
 @testable import TempleCore
 import TempleTestSupport
+@testable import TempleLocalHost
 
 /// The History tab reads the whole disk through `LocalSessionCatalog.stream`: rows
 /// must arrive newest first, a batch at a time, with a total to count against,

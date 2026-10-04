@@ -1,5 +1,6 @@
 import XCTest
 @testable import TempleCore
+@testable import TempleLocalHost
 
 /// Interleavings inside one local `read`, made deterministic with the
 /// source's read-phase seam.

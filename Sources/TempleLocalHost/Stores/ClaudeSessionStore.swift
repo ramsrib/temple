@@ -1,13 +1,14 @@
 import Dispatch
 import Foundation
+import TempleCore
 
 /// Reads Claude Code sessions from `~/.claude/projects/<encoded-cwd>/<id>.jsonl`.
 /// See SESSION-FORMATS.md.
-public struct ClaudeSessionStore: TranscriptSummaryStore {
-    public let agent: Agent = .claude
+struct ClaudeSessionStore: TranscriptSummaryStore {
+    let agent: Agent = .claude
     private let root: URL
 
-    public init(root: URL? = nil) {
+    init(root: URL? = nil) {
         // TEMPLE_CLAUDE_ROOT points the index at an alternate store (testing,
         // demos, screenshots). Defaults to the real one.
         self.root = root
@@ -16,9 +17,9 @@ public struct ClaudeSessionStore: TranscriptSummaryStore {
                 .appendingPathComponent(".claude/projects", isDirectory: true)
     }
 
-    public var watchedURLs: [URL] { [root] }
+    var watchedURLs: [URL] { [root] }
 
-    public func loadSummaries() -> [TranscriptSummary] {
+    func loadSummaries() -> [TranscriptSummary] {
         let files = sessionFileURLs()
         let collector = TranscriptSummaryCollector()
         DispatchQueue.concurrentPerform(iterations: files.count) { index in
@@ -29,9 +30,9 @@ public struct ClaudeSessionStore: TranscriptSummaryStore {
         return collector.result()
     }
 
-    public func sessionFileURLs() -> [URL] { (try? enumerateSessionFiles()) ?? [] }
+    func sessionFileURLs() -> [URL] { (try? enumerateSessionFiles()) ?? [] }
 
-    public func enumerateSessionFiles() throws -> [URL] {
+    func enumerateSessionFiles() throws -> [URL] {
         let fm = FileManager.default
         let dirs: [URL]
         do { dirs = try fm.contentsOfDirectory(at: root.resolvingSymlinksInPath(), includingPropertiesForKeys: [.isDirectoryKey]) }
@@ -45,7 +46,7 @@ public struct ClaudeSessionStore: TranscriptSummaryStore {
         return files
     }
 
-    public func enumerateSessionFiles(in subtree: URL) throws -> [URL] {
+    func enumerateSessionFiles(in subtree: URL) throws -> [URL] {
         let prefix = SessionPaths.normalized(root.path)
         let path = SessionPaths.normalized(subtree.path)
         if path == prefix || prefix.hasPrefix(path + "/") { return try enumerateSessionFiles() }
@@ -58,14 +59,14 @@ public struct ClaudeSessionStore: TranscriptSummaryStore {
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile { return [] }
     }
 
-    public func acceptsTranscript(_ url: URL) -> Bool {
+    func acceptsTranscript(_ url: URL) -> Bool {
         let path = SessionPaths.normalized(url.path)
         let prefix = SessionPaths.normalized(root.path)
         return url.pathExtension == "jsonl" && path.hasPrefix(prefix + "/") &&
             path.split(separator: "/").count == prefix.split(separator: "/").count + 2
     }
 
-    public func loadSummary(at fileURL: URL) -> TranscriptSummary? {
+    func loadSummary(at fileURL: URL) -> TranscriptSummary? {
         StoreIO.summary(at: fileURL, format: ClaudeFormat(), shared: .empty)
     }
 }

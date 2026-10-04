@@ -1,6 +1,7 @@
 import XCTest
 import CoreServices
 @testable import TempleCore
+@testable import TempleLocalHost
 
 final class WatcherTests: XCTestCase {
     private var started: [SessionEngine] = []

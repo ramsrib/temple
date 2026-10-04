@@ -1,5 +1,6 @@
 import Foundation
 import TempleCore
+import TempleLocalHost
 import Darwin
 
 // Row browsing by default; --disk explicitly browses the transcript catalog.

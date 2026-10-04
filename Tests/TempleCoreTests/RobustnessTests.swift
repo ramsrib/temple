@@ -1,5 +1,6 @@
 import XCTest
 @testable import TempleCore
+@testable import TempleLocalHost
 
 final class RobustnessTests: XCTestCase {
     private var roots: [URL] = []

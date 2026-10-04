@@ -1,6 +1,7 @@
 import XCTest
 import TempleCore
 @testable import TempleUI
+@testable import TempleLocalHost
 
 /// ⌘T joins a Claude session the moment its id is minted. Closed before
 /// anything was sent, the CLI never writes a transcript, and the row used to

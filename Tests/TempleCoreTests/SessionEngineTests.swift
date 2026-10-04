@@ -2,6 +2,7 @@ import XCTest
 import CoreServices
 import GRDB
 @testable import TempleCore
+@testable import TempleLocalHost
 
 @MainActor
 final class SessionEngineTests: XCTestCase {

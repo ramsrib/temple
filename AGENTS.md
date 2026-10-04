@@ -237,11 +237,14 @@ during that refactor:
 - **Absence needs evidence.** Only a completed enumeration is `absent`;
   `mismatch`, `unreadable`, a failed scan, a cancelled scan or a missing
   catalog entry never are. A remote transport failure must not be either.
-- **Transcript I/O lives under `Sources/TempleCore/Hosts/Local/`.** An audit
-  test enforces it with an explicit allowlist for unrelated I/O (toolchain,
-  login shell, state dir, DB, usage meter). Add to the allowlist only for I/O
-  that is not about transcripts; route anything that is through
-  `HostSessionSource`.
+- **Local transcript I/O is the `TempleLocalHost` module.** Its stores are
+  internal; `LocalSessionSource` is the public type. `TempleUI` imports it in
+  exactly one file, `Sources/TempleUI/Hosts/LocalHost.swift`, and templectl
+  imports it; `ModuleBoundaryTests` asserts that import list, and that
+  `TempleCore/Formats` touches no filesystem API (no `FileManager`,
+  `FileHandle`, `contentsOf`, `open`). Neither can stop a new direct read of a
+  transcript path with Foundation from TempleUI or TempleCore — that remains
+  a review rule: route it through `HostSessionSource`.
 - **Hosts build their own commands.** Launch from an `AgentLaunchSpec` through
   the row's host's `HostLauncher`; never build a command with this Mac's
   toolchain and hand it to another host. Directory checks go to the owning

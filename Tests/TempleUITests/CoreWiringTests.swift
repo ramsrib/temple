@@ -2,6 +2,7 @@ import XCTest
 @testable import TempleUI
 @testable import TempleCore
 import CoreServices
+@testable import TempleLocalHost
 
 @MainActor
 final class CoreWiringTests: XCTestCase {

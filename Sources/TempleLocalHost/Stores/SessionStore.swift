@@ -1,20 +1,21 @@
 import Foundation
+import TempleCore
 
 /// A source of agent sessions on disk (one per agent).
-public protocol SessionStore: Sendable {
+protocol SessionStore: Sendable {
     var agent: Agent { get }
     /// Roots whose filesystem changes can affect this store's sessions.
     var watchedURLs: [URL] { get }
     func loadSummaries() -> [TranscriptSummary]
 }
 
-public extension SessionStore {
+extension SessionStore {
     var watchedURLs: [URL] { [] }
 }
 
 /// Path-level capabilities required by the live engine. Full-disk catalogs
 /// continue to accept any SessionStore.
-public protocol IncrementalSessionStore: SessionStore {
+protocol IncrementalSessionStore: SessionStore {
     /// Session files currently owned by this store.
     func sessionFileURLs() -> [URL]
     /// Parses one of the URLs returned by `sessionFileURLs()`.
@@ -46,7 +47,7 @@ public protocol IncrementalSessionStore: SessionStore {
 
 }
 
-public extension IncrementalSessionStore {
+extension IncrementalSessionStore {
     /// The pure format behind this store's agent; every reading of a file's
     /// name, identity, header and facts goes through it.
     var format: any TranscriptFormat { TranscriptFormats.format(for: agent) }
@@ -92,10 +93,10 @@ public extension IncrementalSessionStore {
 }
 
 /// Fact-producing stores used by catalog and member enrichment.
-public protocol TranscriptSummaryStore: IncrementalSessionStore {
+protocol TranscriptSummaryStore: IncrementalSessionStore {
     func catalogSummaryParser() -> @Sendable (URL) -> TranscriptSummary?
 }
-public extension TranscriptSummaryStore {
+extension TranscriptSummaryStore {
     func catalogSummaryParser() -> @Sendable (URL) -> TranscriptSummary? { catalogParser() }
 }
 
@@ -315,7 +316,7 @@ final class TranscriptSummaryCollector: @unchecked Sendable {
 
 /// A shared input's stat signature: modification date, size, file identity.
 /// A missing file has its own (all nil).
-public struct SharedInputSignature: Hashable, Sendable {
+struct SharedInputSignature: Hashable, Sendable {
     let date: Date?
     let size: Int?
     let inode: UInt64?

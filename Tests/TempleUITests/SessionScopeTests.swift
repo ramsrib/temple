@@ -4,6 +4,7 @@ import GRDB
 import CoreServices
 @testable import TempleUI
 @testable import TempleCore
+@testable import TempleLocalHost
 
 
 /// The session scope: by default Temple browses only the sessions it has

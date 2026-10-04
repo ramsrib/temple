@@ -1,5 +1,6 @@
 import Dispatch
 import Foundation
+import TempleCore
 import CoreServices
 
 /// This Mac's transcripts, behind the primitive seam: FSEvents observation
@@ -71,9 +72,16 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         return formatter
     }()
 
-    public init(stores: [any IncrementalSessionStore] = [ClaudeSessionStore(), CodexSessionStore()],
-                debounceInterval: TimeInterval = 0.3,
-                monitorChanges: Bool = true) {
+    /// This Mac's two stores, at their real roots or the `TEMPLE_*_ROOT`
+    /// overrides. `monitorChanges: false` never arms FSEvents (templectl's
+    /// one-shot reads).
+    public convenience init(monitorChanges: Bool = true) {
+        self.init(stores: [ClaudeSessionStore(), CodexSessionStore()], monitorChanges: monitorChanges)
+    }
+
+    init(stores: [any IncrementalSessionStore],
+         debounceInterval: TimeInterval = 0.3,
+         monitorChanges: Bool = true) {
         self.stores = stores
         self.debounceInterval = debounceInterval
         self.monitorChanges = monitorChanges
@@ -208,14 +216,14 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             max(0.01, debounceInterval),
             FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot | kFSEventStreamCreateFlagUseCFTypes))
         else {
-            TempleCoreLog.watcher.error("FSEvents stream could not be created")
+            LocalHostLog.watcher.error("FSEvents stream could not be created")
             return
         }
         stream = created
         FSEventStreamSetDispatchQueue(created, queue)
         monitoring = FSEventStreamStart(created)
         if !monitoring {
-            TempleCoreLog.watcher.error("FSEvents stream failed to start")
+            LocalHostLog.watcher.error("FSEvents stream failed to start")
         }
     }
 
@@ -361,7 +369,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
                 enumerationByAgent[store.agent] = false
                 // Preserve the last map for this agent; failed listing proves no absence.
                 for (path, entry) in files where entry.1 == store.agent { next[path] = entry }
-                TempleCoreLog.watcher.error("enumeration failed: \(String(describing: error), privacy: .public)")
+                LocalHostLog.watcher.error("enumeration failed: \(String(describing: error), privacy: .public)")
             }
         }
         files = next
