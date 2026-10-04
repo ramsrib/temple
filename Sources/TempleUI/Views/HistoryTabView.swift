@@ -127,7 +127,7 @@ struct HistoryTabView: View {
     /// What is in the box, not what is showing.
     private var subtitle: String {
         if history.allRows.isEmpty, history.lastUpdated == nil { return "Every session on disk" }
-        return "\(history.allRows.count.formatted()) sessions on disk · \(history.inTempleCount.formatted()) in Temple"
+        return history.countsLine
     }
 
     /// The page is a snapshot, and says so: when it was taken, and the way to

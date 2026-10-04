@@ -274,6 +274,29 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(h.history.allRows.first?.updatedAt, disk.updatedAt)
     }
 
+    /// The header counts the union the page lists. A member whose transcript
+    /// the engine proved gone is one of those rows, but not a file on disk:
+    /// the line names it instead of calling every row "on disk".
+    func testHeaderCountsTheListedRowsAndNamesTheOnesWithoutATranscript() async {
+        let rows = [session("on-disk", hoursAgo: 1), session("outside", hoursAgo: 2)]
+        let h = harness(rows, members: ["on-disk", "pruned", "still-resolving"])
+        let states = h.overlay.rows
+        var resolutions: [String: MemberResolution] = [
+            "on-disk": .loaded(URL(fileURLWithPath: "/tmp/on-disk.jsonl")),
+            "pruned": .confirmedAbsent, "still-resolving": .resolving]
+        h.history.memberRows = { states.values.map { Session(state: $0, resolution: resolutions[$0.id]) } }
+        await load(h.history)
+
+        XCTAssertEqual(h.history.allRows.count, 4)
+        XCTAssertEqual(h.history.transcriptMissingCount, 1, "only a proven absence; resolving is not missing")
+        XCTAssertEqual(h.history.countsLine, "4 sessions · 3 in Temple · 1 without a transcript")
+
+        resolutions["pruned"] = .resolving
+        h.history.rowsChanged()
+        await waitFor { h.history.transcriptMissingCount == 0 }
+        XCTAssertEqual(h.history.countsLine, "4 sessions · 3 in Temple", "no gap, no clause")
+    }
+
     func testArchivedTempleRowsAreShownTaggedUnderInTemple() async {
         let rows = [session("put-away", hoursAgo: 1), session("project-away", project: "/p/b", hoursAgo: 2),
                     session("outside", hoursAgo: 3)]

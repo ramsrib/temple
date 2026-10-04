@@ -129,6 +129,9 @@ public final class HistoryModel: ObservableObject {
     @Published public private(set) var visibleRows: [HistoryRow] = []
     @Published public private(set) var groups: [HistoryRowDayGroup] = []
     @Published public private(set) var inTempleCount = 0
+    /// Members whose transcript the engine proved gone: listed, but nothing
+    /// on disk backs them (`HistoryRow.transcriptMissing`).
+    @Published public private(set) var transcriptMissingCount = 0
     @Published public private(set) var agentCounts: [Agent: Int] = [:]
     /// Projects for the popup, by session count, most first.
     @Published public private(set) var projects: [ProjectCount] = []
@@ -239,6 +242,18 @@ public final class HistoryModel: ObservableObject {
     }
 
     func rowsChanged() { scheduleRebuild() }
+
+    /// The header's counts: what the page lists, not what is on disk. The
+    /// list is the union of the catalog and Temple's members, so a member
+    /// whose transcript is gone is counted — and named, rather than passed
+    /// off as a file Finder would contradict.
+    public var countsLine: String {
+        var line = "\(allRows.count.formatted()) sessions · \(inTempleCount.formatted()) in Temple"
+        if transcriptMissingCount > 0 {
+            line += " · \(transcriptMissingCount.formatted()) without a transcript"
+        }
+        return line
+    }
 
     private var currentMembers: [Session] {
         let supplied = memberRows()
@@ -536,6 +551,7 @@ public final class HistoryModel: ObservableObject {
         }
         assign(\.allRows, rows)
         assign(\.inTempleCount, rows.reduce(0) { $0 + ($1.isMember ? 1 : 0) })
+        assign(\.transcriptMissingCount, rows.reduce(0) { $0 + ($1.transcriptMissing ? 1 : 0) })
         var agents: [Agent: Int] = [:]
         var projectCounts: [ProjectKey: Int] = [:]
         for row in rows {
