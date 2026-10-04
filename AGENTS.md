@@ -234,6 +234,12 @@ during that refactor:
   a launcher failure (`.failed`) keeps the tab with its reason however long
   the process lived. A host whose launcher returns no channel never records
   a folder from a tab. Copying a row into a restored chip writes nothing.
+- **The engine never writes the database.** `SessionEngine` reads rows and
+  publishes authorized facts; only `FactPersister`, called from the app (or
+  writable templectl), writes them, under the `(id, host, incarnation)`
+  predicate. Don't add a DB write to the engine or a source: the incarnation
+  check in the write is what makes a leave-and-rejoin race harmless, and it
+  only works if every engine-originated write goes through it.
 - **Absence needs evidence.** Only a completed enumeration is `absent`;
   `mismatch`, `unreadable`, a failed scan, a cancelled scan or a missing
   catalog entry never are. A remote transport failure must not be either.

@@ -1136,18 +1136,40 @@ files on this Mac, which a session on another machine will never have.
   Codex's shared title, the first prompt, the history prompt — the same chain
   History and templectl show before any hint), with the fill checked against the
   row's host inside the write; a filled field is never overwritten by a file.
-- **The engine verifies, then enriches, then stats.** Per member: locate,
-  verify identity (re-run on a new path, inode, truncation or revert
-  selection), and parse only while the row still lacks a field, backing off
-  1 s → 60 s; a write to a member with nothing missing is a stat and publishes
-  nothing. `mismatch` and `unreadable` never become `absent`; only a completed
-  enumeration proves absence. `index-cache.json` is gone (removed once, so an older build
-  installed alongside keeps its own): SQLite is the fast
-  launch path, and the sidebar draws from it before the engine runs.
-- **One semantic seam per host.** `HostSessionSource` resolves, catalogs,
-  adopts and reports changes for one host; its results say loaded, absent,
-  awaiting creation, unreadable, incomplete or mismatch, and a transport
-  failure never proves absence. Local transcript I/O is the `TempleLocalHost`
+- **The engine verifies, then enriches, then stats — and never writes.**
+  `SessionEngine` is an actor, one per host, that owns the whole per-member
+  machine: locate, verify identity, parse only while the row still lacks a
+  field (backing off 1 s → 60 s), and decide the verdict. `mismatch` and
+  `unreadable` never become `absent`; only a completed enumeration of every
+  eligible agent proves absence. It reads the database (membership and the
+  fields each row still wants) but writes nothing: it publishes, in every
+  snapshot, the facts it currently stands behind for each member, authorized
+  by `(run epoch, operation revision, incarnation)`. The app applies them on
+  the main actor through `FactPersister`, whose SQL carries
+  `WHERE id = ? AND host = ? AND incarnation = ?`, so a leave and rejoin
+  between publish and write cannot let stale facts land. Facts are revoked —
+  dropped from the next snapshot, and any pending retry with them — on every
+  invalidation: a transcript change to a member that still wants a field, a
+  coverage reset or reconnect, a shared-facts change, an explicit open, a new
+  candidate, a membership change. A member whose row is complete holds no
+  facts, and an append to its file is a stat that publishes nothing; it is
+  re-verified only on a new file identity, a shrink, a same-size rewrite or a
+  new locator (accepted: a file rewritten in place to another session and
+  grown on the same inode stays loaded until one of those happens).
+  `index-cache.json` is gone (removed once, so an older build installed
+  alongside keeps its own): SQLite is the fast launch path, and the sidebar
+  draws from it before the engine runs.
+- **One primitive seam per host.** `HostSessionSource` lists and stats
+  (`locate`), reads one transcript (`read`, identity and facts with the
+  signature the read saw), reports changes (`changes`, with a coverage reset
+  on reconnect), lists the whole store (`catalog`), adopts a new Codex
+  session (`adopt`) and answers folder evidence asynchronously; a transport
+  failure never proves absence. The agent formats — filename selection
+  (including Codex's revert rule), identity, bounded parsing with head/tail
+  provenance, shared facts, adoption headers — are pure functions in
+  `TempleCore/Formats`, so a remote source feeds them bytes rather than
+  reimplementing them. A contract suite runs against the local source and a
+  fake remote alike. Local transcript I/O is the `TempleLocalHost`
   module; its stores are internal and `LocalSessionSource` is its only public
   type; `TempleUI` imports it in one composition file (a test asserts the
   import list; it cannot police new Foundation reads — that is a review rule).
@@ -1165,9 +1187,19 @@ files on this Mac, which a session on another machine will never have.
   when its folder is gone, and the failure is shown whenever the process
   exits. A launcher with no channel (a future ssh one, until it relays the
   same report) records nothing; its command must still `cd` or exit, and a
-  remote new session's folder then comes from its transcript. A remote host is the same row with `host` set, an
-  ssh-backed source and an ssh launcher; none of that ships here. The session id stays the
-  key; `host` is an attribute.
+  remote new session's folder then comes from its transcript. The session id
+  stays the key and `host` an attribute: a join refuses an id already in
+  Temple on another host (`hostConflict`) or as another agent
+  (`agentConflict`), inside one transaction, and opens, fills, hints,
+  activity, launch folders and undo all carry the host predicate.
+- **Catalogs are host-tagged and pick before they parse.** Hosts are listed
+  concurrently and each batch names its host; a failed host reports itself.
+  The local catalog chooses each thread's authoritative rollout by the same
+  rule member resolution uses, before parsing, and shows nothing for a thread
+  whose chosen file is unreadable rather than an older rollout. History keys
+  every row by `(host, agent, session id)`; a catalog row for an id that is a
+  member on another host or as another agent is shown, not importable, with
+  the reason.
 - **Older builds keep working on the file; newer ones stop this build.** v10
   only adds columns and keeps `generated_title`, written alongside `title` and
   reconciled on open (open-time only: an older process's later writes arrive
@@ -1208,6 +1240,16 @@ tab's original row; a rebind is now a row write and is next. Codex adoption
 still correlates cwd and time, not process identity, and stays noncommittal
 when in doubt. The Codex usage meter reads the local store only.
 
+**What remote needs, and only needs:** `RemoteSessionSource` passing the
+contract suite; an ssh `HostLauncher` (`prepare` and `availability`, with a
+`cd -- dir || exit` command so the agent never runs elsewhere); host entries
+in `HostRegistry` and a host picker; and `v12-project-host` (host in
+`project_state`/`open_tabs` keys and `PersistedTab.host`; until then non-local
+project archive and order are memory-only and a restored chip takes its host
+from its row). The engine, the database's conflict handling and the sidebar,
+History and ⌘K consumers do not change. Kept local-only: the Codex usage
+meter, Reveal in Finder, and toolchain detection in Settings.
+
 **Measured** with `templectl --watch --metrics` (`Scripts/bench-member-engine.py`)
 on synthetic APFS clones shaped like ADR-027's (337 members, 164 with a log;
 1,355 Claude and 2,761 Codex logs), one member written 4×/s and one outside
@@ -1217,12 +1259,13 @@ delivered no events:
 | | upgrade (fields NULL) | filled |
 |---|---|---|
 | parses at startup | 164 | 0 |
-| parses / publications while writing | 0 / 0 | 0 / 0 |
-| CPU | 0.65% of a core | 0.62% |
+| reads / locates / enumerations at startup | 164 / 2 / 1 | 164 / 2 / 1 |
+| parses / reads / publications / enumerations while writing | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
 | open files | 12 | 12 |
-| first engine publication | 5.3 s | 0.25 s |
+| first engine publication | 0.02 s | 0.02 s |
 | rows readable from SQLite | 0.01 s | 0.01 s |
 
-Synthetic stores and a debug build, so not directly comparable with ADR-027's
+Steady CPU while writing, in a release build: 0.61–0.72% of a core; the
+engine before this decision, re-run on the same machine, used 0.55%. Synthetic stores, so not directly comparable with ADR-027's
 real-store figures; they show the shape (no work per member write once filled),
 not a benchmark result to quote.
