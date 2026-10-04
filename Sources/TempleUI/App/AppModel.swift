@@ -578,9 +578,7 @@ public final class AppModel: ObservableObject {
         beginSidebarRanking()
         applyAppearance()
         openSessions.restore()
-        // Temple owns this obsolete cache. Rows in SQLite are the launch path.
-        try? FileManager.default.removeItem(at: (stateDirectory ?? TempleState.directory)
-            .appendingPathComponent("index-cache.json"))
+        retireIndexCacheOnce()
         indexSource.start { [weak self] snapshot in
             self?.isLoading = false
             self?.receiveEngineSnapshot(snapshot)
@@ -591,6 +589,18 @@ public final class AppModel: ObservableObject {
             object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in self?.applyAppearance() }
             }
+    }
+
+    /// The pre-ADR-029 launch cache is obsolete: rows in SQLite are the launch
+    /// path. It is removed once, not on every launch — an older Temple still
+    /// installed beside this one rebuilds and relies on it, and deleting it
+    /// each time would cold-start that build on every one of its launches.
+    private func retireIndexCacheOnce() {
+        let directory = stateDirectory ?? TempleState.directory
+        let marker = directory.appendingPathComponent(".index-cache-retired")
+        guard !FileManager.default.fileExists(atPath: marker.path) else { return }
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent("index-cache.json"))
+        FileManager.default.createFile(atPath: marker.path, contents: nil)
     }
 
     /// App-quit drain (ADR-010) → returns true once all surfaces are down.

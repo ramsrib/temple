@@ -1141,7 +1141,8 @@ files on this Mac, which a session on another machine will never have.
   selection), and parse only while the row still lacks a field, backing off
   1 s → 60 s; a write to a member with nothing missing is a stat and publishes
   nothing. `mismatch` and `unreadable` never become `absent`; only a completed
-  enumeration proves absence. `index-cache.json` is gone: SQLite is the fast
+  enumeration proves absence. `index-cache.json` is gone (removed once, so an older build
+  installed alongside keeps its own): SQLite is the fast
   launch path, and the sidebar draws from it before the engine runs.
 - **One semantic seam per host.** `HostSessionSource` resolves, catalogs,
   adopts and reports changes for one host; its results say loaded, absent,

@@ -4,7 +4,7 @@ import TempleCore
 
 @MainActor
 final class StartupIndexTests: XCTestCase {
-    func testIndexCacheFileIsRemovedOnStart() throws {
+    func testIndexCacheFileIsRemovedOnTheFirstStartOnly() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("temple-cache-removal-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -21,6 +21,14 @@ final class StartupIndexTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: sentinel.path))
         XCTAssertEqual(model.sessions.first?.displayTitle, "Durable")
         XCTAssertTrue(model.isLoading)
+
+        // Once only: an older Temple beside this one rebuilds the file and
+        // must not be cold-started on every launch of its own.
+        try Data("rebuilt by an older build".utf8).write(to: cache)
+        let again = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: DelayedIndexSource(),
+            database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()), stateDirectory: directory)
+        again.start()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cache.path))
     }
     func testTranscriptUpdateDoesNotOverwriteADurableTitle() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("temple-title-\(UUID().uuidString)")
