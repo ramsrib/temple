@@ -89,7 +89,7 @@ public final class HistoryModel: ObservableObject {
 
     private let overlay: SessionOverlayStore
     /// Runs off the main actor: the noise check stats each project once a read.
-    private let pathExists: @Sendable (String) -> Bool
+    private let directoryEvidence: @Sendable (ProjectKey) -> DirectoryEvidence
     private let now: () -> Date
     /// The full-disk read. Replaceable so tests feed events by hand.
     var catalog: () -> AsyncStream<CatalogBatch>
@@ -205,11 +205,16 @@ public final class HistoryModel: ObservableObject {
 
     init(overlay: SessionOverlayStore,
          catalog: (() -> AsyncStream<CatalogBatch>)? = nil,
-         pathExists: @escaping @Sendable (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
+         pathExists: (@Sendable (String) -> Bool)? = nil,
+         directoryEvidence: (@Sendable (ProjectKey) -> DirectoryEvidence)? = nil,
          now: @escaping () -> Date = Date.init) {
         self.overlay = overlay
         self.catalog = catalog ?? HostRegistry().catalog
-        self.pathExists = pathExists
+        let local = LocalSessionSource()
+        self.directoryEvidence = directoryEvidence ?? { key in
+            guard key.host.isLocal else { return .unknown }
+            return pathExists.map { $0(key.path) ? .exists : .missing } ?? local.directoryEvidence(key.path)
+        }
         self.now = now
         // Membership, renames, retitles and archive state all show on the
         // page. A burst (a bulk import, live retitles) is one rebuild.
@@ -277,11 +282,11 @@ public final class HistoryModel: ObservableObject {
         readTask?.cancel()
         readState = .reading(read: 0, total: nil)
         let stream = catalog()
-        let pathExists = pathExists
+        let directoryEvidence = directoryEvidence
         readTask = Task { [weak self] in
             var seen: Set<String> = []
             var failures: [StoreFailure] = []
-            var exists: [String: Bool] = [:]
+            var exists: [ProjectKey: DirectoryEvidence] = [:]
             for await event in stream {
                 guard let self, !Task.isCancelled else { return }
                 switch event {
@@ -297,7 +302,7 @@ public final class HistoryModel: ObservableObject {
                     let fresh = batch.filter { seen.insert($0.id).inserted }
                     let known = exists
                     let sorted = await Task.detached(priority: .userInitiated) {
-                        Self.classify(fresh, exists: known, pathExists: pathExists)
+                        Self.classify(fresh, exists: known, directoryEvidence: directoryEvidence)
                     }.value
                     guard !Task.isCancelled else { return }
                     exists = sorted.exists
@@ -325,18 +330,19 @@ public final class HistoryModel: ObservableObject {
 
     /// Splits a batch into rows and noise (`SessionFilter.isNoise`), carrying
     /// the per-project existence answers so far in and out.
-    nonisolated static func classify(_ sessions: [TranscriptSummary], exists: [String: Bool],
-                                     pathExists: (String) -> Bool)
-        -> (kept: [TranscriptSummary], noise: [String], exists: [String: Bool]) {
+    nonisolated static func classify(_ sessions: [TranscriptSummary], exists: [ProjectKey: DirectoryEvidence],
+                                     directoryEvidence: (ProjectKey) -> DirectoryEvidence)
+        -> (kept: [TranscriptSummary], noise: [String], exists: [ProjectKey: DirectoryEvidence]) {
         var exists = exists
         var kept: [TranscriptSummary] = []
         var noise: [String] = []
         for session in sessions {
             let isNoise = SessionFilter.isNoise(session) { path in
-                if let hit = exists[path] { return hit }
-                let result = pathExists(path)
-                exists[path] = result
-                return result
+                let key = ProjectKey(host: session.locator.host, path: path)
+                if let hit = exists[key] { return hit != .missing }
+                let result = directoryEvidence(key)
+                exists[key] = result
+                return result != .missing
             }
             if isNoise { noise.append(session.id) } else { kept.append(session) }
         }

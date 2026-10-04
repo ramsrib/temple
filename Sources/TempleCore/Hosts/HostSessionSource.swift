@@ -9,6 +9,8 @@ public protocol HostSessionSource: Sendable {
     var host: HostID { get }
     var capabilities: Set<HostCapability> { get }
     func resolve(_ requests: [ResolutionRequest]) async throws -> ResolutionBatch
+    /// Host-owned directory evidence; unknown must not be treated as missing.
+    func directoryEvidence(_ path: String) -> DirectoryEvidence
     func release(_ ids: [String])
     func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error>
     func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult
@@ -84,4 +86,12 @@ public enum SourceChange: Sendable {
 public protocol HostSourceDiagnostics: Sendable {
     var isMonitoring: Bool { get }
     var metrics: EngineMetrics { get }
+}
+
+public enum DirectoryEvidence: Sendable, Equatable {
+    case exists, missing, unknown
+}
+
+public extension HostSessionSource {
+    func directoryEvidence(_ path: String) -> DirectoryEvidence { .unknown }
 }

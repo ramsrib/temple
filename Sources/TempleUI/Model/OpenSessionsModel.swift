@@ -61,6 +61,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     /// Transitional lookup: legacy callers, restore and reopen prefer the durable row.
     public var sessionRow: (String) -> Session? = { _ in nil }
+    private let directoryEvidence: (ProjectKey) -> DirectoryEvidence
     private let launcherForHost: (HostID) -> (any HostLauncher)?
 
     /// Resolution updates retain the diagnosis interest after an early exit.
@@ -75,9 +76,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     }
 
     private func diagnoseExit(_ tab: SessionTab) {
-        if let cwd = tab.command?.cwd {
-            tab.missingWorkingDirectory = FileManager.default.fileExists(atPath: cwd) ? nil : cwd
-        }
+        tab.missingWorkingDirectory = directoryEvidence(tab.projectKey) == .missing ? tab.projectPath : nil
         guard tab.isResume, let sid = tab.sessionID else { return }
         if let known = sessionKnown(sid) { tab.resumeTargetMissing = !known }
         else { awaitingExitDiagnosis.insert(tab.id) }
@@ -101,9 +100,12 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                 canLaunch: @escaping (Agent) -> Bool = { _ in true },
                 now: @escaping () -> Date = Date.init,
                 commandWrapper: any HostCommandWrapper = LocalCommandWrapper(),
-                launcherForHost: ((HostID) -> (any HostLauncher)?)? = nil) {
+                launcherForHost: ((HostID) -> (any HostLauncher)?)? = nil,
+                directoryEvidence: ((ProjectKey) -> DirectoryEvidence)? = nil) {
         let local = LocalHostLauncher(binaryPath: binaryPath, extraArgs: extraArgs, canLaunch: canLaunch, wrapper: commandWrapper)
         self.launcherForHost = launcherForHost ?? { $0.isLocal ? local : nil }
+        let localSource = LocalSessionSource()
+        self.directoryEvidence = directoryEvidence ?? { $0.host.isLocal ? localSource.directoryEvidence($0.path) : .unknown }
         self.surfaceFactory = surfaceFactory
         self.appearanceProvider = appearanceProvider
         self.runtime = runtime
@@ -380,11 +382,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             openedHandler?(sid, tab.isResume ? .opened : .created, tab.agent,
                            tab.transcriptHint, SessionCore(host: tab.host))
         }
-        // Ghostty falls back to its default cwd when the requested path is not
-        // a directory. Capture the local fact at spawn, before adoption can lag.
-        var isDirectory: ObjCBool = false
-        let launchDirectory = FileManager.default.fileExists(atPath: command.cwd, isDirectory: &isDirectory)
-            && isDirectory.boolValue ? command.cwd : nil
+        // Only the owning host can establish the directory the agent uses.
+        let launchDirectory = directoryEvidence(tab.projectKey) == .exists ? tab.projectPath : nil
         do {
             try surface.start(TerminalIdentity.apply(to: command))
         } catch {

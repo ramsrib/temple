@@ -6,6 +6,36 @@ import TempleTerminalAPI
 
 @MainActor
 final class RemoteHostSeamTests: XCTestCase {
+    func testRemoteDirectoryEvidenceDoesNotConsultTheMac() throws {
+        let remote = HostID(rawValue: "remote-directory")
+        let path = "/not-on-this-mac/project"
+        let summary = TranscriptSummary(id: "remote-dir", agent: .claude,
+            locator: TranscriptLocator(host: remote, path: "opaque:dir"), modifiedAt: Date(), cwd: path)
+        let local = TranscriptSummary(id: "local-dir", agent: .claude,
+            locator: TranscriptLocator(host: .local, path: "opaque:dir"), modifiedAt: Date(), cwd: path)
+        let classified = HistoryModel.classify([local, summary], exists: [:]) { key in
+            key.host.isLocal ? .missing : .unknown
+        }
+        XCTAssertEqual(classified.kept.map(\.id), [summary.id])
+        XCTAssertEqual(classified.noise, [local.id])
+        XCTAssertEqual(classified.exists.count, 2)
+        for evidence in [DirectoryEvidence.exists, .unknown, .missing] {
+            let factory = FakeTerminalSurfaceFactory()
+            let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
+                runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+                persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
+                launcherForHost: { _ in RemoteFixtureLauncher() }, directoryEvidence: { _ in evidence })
+            var recorded: String?
+            model.launchDirectoryHandler = { _, directory in recorded = directory }
+            model.openSession(summary)
+            XCTAssertEqual(recorded, evidence == .exists ? path : nil)
+            let surface = try XCTUnwrap(factory.created.last)
+            surface.simulateExit(status: 1)
+            XCTAssertEqual(model.activeTab?.missingWorkingDirectory, evidence == .missing ? path : nil)
+            XCTAssertFalse(model.activeTab?.commandWasSuspect ?? true)
+        }
+    }
+
     func testAFakeRemoteSourceDrivesRowsEndToEnd() async throws {
         let remote = HostID(rawValue: "fake-host")
         let db = try TempleDB.inMemory()
@@ -47,6 +77,7 @@ final class RemoteHostSeamTests: XCTestCase {
         XCTAssertEqual(localSource.requested, ["local-row"])
         XCTAssertEqual(app.sessions.first { $0.id == "local-row" }?.displayTitle, "Local facts")
         app.openSessions.openSession(row)
+        XCTAssertEqual(try db.sessionState(row.id)?.directorySource, .tab)
         XCTAssertEqual(launcher.specs.count, 1)
         XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["remote-transport", "fake-host", "/remote/bin/claude", "--resume", "remote-row"])
         XCTAssertEqual(factory.created.last?.startedCommand?.cwd, "/transport")
@@ -108,6 +139,7 @@ private final class RemoteFixtureSource: HostSessionSource, @unchecked Sendable 
         })
         return ResolutionBatch(generation: 1, results: results)
     }
+    func directoryEvidence(_ path: String) -> DirectoryEvidence { host.isLocal ? .missing : .exists }
     func release(_ ids: [String]) {}
     func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error> {
         AsyncThrowingStream { stream in

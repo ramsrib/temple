@@ -5,6 +5,11 @@ import CoreServices
 /// Local observation, selection, verification and enrichment. Registered interests
 /// come from the engine; this source never reads or writes Temple registeredIDship.
 public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics, @unchecked Sendable {
+    public func directoryEvidence(_ path: String) -> DirectoryEvidence {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+            ? .exists : .missing
+    }
     public let host = HostID.local
     public let capabilities: Set<HostCapability> = [.liveChanges, .revealInFinder, .catalog]
     private var interests: [String: ResolutionRequest] = [:]

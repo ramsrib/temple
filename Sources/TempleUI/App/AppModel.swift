@@ -332,7 +332,8 @@ public final class AppModel: ObservableObject {
         self.indexSource = resolvedIndexSource
         self.stateDirectory = stateDirectory
         self.notifications = NotificationController()
-        self.history = HistoryModel(overlay: overlay, catalog: { hosts.catalog() })
+        self.history = HistoryModel(overlay: overlay, catalog: { hosts.catalog() },
+            directoryEvidence: { hosts.entry(for: $0.host)?.source.directoryEvidence($0.path) ?? .unknown })
 
 
         let runtime = SessionRuntimeController()
@@ -347,7 +348,8 @@ public final class AppModel: ObservableObject {
             reconciler: reconciler,
             persistence: persistence,
             defaultAgent: { settingsRef.defaultAgent },
-            launcherForHost: { hosts.entry(for: $0)?.launcher })
+            launcherForHost: { hosts.entry(for: $0)?.launcher },
+            directoryEvidence: { hosts.entry(for: $0.host)?.source.directoryEvidence($0.path) ?? .unknown })
 
         // Now self is fully initialized — finish wiring the closures & observers.
         resolveAppearance = { [weak self] in

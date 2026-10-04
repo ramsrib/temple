@@ -3,7 +3,7 @@ import Foundation
 /// Classifies ambient/automation sessions that should be hidden by default.
 public enum SessionFilter {
     public static func isNoise(_ session: TranscriptSummary) -> Bool {
-        isNoise(session, pathExists: FileManager.default.fileExists(atPath:))
+        isNoise(session) { session.locator.host.isLocal ? FileManager.default.fileExists(atPath: $0) : true }
     }
 
     /// Injectable filesystem check keeps classification deterministic in tests.
