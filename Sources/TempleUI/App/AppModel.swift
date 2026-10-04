@@ -958,9 +958,16 @@ public final class AppModel: ObservableObject {
         } else if session.canResume {
             openSessions.openSession(session)
         } else {
-            history.query = session.id
-            openSessions.openHistory()
+            showInHistory(sessionID: session.id)
         }
+    }
+
+    /// History, narrowed to one session: where a row with no folder can be
+    /// seen and archived (⌘K's Return on such a row, a folderless chip's
+    /// "Show in History").
+    public func showInHistory(sessionID: String) {
+        history.query = sessionID
+        openSessions.openHistory()
     }
 
     /// The index can surface the same session id under more than one project

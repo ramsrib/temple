@@ -158,6 +158,10 @@ private struct SessionTerminalView: View {
                 Button("Archive") { model.closeAndArchive(tab, undoManager: undoManager) }
                     .buttonStyle(.link)
                     .font(.system(size: 12))
+            } else if tab.launchPreparationError == OpenSessionsModel.unknownDirectoryMessage, let sid = tab.sessionID {
+                Button("Show in History") { model.showInHistory(sessionID: sid) }
+                    .buttonStyle(.link)
+                    .font(.system(size: 12))
             }
         }
         .padding(.horizontal, 14)

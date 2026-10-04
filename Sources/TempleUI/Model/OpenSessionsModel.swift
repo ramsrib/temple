@@ -28,8 +28,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     @Published public private(set) var tabs: [SessionTab] = []
     @Published public private(set) var activeTabID: SessionTab.ID? {
         didSet {
-            // Going anywhere else is the user's answer: the restored tab that
-            // could not open yet is no longer waited on.
+            // Going anywhere else is the user's answer: the tab that could
+            // not open yet is no longer waited on.
             if activeTabID != pendingRestoreActivation { pendingRestoreActivation = nil }
             guard let id = activeTabID, id != oldValue else { return }
             activationHistory.removeAll { $0 == id }
@@ -40,9 +40,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Tab ids in activation order, most recent last — the "where you came
     /// from" trail that closing a tab walks back (browser MRU, not first-tab).
     private var activationHistory: [SessionTab.ID] = []
-    /// The restored active tab, when its row could not say where to resume
-    /// it yet. It opens the moment the row can (`rowsChanged`), unless the
-    /// user has gone elsewhere in the meantime.
+    /// The tab on screen whose row could not say where to resume it yet — the
+    /// restored active one, or any chip clicked in that state. It opens the
+    /// moment the row can (`rowsChanged`), unless the user has gone elsewhere
+    /// in the meantime: that is what its message promises.
     private var pendingRestoreActivation: SessionTab.ID?
     /// Derived from the active *session* tab; the Settings tab never changes it.
     @Published public private(set) var activeProjectKey: ProjectKey?
@@ -374,6 +375,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             logNonOpenable(row)
             tab.launchPreparationError = Self.unknownDirectoryMessage
             tab.activity = .exited(status: -1)
+            pendingRestoreActivation = tab.id
             return false
         }
         if tab.launchPreparationError == Self.unknownDirectoryMessage { tab.launchPreparationError = nil }
@@ -381,10 +383,11 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         return true
     }
 
-    static let unknownDirectoryMessage = "Temple doesn't know which folder this session ran in yet, so it can't resume it."
+    static let unknownDirectoryMessage = "Temple hasn't found which folder this session ran in, so it can't resume it. "
+        + "It opens by itself if the folder turns up; otherwise find it in History and archive it."
 
-    /// Rows changed: a restored active tab that could not open at launch
-    /// opens now, if its row has learned enough and the user is still on it.
+    /// Rows changed: the tab on screen that could not open for want of a
+    /// folder opens now, if its row has learned one and the user is still on it.
     public func rowsChanged() {
         guard let id = pendingRestoreActivation else { return }
         guard activeTabID == id, let tab = tabs.first(where: { $0.id == id }), !tab.hasSurface else {
@@ -434,6 +437,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         guard !tab.projectPath.isEmpty else {
             tab.launchPreparationError = Self.unknownDirectoryMessage
             tab.activity = .exited(status: -1)
+            pendingRestoreActivation = tab.id
             return
         }
         let spec = AgentLaunchSpec(agent: tab.agent,

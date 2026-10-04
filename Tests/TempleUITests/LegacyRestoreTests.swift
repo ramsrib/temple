@@ -157,6 +157,39 @@ final class LegacyRestoreTests: XCTestCase {
         XCTAssertEqual(app2.openSessions.activeTab?.sessionID, "other")
     }
 
+    /// The message on a folderless chip promises it opens by itself if the
+    /// folder turns up — so that holds for a chip clicked later too, not only
+    /// the restored active one. Its "Show in History" lands on History
+    /// narrowed to the session.
+    func testAFolderlessChipClickedLaterOpensOnceTheRowKnowsAndLinksToHistory() throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "unplaced", via: .opened, agent: .codex)
+        try db.join(sessionID: "other", via: .opened, agent: .claude,
+                    core: SessionCore(directory: directory.path, title: "Other"))
+        DBTabPersistence(db: db).save([
+            PersistedTab(sessionID: "other", agent: .claude, projectPath: directory.path, title: "Other", isActive: true),
+            PersistedTab(sessionID: "unplaced", agent: .codex, projectPath: "", title: "T")])
+        let factory = FakeTerminalSurfaceFactory()
+        let app = AppModel(surfaceFactory: factory,
+                           engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
+                           database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
+        app.history.catalog = { AsyncStream { $0.finish() } }
+        app.start()
+        XCTAssertEqual(factory.created.count, 1, "the restored active tab")
+        let chip = try XCTUnwrap(app.openSessions.tabs.first { $0.sessionID == "unplaced" })
+        app.openSessions.activate(chip)
+        XCTAssertEqual(chip.launchPreparationError, OpenSessionsModel.unknownDirectoryMessage)
+        XCTAssertEqual(factory.created.count, 1)
+
+        try db.fillCoreFields(sessionID: "unplaced", host: .local, directory: directory.path)
+        XCTAssertEqual(factory.created.count, 2, "opens by itself, as the message says")
+        XCTAssertNil(chip.launchPreparationError)
+
+        app.showInHistory(sessionID: "unplaced")
+        XCTAssertTrue(app.historyActive)
+        XCTAssertEqual(app.history.query, "unplaced")
+    }
+
     /// No membership row at all is no licence to spawn with an empty folder:
     /// neither an orphan restored chip nor a catalog session without one.
     func testWithoutARowAnEmptyFolderStillDoesNotSpawn() throws {
