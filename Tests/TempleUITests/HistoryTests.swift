@@ -229,13 +229,13 @@ final class HistoryTests: XCTestCase {
             Fixture.session("older-year", project: "/p", updated: date(2025, 12, 31).timeIntervalSince1970),
         ]
 
-        let groups = HistoryGrouping.groups(sessions, calendar: calendar, now: now)
+        let groups = HistoryRowGrouping.groups(sessions.map { HistoryRow(catalog: $0) }, calendar: calendar, now: now)
 
         XCTAssertEqual(groups.count, 4)
         XCTAssertEqual(groups.map(\.title),
                        ["Today", "Yesterday", "Friday, Jul 10", "Dec 31, 2025"])
-        XCTAssertEqual(groups[0].sessions.map(\.id), ["today-newer", "today-older"])
-        XCTAssertEqual(groups.flatMap(\.sessions).map(\.id), sessions.map(\.id))
+        XCTAssertEqual(groups[0].sessions.map(\.sessionID), ["today-newer", "today-older"])
+        XCTAssertEqual(groups.flatMap(\.sessions).map(\.sessionID), sessions.map(\.id))
     }
 
     /// A pre-v8 row made by a setter has no joined_at, and with no open and
