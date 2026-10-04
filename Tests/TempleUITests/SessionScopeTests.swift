@@ -438,6 +438,43 @@ final class SessionScopeTests: XCTestCase {
         return try TempleDB(readOnlyPath: url)
     }
 
+    /// Two connections to one file: a row the other inserted after this
+    /// store read is not in `rows`, and this store's join of it writes
+    /// nothing and notifies nobody. The join still makes it a member here —
+    /// and so do an import of it — so the touches, retitles and opens that
+    /// follow are not dropped.
+    func testAJoinOrImportOfARowAnotherConnectionInsertedMakesItAMemberHere() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("temple-two-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("temple.sqlite")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let mine = try TempleDB(path: url)
+        let overlay = SessionOverlayStore(db: mine)
+        overlay.titleFlushDelay = 0
+        let other = try TempleDB(path: url)
+        try other.join(sessionID: "s", via: .opened, agent: .claude, core: SessionCore(directory: "/p", title: "Elsewhere"))
+        let summary = TranscriptSummary(id: "i", agent: .codex, locator: TranscriptLocator(host: .local, path: "/tmp/i.jsonl"),
+                                        modifiedAt: Date(timeIntervalSince1970: 10), cwd: "/q", firstPrompt: "Imported")
+        try other.join(sessionID: "i", via: .imported, agent: .codex, locator: summary.locator, core: SessionCore(filling: summary))
+        XCTAssertNil(overlay.rows["s"])
+        XCTAssertNil(overlay.rows["i"])
+
+        XCTAssertTrue(overlay.join("s", via: .opened, agent: .claude).isJoined)
+        XCTAssertTrue(overlay.isTempleSession("s"))
+        XCTAssertEqual(overlay.rows["s"]?.directory, "/p")
+        overlay.touch("s", host: .local, at: Date(timeIntervalSince1970: 100))
+        XCTAssertEqual(overlay.rows["s"]?.lastActiveAt, Date(timeIntervalSince1970: 100), "the touch is not dropped")
+        overlay.recordGeneratedTitle("Agent title", for: "s")
+        overlay.flushPendingTitles()
+        XCTAssertEqual(try other.sessionState("s")?.generatedTitle, "Agent title", "nor the retitle")
+        overlay.recordOpened("s", host: .local, at: Date(timeIntervalSince1970: 200))
+        XCTAssertEqual(try other.sessionState("s")?.lastOpenedAt, Date(timeIntervalSince1970: 200), "nor the open")
+
+        guard case .joined = overlay.import([summary]).first else { return XCTFail("import") }
+        XCTAssertTrue(overlay.isTempleSession("i"), "an import that reports success is a member")
+        XCTAssertEqual(overlay.rows["i"]?.directory, "/q")
+    }
+
     /// Nothing becomes a Temple session without its row: a failed join leaves
     /// it out, and the setter that asked for it does nothing rather than
     /// writing a row that forgets how the session joined.

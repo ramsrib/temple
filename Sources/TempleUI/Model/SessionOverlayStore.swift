@@ -236,9 +236,12 @@ public final class SessionOverlayStore: ObservableObject {
     public func join(_ id: String, via: JoinedVia, agent: Agent? = nil, locator: TranscriptLocator? = nil,
                      core: SessionCore = SessionCore()) -> JoinResult {
         do {
-            // The committed row reaches `rows` through the observer before
-            // this returns (the write is on the main actor).
             try db.join(sessionID: id, via: via, agent: agent, locator: locator, core: core)
+            // A join that wrote reached `rows` through the observer already;
+            // one that found the row there (another connection inserted it
+            // since this store last read) wrote nothing and notified nobody.
+            // Either way the row is Temple's now, so read it.
+            refreshRow(id)
             return .joined
         } catch TempleDBError.hostConflict(let host) {
             TempleUILog.db.notice("join refused for session \(id, privacy: .public): owned by host \(host.rawValue, privacy: .public)")
@@ -293,6 +296,8 @@ public final class SessionOverlayStore: ObservableObject {
             do {
                 let incarnation = try db.join(sessionID: summary.id, via: .imported, agent: summary.agent,
                                               locator: summary.locator, core: SessionCore(filling: summary))
+                // As in `join`: a no-op join still makes the row a member here.
+                refreshRow(summary.id)
                 // The same session twice in one batch joined once.
                 guard joined.insert(summary.id).inserted else { return .skipped }
                 return .joined(incarnation: incarnation)
