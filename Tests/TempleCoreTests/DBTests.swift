@@ -596,6 +596,85 @@ extension DBTests {
         }
     }
 
+    /// A writer that crashed mid-transaction leaves a hot rollback journal.
+    /// Only a connection with write access can roll it back; a read-only
+    /// probe fails with SQLITE_READONLY_ROLLBACK, and when the open path ran
+    /// one first, every later launch failed the same way — forever, because
+    /// nothing else would ever roll the journal back.
+    func testALeftoverHotJournalIsRolledBackAndTheDatabaseOpens() throws {
+        let (seed, path) = try database()
+        try seed.join(sessionID: "committed", via: .imported, core: SessionCore(title: "Kept"))
+        let crashed = path.deletingLastPathComponent().appendingPathComponent("crashed.sqlite")
+        let raw = try DatabaseQueue(path: path.path)
+        try raw.inDatabase { db in
+            try db.execute(sql: "BEGIN IMMEDIATE")
+            try db.execute(sql: "UPDATE session_state SET title = 'Uncommitted' WHERE id = 'committed'")
+            try db.execute(sql: "INSERT INTO session_state (id) VALUES ('uncommitted')")
+            // The files as a crash at this instant would leave them.
+            XCTAssertTrue(FileManager.default.fileExists(atPath: path.path + "-journal"))
+            try FileManager.default.copyItem(atPath: path.path, toPath: crashed.path)
+            try FileManager.default.copyItem(atPath: path.path + "-journal", toPath: crashed.path + "-journal")
+            try db.execute(sql: "ROLLBACK")
+        }
+        try raw.close()
+        try Self.markJournalSynced(URL(fileURLWithPath: crashed.path + "-journal"))
+        XCTAssertThrowsError(try TempleDB(readOnlyPath: crashed), "the hazard: read-only cannot roll back")
+
+        let reopened = try TempleDB(path: crashed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: crashed.path + "-journal"))
+        XCTAssertEqual(try reopened.sessionStates().map(\.id), ["committed"])
+        XCTAssertEqual(try reopened.sessionState("committed")?.title, "Kept")
+        try reopened.join(sessionID: "after", via: .imported)
+        XCTAssertEqual(try TempleDB(path: crashed).sessionStates().map(\.id), ["after", "committed"])
+    }
+
+    /// SQLite writes a journal header with its magic zeroed and fills it in
+    /// when it syncs the journal at commit — the moment from which a crash
+    /// leaves a hot journal. Copying mid-transaction catches the earlier
+    /// state, so finish the header the way that sync would.
+    private static func markJournalSynced(_ journal: URL) throws {
+        var bytes = try Data(contentsOf: journal)
+        func field(_ offset: Int) -> Int { bytes[offset..<offset + 4].reduce(0) { $0 << 8 | Int($1) } }
+        let sector = field(20), page = field(24)
+        let records = UInt32((bytes.count - sector) / (page + 8))
+        XCTAssertGreaterThan(records, 0)
+        bytes.replaceSubrange(0..<8, with: [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7])
+        bytes.replaceSubrange(8..<12, with: withUnsafeBytes(of: records.bigEndian, Array.init))
+        try bytes.write(to: journal)
+    }
+
+    /// An open that has nothing to migrate or reconcile takes no write lock,
+    /// so another connection mid-write cannot fail this launch.
+    func testAnUpToDateOpenSucceedsWhileAnotherConnectionHoldsAWriteLock() throws {
+        let (seed, path) = try database()
+        try seed.join(sessionID: "s", via: .imported)
+        try seed.setTitle("Same", sessionID: "s")
+        let raw = try DatabaseQueue(path: path.path)
+        try raw.inDatabase { db in
+            try db.execute(sql: "BEGIN IMMEDIATE")
+            defer { try? db.execute(sql: "ROLLBACK") }
+            let started = Date()
+            XCTAssertEqual(try TempleDB(path: path).sessionState("s")?.title, "Same")
+            XCTAssertLessThan(Date().timeIntervalSince(started), TempleDB.busyTimeout)
+        }
+        try raw.close()
+    }
+
+    func testTheMigrationLockWaitIsBounded() throws {
+        let (_, path) = try database()
+        let fd = Darwin.open(path.path + ".migrate-lock", O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else { throw POSIXError(.EIO) }
+        defer { flock(fd, LOCK_UN); Darwin.close(fd) }
+        XCTAssertEqual(flock(fd, LOCK_EX), 0)
+        var contended = 0
+        XCTAssertThrowsError(try TempleDB(path: path, onMigrationLockContention: { contended += 1 }, lockTimeout: 0.1)) {
+            XCTAssertEqual($0 as? TempleDBError, .migrationLockTimeout)
+        }
+        XCTAssertEqual(contended, 1)
+        XCTAssertEqual(flock(fd, LOCK_UN), 0)
+        XCTAssertNoThrow(try TempleDB(path: path, onMigrationLockContention: nil, lockTimeout: 0.1))
+    }
+
     func testCoreFillsNeverOverwriteAndLaunchDirectoryAlwaysWins() throws {
         let (db, _) = try database()
         try db.join(sessionID: "s", via: .imported)

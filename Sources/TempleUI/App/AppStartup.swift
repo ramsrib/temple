@@ -1,8 +1,11 @@
 import SwiftUI
 import TempleCore
 
-/// The only default DB opener. Ordinary failures retain the existing ephemeral
-/// fallback; an unknown schema must propagate before any models are constructed.
+/// The only default DB opener. Every failure propagates before any model is
+/// constructed: an unknown schema to the update-required window, anything
+/// else to a window that says the data could not be opened. There is no
+/// in-memory fallback — a Temple that silently forgets every tab, pin and
+/// session it is given looks like it works and loses the user's work.
 public enum AppDatabase {
     public static func open(path: URL = TempleDB.defaultPath()) throws -> TempleDB {
         do {
@@ -10,8 +13,24 @@ public enum AppDatabase {
         } catch TempleDBError.newerSchema {
             throw TempleDBError.newerSchema
         } catch {
-            TempleUILog.db.fault("failed to open database at \(path.path, privacy: .public), falling back to in-memory (state will not persist): \(String(describing: error), privacy: .public)")
-            return try TempleDB.inMemory()
+            TempleUILog.db.fault("failed to open database at \(path.path, privacy: .public): \(String(describing: error), privacy: .public)")
+            throw AppDatabaseError.openFailed(path: path.path, reason: Self.reason(error))
+        }
+    }
+
+    private static func reason(_ error: Error) -> String {
+        if let error = error as? LocalizedError, let text = error.errorDescription { return text }
+        return String(describing: error)
+    }
+}
+
+public enum AppDatabaseError: Error, Equatable, LocalizedError {
+    case openFailed(path: String, reason: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .openFailed(let path, let reason):
+            "Temple couldn't open its data. Nothing was changed; quit and reopen Temple to try again.\n\n\(path)\n\(reason)"
         }
     }
 }

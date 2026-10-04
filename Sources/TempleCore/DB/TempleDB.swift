@@ -24,9 +24,16 @@ public enum JoinedVia: String, Codable, Sendable {
 
 public enum TempleDBError: Error, Equatable, LocalizedError {
     case newerSchema
+    /// Another opener held the migration lock past the wait limit.
+    case migrationLockTimeout
 
     public static let updateRequiredMessage = "This Temple is older than the data it found. Update Temple to continue."
-    public var errorDescription: String? { Self.updateRequiredMessage }
+    public var errorDescription: String? {
+        switch self {
+        case .newerSchema: Self.updateRequiredMessage
+        case .migrationLockTimeout: "Another Temple process kept the database locked."
+        }
+    }
 }
 
 /// Core facts supplied at join. Launch directory observations are a separate,
@@ -214,13 +221,24 @@ public final class TempleDB: @unchecked Sendable {
 
     private static func migrateAndReconcile(_ queue: DatabaseQueue) throws {
         try checkSchema(queue)
-        try migrator.migrate(queue)
+        if try !queue.read({ try migrator.hasCompletedMigrations($0) }) {
+            try migrator.migrate(queue)
+        }
         // A7: open-time only. Old-process writes after this open are picked up
         // on the next open; there is no live cross-process title synchronization.
+        // Read first: an open that changes nothing takes no write lock, so a
+        // second process holding one cannot fail this launch.
+        let differs = try queue.read { database in
+            try Bool.fetchOne(database, sql: "SELECT EXISTS (SELECT 1 FROM session_state WHERE generated_title IS NOT NULL AND title IS NOT generated_title)") ?? false
+        }
+        guard differs else { return }
         try queue.write { database in
             try database.execute(sql: "UPDATE session_state SET title = generated_title WHERE generated_title IS NOT NULL AND title IS NOT generated_title")
         }
     }
+
+    /// How long a writer waits on another connection's lock before failing.
+    static let busyTimeout: TimeInterval = 5
 
     public convenience init(path: URL) throws {
         try self.init(path: path, onMigrationLockContention: nil)
@@ -228,49 +246,54 @@ public final class TempleDB: @unchecked Sendable {
 
     // The contention callback is an internal test seam, called only after flock
     // proves another opener owns the lock (no timing assumptions in race tests).
-    init(path: URL, onMigrationLockContention: (() -> Void)?) throws {
+    init(path: URL, onMigrationLockContention: (() -> Void)?, lockTimeout: TimeInterval = 15) throws {
         let path = path.resolvingSymlinksInPath()
         try FileManager.default.createDirectory(
             at: path.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        db = try Self.withMigrationLock(at: path, onContention: onMigrationLockContention) {
-            // Inspect existing files read-only before opening a writer: even queue
-            // setup must not modify a database whose schema we do not understand.
-            // A live WAL reader may coordinate via -shm; that changes no schema or data.
-            if FileManager.default.fileExists(atPath: path.path) {
-                var configuration = Configuration()
-                configuration.readonly = true
-                let probe = try DatabaseQueue(path: path.path, configuration: configuration)
-                defer { try? probe.close() }
-                try Self.checkSchema(probe)
+        db = try Self.withMigrationLock(at: path, timeout: lockTimeout, onContention: onMigrationLockContention) {
+            // The writer opens first, and nothing it does before checkSchema
+            // writes: queue setup only reads sqlite_master. That read is also
+            // what rolls back a hot journal a crashed writer left behind —
+            // restoring the last committed state, never a schema change. A
+            // read-only probe could not: SQLITE_READONLY_ROLLBACK, on every
+            // launch, since nothing else would ever roll it back.
+            var configuration = Configuration()
+            configuration.busyMode = .timeout(Self.busyTimeout)
+            let queue = try DatabaseQueue(path: path.path, configuration: configuration)
+            do {
+                try Self.migrateAndReconcile(queue)
+            } catch {
+                try? queue.close()
+                throw error
             }
-            let queue = try DatabaseQueue(path: path.path)
-            try Self.migrateAndReconcile(queue)
             return queue
         }
     }
 
-    private static func withMigrationLock<T>(at path: URL, onContention: (() -> Void)?,
+    private static func withMigrationLock<T>(at path: URL, timeout: TimeInterval,
+                                             onContention: (() -> Void)?,
                                              _ body: () throws -> T) throws -> T {
         // SQLite's separate check/migration/reconcile transactions leave a gap.
         // Every P1+ migrator holds this cross-process lock through ALL of them,
-        // including probe and writer open, so a future incompatible migration
+        // including the writer's open, so a future incompatible migration
         // cannot commit in that gap. Pre-P1 migrations are all known to this build.
         // Keep the sidecar: unlinking it would let another opener lock a new inode.
         let fd = Darwin.open(path.path + ".migrate-lock", O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         defer { Darwin.close(fd) }
-        var operation = LOCK_EX | LOCK_NB
-        while flock(fd, operation) != 0 {
+        // Bounded: an opener stuck holding the lock must not hang this launch
+        // forever behind a window that never appears.
+        let deadline = Date().addingTimeInterval(timeout)
+        var contended = false
+        while flock(fd, LOCK_EX | LOCK_NB) != 0 {
             let code = errno
             if code == EINTR { continue }
-            if code == EWOULDBLOCK && operation & LOCK_NB != 0 {
-                onContention?()
-                operation = LOCK_EX
-                continue
-            }
-            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+            guard code == EWOULDBLOCK else { throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO) }
+            if !contended { contended = true; onContention?() }
+            guard Date() < deadline else { throw TempleDBError.migrationLockTimeout }
+            usleep(20_000)
         }
         defer { flock(fd, LOCK_UN) }
         return try body()

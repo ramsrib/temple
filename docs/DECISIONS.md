@@ -1157,9 +1157,13 @@ files on this Mac, which a session on another machine will never have.
   on the next open). A database carrying a migration this build does not know
   is neither migrated nor written: both entry points show an update-required
   window before any model, overlay or tab restore exists, and `templectl`
-  exits non-zero. Probe, open, check, migration and reconcile run under a
-  cross-process lock (`<db>.migrate-lock`), so a future incompatible
-  migration cannot land in the gap. Builds before this one have neither
+  exits non-zero. Open, check, migration and reconcile run under a
+  cross-process lock (`<db>.migrate-lock`, waited on for at most 15 s), so a
+  future incompatible migration cannot land in the gap. The writer opens
+  first and checks the schema before any write: only a writer can roll back
+  a hot journal a crash left behind, and a read-only probe would fail on it
+  every launch. Any other open failure shows a "couldn't open its data"
+  window, never an in-memory database that silently forgets. Builds before this one have neither
   guard, which is why v10 is additive; `v11-project-host` (host in
   `project_state`/`open_tabs` keys) waits for remote, with process exclusion
   as its precondition.
