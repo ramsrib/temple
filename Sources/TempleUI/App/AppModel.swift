@@ -19,6 +19,7 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var sessions: [Session] = []
     @Published public private(set) var rowProjects: [SessionRowProject] = []
     private var applyingEngineSnapshot = false
+    private var ownershipChangedWhileApplying = false
     private var rowPresentationDirty = false
     /// Diagnostic work count, including builds whose values compare equal.
     private(set) var sessionPresentationBuildCount = 0
@@ -56,6 +57,12 @@ public final class AppModel: ObservableObject {
         applyingEngineSnapshot = true
         overlay.applyFacts(snapshot.facts)
         applyingEngineSnapshot = false
+        // An ownership change seen while facts were being written is merged
+        // now, never from inside the write (it may deliver a new snapshot).
+        if ownershipChangedWhileApplying {
+            ownershipChangedWhileApplying = false
+            engineSet.ownershipChanged()
+        }
         if rowPresentationDirty || resolutionsChanged { rebuildSessions() }
         if !sidebarRanksFrozen && sessions.allSatisfy({ row in
             switch snapshot.resolutions[row.id] {
@@ -378,8 +385,10 @@ public final class AppModel: ObservableObject {
                 self.changedRowIDs.insert(change.id)
                 if !change.recencyOnly {
                     self.recencyOnlyChanges = false
-                    // A row joined, left or moved host: the merge follows it.
-                    self.engineSet.ownershipChanged()
+                    // A row joined, left or moved host: the merge follows it
+                    // (after the facts being applied, if any).
+                    if self.applyingEngineSnapshot { self.ownershipChangedWhileApplying = true }
+                    else { self.engineSet.ownershipChanged() }
                 }
                 guard !self.applyingEngineSnapshot else { return }
                 if change.recencyOnly {

@@ -50,8 +50,12 @@ public struct FactPersister: Sendable {
 /// late. (The engine never reuses an authorization for different facts;
 /// comparing the whole value makes that a checked property here too.)
 ///
-/// Thread-safe; the persist closure runs under the lock (it is a pair of
-/// short local transactions).
+/// Thread-safe, and the lock is never held while persisting: a write fires
+/// the database's committed observers synchronously, and whatever they
+/// reach — the app's row refresh, an ownership re-merge, a new snapshot's
+/// `receive` — may call back in. An id being written is not attempted again
+/// until that write returns; then the newest facts for it, if different,
+/// are attempted.
 public final class FactCommitter: @unchecked Sendable {
     public typealias Persist = (String, AuthorizedFacts) throws -> SessionWriteOutcome
 
@@ -77,6 +81,8 @@ public final class FactCommitter: @unchecked Sendable {
     /// latest snapshot no longer carries exactly them.
     private var applied: [String: AuthorizedFacts] = [:]
     private var pending: [String: Pending] = [:]
+    /// Ids with a write under way (outside the lock).
+    private var inFlight: Set<String> = []
 
     public init(persist: @escaping Persist, now: @escaping () -> Date = Date.init) {
         self.persist = persist; self.now = now
@@ -87,63 +93,69 @@ public final class FactCommitter: @unchecked Sendable {
         self.init(persist: { try persister.persist($0, $1) }, now: now)
     }
 
+    private func locked<T>(_ body: () -> T) -> T { lock.lock(); defer { lock.unlock() }; return body() }
+
     /// The latest snapshot's facts, whole. Revokes what it no longer carries
     /// as it was, then persists every newly authorized entry once.
     @discardableResult
     public func receive(_ facts: [String: AuthorizedFacts]) -> [Outcome] {
-        lock.lock(); defer { lock.unlock() }
-        current = facts
-        for (id, entry) in pending where facts[id] != entry.facts {
-            pending.removeValue(forKey: id)
+        let attempts: [(String, AuthorizedFacts)] = locked {
+            current = facts
+            for (id, entry) in pending where facts[id] != entry.facts { pending.removeValue(forKey: id) }
+            for (id, entry) in applied where facts[id] != entry { applied.removeValue(forKey: id) }
+            return facts.keys.sorted().compactMap { id in claimLocked(id).map { (id, $0) } }
         }
-        for (id, entry) in applied where facts[id] != entry {
-            applied.removeValue(forKey: id)
-        }
-        var outcomes: [Outcome] = []
-        for id in facts.keys.sorted() {
-            let entry = facts[id]!
-            guard applied[id] != entry, pending[id] == nil else { continue }
-            outcomes.append(attemptLocked(id, entry, delay: 1))
-        }
-        return outcomes
+        return attempts.flatMap { attempt($0.0, $0.1, delay: 1) }
     }
 
     /// Retries every pending write that is due and still current.
     @discardableResult
     public func retryDue() -> [Outcome] {
-        lock.lock(); defer { lock.unlock() }
-        let time = now()
-        var outcomes: [Outcome] = []
-        for id in pending.keys.sorted() {
-            guard let entry = pending[id], entry.due <= time else { continue }
-            pending.removeValue(forKey: id)
-            // Revoked since it failed: never written late.
-            guard current[id] == entry.facts else { continue }
-            outcomes.append(attemptLocked(id, entry.facts, delay: min(60, entry.delay * 2)))
+        let attempts: [(String, AuthorizedFacts, TimeInterval)] = locked {
+            let time = now()
+            var due: [(String, AuthorizedFacts, TimeInterval)] = []
+            for id in pending.keys.sorted() {
+                guard let entry = pending[id], entry.due <= time, !inFlight.contains(id) else { continue }
+                pending.removeValue(forKey: id)
+                // Revoked since it failed: never written late.
+                guard current[id] == entry.facts else { continue }
+                inFlight.insert(id)
+                due.append((id, entry.facts, min(60, entry.delay * 2)))
+            }
+            return due
         }
-        return outcomes
+        return attempts.flatMap { attempt($0.0, $0.1, delay: $0.2) }
     }
 
     /// When the earliest pending retry is due (nil: nothing pending).
-    public var nextRetry: Date? {
-        lock.lock(); defer { lock.unlock() }
-        return pending.values.map(\.due).min()
+    public var nextRetry: Date? { locked { pending.values.map(\.due).min() } }
+
+    public var pendingIDs: Set<String> { locked { Set(pending.keys) } }
+
+    /// The current facts for `id` if they still need a write and none is
+    /// under way; marks it under way.
+    private func claimLocked(_ id: String) -> AuthorizedFacts? {
+        guard let entry = current[id], applied[id] != entry, pending[id] == nil, !inFlight.contains(id) else { return nil }
+        inFlight.insert(id)
+        return entry
     }
 
-    public var pendingIDs: Set<String> {
-        lock.lock(); defer { lock.unlock() }
-        return Set(pending.keys)
-    }
-
-    private func attemptLocked(_ id: String, _ facts: AuthorizedFacts, delay: TimeInterval) -> Outcome {
+    private func attempt(_ id: String, _ facts: AuthorizedFacts, delay: TimeInterval) -> [Outcome] {
+        let outcome: Outcome
         do {
-            let outcome = try persist(id, facts)
-            applied[id] = facts
-            return .written(id, outcome)
+            let written = try persist(id, facts)
+            outcome = .written(id, written)
+            locked { applied[id] = facts }
         } catch {
-            pending[id] = Pending(facts: facts, due: now().addingTimeInterval(delay), delay: delay)
-            return .failed(id, error)
+            outcome = .failed(id, error)
+            locked {
+                // Kept for a retry only while still current.
+                if current[id] == facts { pending[id] = Pending(facts: facts, due: now().addingTimeInterval(delay), delay: delay) }
+            }
         }
+        // Newer facts that arrived while this write ran.
+        let next: AuthorizedFacts? = locked { inFlight.remove(id); return claimLocked(id) }
+        return [outcome] + (next.map { attempt(id, $0, delay: 1) } ?? [])
     }
 }
 

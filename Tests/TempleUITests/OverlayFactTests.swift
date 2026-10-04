@@ -81,3 +81,45 @@ final class OverlayFactTests: XCTestCase {
         XCTAssertNil(try db.sessionState("s")?.title)
     }
 }
+
+/// The whole app chain, on the main thread: a fact write's committed row
+/// change reaches AppModel's ownership re-merge, which must wait until the
+/// facts are applied (it can deliver a new snapshot, which applies facts
+/// again). Before, this froze the main thread on the committer's lock.
+@MainActor
+final class AppModelFactReentrancyTests: XCTestCase {
+    func testAnOwnershipChangeDuringAFactWriteIsMergedAfterwardsWithoutFreezing() async throws {
+        let b = HostID(rawValue: "host-b")
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "s", via: .imported, agent: .claude, locator: TranscriptLocator(host: .local, path: "/tmp/s.jsonl"))
+        let persister = FactPersister(database: db)
+        var joinedOther = false
+        let overlay = SessionOverlayStore(db: db, persistFacts: { id, facts in
+            if id == "s", !joinedOther {
+                // A row joins on another host in the middle of the write.
+                joinedOther = true
+                try db.join(sessionID: "other", via: .imported, core: SessionCore(host: b))
+            }
+            return try persister.persist(id, facts)
+        })
+        let local = FakeEngine(host: .local), remote = FakeEngine(host: b)
+        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [local, remote], database: db,
+                           settings: SettingsStore(defaults: Fixture.uniqueDefaults()), overlay: overlay,
+                           hostRegistry: Fixture.hostsWithoutFolderEvidence())
+        app.start()
+        let remoteVerdict = MemberResolution.loaded(TranscriptLocator(host: b, path: "/b/other.jsonl"))
+        remote.publish(EngineSnapshot(generation: 1, resolutions: ["other": remoteVerdict]))
+        let summary = TranscriptSummary(id: "s", agent: .claude, locator: TranscriptLocator(host: .local, path: "/tmp/s.jsonl"),
+                                        modifiedAt: Date(timeIntervalSince1970: 9), cwd: "/work", firstPrompt: "Filled")
+        local.publish(.authorized(generation: 1, resolutions: ["s": .loaded(TranscriptLocator(host: .local, path: "/tmp/s.jsonl"))],
+                                  summaries: ["s": summary], in: db))
+        let deadline = Date().addingTimeInterval(3)
+        while app.sessions.first(where: { $0.id == "other" })?.resolution != remoteVerdict, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(joinedOther)
+        XCTAssertEqual(try db.sessionState("s")?.title, "Filled")
+        XCTAssertEqual(app.sessions.first { $0.id == "other" }?.resolution, remoteVerdict,
+                       "the ownership change was merged once the facts were applied")
+    }
+}

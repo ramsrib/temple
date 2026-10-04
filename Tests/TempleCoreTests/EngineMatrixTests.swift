@@ -982,3 +982,41 @@ final class Flag: @unchecked Sendable {
     /// True the first time only.
     func setOnce() -> Bool { lock.lock(); defer { lock.unlock() }; let first = !value; value = true; return first }
 }
+
+/// The committer must never hold its lock across a write: the write's
+/// committed observers run synchronously and can call straight back in.
+final class FactCommitterReentrancyTests: XCTestCase {
+    func testAWriteWhoseObserversCallBackIntoTheCommitterDoesNotDeadlock() throws {
+        let (db, _) = try SQLTrace.database()
+        for id in ["first", "second"] { try db.join(sessionID: id, via: .imported) }
+        func facts(_ id: String) throws -> AuthorizedFacts {
+            let locator = TranscriptLocator(host: .local, path: "/tmp/\(id).jsonl")
+            return AuthorizedFacts(authorization: .init(runEpoch: 1, opRevision: 1, incarnation: try XCTUnwrap(try db.sessionState(id)?.incarnation)),
+                locator: locator, agent: .claude, signature: TranscriptSignature(modifiedAt: Date(timeIntervalSince1970: 1), size: 1, identity: 1),
+                coverage: 1, sharedRevision: nil,
+                summary: TranscriptSummary(id: id, agent: .claude, locator: locator, modifiedAt: Date(timeIntervalSince1970: 1), cwd: "/\(id)"))
+        }
+        let first = try facts("first"), second = try facts("second")
+        let persister = FactPersister(database: db)
+        final class Box: @unchecked Sendable { var committer: FactCommitter?; var reentered = false }
+        let box = Box()
+        // Stands in for the app's chain: a committed row change refreshes the
+        // row, which re-merges ownership, which delivers a newer snapshot.
+        let observer = db.observeRowChanges { id in
+            guard id == "first", !box.reentered else { return }
+            box.reentered = true
+            box.committer?.receive(["first": first, "second": second])
+        }
+        defer { db.removeRowChangeObserver(observer) }
+        box.committer = FactCommitter(persist: { try persister.persist($0, $1) })
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            box.committer?.receive(["first": first])
+            done.signal()
+        }
+        XCTAssertEqual(done.wait(timeout: .now() + 3), .success, "deadlocked: the lock was held across the write")
+        XCTAssertTrue(box.reentered)
+        XCTAssertEqual(try db.sessionState("first")?.directory, "/first")
+        XCTAssertEqual(try db.sessionState("second")?.directory, "/second")
+    }
+}
