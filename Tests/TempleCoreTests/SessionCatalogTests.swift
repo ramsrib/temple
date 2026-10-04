@@ -172,6 +172,31 @@ final class CatalogSelectionTests: XCTestCase {
         XCTAssertEqual(remote.map(\.locator.path), ["/home/me/.agent-b/sessions/2026/10/02/\(name)"])
     }
 
+    /// The stream is ordered by the file each thread's pick reads, so a
+    /// thread whose passed-over rollout is newest does not arrive ahead of
+    /// a session modified after its selected file.
+    func testStreamingOrderFollowsTheChosenFileNotItsDuplicates() async throws {
+        let root = try root()
+        let day = root.appendingPathComponent("sessions/2026/10/01", isDirectory: true)
+        try FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
+        let reverted = UUID().uuidString.lowercased(), plain = UUID().uuidString.lowercased()
+        let files: [(String, String, TimeInterval)] = [
+            ("rollout-2026-10-01T10-00-00-\(reverted).jsonl", reverted, 10),   // passed over, newest
+            ("rollout-2026-10-01T11-00-00-\(reverted)_\(UUID().uuidString.lowercased()).jsonl", reverted, 500), // selected, oldest
+            ("rollout-2026-10-01T09-00-00-\(plain).jsonl", plain, 100),
+        ]
+        for (name, id, age) in files {
+            let url = day.appendingPathComponent(name)
+            try codexLine(id, prompt: name).write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-age)], ofItemAtPath: url.path)
+        }
+        var batches: [[String]] = []
+        for await event in LocalSessionCatalog(stores: [CodexSessionStore(root: root)]).stream(batchSize: 1) {
+            if case .sessions(let rows, _, _) = event { batches.append(rows.map(\.id)) }
+        }
+        XCTAssertEqual(batches, [[plain], [reverted]])
+    }
+
     /// Claude has no selection: a session id in two project folders is one
     /// row — the first file in resolution's order that reads — not two.
     func testAClaudeIDInTwoProjectFoldersIsOneRow() async throws {

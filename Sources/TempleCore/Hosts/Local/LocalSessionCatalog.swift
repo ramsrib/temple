@@ -66,8 +66,10 @@ struct LocalSessionCatalog: Sendable {
             let parser = incremental.catalogParser()
             let urls = Dictionary(files.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
             for thread in TranscriptCandidates.catalogThreads(format: incremental.format, listed: Array(urls.keys)) {
-                let threadURLs = thread.paths.compactMap { urls[$0] }
-                let modified = threadURLs.map(StoreIO.modificationDate).max() ?? .distantPast
+                // Ordered by the file the pick reads first, not by the newest
+                // of the thread's files: a rollout the pick passes over must
+                // not pull its thread ahead of newer sessions.
+                let modified = thread.paths.first.flatMap { urls[$0] }.map(StoreIO.modificationDate) ?? .distantPast
                 entries.append(Entry(modified: modified, parse: {
                     TranscriptCandidates.catalogPick(thread) { path in
                         guard let url = urls[path] else { return .missing }
