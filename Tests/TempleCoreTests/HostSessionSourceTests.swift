@@ -8,6 +8,68 @@ final class HostSessionSourceTests: XCTestCase {
         XCTAssertTrue(condition())
     }
 
+    func testNewCoverageInvalidatesOtherMembersInEitherDeliveryOrder() async throws {
+        for batchFirst in [false, true] {
+            let source = FakeHostSource(host: .local)
+            let engine = SessionEngine(source: source, members: ["a", "b"])
+            let stream = engine.start()
+            defer { engine.stop(); withExtendedLifetime(stream) {} }
+            try await wait { engine.resolution(for: "b") == .confirmedAbsent }
+            source.gateNext()
+            engine.requestResolution("a")
+            try await wait { source.hasPending }
+            if !batchFirst {
+                source.send(.coverageReset(2))
+                try await wait { engine.publishedSnapshot?.generation == 2 }
+            }
+            source.gateNext()
+            source.resumePending(ResolutionBatch(generation: 2, results: ["a": .absent]))
+            try await wait { source.hasPending && engine.publishedSnapshot?.generation == 2 }
+            XCTAssertEqual(engine.resolution(for: "b"), .resolving)
+            if batchFirst { source.send(.coverageReset(2)) }
+            source.resumePending(ResolutionBatch(generation: 2, results: ["a": .absent, "b": .unreadable]))
+            try await wait { engine.resolution(for: "b") == .unreadable }
+            XCTAssertEqual(engine.publishedSnapshot?.generation, 2)
+        }
+    }
+
+    func testQueuedResolveCannotRegisterALeftMember() async throws {
+        let source = FakeHostSource(host: .local)
+        let engine = SessionEngine(source: source, members: ["a", "b"])
+        let stream = engine.start()
+        defer { engine.stop(); withExtendedLifetime(stream) {} }
+        try await wait { engine.resolution(for: "b") == .confirmedAbsent }
+        source.gateNext()
+        engine.requestResolution("a")
+        try await wait { source.hasPending }
+        engine.requestResolution("b")
+        engine.forgetMember("b")
+        try await wait { engine.resolution(for: "b") == nil }
+        source.resumePending(ResolutionBatch(generation: 1, results: ["a": .absent]))
+        engine.requestResolution("a")
+        try await wait { source.callCount >= 3 }
+        XCTAssertEqual(source.callCount, 3)
+        XCTAssertEqual(source.registeredIDs, ["a"])
+    }
+
+    func testInFlightRegistrationIsReleasedAfterLeave() async throws {
+        let source = FakeHostSource(host: .local)
+        let engine = SessionEngine(source: source, members: ["a", "b"])
+        let stream = engine.start()
+        defer { engine.stop(); withExtendedLifetime(stream) {} }
+        try await wait { engine.resolution(for: "b") == .confirmedAbsent }
+        source.gateNext()
+        engine.requestResolution("a")
+        try await wait { source.hasPending }
+        engine.forgetMember("a")
+        try await wait { engine.resolution(for: "a") == nil }
+        // This fake registers again at completion, after leave's first release.
+        source.resumePending(ResolutionBatch(generation: 1, results: ["a": .absent]))
+        engine.requestResolution("b")
+        try await wait { source.callCount >= 3 }
+        XCTAssertEqual(source.registeredIDs, ["b"])
+    }
+
     func testTransportFailureNeverProvesAbsence() async throws {
         let source = FakeHostSource(host: .local)
         source.fail = true
@@ -91,6 +153,10 @@ final class FakeHostSource: HostSessionSource, @unchecked Sendable {
     private var generation: UInt64 = 1
     private var ids: Set<String> = []
     private var released: Set<String> = []
+    private var registered: Set<String> = []
+    private var calls = 0
+    var callCount: Int { lock.lock(); defer { lock.unlock() }; return calls }
+    var registeredIDs: Set<String> { lock.lock(); defer { lock.unlock() }; return registered }
     private var gated = false
     private var pending: CheckedContinuation<ResolutionBatch, Error>?
     private var continuation: AsyncThrowingStream<SourceChange, Error>.Continuation?
@@ -100,11 +166,13 @@ final class FakeHostSource: HostSessionSource, @unchecked Sendable {
     var hasPending: Bool { lock.lock(); defer { lock.unlock() }; return pending != nil }
     func gateNext() { lock.lock(); gated = true; lock.unlock() }
     func resumePending(_ batch: ResolutionBatch) {
-        lock.lock(); let waiting = pending; pending = nil; lock.unlock(); waiting?.resume(returning: batch)
+        lock.lock(); let waiting = pending; pending = nil
+        generation = max(generation, batch.generation); registered.formUnion(batch.results.keys)
+        lock.unlock(); waiting?.resume(returning: batch)
     }
     func resolve(_ requests: [ResolutionRequest]) async throws -> ResolutionBatch {
         try await withCheckedThrowingContinuation { waiting in
-            lock.lock(); ids.formUnion(requests.map(\.id))
+            lock.lock(); calls += 1; ids.formUnion(requests.map(\.id)); registered.formUnion(requests.map(\.id))
             if gated { gated = false; pending = waiting; lock.unlock(); return }
             let batch = ResolutionBatch(generation: generation,
                 results: Dictionary(uniqueKeysWithValues: requests.map { ($0.id, ResolutionResult.absent) }))
@@ -113,7 +181,7 @@ final class FakeHostSource: HostSessionSource, @unchecked Sendable {
             else { waiting.resume(returning: batch) }
         }
     }
-    func release(_ ids: [String]) { lock.lock(); released.formUnion(ids); lock.unlock() }
+    func release(_ ids: [String]) { lock.lock(); released.formUnion(ids); registered.subtract(ids); lock.unlock() }
     func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error> { AsyncThrowingStream { $0.finish() } }
     func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult { .none }
     func changes() -> AsyncThrowingStream<SourceChange, Error> {

@@ -106,14 +106,7 @@ public final class SessionEngine: @unchecked Sendable {
                                 switch change {
                                 case .sessions(let ids): self.enqueueLocked(Set(ids).intersection(self.members))
                                 case .coverageReset(let generation):
-                                    guard generation > self.generation else { return }
-                                    self.generation = generation
-                                    // Prior coverage cannot diagnose missing transcripts while
-                                    // the new generation's resolution is still in flight.
-                                    for id in self.members { self.states[id] = .resolving }
-                                    self.summaries.removeAll()
-                                    self.publishLocked()
-                                    self.enqueueLocked(self.members)
+                                    self.advanceGenerationLocked(generation)
                                 case .sharedTitlesChanged: self.enqueueLocked(self.members)
                                 }
                             }
@@ -178,10 +171,22 @@ public final class SessionEngine: @unchecked Sendable {
             }
         }
     }
+    /// A batch can announce new coverage before the change stream does. Either
+    /// path invalidates every verdict not resolved by that batch.
+    private func advanceGenerationLocked(_ next: UInt64, resolved: Set<String> = []) {
+        guard next > generation else { return }
+        generation = next
+        let pending = members.subtracting(resolved)
+        for id in pending { states[id] = .resolving; summaries.removeValue(forKey: id) }
+        if !pending.isEmpty {
+            publishLocked()
+            enqueueLocked(pending)
+        }
+    }
+
     private func enqueueLocked(_ ids: Set<String>, explicit: Bool = false, includeEmpty: Bool = false) {
         guard running, !ids.isEmpty || includeEmpty else { return }
         let token = runID
-        let requestedGeneration = generation
         let requests = ids.sorted().compactMap { id -> ResolutionRequest? in
             let row = try? database?.sessionState(id)
             if database != nil && row?.host != host { return nil }
@@ -200,16 +205,42 @@ public final class SessionEngine: @unchecked Sendable {
         let versions = Dictionary(uniqueKeysWithValues: requests.map { ($0.id, revisions[$0.id, default: 0]) })
         let preceding = workTask
         let operation = UUID()
+        let queuedRequests = requests
         workTask = Task { [weak self = self, source] in
-            defer { self?.queue.async { [weak self = self] in self?.workTasks.removeValue(forKey: operation) } }
+            defer {
+                if let self {
+                    self.queue.async {
+                        // A source may finish registering after leave/stop released it.
+                        source.release(queuedRequests.map(\.id).filter { !self.members.contains($0) })
+                        self.workTasks.removeValue(forKey: operation)
+                    }
+                } else { source.release(queuedRequests.map(\.id)) }
+            }
             await preceding?.value
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, let self else { return }
+            let execution: ([ResolutionRequest], UInt64) = await withCheckedContinuation { continuation in
+                self.queue.async {
+                    guard self.running, self.runID == token else { continuation.resume(returning: ([], self.generation)); return }
+                    let active = queuedRequests.filter { request in
+                        guard self.members.contains(request.id),
+                              self.revisions[request.id, default: 0] == versions[request.id] else { return false }
+                        if let database = self.database {
+                            return (try? database.sessionState(request.id))?.host == self.host
+                        }
+                        return true
+                    }
+                    continuation.resume(returning: (active, self.generation))
+                }
+            }
+            let requests = execution.0
+            guard !Task.isCancelled, !requests.isEmpty || includeEmpty else { return }
             do {
                 let batch = try await source.resolve(requests)
                 guard !Task.isCancelled else { return }
-                self?.queue.async { [weak self = self] in
+                self.queue.async { [weak self = self] in
                     guard let self, self.running, self.runID == token, batch.generation >= self.generation else { return }
-                    self.generation = batch.generation
+                    let accepted = Set(requests.filter { self.members.contains($0.id) && self.revisions[$0.id, default: 0] == versions[$0.id] }.map(\.id))
+                    self.advanceGenerationLocked(batch.generation, resolved: accepted)
                     for request in requests where self.members.contains(request.id) && self.revisions[request.id, default: 0] == versions[request.id] {
                         let id = request.id
                         let result = batch.results[id] ?? .incomplete
@@ -240,8 +271,8 @@ public final class SessionEngine: @unchecked Sendable {
                 }
             } catch {
                 guard !Task.isCancelled else { return }
-                self?.queue.async { [weak self = self] in
-                    guard let self, self.running, self.runID == token, self.generation <= requestedGeneration else { return }
+                self.queue.async { [weak self = self] in
+                    guard let self, self.running, self.runID == token, self.generation <= execution.1 else { return }
                     for request in requests where self.members.contains(request.id) && self.revisions[request.id, default: 0] == versions[request.id] {
                         self.states[request.id] = .incomplete; self.summaries.removeValue(forKey: request.id)
                     }
@@ -295,6 +326,7 @@ public final class SessionEngine: @unchecked Sendable {
                         guard let self else { source.release([summary.id]); continuation.resume(returning: nil); return }
                         self.queue.async {
                             if !self.members.contains(summary.id) { source.release([summary.id]) }
+                            if self.running { self.advanceGenerationLocked(acceptedGeneration) }
                             continuation.resume(returning: !cancellation.isCancelled && acceptedGeneration >= self.generation ? result : nil)
                         }
                     }
