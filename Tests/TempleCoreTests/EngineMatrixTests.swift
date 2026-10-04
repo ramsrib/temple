@@ -650,6 +650,99 @@ final class EngineMatrixTests: XCTestCase {
         XCTAssertTrue(absent, "the older listing's failure answered the newer check")
     }
 
+    // MARK: Complete members: an append is a stat
+
+    /// A complete member has no facts a stale read could persist: appends to
+    /// the same file are stats — no read, no publication.
+    func testAppendsToACompleteMemberAreStatsOnly() async throws {
+        let h = try harness()
+        let id = uuid()
+        h.source.write(claudePath(id), agent: .claude, data: claudeData(id))
+        try join(h, id, path: claudePath(id))
+        try complete(h, id)
+        await h.engine.start()
+        try await waitUntil("loaded") { self.isLoaded(h, id) }
+        try await settle()
+        let reads = h.source.counters.reads, publications = h.engine.metrics.publications
+        let observed = h.engine.metrics.observations
+        for n in 0..<100 { h.source.append(claudePath(id), Data("\n{\"n\":\(n)}".utf8)) }
+        try await waitUntil("observed") { h.engine.metrics.observations >= observed + 1 }
+        try await settle(300)
+        XCTAssertEqual(h.source.counters.reads, reads, "no read")
+        XCTAssertEqual(h.engine.metrics.publications, publications, "no publication")
+        XCTAssertTrue(isLoaded(h, id))
+    }
+
+    /// A complete member re-verifies on anything but an append: a same-size
+    /// rewrite (one identity read; another session's id is a mismatch), a
+    /// growth on a host without file identities, a coverage reset.
+    func testACompleteMemberReverifiesOnEverythingButAnAppend() async throws {
+        func loadedComplete(hasInodes: Bool = true) async throws -> (Harness, String) {
+            let h = try harness(hasInodes: hasInodes)
+            let id = uuid()
+            h.source.write(claudePath(id), agent: .claude, data: claudeData(id, cwd: "/aaaa"))
+            try join(h, id, path: claudePath(id))
+            try complete(h, id)
+            await h.engine.start()
+            try await waitUntil("loaded") { self.isLoaded(h, id) }
+            try await settle()
+            return (h, id)
+        }
+        do {   // same-size rewrite, same session
+            let (h, id) = try await loadedComplete()
+            let reads = h.source.counters.reads
+            h.source.write(claudePath(id), agent: .claude, data: claudeData(id, cwd: "/bbbb"), inPlace: true)
+            try await waitUntil("re-verified") { h.source.counters.reads == reads + 1 }
+            try await settle()
+            XCTAssertEqual(h.source.counters.reads, reads + 1)
+            XCTAssertEqual(h.source.counters.parses, 0)
+            XCTAssertTrue(isLoaded(h, id))
+            await h.engine.stop()
+        }
+        do {   // same-size rewrite naming another session
+            let (h, id) = try await loadedComplete()
+            h.source.write(claudePath(id), agent: .claude, data: claudeData(uuid(), cwd: "/aaaa"), inPlace: true)
+            try await waitUntil("mismatch") { self.resolution(h, id) == .mismatch }
+            await h.engine.stop()
+        }
+        do {   // growth where the host has no file identities
+            let (h, id) = try await loadedComplete(hasInodes: false)
+            let reads = h.source.counters.reads
+            h.source.append(claudePath(id), Data("\n{}".utf8))
+            try await waitUntil("re-verified") { h.source.counters.reads == reads + 1 }
+            await h.engine.stop()
+        }
+        do {   // coverage reset
+            let (h, id) = try await loadedComplete()
+            let reads = h.source.counters.reads
+            h.source.dropEvents()
+            try await waitUntil("re-verified") { h.source.counters.reads == reads + 1 }
+            XCTAssertTrue(isLoaded(h, id))
+            await h.engine.stop()
+        }
+    }
+
+    /// A complete member whose row starts wanting a field again (cleared)
+    /// is guarded from then on: it is read with facts and filled, and its
+    /// next append revokes and reads again.
+    func testACompleteMemberThatStartsWantingAFieldIsGuarded() async throws {
+        let h = try harness()
+        let id = uuid()
+        h.source.write(claudePath(id), agent: .claude, data: claudeData(id, prompt: "From the transcript"))
+        try join(h, id, path: claudePath(id))
+        try complete(h, id)
+        await h.engine.start()
+        try await waitUntil("loaded") { self.isLoaded(h, id) }
+        try await settle()
+        h.source.append(claudePath(id), Data("\n{}".utf8))
+        try await settle()
+        let reads = h.source.counters.reads
+        try h.db.setTitle(nil, sessionID: id, host: h.source.host)
+        try await waitUntil("filled again") { try self.row(h, id)?.title == "From the transcript" }
+        XCTAssertGreaterThan(h.source.counters.reads, reads)
+        XCTAssertEqual(h.source.counters.parses, 1)
+    }
+
     /// 16. Round trips: one listing for a batch, one read per member that
     /// needs one, a stat for a write to a complete member, and nothing for
     /// a write to a non-member.
@@ -669,19 +762,18 @@ final class EngineMatrixTests: XCTestCase {
             XCTAssertEqual(h.source.counters.locates, 1)
             XCTAssertEqual(h.source.counters.reads, 5)
             XCTAssertEqual(h.source.counters.parses, 0)
-            // A write to a complete member: one locate and one identity
-            // read (any change re-verifies), no parse.
+            // An append to a complete member: one locate (the stat), no read.
             h.source.append(claudePath(ids[0]), Data("\n{}".utf8))
             try await waitUntil("relocated") { h.source.counters.locates == 2 }
             try await settle()
-            XCTAssertEqual(h.source.counters.reads, 6)
+            XCTAssertEqual(h.source.counters.reads, 5)
             XCTAssertEqual(h.source.counters.parses, 0)
             // A write to a non-member: nothing.
             let outside = uuid()
             h.source.write(claudePath(outside), agent: .claude, data: claudeData(outside))
             try await settle()
             XCTAssertEqual(h.source.counters.locates, 2)
-            XCTAssertEqual(h.source.counters.reads, 6)
+            XCTAssertEqual(h.source.counters.reads, 5)
             await h.engine.stop()
         }
         // Members with NULL fields: one locate + N reads with facts.

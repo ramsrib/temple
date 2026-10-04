@@ -102,9 +102,9 @@ final class MemberStateMachineTests: XCTestCase {
         tasks.append(Task { for await snapshot in stream { committer.receive(snapshot.facts) } })
     }
 
-    /// A write to a member with nothing missing re-verifies its identity
-    /// (any change does) but parses nothing and publishes nothing.
-    func testAMemberWriteWithNothingMissingIsAnIdentityReadNotAParse() async throws {
+    /// An append to a member with nothing missing is a stat: no read, no
+    /// parse, no publication.
+    func testAMemberWriteWithNothingMissingIsAStatNotAParse() async throws {
         let (_, file, _, _, watcher, _) = try fixture(row: .complete)
         try await start(watcher)
         XCTAssertEqual(watcher.resolution(for: "member"), .loaded(file))
@@ -112,7 +112,7 @@ final class MemberStateMachineTests: XCTestCase {
         let before = watcher.metrics
         try append(file)
         try await written(watcher, file)
-        XCTAssertEqual(watcher.metrics.factReads, 0); XCTAssertEqual(watcher.metrics.reads, 2)
+        XCTAssertEqual(watcher.metrics.factReads, 0); XCTAssertEqual(watcher.metrics.reads, 1)
         XCTAssertEqual(watcher.metrics.parses, 0)
         XCTAssertEqual(watcher.metrics.publications, before.publications)
     }

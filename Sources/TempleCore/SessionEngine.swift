@@ -290,7 +290,12 @@ public actor SessionEngine: HostEngine {
         var relocate = false
         if member.hint != oldHint, member.hint?.path != member.verified?.locator.path { relocate = true }
         if member.agent != oldAgent, !member.resolution.isLoaded { relocate = true }
-        if !member.wanted.isSubset(of: oldWanted) { relocate = true }
+        if !member.wanted.isSubset(of: oldWanted) {
+            // It wants a field again: from here on it is guarded, and the
+            // file is verified afresh before anything is read from it.
+            relocate = true
+            member.verified = nil
+        }
         if awaitingCreation, !member.resolution.isLoaded { relocate = true }
         // Facts the row no longer needs leave the snapshot (a fill landed,
         // or another writer got there first).
@@ -458,6 +463,7 @@ public actor SessionEngine: HostEngine {
         for id in members.keys {
             members[id]?.resetBudget()
             members[id]?.failures.removeAll()
+            members[id]?.verified = nil
             invalidate(id)
         }
         enqueue(Set(members.keys))
@@ -475,12 +481,20 @@ public actor SessionEngine: HostEngine {
             guard !affected.isEmpty else { return }
             counters.observations &+= UInt64(affected.count)
             mirror.setCounters(counters)
-            // Any change to a member's transcript: work in flight is stale
-            // (C6), issued facts are revoked now — whatever the change was,
-            // growth included — and identity is verified again.
+            // Work in flight is stale either way (C6). A member with facts to
+            // protect — it wants a field, or holds issued facts — has them
+            // revoked now, whatever the change was (growth included), and
+            // its identity is read again. A complete member has none: the
+            // listing decides, and an append to the same file is a stat.
             for id in affected {
-                invalidate(id)
-                members[id]?.verified = nil
+                guard let member = members[id] else { continue }
+                if member.guardsFacts {
+                    invalidate(id)
+                    members[id]?.verified = nil
+                } else {
+                    members[id]?.opRevision &+= 1
+                    members[id]?.pass = nil
+                }
             }
             enqueue(affected)
         case .coverageReset(let next):
@@ -493,6 +507,7 @@ public actor SessionEngine: HostEngine {
             for id in members.keys {
                 members[id]?.resetBudget()
                 members[id]?.failures.removeAll()
+                members[id]?.verified = nil
                 invalidate(id)
             }
             enqueue(Set(members.keys))
@@ -645,6 +660,7 @@ public actor SessionEngine: HostEngine {
                     let current = members[id]?.opRevision == batch.revisions[id]
                     members[id]?.resetBudget()
                     members[id]?.failures.removeAll()
+                    members[id]?.verified = nil
                     invalidate(id)
                     if current { revisions[id] = members[id]?.opRevision }
                 }
@@ -890,6 +906,12 @@ public actor SessionEngine: HostEngine {
         if let current = member.verified, current.locator == locator {
             if current.signature == signature {
                 verified = true
+            } else if !member.guardsFacts, current.signature.identity != 0,
+                      signature.identity == current.signature.identity, signature.size > current.signature.size {
+                // A complete member's transcript appended to (same file,
+                // grown): nothing to protect, nothing to read.
+                member.verified = (locator, signature)
+                verified = true
             } else {
                 // Any change at all — growth, a same-size rewrite, a new
                 // identity — means identity again, and whatever was parsed
@@ -1107,6 +1129,13 @@ private struct Member {
         incarnation = row.incarnation
         wanted = row.missingCoreFields
         self.readOnly = readOnly
+    }
+
+    /// Whether the conservative rule applies: the member can be given facts
+    /// (it wants a field the database lets it fill) or holds some. A
+    /// complete member has nothing a stale read could put in its row.
+    var guardsFacts: Bool {
+        facts != nil || (!readOnly && incarnation != nil && !wanted.isEmpty)
     }
 
     mutating func resetBudget() {
