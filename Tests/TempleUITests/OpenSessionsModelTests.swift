@@ -67,7 +67,8 @@ final class OpenSessionsModelTests: XCTestCase {
         let factory = FakeTerminalSurfaceFactory()
         let app = AppModel(surfaceFactory: factory, indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
             database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
-            stateDirectory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+            stateDirectory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+            hostRegistry: Fixture.hostsWithoutFolderEvidence())
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["row": .resolving], summaries: [:]))
         app.openSession(id: "row")
         XCTAssertEqual(factory.created.count, 1)
@@ -277,7 +278,8 @@ final class OpenSessionsModelTests: XCTestCase {
         let model = OpenSessionsModel(surfaceFactory: factory ?? FakeTerminalSurfaceFactory(),
             appearanceProvider: { .default }, runtime: SessionRuntimeController(),
             registry: InMemoryProcessRegistry(),
-            persistence: persistence ?? UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()), now: now)
+            persistence: persistence ?? UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()), now: now,
+            directoryEvidence: Fixture.existingFoldersOnly)
         model.openedHandler = { id, via, agent, path, core in
             overlay.join(id, via: via, agent: agent, transcriptPath: path, core: core)
             if via == .opened { overlay.recordOpened(id) }
@@ -495,7 +497,7 @@ final class OpenSessionsModelTests: XCTestCase {
     func testADeletedWorkingDirectoryGetsItsOwnLine() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let model = modelForResumeTests(sessionKnown: { _ in true })
+        let model = modelForResumeTests(sessionKnown: { _ in true }, directoryEvidence: Fixture.localDirectoryEvidence)
         model.openSession(Fixture.session("a", project: directory.path))
         let tab = try XCTUnwrap(model.tabs.first)
         try FileManager.default.removeItem(at: directory)
@@ -1208,16 +1210,49 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertTrue(tab.commandWasSuspect)
     }
 
-    private func modelForResumeTests(sessionKnown: @escaping (String) -> Bool?) -> OpenSessionsModel {
+    private func modelForResumeTests(sessionKnown: @escaping (String) -> Bool?,
+                                     directoryEvidence: @escaping (ProjectKey) -> DirectoryEvidence = { _ in .unknown }) -> OpenSessionsModel {
         let model = OpenSessionsModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
             appearanceProvider: { .default },
             runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
             binaryPath: { _ in "/bin/claude" },
-            canLaunch: { _ in true })
+            canLaunch: { _ in true },
+            directoryEvidence: directoryEvidence)
         model.sessionKnown = sessionKnown
         return model
+    }
+
+    /// A gone folder is not started somewhere else (the terminal would keep
+    /// Temple's cwd); the header says why, and a click after the folder is
+    /// back starts it.
+    func testAMissingFolderIsNotSpawnedAndARestoredOneIs() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let factory = FakeTerminalSurfaceFactory()
+        let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
+            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
+            persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
+            directoryEvidence: Fixture.localDirectoryEvidence)
+        var recorded: [String] = []
+        model.launchDirectoryHandler = { _, path in recorded.append(path) }
+        var joined: [String] = []
+        model.openedHandler = { id, _, _, _, _ in joined.append(id) }
+        model.openSession(Fixture.session("gone", project: directory.path))
+        let tab = try XCTUnwrap(model.activeTab)
+        XCTAssertTrue(factory.created.isEmpty, "nothing runs in Temple's own cwd instead")
+        XCTAssertEqual(tab.launchPreparationError, "The folder \(directory.path) no longer exists.")
+        XCTAssertEqual(tab.activity, .exited(status: -1))
+        XCTAssertTrue(recorded.isEmpty)
+        XCTAssertTrue(joined.isEmpty)
+
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        model.activate(tab)
+        XCTAssertEqual(factory.created.count, 1)
+        XCTAssertNil(tab.launchPreparationError)
+        XCTAssertEqual(tab.activity, .running)
+        XCTAssertEqual(recorded, [directory.path])
     }
 
     func testAnEarlyExitingResumeWithAMissingTargetGetsAnnotated() {

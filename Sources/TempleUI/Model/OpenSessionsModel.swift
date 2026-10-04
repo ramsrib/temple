@@ -112,8 +112,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                 directoryEvidence: ((ProjectKey) -> DirectoryEvidence)? = nil) {
         let local = LocalHostLauncher(binaryPath: binaryPath, extraArgs: extraArgs, canLaunch: canLaunch, wrapper: commandWrapper)
         self.launcherForHost = launcherForHost ?? { $0.isLocal ? local : nil }
-        let localSource = LocalSessionSource()
-        self.directoryEvidence = directoryEvidence ?? { $0.host.isLocal ? localSource.directoryEvidence($0.path) : .unknown }
+        // The host registry owns directory evidence (AppModel passes it in).
+        // Without it, nothing here can say a folder is gone.
+        self.directoryEvidence = directoryEvidence ?? { _ in .unknown }
         self.surfaceFactory = surfaceFactory
         self.appearanceProvider = appearanceProvider
         self.runtime = runtime
@@ -404,6 +405,18 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         let command: TerminalCommand
         tab.launchPreparationError = nil
         tab.commandWasSuspect = false
+        tab.missingWorkingDirectory = nil
+        // Only the owning host can establish the directory the agent uses.
+        let evidence = directoryEvidence(tab.projectKey)
+        // A gone folder is not started anywhere else: the terminal would keep
+        // Temple's own cwd and the agent would run, and record, in the wrong
+        // place. Clicking the chip again re-checks, so a restored folder works.
+        guard evidence != .missing else {
+            TempleUILog.launch.notice("not spawning in a missing folder: \(tab.projectPath, privacy: .public)")
+            tab.launchPreparationError = "The folder \(tab.projectPath) no longer exists."
+            tab.activity = .exited(status: -1)
+            return
+        }
         do { command = try launcher.command(for: spec) }
         catch {
             TempleUILog.launch.error("command preparation failed: \(String(describing: error), privacy: .public)")
@@ -423,8 +436,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             openedHandler?(sid, tab.isResume ? .opened : .created, tab.agent,
                            tab.transcriptHint, SessionCore(host: tab.host))
         }
-        // Only the owning host can establish the directory the agent uses.
-        let launchDirectory = directoryEvidence(tab.projectKey) == .exists ? tab.projectPath : nil
+        let launchDirectory = evidence == .exists ? tab.projectPath : nil
         do {
             try surface.start(TerminalIdentity.apply(to: command))
         } catch {

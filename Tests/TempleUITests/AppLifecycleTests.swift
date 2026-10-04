@@ -11,7 +11,8 @@ final class AppLifecycleTests: XCTestCase {
         AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
                  indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
                  database: try! TempleDB.inMemory(),
-                 settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
+                 settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+                 hostRegistry: Fixture.hostsWithoutFolderEvidence())
     }
 
     func testImmediateDelegateQuitFlushesPendingTouches() throws {

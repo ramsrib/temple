@@ -21,7 +21,8 @@ final class SessionScopeTests: XCTestCase {
             indexSource: FakeIndexSource(index),
             database: database,
             settings: settings ?? SettingsStore(defaults: Fixture.uniqueDefaults()),
-            overlay: overlay
+            overlay: overlay,
+            hostRegistry: Fixture.hostsWithoutFolderEvidence()
         )
 
         return (model, overlay)

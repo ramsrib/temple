@@ -182,6 +182,24 @@ enum Fixture {
         }
     }
 
+    /// This Mac's real folder check, for tests that use real directories.
+    static let localDirectoryEvidence: (ProjectKey) -> DirectoryEvidence = {
+        LocalSessionSource().directoryEvidence($0.path)
+    }
+
+    /// Real folders exist; made-up ones ("/p") are unknown rather than missing,
+    /// so a test can record launch directories and still open fake paths.
+    static let existingFoldersOnly: (ProjectKey) -> DirectoryEvidence = {
+        localDirectoryEvidence($0) == .exists ? .exists : .unknown
+    }
+
+    /// A local host whose folder evidence is unknown, so tests may open
+    /// sessions in made-up paths ("/p/a") — the real host would refuse to
+    /// start an agent in a folder that does not exist.
+    static func hostsWithoutFolderEvidence() -> HostRegistry {
+        HostRegistry(entries: [.init(source: FolderAgnosticSource(), launcher: LocalHostLauncher())])
+    }
+
     /// An isolated defaults object that never reaches the disk.
     static func uniqueDefaults() -> UserDefaults { InMemoryDefaults() }
 
@@ -210,4 +228,17 @@ enum Fixture {
             persistence: persistence,
             defaultAgent: { defaultAgent })
     }
+}
+
+/// A local source with no transcripts, no catalog and no folder evidence.
+final class FolderAgnosticSource: HostSessionSource, @unchecked Sendable {
+    let host = HostID.local
+    let capabilities: Set<HostCapability> = []
+    func resolve(_ requests: [ResolutionRequest]) async throws -> ResolutionBatch {
+        ResolutionBatch(generation: 1, results: Dictionary(uniqueKeysWithValues: requests.map { ($0.id, .incomplete) }))
+    }
+    func release(_ ids: [String]) {}
+    func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error> { AsyncThrowingStream { $0.finish() } }
+    func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult { .none }
+    func changes() -> AsyncThrowingStream<SourceChange, Error> { AsyncThrowingStream { _ in } }
 }

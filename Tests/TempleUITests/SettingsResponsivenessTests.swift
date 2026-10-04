@@ -20,7 +20,8 @@ final class SettingsResponsivenessTests: XCTestCase {
         model = AppModel(surfaceFactory: factory,
                          indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
                          database: try TempleDB.inMemory(),
-                         settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
+                         settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+                         hostRegistry: Fixture.hostsWithoutFolderEvidence())
         _ = model.openSessions.newSession(agent: .claude, projectPath: "/p/a")
         _ = model.openSessions.newSession(agent: .codex, projectPath: "/p/b")
         model.objectWillChange.sink { [weak self] in self?.republished += 1 }.store(in: &cancellables)

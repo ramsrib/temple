@@ -67,9 +67,16 @@ final class RemoteHostSeamTests: XCTestCase {
             model.launchDirectoryHandler = { _, directory in recorded = directory }
             model.openSession(summary)
             XCTAssertEqual(recorded, evidence == .exists ? path : nil)
+            XCTAssertFalse(model.activeTab?.commandWasSuspect ?? true)
+            guard evidence != .missing else {
+                // The owning host says the folder is gone: nothing is started.
+                XCTAssertTrue(factory.created.isEmpty)
+                XCTAssertEqual(model.activeTab?.launchPreparationError, "The folder \(path) no longer exists.")
+                continue
+            }
             let surface = try XCTUnwrap(factory.created.last)
             surface.simulateExit(status: 1)
-            XCTAssertEqual(model.activeTab?.missingWorkingDirectory, evidence == .missing ? path : nil)
+            XCTAssertNil(model.activeTab?.missingWorkingDirectory)
             XCTAssertFalse(model.activeTab?.commandWasSuspect ?? true)
         }
     }

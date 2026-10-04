@@ -1175,8 +1175,9 @@ files on this Mac, which a session on another machine will never have.
   another terminal does not move here, as it already did not un-archive
   (ADR-017). History still shows the disk's time: it is the disk's view.
 - **Members are not noise.** The noise filter classifies non-members in
-  History only. A member whose directory is gone keeps its row; the resume
-  banner says the folder no longer exists, on its own line.
+  History only. A member whose directory is gone keeps its row; opening it
+  starts nothing (the terminal would otherwise run the agent in Temple's own
+  cwd) and the banner says the folder no longer exists, on its own line.
 - **Legacy rows are completed from facts, and the rest are kept.** v10 copies
   `generated_title` to `title` and nothing else. The standing fill completes
   every legacy row whose transcript exists on the first launch, through the
