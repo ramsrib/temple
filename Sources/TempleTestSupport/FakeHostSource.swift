@@ -18,6 +18,10 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
         public var bytesRead = 0
         /// The ids each `locate` asked about, in order.
         public var locatedIDs: [[String]] = []
+        /// Folder-evidence checks begun, and those abandoned on cancellation
+        /// while held at `evidenceGate`.
+        public var evidenceChecks = 0
+        public var evidenceCancelled = 0
     }
 
     public let host: HostID
@@ -29,6 +33,10 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
     /// an operation in flight.
     public var readGate: FakeGate? { get { locked { gates.read } } set { locked { gates.read = newValue } } }
     public var locateGate: FakeGate? { get { locked { gates.locate } } set { locked { gates.locate = newValue } } }
+    /// Holds every folder-evidence check until it opens — or until the
+    /// asking task is cancelled, which answers `.unknown`.
+    public var evidenceGate: FakeGate? { get { locked { gateForEvidence } } set { locked { gateForEvidence = newValue } } }
+    private var gateForEvidence: FakeGate?
     /// Runs inside every read, after its bytes and before its closing stat,
     /// without the host's lock: a test can change the file mid-read.
     public var readPhaseHook: (@Sendable (String) -> Void)? {
@@ -359,7 +367,12 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
     }
 
     public func directoryEvidence(_ path: String) async -> DirectoryEvidence {
-        locked {
+        let gate: FakeGate? = locked { counts.evidenceChecks += 1; return gateForEvidence }
+        if let gate {
+            await gate.waitUnlessCancelled()
+            if Task.isCancelled { locked { counts.evidenceCancelled += 1 }; return .unknown }
+        }
+        return locked {
             if directories.contains(path) { return .exists }
             if unsearchable.contains(where: { path.hasPrefix($0 + "/") }) { return .unknown }
             return .missing
@@ -476,8 +489,27 @@ public final class FakeGate: @unchecked Sendable {
     private let lock = NSLock()
     private var isOpen = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var cancellable: [UUID: CheckedContinuation<Void, Never>] = [:]
     private(set) public var arrivals = 0
     public init() {}
+
+    /// Like `wait()`, but a cancelled waiter stops waiting: it returns at
+    /// once, gate still shut, as a transport that honours cancellation would.
+    public func waitUnlessCancelled() async {
+        let token = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                lock.lock()
+                arrivals += 1
+                if isOpen || Task.isCancelled { lock.unlock(); continuation.resume(); return }
+                cancellable[token] = continuation
+                lock.unlock()
+            }
+        } onCancel: {
+            lock.lock(); let continuation = cancellable.removeValue(forKey: token); lock.unlock()
+            continuation?.resume()
+        }
+    }
     public func wait() async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             lock.lock()
@@ -488,7 +520,9 @@ public final class FakeGate: @unchecked Sendable {
         }
     }
     public func open() {
-        lock.lock(); isOpen = true; let pending = waiters; waiters.removeAll(); lock.unlock()
+        lock.lock(); isOpen = true
+        let pending = waiters + Array(cancellable.values); waiters.removeAll(); cancellable.removeAll()
+        lock.unlock()
         pending.forEach { $0.resume() }
     }
 }

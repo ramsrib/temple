@@ -313,81 +313,124 @@ public final class HistoryModel: ObservableObject {
     /// ⌘R, and every activation. A read already running is replaced.
     /// Every host is read at once; progress is the sum over the hosts heard
     /// from, and a host that fails says so for itself only.
+    ///
+    /// Each host's batches run in a lane of their own, in order: the noise
+    /// check asks the owning host about each project once a read, and a
+    /// host whose folder checks stall holds up its own rows, never another
+    /// host's. The lanes are child tasks of the read, so ending it (Refresh,
+    /// the tab leaving the screen) cancels any folder check still in flight.
     public func refresh() {
         readTask?.cancel()
         readState = .reading(read: 0, total: nil)
         let stream = catalog()
         let directoryEvidence = directoryEvidence
+        let pass = ReadPass()
         readTask = Task { [weak self] in
-            var seen: Set<HistoryKey> = []
-            var failures: [StoreFailure] = []
-            var exists: [ProjectKey: DirectoryEvidence] = [:]
-            var progress: [HostID: (read: Int, total: Int?)] = [:]
-            func summed() -> ReadState {
-                let read = progress.values.reduce(0) { $0 + $1.read }
-                let total: Int? = progress.values.contains { $0.total == nil } ? nil
-                    : progress.values.reduce(0) { $0 + ($1.total ?? 0) }
-                return .reading(read: read, total: total)
-            }
-            for await event in stream {
-                guard let self, !Task.isCancelled else { return }
-                let host = event.host
-                switch event.batch {
-                case .listed(let total):
-                    progress[host] = (0, total)
-                    self.readState = summed()
-                case .storeFailed(let agent, let message):
-                    // A host that failed as a whole failed for every agent,
-                    // and has nothing more to read.
-                    for agent in agent.map({ [$0] }) ?? Agent.allCases {
-                        failures.append(StoreFailure(host: host, agent: agent, message: message))
-                    }
-                    if agent == nil {
-                        let read = progress[host]?.read ?? 0
-                        progress[host] = (read, read)
-                        self.readState = summed()
-                    }
-                    self.storeFailures = failures
-                case .sessions(let batch, let read, let total):
-                    // One summary per host, agent and id by the catalog's own
-                    // selection. The noise check asks the owning host about
-                    // each project once a read, off the main actor, a batch
-                    // at a time so the order is kept.
-                    let fresh = batch.filter { $0.locator.host == host }
-                    let previously = exists
-                    let asked = await Task.detached(priority: .userInitiated) { () -> [ProjectKey: DirectoryEvidence] in
-                        var answers: [ProjectKey: DirectoryEvidence] = [:]
-                        for key in Set(fresh.map(Self.noiseKey)) where previously[key] == nil {
-                            answers[key] = await directoryEvidence(key)
+            await withTaskGroup(of: Void.self) { group in
+                var lanes: [HostID: AsyncStream<CatalogBatch>.Continuation] = [:]
+                for await event in stream {
+                    if Task.isCancelled { break }
+                    if lanes[event.host] == nil {
+                        let (batches, lane) = AsyncStream<CatalogBatch>.makeStream()
+                        lanes[event.host] = lane
+                        let host = event.host
+                        group.addTask { [weak self] in
+                            await Self.runLane(batches, host: host, pass: pass, directoryEvidence: directoryEvidence) {
+                                batch, asked in self?.apply(batch, host: host, asked: asked, pass: pass)
+                            }
                         }
-                        return answers
-                    }.value
-                    let answers = previously.merging(asked) { old, _ in old }
-                    let sorted = Self.classify(fresh, exists: answers) { answers[$0] ?? .unknown }
-                    guard !Task.isCancelled else { return }
-                    exists = sorted.exists
-                    var disk = self.diskByKey
-                    for session in fresh {
-                        let key = HistoryKey(session)
-                        seen.insert(key)
-                        disk[key] = session
-                        self.noiseKeys.remove(key)
                     }
-                    self.diskByKey = disk
-                    self.noiseKeys.formUnion(sorted.noise)
-                    progress[host] = (read, total)
-                    self.readState = summed()
-                    self.rebuild()
+                    lanes[event.host]?.yield(event.batch)
                 }
+                for lane in lanes.values { lane.finish() }
             }
             guard let self, !Task.isCancelled else { return }
             // Gone from disk since the last read: drop it now the read is whole.
-            self.diskByKey = self.diskByKey.filter { seen.contains($0.key) }
-            self.storeFailures = failures
+            self.diskByKey = self.diskByKey.filter { pass.seen.contains($0.key) }
+            self.storeFailures = pass.failures
             self.lastUpdated = self.now()
             self.readState = .done
             self.readTask = nil
             self.rebuild()
+        }
+    }
+
+    /// One read's running totals, across its hosts' lanes.
+    @MainActor private final class ReadPass {
+        var seen: Set<HistoryKey> = []
+        var failures: [StoreFailure] = []
+        var exists: [ProjectKey: DirectoryEvidence] = [:]
+        var progress: [HostID: (read: Int, total: Int?)] = [:]
+
+        var summed: ReadState {
+            let read = progress.values.reduce(0) { $0 + $1.read }
+            let total: Int? = progress.values.contains { $0.total == nil } ? nil
+                : progress.values.reduce(0) { $0 + ($1.total ?? 0) }
+            return .reading(read: read, total: total)
+        }
+    }
+
+    /// One host's batches, in order, off the main actor: a batch of sessions
+    /// first has its projects' folders checked with the owning host (each
+    /// once a read), then lands on the page. Stops at cancellation, with
+    /// nothing more asked or applied.
+    private nonisolated static func runLane(
+        _ batches: AsyncStream<CatalogBatch>, host: HostID, pass: ReadPass,
+        directoryEvidence: @escaping @Sendable (ProjectKey) async -> DirectoryEvidence,
+        apply: @escaping @MainActor (CatalogBatch, [ProjectKey: DirectoryEvidence]) -> Void
+    ) async {
+        for await batch in batches {
+            guard !Task.isCancelled else { return }
+            var asked: [ProjectKey: DirectoryEvidence] = [:]
+            if case .sessions(let rows, _, _) = batch {
+                let previously = await pass.exists
+                for key in Set(rows.filter { $0.locator.host == host }.map(noiseKey)) where previously[key] == nil {
+                    asked[key] = await directoryEvidence(key)
+                    guard !Task.isCancelled else { return }
+                }
+            }
+            await apply(batch, asked)
+        }
+    }
+
+    /// One host's batch onto the page, with the folder answers its lane
+    /// asked for. Nothing lands from a read that has ended.
+    private func apply(_ batch: CatalogBatch, host: HostID, asked: [ProjectKey: DirectoryEvidence], pass: ReadPass) {
+        guard !Task.isCancelled else { return }
+        switch batch {
+        case .listed(let total):
+            pass.progress[host] = (0, total)
+            readState = pass.summed
+        case .storeFailed(let agent, let message):
+            // A host that failed as a whole failed for every agent, and has
+            // nothing more to read.
+            for agent in agent.map({ [$0] }) ?? Agent.allCases {
+                pass.failures.append(StoreFailure(host: host, agent: agent, message: message))
+            }
+            if agent == nil {
+                let read = pass.progress[host]?.read ?? 0
+                pass.progress[host] = (read, read)
+                readState = pass.summed
+            }
+            storeFailures = pass.failures
+        case .sessions(let batch, let read, let total):
+            // One summary per host, agent and id by the catalog's own selection.
+            let fresh = batch.filter { $0.locator.host == host }
+            let answers = pass.exists.merging(asked) { old, _ in old }
+            let sorted = Self.classify(fresh, exists: answers) { answers[$0] ?? .unknown }
+            pass.exists = sorted.exists
+            var disk = diskByKey
+            for session in fresh {
+                let key = HistoryKey(session)
+                pass.seen.insert(key)
+                disk[key] = session
+                noiseKeys.remove(key)
+            }
+            diskByKey = disk
+            noiseKeys.formUnion(sorted.noise)
+            pass.progress[host] = (read, total)
+            readState = pass.summed
+            rebuild()
         }
     }
 

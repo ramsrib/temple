@@ -390,6 +390,41 @@ final class HistoryHostKeyTests: XCTestCase {
         XCTAssertEqual(Set(history.allRows.map(\.host)), [.local, remote])
     }
 
+    /// A host whose folder checks stall holds up only its own rows: the
+    /// local host's batches keep landing meanwhile. Ending the read cancels
+    /// the stalled check, and nothing after it is asked or shown.
+    func testAStalledFolderCheckHoldsUpNoOtherHostAndEndsWithTheRead() async throws {
+        let box = FakeHostSource(host: remote)
+        let gate = FakeGate()
+        box.evidenceGate = gate
+        let db = try TempleDB.inMemory()
+        var continuation: AsyncStream<HostCatalogEvent>.Continuation!
+        let stream = AsyncStream<HostCatalogEvent> { continuation = $0 }
+        let remote = remote
+        let history = HistoryModel(overlay: SessionOverlayStore(db: db), catalog: { stream },
+            directoryEvidence: { key in key.host == remote ? await box.directoryEvidence(key.path) : .exists })
+        history.activate()
+        func onBox(_ id: String, _ folder: String) -> TranscriptSummary {
+            TranscriptSummary(id: id, agent: .claude, locator: TranscriptLocator(host: remote, path: "/box/\(id).jsonl"),
+                              modifiedAt: Date(), cwd: folder, firstPrompt: "On the box")
+        }
+
+        continuation.yield(.sessions([onBox("x", "/one"), onBox("y", "/two")], read: 2, total: 2), host: remote)
+        await waitFor { box.counters.evidenceChecks == 1 }
+        continuation.yield(.sessions([summary("a")], read: 1, total: 2), host: .local)
+        await waitFor { history.allRows.map(\.sessionID) == ["a"] }
+        continuation.yield(.sessions([summary("b", secondsAgo: 120)], read: 2, total: 2), host: .local)
+        await waitFor { history.allRows.map(\.sessionID) == ["a", "b"] }
+        XCTAssertTrue(history.isReading)
+
+        history.deactivate()
+        await waitFor { box.counters.evidenceCancelled == 1 }
+        gate.open()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(box.counters.evidenceChecks, 1, "the second folder was asked after the read ended")
+        XCTAssertFalse(history.allRows.contains { $0.host == remote })
+    }
+
     /// Progress is the sum over the hosts heard from; a host still listing
     /// leaves the total open.
     func testReadProgressSumsTheHostsHeardFrom() async throws {

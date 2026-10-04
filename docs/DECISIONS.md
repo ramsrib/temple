@@ -1194,6 +1194,9 @@ files on this Mac, which a session on another machine will never have.
   activity, launch folders and undo all carry the host predicate.
 - **Catalogs are host-tagged and pick before they parse.** Hosts are listed
   concurrently and each batch names its host; a failed host reports itself.
+  History takes each host's batches in a lane of its own, folder checks
+  included, so a host that answers slowly holds up only its own rows, and
+  ending the read (Refresh, leaving the tab) cancels its checks in flight.
   The local catalog chooses each thread's authoritative rollout by the same
   rule member resolution uses, before parsing, and shows nothing for a thread
   whose chosen file is unreadable rather than an older rollout. A file is
