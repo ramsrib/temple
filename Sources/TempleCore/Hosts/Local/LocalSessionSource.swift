@@ -41,6 +41,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     private var parseCount: UInt64 = 0
     private var verificationCount: UInt64 = 0
     private var observedCount: UInt64 = 0
+    private var enumerationCount: UInt64 = 0
     private var snapshotMetrics = EngineMetrics()
 
     private let snapshotLock = NSLock()
@@ -190,7 +191,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         if statesDirty { statesDirty = false; contentDirty = true }
         snapshotMonitoring = monitoring
         snapshotMetrics = EngineMetrics(parses: parseCount, verifications: verificationCount,
-            publications: 0, observations: observedCount)
+            publications: 0, observations: observedCount, enumerations: enumerationCount)
         snapshotLock.unlock()
     }
 
@@ -409,6 +410,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     }
 
     private func enumerateLocked(subtree: String? = nil) {
+        if subtree == nil { enumerationCount &+= 1 }
         var next: [String: (URL, Agent)] = subtree.map { prefix in
             files.filter { !$0.key.hasPrefix(prefix + "/") }
         } ?? [:]
@@ -485,7 +487,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         publishLocked()
     }
 
-    private func resolveLocked(_ id: String, explicit: Bool = false, rescannedMissing: Bool = false) {
+    private func resolveLocked(_ id: String, explicit: Bool = false) {
         guard registeredIDs.contains(id) else { return }
         let row = interests[id]
         // A committed hint can name a new revert that arrived while this ID
@@ -527,7 +529,11 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             do { available.append((path, try FileSignature(URL(fileURLWithPath: path)))) }
             catch {
                 if !Self.isMissing(error) { unreadable = true }
-                else if path == selectedPath {
+                else if path != selectedPath {
+                    // A mapped name that is gone leaves the map; a hint that is
+                    // gone stays tracked, so its file reappearing still routes.
+                    if path != preferredPath { pathsByID[id]?.remove(path); files.removeValue(forKey: path) }
+                } else {
                     // Deletion is the only event that needs a thread-local
                     // rescan of older names. Ordinary writes use the cached pick.
                     pathsByID[id]?.remove(path); files.removeValue(forKey: path)
@@ -656,12 +662,11 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             setStateLocked(id, to: .loaded(entry.0)); awaiting.remove(id)
             return
         }
-        if ordered.isEmpty, !unreadable, !paths.isEmpty, !rescannedMissing {
-            // A disappeared hint/previous path is not a new enumeration verdict.
-            enumerateLocked()
-            resolveLocked(id, explicit: explicit, rescannedMissing: true)
-            return
-        }
+        // A hint or mapped name that is gone does not walk both stores again:
+        // the filename map is kept current by events and rebuilt on every
+        // coverage reset, so it already says where else this id lives. (Doing
+        // the walk here ran it on every resolve of a member whose transcript
+        // was pruned — and every Codex prompt re-resolves every member.)
         if summaries.removeValue(forKey: id) != nil { contentDirty = true; changedIDs.insert(id) }
         // A candidate with a failed verification is evidence, never absence.
         setStateLocked(id, to: unreadable ? .unreadable : failure ??

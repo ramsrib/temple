@@ -384,6 +384,9 @@ public struct EngineMetrics: Sendable {
     public var verifications: UInt64 = 0
     public var publications: UInt64 = 0
     public var observations: UInt64 = 0
+    /// Full walks of every store's listing (startup, coverage resets, and
+    /// anything else that cannot trust the filename map).
+    public var enumerations: UInt64 = 0
 }
 
 private final class EngineCancellation: @unchecked Sendable {

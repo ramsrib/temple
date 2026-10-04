@@ -4,7 +4,8 @@ import CoreServices
 
 @MainActor
 final class MemberStateMachineTests: XCTestCase {
-    private func fixture(agent: Agent = .claude, prompt: String? = nil, complete: Bool = false)
+    private func fixture(agent: Agent = .claude, prompt: String? = nil, complete: Bool = false,
+                         monitorChanges: Bool = true)
         throws -> (URL, URL, TempleDB, P5SpyStore, P5Clock, SessionEngine) {
         let root = URL(fileURLWithPath: "/private/tmp/temple-p5-\(UUID().uuidString)")
         let dir = root.appendingPathComponent(agent == .claude ? "project" : "sessions")
@@ -17,7 +18,8 @@ final class MemberStateMachineTests: XCTestCase {
             core: complete ? SessionCore(directory: "/work", title: "Complete", lastActiveAt: Date()) : nil)
         let store = P5SpyStore(agent == .claude ? ClaudeSessionStore(root: root) : CodexSessionStore(root: root))
         let clock = P5Clock()
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.01, now: { clock.date }), database: db)
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.01,
+            monitorChanges: monitorChanges, now: { clock.date }), database: db)
         return (root, file, db, store, clock, watcher)
     }
 
@@ -269,6 +271,29 @@ final class MemberStateMachineTests: XCTestCase {
         try await wait { watcher.metrics.observations >= 2 }
         XCTAssertEqual(spy.parses, 0)
         XCTAssertEqual(watcher.metrics.publications, before)
+    }
+
+    /// A member whose transcript was pruned keeps its hint. Resolving it must
+    /// not walk both stores each time: every Codex prompt re-resolves every
+    /// member, so that was a full enumeration per pruned member per prompt.
+    func testAPrunedHintedMemberDoesNotReEnumerateOnEveryResolve() async throws {
+        // Synthetic events only: a live stream delivers the fixture's own
+        // directory creations as root events, which rescan legitimately.
+        let (root, _, db, _, _, watcher) = try fixture(agent: .codex, complete: true, monitorChanges: false)
+        let gone = root.appendingPathComponent("sessions/rollout-pruned.jsonl")
+        try db.join(sessionID: "pruned", via: .imported, agent: .codex, transcriptPath: gone)
+        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
+        try await wait { watcher.resolution(for: "pruned") == .confirmedAbsent }
+        let before = watcher.metrics
+        let history = root.appendingPathComponent("history.jsonl")
+        for round in 0..<3 {
+            try Data("{\"session_id\":\"other\",\"text\":\"prompt \(round)\"}".utf8).write(to: history)
+            watcher.reconcileEvent(path: history.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
+            watcher.reconcileEnrichment()
+        }
+        try await wait { watcher.metrics.observations >= before.observations + 3 }
+        XCTAssertEqual(watcher.metrics.enumerations, before.enumerations)
+        XCTAssertEqual(watcher.resolution(for: "pruned"), .confirmedAbsent)
     }
 
     func testClaudeVerifiesTheFirstTypedLineCarryingAnID() async throws {

@@ -2,7 +2,8 @@
 """ADR-027-style P5 measurement on APFS clones of SYNTHETIC stores only.
 
 Creates 1,355 Claude logs, 2,761 Codex logs and 337 member rows (164 logs
-present, 173 missing) under /private/tmp. Never reads personal stores or runs
+present, 173 missing, 86 of those still hinting at a pruned path) under
+/private/tmp. Never reads personal stores or runs
 Temple. Each run gets APFS clonefiles of this seed, one member append at 4/s,
 and one non-member Codex append at 2/s. Logs/counters remain for inspection.
 Every invocation first rejects a disabled-watcher negative control; measured
@@ -82,8 +83,18 @@ with sqlite3.connect(seed/'state/temple.sqlite') as db:
             db.execute('INSERT INTO session_state (id,agent,transcript_path,joined_at,joined_via) VALUES (?,?,?,?,?)',
                        (sid,agent,str(path),'2026-10-03 00:00:00.000','imported'))
     for index in range(173):
-        db.execute('INSERT INTO session_state (id,joined_at,joined_via) VALUES (?,?,?)',
-                   (str(uuid.UUID(int=20000+index)),'2026-10-03 00:00:00.000','imported'))
+        sid=str(uuid.UUID(int=20000+index))
+        # Half the absent rows keep the hint to a transcript since pruned: the
+        # shape that once forced a full enumeration on every resolve.
+        if index % 2 == 0:
+            agent='claude' if index % 4 == 0 else 'codex'
+            pruned=(seed/'claude/project-0'/f'{sid}.jsonl' if agent=='claude'
+                    else seed/'codex/sessions/2026/10/03'/f'rollout-2026-10-03T00-00-00-{sid}.jsonl')
+            db.execute('INSERT INTO session_state (id,agent,transcript_path,joined_at,joined_via) VALUES (?,?,?,?,?)',
+                       (sid,agent,str(pruned),'2026-10-03 00:00:00.000','imported'))
+        else:
+            db.execute('INSERT INTO session_state (id,joined_at,joined_via) VALUES (?,?,?)',
+                       (sid,'2026-10-03 00:00:00.000','imported'))
 
 def validate_window(samples, start_sample, end_sample, writes, seconds):
     """Zero work is meaningful only if live member events actually reached the engine."""
@@ -210,6 +221,8 @@ for run in range(-1, args.runs):
                 'monitoring':all(s['monitoring'] for s in window),
                 'startup_parses':start_sample['parses'],'startup_verifications':start_sample['verifications'],
                 'startup_publications':start_sample['publications'],
+                'startup_enumerations':start_sample.get('enumerations'),
+                'steady_enumerations':end_sample.get('enumerations',0)-start_sample.get('enumerations',0),
                 'steady_parses':end_sample['parses']-start_sample['parses'],
                 'steady_verifications':end_sample['verifications']-start_sample['verifications'],
                 'steady_publications':end_sample['publications']-start_sample['publications'],
@@ -222,7 +235,7 @@ for run in range(-1, args.runs):
     finally:
         if process.poll() is None: process.terminate()
         process.wait(timeout=10); reader.join(timeout=10)
-result={'method':'APFS clonefile, synthetic 1355 Claude + 2761 Codex logs, 337 members (164 present)',
+result={'method':'APFS clonefile, synthetic 1355 Claude + 2761 Codex logs, 337 members (164 present, 86 absent but hinted)',
         'durable_rows_seconds_definition':'CLI SQLite open and sessionStates read; not sidebar paint',
         'base':str(base),'negative_control':negative_control,'runs':reports}
 (base/'results.json').write_text(json.dumps(result,indent=2)+'\n')

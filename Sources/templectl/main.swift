@@ -168,7 +168,8 @@ if CommandLine.arguments.contains("--disk") {
             buffer.deallocate()
             let sample: [String: Any] = ["event": "metrics", "parses": counters.parses,
                 "verifications": counters.verifications, "publications": counters.publications,
-                "observations": counters.observations, "monitoring": watcher.isMonitoring,
+                "observations": counters.observations, "enumerations": counters.enumerations,
+                "monitoring": watcher.isMonitoring,
                 "cpu_seconds": userCPU + systemCPU,
                 "wall_seconds": Date().timeIntervalSince(watchStart),
                 "open_fds": Int(bytes) / MemoryLayout<proc_fdinfo>.stride]
