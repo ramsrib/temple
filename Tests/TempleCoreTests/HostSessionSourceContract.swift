@@ -588,32 +588,58 @@ final class LocalSourceContractTests: HostSessionSourceContract {
         XCTAssertFalse(source.isMonitoring)
     }
 
-    func testChangesNameOnlyTheAffectedRegisteredSession() async throws {
-        let root = URL(fileURLWithPath: "/private/tmp/temple-p6-changes-\(UUID().uuidString)")
-        let project = root.appendingPathComponent("project")
+    /// A transcript created after startup reaches the listing `locate`
+    /// trusts through the observed event alone: no FSEvents stream runs here
+    /// (so no directory rescan can fill the map instead), the event is
+    /// injected, and no enumeration happens after the startup one. Without
+    /// the filename map following observed transcripts, `locate` would not
+    /// find the file.
+    func testAnInjectedCreationReachesTheFilenameMapWithoutARescan() async throws {
+        let root = URL(fileURLWithPath: "/private/tmp/temple-map-\(UUID().uuidString)")
+        let project = root.appendingPathComponent("claude/-work")
+        let rollouts = root.appendingPathComponent("codex/sessions/2026/10/01")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: rollouts, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        for id in ["one", "two"] {
-            try "{\"type\":\"user\",\"sessionId\":\"\(id)\"}".write(to: project.appendingPathComponent("\(id).jsonl"), atomically: false, encoding: .utf8)
-        }
-        let source = LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.01)
+        let source = LocalSessionSource(stores: [ClaudeSessionStore(root: root.appendingPathComponent("claude")),
+                                                 CodexSessionStore(root: root.appendingPathComponent("codex"))],
+                                        debounceInterval: 0.01, monitorChanges: false)
+        let log = EventLog()
         let changes = source.changes()
-        defer { source.release(["one", "two"]) }
-        let changed = expectation(description: "semantic invalidation")
-        let reader = Task { () throws -> [String] in
-            for try await change in changes {
-                if case .sessions(let ids) = change { changed.fulfill(); return ids }
-            }
-            return []
+        let reader = Task { do { for try await change in changes { log.append(change) } } catch {} }
+        defer { reader.cancel() }
+        let claudeID = uuid(), codexID = uuid()
+        // Started (one enumeration) before anything exists.
+        let empty = try await source.locate([LocateRequest(id: claudeID), LocateRequest(id: codexID)])
+        XCTAssertEqual(empty.candidates[claudeID]?.count, 0)
+        XCTAssertEqual(source.metrics.enumerations, 1)
+        let claude = project.appendingPathComponent("\(claudeID).jsonl")
+        let codex = rollouts.appendingPathComponent(rolloutName(codexID))
+        try claudeData(claudeID).write(to: claude)
+        try codexData(codexID).write(to: codex)
+        for file in [claude, codex] {
+            source.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemIsFile))
         }
-        _ = try await source.resolve([ResolutionRequest(id: "one"), ResolutionRequest(id: "two")])
-        let file = project.appendingPathComponent("one.jsonl")
-        try FileManager.default.removeItem(at: file)
-        source.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemRemoved))
-        await fulfillment(of: [changed], timeout: 3)
-        reader.cancel()
-        let ids = try await reader.value
-        XCTAssertEqual(ids, ["one"])
+        try await waitUntil { log.all.contains { change in
+            if case .transcripts(_, let locators) = change { return locators.contains(TranscriptLocator(localURL: codex)) }
+            return false
+        } && log.all.contains { change in
+            if case .transcripts(_, let locators) = change { return locators.contains(TranscriptLocator(localURL: claude)) }
+            return false
+        } }
+        let found = try await source.locate([LocateRequest(id: claudeID), LocateRequest(id: codexID)])
+        XCTAssertEqual(found.candidates[claudeID]?.map(\.locator.path), [claude.path])
+        XCTAssertEqual(found.candidates[codexID]?.map(\.locator.path), [codex.path])
+        XCTAssertEqual(found.candidates[codexID]?.first?.role, .selected)
+        XCTAssertEqual(source.metrics.enumerations, 1, "found from the event, not a rescan")
+        // And out again on removal.
+        try FileManager.default.removeItem(at: claude)
+        source.reconcileEvent(path: claude.path, flags: UInt32(kFSEventStreamEventFlagItemRemoved | kFSEventStreamEventFlagItemIsFile))
+        let before = log.all.count
+        try await waitUntil { log.all.count > before }
+        let gone = try await source.locate([LocateRequest(id: claudeID)])
+        XCTAssertEqual(gone.candidates[claudeID]?.count, 0)
+        XCTAssertEqual(source.metrics.enumerations, 1)
     }
 }
 

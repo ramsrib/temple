@@ -54,7 +54,7 @@ public final class AppModel: ObservableObject {
         }
         latestEngineSnapshot = snapshot
         applyingEngineSnapshot = true
-        for summary in snapshot.summaries.values { overlay.fillMissingCoreFields(from: summary) }
+        overlay.applyFacts(snapshot.facts)
         applyingEngineSnapshot = false
         if rowPresentationDirty || resolutionsChanged { rebuildSessions() }
         if !sidebarRanksFrozen && sessions.allSatisfy({ row in
@@ -63,7 +63,6 @@ public final class AppModel: ObservableObject {
             default: return false
             }
         }) { freezeSidebarRanks() }
-        (indexSource as? WatcherIndexSource)?.setEnrichmentWanted(overlay.missingCoreFields)
         openSessions.refreshExitedResumeDiagnoses()
     }
 
@@ -304,13 +303,14 @@ public final class AppModel: ObservableObject {
     /// Where the database lives; nil for an in-memory one. Startup
     /// housekeeping happens beside it and nowhere else.
     private let databaseDirectory: URL?
-    private let indexSource: IndexSource
+    /// One engine per registry host, merged by current row ownership.
+    let engineSet: EngineSet
     public let hostRegistry: HostRegistry
 
     private var cancellables: Set<AnyCancellable> = []
     private var themeObserver: NSObjectProtocol?
     public init(surfaceFactory: TerminalSurfaceFactory = StubTerminalSurfaceFactory(),
-                indexSource: IndexSource? = nil,
+                engines: [any HostEngine]? = nil,
                 registry: ProcessRegistry? = nil,
                 reconciler: CodexAdopting? = nil,
                 persistence: TabPersistence? = nil,
@@ -334,21 +334,19 @@ public final class AppModel: ObservableObject {
             launcher: LocalHostLauncher(binaryPath: { toolchain.launchPath(for: $0) },
                 extraArgs: { settings.extraArgs(for: $0) }, availability: { toolchain.launchAvailability($0) }))])
         self.hostRegistry = hosts
-        let resolvedIndexSource = indexSource ?? WatcherIndexSource(engines: hosts.entries.map {
+        let engineSet = EngineSet(engines: engines ?? hosts.entries.map {
             SessionEngine(source: $0.source, database: database)
         })
-        let reconciler = reconciler ?? (resolvedIndexSource as? WatcherIndexSource).map {
-            WatcherCodexReconciler(indexSource: $0)
-        } ?? NoopCodexReconciler()
+        let reconciler = reconciler ?? CodexAdopter(registry: hosts)
         self.settings = settings
         self.overlay = overlay
         self.uiState = uiState
         self.sidebarVisibility = uiState.sidebarVisibility ?? .all
-        self.indexSource = resolvedIndexSource
+        self.engineSet = engineSet
         self.databaseDirectory = database.fileURL?.deletingLastPathComponent()
         self.notifications = NotificationController()
         self.history = HistoryModel(overlay: overlay, catalog: { hosts.catalog() },
-            directoryEvidence: { hosts.entry(for: $0.host)?.source.directoryEvidence($0.path) ?? .unknown })
+            directoryEvidence: { key in await hosts.entry(for: key.host)?.source.directoryEvidence(key.path) ?? .unknown })
 
 
         let runtime = SessionRuntimeController()
@@ -364,20 +362,25 @@ public final class AppModel: ObservableObject {
             persistence: persistence,
             defaultAgent: { settingsRef.defaultAgent },
             launcherForHost: { hosts.entry(for: $0)?.launcher },
-            directoryEvidence: { hosts.entry(for: $0.host)?.source.directoryEvidence($0.path) ?? .unknown })
+            directoryEvidence: { key in await hosts.entry(for: key.host)?.source.directoryEvidence(key.path) ?? .unknown })
 
         // Now self is fully initialized — finish wiring the closures & observers.
         resolveAppearance = { [weak self] in
             self?.currentAppearance() ?? .default
         }
+        engineSet.owner = { [weak overlay] id in overlay?.rows[id]?.host }
+        overlay.onOwnershipMismatch = { [weak engineSet] id, host in engineSet?.reconcileMembership(id, host: host) }
         rebuildSessions()
         overlay.rowChanges
             .sink { [weak self] change in
                 guard let self else { return }
                 self.rowPresentationDirty = true
                 self.changedRowIDs.insert(change.id)
-                (self.indexSource as? WatcherIndexSource)?.setEnrichmentWanted(self.overlay.missingCoreFields)
-                if !change.recencyOnly { self.recencyOnlyChanges = false }
+                if !change.recencyOnly {
+                    self.recencyOnlyChanges = false
+                    // A row joined, left or moved host: the merge follows it.
+                    self.engineSet.ownershipChanged()
+                }
                 guard !self.applyingEngineSnapshot else { return }
                 if change.recencyOnly {
                     self.scheduleRowPresentation()
@@ -386,7 +389,6 @@ public final class AppModel: ObservableObject {
                 }
             }
             .store(in: &cancellables)
-        (resolvedIndexSource as? WatcherIndexSource)?.setEnrichmentWanted(overlay.missingCoreFields)
         wire()
         wireHistory(database: database)
         // NB: detection is NOT started here. It runs real binaries (`claude --version`),
@@ -424,9 +426,9 @@ public final class AppModel: ObservableObject {
             // opened since, even once its tab is closed (TempleDB.leave
             // keeps a row with last_opened_at set).
             if open.via == .opened { self.overlay.recordOpened(open.id, host: open.host) }
-            if let engine = (self.indexSource as? WatcherIndexSource)?.engine(for: open.host) {
-                if case .loaded = engine.resolution(for: open.id) { return result }
-                engine.requestResolution(open.id)
+            if let engine = self.engineSet.engine(for: open.host) {
+                if case .loaded = engine.latestSnapshot?.resolutions[open.id] { return result }
+                Task { await engine.requestResolution(open.id) }
             }
             return result
         }
@@ -439,7 +441,7 @@ public final class AppModel: ObservableObject {
         // the worse mistake.
         openSessions.unstartedHandler = { [weak self] id, host in
             guard let self, self.overlay.rows[id]?.host == host,
-                  let engine = (self.indexSource as? WatcherIndexSource)?.engine(for: host) else { return }
+                  let engine = self.engineSet.engine(for: host) else { return }
             Task { @MainActor [weak self] in
                 guard await engine.confirmAbsence(id), let self,
                       self.overlay.discardUnstartedCreation(id, host: host) else { return }
@@ -604,7 +606,7 @@ public final class AppModel: ObservableObject {
         applyAppearance()
         openSessions.restore()
         retireIndexCacheOnce()
-        indexSource.start { [weak self] snapshot in
+        engineSet.start { [weak self] snapshot in
             // Every snapshot lands here; republishing an unchanged flag
             // re-renders everything that observes the model.
             if self?.isLoading == true { self?.isLoading = false }
@@ -645,7 +647,9 @@ public final class AppModel: ObservableObject {
             // Final barrier for writes queued while the processes drained.
             overlay.flushPendingTitles()
             overlay.flushPendingTouches()
-            indexSource.stop()
+            engineSet.stop()
+            // Nothing from the stopped engines is written after this.
+            overlay.applyFacts([:])
             completion()
         }
     }
@@ -712,13 +716,13 @@ public final class AppModel: ObservableObject {
             return
         }
         let host = overlay.rows[id]?.host ?? openSessions.sessionTab(withSessionID: id)?.host ?? .local
-        let engine = (indexSource as? WatcherIndexSource)?.engine(for: host)
+        let engine = engineSet.engine(for: host)
         if let tab = openSessions.sessionTab(withSessionID: id) {
-            engine?.requestResolution(id)
+            if let engine { Task { await engine.requestResolution(id) } }
             openSessions.activate(tab)
             return
         }
-        if overlay.isTempleSession(id) { engine?.requestResolution(id) }
+        if overlay.isTempleSession(id), let engine { Task { await engine.requestResolution(id) } }
     }
 
     /// Catalog actions prefer durable row facts when the session is a member.

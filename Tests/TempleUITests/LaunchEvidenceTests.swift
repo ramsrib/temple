@@ -165,7 +165,7 @@ final class LaunchEvidenceTests: XCTestCase {
     func testTheHeaderShowsTheAgentsArgvNotTheWrapper() throws {
         let markers = URL(fileURLWithPath: "/private/tmp/temple-markers-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: markers) }
-        let launcher = LocalHostLauncher(binaryPath: { _ in "/bin/claude" }, markerDirectory: markers)
+        let launcher = LocalHostLauncher(binaryPath: { _ in "/bin/claude" }, folderEvidence: { _ in .unknown }, markerDirectory: markers)
         let (model, factory) = model(launcher)
         model.openSession(Fixture.session("s", project: "/p"))
         let tab = try XCTUnwrap(model.activeTab)
@@ -198,7 +198,7 @@ final class LaunchEvidenceTests: XCTestCase {
     func testTheMarkerNotifiesWhenTheWrapperWrites() async throws {
         let directory = URL(fileURLWithPath: "/private/tmp/temple-markers-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
-        let launch = try LocalHostLauncher(markerDirectory: directory)
+        let launch = try LocalHostLauncher(folderEvidence: { _ in .unknown }, markerDirectory: directory)
             .prepare(AgentLaunchSpec(agent: .claude, mode: .new(sessionID: "x"), directory: "/f", host: .local))
         let channel = try XCTUnwrap(launch.result)
         let delivered = expectation(description: "event")
@@ -224,7 +224,7 @@ final class LaunchEvidenceTests: XCTestCase {
         let fresh = ToolchainModel(resolve: { ToolchainResolution(agent: $0, installs: [], chosen: nil) },
                                    probe: { _, _ in (version: "1.2.3", failure: nil, details: nil) })
         XCTAssertEqual(fresh.launchAvailability(.claude), .available, "unknown is not a failure")
-        let launcher = LocalHostLauncher(availability: { $0 == .codex ? .unavailable(reason: "not found") : .available })
+        let launcher = LocalHostLauncher(availability: { $0 == .codex ? .unavailable(reason: "not found") : .available }, folderEvidence: { _ in .unknown })
         XCTAssertEqual(launcher.availability(.codex), .unavailable(reason: "not found"))
         XCTAssertEqual(launcher.availability(.claude), .available)
     }
@@ -263,4 +263,28 @@ private final class ScriptedSource: LaunchResultSource {
     func stop() { stopped = true; notify = nil }
     func push(_ event: LaunchEvent) { pending.append(event) }
     func notifyNow() { notify?() }
+}
+
+/// This Mac's launcher proves a folder gone from its own `stat(2)` before
+/// anything spawns (it replaced the old synchronous directory-evidence path).
+@MainActor
+final class LocalFolderEvidenceTests: XCTestCase {
+    func testPrepareRefusesAFolderThisMacProvesGoneAndOnlyThatOne() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/temple-prepare-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let launcher = LocalHostLauncher(binaryPath: { _ in "/bin/claude" }, markerDirectory: root.appendingPathComponent("markers"))
+        let gone = root.appendingPathComponent("gone").path
+        XCTAssertThrowsError(try launcher.prepare(AgentLaunchSpec(agent: .claude, mode: .new(sessionID: "s"), directory: gone, host: .local))) {
+            XCTAssertEqual($0 as? HostLaunchError, .directoryMissing(gone))
+        }
+        let file = root.appendingPathComponent("a-file")
+        try Data().write(to: file)
+        XCTAssertThrowsError(try launcher.prepare(AgentLaunchSpec(agent: .claude, mode: .new(sessionID: "s"), directory: file.path, host: .local)))
+        let present = try launcher.prepare(AgentLaunchSpec(agent: .claude, mode: .new(sessionID: "s"), directory: root.path, host: .local))
+        present.result?.cancel()
+        XCTAssertEqual(LocalHostLauncher.statEvidence(root.path), .exists)
+        XCTAssertEqual(LocalHostLauncher.statEvidence(gone), .missing)
+        XCTAssertEqual(LocalHostLauncher.statEvidence(file.path + "/below"), .missing, "ENOTDIR proves it gone")
+    }
 }

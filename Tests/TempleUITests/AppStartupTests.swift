@@ -19,7 +19,7 @@ final class AppStartupTests: XCTestCase {
         let startup = AppStartup(openDatabase: { try AppDatabase.open(path: path) }) { database in
             modelConstructions += 1
             return AppModel(surfaceFactory: factory,
-                            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
+                            engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
                             database: database,
                             settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         }

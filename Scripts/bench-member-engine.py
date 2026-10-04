@@ -235,6 +235,8 @@ for run in range(-1, args.runs):
                 'steady_publications':end_sample['publications']-start_sample['publications'],
                 'steady_observations':end_sample['observations']-start_sample['observations'],
                 'cpu_percent_one_core':100*(end_sample['cpu_seconds']-start_sample['cpu_seconds'])/elapsed,
+                **{f'startup_{key}': start_sample.get(key) for key in ['locates','reads','fact_reads','wider_reads','shared_transfers','retries']},
+                **{f'steady_{key}': end_sample.get(key,0)-start_sample.get(key,0) for key in ['locates','reads','fact_reads','wider_reads','shared_transfers','retries']},
                 'open_fds_min':min(s['open_fds'] for s in window),'open_fds_max':max(s['open_fds'] for s in window),
                 'durable_rows_seconds':rows_time[0], 'first_publication_seconds':publication_time[0], 'log':str(log)}
         reports.append(report)

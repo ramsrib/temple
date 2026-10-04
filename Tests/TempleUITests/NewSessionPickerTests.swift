@@ -11,7 +11,7 @@ final class NewSessionPickerTests: XCTestCase {
         Fixture.join(rows, to: database)
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
+            engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
             database: database,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: SessionOverlayStore(db: database)

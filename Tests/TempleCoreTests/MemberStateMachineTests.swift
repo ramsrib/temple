@@ -2,25 +2,50 @@ import XCTest
 import CoreServices
 @testable import TempleCore
 
+/// The engine's per-member state machine over this Mac's source: verify,
+/// enrich only while the row lacks something, back off, re-verify on a new
+/// file. No FSEvents stream runs (every event is injected) and timers never
+/// fire on their own: a test advances the clock and runs due work itself.
 @MainActor
 final class MemberStateMachineTests: XCTestCase {
-    private func fixture(agent: Agent = .claude, prompt: String? = nil, complete: Bool = false,
-                         monitorChanges: Bool = true)
-        throws -> (URL, URL, TempleDB, P5SpyStore, P5Clock, SessionEngine) {
+    private var started: [SessionEngine] = []
+    private var tasks: [Task<Void, Never>] = []
+
+    override func tearDown() async throws {
+        tasks.forEach { $0.cancel() }; tasks.removeAll()
+        for engine in started { await engine.stop() }
+        started.removeAll()
+        try await super.tearDown()
+    }
+
+    private enum Row { case complete, wantsTitle, wantsDirectoryAndTitle, bare }
+
+    private func fixture(agent: Agent = .claude, prompt: String? = nil, row: Row = .bare)
+        throws -> (URL, URL, TempleDB, P5Clock, SessionEngine, LocalSessionSource) {
         let root = URL(fileURLWithPath: "/private/tmp/temple-p5-\(UUID().uuidString)")
         let dir = root.appendingPathComponent(agent == .claude ? "project" : "sessions")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        addTeardownBlock {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+            try? FileManager.default.removeItem(at: root)
+        }
         let file = dir.appendingPathComponent(agent == .claude ? "member.jsonl" : "rollout-member.jsonl")
         try write(file, agent: agent, id: "member", prompt: prompt)
         let db = try TempleDB.inMemory()
-        try db.join(sessionID: "member", via: .imported, agent: agent, locator: TranscriptLocator(localURL: file),
-            core: complete ? SessionCore(directory: "/work", title: "Complete", lastActiveAt: Date()) : nil)
-        let store = P5SpyStore(agent == .claude ? ClaudeSessionStore(root: root) : CodexSessionStore(root: root))
+        let core: SessionCore? = switch row {
+        case .complete: SessionCore(directory: "/work", title: "Complete", lastActiveAt: Date())
+        case .wantsTitle: SessionCore(directory: "/work", directorySource: .tab, lastActiveAt: Date())
+        case .wantsDirectoryAndTitle: SessionCore(lastActiveAt: Date())
+        case .bare: nil
+        }
+        try db.join(sessionID: "member", via: .imported, agent: agent, locator: TranscriptLocator(localURL: file), core: core)
+        let store: any IncrementalSessionStore = agent == .claude ? ClaudeSessionStore(root: root) : CodexSessionStore(root: root)
+        let source = LocalSessionSource(stores: [store], debounceInterval: 0.01, monitorChanges: false)
         let clock = P5Clock()
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.01,
-            monitorChanges: monitorChanges, now: { clock.date }), database: db)
-        return (root, file, db, store, clock, watcher)
+        let watcher = SessionEngine(source: source, database: db, now: { clock.date },
+                                    sleep: { _ in try await Task.sleep(for: .seconds(3600)) })
+        started.append(watcher)
+        return (root, file, db, clock, watcher, source)
     }
 
     private func write(_ file: URL, agent: Agent = .claude, id: String = "member", prompt: String? = nil,
@@ -40,258 +65,276 @@ final class MemberStateMachineTests: XCTestCase {
         try handle.seekToEnd(); try handle.write(contentsOf: Data(line.utf8))
     }
 
-    private func wait(_ predicate: () -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(3)
-        while !predicate(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertTrue(predicate())
+    /// What FSEvents would deliver for a write to `file`.
+    private func touched(_ watcher: SessionEngine, _ file: URL) {
+        watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile))
     }
 
-    private func start(_ watcher: SessionEngine) async throws -> Task<Void, Never> {
-        let stream = watcher.start()
-        let task = Task { for await _ in stream {} }
-        try await wait { watcher.publishedSnapshot != nil }
-        return task
+    private func wait(_ message: String = "condition", _ predicate: () async -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(3)
+        while await !predicate() {
+            guard Date() < deadline else { XCTFail("timed out: \(message)"); return }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    private func start(_ watcher: SessionEngine) async throws {
+        await watcher.start()
+        try await wait("settled") {
+            guard let snapshot = watcher.latestSnapshot, !snapshot.resolutions.isEmpty else { return false }
+            return !snapshot.resolutions.values.contains(.resolving)
+        }
+    }
+
+    /// A write, delivered, and the pass it causes finished.
+    private func written(_ watcher: SessionEngine, _ file: URL) async throws {
+        let before = watcher.metrics
+        touched(watcher, file)
+        try await wait("observed") { watcher.metrics.observations > before.observations }
+        try await wait("located") { watcher.metrics.locates > before.locates }
+        try await Task.sleep(for: .milliseconds(20))
+    }
+
+    /// Persists authorized facts as the app does.
+    private func consume(_ watcher: SessionEngine, _ db: TempleDB) {
+        let committer = FactCommitter(database: db)
+        let stream = watcher.snapshots()
+        tasks.append(Task { for await snapshot in stream { committer.receive(snapshot.facts) } })
     }
 
     func testAMemberWriteWithNothingMissingIsAStatNotAParse() async throws {
-        let (_, file, _, spy, _, watcher) = try fixture(complete: true)
-        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
+        let (_, file, _, _, watcher, _) = try fixture(row: .complete)
+        try await start(watcher)
         XCTAssertEqual(watcher.resolution(for: "member"), .loaded(file))
-        XCTAssertEqual(spy.parses, 0); XCTAssertEqual(spy.verifications, 1)
+        XCTAssertEqual(watcher.metrics.factReads, 0); XCTAssertEqual(watcher.metrics.reads, 1)
         let before = watcher.metrics
         try append(file)
-        watcher.reconcileEnrichment()
-        try await wait { watcher.metrics.observations > before.observations }
-        XCTAssertEqual(spy.parses, 0); XCTAssertEqual(spy.verifications, 1)
+        try await written(watcher, file)
+        XCTAssertEqual(watcher.metrics.factReads, 0); XCTAssertEqual(watcher.metrics.reads, 1)
+        XCTAssertEqual(watcher.metrics.parses, 0)
         XCTAssertEqual(watcher.metrics.publications, before.publications)
     }
 
-    func testFirstCompletenessMapClearsInferredEnrichment() async throws {
-        let (_, file, db, spy, clock, watcher) = try fixture(prompt: "A title")
-        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
-        let summary = try XCTUnwrap(watcher.publishedSnapshot?.summaries["member"])
-        _ = try db.fillCoreFields(sessionID: "member", host: .local, agent: summary.agent, directory: summary.cwd,
-            title: summary.firstPrompt, lastActiveAt: summary.modifiedAt)
-        let observations = watcher.metrics.observations
-        watcher.setEnrichmentWanted([:])
-        try await wait { watcher.metrics.observations > observations }
+    /// Once the row has every field, later writes are stats, not parses.
+    func testAFilledRowStopsParsing() async throws {
+        let (_, file, db, clock, watcher, _) = try fixture(prompt: "A title")
+        consume(watcher, db)
+        try await start(watcher)
+        try await wait("filled") { (try? db.sessionState("member")?.title) == "A title" }
+        try await wait("facts dropped") { watcher.latestSnapshot?.facts["member"] == nil }
         let before = watcher.metrics
-        let parses = spy.parses
         clock.advance(61)
         try append(file)
-        watcher.reconcileEnrichment()
-        try await wait { watcher.metrics.observations > before.observations }
-        XCTAssertEqual(spy.parses, parses)
+        try await written(watcher, file)
+        XCTAssertEqual(watcher.metrics.factReads, before.factReads)
         XCTAssertEqual(watcher.metrics.publications, before.publications)
     }
 
     func testAPromptArrivingOnWrite12IsFilled() async throws {
-        let (_, file, db, spy, clock, watcher) = try fixture()
-        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
-        watcher.setEnrichmentWanted(["member": [.title]])
+        let (_, file, db, clock, watcher, _) = try fixture(row: .wantsTitle)
+        consume(watcher, db)
+        try await start(watcher)
         for number in 1...12 {
             clock.advance(61)
             if number == 12 {
                 try append(file, "{\"type\":\"user\",\"sessionId\":\"member\",\"message\":{\"content\":\"Twelfth prompt\"}}\n")
             } else { try append(file) }
-            let before = spy.parses
-            watcher.reconcileEnrichment()
-            try await wait { spy.parses > before }
+            let before = watcher.metrics.factReads
+            touched(watcher, file)
+            try await wait("parsed \(number)") { watcher.metrics.factReads > before }
         }
-        let summary = try XCTUnwrap(watcher.publishedSnapshot?.summaries["member"])
-        _ = try db.fillCoreFields(sessionID: "member", host: .local, agent: summary.agent, directory: summary.cwd,
-            title: summary.firstPrompt, lastActiveAt: summary.modifiedAt)
-        watcher.setEnrichmentWanted([:])
-        XCTAssertEqual(try db.sessionState("member")?.title, "Twelfth prompt")
-        XCTAssertGreaterThanOrEqual(spy.parses, 13)
+        try await wait("titled") { (try? db.sessionState("member")?.title) == "Twelfth prompt" }
+        XCTAssertGreaterThanOrEqual(watcher.metrics.factReads, 13)
     }
 
     func testBackoffBoundsParsesForAPromptlessFile() async throws {
-        let (_, file, _, spy, clock, watcher) = try fixture()
-        watcher.setEnrichmentWanted(["member": [.title]])
-        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
+        let (_, file, _, clock, watcher, _) = try fixture(row: .wantsTitle)
+        try await start(watcher)
         for _ in 0..<240 {
             clock.advance(0.25)
             try append(file)
-            let observations = watcher.metrics.observations
-            watcher.reconcileEnrichment()
-            try await wait { watcher.metrics.observations > observations }
+            try await written(watcher, file)
+            await watcher.reconcileEnrichment()
         }
+        try await Task.sleep(for: .milliseconds(50))
         // t=0,1,3,7,15,31. There is no lifetime attempt limit.
-        XCTAssertEqual(spy.parses, 6)
-        XCTAssertEqual(spy.verifications, 1)
+        XCTAssertEqual(watcher.metrics.factReads, 6)
+        XCTAssertEqual(watcher.metrics.reads, 6, "appends never re-verify identity")
     }
 
     func testAnExplicitRequestRunsWithAnUnchangedSignature() async throws {
-        let (_, _, _, spy, _, watcher) = try fixture()
-        watcher.setEnrichmentWanted(["member": [.title]])
-        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
-        let before = spy.parses
-        watcher.requestResolution("member")
-        try await wait { spy.parses == before + 1 }
+        let (_, _, _, _, watcher, _) = try fixture(row: .wantsTitle)
+        try await start(watcher)
+        let before = watcher.metrics.factReads
+        await watcher.requestResolution("member")
+        try await wait { watcher.metrics.factReads == before + 1 }
     }
 
     func testAReplacedFileIsReverified() async throws {
         for agent in Agent.allCases {
-            let (_, file, _, spy, _, watcher) = try fixture(agent: agent, complete: true)
-            let task = try await start(watcher)
+            let (_, file, _, _, watcher, _) = try fixture(agent: agent, row: .complete)
+            try await start(watcher)
             let old = try FileSignature(file)
             try write(file, agent: agent, id: "other", atomic: true)
             XCTAssertNotEqual(try FileSignature(file).fileNumber, old.fileNumber)
-            watcher.reconcileEnrichment()
+            touched(watcher, file)
             try await wait { watcher.resolution(for: "member") == .mismatch }
-            XCTAssertEqual(spy.parses, 0); XCTAssertEqual(spy.verifications, 2)
-            task.cancel(); watcher.stop()
+            XCTAssertEqual(watcher.metrics.factReads, 0); XCTAssertEqual(watcher.metrics.reads, 2)
+            await watcher.stop()
         }
     }
 
     func testTruncationThenRegrowthReverifies() async throws {
-        let (_, file, _, spy, _, watcher) = try fixture(complete: true)
-        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
+        let (_, file, _, _, watcher, _) = try fixture(row: .complete)
+        try await start(watcher)
         let inode = try FileSignature(file).fileNumber
         try Data().write(to: file)
-        watcher.reconcileEnrichment()
+        touched(watcher, file)
         try await wait { watcher.resolution(for: "member") == .incomplete }
-        XCTAssertEqual(spy.verifications, 2)
+        XCTAssertEqual(watcher.metrics.reads, 2)
         try write(file, id: "other")
         XCTAssertEqual(try FileSignature(file).fileNumber, inode)
-        watcher.reconcileEnrichment()
+        touched(watcher, file)
         try await wait { watcher.resolution(for: "member") == .mismatch }
-        XCTAssertEqual(spy.verifications, 3)
+        XCTAssertEqual(watcher.metrics.reads, 3)
     }
 
     func testMismatchAndUnreadableNeverBecomeAbsent() async throws {
-        let (root, file, _, spy, _, watcher) = try fixture(complete: true)
-        spy.failVerification = true
-        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
+        let (root, file, _, _, watcher, _) = try fixture(row: .complete)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: file.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path) }
+        try await start(watcher)
         XCTAssertEqual(watcher.resolution(for: "member"), .unreadable)
         watcher.reconcileEvent(path: root.path, flags: UInt32(kFSEventStreamEventFlagKernelDropped))
-        try await wait { spy.verifications >= 2 }
+        try await wait { watcher.metrics.reads >= 2 }
         XCTAssertEqual(watcher.resolution(for: "member"), .unreadable)
-        spy.failVerification = false
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         try write(file, id: "wrong", atomic: true)
-        watcher.reconcileEnrichment()
+        touched(watcher, file)
         try await wait { watcher.resolution(for: "member") == .mismatch }
-        watcher.requestResolution("member")
-        try await wait { spy.verifications >= 4 }
+        await watcher.requestResolution("member")
+        try await wait { watcher.metrics.reads >= 4 }
         XCTAssertEqual(watcher.resolution(for: "member"), .mismatch)
     }
 
     func testCoverageResetRearmsEnrichment() async throws {
-        let (root, file, _, spy, _, watcher) = try fixture()
-        watcher.setEnrichmentWanted(["member": [.title]])
-        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
+        let (root, file, _, _, watcher, _) = try fixture(row: .wantsTitle)
+        try await start(watcher)
         try append(file)
-        watcher.reconcileEnrichment()
-        let before = spy.parses
+        try await written(watcher, file)
+        let before = watcher.metrics.factReads
         watcher.reconcileEvent(path: root.path, flags: UInt32(kFSEventStreamEventFlagKernelDropped))
-        try await wait { spy.parses == before + 1 }
-        XCTAssertEqual(spy.verifications, 1, "Coverage resets enrichment without invalidating a stable identity")
+        try await wait { watcher.metrics.factReads == before + 1 }
+        XCTAssertEqual(watcher.metrics.reads, watcher.metrics.factReads,
+                       "Coverage resets enrichment without an identity-only re-read of a stable file")
     }
 
     func testAPartialFillResolvesADeferredSignatureWithoutAnotherWrite() async throws {
-        let (_, file, db, spy, clock, watcher) = try fixture()
-        watcher.setEnrichmentWanted(["member": [.directory, .title]])
-        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
+        let (_, file, db, clock, watcher, _) = try fixture(row: .wantsDirectoryAndTitle)
+        try await start(watcher)
         clock.advance(0.1)
         try append(file, "{\"type\":\"user\",\"sessionId\":\"member\",\"message\":{\"content\":\"Soon\"}}\n")
-        let observations = watcher.metrics.observations
-        watcher.reconcileEnrichment()
-        try await wait { watcher.metrics.observations > observations }
-        XCTAssertEqual(spy.parses, 1, "Changed signature is deferred behind the first deadline")
+        try await written(watcher, file)
+        XCTAssertEqual(watcher.metrics.factReads, 1, "Changed signature is deferred behind the first deadline")
         _ = try db.fillCoreFields(sessionID: "member", host: .local, directory: "/work")
-        watcher.setEnrichmentWanted(["member": [.title]])
         // No clock advance, reconciliation or further write: the fill must re-arm work.
-        try await wait { watcher.publishedSnapshot?.summaries["member"]?.firstPrompt == "Soon" }
-        XCTAssertEqual(spy.parses, 2)
-        let summary = try XCTUnwrap(watcher.publishedSnapshot?.summaries["member"])
-        _ = try db.fillCoreFields(sessionID: "member", host: .local, title: summary.firstPrompt)
-        XCTAssertEqual(try db.sessionState("member")?.title, "Soon")
+        try await wait { watcher.latestSnapshot?.facts["member"]?.summary?.firstPrompt == "Soon" }
+        XCTAssertEqual(watcher.metrics.factReads, 2)
     }
 
     func testRapidReplacementsPreserveTheMembersParseBackoff() async throws {
-        let (_, file, _, spy, clock, watcher) = try fixture()
-        watcher.setEnrichmentWanted(["member": [.title]])
-        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
+        let (_, file, _, clock, watcher, _) = try fixture(row: .wantsTitle)
+        try await start(watcher)
         for _ in 0..<240 {
             clock.advance(0.25)
-            let verifications = spy.verifications
+            let reads = watcher.metrics.reads
             try write(file, atomic: true)
-            watcher.reconcileEnrichment()
-            try await wait { spy.verifications > verifications }
+            touched(watcher, file)
+            try await wait { watcher.metrics.reads > reads }
+            await watcher.reconcileEnrichment()
         }
-        XCTAssertEqual(spy.parses, 6, "Replacements verify immediately but parse only at 0,1,3,7,15,31")
-        XCTAssertGreaterThanOrEqual(spy.verifications, 241)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(watcher.metrics.factReads, 6, "Replacements verify immediately but parse only at 0,1,3,7,15,31")
+        XCTAssertGreaterThanOrEqual(watcher.metrics.reads, 241)
     }
 
     func testRepeatedAfterParseRacesStillChargeTheMembersBackoff() async throws {
-        let (_, file, _, spy, clock, watcher) = try fixture()
-        spy.afterParse = {
-            let handle = try! FileHandle(forWritingTo: file)
+        let (_, file, _, clock, watcher, source) = try fixture(row: .wantsTitle)
+        // The file grows in the middle of every facts read: none settles.
+        source.readPhaseHook = { phase, url in
+            guard phase == .sharedFactsAcquired, let handle = try? FileHandle(forWritingTo: url) else { return }
             defer { try? handle.close() }
-            try! handle.seekToEnd()
-            try! handle.write(contentsOf: Data("{}\n".utf8))
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: Data("{}\n".utf8))
         }
-        watcher.setEnrichmentWanted(["member": [.title]])
-        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
+        let recorded = Recorded()
+        let stream = watcher.snapshots()
+        tasks.append(Task { for await snapshot in stream { recorded.append(snapshot) } })
+        try await start(watcher)
         for _ in 0..<240 {
             clock.advance(0.25)
             try append(file)
-            let observations = watcher.metrics.observations
-            watcher.reconcileEnrichment()
-            try await wait { watcher.metrics.observations > observations }
+            try await written(watcher, file)
+            await watcher.reconcileEnrichment()
         }
-        XCTAssertEqual(spy.parses, 6, "Every discarded parse consumes a backoff interval")
-        XCTAssertNil(watcher.publishedSnapshot?.summaries["member"], "Racing results must never escape")
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(watcher.metrics.factReads, 6, "Every discarded parse consumes a backoff interval")
+        XCTAssertFalse(recorded.all.contains { $0.facts["member"]?.summary != nil }, "Racing results must never escape")
     }
 
     func testAnIdentityReadRacingAReplacementNeverPublishesLoaded() async throws {
-        let (_, file, _, spy, _, watcher) = try fixture(complete: true)
-        spy.afterVerification = {
-            try? Data("{\"type\":\"system\",\"sessionId\":\"wrong\"}".utf8).write(to: file, options: .atomic)
+        let (_, file, _, _, watcher, source) = try fixture(row: .complete)
+        let once = Flag()
+        source.readPhaseHook = { phase, url in
+            guard phase == .bytesRead, once.setOnce() else { return }
+            try? Data("{\"type\":\"system\",\"sessionId\":\"wrong\"}".utf8).write(to: url, options: .atomic)
         }
-        let stream = watcher.start()
-        var states: [MemberResolution] = []
-        let task = Task { for await snapshot in stream { if let state = snapshot.resolutions["member"] { states.append(state) } } }
-        defer { task.cancel(); watcher.stop() }
+        let recorded = Recorded()
+        let stream = watcher.snapshots()
+        tasks.append(Task { for await snapshot in stream { recorded.append(snapshot) } })
+        await watcher.start()
         try await wait { watcher.resolution(for: "member") == .mismatch }
-        XCTAssertFalse(states.contains(.loaded(file)))
-        XCTAssertEqual(spy.parses, 0)
-        XCTAssertGreaterThanOrEqual(spy.verifications, 2)
+        XCTAssertFalse(recorded.all.contains { $0.resolutions["member"] == .loaded(file) })
+        XCTAssertEqual(watcher.metrics.factReads, 0)
+        XCTAssertGreaterThanOrEqual(watcher.metrics.reads, 1)
     }
 
     func testCodexSharedHistoryChangesDoNotPublishForACompleteMember() async throws {
-        let (root, _, _, spy, _, watcher) = try fixture(agent: .codex, complete: true)
-        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
-        let before = watcher.metrics.publications
+        let (root, _, _, _, watcher, _) = try fixture(agent: .codex, row: .complete)
+        try await start(watcher)
+        let before = watcher.metrics
         let history = root.appendingPathComponent("history.jsonl")
         try Data("{\"session_id\":\"member\",\"text\":\"A late history prompt\"}".utf8).write(to: history)
         watcher.reconcileEvent(path: history.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
-        watcher.reconcileEnrichment()
-        try await wait { watcher.metrics.observations >= 2 }
-        XCTAssertEqual(spy.parses, 0)
-        XCTAssertEqual(watcher.metrics.publications, before)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(watcher.metrics.factReads, 0)
+        XCTAssertEqual(watcher.metrics.locates, before.locates)
+        XCTAssertEqual(watcher.metrics.publications, before.publications)
     }
 
-    /// A member whose transcript was pruned keeps its hint. Resolving it must
-    /// not walk both stores each time: every Codex prompt re-resolves every
-    /// member, so that was a full enumeration per pruned member per prompt.
+    /// A member whose transcript was pruned keeps its hint. Resolving it
+    /// again must not walk both stores each time (that was a full
+    /// enumeration per pruned member per resolve); and new shared facts do
+    /// not resolve it at all — a history line cannot give it a transcript.
     func testAPrunedHintedMemberDoesNotReEnumerateOnEveryResolve() async throws {
-        // Synthetic events only: a live stream delivers the fixture's own
-        // directory creations as root events, which rescan legitimately.
-        let (root, _, db, _, _, watcher) = try fixture(agent: .codex, complete: true, monitorChanges: false)
+        let (root, _, db, _, watcher, _) = try fixture(agent: .codex, row: .complete)
         let gone = root.appendingPathComponent("sessions/rollout-pruned.jsonl")
         try db.join(sessionID: "pruned", via: .imported, agent: .codex, locator: TranscriptLocator(localURL: gone))
-        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
+        try await start(watcher)
         try await wait { watcher.resolution(for: "pruned") == .confirmedAbsent }
         let before = watcher.metrics
         let history = root.appendingPathComponent("history.jsonl")
+        try Data("{\"session_id\":\"other\",\"text\":\"prompt\"}".utf8).write(to: history)
+        watcher.reconcileEvent(path: history.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(watcher.metrics.locates, before.locates, "no transcript, nothing shared facts could add")
         for round in 0..<3 {
-            try Data("{\"session_id\":\"other\",\"text\":\"prompt \(round)\"}".utf8).write(to: history)
-            watcher.reconcileEvent(path: history.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
-            watcher.reconcileEnrichment()
+            // The hinted path itself is reported again (gone): resolved
+            // again from the map, without a walk.
+            watcher.reconcileEvent(path: gone.path, flags: UInt32(kFSEventStreamEventFlagItemRemoved | kFSEventStreamEventFlagItemIsFile))
+            try await wait { watcher.metrics.locates > before.locates + UInt64(round) }
         }
-        try await wait { watcher.metrics.observations >= before.observations + 3 }
+        try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(watcher.metrics.enumerations, before.enumerations)
         XCTAssertEqual(watcher.resolution(for: "pruned"), .confirmedAbsent)
     }
@@ -300,42 +343,39 @@ final class MemberStateMachineTests: XCTestCase {
     /// prompt, so the attempt gate on the rollout's signature used to make
     /// the title unreachable until the rollout was written again.
     func testASharedHistoryPromptCompletesACodexTitleWithoutTheRolloutChanging() async throws {
-        let (root, file, db, spy, clock, watcher) = try fixture(agent: .codex)
+        let (root, file, db, clock, watcher, _) = try fixture(agent: .codex, row: .wantsTitle)
         try db.join(sessionID: "complete", via: .imported, agent: .claude,
             core: SessionCore(directory: "/w", title: "Done", lastActiveAt: Date()))
-        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
-        try await wait { watcher.publishedSnapshot?.summaries["member"] != nil }
-        XCTAssertNil(watcher.publishedSnapshot?.summaries["member"]?.historyPrompt)
-        watcher.setEnrichmentWanted(["member": [.title]])
-        let parses = spy.parses
+        try await start(watcher)
+        XCTAssertEqual(watcher.resolution(for: "member"), .loaded(file))
+        XCTAssertNil(watcher.latestSnapshot?.facts["member"], "nothing the row wants yet")
+        let parses = watcher.metrics.factReads
         clock.advance(61)
         let history = root.appendingPathComponent("history.jsonl")
         try Data("{\"session_id\":\"member\",\"ts\":1,\"text\":\"Recorded later\"}".utf8).write(to: history)
         watcher.reconcileEvent(path: history.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
-        try await wait { watcher.publishedSnapshot?.summaries["member"]?.historyPrompt == "Recorded later" }
-        XCTAssertEqual(spy.parses, parses + 1)
+        try await wait { watcher.latestSnapshot?.facts["member"]?.summary?.historyPrompt == "Recorded later" }
+        XCTAssertEqual(watcher.metrics.factReads, parses + 1)
         XCTAssertEqual(watcher.resolution(for: "member"), .loaded(file))
     }
 
-    /// Filling one field shortens the backoff; it does not re-read a file
-    /// that has not changed.
+    /// Filling one field does not re-read a file that has not changed.
     func testAFieldFillDoesNotReparseAnUnchangedFile() async throws {
-        let (_, _, db, spy, _, watcher) = try fixture()
-        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
-        try await wait { watcher.publishedSnapshot?.summaries["member"] != nil }
-        watcher.setEnrichmentWanted(["member": [.directory, .title, .lastActiveAt, .agent]])
-        let parses = spy.parses
-        let observations = watcher.metrics.observations
+        let (_, _, db, _, watcher, _) = try fixture()
+        try await start(watcher)
+        try await wait { watcher.latestSnapshot?.facts["member"]?.summary != nil }
+        let parses = watcher.metrics.factReads
+        let locates = watcher.metrics.locates
         _ = try db.fillCoreFields(sessionID: "member", host: .local, directory: "/work")
-        watcher.setEnrichmentWanted(["member": [.title, .lastActiveAt, .agent]])
-        try await wait { watcher.metrics.observations > observations }
-        XCTAssertEqual(spy.parses, parses)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(watcher.metrics.factReads, parses)
+        XCTAssertEqual(watcher.metrics.locates, locates)
     }
 
     func testClaudeVerifiesTheFirstTypedLineCarryingAnID() async throws {
-        let (_, file, _, _, _, watcher) = try fixture(complete: true)
+        let (_, file, _, _, watcher, _) = try fixture(row: .complete)
         try "{\"sessionId\":\"untyped\"}\n{\"type\":\"summary\"}\n{\"type\":\"user\",\"sessionId\":\"member\"}\n{\"type\":\"user\",\"sessionId\":\"other\"}".write(to: file, atomically: false, encoding: .utf8)
-        let task = try await start(watcher); defer { task.cancel(); watcher.stop() }
+        try await start(watcher)
         XCTAssertEqual(watcher.resolution(for: "member"), .loaded(file))
     }
 }
@@ -347,42 +387,9 @@ private final class P5Clock: @unchecked Sendable {
     func advance(_ seconds: TimeInterval) { lock.lock(); value.addTimeInterval(seconds); lock.unlock() }
 }
 
-private final class P5SpyStore: IncrementalSessionStore, @unchecked Sendable {
-    private let inner: any IncrementalSessionStore
+private final class Recorded: @unchecked Sendable {
     private let lock = NSLock()
-    private var parseCount = 0
-    private var verifyCount = 0
-    private var failure = false
-    var afterParse: (@Sendable () -> Void)?
-    var afterVerification: (@Sendable () -> Void)?
-    init(_ inner: any IncrementalSessionStore) { self.inner = inner }
-    var parses: Int { lock.lock(); defer { lock.unlock() }; return parseCount }
-    var verifications: Int { lock.lock(); defer { lock.unlock() }; return verifyCount }
-    var failVerification: Bool {
-        get { lock.lock(); defer { lock.unlock() }; return failure }
-        set { lock.lock(); failure = newValue; lock.unlock() }
-    }
-    var agent: Agent { inner.agent }
-    var watchedURLs: [URL] { inner.watchedURLs }
-    var sharedFactURLs: [URL] { inner.sharedFactURLs }
-    func loadSummaries() -> [TranscriptSummary] { XCTFail("No full-store parse"); return [] }
-    func loadSummary(at fileURL: URL) -> TranscriptSummary? {
-        lock.lock(); parseCount += 1; lock.unlock()
-        let summary = inner.loadSummary(at: fileURL)
-        afterParse?()
-        return summary
-    }
-    func verifyIdentity(at url: URL, expectedID: String) throws -> TranscriptVerification {
-        lock.lock(); verifyCount += 1; lock.unlock()
-        if failVerification { throw CocoaError(.fileReadNoPermission) }
-        let verdict = try inner.verifyIdentity(at: url, expectedID: expectedID)
-        let callback = afterVerification; afterVerification = nil; callback?()
-        return verdict
-    }
-    func sessionFileURLs() -> [URL] { inner.sessionFileURLs() }
-    func enumerateSessionFiles() throws -> [URL] { try inner.enumerateSessionFiles() }
-    func enumerateSessionFiles(in subtree: URL) throws -> [URL] { try inner.enumerateSessionFiles(in: subtree) }
-    func filenameID(at url: URL) -> String? { inner.filenameID(at: url) }
-    func rolloutSelectionKey(at url: URL) -> String? { inner.rolloutSelectionKey(at: url) }
-    func acceptsTranscript(_ url: URL) -> Bool { inner.acceptsTranscript(url) }
+    private var snapshots: [EngineSnapshot] = []
+    func append(_ snapshot: EngineSnapshot) { lock.lock(); snapshots.append(snapshot); lock.unlock() }
+    var all: [EngineSnapshot] { lock.lock(); defer { lock.unlock() }; return snapshots }
 }

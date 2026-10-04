@@ -16,6 +16,8 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
         public var parses = 0
         public var widerReads = 0
         public var bytesRead = 0
+        /// The ids each `locate` asked about, in order.
+        public var locatedIDs: [[String]] = []
     }
 
     public let host: HostID
@@ -146,10 +148,30 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
     public func breakTransport(_ broken: Bool = true) { locked { transportBroken = broken } }
 
     /// What a dropped event stream (or a reconnect) does: coverage moves on.
-    public func dropEvents() {
+    /// Unannounced, a consumer learns of it from its next `locate`.
+    public func dropEvents(announce: Bool = true) {
         let next: UInt64 = locked { coverage += 1; return coverage }
-        emit(.coverageReset(coverage: next))
+        if announce { emit(.coverageReset(coverage: next)) }
     }
+
+    /// The next `count` reads throw `error` (after their round trip), while
+    /// listings keep working: a transport that fails mid-operation.
+    public func failNextReads(_ count: Int, with error: TranscriptReadError) {
+        locked { readFailures = (count, error) }
+    }
+    private var readFailures: (count: Int, error: TranscriptReadError)?
+
+    /// Ends every open change stream (a dropped connection), with an error
+    /// or without one. A consumer is expected to subscribe again.
+    public func endChanges(throwing error: Error? = nil) {
+        let targets: [AsyncThrowingStream<SourceChange, Error>.Continuation] = locked {
+            let all = Array(continuations.values); continuations.removeAll(); return all
+        }
+        for continuation in targets { continuation.finish(throwing: error) }
+    }
+
+    /// How many change streams are open.
+    public var subscribers: Int { locked { continuations.count } }
 
     private func changeLocked(_ path: String, agent: Agent) -> SourceChange {
         let id = TranscriptFormats.format(for: agent).name(path: path)?.threadID
@@ -186,6 +208,7 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
         return try locked {
             counts.roundTrips += 1
             counts.locates += 1
+            counts.locatedIDs.append(requests.map(\.id).sorted())
             guard !transportBroken else { throw LocateError.transport("fake transport down") }
             counts.listings += 1
             var candidates: [String: [TranscriptCandidate]] = [:]
@@ -228,6 +251,14 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
     /// never settles throws `changedDuringRead`.
     public func read(_ locator: TranscriptLocator, agent: Agent, expecting id: String, facts: Bool) async throws -> TranscriptRead {
         await readGate?.wait()
+        let injected: TranscriptReadError? = locked {
+            guard let failure = readFailures, failure.count > 0 else { return nil }
+            counts.reads += 1
+            counts.roundTrips += 1
+            readFailures = failure.count > 1 ? (failure.count - 1, failure.error) : nil
+            return failure.error
+        }
+        if let injected { throw injected }
         let format = TranscriptFormats.format(for: agent)
         func current() throws -> File {
             guard !transportBroken else { throw TranscriptReadError.transport("fake transport down") }

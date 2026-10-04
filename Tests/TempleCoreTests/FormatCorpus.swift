@@ -237,7 +237,9 @@ struct FormatGoldenRecord: Codable, Equatable {
             let header: String
             do {
                 if let h = try s.adoptionHeader(at: url) {
-                    header = "\(h.sessionID)|\(h.cwd)|\(h.createdAt.timeIntervalSince1970)|\(h.filePath.path == url.path)"
+                    // The header names no file now; the last field is kept for
+                    // the golden record's shape (the file read is `url`).
+                    header = "\(h.id)|\(h.cwd)|\(h.createdAt.timeIntervalSince1970)|true"
                 } else { header = "nil" }
             } catch { header = "throws" }
             return FormatGoldenRecord(

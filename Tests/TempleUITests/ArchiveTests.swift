@@ -12,12 +12,12 @@ final class ArchiveTests: XCTestCase {
         let overlay = SessionOverlayStore(db: database)
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
+            engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
             database: database,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: overlay
         )
-        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: Dictionary(uniqueKeysWithValues: model.sessions.map { ($0.id, MemberResolution.confirmedAbsent) }), summaries: [:]))
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: Dictionary(uniqueKeysWithValues: model.sessions.map { ($0.id, MemberResolution.confirmedAbsent) })))
         return (model, overlay)
     }
 
@@ -359,9 +359,10 @@ final class ArchiveTests: XCTestCase {
 
     /// Index churn is not a decision: a session resumed in some other terminal
     /// updates its file, and must stay archived.
-    func testDiskActivityDoesNotUnarchive() {
+    func testDiskActivityDoesNotUnarchive() throws {
         let index = twoProjects()
-        let (model, overlay) = makeModel(index)
+        let database = try TempleDB.inMemory()
+        let (model, overlay) = makeModel(index, database: database)
         overlay.setArchived(true, sessionID: "a1")
         overlay.setProjectArchived(true, path: "/p/b")
 
@@ -370,8 +371,8 @@ final class ArchiveTests: XCTestCase {
                 locator: TranscriptLocator(host: .local, path: "/tmp/\(id).jsonl"),
                 modifiedAt: Date(timeIntervalSince1970: 500), cwd: "/changed", firstPrompt: "Changed externally")
         }
-        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: [:],
-            summaries: Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0) })))
+        model.receiveEngineSnapshot(.authorized(generation: 2, resolutions: [:],
+            summaries: Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0) }), in: database))
 
         XCTAssertTrue(overlay.isArchived("a1"))
         XCTAssertTrue(overlay.isProjectArchived("/p/b"))

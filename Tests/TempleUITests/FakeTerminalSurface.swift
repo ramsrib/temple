@@ -119,18 +119,50 @@ final class FakeTerminalSurfaceFactory: TerminalSurfaceFactory {
     }
 }
 
-/// An `IndexSource` that emits a fixed index on demand (no disk / no timer).
-@MainActor
-final class FakeIndexSource: IndexSource {
-    var index: CatalogFixtureIndex
-    private var onUpdate: ((EngineSnapshot) -> Void)?
-    init(_ index: CatalogFixtureIndex) { self.index = index }
-    func start(onUpdate: @escaping (EngineSnapshot) -> Void) {
-        self.onUpdate = onUpdate
-        onUpdate(index.snapshot)
+/// A host engine that publishes what a test hands it (no disk, no timer).
+/// `start` publishes the fixture index's resolutions; `publish` anything else.
+final class FakeEngine: HostEngine, @unchecked Sendable {
+    let host: HostID
+    private let lock = NSLock()
+    private let initial: EngineSnapshot?
+    private var current: EngineSnapshot?
+    private var continuations: [UUID: AsyncStream<EngineSnapshot>.Continuation] = [:]
+    private var requests: [String] = []
+    private var reconciles: [String] = []
+    /// What `confirmAbsence` answers.
+    var absent = false
+
+    init(_ index: CatalogFixtureIndex? = nil, host: HostID = .local, snapshot: EngineSnapshot? = nil) {
+        self.host = host
+        self.initial = snapshot ?? index?.snapshot
     }
-    func stop() {}
-    func emit(_ new: CatalogFixtureIndex) { index = new; onUpdate?(new.snapshot) }
+
+    var latestSnapshot: EngineSnapshot? { lock.lock(); defer { lock.unlock() }; return current }
+    var requested: [String] { lock.lock(); defer { lock.unlock() }; return requests }
+    var reconciled: [String] { lock.lock(); defer { lock.unlock() }; return reconciles }
+
+    func snapshots() -> AsyncStream<EngineSnapshot> {
+        let token = UUID()
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            continuation.onTermination = { [weak self] _ in
+                guard let self else { return }
+                self.lock.lock(); self.continuations.removeValue(forKey: token); self.lock.unlock()
+            }
+            lock.lock(); continuations[token] = continuation; let latest = current; lock.unlock()
+            if let latest { continuation.yield(latest) }
+        }
+    }
+
+    func publish(_ snapshot: EngineSnapshot) {
+        lock.lock(); current = snapshot; let targets = Array(continuations.values); lock.unlock()
+        targets.forEach { $0.yield(snapshot) }
+    }
+
+    func start() async { if let initial { publish(initial) } }
+    func stop() async {}
+    func requestResolution(_ id: String, awaitingCreation: Bool) async { lock.lock(); requests.append(id); lock.unlock() }
+    func reconcileMembership(_ id: String) async { lock.lock(); reconciles.append(id); lock.unlock() }
+    func confirmAbsence(_ id: String) async -> Bool { absent }
 }
 
 
@@ -196,7 +228,7 @@ enum Fixture {
 
     /// This Mac's real folder check, for tests that use real directories.
     static let localDirectoryEvidence: (ProjectKey) -> DirectoryEvidence = {
-        LocalSessionSource().directoryEvidence($0.path)
+        LocalHostLauncher.statEvidence($0.path)
     }
 
     /// Real folders exist; made-up ones ("/p") are unknown rather than missing,
@@ -209,7 +241,7 @@ enum Fixture {
     /// sessions in made-up paths ("/p/a") — the real host would refuse to
     /// start an agent in a folder that does not exist.
     static func hostsWithoutFolderEvidence() -> HostRegistry {
-        HostRegistry(entries: [.init(source: FolderAgnosticSource(), launcher: LocalHostLauncher())])
+        HostRegistry(entries: [.init(source: FolderAgnosticSource(), launcher: LocalHostLauncher(folderEvidence: { _ in .unknown }))])
     }
 
     /// An isolated defaults object that never reaches the disk.
@@ -246,10 +278,13 @@ enum Fixture {
 final class FolderAgnosticSource: HostSessionSource, @unchecked Sendable {
     let host = HostID.local
     let capabilities: Set<HostCapability> = []
-    func resolve(_ requests: [ResolutionRequest]) async throws -> ResolutionBatch {
-        ResolutionBatch(generation: 1, results: Dictionary(uniqueKeysWithValues: requests.map { ($0.id, .incomplete) }))
+    func locate(_ requests: [LocateRequest]) async throws -> LocateResult {
+        LocateResult(coverage: 1, candidates: [:], complete: [], sharedRevision: [:])
     }
-    func release(_ ids: [String]) {}
+    func read(_ locator: TranscriptLocator, agent: Agent, expecting id: String, facts: Bool) async throws -> TranscriptRead {
+        throw TranscriptReadError.missing
+    }
+    func directoryEvidence(_ path: String) async -> DirectoryEvidence { .unknown }
     func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error> { AsyncThrowingStream { $0.finish() } }
     func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult { .none }
     func changes() -> AsyncThrowingStream<SourceChange, Error> { AsyncThrowingStream { _ in } }

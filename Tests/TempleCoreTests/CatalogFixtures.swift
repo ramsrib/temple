@@ -21,5 +21,8 @@ extension TranscriptSummary {
     var resume: (argv: [String], cwd: String) { (agent.resumeArgv(sessionID: id), projectPath) }
 }
 extension EngineSnapshot {
-    var allSessions: [TranscriptSummary] { summaries.values.sorted { $0.modifiedAt == $1.modifiedAt ? $0.id < $1.id : $0.modifiedAt > $1.modifiedAt } }
+    /// The parsed facts this snapshot authorizes, newest first.
+    var allSessions: [TranscriptSummary] {
+        facts.values.compactMap(\.summary).sorted { $0.modifiedAt == $1.modifiedAt ? $0.id < $1.id : $0.modifiedAt > $1.modifiedAt }
+    }
 }

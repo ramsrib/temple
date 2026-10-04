@@ -16,7 +16,7 @@ final class StartupIndexTests: XCTestCase {
         // is a file in the test's own directory.
         let db = try TempleDB(path: directory.appendingPathComponent("temple.sqlite"))
         Fixture.join([Fixture.row("member", project: "/work", title: "Durable")], to: db)
-        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: DelayedIndexSource(),
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [FakeEngine()],
             database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         model.start()
         XCTAssertFalse(FileManager.default.fileExists(atPath: cache.path))
@@ -27,7 +27,7 @@ final class StartupIndexTests: XCTestCase {
         // Once only: an older Temple beside this one rebuilds the file and
         // must not be cold-started on every launch of its own.
         try Data("rebuilt by an older build".utf8).write(to: cache)
-        let again = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: DelayedIndexSource(),
+        let again = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [FakeEngine()],
             database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         again.start()
         XCTAssertTrue(FileManager.default.fileExists(atPath: cache.path))
@@ -41,7 +41,7 @@ final class StartupIndexTests: XCTestCase {
         let cache = TempleState.directory.appendingPathComponent("index-cache.json")
         try Data("someone else's".utf8).write(to: cache)
         defer { try? FileManager.default.removeItem(at: cache) }
-        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: DelayedIndexSource(),
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [FakeEngine()],
             database: try TempleDB.inMemory(), settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         model.start()
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
@@ -55,28 +55,15 @@ final class StartupIndexTests: XCTestCase {
         let second = CatalogFixtureIndex.grouping([Fixture.session("member", project: "/tmp", title: "After", updated: 10)])
         let db = try TempleDB.inMemory()
         Fixture.join(first, to: db)
-        let source = DelayedIndexSource()
-        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source, database: db,
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [FakeEngine()], database: db,
                              settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         model.start()
-        source.emit(first)
-        source.emit(second)
+        // Authorized facts for the row's own membership: the persisted
+        // title is NULL-only, so a transcript cannot overwrite it.
+        model.receiveEngineSnapshot(first.snapshot(authorizedBy: db, generation: 1))
+        model.receiveEngineSnapshot(second.snapshot(authorizedBy: db, generation: 2))
         XCTAssertEqual(model.sessions.first?.displayTitle, "Before")
+        XCTAssertEqual(try db.sessionState("member")?.title, "Before")
     }
 
-}
-
-@MainActor
-private final class DelayedIndexSource: IndexSource {
-    private var onUpdate: ((EngineSnapshot) -> Void)?
-
-    func start(onUpdate: @escaping (EngineSnapshot) -> Void) {
-        self.onUpdate = onUpdate
-    }
-
-    func stop() {}
-
-    func emit(_ index: CatalogFixtureIndex) {
-        onUpdate?(index.snapshot)
-    }
 }

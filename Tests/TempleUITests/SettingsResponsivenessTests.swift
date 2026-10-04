@@ -18,7 +18,7 @@ final class SettingsResponsivenessTests: XCTestCase {
     override func setUp() async throws {
         factory = FakeTerminalSurfaceFactory()
         model = AppModel(surfaceFactory: factory,
-                         indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
+                         engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
                          database: try TempleDB.inMemory(),
                          settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
                          hostRegistry: Fixture.hostsWithoutFolderEvidence())

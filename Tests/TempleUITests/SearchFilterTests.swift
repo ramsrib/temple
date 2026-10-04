@@ -17,12 +17,12 @@ final class SearchFilterTests: XCTestCase {
         let overlay = SessionOverlayStore(db: database)
         let settings = SettingsStore(defaults: Fixture.uniqueDefaults())
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
-                             indexSource: FakeIndexSource(index),
+                             engines: [FakeEngine(index)],
                              database: database,
                              settings: settings,
                              overlay: overlay)
 
-        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: Dictionary(uniqueKeysWithValues: model.sessions.map { ($0.id, MemberResolution.confirmedAbsent) }), summaries: [:]))
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: Dictionary(uniqueKeysWithValues: model.sessions.map { ($0.id, MemberResolution.confirmedAbsent) })))
         return (model, overlay)
     }
 
@@ -31,7 +31,7 @@ final class SearchFilterTests: XCTestCase {
         Fixture.join(rows, to: db)
         let overlay = SessionOverlayStore(db: db)
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])), database: db,
+            engines: [FakeEngine(CatalogFixtureIndex(projects: []))], database: db,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()), overlay: overlay)
         return (model, overlay)
     }
@@ -234,7 +234,7 @@ final class SearchFilterTests: XCTestCase {
     func testProjectOrderFrozenAtFirstCompleteSnapshotAndStableAcrossUpdates() async {
         let (model, overlay) = makeRowModel([Fixture.row("a1", project: "/p/a", updated: 20),
             Fixture.row("b1", project: "/p/b", updated: 10)])
-        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a1": .confirmedAbsent, "b1": .confirmedAbsent], summaries: [:]))
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a1": .confirmedAbsent, "b1": .confirmedAbsent]))
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
         overlay.touch("b1", host: .local, at: Date(timeIntervalSince1970: 50))
         await withCheckedContinuation { continuation in
@@ -248,7 +248,7 @@ final class SearchFilterTests: XCTestCase {
     func testSessionOrderWithinProjectFrozenAndNewSessionsPrepend() async {
         let (model, overlay) = makeRowModel([Fixture.row("s1", project: "/p/a", updated: 20),
             Fixture.row("s2", project: "/p/a", updated: 10)])
-        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["s1": .confirmedAbsent, "s2": .confirmedAbsent], summaries: [:]))
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["s1": .confirmedAbsent, "s2": .confirmedAbsent]))
         XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["s1", "s2"])
         overlay.touch("s2", host: .local, at: Date(timeIntervalSince1970: 50))
         await withCheckedContinuation { continuation in
@@ -265,7 +265,7 @@ final class SearchFilterTests: XCTestCase {
         let (model, overlay) = makeRowModel([Fixture.row("s1", project: "/p/a", updated: 20),
             Fixture.row("s2", project: "/p/a", updated: 10), Fixture.row("b1", project: "/p/b", updated: 15)])
         model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["s1": .confirmedAbsent,
-            "s2": .confirmedAbsent, "b1": .confirmedAbsent], summaries: [:]))
+            "s2": .confirmedAbsent, "b1": .confirmedAbsent]))
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
         overlay.join("old", via: .imported, agent: .claude,
                      core: SessionCore(directory: "/p/a", title: "Old", lastActiveAt: Date(timeIntervalSince1970: 5)))

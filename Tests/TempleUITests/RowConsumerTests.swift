@@ -8,7 +8,7 @@ final class RowConsumerTests: XCTestCase {
         let db = try TempleDB.inMemory()
         Fixture.join(rows, to: db)
         return AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])), database: db,
+            engines: [FakeEngine(CatalogFixtureIndex(projects: []))], database: db,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
     }
 
@@ -24,8 +24,7 @@ final class RowConsumerTests: XCTestCase {
 
     private func freeze(_ app: AppModel) {
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1,
-            resolutions: Dictionary(uniqueKeysWithValues: app.sessions.map { ($0.id, MemberResolution.confirmedAbsent) }),
-            summaries: [:]))
+            resolutions: Dictionary(uniqueKeysWithValues: app.sessions.map { ($0.id, MemberResolution.confirmedAbsent) })))
         XCTAssertTrue(app.sidebarRanksFrozen)
     }
 
@@ -206,7 +205,7 @@ final class RowConsumerTests: XCTestCase {
         let app = try model([Fixture.row("a", project: "/a", updated: 20),
                              Fixture.row("b", project: "/b", updated: 10)])
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1,
-            resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent], summaries: [:]))
+            resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent]))
         let builds = app.sessionPresentationBuildCount
         let groups = app.rowProjectBuildCount
         for tick in 1...100 { app.overlay.touch("b", host: .local, at: Date(timeIntervalSince1970: Double(100 + tick))) }
@@ -235,7 +234,7 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(app.displayProjects.map(\.path), ["/b", "/a"])
         app.overlay.touch("a", host: .local, at: Date(timeIntervalSince1970: 40))
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1,
-            resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent], summaries: [:]))
+            resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent]))
         XCTAssertTrue(app.sidebarRanksFrozen)
         XCTAssertEqual(app.displayProjects.map(\.path), ["/a", "/b"])
         app.overlay.observeLaunchDirectory("b", host: .local, "/a")
@@ -349,7 +348,7 @@ final class RowConsumerTests: XCTestCase {
 
     func testAMemberWithoutATranscriptStillHasASidebarRow() throws {
         let app = try model([Fixture.row("missing", project: "/gone", title: "Kept")])
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["missing": .confirmedAbsent], summaries: [:]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["missing": .confirmedAbsent]))
         XCTAssertEqual(app.displayProjects.flatMap(\.sessions).map(\.id), ["missing"])
         XCTAssertEqual(app.displayProjects.first?.sessions.first?.displayTitle, "Kept")
         XCTAssertNil(app.displayProjects.first?.sessions.first?.transcript)
@@ -409,7 +408,7 @@ final class RowConsumerTests: XCTestCase {
         let rows = ["absent", "unreadable", "resolving", "awaiting", "unknown"].map { Fixture.row($0, title: $0) }
         let app = try model(rows)
         app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["absent": .confirmedAbsent,
-            "unreadable": .unreadable, "resolving": .resolving, "awaiting": .awaitingCreation], summaries: [:]))
+            "unreadable": .unreadable, "resolving": .resolving, "awaiting": .awaitingCreation]))
         try await read(app, events: [.storeFailed(agent: .codex, message: "Failed scan")])
         XCTAssertEqual(app.history.allRows.count, 5)
         XCTAssertEqual(app.history.allRows.filter(\.transcriptMissing).map(\.sessionID), ["absent"])
@@ -418,7 +417,7 @@ final class RowConsumerTests: XCTestCase {
         app.history.openSelected()
         XCTAssertTrue(app.openSessions.tabs.isEmpty)
         // A stale absence cannot replace newer unresolved evidence.
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["unknown": .confirmedAbsent], summaries: [:]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["unknown": .confirmedAbsent]))
         app.history.rebuild()
         XCTAssertFalse(app.history.allRows.first { $0.sessionID == "unknown" }!.transcriptMissing)
         // Cancelling a later scan leaves the member union and its evidence intact.
@@ -482,7 +481,7 @@ final class RowConsumerTests: XCTestCase {
         let remote = HostID(rawValue: "remote")
         let app = try model([Fixture.row("local", project: "/same", title: "Local row"),
             Fixture.row("remote", project: "/same", title: "Remote row", host: remote)])
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["local": .confirmedAbsent, "remote": .confirmedAbsent], summaries: [:]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["local": .confirmedAbsent, "remote": .confirmedAbsent]))
         app.openSessions.openSession(app.sessions.first { $0.id == "remote" }!)
         let tab = try XCTUnwrap(app.openSessions.activeTab)
         tab.title = "Stale chip title"
@@ -504,17 +503,17 @@ final class RowConsumerTests: XCTestCase {
 
     func testFrozenRankWaitsForTheFirstCompleteGeneration() async throws {
         let app = try model([Fixture.row("a", project: "/a", updated: 20), Fixture.row("b", project: "/b", updated: 10)])
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .confirmedAbsent, "b": .resolving], summaries: [:]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .confirmedAbsent, "b": .resolving]))
         XCTAssertFalse(app.sidebarRanksFrozen)
         app.overlay.touch("b", host: .local, at: Date(timeIntervalSince1970: 30))
         await nextPresentationTurn()
         XCTAssertEqual(app.displayProjects.map(\.path), ["/b", "/a"])
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["a": .resolving, "b": .confirmedAbsent], summaries: [:]))
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent], summaries: [:]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["a": .resolving, "b": .confirmedAbsent]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent]))
         XCTAssertFalse(app.sidebarRanksFrozen, "a stale complete generation cannot freeze the newer one")
         app.overlay.touch("a", host: .local, at: Date(timeIntervalSince1970: 40))
         await nextPresentationTurn()
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent], summaries: [:]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent]))
         XCTAssertTrue(app.sidebarRanksFrozen)
         XCTAssertEqual(app.displayProjects.map(\.path), ["/a", "/b"])
         app.overlay.touch("b", host: .local, at: Date(timeIntervalSince1970: 50))
@@ -524,11 +523,11 @@ final class RowConsumerTests: XCTestCase {
 
     func testSidebarSessionsSortLiveUntilInitialResolutionCompletes() async throws {
         let app = try model([Fixture.row("a", project: "/same", updated: 20), Fixture.row("b", project: "/same", updated: 10)])
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .loaded(URL(fileURLWithPath: "/tmp/a.jsonl")), "b": .resolving], summaries: [:]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .loaded(URL(fileURLWithPath: "/tmp/a.jsonl")), "b": .resolving]))
         app.overlay.touch("b", host: .local, at: Date(timeIntervalSince1970: 30))
         await nextPresentationTurn()
         XCTAssertEqual(app.displayProjects.first?.sessions.map(\.id), ["b", "a"])
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .loaded(URL(fileURLWithPath: "/tmp/a.jsonl")), "b": .unreadable], summaries: [:]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .loaded(URL(fileURLWithPath: "/tmp/a.jsonl")), "b": .unreadable]))
         XCTAssertTrue(app.sidebarRanksFrozen)
         app.overlay.touch("a", host: .local, at: Date(timeIntervalSince1970: 40))
         await nextPresentationTurn()
@@ -542,7 +541,7 @@ final class RowConsumerTests: XCTestCase {
         var deadline: (@MainActor () -> Void)?
         app.scheduleSidebarFreeze = { delay, action in XCTAssertEqual(delay, 3); deadline = action }
         app.beginSidebarRanking()
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .unreadable, "b": .awaitingCreation], summaries: [:]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .unreadable, "b": .awaitingCreation]))
         XCTAssertFalse(app.sidebarRanksFrozen)
         app.overlay.touch("b", host: remote, at: Date(timeIntervalSince1970: 30))
         await nextPresentationTurn()
@@ -564,14 +563,14 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertNil(app.transcriptURL(for: "local"), "legacy index presence is not a row locator")
         let localURL = URL(fileURLWithPath: "/tmp/local.jsonl")
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["local": .loaded(localURL),
-            "remote": .loaded(TranscriptLocator(host: remote, path: "/remote/transcript.jsonl"))], summaries: [:]))
+            "remote": .loaded(TranscriptLocator(host: remote, path: "/remote/transcript.jsonl"))]))
         XCTAssertEqual(app.transcriptURL(for: "local"), localURL)
         XCTAssertNil(app.transcriptURL(for: "remote"), "remote locators cannot reveal a local file")
         let tab = SessionTab(kind: .session, sessionID: "local", agent: .codex,
             projectPath: "/wrong", title: "Old title")
         XCTAssertEqual(app.resumeArgv(for: tab), ["claude", "--resume", "local"])
         app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["local": .confirmedAbsent,
-            "remote": .unreadable], summaries: [:]))
+            "remote": .unreadable]))
         XCTAssertNil(app.transcriptURL(for: "local"))
         XCTAssertNil(app.transcriptURL(for: "remote"))
     }

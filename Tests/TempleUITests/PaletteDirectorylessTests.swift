@@ -13,7 +13,7 @@ final class PaletteDirectorylessTests: XCTestCase {
                     core: SessionCore(directory: "/p", title: "Lost and found"))
         let factory = FakeTerminalSurfaceFactory()
         let model = AppModel(surfaceFactory: factory,
-                             indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
+                             engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
                              database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
                              hostRegistry: Fixture.hostsWithoutFolderEvidence())
         let results = model.paletteResults("Lost")

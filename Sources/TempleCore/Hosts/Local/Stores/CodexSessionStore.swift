@@ -60,6 +60,8 @@ public struct CodexSessionStore: TranscriptSummaryStore {
         return (snapshot.facts, snapshot.revision)
     }
 
+    public var sharedTransfers: Int { shared.fileReads }
+
     /// The inputs' current revision, from a stat of each; nothing is read.
     public func sharedRevision() -> UInt64? { shared.revision(currentKey: sharedInputKey) }
 

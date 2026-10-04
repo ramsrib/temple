@@ -5,8 +5,18 @@ import CoreServices
 
 @MainActor
 final class CoreWiringTests: XCTestCase {
-    func testWatcherIndexSourceDeliversFilesystemUpdateIntoAppModel() async throws { try await exerciseWiring(injectEvents: false) }
-    func testWatcherIndexSourceDeliversInjectedUpdateIntoAppModel() async throws { try await exerciseWiring(injectEvents: true) }
+    private var engines: [SessionEngine] = []
+
+    override func tearDown() async throws {
+        for engine in engines { await engine.stop() }
+        engines.removeAll()
+        try await super.tearDown()
+    }
+
+    private func tracked(_ engine: SessionEngine) -> SessionEngine { engines.append(engine); return engine }
+
+    func testTheEngineDeliversAFilesystemUpdateIntoAppModel() async throws { try await exerciseWiring(injectEvents: false) }
+    func testTheEngineDeliversAnInjectedUpdateIntoAppModel() async throws { try await exerciseWiring(injectEvents: true) }
 
     private func exerciseWiring(injectEvents: Bool) async throws {
         let root = FileManager.default.temporaryDirectory
@@ -18,14 +28,12 @@ final class CoreWiringTests: XCTestCase {
         // Isolate the startup cache: never read or overwrite the developer's
         // real ~/Library/Application Support cache from a test.
         let database = try TempleDB.inMemory()
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.05), database: database)
+        let watcher = tracked(SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.05), database: database))
         try database.join(sessionID: "wired-session", via: .created, agent: .claude,
                           core: SessionCore(directory: "/tmp/project"))
-        let source = WatcherIndexSource(watcher: watcher)
-        defer { source.stop() }
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: source,
+            engines: [watcher],
             database: database,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: SessionOverlayStore(db: database)
@@ -55,27 +63,31 @@ final class CoreWiringTests: XCTestCase {
         }
         XCTAssertTrue(model.sessions.contains(where: { $0.id == "wired-session" }))
         if injectEvents { XCTAssertEqual(model.openSessions.activeTab?.sessionID, "wired-session") }
+        // The engine's facts reach the row through the overlay's persister.
+        let filled = Date().addingTimeInterval(5)
+        while (try? database.sessionState("wired-session")?.title) == nil, Date() < filled {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTAssertEqual(try database.sessionState("wired-session")?.title, "hello")
+        XCTAssertEqual(try database.sessionState("wired-session")?.transcriptPath.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+                       file.resolvingSymlinksInPath().path)
     }
 
-    func testWatcherCodexReconcilerAdoptsFixtureRollout() async throws {
+    func testCodexAdopterAdoptsFixtureRolloutThroughTheHostSource() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("temple-ui-codex-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.05))
-        let source = WatcherIndexSource(
-            watcher: watcher
-        )
-        defer { source.stop() }
-        let reconciler = WatcherCodexReconciler(indexSource: source, window: 3)
+        let hosts = HostRegistry(entries: [.init(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.05),
+                                                 launcher: LocalHostLauncher(folderEvidence: { _ in .unknown }))])
+        let reconciler = CodexAdopter(registry: hosts, window: 3)
         let adopted = expectation(description: "adopted Codex session id")
         let launch = Date()
         let sessionID = UUID().uuidString.lowercased()
-        reconciler.reconcile(projectPath: "/tmp/project", startedAt: launch) { id in
+        reconciler.reconcile(host: .local, projectPath: "/tmp/project", startedAt: launch) { id, locator in
             XCTAssertEqual(id, sessionID)
-            XCTAssertNotNil(reconciler.transcriptPath(for: id))
-            XCTAssertNil(reconciler.transcriptPath(for: id), "Adoption paths are consumed, not retained per tab")
+            XCTAssertEqual(locator?.localURL?.lastPathComponent, "rollout-2026-07-10T00-00-00-\(sessionID).jsonl")
             adopted.fulfill()
         }
 
@@ -101,27 +113,22 @@ final class CoreWiringTests: XCTestCase {
         XCTAssertTrue(predicate())
     }
 
-    func testPrimaryRegistrationReplaysEarlySnapshotAndStopClearsIt() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02))
-        let source = WatcherIndexSource(watcher: watcher)
-        defer { source.stop() }
-        let early = expectation(description: "early observer received publication")
-        let token = source.observe { _ in early.fulfill() }
-        await fulfillment(of: [early], timeout: 2)
-        source.removeObserver(token)
-        var resolutionReplays = 0
-        source.onResolutionUpdate = { _ in resolutionReplays += 1 }
-        XCTAssertEqual(resolutionReplays, 1, "A late UI subscriber also receives completed resolution")
+    func testEngineSetReplaysTheLatestMergeAndStopClearsIt() async throws {
+        let engine = FakeEngine(snapshot: EngineSnapshot(generation: 1, resolutions: ["a": .confirmedAbsent]))
+        let set = EngineSet(engines: [engine])
+        set.owner = { _ in .local }
         var received = 0
-        source.start { _ in received += 1 }
-        XCTAssertEqual(received, 1, "Primary registration synchronously replays the live generation")
-        source.stop()
-        source.start { _ in received += 1 }
-        XCTAssertEqual(received, 1, "Stopped generation cannot be replayed")
-        try await waitFor { received == 2 }
+        set.start { _ in received += 1 }
+        try await waitFor { received == 1 }
+        var replayed = 0
+        set.start { _ in replayed += 1 }
+        XCTAssertEqual(replayed, 1, "a later registration synchronously replays the latest merge")
+        set.stop()
+        XCTAssertNil(set.latest)
+        var afterStop = 0
+        set.start { _ in afterStop += 1 }
+        XCTAssertEqual(afterStop, 0, "a stopped merge is not replayed")
+        try await waitFor { afterStop == 1 }
     }
 
     func testAppModelUsesSnapshotResolutionAndDoesNotQueueDirectorylessRows() async throws {
@@ -131,12 +138,9 @@ final class CoreWiringTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let database = try TempleDB.inMemory()
         try database.join(sessionID: "pruned", via: .created, agent: .claude)
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: database)
+        let watcher = tracked(SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: database))
         try database.join(sessionID: "awaiting", via: .created, agent: .claude)
-        let cache = root.appendingPathComponent("cache.json")
-        let source = WatcherIndexSource(watcher: watcher)
-        defer { source.stop() }
-        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [watcher],
             database: database, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: SessionOverlayStore(db: database))
         model.start()
@@ -169,12 +173,9 @@ final class CoreWiringTests: XCTestCase {
         try #"{"sessionId":"member","type":"user","cwd":"/tmp/project","message":{"content":"member"}}"#.write(to: file, atomically: true, encoding: .utf8)
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "member", via: .opened, agent: .claude, locator: TranscriptLocator(localURL: file))
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: db)
-        let cache = root.appendingPathComponent("cache.json")
-        let source = WatcherIndexSource(watcher: watcher)
-        defer { source.stop() }
+        let watcher = tracked(SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: db))
         let overlay = SessionOverlayStore(db: db)
-        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [watcher],
             database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()), overlay: overlay)
         model.start()
         try await waitFor { model.openSessions.sessionKnown("member") == true }

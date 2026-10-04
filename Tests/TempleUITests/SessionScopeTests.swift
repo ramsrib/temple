@@ -18,7 +18,7 @@ final class SessionScopeTests: XCTestCase {
         let overlay = SessionOverlayStore(db: database)
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(index),
+            engines: [FakeEngine(index)],
             database: database,
             settings: settings ?? SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: overlay,
@@ -52,8 +52,8 @@ final class SessionScopeTests: XCTestCase {
         let (model, overlay) = makeModel(CatalogFixtureIndex(projects: []), database: db)
         let facts = summary()
         for _ in 0..<20 {
-            model.receiveEngineSnapshot(EngineSnapshot(generation: 1,
-                resolutions: ["legacy": .loaded(facts.locator.localURL!)], summaries: ["legacy": facts]))
+            model.receiveEngineSnapshot(.authorized(generation: 1,
+                resolutions: ["legacy": .loaded(facts.locator.localURL!)], summaries: ["legacy": facts], in: db))
         }
         XCTAssertEqual(counter.count, 1)
         let row = try XCTUnwrap(db.sessionState("legacy"))
@@ -64,8 +64,8 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertNil(row.generatedTitle)
         XCTAssertEqual(row.lastActiveAt, facts.modifiedAt)
         XCTAssertEqual(overlay.rows["legacy"], row)
-        model.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: [:],
-            summaries: ["legacy": summary(cwd: "/changed", prompt: "Changed", time: 200)]))
+        model.receiveEngineSnapshot(.authorized(generation: 2, resolutions: [:],
+            summaries: ["legacy": summary(cwd: "/changed", prompt: "Changed", time: 200)], in: db, opRevision: 2))
         XCTAssertEqual(try db.sessionState("legacy"), row)
         XCTAssertEqual(counter.count, 1)
     }
@@ -90,7 +90,7 @@ final class SessionScopeTests: XCTestCase {
             recordedTitle: agent == .claude ? title : nil, sharedTitle: agent == .codex ? title : nil)
         let legacy = facts
         let overlay = SessionOverlayStore(db: db)
-        overlay.fillMissingCoreFields(from: facts)
+        overlay.applyFacts(["legacy": try XCTUnwrap(AuthorizedFacts.current(facts, in: db))])
         for store in [overlay, SessionOverlayStore(db: db)] {
             XCTAssertNil(store.generatedTitle(for: "legacy"))
             XCTAssertEqual(store.displayTitle(for: legacy), title)
@@ -106,6 +106,8 @@ final class SessionScopeTests: XCTestCase {
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "legacy", via: .imported)
         let overlay = SessionOverlayStore(db: db)
+        // Facts authorized for the local membership, delivered after it left.
+        let stale = try XCTUnwrap(AuthorizedFacts.current(summary(), in: db))
         let committed = DispatchSemaphore(value: 0)
         let remote = HostID(rawValue: "remote")
         // Hold the main actor until both commits finish: the row observer's
@@ -120,7 +122,10 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertEqual(committed.wait(timeout: .now() + 3), .success)
         XCTAssertEqual(overlay.rows["legacy"]?.host, .local)
         XCTAssertEqual(try db.sessionState("legacy")?.host, remote)
-        overlay.fillMissingCoreFields(from: summary())
+        var mismatched: [String] = []
+        overlay.onOwnershipMismatch = { id, _ in mismatched.append(id) }
+        overlay.applyFacts(["legacy": stale])
+        XCTAssertEqual(mismatched, ["legacy"])
         let row = try XCTUnwrap(db.sessionState("legacy"))
         XCTAssertEqual(row.host, remote)
         XCTAssertNil(row.agent)
@@ -138,18 +143,18 @@ final class SessionScopeTests: XCTestCase {
         try db.join(sessionID: "legacy", via: .imported)
         let (model, overlay) = makeModel(CatalogFixtureIndex(projects: []), database: db)
         let resolution: [String: MemberResolution] = ["legacy": .loaded(summary().locator.localURL!)]
-        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: resolution, summaries: ["legacy": summary()]))
+        model.receiveEngineSnapshot(.authorized(generation: 1, resolutions: resolution, summaries: ["legacy": summary()], in: db))
         let filledBuilds = model.sessionPresentationBuildCount
         let filledSessions = model.sessions
         // Each publication has changed transcript facts and generation, but the
         // completed row and its resolution stay identical.
         for tick in 2...30 {
-            model.receiveEngineSnapshot(EngineSnapshot(generation: UInt64(tick), resolutions: resolution,
-                summaries: ["legacy": summary(prompt: "Changed \(tick)", time: Double(tick + 100))]))
+            model.receiveEngineSnapshot(.authorized(generation: UInt64(tick), resolutions: resolution,
+                summaries: ["legacy": summary(prompt: "Changed \(tick)", time: Double(tick + 100))], in: db, opRevision: UInt64(tick)))
         }
         XCTAssertEqual(model.sessionPresentationBuildCount, filledBuilds)
         XCTAssertEqual(model.sessions, filledSessions)
-        model.receiveEngineSnapshot(EngineSnapshot(generation: 31, resolutions: ["legacy": .confirmedAbsent], summaries: [:]))
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 31, resolutions: ["legacy": .confirmedAbsent]))
         XCTAssertEqual(model.sessionPresentationBuildCount, filledBuilds + 1)
         XCTAssertNil(model.sessions.first?.transcript)
         overlay.rename("legacy", to: "Renamed")
@@ -162,7 +167,7 @@ final class SessionScopeTests: XCTestCase {
         try db.join(sessionID: "legacy", via: .opened,
                     core: SessionCore(directory: "/tab", directorySource: .tab))
         let overlay = SessionOverlayStore(db: db)
-        overlay.fillMissingCoreFields(from: summary())
+        overlay.applyFacts(["legacy": try XCTUnwrap(AuthorizedFacts.current(summary(), in: db))])
         XCTAssertEqual(try db.sessionState("legacy")?.directory, "/tab")
         XCTAssertEqual(try db.sessionState("legacy")?.directorySource, .tab)
         XCTAssertEqual(try db.sessionState("legacy")?.title, "First prompt")
@@ -172,14 +177,14 @@ final class SessionScopeTests: XCTestCase {
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "legacy", via: .imported)
         let overlay = SessionOverlayStore(db: db)
-        overlay.fillMissingCoreFields(from: summary(cwd: nil, prompt: nil))
+        overlay.applyFacts(["legacy": try XCTUnwrap(AuthorizedFacts.current(summary(cwd: nil, prompt: nil), in: db))])
         let row = try XCTUnwrap(db.sessionState("legacy"))
         XCTAssertNil(row.directory)
         XCTAssertNil(row.directorySource)
         XCTAssertNil(row.title)
         XCTAssertNil(row.generatedTitle)
         XCTAssertEqual(row.agent, .claude)
-        overlay.fillMissingCoreFields(from: summary())
+        overlay.applyFacts(["legacy": try XCTUnwrap(AuthorizedFacts.current(summary(), in: db, opRevision: 2))])
         XCTAssertEqual(try db.sessionState("legacy")?.title, "First prompt")
     }
 
@@ -191,7 +196,7 @@ final class SessionScopeTests: XCTestCase {
         try db.join(sessionID: "directoryless", via: .imported)
         let (model, overlay) = makeModel(CatalogFixtureIndex(projects: []), database: db)
         model.receiveEngineSnapshot(EngineSnapshot(generation: 1,
-            resolutions: ["missing": .confirmedAbsent], summaries: [:]))
+            resolutions: ["missing": .confirmedAbsent]))
         XCTAssertEqual(Set(model.sessions.map(\.id)), ["missing", "directoryless"])
         let session = try XCTUnwrap(model.sessions.first { $0.id == "missing" })
         XCTAssertEqual(session.displayTitle, "Row title")
@@ -229,10 +234,7 @@ final class SessionScopeTests: XCTestCase {
         let firstLine = "{\"session_id\":\"\(initial)\",\"ts\":10,\"text\":\"First recorded prompt\"}"
         try firstLine.write(to: history, atomically: true, encoding: .utf8)
         let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02), database: db)
-        let cache = root.appendingPathComponent("cache.json")
-        let source = WatcherIndexSource(watcher: watcher)
-        defer { source.stop() }
-        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source, database: db,
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [watcher], database: db,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         model.start()
         let initialDeadline = Date().addingTimeInterval(3)
@@ -243,7 +245,7 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertNil(try db.sessionState(late)?.title)
         try (firstLine + "\n{\"session_id\":\"\(late)\",\"ts\":20,\"text\":\"Late recorded prompt\"}")
             .write(to: history, atomically: true, encoding: .utf8)
-        watcher.requestResolution(late)
+        await watcher.requestResolution(late)
         let lateDeadline = Date().addingTimeInterval(3)
         while model.sessions.first(where: { $0.id == late })?.state.title == nil, Date() < lateDeadline {
             try await Task.sleep(for: .milliseconds(15))
@@ -251,6 +253,7 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertEqual(try db.sessionState(late)?.title, "Late recorded prompt")
         XCTAssertNil(try db.sessionState(initial)?.generatedTitle)
         XCTAssertNil(try db.sessionState(late)?.generatedTitle)
+        await watcher.stop()
     }
 
     func testWatcherAdapterPublishesLegacyIndexAndFillsRows() async throws {
@@ -265,9 +268,8 @@ final class SessionScopeTests: XCTestCase {
         try db.join(sessionID: "legacy", via: .imported)
         try db.join(sessionID: "missing", via: .imported,
                     core: SessionCore(directory: "/missing", title: "Kept row"))
-        let source = WatcherIndexSource(watcher: SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)]), database: db))
-        defer { source.stop() }
-        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source, database: db,
+        let engine = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)]), database: db)
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [engine], database: db,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         model.start()
         let end = Date().addingTimeInterval(3)
@@ -285,6 +287,7 @@ final class SessionScopeTests: XCTestCase {
         let activity = try XCTUnwrap(filled.lastActiveAt)
         model.overlay.touch("legacy", host: .local, at: activity.addingTimeInterval(-100))
         XCTAssertEqual(model.overlay.rows["legacy"]?.lastActiveAt, filled.lastActiveAt)
+        await engine.stop()
     }
 
     func testDisplayTitleChainAndSortDate() {
@@ -365,8 +368,8 @@ final class SessionScopeTests: XCTestCase {
 
         let outside = try XCTUnwrap(mixedIndex().allSessions.first { $0.id == "o1" })
         model.openSessions.openSession(outside)
-        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: [:],
-            summaries: ["o1": summary("o1", cwd: "/p/outside", prompt: "Outside one", time: 50)]))
+        model.receiveEngineSnapshot(.authorized(generation: 1, resolutions: [:],
+            summaries: ["o1": summary("o1", cwd: "/p/outside", prompt: "Outside one", time: 50)], in: database))
 
         XCTAssertEqual(model.displayProjects.flatMap(\.sessions).map(\.id), ["o1"])
         // A relaunch reads it back from the DB.

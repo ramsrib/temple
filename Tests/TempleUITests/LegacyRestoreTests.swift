@@ -68,7 +68,7 @@ final class LegacyRestoreTests: XCTestCase {
 
         let factory = FakeTerminalSurfaceFactory()
         let app = AppModel(surfaceFactory: factory,
-                           indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
+                           engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
                            database: db,
                            settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         app.start()
@@ -123,7 +123,7 @@ final class LegacyRestoreTests: XCTestCase {
                           PersistedTab(sessionID: "other", agent: .claude, projectPath: directory.path, title: "Other")])
         let factory = FakeTerminalSurfaceFactory()
         let app = AppModel(surfaceFactory: factory,
-                           indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
+                           engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
                            database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         app.start()
         let tab = try XCTUnwrap(app.openSessions.activeTab)
@@ -147,7 +147,7 @@ final class LegacyRestoreTests: XCTestCase {
             PersistedTab(sessionID: "other", agent: .claude, projectPath: directory.path, title: "Other")])
         let factory2 = FakeTerminalSurfaceFactory()
         let app2 = AppModel(surfaceFactory: factory2,
-                            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
+                            engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
                             database: db2, settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         app2.start()
         app2.openSessions.activate(try XCTUnwrap(app2.openSessions.tabs.last))
@@ -165,7 +165,7 @@ final class LegacyRestoreTests: XCTestCase {
             PersistedTab(sessionID: "orphan", agent: .claude, projectPath: "", title: "Orphan", isActive: true)])
         let factory = FakeTerminalSurfaceFactory()
         let app = AppModel(surfaceFactory: factory,
-                           indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
+                           engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
                            database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         app.start()
         let orphan = try XCTUnwrap(app.openSessions.activeTab)

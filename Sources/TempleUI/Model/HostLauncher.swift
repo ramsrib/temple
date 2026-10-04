@@ -151,19 +151,31 @@ public final class LocalHostLauncher: HostLauncher {
     private let binaryPath: (Agent) -> String
     private let extraArgs: (Agent) -> [String]
     private let availabilityCheck: (Agent) -> LaunchAvailability
+    private let folderEvidence: (String) -> DirectoryEvidence
     private let markerDirectory: URL
 
+    /// `folderEvidence` is this Mac's `stat(2)`: only `ENOENT`/`ENOTDIR` (or
+    /// a file where the folder should be) prove a folder gone; anything else
+    /// is unknown, and the spawn proceeds behind the wrapper's own `cd`.
     public init(binaryPath: @escaping (Agent) -> String = { $0.binaryName },
                 extraArgs: @escaping (Agent) -> [String] = { _ in [] },
                 availability: @escaping (Agent) -> LaunchAvailability = { _ in .available },
+                folderEvidence: @escaping (String) -> DirectoryEvidence = LocalHostLauncher.statEvidence,
                 markerDirectory: URL? = nil) {
         self.binaryPath = binaryPath; self.extraArgs = extraArgs
         self.availabilityCheck = availability
+        self.folderEvidence = folderEvidence
         self.markerDirectory = markerDirectory
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("temple-launch", isDirectory: true)
     }
 
     public func availability(_ agent: Agent) -> LaunchAvailability { availabilityCheck(agent) }
+
+    public nonisolated static func statEvidence(_ path: String) -> DirectoryEvidence {
+        var info = stat()
+        if stat(path, &info) == 0 { return (info.st_mode & S_IFMT) == S_IFDIR ? .exists : .missing }
+        return errno == ENOENT || errno == ENOTDIR ? .missing : .unknown
+    }
 
     /// The agent's argv, run in the spec's folder through a wrapper that
     /// enters the folder itself and records the outcome in a per-launch
@@ -181,11 +193,10 @@ public final class LocalHostLauncher: HostLauncher {
         case .resume(let id): arguments = Array(spec.agent.resumeArgv(sessionID: id).dropFirst())
         case .new(let id): arguments = spec.agent == .claude ? id.map { ["--session-id", $0] } ?? [] : []
         }
+        // A folder this Mac proves gone spawns nothing; if it goes in the gap
+        // before exec, the wrapper's own `cd` refuses to run the agent elsewhere.
+        if folderEvidence(spec.directory) == .missing { throw HostLaunchError.directoryMissing(spec.directory) }
         let argv = [binaryPath(spec.agent)] + extraArgs(spec.agent) + arguments
-        // A folder this Mac proves gone never reaches here: the host's
-        // synchronous directory evidence stops the spawn first (until the
-        // engine cutover replaces that path), and if the folder goes in the
-        // gap the wrapper's own `cd` refuses to run the agent elsewhere.
         guard let marker = LocalLaunchMarker(directory: markerDirectory, folder: spec.directory) else {
             // No marker, no evidence: the folder is recorded from nothing
             // (no channel), but the wrapper still enters it itself, so the

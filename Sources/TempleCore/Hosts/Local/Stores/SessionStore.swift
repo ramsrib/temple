@@ -31,8 +31,9 @@ public protocol IncrementalSessionStore: SessionStore {
     /// Files outside any transcript whose contents feed every summary
     /// (Codex's history.jsonl and session_index.jsonl).
     var sharedFactURLs: [URL] { get }
-    func adoptionHeader(at url: URL) throws -> CodexRolloutCandidate?
-    func metadataHeader(at url: URL) -> CodexRolloutCandidate?
+    func adoptionHeader(at url: URL) throws -> AdoptionCandidate?
+    /// Shared-input file reads so far (a diagnostic; 0 for an agent with none).
+    var sharedTransfers: Int { get }
     /// A parser for many files in one read (`LocalSessionCatalog.stream`): any
     /// input shared by every file is read once, here, not once per file.
     func catalogParser() -> @Sendable (URL) -> TranscriptSummary?
@@ -76,12 +77,11 @@ public extension IncrementalSessionStore {
     }
     /// Nil proves an exclusion. Invalid/partial eligible metadata throws, so
     /// adoption cannot mistake a failed read for a noncompeting rollout.
-    func adoptionHeader(at url: URL) throws -> CodexRolloutCandidate? {
+    func adoptionHeader(at url: URL) throws -> AdoptionCandidate? {
         guard agent == .codex else { return nil }
-        let header = try format.header(firstLine: StoreIO.readFirstLine(url, maxBytes: CodexFormat.headerLineBytes))
-        return header.map { CodexRolloutCandidate(sessionID: $0.id, cwd: $0.cwd, createdAt: $0.createdAt, filePath: url) }
+        return try format.header(firstLine: StoreIO.readFirstLine(url, maxBytes: CodexFormat.headerLineBytes))
     }
-    func metadataHeader(at url: URL) -> CodexRolloutCandidate? { try? adoptionHeader(at: url) }
+    var sharedTransfers: Int { 0 }
     func sharedRevision() -> UInt64? { nil }
     func sharedFactsSnapshot() -> (facts: SharedFacts, revision: UInt64?) { (.empty, nil) }
     func catalogParser() -> @Sendable (URL) -> TranscriptSummary? {

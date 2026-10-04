@@ -2,13 +2,15 @@ import Dispatch
 import Foundation
 import CoreServices
 
-/// Local observation, selection, verification and enrichment. Registered interests
-/// come from the engine; this source never reads or writes Temple membership.
+/// This Mac's transcripts, behind the primitive seam: FSEvents observation
+/// of both stores, a filename map kept current by those events (and rebuilt
+/// on every coverage reset), listing, bounded reads, Codex adoption and the
+/// catalog. It holds no member state: which sessions are Temple's, and what
+/// to do about each, is `SessionEngine`'s.
 public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics, @unchecked Sendable {
     /// Only `ENOENT`/`ENOTDIR` (or a file where the folder should be) prove
     /// a folder gone; anything else — a parent it may not search, an I/O
     /// error — is unknown.
-    public func directoryEvidence(_ path: String) -> DirectoryEvidence { Self.evidence(path) }
     public func directoryEvidence(_ path: String) async -> DirectoryEvidence { Self.evidence(path) }
 
     static func evidence(_ path: String) -> DirectoryEvidence {
@@ -18,7 +20,6 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     }
     public let host = HostID.local
     public let capabilities: Set<HostCapability> = [.liveChanges, .revealInFinder, .catalog]
-    private var interests: [String: ResolutionRequest] = [:]
     private var changeContinuations: [UUID: AsyncThrowingStream<SourceChange, Error>.Continuation] = [:]
     private let stores: [any IncrementalSessionStore]
     private let debounceInterval: TimeInterval
@@ -28,25 +29,10 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     private var roots: [RootMapping] = []
     private var files: [String: (URL, Agent)] = [:]
     private var pathsByID: [String: Set<String>] = [:]
-    private var memberIDsByPath: [String: Set<String>] = [:]
-    private var hintPathsByID: [String: String] = [:]
     private var selectedCodexPaths: [String: (path: String, key: String)] = [:]
-    private var registeredIDs: Set<String> = []
-    private var awaiting: Set<String> = []
-    private var states: [String: MemberResolution] = [:]
-    private var statesDirty = false
-    private var summaries: [String: TranscriptSummary] = [:]
+    /// The source's coverage generation (`LocateResult.coverage`).
     private var generation: UInt64 = 0
-    private var contentDirty = false
-    private var changedIDs: Set<String> = []
-    private var signatures: [String: FileSignature] = [:] // last observed, including stat-only writes
-    private var memberWork: [String: MemberWork] = [:]
-    private var enrichmentTimers: [String: DispatchWorkItem] = [:]
-    private let now: @Sendable () -> Date
     private let monitorChanges: Bool
-    private var parseCount: UInt64 = 0
-    private var verificationCount: UInt64 = 0
-    private var observedCount: UInt64 = 0
     private var enumerationCount: UInt64 = 0
     private var snapshotMetrics = EngineMetrics()
 
@@ -54,11 +40,9 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     private var snapshotMonitoring = false
     private var adoptionTimers: [UUID: DispatchWorkItem] = [:]
     private var unresolvedCandidates: Set<String> = []
-    private var enumerationSucceeded = true
     private var enumerationByAgent: [Agent: Bool] = [:]
     private var streamID: UUID?
-    private var pendingPaths: Set<String> = []
-    /// Every transcript path observed since the last flush, member or not.
+    /// Every transcript path observed since the last flush.
     private var rawPaths: Set<String> = []
     /// The last shared-facts revision announced per agent.
     private var announcedShared: [Agent: UInt64] = [:]
@@ -69,10 +53,10 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     private let readCounts = ReadCounters()
     private var work: DispatchWorkItem?
     private var requests: [UUID: LocalAdoptionWindow] = [:]
-    private var candidates: [String: CodexRolloutCandidate] = [:]
+    private var candidates: [String: RolloutHeader] = [:]
     // Keep competitors seen anywhere in an active window, even if a later
     // sweep no longer finds their files. Overflow refuses the decision.
-    private var seenCandidates: [String: CodexRolloutCandidate] = [:]
+    private var seenCandidates: [String: RolloutHeader] = [:]
     private var candidateSignatures: [String: FileSignature] = [:]
     private var claimed: [String: Date] = [:]
     private static let candidateCacheLimit = 512
@@ -87,11 +71,9 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
 
     public init(stores: [any IncrementalSessionStore] = [ClaudeSessionStore(), CodexSessionStore()],
                 debounceInterval: TimeInterval = 0.3,
-                monitorChanges: Bool = true,
-                now: @escaping @Sendable () -> Date = { Date() }) {
+                monitorChanges: Bool = true) {
         self.stores = stores
         self.debounceInterval = debounceInterval
-        self.now = now
         self.monitorChanges = monitorChanges
     }
 
@@ -124,68 +106,6 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         }
     }
 
-    public func resolve(_ requests: [ResolutionRequest]) async throws -> ResolutionBatch {
-        let ticket = AdoptionTicket()
-        return try await withTaskCancellationHandler {
-            try Task.checkCancellation()
-            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ResolutionBatch, Error>) in
-                queue.async {
-                    guard !ticket.isCancelled else { continuation.resume(throwing: CancellationError()); return }
-                    self.startLocked()
-                    for request in requests {
-                        guard !ticket.isCancelled else { continuation.resume(throwing: CancellationError()); return }
-                        let id = request.id
-                        let previous = self.interests[id]
-                        self.interests[id] = request
-                        self.registeredIDs.insert(id)
-                        // The engine owns "awaiting creation"; mirror it both ways,
-                        // or a stale entry here would keep answering for it.
-                        if request.awaitingCreation { self.awaiting.insert(id) } else { self.awaiting.remove(id) }
-                        // A fill shrinks what is wanted but changes nothing in the
-                        // file: it shortens the backoff, never re-reads the file.
-                        let filled = previous.map { !$0.wanted.subtracting(request.wanted).isEmpty } ?? false
-                        if request.explicit || previous == nil { self.resetEnrichmentLocked(id) }
-                        else if filled { self.resetBackoffLocked(id) }
-                        self.resolveLocked(id, explicit: request.explicit)
-                        if request.explicit && (self.states[id] == .confirmedAbsent || self.states[id] == .resolving) {
-                            self.enumerateLocked(); self.resolveLocked(id, explicit: true)
-                        }
-                    }
-                    self.snapshotLocked()
-                    var results: [String: ResolutionResult] = [:]
-                    for request in requests {
-                        let id = request.id
-                        switch self.states[id] ?? .incomplete {
-                        case .loaded(let locator):
-                            let summary = self.summaries[id]
-                            var missing = request.wanted
-                            if let summary {
-                                missing.remove(.agent); missing.remove(.lastActiveAt)
-                                if summary.cwd != nil { missing.remove(.directory) }
-                                if summary.titleFact != nil { missing.remove(.title) }
-                            }
-                            results[id] = .loaded(locator, summary, missing)
-                        case .confirmedAbsent: results[id] = .absent
-                        case .awaitingCreation: results[id] = .awaitingCreation
-                        case .unreadable: results[id] = .unreadable
-                        case .mismatch: results[id] = .mismatch
-                        case .resolving, .incomplete: results[id] = .incomplete
-                        }
-                    }
-                    // A request reads the latest local state; no redundant invalidation.
-                    self.changedIDs.subtract(requests.map(\.id))
-                    self.contentDirty = !self.changedIDs.isEmpty
-                    if ticket.isCancelled { continuation.resume(throwing: CancellationError()) }
-                    else { continuation.resume(returning: ResolutionBatch(generation: self.generation, results: results)) }
-                }
-            }
-        } onCancel: { ticket.cancel() }
-    }
-
-    public func release(_ ids: [String]) {
-        for id in ids { forgetMember(id) }
-    }
-
     public func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error> {
         let catalog = LocalSessionCatalog(stores: stores.filter { query.agents.contains($0.agent) })
         return AsyncThrowingStream { continuation in
@@ -200,29 +120,11 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         }
     }
 
-    private func setStateLocked(_ id: String, to state: MemberResolution) {
-        if case .loaded = state { awaiting.remove(id) }
-        guard states[id] != state else { return }
-        states[id] = state; statesDirty = true; changedIDs.insert(id)
-    }
-
     private func snapshotLocked() {
         snapshotLock.lock()
-        if statesDirty { statesDirty = false; contentDirty = true }
         snapshotMonitoring = monitoring
-        snapshotMetrics = EngineMetrics(parses: parseCount, verifications: verificationCount,
-            publications: 0, observations: observedCount, enumerations: enumerationCount, locates: locateCount)
+        snapshotMetrics = EngineMetrics(enumerations: enumerationCount, locates: locateCount)
         snapshotLock.unlock()
-    }
-
-    private func emitChangesLocked() {
-        snapshotLocked()
-        guard running, contentDirty else { return }
-        contentDirty = false
-        let ids = changedIDs.intersection(registeredIDs).sorted()
-        changedIDs.removeAll()
-        guard !ids.isEmpty else { return }
-        for continuation in changeContinuations.values { continuation.yield(.sessions(ids)) }
     }
 
     private func startLocked() {
@@ -244,16 +146,14 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     }
 
     private func stopIfIdleLocked() {
-        if changeContinuations.isEmpty && registeredIDs.isEmpty && requests.isEmpty { stopLocked() }
+        if changeContinuations.isEmpty && requests.isEmpty { stopLocked() }
     }
 
-    private func stopLocked(preservePrestart: Bool = false) {
-        if !preservePrestart {
-            adoptionTimers.values.forEach { $0.cancel() }; adoptionTimers.removeAll()
-            for request in requests.values where !request.decided { request.completion(.incomplete) }
-            requests.removeAll(); candidates.removeAll(); seenCandidates.removeAll(); candidateSignatures.removeAll()
-            unresolvedCandidates.removeAll(); awaiting.removeAll()
-        }
+    private func stopLocked() {
+        adoptionTimers.values.forEach { $0.cancel() }; adoptionTimers.removeAll()
+        for request in requests.values where !request.decided { request.completion(.incomplete) }
+        requests.removeAll(); candidates.removeAll(); seenCandidates.removeAll(); candidateSignatures.removeAll()
+        unresolvedCandidates.removeAll()
         running = false
         monitoring = false
         work?.cancel(); work = nil
@@ -262,39 +162,9 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             self.stream = nil
         }
         streamID = nil
-        pendingPaths.removeAll()
         rawPaths.removeAll()
-        files.removeAll(); pathsByID.removeAll(); memberIDsByPath.removeAll()
-        hintPathsByID.removeAll(); selectedCodexPaths.removeAll()
-        signatures.removeAll(); summaries.removeAll(); memberWork.removeAll()
-        enrichmentTimers.values.forEach { $0.cancel() }; enrichmentTimers.removeAll()
-        interests.removeAll(); registeredIDs.removeAll(); changedIDs.removeAll()
-        states.removeAll(); statesDirty = true; snapshotLocked()
-    }
-
-    /// Release observation state without disturbing the filename map.
-    private func forgetMember(_ id: String) {
-        queue.async { [weak self = self] in
-            guard let self, self.registeredIDs.contains(id) else { return }
-            self.interests.removeValue(forKey: id)
-            self.registeredIDs.remove(id)
-            self.awaiting.remove(id)
-            self.memberWork.removeValue(forKey: id)
-            self.enrichmentTimers.removeValue(forKey: id)?.cancel()
-            self.summaries.removeValue(forKey: id)
-            self.signatures.removeValue(forKey: id)
-            self.hintPathsByID.removeValue(forKey: id)
-            for path in Array(self.memberIDsByPath.keys) {
-                self.memberIDsByPath[path]?.remove(id)
-                if self.memberIDsByPath[path]?.isEmpty == true { self.memberIDsByPath.removeValue(forKey: path) }
-            }
-            self.states.removeValue(forKey: id)
-            self.statesDirty = true
-            self.snapshotLocked()
-            guard self.running else { return }
-            self.publishLocked()
-            self.stopIfIdleLocked()
-        }
+        files.removeAll(); pathsByID.removeAll(); selectedCodexPaths.removeAll()
+        snapshotLocked()
     }
 
     private func armLocked() {
@@ -303,8 +173,8 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             self.stream = nil
         }
         roots = stores.flatMap(\.watchedURLs).map(RootMapping.init)
-        // Enumeration-only control for the synthetic benchmark: startup still
-        // resolves rows, but no filesystem events can reach the engine.
+        // Enumeration-only control for the synthetic benchmark (and for
+        // tests that inject every event): nothing from FSEvents arrives.
         guard monitorChanges else { return }
         let requestedPaths = Set(roots.flatMap { [$0.watchPhysical, $0.watchLogical] })
         let paths = requestedPaths.filter { path in
@@ -335,7 +205,6 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             max(0.01, debounceInterval),
             FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot | kFSEventStreamCreateFlagUseCFTypes))
         else {
-            enumerationSucceeded = false
             TempleCoreLog.watcher.error("FSEvents stream could not be created")
             return
         }
@@ -343,7 +212,6 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         FSEventStreamSetDispatchQueue(created, queue)
         monitoring = FSEventStreamStart(created)
         if !monitoring {
-            enumerationSucceeded = false
             TempleCoreLog.watcher.error("FSEvents stream failed to start")
         }
     }
@@ -362,6 +230,10 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         let path = logicalPath(rawPath)
         let rootLocation = path.map { p in roots.contains { $0.logical == p || $0.logical.hasPrefix(p + "/") } } ?? false
         if dropped || rootChanged || rootLocation {
+            // Lost events, or a watched root replaced: nothing seen before
+            // can be vouched for (coverage moves on). A root that appeared
+            // or was touched is listed again and every transcript under it
+            // reported.
             armLocked(); recoverLocked(resetCoverage: dropped || rootChanged); return
         }
         guard let path else { return }
@@ -387,43 +259,24 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
                     return path == root || path.hasPrefix(root + "/")
                 }
             }
-            if relevant { recoverLocked(subtree: path) }
+            if relevant { rescanLocked(subtree: path) }
             return
         }
         guard isTranscript else { return }
-        // Every transcript write is reported as an observation, member or not.
+        // Every transcript write is reported, member or not: which ids are
+        // members is the engine's business.
         rawPaths.insert(path)
-        scheduleLocked()
-        let hintedMember = memberIDsByPath[path]?.isEmpty == false
-        let filenameMember = stores.contains { store in
-            store.acceptsTranscript(url) && store.filenameID(at: url).map { registeredIDs.contains($0) } == true
-        }
-        guard hintedMember || filenameMember || (stores.contains { $0.agent == .codex && $0.acceptsTranscript(url) } && !requests.isEmpty) else { return }
-        pendingPaths.insert(path)
         scheduleLocked()
     }
 
-    /// history.jsonl or session_index.jsonl changed. Only a Codex member
-    /// still wanting a title can gain anything from it, and its own rollout
-    /// is unchanged — so the attempt recorded against that rollout is
-    /// dropped (the backoff stands), and everyone else is left alone rather
-    /// than re-resolved on every Codex prompt.
+    /// history.jsonl or session_index.jsonl changed: announce the new
+    /// revision. Which members could gain a title is the engine's question.
     private func sharedFactsChangedLocked() {
         for store in stores {
             guard let revision = store.sharedRevision(), revision > announcedShared[store.agent] ?? 0 else { continue }
             announcedShared[store.agent] = revision
             for continuation in changeContinuations.values { continuation.yield(.sharedFacts(store.agent, revision: revision)) }
         }
-        var touched = false
-        for id in registeredIDs.sorted() {
-            guard let interest = interests[id], interest.wanted.contains(.title) else { continue }
-            let agent = interest.agent ?? memberWork[id].flatMap { files[$0.path]?.1 }
-            guard agent == .codex else { continue }
-            memberWork[id]?.lastAttempt = nil
-            resolveLocked(id)
-            touched = true
-        }
-        if touched { publishLocked() }
     }
 
     private func logicalPath(_ raw: String) -> String? {
@@ -443,18 +296,19 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         let item = DispatchWorkItem { [weak self = self] in
             guard let self, self.running else { return }
             self.work = nil
-            let paths = self.pendingPaths; self.pendingPaths.removeAll()
             let raw = self.rawPaths; self.rawPaths.removeAll()
             // The filename map follows every observed transcript, whether or
-            // not anyone registered interest in it: `locate` answers from it.
+            // not anyone is interested in it: `locate` answers from it.
             for path in raw { self.observeTranscriptPathLocked(path) }
-            var changed = false
-            for path in paths {
-                if self.reconcileFileLocked(URL(fileURLWithPath: path)) { changed = true }
+            if !self.requests.isEmpty {
+                for path in raw {
+                    let url = URL(fileURLWithPath: path)
+                    if let store = self.stores.first(where: { $0.agent == .codex && $0.acceptsTranscript(url) }) {
+                        _ = self.readCandidateLocked(url, store: store)
+                    }
+                }
             }
-            if changed { self.publishLocked() }
-            else { self.emitChangesLocked() }
-            // After the member work, so a consumer that resolves on these
+            // After the map is current, so a consumer that locates on these
             // finds the source already up to date.
             self.emitTranscriptsLocked(raw)
         }
@@ -507,12 +361,12 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
                 TempleCoreLog.watcher.error("enumeration failed: \(String(describing: error), privacy: .public)")
             }
         }
-        enumerationSucceeded = enumerationByAgent.values.allSatisfy { $0 }
         files = next
         pathsByID.removeAll(); selectedCodexPaths.removeAll()
         for (path, entry) in files {
             if let store = stores.first(where: { $0.agent == entry.1 }) { _ = recordFilenameLocked(path, store: store) }
         }
+        snapshotLocked()
     }
 
     @discardableResult
@@ -527,297 +381,37 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         return id
     }
 
-    private func trackHintLocked(_ id: String, path: String?) {
-        guard hintPathsByID[id] != path else { return }
-        if let old = hintPathsByID.removeValue(forKey: id) {
-            memberIDsByPath[old]?.remove(id)
-            if memberIDsByPath[old]?.isEmpty == true { memberIDsByPath.removeValue(forKey: old) }
-        }
-        if let path {
-            hintPathsByID[id] = path
-            memberIDsByPath[path, default: []].insert(id)
-        }
-    }
-
-    private func recoverLocked(subtree: String? = nil, resetCoverage: Bool = false) {
+    /// The whole map is listed again. With a coverage reset, consumers are
+    /// told to trust nothing they saw; without one, every transcript the
+    /// map held or holds now is reported.
+    private func recoverLocked(resetCoverage: Bool) {
+        let before = Set(files.keys)
         if resetCoverage {
-            generation &+= 1; contentDirty = true
+            generation &+= 1
             for continuation in changeContinuations.values { continuation.yield(.coverageReset(coverage: generation)) }
         }
+        enumerateLocked()
+        if !requests.isEmpty { sweepCandidatesLocked() }
+        if !resetCoverage { emitTranscriptsLocked(before.union(files.keys)) }
+    }
+
+    /// A directory under a store moved in, or its events coalesced: that
+    /// subtree is listed again, and every transcript it held or holds now is
+    /// reported (FSEvents named no file, so any of them may have changed).
+    private func rescanLocked(subtree: String) {
+        let before = files.keys.filter { $0.hasPrefix(subtree + "/") }
         enumerateLocked(subtree: subtree)
-        for id in registeredIDs {
-            if let subtree {
-                let mapped = (pathsByID[id] ?? []).contains { $0.hasPrefix(subtree + "/") }
-                let old = memberWork[id]?.path.hasPrefix(subtree + "/") == true
-                let hinted = interests[id]?.hint?.path.hasPrefix(subtree + "/") == true
-                if !mapped && !old && !hinted { continue }
-            }
-            if resetCoverage { resetEnrichmentLocked(id) }
-            resolveLocked(id, explicit: resetCoverage)
-        }
+        let after = files.keys.filter { $0.hasPrefix(subtree + "/") }
         if !requests.isEmpty { sweepCandidatesLocked(subtree: subtree) }
-        publishLocked()
-    }
-
-    private func resolveLocked(_ id: String, explicit: Bool = false) {
-        guard registeredIDs.contains(id) else { return }
-        let row = interests[id]
-        // A committed hint can name a new revert that arrived while this ID
-        // was still outside Temple. Include its filename before choosing the
-        // thread's active rollout, without enumerating or reading other logs.
-        if let hint = row?.hint?.path, let agent = row?.agent,
-           let store = stores.first(where: { $0.agent == agent }) {
-            let path = logicalPath(hint) ?? RootMapping.alias(hint)
-            let url = URL(fileURLWithPath: path)
-            if store.acceptsTranscript(url), pathsByID[id]?.contains(path) != true,
-               store.filenameID(at: url) == id, (try? FileSignature(url)) != nil {
-                files[path] = (url, agent)
-                _ = recordFilenameLocked(path, store: store)
-            }
-        }
-        var selectedPath = selectedCodexPaths[id]?.path
-        var paths: Set<String> = selectedPath.map { [$0] } ?? pathsByID[id] ?? []
-        var preferredPath: String?
-        if let row, let hint = row.hint?.path {
-            let path = logicalPath(hint) ?? RootMapping.alias(hint)
-            if let agent = row.agent, let store = stores.first(where: { $0.agent == agent }),
-               store.acceptsTranscript(URL(fileURLWithPath: path)) {
-                files[path] = (URL(fileURLWithPath: path), agent)
-                preferredPath = path
-                // An older canonical Codex hint must not override thread/revert.
-                if selectedPath == nil || selectedPath == path || store.filenameID(at: URL(fileURLWithPath: path)) != id {
-                    paths.insert(path)
-                }
-                trackHintLocked(id, path: path)
-            }
-        }
-        if preferredPath == nil { trackHintLocked(id, path: nil) }
-        if let loaded = memberWork[id], selectedPath == nil || loaded.path == selectedPath {
-            paths.insert(loaded.path)
-        }
-        var unreadable = false
-        var available: [(String, FileSignature)] = []
-        for path in paths {
-            do { available.append((path, try FileSignature(URL(fileURLWithPath: path)))) }
-            catch {
-                if !Self.isMissing(error) { unreadable = true }
-                else if path != selectedPath {
-                    // A mapped name that is gone leaves the map; a hint that is
-                    // gone stays tracked, so its file reappearing still routes.
-                    if path != preferredPath { pathsByID[id]?.remove(path); files.removeValue(forKey: path) }
-                } else {
-                    // Deletion is the only event that needs a thread-local
-                    // rescan of older names. Ordinary writes use the cached pick.
-                    pathsByID[id]?.remove(path); files.removeValue(forKey: path)
-                    selectedCodexPaths.removeValue(forKey: id); selectedPath = nil
-                    if let store = stores.first(where: { $0.agent == .codex }) {
-                        let remaining = (pathsByID[id] ?? []).compactMap { path -> (path: String, key: String)? in
-                            guard let key = store.rolloutSelectionKey(at: URL(fileURLWithPath: path)) else { return nil }
-                            return (path, key)
-                        }.sorted { $0.key == $1.key ? $0.path > $1.path : $0.key > $1.key }
-                        for candidate in remaining {
-                            do {
-                                let signature = try FileSignature(URL(fileURLWithPath: candidate.path))
-                                selectedCodexPaths[id] = candidate; selectedPath = candidate.path
-                                available.append((candidate.path, signature)); break
-                            } catch {
-                                if Self.isMissing(error) {
-                                    pathsByID[id]?.remove(candidate.path); files.removeValue(forKey: candidate.path)
-                                } else {
-                                    selectedCodexPaths[id] = candidate; selectedPath = candidate.path
-                                    unreadable = true; break
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // The cached filename pick comes first. Any separate validated hint
-        // remains a fallback; older canonical rollouts were excluded above.
-        let ordered = available.sorted { lhs, rhs in
-            if lhs.0 == rhs.0 { return false }
-            if lhs.0 == selectedPath { return true }
-            if rhs.0 == selectedPath { return false }
-            if lhs.0 == preferredPath { return true }
-            if rhs.0 == preferredPath { return false }
-            return lhs.0 < rhs.0
-        }
-        var failure: MemberResolution?
-        for (path, signature) in ordered {
-            guard let entry = files[path], let store = stores.first(where: { $0.agent == entry.1 }) else { continue }
-            observedCount &+= 1
-            let previous = signatures[id]
-            var work = memberWork[id] ?? MemberWork(path: path)
-            let invalidate = work.path != path || previous?.fileNumber != signature.fileNumber
-                || signature.size < (previous?.size ?? 0)
-            if invalidate {
-                // Identity belongs to the selected file; the parse budget belongs
-                // to the member and survives replacements, truncation and reverts.
-                work.path = path
-                work.verified = false
-                work.verificationFailure = nil
-                work.lastAttempt = nil
-                work.enrichmentFailed = false
-                summaries.removeValue(forKey: id)
-            }
-            signatures[id] = signature
-            memberWork[id] = work
-            if !work.verified {
-                if !explicit, previous == signature, let cachedFailure = work.verificationFailure {
-                    if cachedFailure == .unreadable { unreadable = true }
-                    else { failure = failure ?? cachedFailure }
-                    continue
-                }
-                verificationCount &+= 1
-                do {
-                    let verdict = try store.verifyIdentity(at: entry.0, expectedID: id)
-                    guard try FileSignature(entry.0) == signature else {
-                        work.verified = false; memberWork[id] = work
-                        pendingPaths.insert(path); scheduleLocked(); continue
-                    }
-                    switch verdict {
-                    case .verified: work.verified = true; work.verificationFailure = nil
-                    case .incomplete: failure = failure ?? .incomplete; work.verificationFailure = .incomplete
-                    case .mismatch: failure = .mismatch; work.verificationFailure = .mismatch
-                    }
-                } catch { unreadable = true; work.verificationFailure = .unreadable }
-                memberWork[id] = work
-                guard work.verified else { continue }
-            }
-            // Path authority changes after verification, even when all core fields exist.
-            trackHintLocked(id, path: path)
-            let missing = missingFieldsLocked(id, row: row)
-            guard !missing.isEmpty else {
-                enrichmentTimers.removeValue(forKey: id)?.cancel()
-                memberWork[id] = work
-                setStateLocked(id, to: .loaded(entry.0)); awaiting.remove(id)
-                return
-            }
-            if !explicit && work.lastAttempt == signature {
-                memberWork[id] = work
-                setStateLocked(id, to: work.enrichmentFailed ? .unreadable : .loaded(entry.0)); return
-            }
-            if !explicit && now() < work.nextAttempt {
-                memberWork[id] = work
-                scheduleEnrichmentLocked(id, after: work.nextAttempt.timeIntervalSince(now()))
-                setStateLocked(id, to: .loaded(entry.0)); return
-            }
-            // Charge even a read whose result is discarded for a concurrent write.
-            work.lastAttempt = signature
-            work.nextAttempt = now().addingTimeInterval(work.delay)
-            work.delay = min(60, work.delay * 2)
-            memberWork[id] = work
-            parseCount &+= 1
-            let summary = store.loadSummary(at: entry.0)
-            do {
-                guard try FileSignature(entry.0) == signature else {
-                    // Nothing from this read is accepted across a concurrent write,
-                    // but identity stands: a replacement or truncation shows up as
-                    // an inode or size change on the next pass and re-verifies there.
-                    memberWork[id] = work
-                    pendingPaths.insert(path); scheduleLocked(); return
-                }
-            } catch {
-                work.verified = false; memberWork[id] = work
-                unreadable = true; continue
-            }
-            work.enrichmentFailed = summary == nil
-            memberWork[id] = work
-            guard let summary else { unreadable = true; continue }
-            guard summary.id == id else {
-                work.verified = false; memberWork[id] = work
-                failure = .mismatch; continue
-            }
-            if summaries[id] != summary { contentDirty = true; changedIDs.insert(id) }
-            summaries[id] = summary
-            setStateLocked(id, to: .loaded(entry.0)); awaiting.remove(id)
-            return
-        }
-        // A hint or mapped name that is gone does not walk both stores again:
-        // the filename map is kept current by events and rebuilt on every
-        // coverage reset, so it already says where else this id lives. (Doing
-        // the walk here ran it on every resolve of a member whose transcript
-        // was pruned — and every Codex prompt re-resolves every member.)
-        if summaries.removeValue(forKey: id) != nil { contentDirty = true; changedIDs.insert(id) }
-        // A candidate with a failed verification is evidence, never absence.
-        setStateLocked(id, to: unreadable ? .unreadable : failure ??
-            (awaiting.contains(id) ? .awaitingCreation :
-                (enumerationSucceeded && ordered.isEmpty ? .confirmedAbsent : .resolving)))
-    }
-
-    private func missingFieldsLocked(_ id: String, row: ResolutionRequest?) -> Set<SessionCoreField> {
-        row?.wanted ?? []
-    }
-
-    /// The next attempt may come at once, but only for a file whose
-    /// signature differs from the last one read: an unchanged file is not
-    /// read again.
-    private func resetBackoffLocked(_ id: String) {
-        enrichmentTimers.removeValue(forKey: id)?.cancel()
-        memberWork[id]?.delay = 1
-        memberWork[id]?.nextAttempt = .distantPast
-    }
-
-    private func resetEnrichmentLocked(_ id: String) {
-        enrichmentTimers.removeValue(forKey: id)?.cancel()
-        memberWork[id]?.delay = 1
-        memberWork[id]?.nextAttempt = .distantPast
-        memberWork[id]?.lastAttempt = nil
-    }
-
-    private func scheduleEnrichmentLocked(_ id: String, after delay: TimeInterval) {
-        guard enrichmentTimers[id] == nil else { return }
-        let timer = DispatchWorkItem { [weak self = self] in
-            guard let self, self.running else { return }
-            self.enrichmentTimers.removeValue(forKey: id)
-            self.resolveLocked(id)
-            self.publishLocked()
-        }
-        enrichmentTimers[id] = timer
-        queue.asyncAfter(deadline: .now() + max(0.01, delay), execute: timer)
-    }
-
-    /// Deterministic backoff checkpoint; tests can advance a clock without waiting minutes.
-    func reconcileEnrichment() {
-        queue.async { [weak self = self] in
-            guard let self, self.running else { return }
-            for id in self.registeredIDs { self.resolveLocked(id) }
-            self.publishLocked()
-        }
+        emitTranscriptsLocked(Set(before).union(after))
     }
 
     public var metrics: EngineMetrics {
         snapshotLock.lock(); var result = snapshotMetrics; snapshotLock.unlock()
         let reads = readCounts.values
-        result.reads = reads.reads; result.parses &+= reads.parses; result.widerReads = reads.wider
+        result.reads = reads.reads; result.parses = reads.parses; result.widerReads = reads.wider
+        result.sharedTransfers = UInt64(stores.reduce(0) { $0 + $1.sharedTransfers })
         return result
-    }
-
-    private func reconcileFileLocked(_ url: URL) -> Bool {
-        guard let store = stores.first(where: { $0.acceptsTranscript(url) }) else { return false }
-        let path = url.path
-        files[path] = (url, store.agent)
-        var ids = memberIDsByPath[path] ?? []
-        if let id = recordFilenameLocked(path, store: store), registeredIDs.contains(id) { ids.insert(id) }
-        var changed = false
-        // Filename routing and validated hints are the only member discovery.
-        // Outside writes never parse transcripts, read the DB, or publish state.
-        for id in ids.sorted() {
-            let old = summaries[id]
-            resolveLocked(id)
-            if old != summaries[id] { changed = true }
-        }
-        if store.agent == .codex, !requests.isEmpty {
-            _ = readCandidateLocked(url, store: store)
-        }
-        if !ids.isEmpty { snapshotLocked() }
-        return changed
-    }
-
-    private func publishLocked() {
-        snapshotLocked()
-        emitChangesLocked()
     }
 
     private func emitTranscriptsLocked(_ paths: Set<String>) {
@@ -834,7 +428,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         for continuation in changeContinuations.values { continuation.yield(.transcripts(ids: ids, locators: locators)) }
     }
 
-    // MARK: Primitives (the next engine's seam)
+    // MARK: Primitives
 
     /// From the filename map — kept current by events and rebuilt on every
     /// coverage reset while observing; listed on the spot when nothing
@@ -866,7 +460,12 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
                     }
                     candidates[request.id] = list
                 }
-                let complete = Set(self.stores.filter { self.enumerationByAgent[$0.agent] == true }.map(\.agent))
+                // An agent this Mac has no store for has nothing to list: its
+                // listing is complete. One with a store is complete only once
+                // its last full enumeration succeeded.
+                let served = Set(self.stores.map(\.agent))
+                let complete = Set(Agent.allCases.filter { !served.contains($0) })
+                    .union(self.stores.filter { self.enumerationByAgent[$0.agent] == true }.map(\.agent))
                 var shared: [Agent: UInt64] = [:]
                 for store in self.stores {
                     if let revision = store.sharedRevision() { shared[store.agent] = revision }
@@ -1044,7 +643,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             // missing cwd/time is unresolved, just like partial JSON or I/O.
             let header = try store.adoptionHeader(at: url)
             guard try FileSignature(url) == signature else { throw CocoaError(.fileReadUnknown) }
-            guard let candidate = header else {
+            guard let candidate = header.map({ RolloutHeader(header: $0, path: url) }) else {
                 candidates.removeValue(forKey: url.path)
                 candidateSignatures[url.path] = signature
                 unresolvedCandidates.remove(url.path); return true
@@ -1061,7 +660,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         return true
     }
 
-    private func rememberCandidateLocked(_ candidate: CodexRolloutCandidate) {
+    private func rememberCandidateLocked(_ candidate: RolloutHeader) {
         guard requests.values.contains(where: { !$0.decided && $0.matches(candidate) }) else { return }
         guard seenCandidates[candidate.sessionID] != nil || seenCandidates.count < Self.candidateCacheLimit else {
             for id in requests.keys { requests[id]?.observationOverflow = true }
@@ -1099,7 +698,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
            eligible.count == 1, let seen = eligible.first,
            let candidate = candidates.values.first(where: { $0.sessionID == seen.sessionID && request.matches($0) }),
            claimed[candidate.sessionID] == nil, claimed.count < Self.candidateCacheLimit {
-            claimed[candidate.sessionID] = candidate.createdAt; result = .adopted(id: candidate.sessionID, locator: TranscriptLocator(localURL: candidate.filePath))
+            claimed[candidate.sessionID] = candidate.createdAt; result = .adopted(id: candidate.sessionID, locator: TranscriptLocator(localURL: candidate.path))
         }
         requests[id]?.decided = true
         adoptionTimers.removeValue(forKey: id)?.cancel()
@@ -1129,8 +728,21 @@ private struct LocalAdoptionWindow {
     var failedSweep = false
     var observationOverflow = false
     var decided = false
-    func matches(_ candidate: CodexRolloutCandidate) -> Bool {
+    /// The one adoption rule: the sole exact-folder rollout header inside
+    /// the symmetric launch window. Zero or several refuse the decision.
+    func matches(_ candidate: RolloutHeader) -> Bool {
         candidate.cwd == cwd && abs(candidate.createdAt.timeIntervalSince(start)) <= window
+    }
+}
+
+/// A Codex rollout's header (`CodexFormat.header`) and the file it heads.
+struct RolloutHeader: Equatable {
+    let sessionID: String
+    let cwd: String
+    let createdAt: Date
+    let path: URL
+    init(header: AdoptionCandidate, path: URL) {
+        sessionID = header.id; cwd = header.cwd; createdAt = header.createdAt; self.path = path
     }
 }
 
@@ -1178,16 +790,6 @@ private final class ReadCounters: @unchecked Sendable {
     func read() { lock.lock(); reads &+= 1; lock.unlock() }
     func parse(wider isWider: Bool) { lock.lock(); parses &+= 1; if isWider { wider &+= 1 }; lock.unlock() }
     var values: (reads: UInt64, parses: UInt64, wider: UInt64) { lock.lock(); defer { lock.unlock() }; return (reads, parses, wider) }
-}
-
-private struct MemberWork {
-    var path: String
-    var verified = false
-    var enrichmentFailed = false
-    var verificationFailure: MemberResolution?
-    var lastAttempt: FileSignature?
-    var nextAttempt = Date.distantPast
-    var delay: TimeInterval = 1
 }
 
 /// Cancellation can race registration; the action is installed under the same lock.

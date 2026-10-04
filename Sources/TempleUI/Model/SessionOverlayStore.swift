@@ -46,7 +46,6 @@ public final class SessionOverlayStore: ObservableObject {
     /// Emitted after a row changes, without making subscribers diff the whole store.
     struct RowChange { let id: String; let recencyOnly: Bool }
     let rowChanges = PassthroughSubject<RowChange, Never>()
-    private(set) var missingCoreFields: [String: Set<SessionCoreField>] = [:]
     private var rowObserver: UUID?
 
     @Published public private(set) var pinned: Set<String>
@@ -81,19 +80,27 @@ public final class SessionOverlayStore: ObservableObject {
     private var touchHosts: [String: HostID] = [:]
     private var touchTimers: [String: () -> Void] = [:]
     private let db: TempleDB
+    /// Transcript facts from the engine: persisted only while the latest
+    /// snapshot still authorizes them (`FactCommitter`).
+    private let facts: FactCommitter
+    private let scheduleFactRetry: (TimeInterval, @escaping @MainActor () -> Void) -> () -> Void
+    private var factRetry: (() -> Void)?
+    private var factRetryDue: Date?
+    private var latestFacts: [String: AuthorizedFacts] = [:]
+    /// A fact write found its row gone, rejoined or on another host: the
+    /// owning engine is asked to re-read it (AppModel wires this).
+    var onOwnershipMismatch: ((_ id: String, _ host: HostID) -> Void)?
 
     public init(db: TempleDB, now: @escaping () -> Date = Date.init,
-                scheduleTouch: @escaping (TimeInterval, @escaping @MainActor () -> Void) -> () -> Void = { delay, action in
-                    let task = Task { @MainActor in
-                        try? await Task.sleep(for: .seconds(delay))
-                        guard !Task.isCancelled else { return }
-                        action()
-                    }
-                    return { task.cancel() }
-                }) {
+                scheduleTouch: @escaping (TimeInterval, @escaping @MainActor () -> Void) -> () -> Void = SessionOverlayStore.schedule,
+                persistFacts: FactCommitter.Persist? = nil,
+                scheduleFactRetry: @escaping (TimeInterval, @escaping @MainActor () -> Void) -> () -> Void = SessionOverlayStore.schedule) {
         self.now = now
         self.scheduleTouch = scheduleTouch
         self.db = db
+        let persister = FactPersister(database: db)
+        self.facts = FactCommitter(persist: persistFacts ?? { try persister.persist($0, $1) }, now: now)
+        self.scheduleFactRetry = scheduleFactRetry
         let states = (try? db.sessionStates()) ?? []
         self.rows = Dictionary(uniqueKeysWithValues: states.map { ($0.id, $0) })
         self.lastActiveAt = Dictionary(uniqueKeysWithValues: states.compactMap { row in row.lastActiveAt.map { (row.id, $0) } })
@@ -132,20 +139,20 @@ public final class SessionOverlayStore: ObservableObject {
         if let current = try? db.sessionStates() {
             rows = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
         }
-        for row in rows.values { trackMissingFields(row) }
+    }
+
+    /// A cancellable one-shot main-actor timer.
+    public nonisolated static func schedule(_ delay: TimeInterval, _ action: @escaping @MainActor () -> Void) -> () -> Void {
+        let task = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            action()
+        }
+        return { task.cancel() }
     }
 
     deinit {
         if let rowObserver { db.removeRowChangeObserver(rowObserver) }
-    }
-
-    private func trackMissingFields(_ row: SessionState) {
-        var missing: Set<SessionCoreField> = []
-        if row.agent == nil { missing.insert(.agent) }
-        if row.directory == nil { missing.insert(.directory) }
-        if row.title == nil { missing.insert(.title) }
-        if row.lastActiveAt == nil { missing.insert(.lastActiveAt) }
-        missingCoreFields[row.id] = missing.isEmpty ? nil : missing
     }
 
     private func refreshRow(_ id: String) {
@@ -154,7 +161,6 @@ public final class SessionOverlayStore: ObservableObject {
                 if let pending = pendingTouches[id] {
                     row.lastActiveAt = max(row.lastActiveAt ?? .distantPast, pending)
                 }
-                trackMissingFields(row)
                 if lastActiveAt[id] != row.lastActiveAt { lastActiveAt[id] = row.lastActiveAt }
                 if rows[id] != row {
                     var previous = rows[id]
@@ -164,7 +170,6 @@ public final class SessionOverlayStore: ObservableObject {
                     rowChanges.send(RowChange(id: id, recencyOnly: recencyOnly))
                 }
             } else {
-                missingCoreFields.removeValue(forKey: id)
                 lastActiveAt.removeValue(forKey: id)
                 if rows.removeValue(forKey: id) != nil {
                     rowChanges.send(RowChange(id: id, recencyOnly: false))
@@ -175,26 +180,58 @@ public final class SessionOverlayStore: ObservableObject {
         }
     }
 
-    /// Only recorded facts fill NULL core fields; complete rows never hit SQLite.
-    /// Partial rows also skip writes until a summary supplies a missing fact.
-    public func fillMissingCoreFields(from summary: TranscriptSummary) {
-        let core = SessionCore(filling: summary)
-        guard let row = rows[summary.id], row.host == core.host,
-              let missing = missingCoreFields[summary.id] else { return }
-        let supplied = Set<SessionCoreField>([.agent, .lastActiveAt])
-            .union(core.directory == nil ? [] : [.directory])
-            .union(core.title == nil ? [] : [.title])
-        guard !missing.isDisjoint(with: supplied) else { return }
-        do {
-            let outcome = try db.fillCoreFields(sessionID: summary.id, host: core.host, agent: summary.agent,
-                directory: core.directory, title: core.title, lastActiveAt: core.lastActiveAt)
-            // Changed rows refresh synchronously through the committed observer.
-            // Reconcile a no-op too: another writer may already have filled it.
-            if case .changed = outcome {} else { refreshRow(summary.id) }
-        } catch {
-            TempleUILog.db.error("core fill failed for session \(summary.id, privacy: .public): \(String(describing: error), privacy: .public)")
+    // MARK: Engine facts
+
+    /// The latest merged snapshot's authorized facts, whole: each newly
+    /// authorized entry is persisted once (NULL-only fill and hint, under
+    /// the row's host and incarnation); a failed write is retried with
+    /// backoff while the snapshot still carries the same authorization, and
+    /// dropped the moment one does not.
+    public func applyFacts(_ latest: [String: AuthorizedFacts]) {
+        latestFacts = latest
+        handle(facts.receive(latest))
+        rescheduleFactRetry()
+    }
+
+    private func retryFacts() {
+        factRetry = nil; factRetryDue = nil
+        handle(facts.retryDue())
+        rescheduleFactRetry()
+    }
+
+    private func handle(_ outcomes: [FactCommitter.Outcome]) {
+        for outcome in outcomes {
+            switch outcome {
+            case .written(let id, .changed):
+                // Changed rows refresh synchronously through the committed observer.
+                _ = id
+            case .written(let id, .unchanged):
+                // Another writer may already have filled it.
+                refreshRow(id)
+            case .written(let id, .ownershipMismatch):
+                refreshRow(id)
+                if let host = latestFactHost(id) { onOwnershipMismatch?(id, host) }
+            case .failed(let id, let error):
+                TempleUILog.db.error("core fill failed for session \(id, privacy: .public): \(String(describing: error), privacy: .public)")
+            }
         }
     }
+
+    private func latestFactHost(_ id: String) -> HostID? { latestFacts[id]?.locator.host }
+
+    private func rescheduleFactRetry() {
+        guard let due = facts.nextRetry else {
+            factRetry?(); factRetry = nil; factRetryDue = nil
+            return
+        }
+        if let factRetryDue, factRetryDue <= due, factRetry != nil { return }
+        factRetry?()
+        factRetryDue = due
+        factRetry = scheduleFactRetry(max(0, due.timeIntervalSince(now()))) { [weak self] in self?.retryFacts() }
+    }
+
+    /// Fact writes waiting out a backoff (diagnostic, for tests).
+    var pendingFactIDs: Set<String> { facts.pendingIDs }
 
     public convenience init() throws {
         self.init(db: try AppDatabase.open())
@@ -340,7 +377,6 @@ public final class SessionOverlayStore: ObservableObject {
         if lastActiveAt[id] != date { lastActiveAt[id] = date }
         if var row = rows[id], row.lastActiveAt != date {
             row.lastActiveAt = date
-            trackMissingFields(row)
             rows[id] = row
             rowChanges.send(RowChange(id: id, recencyOnly: true))
         }

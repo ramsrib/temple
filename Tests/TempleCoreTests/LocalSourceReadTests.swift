@@ -70,9 +70,4 @@ final class LocalSourceReadTests: XCTestCase {
     }
 }
 
-final class Flag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var set = false
-    /// True the first time only.
-    func setOnce() -> Bool { lock.lock(); defer { lock.unlock() }; if set { return false }; set = true; return true }
-}
+

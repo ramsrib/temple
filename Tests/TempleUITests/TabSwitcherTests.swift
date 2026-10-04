@@ -13,7 +13,7 @@ final class TabSwitcherTests: XCTestCase {
         let overlay = SessionOverlayStore(db: database)
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
+            engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
             database: database,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: overlay

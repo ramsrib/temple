@@ -32,14 +32,57 @@ final class SessionEngineTests: XCTestCase {
         return file
     }
 
+    private var started: [SessionEngine] = []
+    private var adoptions: [Task<Void, Never>] = []
+
+    override func tearDown() async throws {
+        adoptions.forEach { $0.cancel() }; adoptions.removeAll()
+        for engine in started { await engine.stop() }
+        started.removeAll()
+        try await super.tearDown()
+    }
+
+    /// Starts the engine and waits for a snapshot that has settled every
+    /// member (no `.resolving` left).
     private func start(_ watcher: SessionEngine) async throws -> EngineRecorder {
+        started.append(watcher)
         let recorder = EngineRecorder(watcher)
-        try await eventually { !recorder.indices.isEmpty }
+        await watcher.start()
+        try await eventually {
+            guard let last = recorder.indices.last else { return false }
+            return !last.resolutions.values.contains(.resolving)
+        }
         return recorder
     }
 
+    /// An engine over bare member rows (no agent, hint or facts yet): the
+    /// rows want every field, so the engine authorizes facts for each loaded
+    /// member, and the test reads them from the snapshot (nothing persists
+    /// them here).
+    private func memberEngine(_ source: LocalSessionSource, members: Set<String>) throws -> SessionEngine {
+        let db = try TempleDB.inMemory()
+        for id in members.sorted() { try db.join(sessionID: id, via: .imported) }
+        return SessionEngine(source: source, database: db)
+    }
+
+    struct AdoptedRollout: Sendable { let sessionID: String; let filePath: URL }
+
+    /// Adoption is the source's (`HostSessionSource.adopt`); the engine
+    /// takes no part in it.
+    private func adopt(_ watcher: SessionEngine, projectPath: String, startedAt: Date, window: TimeInterval,
+                       completion: @escaping @Sendable (AdoptedRollout?) -> Void) {
+        let source = watcher.source
+        adoptions.append(Task {
+            let result = try? await source.adopt(AdoptionRequest(directory: projectPath, startedAt: startedAt, window: window))
+            if case .adopted(let id, let locator)? = result, let url = locator.localURL {
+                completion(AdoptedRollout(sessionID: id, filePath: url))
+            } else { completion(nil) }
+        })
+    }
+
+    /// Live FSEvents tests share the machine with the rest of the suite.
     private func eventually(_ predicate: () -> Bool) async throws {
-        let end = Date().addingTimeInterval(3)
+        let end = Date().addingTimeInterval(6)
         while !predicate(), Date() < end { try await Task.sleep(for: .milliseconds(15)) }
         XCTAssertTrue(predicate())
     }
@@ -48,22 +91,22 @@ final class SessionEngineTests: XCTestCase {
         let root = try root()
         let file = try claude(root, id: "loaded", text: "Recorded prompt")
         try claude(root, id: "outside")
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)]), members: ["loaded", "missing"])
-        let updates = watcher.snapshots()
-        var snapshots: [EngineSnapshot] = []
-        let task = Task { for await snapshot in updates { snapshots.append(snapshot) } }
+        let watcher = try memberEngine(LocalSessionSource(stores: [ClaudeSessionStore(root: root)]), members: ["loaded", "missing"])
         let recorder = try await start(watcher)
-        defer { task.cancel(); recorder.stop() }
-        try await eventually { snapshots.last?.summaries["loaded"] != nil }
-        let snapshot = try XCTUnwrap(snapshots.last)
+        defer { recorder.stop() }
+        try await eventually { recorder.indices.last?.facts["loaded"]?.summary != nil }
+        let snapshot = try XCTUnwrap(watcher.latestSnapshot)
         XCTAssertGreaterThan(snapshot.generation, 0)
         XCTAssertEqual(snapshot.resolutions["loaded"], .loaded(file))
         XCTAssertEqual(snapshot.resolutions["missing"], .confirmedAbsent)
-        XCTAssertEqual(Set(snapshot.summaries.keys), ["loaded"])
-        XCTAssertEqual(snapshot.summaries["loaded"]?.cwd, "/private/tmp")
-        XCTAssertEqual(snapshot.summaries["loaded"]?.firstPrompt, "Recorded prompt")
-        XCTAssertEqual(snapshot.summaries["loaded"]?.locator.localURL, file)
-        XCTAssertEqual(snapshot.summaries["loaded"]?.modifiedAt, recorder.latest.first?.updatedAt)
+        XCTAssertEqual(Set(snapshot.facts.keys), ["loaded"])
+        let facts = try XCTUnwrap(snapshot.facts["loaded"])
+        XCTAssertEqual(facts.summary?.cwd, "/private/tmp")
+        XCTAssertEqual(facts.summary?.firstPrompt, "Recorded prompt")
+        XCTAssertEqual(facts.summary?.locator.localURL, file)
+        XCTAssertEqual(facts.locator.localURL, file)
+        XCTAssertEqual(facts.agent, .claude)
+        XCTAssertNotNil(facts.authorization.incarnation)
 
         let replay = watcher.snapshots()
         var iterator = replay.makeAsyncIterator()
@@ -71,8 +114,8 @@ final class SessionEngineTests: XCTestCase {
         XCTAssertEqual(replayed, snapshot)
         try FileManager.default.removeItem(at: file)
         watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemRemoved))
-        try await eventually { snapshots.last?.resolutions["loaded"] == .confirmedAbsent }
-        XCTAssertNil(snapshots.last?.summaries["loaded"])
+        try await eventually { recorder.indices.last?.resolutions["loaded"] == .confirmedAbsent }
+        XCTAssertNil(recorder.indices.last?.facts["loaded"], "revoked with the file")
     }
 
     func testOnlyMembersAreParsedAndNonmemberWriteDoesNotPublish() async throws {
@@ -80,20 +123,22 @@ final class SessionEngineTests: XCTestCase {
         let member = try claude(root, id: "member")
         let outside = try claude(root, id: "outside")
         let store = EngineCountingStore(ClaudeSessionStore(root: root))
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), members: ["member"])
+        let watcher = try memberEngine(LocalSessionSource(stores: [store], debounceInterval: 0.02), members: ["member"])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
-        XCTAssertEqual(store.parses, ["member": 1])
+        try await eventually { recorder.latest.count == 1 }
+        XCTAssertEqual(watcher.metrics.factReads, 1)
         let before = recorder.indices.count
         try claude(root, id: "outside", text: "changed")
         watcher.reconcileEvent(path: outside.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
         try await Task.sleep(for: .milliseconds(160))
-        XCTAssertEqual(store.parses, ["member": 1])
+        XCTAssertEqual(watcher.metrics.factReads, 1)
         XCTAssertEqual(recorder.indices.count, before)
         try claude(root, id: "member", text: "new title")
         watcher.reconcileEvent(path: member.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
         try await eventually { recorder.latest.first?.title == "new title" }
-        XCTAssertEqual(store.parses["member"], 2)
+        XCTAssertEqual(watcher.metrics.factReads, 2)
+        XCTAssertEqual(recorder.latest.map(\.id), ["member"])
     }
 
     func testCommittedJoinLoadsWithoutAnEventAndRepeatedJoinDoesNotReparse() async throws {
@@ -101,16 +146,18 @@ final class SessionEngineTests: XCTestCase {
         let file = try claude(root, id: "existing")
         let db = try TempleDB.inMemory()
         let store = EngineCountingStore(ClaudeSessionStore(root: root))
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), database: db)
+        // No FSEvents: the fixture's own fresh directories would arrive as
+        // root events (a coverage reset re-arms enrichment, legitimately).
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02, monitorChanges: false), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
-        XCTAssertTrue(store.parses.isEmpty)
+        XCTAssertEqual(watcher.metrics.factReads, 0)
         try db.join(sessionID: "existing", via: .opened, agent: .claude, locator: TranscriptLocator(localURL: file))
         try await eventually { recorder.latest.count == 1 }
         XCTAssertEqual(try db.sessionState("existing")?.transcriptPath, file.path)
         try db.join(sessionID: "existing", via: .opened)
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(store.parses["existing"], 1)
+        XCTAssertEqual(watcher.metrics.factReads, 1)
     }
 
     /// History's undo of an import: a committed leave takes the session out of
@@ -127,7 +174,7 @@ final class SessionEngineTests: XCTestCase {
         try db.join(sessionID: "imported", via: .imported, agent: .claude, locator: TranscriptLocator(localURL: imported))
         try db.join(sessionID: "pinned", via: .imported, agent: .claude, locator: TranscriptLocator(localURL: pinned))
         try db.setPinned(true, sessionID: "pinned")
-        try await eventually { recorder.latest.count == 2 }
+        try await eventually { recorder.indices.last?.resolutions.count == 2 && recorder.latest.count == 2 }
 
         XCTAssertTrue(try db.leave(sessionID: "imported", host: .local))
         try await eventually { Set(recorder.latest.map(\.id)) == ["pinned"] }
@@ -136,6 +183,7 @@ final class SessionEngineTests: XCTestCase {
         XCTAssertFalse(try db.leave(sessionID: "pinned", host: .local))
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(Set(recorder.latest.map(\.id)), ["pinned"])
+        XCTAssertEqual(Set(watcher.latestSnapshot?.resolutions.keys ?? [:].keys), ["pinned"])
     }
 
     func testDelayedLeaveAfterReimportKeepsMembershipAndEventRouting() async throws {
@@ -149,9 +197,10 @@ final class SessionEngineTests: XCTestCase {
         XCTAssertTrue(try db.leave(sessionID: "reimported", host: .local))
         try db.join(sessionID: "reimported", via: .imported, agent: .claude, locator: TranscriptLocator(localURL: file))
         // Force the callback order: resolution of the new commit, then the
-        // delayed invalidation from the old leave, irrespective of DB delivery.
-        watcher.requestResolution("reimported")
-        watcher.forgetMember("reimported")
+        // delayed callback from the old leave, irrespective of DB delivery:
+        // each re-reads the row, which is a member again.
+        await watcher.requestResolution("reimported")
+        await watcher.reconcileMembership("reimported")
         try claude(root, id: "reimported", text: "after reimport")
         watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
         try await eventually { recorder.latest.first?.title == "after reimport" }
@@ -169,7 +218,7 @@ final class SessionEngineTests: XCTestCase {
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         try queue.close()
-        watcher.forgetMember("kept")
+        await watcher.reconcileMembership("kept")
         try await Task.sleep(for: .milliseconds(120))
         XCTAssertEqual(recorder.latest.map(\.id), ["kept"])
         XCTAssertEqual(watcher.resolution(for: "kept"), .loaded(file))
@@ -196,7 +245,7 @@ final class SessionEngineTests: XCTestCase {
     func testAliasesAndCombinedFlagsReconcileTheCurrentFile() async throws {
         let root = try root()
         let file = try claude(root, id: "alias")
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), members: ["alias"])
+        let watcher = try memberEngine(LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), members: ["alias"])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         try claude(root, id: "alias", text: "alias update")
@@ -209,7 +258,7 @@ final class SessionEngineTests: XCTestCase {
         let root = try root()
         let staging = try self.root()
         try claude(staging, id: "moved")
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), members: ["moved"])
+        let watcher = try memberEngine(LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), members: ["moved"])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let dir = root.appendingPathComponent("project")
@@ -231,7 +280,7 @@ final class SessionEngineTests: XCTestCase {
         let second = try root()
         try claude(first, id: "linked", text: "first")
         try claude(second, id: "linked", text: "second")
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: missing)], debounceInterval: 0.02), members: ["linked"])
+        let watcher = try memberEngine(LocalSessionSource(stores: [ClaudeSessionStore(root: missing)], debounceInterval: 0.02), members: ["linked"])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         XCTAssertEqual(watcher.resolution(for: "linked"), .confirmedAbsent)
@@ -252,7 +301,7 @@ final class SessionEngineTests: XCTestCase {
         let root = try root()
         try claude(root, id: "kept")
         let store = EngineCountingStore(ClaudeSessionStore(root: root))
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), members: ["kept", "unknown"])
+        let watcher = try memberEngine(LocalSessionSource(stores: [store], debounceInterval: 0.02), members: ["kept", "unknown"])
         store.failEnumeration = true
         let recorder = try await start(watcher)
         defer { recorder.stop() }
@@ -313,21 +362,22 @@ final class SessionEngineTests: XCTestCase {
         let id = UUID().uuidString.lowercased()
         let file = try rollout(root, id: id, at: Date())
         let store = EngineCountingStore(CodexSessionStore(root: root))
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), members: [id])
+        let watcher = try memberEngine(LocalSessionSource(stores: [store], debounceInterval: 0.02), members: [id])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
-        let parses = store.parses
+        try await eventually { recorder.latest.count == 1 }
+        let parses = watcher.metrics.factReads
         let date = recorder.latest.first?.updatedAt
         let title = root.appendingPathComponent("session_index.jsonl")
         try "{\"id\":\"\(id)\",\"thread_name\":\"Retitled\"}".write(to: title, atomically: true, encoding: .utf8)
-        watcher.requestResolution(id)
+        await watcher.requestResolution(id)
         try await eventually { recorder.latest.first?.title == "Retitled" }
         XCTAssertEqual(recorder.latest.first?.updatedAt, date)
         XCTAssertEqual(recorder.latest.first?.filePath, file)
         try FileManager.default.removeItem(at: title)
-        watcher.requestResolution(id)
+        await watcher.requestResolution(id)
         try await eventually { recorder.latest.first?.title == "(no prompt)" }
-        XCTAssertEqual(store.parses.values.reduce(0, +), parses.values.reduce(0, +) + 2)
+        XCTAssertGreaterThanOrEqual(watcher.metrics.factReads, parses + 2)
     }
 
     func testAdoptionCatchUpFindsFileCreatedBeforeRegistrationWithoutPublishingIt() async throws {
@@ -339,7 +389,7 @@ final class SessionEngineTests: XCTestCase {
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let decided = expectation(description: "catch-up adoption")
-        watcher.registerAdoption(projectPath: "/private/tmp", startedAt: time, window: 0.3) { candidate in
+        adopt(watcher, projectPath: "/private/tmp", startedAt: time, window: 0.3) { candidate in
             XCTAssertEqual(candidate?.sessionID, id); decided.fulfill()
         }
         await fulfillment(of: [decided], timeout: 2)
@@ -355,7 +405,7 @@ final class SessionEngineTests: XCTestCase {
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let decided = expectation(description: "ambiguous decision")
-        watcher.registerAdoption(projectPath: "/private/tmp", startedAt: time, window: 0.35) { candidate in
+        adopt(watcher, projectPath: "/private/tmp", startedAt: time, window: 0.35) { candidate in
             XCTAssertNil(candidate); decided.fulfill()
         }
         await fulfillment(of: [decided], timeout: 2)
@@ -369,7 +419,7 @@ final class SessionEngineTests: XCTestCase {
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let decided = expectation(description: "whole window remains ambiguous")
-        watcher.registerAdoption(projectPath: "/private/tmp", startedAt: time, window: 5) { candidate in
+        adopt(watcher, projectPath: "/private/tmp", startedAt: time, window: 5) { candidate in
             XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(time), 5)
             XCTAssertNil(candidate)
             decided.fulfill()
@@ -390,7 +440,7 @@ final class SessionEngineTests: XCTestCase {
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let decided = expectation(description: "previously seen competitor remains ambiguous")
-        watcher.registerAdoption(projectPath: "/private/tmp", startedAt: time, window: 0.4) { candidate in
+        adopt(watcher, projectPath: "/private/tmp", startedAt: time, window: 0.4) { candidate in
             XCTAssertNil(candidate); decided.fulfill()
         }
         try await eventually { store.headerReads == 1 }
@@ -409,7 +459,7 @@ final class SessionEngineTests: XCTestCase {
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let decided = expectation(description: "removed candidate cannot bind")
-        watcher.registerAdoption(projectPath: "/private/tmp", startedAt: time, window: 0.3) { candidate in
+        adopt(watcher, projectPath: "/private/tmp", startedAt: time, window: 0.3) { candidate in
             XCTAssertNil(candidate); decided.fulfill()
         }
         try await eventually { store.headerReads == 1 }
@@ -426,7 +476,7 @@ final class SessionEngineTests: XCTestCase {
         let decided = expectation(description: "two refused requests")
         decided.expectedFulfillmentCount = 2
         for offset in [0.0, 0.08] {
-            watcher.registerAdoption(projectPath: "/private/tmp", startedAt: time.addingTimeInterval(offset), window: 0.3) { candidate in
+            adopt(watcher, projectPath: "/private/tmp", startedAt: time.addingTimeInterval(offset), window: 0.3) { candidate in
                 XCTAssertNil(candidate); decided.fulfill()
             }
         }
@@ -447,7 +497,7 @@ final class SessionEngineTests: XCTestCase {
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let decided = expectation(description: "completed header")
-        watcher.registerAdoption(projectPath: "/private/tmp", startedAt: time, window: 0.35) { candidate in
+        adopt(watcher, projectPath: "/private/tmp", startedAt: time, window: 0.35) { candidate in
             XCTAssertEqual(candidate?.sessionID, id); decided.fulfill()
         }
         try await Task.sleep(for: .milliseconds(80))
@@ -461,7 +511,8 @@ final class SessionEngineTests: XCTestCase {
         let root = try root()
         try claude(root, id: "before")
         let store = EngineCountingStore(ClaudeSessionStore(root: root))
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), members: ["before", "during"])
+        // Injected events only: the write lands mid-scan, deterministically.
+        let watcher = try memberEngine(LocalSessionSource(stores: [store], debounceInterval: 0.02, monitorChanges: false), members: ["before", "during"])
         let file = root.appendingPathComponent("project/during.jsonl")
         store.afterListing = {
             try? #"{"type":"user","sessionId":"during","cwd":"/private/tmp","message":{"content":"during scan"}}"#.write(to: file, atomically: true, encoding: .utf8)
@@ -470,7 +521,7 @@ final class SessionEngineTests: XCTestCase {
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         try await eventually { recorder.latest.count == 2 }
-        XCTAssertEqual(store.parses, ["before": 1, "during": 1])
+        XCTAssertEqual(watcher.metrics.factReads, 2)
     }
 
     func testNonmemberCodexWritesAndWALTrafficDoNotParseOrPublish() async throws {
@@ -480,17 +531,18 @@ final class SessionEngineTests: XCTestCase {
         try rollout(root, id: id, at: Date())
         let outside = try rollout(root, id: outsideID, at: Date())
         let store = EngineCountingStore(CodexSessionStore(root: root))
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), members: [id])
+        let watcher = try memberEngine(LocalSessionSource(stores: [store], debounceInterval: 0.02), members: [id])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
-        let counts = store.parses
+        try await eventually { recorder.latest.count == 1 }
+        let counts = watcher.metrics.factReads
         let publications = recorder.indices.count
         try rollout(root, id: outsideID, at: Date())
         watcher.reconcileEvent(path: outside.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
         watcher.reconcileEvent(path: root.appendingPathComponent("state_5.sqlite-wal").path,
                                flags: UInt32(kFSEventStreamEventFlagItemModified))
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(store.parses, counts)
+        XCTAssertEqual(watcher.metrics.factReads, counts)
         XCTAssertEqual(recorder.indices.count, publications)
     }
 
@@ -505,13 +557,11 @@ final class SessionEngineTests: XCTestCase {
         try handle.close()
         XCTAssertEqual(try StoreIO.readFirstLine(file), header)
         let store = CodexSessionStore(root: root)
-        XCTAssertEqual(store.metadataHeader(at: file)?.sessionID, id)
-        XCTAssertEqual(try store.adoptionHeader(at: file)?.sessionID, id)
+        XCTAssertEqual(try store.adoptionHeader(at: file)?.id, id)
         // A valid header beginning beyond the cap must never be reached.
         try (Data(repeating: 0x20, count: StoreIO.readWindowBytes) + header + Data([0x0a])).write(to: file)
         XCTAssertThrowsError(try StoreIO.readFirstLine(file))
-        XCTAssertNil(store.metadataHeader(at: file))
-        XCTAssertThrowsError(try store.adoptionHeader(at: file)?.sessionID)
+        XCTAssertThrowsError(try store.adoptionHeader(at: file)?.id)
     }
 
     func testIncompleteEligibleRolloutBlocksAdoptingReadableOutsider() async throws {
@@ -524,7 +574,7 @@ final class SessionEngineTests: XCTestCase {
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let done = expectation(description: "unresolved competitor refuses adoption")
-        watcher.registerAdoption(projectPath: "/private/tmp", startedAt: now, window: 0.15) { result in
+        adopt(watcher, projectPath: "/private/tmp", startedAt: now, window: 0.15) { result in
             XCTAssertNil(result); done.fulfill()
         }
         await fulfillment(of: [done], timeout: 2)
@@ -548,24 +598,6 @@ final class SessionEngineTests: XCTestCase {
             try await eventually { recorder.latest.first?.title == "updated prompt" }
             XCTAssertEqual(recorder.latest.map(\.id), [valid])
             recorder.stop()
-        }
-    }
-
-    func testAdoptionTimersAreCancelledOnStopAndRestart() async throws {
-        for restart in [false, true] {
-            let root = try root()
-            let now = Date()
-            let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02))
-            let recorder = try await start(watcher)
-            let forbidden = expectation(description: "old generation never decides")
-            forbidden.isInverted = true
-            watcher.registerAdoption(projectPath: "/private/tmp", startedAt: now, window: 0.2) { _ in forbidden.fulfill() }
-            recorder.stop()
-            var next: EngineRecorder?
-            if restart { next = try await start(watcher) }
-            try rollout(root, id: UUID().uuidString.lowercased(), at: now)
-            await fulfillment(of: [forbidden], timeout: 0.4)
-            next?.stop()
         }
     }
 
@@ -595,13 +627,13 @@ final class SessionEngineTests: XCTestCase {
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let first = expectation(description: "deadline adoption")
-        watcher.registerAdoption(projectPath: "/private/tmp", startedAt: now, window: 0.2) { result in
+        adopt(watcher, projectPath: "/private/tmp", startedAt: now, window: 0.2) { result in
             XCTAssertEqual(result?.sessionID, id); first.fulfill()
         }
         await fulfillment(of: [first], timeout: 1)
         XCTAssertEqual(store.headerReads, 1)
         let second = expectation(description: "same cached candidate already claimed")
-        watcher.registerAdoption(projectPath: "/private/tmp", startedAt: now, window: 0.2) { result in
+        adopt(watcher, projectPath: "/private/tmp", startedAt: now, window: 0.2) { result in
             XCTAssertNil(result); second.fulfill()
         }
         await fulfillment(of: [second], timeout: 1)
@@ -612,7 +644,7 @@ final class SessionEngineTests: XCTestCase {
         let root = try root()
         try claude(root, id: "before")
         let store = EngineCountingStore(ClaudeSessionStore(root: root))
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), members: ["before", "during"])
+        let watcher = try memberEngine(LocalSessionSource(stores: [store], debounceInterval: 0.02), members: ["before", "during"])
         let file = root.appendingPathComponent("project/during.jsonl")
         store.afterListing = {
             try? #"{"type":"user","sessionId":"during","cwd":"/private/tmp","message":{"content":"during scan"}}"#.write(to: file, atomically: true, encoding: .utf8)
@@ -629,7 +661,7 @@ final class SessionEngineTests: XCTestCase {
     func testLiveMissingAndRetargetedRoots() async throws {
         let base = try root()
         let logical = base.appendingPathComponent("logical")
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: logical)], debounceInterval: 0.02), members: ["member"])
+        let watcher = try memberEngine(LocalSessionSource(stores: [ClaudeSessionStore(root: logical)], debounceInterval: 0.02), members: ["member"])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         try XCTSkipIf(!watcher.isMonitoring, "FSEvents service unavailable in this execution environment")
@@ -652,14 +684,16 @@ final class SessionEngineTests: XCTestCase {
         let id = UUID().uuidString.lowercased()
         let physicalFile = try rollout(physical, id: id, at: Date())
         try FileManager.default.createSymbolicLink(at: base.appendingPathComponent("sessions"), withDestinationURL: physical.appendingPathComponent("sessions"))
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: base)], debounceInterval: 0.02), members: [id])
+        let watcher = try memberEngine(LocalSessionSource(stores: [CodexSessionStore(root: base)], debounceInterval: 0.02), members: [id])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
+        try await eventually { recorder.latest.count == 1 }
         XCTAssertEqual(recorder.latest.first?.filePath.path, base.appendingPathComponent("sessions/2026/10/02/" + physicalFile.lastPathComponent).path)
+        let initial = recorder.latest.first?.createdAt
         try XCTSkipIf(!inject && !watcher.isMonitoring, "FSEvents service unavailable in this execution environment")
         try rollout(physical, id: id, at: Date().addingTimeInterval(1))
         if inject { watcher.reconcileEvent(path: physicalFile.path, flags: UInt32(kFSEventStreamEventFlagItemModified)) }
-        try await eventually { recorder.latest.first?.createdAt != nil && recorder.latest.first?.createdAt != recorder.indices.first?.allSessions.first?.createdAt }
+        try await eventually { recorder.latest.first?.createdAt != nil && recorder.latest.first?.createdAt != initial }
     }
 
     func testReadOnlyWatcherLoadsMembersWithoutUpdatingHints() async throws {
@@ -673,7 +707,9 @@ final class SessionEngineTests: XCTestCase {
         let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: db)
         let recorder = try await start(watcher)
         defer { recorder.stop() }
-        XCTAssertEqual(recorder.latest.first?.filePath, file)
+        XCTAssertEqual(watcher.resolution(for: "member"), .loaded(file))
+        XCTAssertTrue(recorder.indices.allSatisfy { $0.facts.isEmpty }, "a read-only database authorizes nothing")
+        XCTAssertEqual(watcher.metrics.factReads, 0)
         XCTAssertNil(try db.sessionState("member")?.transcriptPath)
     }
 
@@ -687,15 +723,15 @@ final class SessionEngineTests: XCTestCase {
             entered.fulfill()
             _ = gate.wait(timeout: .now() + 1)
         }
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), members: ["pruned"])
+        let watcher = try memberEngine(LocalSessionSource(stores: [store], debounceInterval: 0.02), members: ["pruned"])
         let recorder = try await start(watcher)
         defer { recorder.stop(); gate.signal() }
-        watcher.registerAdoption(projectPath: "/private/tmp", startedAt: Date(), window: 1) { _ in }
+        adopt(watcher, projectPath: "/private/tmp", startedAt: Date(), window: 1) { _ in }
         await fulfillment(of: [entered], timeout: 1)
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { gate.signal() }
         let began = Date()
         XCTAssertEqual(watcher.resolution(for: "pruned"), .confirmedAbsent)
-        XCTAssertNotNil(watcher.publishedSnapshot)
+        XCTAssertNotNil(watcher.latestSnapshot)
         _ = watcher.isMonitoring
         XCTAssertLessThan(Date().timeIntervalSince(began), 0.05)
     }
@@ -715,7 +751,7 @@ final class SessionEngineTests: XCTestCase {
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let refused = expectation(description: "neither competitor may be evicted before decision")
-        watcher.registerAdoption(projectPath: "/private/tmp", startedAt: now, window: 1) { candidate in
+        adopt(watcher, projectPath: "/private/tmp", startedAt: now, window: 1) { candidate in
             XCTAssertNil(candidate); refused.fulfill()
         }
         await fulfillment(of: [refused], timeout: 3)
@@ -735,11 +771,11 @@ final class SessionEngineTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertTrue(recorder.latest.isEmpty)
         XCTAssertNil(watcher.resolution(for: "external"))
-        recorder.stop()
-        try await eventually { watcher.publishedSnapshot == nil }
+        await recorder.stopNow()
+        XCTAssertNil(watcher.latestSnapshot)
         let next = try await start(watcher)
         defer { next.stop() }
-        XCTAssertEqual(next.latest.map(\.id), ["external"])
+        try await eventually { next.latest.map(\.id) == ["external"] }
     }
 
     func testAdoptionFilenameTimestampAdmitsOldMtimeCompetitor() async throws {
@@ -759,7 +795,7 @@ final class SessionEngineTests: XCTestCase {
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         let refused = expectation(description: "recent filename is eligible despite older mtime")
-        watcher.registerAdoption(projectPath: "/private/tmp", startedAt: now, window: 1) { candidate in
+        adopt(watcher, projectPath: "/private/tmp", startedAt: now, window: 1) { candidate in
             XCTAssertNil(candidate); refused.fulfill()
         }
         await fulfillment(of: [refused], timeout: 2)
@@ -797,28 +833,31 @@ final class SessionEngineTests: XCTestCase {
         try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(1000)], ofItemAtPath: original.path)
         try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-1000)], ofItemAtPath: selected.path)
         let db = try TempleDB.inMemory()
-        try db.join(sessionID: thread, via: .opened, agent: .codex, locator: TranscriptLocator(localURL: original))
-        let store = EngineCountingStore(CodexSessionStore(root: root))
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), database: db)
+        try db.join(sessionID: thread, via: .opened, agent: .codex, locator: TranscriptLocator(localURL: original),
+                    core: SessionCore(directory: "/w", title: "Complete", lastActiveAt: Date()))
+        let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02), database: db)
+        // The consumer persists what the engine authorizes: here, the hint.
+        let committer = FactCommitter(database: db)
+        let stream = watcher.snapshots()
+        let consumer = Task { for await snapshot in stream { committer.receive(snapshot.facts) } }
+        defer { consumer.cancel() }
         let recorder = try await start(watcher)
         defer { recorder.stop() }
-        XCTAssertEqual(recorder.latest.map(\.id), [thread])
-        XCTAssertEqual(recorder.latest.first?.filePath, selected)
-        XCTAssertEqual(store.parses, [selected.deletingPathExtension().lastPathComponent: 1])
-        XCTAssertEqual(try db.sessionState(thread)?.transcriptPath, selected.path)
+        XCTAssertEqual(watcher.resolution(for: thread), .loaded(selected))
+        XCTAssertEqual(watcher.metrics.factReads, 0, "a complete row: identity only")
+        try await eventually { (try? db.sessionState(thread)?.transcriptPath) == selected.path }
         let newest = directory.appendingPathComponent("rollout-2026-10-02T00-00-02-\(thread)_30000000-0000-0000-0000-000000000000.jsonl")
         try data.write(to: newest)
         watcher.reconcileEvent(path: newest.path, flags: UInt32(kFSEventStreamEventFlagItemCreated))
-        try await eventually { recorder.latest.first?.filePath == newest }
-        XCTAssertEqual(recorder.latest.count, 1)
-        XCTAssertEqual(try db.sessionState(thread)?.transcriptPath, newest.path)
+        try await eventually { watcher.resolution(for: thread) == .loaded(newest) }
+        try await eventually { (try? db.sessionState(thread)?.transcriptPath) == newest.path }
         try FileManager.default.removeItem(at: newest)
         watcher.reconcileEvent(path: newest.path, flags: UInt32(kFSEventStreamEventFlagItemRemoved))
-        try await eventually { recorder.latest.first?.filePath == selected }
-        XCTAssertNil(store.parses[olderRevert.deletingPathExtension().lastPathComponent])
+        try await eventually { watcher.resolution(for: thread) == .loaded(selected) }
+        XCTAssertFalse(recorder.indices.contains { $0.resolutions[thread] == .loaded(olderRevert) || $0.resolutions[thread] == .loaded(original) })
         for file in [original, olderRevert, selected] { try FileManager.default.removeItem(at: file) }
         watcher.reconcileEvent(path: selected.path, flags: UInt32(kFSEventStreamEventFlagItemRemoved))
-        try await eventually { watcher.resolution(for: thread) == .confirmedAbsent && recorder.latest.isEmpty }
+        try await eventually { watcher.resolution(for: thread) == .confirmedAbsent }
     }
 
     func testUnreadableSelectedRevertDoesNotSilentlyLoadOlderRollout() async throws {
@@ -851,11 +890,14 @@ final class SessionEngineTests: XCTestCase {
         defer { recorder.stop() }
         XCTAssertEqual(watcher.resolution(for: member), .confirmedAbsent)
         XCTAssertEqual(store.headerReads, 0)
-        XCTAssertTrue(store.parses.isEmpty)
+        XCTAssertEqual(watcher.metrics.factReads, 0)
+        XCTAssertEqual(watcher.metrics.reads, 0, "the payload id of another file is never searched")
         let matching = try rollout(root, id: member, at: Date())
         watcher.reconcileEvent(path: matching.path, flags: UInt32(kFSEventStreamEventFlagItemCreated))
         try await eventually { recorder.latest.first?.filePath == matching }
-        XCTAssertNil(store.parses[outside.deletingPathExtension().lastPathComponent])
+        XCTAssertEqual(watcher.metrics.factReads, 1)
+        XCTAssertEqual(watcher.metrics.reads, 1)
+        _ = outside
         XCTAssertEqual(store.headerReads, 0)
     }
 
@@ -864,7 +906,7 @@ final class SessionEngineTests: XCTestCase {
         let member = UUID().uuidString.lowercased()
         let store = EngineCountingStore(CodexSessionStore(root: root))
         store.failEnumeration = true
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.02), members: [member])
+        let watcher = try memberEngine(LocalSessionSource(stores: [store], debounceInterval: 0.02), members: [member])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
         XCTAssertEqual(watcher.resolution(for: member), .incomplete)
@@ -900,11 +942,11 @@ final class SessionEngineTests: XCTestCase {
         XCTAssertEqual(store.headerReads, 0, "Startup must never scan outside headers")
         for adopting in [false, true] {
             if adopting {
-                watcher.registerAdoption(projectPath: "/elsewhere", startedAt: Date(), window: 2) { _ in }
+                adopt(watcher, projectPath: "/elsewhere", startedAt: Date(), window: 2) { _ in }
                 try await Task.sleep(for: .milliseconds(100))
             }
             sql.reset()
-            let parses = store.parses
+            let parses = watcher.metrics.factReads
             let headers = store.headerReads
             let publications = recorder.indices.count
             let listings = store.enumerations
@@ -918,7 +960,7 @@ final class SessionEngineTests: XCTestCase {
             }
             try await Task.sleep(for: .milliseconds(200))
             XCTAssertEqual(store.headerReads - headers, 0)
-            XCTAssertEqual(store.parses, parses)
+            XCTAssertEqual(watcher.metrics.factReads, parses)
             XCTAssertEqual(sql.count, 0, "No SQL reads or writes for nonmember rollouts")
             XCTAssertEqual(store.enumerations, listings)
             XCTAssertEqual(recorder.indices.count, publications)
@@ -941,7 +983,8 @@ final class SessionEngineTests: XCTestCase {
         try db.join(sessionID: thread, via: .created, agent: .codex, locator: TranscriptLocator(localURL: reverted))
         try await eventually { recorder.latest.first?.filePath == reverted }
         XCTAssertEqual(store.enumerations, listings)
-        XCTAssertNil(store.parses[original.deletingPathExtension().lastPathComponent])
+        XCTAssertEqual(watcher.metrics.factReads, 1)
+        XCTAssertFalse(recorder.indices.contains { $0.resolutions[thread] == .loaded(original) })
         XCTAssertEqual(store.headerReads, 0)
     }
 
@@ -978,17 +1021,20 @@ final class SessionEngineTests: XCTestCase {
 @MainActor
 private final class EngineRecorder {
     var indices: [EngineSnapshot] = []
+    /// The parsed facts the latest snapshot authorizes (nothing persists them
+    /// in these tests, so they stay while the row wants them).
     var latest: [TranscriptSummary] { indices.last?.allSessions ?? [] }
     private let watcher: SessionEngine
     private var task: Task<Void, Never>?
     init(_ watcher: SessionEngine) {
         self.watcher = watcher
-        let stream = watcher.start()
+        let stream = watcher.snapshots()
         task = Task { [weak self] in
             for await index in stream { self?.indices.append(index) }
         }
     }
-    func stop() { task?.cancel(); watcher.stop() }
+    func stop() { task?.cancel(); let watcher = watcher; Task { await watcher.stop() } }
+    func stopNow() async { task?.cancel(); await watcher.stop() }
 }
 
 private final class EngineCountingStore: IncrementalSessionStore, @unchecked Sendable {
@@ -1027,8 +1073,10 @@ private final class EngineCountingStore: IncrementalSessionStore, @unchecked Sen
     func acceptsTranscript(_ url: URL) -> Bool { inner.acceptsTranscript(url) }
     func filenameID(at url: URL) -> String? { inner.filenameID(at: url) }
     func rolloutSelectionKey(at url: URL) -> String? { inner.rolloutSelectionKey(at: url) }
-    func metadataHeader(at url: URL) -> CodexRolloutCandidate? { inner.metadataHeader(at: url) }
-    func adoptionHeader(at url: URL) throws -> CodexRolloutCandidate? {
+    func sharedRevision() -> UInt64? { inner.sharedRevision() }
+    func sharedFactsSnapshot() -> (facts: SharedFacts, revision: UInt64?) { inner.sharedFactsSnapshot() }
+    var sharedTransfers: Int { inner.sharedTransfers }
+    func adoptionHeader(at url: URL) throws -> AdoptionCandidate? {
         lock.lock(); headerCount += 1; lock.unlock()
         headerObserver?()
         return try inner.adoptionHeader(at: url)

@@ -23,7 +23,7 @@ final class UnstartedSessionTests: XCTestCase {
         let source = LocalSessionSource(stores: [ClaudeSessionStore(root: storeRoot)], debounceInterval: 0.01,
                                         monitorChanges: false)
         let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
-                           indexSource: WatcherIndexSource(engines: [SessionEngine(source: source, database: db)]),
+                           engines: [SessionEngine(source: source, database: db)],
                            database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
                            hostRegistry: Fixture.hostsWithoutFolderEvidence())
         app.start()
@@ -72,7 +72,7 @@ final class UnstartedSessionTests: XCTestCase {
         let app = model(db, storeRoot: notADirectory)
         let tab = app.openSessions.newSession(agent: .claude, projectPath: "/p")
         let id = try XCTUnwrap(tab.sessionID)
-        app.receiveEngineSnapshot(EngineSnapshot(generation: .max, resolutions: [id: .awaitingCreation], summaries: [:]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: .max, resolutions: [id: .awaitingCreation]))
         app.openSessions.closeTab(tab.id)
         await quiesce()
         XCTAssertNotNil(try db.sessionState(id))

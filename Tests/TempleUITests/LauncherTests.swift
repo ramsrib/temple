@@ -16,7 +16,7 @@ final class LauncherTests: XCTestCase {
 
     @MainActor
     func testTheLocalLauncherBuildsNewAndResumeArgvFromIntent() throws {
-        let launcher = LocalHostLauncher(binaryPath: { "/bin/" + $0.binaryName })
+        let launcher = LocalHostLauncher(binaryPath: { "/bin/" + $0.binaryName }, folderEvidence: { _ in .unknown })
         let new = try launcher.prepare(AgentLaunchSpec(agent: .claude, mode: .new(sessionID: "uuid-1"), directory: "/p/a", host: .local))
         XCTAssertEqual(new.displayArgv, ["/bin/claude", "--session-id", "uuid-1"])
         let codex = try launcher.prepare(AgentLaunchSpec(agent: .codex, mode: .new(sessionID: nil), directory: "/p/b", host: .local))

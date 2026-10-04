@@ -39,29 +39,42 @@ public enum SessionLauncher {
 
 /// Adopts a freshly-launched Codex session's real id (ADR-008 reconcile).
 ///
-/// `WatcherCodexReconciler` supplies the real watcher-backed implementation;
-/// the protocol keeps launch-model tests deterministic.
+/// `CodexAdopter` asks the owning host's source; the protocol keeps
+/// launch-model tests deterministic.
 @MainActor
 public protocol CodexAdopting: AnyObject {
     /// Begin watching for the rollout file of a Codex session just started in
-    /// `projectPath`; call `adopt` with the discovered id when found.
-    func reconcile(projectPath: String, startedAt: Date, adopt: @escaping (String) -> Void)
-    func reconcile(host: HostID, projectPath: String, startedAt: Date, adopt: @escaping (String) -> Void)
-    func transcriptPath(for sessionID: String) -> URL?
+    /// `projectPath` on `host`; call `adopt` with the discovered id and the
+    /// rollout it was found in.
+    func reconcile(host: HostID, projectPath: String, startedAt: Date,
+                   adopt: @escaping (_ id: String, _ locator: TranscriptLocator?) -> Void)
 }
 
-public extension CodexAdopting {
-    func reconcile(host: HostID, projectPath: String, startedAt: Date, adopt: @escaping (String) -> Void) {
-        if host.isLocal { reconcile(projectPath: projectPath, startedAt: startedAt, adopt: adopt) }
+/// Adoption through the owning host's source (`HostSessionSource.adopt`):
+/// the one rollout header in the launch window for that folder, or nothing.
+@MainActor
+public final class CodexAdopter: CodexAdopting {
+    private let registry: HostRegistry
+    private let window: TimeInterval
+    public init(registry: HostRegistry, window: TimeInterval = 5) {
+        self.registry = registry; self.window = window
     }
-    func transcriptPath(for sessionID: String) -> URL? { nil }
+    public func reconcile(host: HostID, projectPath: String, startedAt: Date,
+                          adopt: @escaping (String, TranscriptLocator?) -> Void) {
+        guard let source = registry.entry(for: host)?.source else { return }
+        let request = AdoptionRequest(directory: projectPath, startedAt: startedAt, window: window)
+        Task {
+            let result = try? await source.adopt(request)
+            guard !Task.isCancelled, case .adopted(let id, let locator) = result, locator.host == host else { return }
+            adopt(id, locator)
+        }
+    }
 }
 
 /// No-op implementation for tests that do not exercise adoption.
 @MainActor
 public final class NoopCodexReconciler: CodexAdopting {
     public init() {}
-    public func reconcile(projectPath: String, startedAt: Date, adopt: @escaping (String) -> Void) {
-        // Intentionally does nothing until Track C's matcher is wired in.
-    }
+    public func reconcile(host: HostID, projectPath: String, startedAt: Date,
+                          adopt: @escaping (String, TranscriptLocator?) -> Void) {}
 }

@@ -82,7 +82,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     /// Transitional lookup: legacy callers, restore and reopen prefer the durable row.
     public var sessionRow: (String) -> Session? = { _ in nil }
-    private let directoryEvidence: (ProjectKey) -> DirectoryEvidence
+    /// The owning host's folder evidence, asked after an agent exits: a
+    /// folder deleted while it ran gets its own line. (Before a spawn, the
+    /// launcher's `prepare` is what proves a folder gone.)
+    private let directoryEvidence: (ProjectKey) async -> DirectoryEvidence
     private let launcherForHost: (HostID) -> (any HostLauncher)?
 
     /// Resolution updates retain the diagnosis interest after an early exit.
@@ -97,7 +100,16 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     }
 
     private func diagnoseExit(_ tab: SessionTab) {
-        tab.missingWorkingDirectory = directoryEvidence(tab.projectKey) == .missing ? tab.projectPath : nil
+        let key = tab.projectKey, path = tab.projectPath, evidence = directoryEvidence
+        let exited = tab.surface.map(ObjectIdentifier.init)
+        Task { @MainActor [weak tab] in
+            let result = await evidence(key)
+            // Only for the exit it was asked about: a relaunch has another
+            // surface, and its own exit asks again.
+            guard let tab, case .exited = tab.activity, tab.projectPath == path,
+                  tab.surface.map(ObjectIdentifier.init) == exited else { return }
+            tab.missingWorkingDirectory = result == .missing ? path : nil
+        }
         guard tab.isResume, let sid = tab.sessionID else { return }
         if let known = sessionKnown(sid) { tab.resumeTargetMissing = !known }
         else { awaitingExitDiagnosis.insert(tab.id) }
@@ -118,16 +130,16 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                 defaultAgent: @escaping () -> Agent = { .claude },
                 now: @escaping () -> Date = Date.init,
                 launcherForHost: ((HostID) -> (any HostLauncher)?)? = nil,
-                directoryEvidence: ((ProjectKey) -> DirectoryEvidence)? = nil) {
+                directoryEvidence: ((ProjectKey) async -> DirectoryEvidence)? = nil) {
         if let launcherForHost {
             self.launcherForHost = launcherForHost
         } else {
             // The registry owns launchers in the app (AppModel passes them in).
-            let local = LocalHostLauncher()
+            // Without it nothing here can say a folder is gone.
+            let local = LocalHostLauncher(folderEvidence: { _ in .unknown })
             self.launcherForHost = { $0.isLocal ? local : nil }
         }
         // The host registry owns directory evidence (AppModel passes it in).
-        // Without it, nothing here can say a folder is gone.
         self.directoryEvidence = directoryEvidence ?? { _ in .unknown }
         self.surfaceFactory = surfaceFactory
         self.appearanceProvider = appearanceProvider
@@ -291,9 +303,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         }
         if spec.isProvisional {
             // Codex: adopt the real id once its rollout file appears (ADR-008).
-            reconciler.reconcile(host: tab.host, projectPath: projectPath, startedAt: Date()) { [weak self, weak tab] id in
+            reconciler.reconcile(host: tab.host, projectPath: projectPath, startedAt: Date()) { [weak self, weak tab] id, locator in
                 guard let self, let tab else { return }
-                self.adopt(sessionID: id, for: tab.id)
+                self.adopt(sessionID: id, for: tab.id, locator: locator)
             }
         }
         activate(tab)
@@ -311,12 +323,12 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     }
 
     /// Codex reconcile seam (ADR-008): rebind a provisional tab to its real id.
-    public func adopt(sessionID: String, for tabID: SessionTab.ID) {
+    public func adopt(sessionID: String, for tabID: SessionTab.ID, locator: TranscriptLocator? = nil) {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
         // Join before binding: an id Temple already has on another host is
         // never bound to this tab, which stays provisional.
         let open = SessionOpen(id: sessionID, host: tab.host, via: .created, agent: .codex,
-                               locator: reconciler.transcriptPath(for: sessionID).map(TranscriptLocator.init(localURL:)))
+                               locator: locator?.host == tab.host ? locator : nil)
         if let conflict = openedHandler?(open).conflict {
             TempleUILog.launch.notice("adoption refused for \(sessionID, privacy: .public): \(conflict.message, privacy: .public)")
             return
@@ -426,15 +438,6 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         guard !tab.projectPath.isEmpty else {
             tab.launchPreparationError = Self.unknownDirectoryMessage
             tab.activity = .exited(status: -1)
-            return
-        }
-        // A gone folder is not started anywhere else: the terminal would keep
-        // Temple's own cwd and the agent would run, and record, in the wrong
-        // place. Clicking the chip again re-checks, so a restored folder works.
-        // (The owning host's synchronous evidence; a launcher that proves it
-        // in `prepare` is handled the same way below.)
-        guard directoryEvidence(tab.projectKey) != .missing else {
-            showMissingFolder(tab, tab.projectPath)
             return
         }
         let spec = AgentLaunchSpec(agent: tab.agent,

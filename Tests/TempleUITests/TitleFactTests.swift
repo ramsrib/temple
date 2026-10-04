@@ -33,7 +33,9 @@ final class TitleFactTests: XCTestCase {
         let claude = summary("claude", agent: .claude, prompt: "First prompt", recorded: "Recorded summary")
         let codex = summary("codex", agent: .codex, shared: "Named thread")
         for item in [claude, codex] { overlay.join(item.id, via: .opened, agent: item.agent) }
-        for item in [claude, codex] { overlay.fillMissingCoreFields(from: item) }
+        overlay.applyFacts(Dictionary(uniqueKeysWithValues: try [claude, codex].map {
+            ($0.id, try XCTUnwrap(AuthorizedFacts.current($0, in: db)))
+        }))
         XCTAssertEqual(overlay.rows["claude"]?.title, claude.catalogTitle)
         XCTAssertEqual(overlay.rows["codex"]?.title, "Named thread")
 

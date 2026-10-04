@@ -95,7 +95,10 @@ final class LaunchWrapperShellTests: XCTestCase {
         let folder = root.appendingPathComponent("gone")
         let out = root.appendingPathComponent("out").path
         let probe = try probe()
-        let launcher = LocalHostLauncher(binaryPath: { _ in probe.path }, markerDirectory: root.appendingPathComponent("markers"))
+        // The folder goes in the gap between `prepare`'s own check and the
+        // exec (unknown here, so `prepare` proceeds): the wrapper refuses.
+        let launcher = LocalHostLauncher(binaryPath: { _ in probe.path }, folderEvidence: { _ in .unknown },
+                                         markerDirectory: root.appendingPathComponent("markers"))
         let launch = try launcher.prepare(AgentLaunchSpec(agent: .claude, mode: .resume(sessionID: "s"), directory: folder.path, host: .local))
         let status = try run(launch, ghosttyCwd: root.path, extraEnv: ["PROBE_OUT": out])
         XCTAssertEqual(status, 1)
@@ -127,7 +130,9 @@ final class LaunchWrapperShellTests: XCTestCase {
         let blocker = root.appendingPathComponent("not-a-directory")
         try Data().write(to: blocker)
         let probe = try probe()
+        // Folder evidence unknown, as for a folder that goes after `prepare`.
         let launcher = LocalHostLauncher(binaryPath: { _ in probe.path }, extraArgs: { _ in ["it's", "two words"] },
+                                         folderEvidence: { _ in .unknown },
                                          markerDirectory: blocker.appendingPathComponent("markers"))
         let folder = root.appendingPathComponent("here it is")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

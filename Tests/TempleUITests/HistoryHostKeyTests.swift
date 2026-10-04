@@ -484,11 +484,13 @@ private final class SlowCatalogSource: HostSessionSource, @unchecked Sendable {
     private let gate: FakeGate
     init(host: HostID, gate: FakeGate) { self.host = host; self.gate = gate }
 
-    func resolve(_ requests: [ResolutionRequest]) async throws -> ResolutionBatch {
-        ResolutionBatch(generation: 0, results: [:])
+    func locate(_ requests: [LocateRequest]) async throws -> LocateResult {
+        LocateResult(coverage: 1, candidates: [:], complete: [], sharedRevision: [:])
     }
-    func directoryEvidence(_ path: String) -> DirectoryEvidence { .unknown }
-    func release(_ ids: [String]) {}
+    func read(_ locator: TranscriptLocator, agent: Agent, expecting id: String, facts: Bool) async throws -> TranscriptRead {
+        throw TranscriptReadError.missing
+    }
+    func directoryEvidence(_ path: String) async -> DirectoryEvidence { .unknown }
     func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult { .incomplete }
     func changes() -> AsyncThrowingStream<SourceChange, Error> { AsyncThrowingStream { _ in } }
     func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error> {

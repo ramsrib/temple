@@ -11,7 +11,7 @@ let limit = CommandLine.arguments.contains("--all") ? Int.max : 8
 let includeNoise = CommandLine.arguments.contains("--all")
 
 if CommandLine.arguments.contains("--help") {
-    print("Usage: templectl [--disk] [--watch] [--all] [--search <term>] [--import-all] [--metrics]\n  --metrics  report watch parses, publications, CPU seconds and open descriptors once per second\n  --disk  browse the transcript catalog instead of Temple rows\n  --all  include noise sessions and do not cap sessions per project\n  --import-all  make every indexed session a Temple session (demo state dirs only)")
+    print("Usage: templectl [--disk] [--watch] [--all] [--search <term>] [--import-all] [--init-db] [--metrics]\n  --metrics  report watch parses, publications, CPU seconds and open descriptors once per second\n  --disk  browse the transcript catalog instead of Temple rows\n  --all  include noise sessions and do not cap sessions per project\n  --import-all  make every indexed session a Temple session (demo state dirs only)\n  --init-db  create or migrate the database and exit (redirected state dirs only)")
     exit(0)
 }
 
@@ -51,6 +51,18 @@ if CommandLine.arguments.contains("--import-all") {
         imported += 1
     }
     print("imported \(imported) sessions")
+    exit(0)
+}
+
+// Fixture scripts install the production schema this way before seeding
+// rows: it opens (creating and migrating) the database and does nothing else.
+if CommandLine.arguments.contains("--init-db") {
+    guard TempleState.isRedirected else {
+        FileHandle.standardError.write(Data("templectl: --init-db needs TEMPLE_STATE_DIR set to a directory other than the real state dir\n".utf8))
+        exit(1)
+    }
+    _ = try openDatabase()
+    print("initialized \(TempleDB.defaultPath().path)")
     exit(0)
 }
 
@@ -147,8 +159,13 @@ if CommandLine.arguments.contains("--disk") {
         fflush(stdout)
     }
     let watcher = SessionEngine(source: LocalSessionSource(monitorChanges: !disableWatcher), database: database)
+    // Writable (a redirected state dir): the engine's authorized facts are
+    // persisted exactly as the app persists them — only while the latest
+    // snapshot still carries them, retried with backoff, revoked otherwise.
+    // Read-only: identity reads only, and nothing is ever written.
+    let committer: FactCommitter? = database.isReadOnly ? nil : FactCommitter(database: database)
     let snapshots = watcher.snapshots()
-    let engineUpdates = watcher.start()
+    await watcher.start()
     let metricsTask = wantsMetrics ? Task {
         while !Task.isCancelled {
             let counters = watcher.metrics
@@ -163,6 +180,8 @@ if CommandLine.arguments.contains("--disk") {
             let sample: [String: Any] = ["event": "metrics", "parses": counters.parses,
                 "verifications": counters.verifications, "publications": counters.publications,
                 "observations": counters.observations, "enumerations": counters.enumerations,
+                "locates": counters.locates, "reads": counters.reads, "fact_reads": counters.factReads, "wider_reads": counters.widerReads,
+                "shared_transfers": counters.sharedTransfers, "retries": counters.retries,
                 "monitoring": watcher.isMonitoring,
                 "cpu_seconds": userCPU + systemCPU,
                 "wall_seconds": Date().timeIntervalSince(watchStart),
@@ -173,33 +192,25 @@ if CommandLine.arguments.contains("--disk") {
             do { try await Task.sleep(for: .seconds(1)) } catch { break }
         }
     } : nil
-    defer { metricsTask?.cancel(); watcher.stop(); withExtendedLifetime(engineUpdates) {} }
     var firstPublication = true
-    for await snapshot in snapshots {
+    func show(_ snapshot: EngineSnapshot) throws {
         if firstPublication, wantsMetrics {
             print("first engine publication: elapsed_seconds=\(Date().timeIntervalSince(watchStart))")
             firstPublication = false
         }
-        if !database.isReadOnly {
-            for summary in snapshot.summaries.values {
-                let core = SessionCore(filling: summary)
-                _ = try database.fillCoreFields(sessionID: summary.id, host: core.host,
-                    agent: summary.agent, directory: core.directory, title: core.title,
-                    lastActiveAt: core.lastActiveAt)
-            }
-        }
         let states = try database.sessionStates()
-        watcher.setEnrichmentWanted(Dictionary(uniqueKeysWithValues: states.compactMap { state in
-            var missing = Set<SessionCoreField>()
-            if state.agent == nil { missing.insert(.agent) }; if state.directory == nil { missing.insert(.directory) }
-            if state.title == nil { missing.insert(.title) }; if state.lastActiveAt == nil { missing.insert(.lastActiveAt) }
-            return missing.isEmpty ? nil : (state.id, missing)
-        }))
         let rows = states.map { Session(state: $0, resolution: snapshot.resolutions[$0.id]) }
             .sorted { $0.sortDate == $1.sortDate ? $0.id < $1.id : $0.sortDate > $1.sortDate }
         printRows(searchQuery.map { SessionRowSearch.rank(rows, query: $0) } ?? rows, compact: true)
         fflush(stdout)
     }
+    if let committer {
+        try await committer.consume(snapshots, onSnapshot: show)
+    } else {
+        for await snapshot in snapshots { try show(snapshot) }
+    }
+    metricsTask?.cancel()
+    await watcher.stop()
 } else {
     let database = try openDatabase(readOnly: !TempleState.isRedirected)
     let rows = try database.sessionStates().map { Session(state: $0) }

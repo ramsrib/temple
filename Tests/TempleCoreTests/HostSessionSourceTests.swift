@@ -2,179 +2,142 @@ import XCTest
 @testable import TempleCore
 import TempleTestSupport
 
+/// Which members the engine works on, and when — against a scripted host.
 final class HostSessionSourceTests: XCTestCase {
-    private func wait(_ condition: () -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(3)
-        while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertTrue(condition())
+    private let remote = HostID(rawValue: "fake")
+    private var engines: [SessionEngine] = []
+
+    override func tearDown() async throws {
+        for engine in engines { await engine.stop() }
+        engines.removeAll()
+        try await super.tearDown()
     }
 
-    func testNewCoverageInvalidatesOtherMembersInEitherDeliveryOrder() async throws {
-        for batchFirst in [false, true] {
-            let source = ResolvingFakeSource(host: .local)
-            let engine = SessionEngine(source: source, members: ["a", "b"])
-            let stream = engine.start()
-            defer { engine.stop(); withExtendedLifetime(stream) {} }
-            try await wait { engine.resolution(for: "b") == .confirmedAbsent }
-            source.gateNext()
-            engine.requestResolution("a")
-            try await wait { source.hasPending }
-            if !batchFirst {
-                source.send(.coverageReset(coverage: 2))
-                try await wait { engine.publishedSnapshot?.generation == 2 }
-            }
-            source.gateNext()
-            source.resumePending(ResolutionBatch(generation: 2, results: ["a": .absent]))
-            try await wait { source.hasPending && engine.publishedSnapshot?.generation == 2 }
-            XCTAssertEqual(engine.resolution(for: "b"), .resolving)
-            if batchFirst { source.send(.coverageReset(coverage: 2)) }
-            source.resumePending(ResolutionBatch(generation: 2, results: ["a": .absent, "b": .unreadable]))
-            try await wait { engine.resolution(for: "b") == .unreadable }
-            XCTAssertEqual(engine.publishedSnapshot?.generation, 2)
+    private func wait(_ message: String = "condition", _ condition: () async -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while await !condition() {
+            guard Date() < deadline else { XCTFail("timed out: \(message)"); return }
+            try await Task.sleep(for: .milliseconds(10))
         }
     }
 
-    func testQueuedResolveCannotRegisterALeftMember() async throws {
-        let source = ResolvingFakeSource(host: .local)
-        let engine = SessionEngine(source: source, members: ["a", "b"])
-        let stream = engine.start()
-        defer { engine.stop(); withExtendedLifetime(stream) {} }
-        try await wait { engine.resolution(for: "b") == .confirmedAbsent }
-        source.gateNext()
-        engine.requestResolution("a")
-        try await wait { source.hasPending }
-        engine.requestResolution("b")
-        engine.forgetMember("b")
-        try await wait { engine.resolution(for: "b") == nil }
-        source.resumePending(ResolutionBatch(generation: 1, results: ["a": .absent]))
-        engine.requestResolution("a")
-        try await wait { source.callCount >= 3 }
-        XCTAssertEqual(source.callCount, 3)
-        XCTAssertEqual(source.registeredIDs, ["a"])
+    private func engine(_ source: FakeHostSource, _ db: TempleDB) -> SessionEngine {
+        let engine = SessionEngine(source: source, database: db)
+        engines.append(engine)
+        return engine
     }
 
-    func testInFlightRegistrationIsReleasedAfterLeave() async throws {
-        let source = ResolvingFakeSource(host: .local)
-        let engine = SessionEngine(source: source, members: ["a", "b"])
-        let stream = engine.start()
-        defer { engine.stop(); withExtendedLifetime(stream) {} }
-        try await wait { engine.resolution(for: "b") == .confirmedAbsent }
-        source.gateNext()
-        engine.requestResolution("a")
-        try await wait { source.hasPending }
-        engine.forgetMember("a")
-        try await wait { engine.resolution(for: "a") == nil }
-        // This fake registers again at completion, after leave's first release.
-        source.resumePending(ResolutionBatch(generation: 1, results: ["a": .absent]))
-        engine.requestResolution("b")
-        try await wait { source.callCount >= 3 }
-        XCTAssertEqual(source.registeredIDs, ["b"])
-    }
-
-    func testTransportFailureNeverProvesAbsence() async throws {
-        let source = ResolvingFakeSource(host: .local)
-        source.fail = true
-        let engine = SessionEngine(source: source, members: ["member"])
-        let stream = engine.start()
-        defer { engine.stop(); withExtendedLifetime(stream) {} }
-        try await wait { engine.publishedSnapshot != nil }
-        XCTAssertEqual(engine.resolution(for: "member"), .incomplete)
-        XCTAssertNil(engine.publishedSnapshot?.summaries["member"])
-        source.fail = false
-        engine.requestResolution("member")
-        try await wait { engine.resolution(for: "member") == .confirmedAbsent }
-    }
+    private func path(_ id: String) -> String { "/home/me/.agent-a/projects/-w/\(id).jsonl" }
+    private func data(_ id: String) -> Data { Data(#"{"type":"user","sessionId":"\#(id)","cwd":"/w","message":{"content":"hi"}}"#.utf8) }
 
     func testEngineResolvesOnlyItsHostsRows() async throws {
         let db = try TempleDB.inMemory()
-        let remote = HostID(rawValue: "fake")
         try db.join(sessionID: "local", via: .imported, core: SessionCore(host: .local))
         try db.join(sessionID: "remote", via: .imported, core: SessionCore(host: remote))
-        let source = ResolvingFakeSource(host: remote)
-        let engine = SessionEngine(source: source, database: db)
-        let stream = engine.start()
-        defer { engine.stop(); withExtendedLifetime(stream) {} }
-        try await wait { engine.resolution(for: "remote") != nil }
+        let source = FakeHostSource(host: remote)
+        let engine = engine(source, db)
+        await engine.start()
+        try await wait { engine.resolution(for: "remote") != nil && source.counters.locates >= 1 }
         XCTAssertNil(engine.resolution(for: "local"))
-        XCTAssertEqual(source.requestedIDs, ["remote"])
+        XCTAssertEqual(source.counters.locatedIDs.first, ["remote"])
         try db.join(sessionID: "next-local", via: .created, core: SessionCore(host: .local))
         try db.join(sessionID: "next-remote", via: .imported, core: SessionCore(host: remote))
         try await wait { engine.resolution(for: "next-remote") != nil }
-        XCTAssertEqual(source.requestedIDs, ["remote", "next-remote"])
+        XCTAssertFalse(source.counters.locatedIDs.joined().contains("next-local"))
+        XCTAssertNil(engine.resolution(for: "next-local"))
         _ = try db.leave(sessionID: "next-remote", host: remote)
         try await wait { engine.resolution(for: "next-remote") == nil }
-        XCTAssertEqual(source.releasedIDs, ["next-remote"])
     }
 
-    func testAStaleGenerationBatchIsDropped() async throws {
-        let source = ResolvingFakeSource(host: .local)
-        let engine = SessionEngine(source: source, members: ["member"])
-        let stream = engine.start()
-        defer { engine.stop(); withExtendedLifetime(stream) {} }
-        try await wait { engine.publishedSnapshot?.generation == 1 }
-        source.gateNext()
-        engine.requestResolution("member")
-        try await wait { source.hasPending }
-        source.send(.coverageReset(coverage: 2))
-        try await wait { engine.publishedSnapshot?.generation == 2 }
-        // A reply from the old coverage cannot replace the member's verdict.
-        source.resumePending(ResolutionBatch(generation: 1, results: ["member": .mismatch]))
-        try await wait { engine.resolution(for: "member") == .confirmedAbsent }
-        XCTAssertEqual(engine.publishedSnapshot?.generation, 2)
+    /// New coverage, learned from a listing or from the event (either first):
+    /// every other member is located again, and only once.
+    func testNewCoverageRelocatesOtherMembersInEitherDeliveryOrder() async throws {
+        for eventFirst in [false, true] {
+            let db = try TempleDB.inMemory()
+            let source = FakeHostSource(host: remote)
+            for id in ["a", "b"] {
+                source.write(path(id), agent: .claude, data: data(id))
+                try db.join(sessionID: id, via: .imported, agent: .claude,
+                            locator: TranscriptLocator(host: remote, path: path(id)),
+                            core: SessionCore(host: remote, directory: "/w", title: "T", lastActiveAt: Date()))
+            }
+            let engine = engine(source, db)
+            await engine.start()
+            try await wait { engine.resolution(for: "b")?.isLoadedForTest == true }
+            let gate = FakeGate()
+            source.locateGate = gate
+            await engine.requestResolution("a")
+            try await wait { gate.arrivals == 1 }
+            source.dropEvents()
+            if eventFirst { try await wait { await engine.currentCoverage == 2 } }
+            source.locateGate = nil
+            gate.open()
+            try await wait("both relocated") { source.counters.locatedIDs.dropFirst().joined().contains("b") }
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertEqual(source.counters.locatedIDs.dropFirst().joined().filter { $0 == "b" }.count, 1, "eventFirst: \(eventFirst)")
+            let coverage = await engine.currentCoverage
+            XCTAssertEqual(coverage, 2)
+            await engine.stop()
+        }
     }
-}
 
-extension HostSessionSourceTests {
-    /// Shared session titles can complete only a Codex member still missing
-    /// one; re-resolving every member on every Codex prompt bought nothing.
-    func testSharedTitleChangesReResolveOnlyUntitledCodexMembers() async throws {
+    func testTransportFailureNeverProvesAbsence() async throws {
         let db = try TempleDB.inMemory()
-        try db.join(sessionID: "codex-untitled", via: .imported, agent: .codex)
-        try db.join(sessionID: "codex-titled", via: .imported, agent: .codex, core: SessionCore(title: "Named"))
-        try db.join(sessionID: "claude-untitled", via: .imported, agent: .claude)
-        let source = ResolvingFakeSource(host: .local)
-        let engine = SessionEngine(source: source, database: db)
-        let stream = engine.start()
-        defer { engine.stop(); withExtendedLifetime(stream) {} }
-        try await wait { engine.resolution(for: "codex-titled") == .confirmedAbsent }
-        let calls = source.callCount
-        source.send(.sharedFacts(.codex, revision: 1))
-        try await wait { source.callCount > calls }
-        XCTAssertEqual(source.lastBatch, ["codex-untitled"])
+        try db.join(sessionID: "member", via: .imported, agent: .claude, core: SessionCore(host: remote))
+        let source = FakeHostSource(host: remote)
+        source.breakTransport()
+        let engine = engine(source, db)
+        await engine.start()
+        try await wait { engine.resolution(for: "member") == .incomplete }
+        XCTAssertTrue(engine.latestSnapshot?.facts.isEmpty ?? false)
+        source.breakTransport(false)
+        await engine.requestResolution("member")
+        try await wait { engine.resolution(for: "member") == .confirmedAbsent }
     }
 
-    /// The primitive change stream reaches the current engine too: a raw
-    /// observation of a member's file resolves that member again, and only it.
-    func testRawTranscriptEventsResolveOnlyTheMembersTheyName() async throws {
-        let source = ResolvingFakeSource(host: .local)
-        let engine = SessionEngine(source: source, members: ["member", "other"])
-        let stream = engine.start()
-        defer { engine.stop(); withExtendedLifetime(stream) {} }
+    /// Shared session titles can complete only a Codex (or agent-less)
+    /// member still missing one, and only one with a transcript to read them
+    /// against; nobody else is located again for them.
+    func testSharedTitleChangesRelocateOnlyUntitledCodexMembersWithATranscript() async throws {
+        let db = try TempleDB.inMemory()
+        let source = FakeHostSource(host: remote)
+        func rollout(_ id: String) -> String { "/home/me/.agent-b/sessions/2026/10/01/rollout-2026-10-01T10-00-00-\(id).jsonl" }
+        let untitled = "00000000-0000-0000-0000-00000000000a", titled = "00000000-0000-0000-0000-00000000000b"
+        let absent = "00000000-0000-0000-0000-00000000000c"
+        for id in [untitled, titled] {
+            source.write(rollout(id), agent: .codex, data: Data(#"{"type":"session_meta","payload":{"id":"\#(id)","cwd":"/w"}}"#.utf8))
+        }
+        let core = SessionCore(host: remote, directory: "/w", lastActiveAt: Date())
+        try db.join(sessionID: untitled, via: .imported, agent: .codex, locator: TranscriptLocator(host: remote, path: rollout(untitled)), core: core)
+        try db.join(sessionID: titled, via: .imported, agent: .codex, locator: TranscriptLocator(host: remote, path: rollout(titled)),
+                    core: SessionCore(host: remote, directory: "/w", title: "Named", lastActiveAt: Date()))
+        try db.join(sessionID: absent, via: .imported, agent: .codex, core: core)
+        try db.join(sessionID: "claude-untitled", via: .imported, agent: .claude, core: SessionCore(host: remote))
+        let engine = engine(source, db)
+        await engine.start()
+        try await wait { engine.resolution(for: absent) == .confirmedAbsent && engine.resolution(for: untitled)?.isLoadedForTest == true }
+        try await Task.sleep(for: .milliseconds(50))
+        let calls = source.counters.locates
+        source.setShared(.codex, CodexFormat.historyInput, Data())
+        try await wait { source.counters.locates > calls }
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(source.counters.locatedIDs.dropFirst(calls).flatMap { $0 }, [untitled])
+    }
+
+    /// A raw observation of a member's file locates that member again, and only it.
+    func testRawTranscriptEventsLocateOnlyTheMembersTheyName() async throws {
+        let db = try TempleDB.inMemory()
+        for id in ["member", "other"] { try db.join(sessionID: id, via: .imported, agent: .claude, core: SessionCore(host: remote)) }
+        let source = FakeHostSource(host: remote)
+        let engine = engine(source, db)
+        await engine.start()
         try await wait { engine.resolution(for: "other") == .confirmedAbsent }
-        let calls = source.callCount
-        source.send(.transcripts(ids: ["member", "stranger"],
-                                 locators: [TranscriptLocator(host: .local, path: "/x/member.jsonl"), TranscriptLocator(host: .local, path: "/x/stranger.jsonl")]))
-        try await wait { source.callCount > calls }
-        XCTAssertEqual(source.lastBatch, ["member"])
-    }
-
-    /// A source that has not adopted the primitives says so, typed — never a crash.
-    func testUnadoptedPrimitivesThrowATypedUnsupportedError() async throws {
-        let source = ResolvingFakeSource(host: .local)
-        do {
-            _ = try await source.locate([LocateRequest(id: "x")])
-            XCTFail("expected unsupported")
-        } catch {
-            XCTAssertEqual(error as? HostSourceError, .unsupported("locate"))
-        }
-        do {
-            _ = try await source.read(TranscriptLocator(host: .local, path: "/x"), agent: .claude, expecting: "x", facts: false)
-            XCTFail("expected unsupported")
-        } catch {
-            XCTAssertEqual(error as? HostSourceError, .unsupported("read"))
-        }
-        let evidence: DirectoryEvidence = await source.directoryEvidence("/anywhere")
-        XCTAssertEqual(evidence, .unknown)
+        let calls = source.counters.locates
+        source.write(path("member"), agent: .claude, data: data("member"))
+        source.write(path("stranger"), agent: .claude, data: data("stranger"))
+        try await wait { source.counters.locates > calls }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(Set(source.counters.locatedIDs.dropFirst(calls).joined()), ["member"])
     }
 
     /// The traced database the cutover's no-stale-write tests count on.
@@ -189,54 +152,6 @@ extension HostSessionSourceTests {
     }
 }
 
-/// No local paths, stores or parser dependency: usable by engine and UI seam tests.
-final class ResolvingFakeSource: HostSessionSource, @unchecked Sendable {
-    let host: HostID
-    let capabilities: Set<HostCapability> = [.liveChanges, .catalog]
-    private let lock = NSLock()
-    var fail = false
-    private var generation: UInt64 = 1
-    private var ids: Set<String> = []
-    private var released: Set<String> = []
-    private var registered: Set<String> = []
-    private var calls = 0
-    var callCount: Int { lock.lock(); defer { lock.unlock() }; return calls }
-    private var batches: [[String]] = []
-    var lastBatch: [String] { lock.lock(); defer { lock.unlock() }; return batches.last ?? [] }
-    var registeredIDs: Set<String> { lock.lock(); defer { lock.unlock() }; return registered }
-    private var gated = false
-    private var pending: CheckedContinuation<ResolutionBatch, Error>?
-    private var continuation: AsyncThrowingStream<SourceChange, Error>.Continuation?
-    init(host: HostID) { self.host = host }
-    var requestedIDs: Set<String> { lock.lock(); defer { lock.unlock() }; return ids }
-    var releasedIDs: Set<String> { lock.lock(); defer { lock.unlock() }; return released }
-    var hasPending: Bool { lock.lock(); defer { lock.unlock() }; return pending != nil }
-    func gateNext() { lock.lock(); gated = true; lock.unlock() }
-    func resumePending(_ batch: ResolutionBatch) {
-        lock.lock(); let waiting = pending; pending = nil
-        generation = max(generation, batch.generation); registered.formUnion(batch.results.keys)
-        lock.unlock(); waiting?.resume(returning: batch)
-    }
-    func resolve(_ requests: [ResolutionRequest]) async throws -> ResolutionBatch {
-        try await withCheckedThrowingContinuation { waiting in
-            lock.lock(); calls += 1; ids.formUnion(requests.map(\.id)); registered.formUnion(requests.map(\.id))
-            batches.append(requests.map(\.id).sorted())
-            if gated { gated = false; pending = waiting; lock.unlock(); return }
-            let batch = ResolutionBatch(generation: generation,
-                results: Dictionary(uniqueKeysWithValues: requests.map { ($0.id, ResolutionResult.absent) }))
-            let failed = fail; lock.unlock()
-            if failed { waiting.resume(throwing: CocoaError(.fileReadUnknown)) }
-            else { waiting.resume(returning: batch) }
-        }
-    }
-    func release(_ ids: [String]) { lock.lock(); released.formUnion(ids); registered.subtract(ids); lock.unlock() }
-    func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error> { AsyncThrowingStream { $0.finish() } }
-    func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult { .none }
-    func changes() -> AsyncThrowingStream<SourceChange, Error> {
-        AsyncThrowingStream { lock.lock(); continuation = $0; lock.unlock() }
-    }
-    func send(_ change: SourceChange) {
-        lock.lock(); if case .coverageReset(coverage: let value) = change { generation = value }
-        let target = continuation; lock.unlock(); target?.yield(change)
-    }
+extension MemberResolution {
+    var isLoadedForTest: Bool { if case .loaded = self { true } else { false } }
 }

@@ -3,12 +3,34 @@ import CoreServices
 @testable import TempleCore
 
 final class WatcherTests: XCTestCase {
+    private var started: [SessionEngine] = []
+
+    override func tearDown() async throws {
+        for engine in started { await engine.stop() }
+        started.removeAll()
+        try await super.tearDown()
+    }
+
+    /// Bare member rows want every field, so loaded members carry their
+    /// parsed facts in each snapshot (nothing persists them here).
+    private func engine(_ source: LocalSessionSource, members: Set<String>) throws -> SessionEngine {
+        let db = try TempleDB.inMemory()
+        for id in members.sorted() { try db.join(sessionID: id, via: .imported) }
+        let engine = SessionEngine(source: source, database: db)
+        started.append(engine)
+        return engine
+    }
+
+    /// The first snapshot, and the source observing (it starts on the
+    /// engine's subscription, which the first publication can precede).
     private func waitForInitialPublication(_ watcher: SessionEngine) async throws {
         let deadline = Date().addingTimeInterval(3)
-        while watcher.publishedSnapshot == nil, Date() < deadline {
+        while watcher.latestSnapshot == nil || watcher.metrics.locates == 0, Date() < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertNotNil(watcher.publishedSnapshot)
+        XCTAssertNotNil(watcher.latestSnapshot)
+        let monitoring = Date().addingTimeInterval(2)
+        while !watcher.isMonitoring, Date() < monitoring { try await Task.sleep(for: .milliseconds(10)) }
     }
 
     func testWatcherYieldsUpdatedIndexAfterNewSessionFile() async throws { try await exercise0(injectEvents: false) }
@@ -21,10 +43,10 @@ final class WatcherTests: XCTestCase {
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.1), members: ["new-session"])
+        let watcher = try engine(LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.1), members: ["new-session"])
         let received = expectation(description: "updated index")
-        let stream = watcher.start()
-        defer { watcher.stop() }
+        let stream = watcher.snapshots()
+        await watcher.start()
         try await waitForInitialPublication(watcher)
         try XCTSkipIf(!injectEvents && !watcher.isMonitoring, "FSEvents service unavailable in this execution environment")
         let task = Task {
@@ -44,7 +66,6 @@ final class WatcherTests: XCTestCase {
         }
 
         await fulfillment(of: [received], timeout: 5)
-        watcher.stop()
         task.cancel()
     }
 
@@ -67,11 +88,11 @@ final class WatcherTests: XCTestCase {
             )
         }
 
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.05), members: Set((0..<200).map { "session-\($0)" }))
+        let watcher = try engine(LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.05), members: Set((0..<200).map { "session-\($0)" }))
         let received = expectation(description: "incremental update")
         let target = project.appendingPathComponent("session-100.jsonl")
-        let stream = watcher.start()
-        defer { watcher.stop() }
+        let stream = watcher.snapshots()
+        await watcher.start()
         try await waitForInitialPublication(watcher)
         try XCTSkipIf(!injectEvents && !watcher.isMonitoring, "FSEvents service unavailable in this execution environment")
         let task = Task {
@@ -96,7 +117,6 @@ final class WatcherTests: XCTestCase {
         }
 
         await fulfillment(of: [received], timeout: 2.0)
-        watcher.stop()
         task.cancel()
     }
 
@@ -114,11 +134,11 @@ final class WatcherTests: XCTestCase {
         let firstLine = #"{"sessionId":"streaming-session","type":"user","message":{"content":"hello"},"cwd":"/tmp/project","timestamp":"2026-01-01T00:00:00Z"}"#
         try firstLine.write(to: session, atomically: true, encoding: .utf8)
 
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.3), members: ["streaming-session"])
+        let watcher = try engine(LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.3), members: ["streaming-session"])
         let initial = expectation(description: "initial index")
         let updatedWhileAppending = expectation(description: "update before steady appends stop")
-        let stream = watcher.start()
-        defer { watcher.stop() }
+        let stream = watcher.snapshots()
+        await watcher.start()
         try await waitForInitialPublication(watcher)
         try XCTSkipIf(!injectEvents && !watcher.isMonitoring, "FSEvents service unavailable in this execution environment")
         let watchTask = Task {
@@ -151,7 +171,6 @@ final class WatcherTests: XCTestCase {
         await fulfillment(of: [updatedWhileAppending], timeout: 1.5)
         appendTask.cancel()
         _ = try? await appendTask.value
-        watcher.stop()
         watchTask.cancel()
     }
 
@@ -173,15 +192,20 @@ final class WatcherTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let file = project.appendingPathComponent("racy-session.jsonl")
-        let store = MidWriteRacingStore(
-            inner: ClaudeSessionStore(root: root),
-            racingFile: file,
-            lateLine: "\n" + #"{"sessionId":"racy-session","type":"user","message":{"content":"hello"},"cwd":"/tmp/tw-proj","timestamp":"2026-01-01T00:00:01Z"}"#)
-
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [store], debounceInterval: 0.05), members: ["racy-session"])
+        let lateLine = "\n" + #"{"sessionId":"racy-session","type":"user","message":{"content":"hello"},"cwd":"/tmp/tw-proj","timestamp":"2026-01-01T00:00:01Z"}"#
+        let source = LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.05)
+        // The CLI writes more of the file while the first read is in it:
+        // after its bytes, before its closing stat.
+        let once = Flag()
+        source.readPhaseHook = { phase, url in
+            guard phase == .bytesRead, url.lastPathComponent == file.lastPathComponent, once.setOnce(),
+                  let handle = try? FileHandle(forWritingTo: url) else { return }
+            handle.seekToEndOfFile(); handle.write(Data(lateLine.utf8)); try? handle.close()
+        }
+        let watcher = try engine(source, members: ["racy-session"])
         let corrected = expectation(description: "re-parsed with real cwd after mid-write race")
-        let stream = watcher.start()
-        defer { watcher.stop() }
+        let stream = watcher.snapshots()
+        await watcher.start()
         try await waitForInitialPublication(watcher)
         try XCTSkipIf(!injectEvents && !watcher.isMonitoring, "FSEvents service unavailable in this execution environment")
         let task = Task {
@@ -202,43 +226,6 @@ final class WatcherTests: XCTestCase {
         }
 
         await fulfillment(of: [corrected], timeout: 5)
-        watcher.stop()
         task.cancel()
-    }
-}
-
-/// Simulates the CLI writing more of the session file while the watcher is
-/// mid-parse: the first `loadSession` for the racing file appends the late
-/// line after reading, then returns the stale (preamble-only) parse.
-private final class MidWriteRacingStore: IncrementalSessionStore, @unchecked Sendable {
-    private let inner: ClaudeSessionStore
-    private let racingFile: URL
-    private let lateLine: String
-    private var raced = false
-
-    init(inner: ClaudeSessionStore, racingFile: URL, lateLine: String) {
-        self.inner = inner
-        self.racingFile = racingFile
-        self.lateLine = lateLine
-    }
-
-    var agent: Agent { inner.agent }
-    var watchedURLs: [URL] { inner.watchedURLs }
-    var sharedFactURLs: [URL] { inner.sharedFactURLs }
-    func loadSummaries() -> [TranscriptSummary] { inner.loadSummaries() }
-    func sessionFileURLs() -> [URL] { inner.sessionFileURLs() }
-
-    func loadSummary(at fileURL: URL) -> TranscriptSummary? {
-        let stale = inner.loadSummary(at: fileURL)
-        // Compare by name: the enumerated URL may carry the resolved
-        // /private/var prefix while the fixture URL has /var (tmp symlink).
-        if !raced, fileURL.lastPathComponent == racingFile.lastPathComponent,
-           let handle = try? FileHandle(forWritingTo: racingFile) {
-            raced = true
-            handle.seekToEndOfFile()
-            handle.write(Data(lateLine.utf8))
-            try? handle.close()
-        }
-        return stale
     }
 }

@@ -4,24 +4,16 @@ public enum HostCapability: Hashable, Sendable {
     case liveChanges, revealInFinder, catalog
 }
 
-/// Transcript operations for one host. Failures never prove absence.
-///
-/// Two generations live here until the engine cutover: the semantic
-/// `resolve`/`release` the current engine drives, and the primitives the
-/// next one will — `locate` (listing + stat, no identity reads), `read` (one
-/// bounded read: identity, facts when asked, the post-read signature), the
-/// async `directoryEvidence`, `changes`, `catalog` and `adopt`. The agent
-/// formats are not a source's business: they are `TempleCore/Formats`, the
-/// same for every host. A source that has not adopted a primitive throws
-/// `HostSourceError.unsupported` from it.
+/// Transcript operations for one host: primitives only. Failures never
+/// prove absence. `locate` lists and stats (no identity reads), `read` is
+/// one bounded read (identity, facts when asked, the post-read signature),
+/// and `changes`, `catalog`, `adopt` and `directoryEvidence` complete the
+/// seam. The state machine that drives them is `SessionEngine`, identical
+/// for every host; the agent formats are `TempleCore/Formats`, the same for
+/// every host too.
 public protocol HostSessionSource: Sendable {
     var host: HostID { get }
     var capabilities: Set<HostCapability> { get }
-    func resolve(_ requests: [ResolutionRequest]) async throws -> ResolutionBatch
-    /// Host-owned directory evidence; unknown must not be treated as missing.
-    /// Synchronous, for the launch and History paths until the cutover.
-    func directoryEvidence(_ path: String) -> DirectoryEvidence
-    func release(_ ids: [String])
     func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error>
     func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult
     func changes() -> AsyncThrowingStream<SourceChange, Error>
@@ -35,13 +27,9 @@ public protocol HostSessionSource: Sendable {
     /// identity verified, facts from bounded bytes (at most one wider head)
     /// with the agent's shared inputs. Throws `TranscriptReadError`.
     func read(_ locator: TranscriptLocator, agent: Agent, expecting id: String, facts: Bool) async throws -> TranscriptRead
-    /// Owning-host directory evidence, by whatever transport the host uses.
+    /// Owning-host directory evidence, by whatever transport the host uses;
+    /// unknown must not be treated as missing.
     func directoryEvidence(_ path: String) async -> DirectoryEvidence
-}
-
-/// A primitive this source has not adopted yet.
-public enum HostSourceError: Error, Equatable {
-    case unsupported(String)
 }
 
 public struct LocateRequest: Sendable, Equatable {
@@ -128,36 +116,6 @@ public enum LocateError: Error, Equatable {
     case transport(String)
 }
 
-public struct ResolutionRequest: Sendable {
-    public let id: String
-    public let agent: Agent?
-    public let hint: TranscriptLocator?
-    public let wanted: Set<SessionCoreField>
-    public let awaitingCreation: Bool
-    /// Re-arms enrichment even when the transcript has not changed.
-    public let explicit: Bool
-    public init(id: String, agent: Agent? = nil, hint: TranscriptLocator? = nil,
-                wanted: Set<SessionCoreField> = [], awaitingCreation: Bool = false, explicit: Bool = false) {
-        self.id = id; self.agent = agent; self.hint = hint; self.wanted = wanted
-        self.awaitingCreation = awaitingCreation; self.explicit = explicit
-    }
-}
-
-public enum ResolutionResult: Sendable {
-    case loaded(TranscriptLocator, TranscriptSummary?, Set<SessionCoreField>)
-    /// Only a completed enumeration with no candidate can return this verdict.
-    case absent
-    case awaitingCreation, unreadable, incomplete, mismatch
-}
-
-public struct ResolutionBatch: Sendable {
-    public let generation: UInt64
-    public let results: [String: ResolutionResult]
-    public init(generation: UInt64, results: [String: ResolutionResult]) {
-        self.generation = generation; self.results = results
-    }
-}
-
 public struct CatalogQuery: Sendable {
     public let agents: Set<Agent>
     public let newestFirst: Bool
@@ -189,8 +147,6 @@ public enum AdoptionResult: Sendable, Equatable {
 }
 
 public enum SourceChange: Sendable, Equatable {
-    /// Members whose resolution changed (the semantic path; gone at the cutover).
-    case sessions([String])
     /// Transcripts were written, created or removed. Locators are always
     /// present; ids are what the file names say (possibly none).
     case transcripts(ids: Set<String>, locators: Set<TranscriptLocator>)
@@ -201,6 +157,8 @@ public enum SourceChange: Sendable, Equatable {
 }
 
 /// Optional measurement surface; transcript operations do not depend on it.
+/// A source reports what only it can count (parses, enumerations, wider
+/// heads, shared-input transfers); the engine adds its own counters.
 public protocol HostSourceDiagnostics: Sendable {
     var isMonitoring: Bool { get }
     var metrics: EngineMetrics { get }
@@ -208,19 +166,4 @@ public protocol HostSourceDiagnostics: Sendable {
 
 public enum DirectoryEvidence: Sendable, Equatable {
     case exists, missing, unknown
-}
-
-public extension HostSessionSource {
-    func directoryEvidence(_ path: String) -> DirectoryEvidence { .unknown }
-    func directoryEvidence(_ path: String) async -> DirectoryEvidence { .unknown }
-    func locate(_ requests: [LocateRequest]) async throws -> LocateResult {
-        throw HostSourceError.unsupported("locate")
-    }
-    func read(_ locator: TranscriptLocator, agent: Agent, expecting id: String, facts: Bool) async throws -> TranscriptRead {
-        throw HostSourceError.unsupported("read")
-    }
-    func resolve(_ requests: [ResolutionRequest]) async throws -> ResolutionBatch {
-        throw HostSourceError.unsupported("resolve")
-    }
-    func release(_ ids: [String]) {}
 }

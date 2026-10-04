@@ -44,7 +44,7 @@ final class RemoteHostSeamTests: XCTestCase {
         XCTAssertTrue(model.tabs.isEmpty)
     }
 
-    func testRemoteDirectoryEvidenceDoesNotConsultTheMac() throws {
+    func testRemoteDirectoryEvidenceDoesNotConsultTheMac() async throws {
         let remote = HostID(rawValue: "remote-directory")
         let path = "/not-on-this-mac/project"
         let summary = TranscriptSummary(id: "remote-dir", agent: .claude,
@@ -71,15 +71,14 @@ final class RemoteHostSeamTests: XCTestCase {
             // whatever its folder evidence says (D4: unknown stays unknown).
             XCTAssertNil(recorded)
             XCTAssertFalse(model.activeTab?.commandWasSuspect ?? true)
-            guard evidence != .missing else {
-                // The owning host says the folder is gone: nothing is started.
-                XCTAssertTrue(factory.created.isEmpty)
-                XCTAssertEqual(model.activeTab?.launchPreparationError, "The folder \(path) no longer exists.")
-                continue
-            }
+            // Folder evidence never gates a spawn: the launcher's `prepare`
+            // proves a folder gone, or its command must `cd` or exit.
             let surface = try XCTUnwrap(factory.created.last)
             surface.simulateExit(status: 1)
-            XCTAssertNil(model.activeTab?.missingWorkingDirectory)
+            // After an exit, the owning host's evidence (never this Mac's)
+            // names a deleted folder.
+            try await Task.sleep(for: .milliseconds(50))
+            XCTAssertEqual(model.activeTab?.missingWorkingDirectory, evidence == .missing ? path : nil, "\(evidence)")
             XCTAssertFalse(model.activeTab?.commandWasSuspect ?? true)
         }
     }
@@ -94,7 +93,7 @@ final class RemoteHostSeamTests: XCTestCase {
         let localSource = RemoteFixtureSource(host: .local)
         let launcher = RemoteFixtureLauncher()
         let hosts = HostRegistry(entries: [
-            .init(source: localSource, launcher: LocalHostLauncher(binaryPath: { _ in "/mac/only/agent" })),
+            .init(source: localSource, launcher: LocalHostLauncher(binaryPath: { _ in "/mac/only/agent" }, folderEvidence: { _ in .unknown })),
             .init(source: remoteSource, launcher: launcher)
         ])
         let directory = URL(fileURLWithPath: "/private/tmp/temple-p6-remote-test-\(UUID().uuidString)")
@@ -162,7 +161,7 @@ final class RemoteHostSeamTests: XCTestCase {
         XCTAssertEqual(localLaunch.displayArgv.first, "/mac/only/agent")
         localLaunch.result?.cancel()
         // Fills do not replace facts on the next remote observation.
-        remoteSource.sendChange()
+        remoteSource.sendChange(TranscriptLocator(host: remote, path: "opaque:remote-row"))
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(try db.sessionState(row.id)?.title, "Remote prompt")
         await withCheckedContinuation { continuation in app.drainForQuit { continuation.resume() } }
@@ -263,22 +262,24 @@ private final class RemoteFixtureSource: HostSessionSource, @unchecked Sendable 
     private var continuation: AsyncThrowingStream<SourceChange, Error>.Continuation?
     init(host: HostID) { self.host = host }
     var requested: Set<String> { lock.lock(); defer { lock.unlock() }; return ids }
-    private func record(_ requests: [ResolutionRequest]) {
+    private static let signature = TranscriptSignature(modifiedAt: Date(timeIntervalSince1970: 123), size: 10, identity: 0)
+    func locate(_ requests: [LocateRequest]) async throws -> LocateResult {
         lock.lock(); ids.formUnion(requests.map(\.id)); lock.unlock()
+        var candidates: [String: [TranscriptCandidate]] = [:]
+        for request in requests {
+            candidates[request.id] = host.isLocal ? [] : [TranscriptCandidate(
+                locator: TranscriptLocator(host: host, path: "opaque:\(request.id)"), agent: .claude,
+                role: .selected, stat: .present(Self.signature))]
+        }
+        return LocateResult(coverage: 1, candidates: candidates, complete: Set(Agent.allCases), sharedRevision: [:])
     }
-    func resolve(_ requests: [ResolutionRequest]) async throws -> ResolutionBatch {
-        record(requests)
-        let results = Dictionary(uniqueKeysWithValues: requests.map { request -> (String, ResolutionResult) in
-            if host.isLocal { return (request.id, .absent) }
-            let locator = TranscriptLocator(host: host, path: "opaque:\(request.id)")
-            let summary = TranscriptSummary(id: request.id, agent: .claude, locator: locator,
-                modifiedAt: Date(timeIntervalSince1970: 123), cwd: "/remote/project", firstPrompt: "Remote prompt")
-            return (request.id, .loaded(locator, summary, []))
-        })
-        return ResolutionBatch(generation: 1, results: results)
+    func read(_ locator: TranscriptLocator, agent: Agent, expecting id: String, facts: Bool) async throws -> TranscriptRead {
+        guard !host.isLocal else { throw TranscriptReadError.missing }
+        let summary = facts ? TranscriptSummary(id: id, agent: .claude, locator: locator,
+            modifiedAt: Date(timeIntervalSince1970: 123), cwd: "/remote/project", firstPrompt: "Remote prompt") : nil
+        return TranscriptRead(identity: .verified, summary: summary, signature: Self.signature, bytesRead: 10, sharedRevision: nil)
     }
-    func directoryEvidence(_ path: String) -> DirectoryEvidence { host.isLocal ? .missing : .exists }
-    func release(_ ids: [String]) {}
+    func directoryEvidence(_ path: String) async -> DirectoryEvidence { host.isLocal ? .missing : .exists }
     func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error> {
         AsyncThrowingStream { stream in
             if !host.isLocal {
@@ -296,7 +297,10 @@ private final class RemoteFixtureSource: HostSessionSource, @unchecked Sendable 
     func changes() -> AsyncThrowingStream<SourceChange, Error> {
         AsyncThrowingStream { lock.lock(); continuation = $0; lock.unlock() }
     }
-    func sendChange() { lock.lock(); let stream = continuation; let values = Array(ids); lock.unlock(); stream?.yield(.sessions(values)) }
+    func sendChange(_ locator: TranscriptLocator) {
+        lock.lock(); let stream = continuation; lock.unlock()
+        stream?.yield(.transcripts(ids: [], locators: [locator]))
+    }
 }
 
 @MainActor

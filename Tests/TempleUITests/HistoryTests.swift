@@ -811,7 +811,7 @@ final class HistoryTabTests: XCTestCase {
         let database = try! TempleDB.inMemory()
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
+            engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
             database: database,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: SessionOverlayStore(db: database))
@@ -924,7 +924,7 @@ final class HistoryTabTests: XCTestCase {
         let overlay = SessionOverlayStore(db: database)
         let model = AppModel(
             surfaceFactory: FakeTerminalSurfaceFactory(),
-            indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
+            engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
             database: database,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: overlay)
@@ -1000,10 +1000,7 @@ final class HistoryUndoEngineTests: XCTestCase {
             .write(to: file, atomically: true, encoding: .utf8)
         let database = try TempleDB.inMemory()
         let watcher = SessionEngine(source: LocalSessionSource(stores: [ClaudeSessionStore(root: root)], debounceInterval: 0.02), database: database)
-        let cache = root.appendingPathComponent("cache.json")
-        let source = WatcherIndexSource(watcher: watcher)
-        defer { source.stop() }
-        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: source,
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [watcher],
                              database: database, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
                              overlay: SessionOverlayStore(db: database))
         model.start()
@@ -1028,6 +1025,7 @@ final class HistoryUndoEngineTests: XCTestCase {
         try await waitFor { !model.sessions.contains { $0.id == "imp" } }
         XCTAssertFalse(model.overlay.isTempleSession("imp"))
         XCTAssertNil(try database.sessionState("imp"))
+        await watcher.stop()
     }
 
     private func waitFor(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {

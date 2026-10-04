@@ -20,7 +20,7 @@ final class OpenSessionsModelTests: XCTestCase {
         let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
             runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
-            launcherForHost: { _ in LocalHostLauncher(binaryPath: { "/configured/" + $0.binaryName }, extraArgs: { _ in ["--flag"] }) })
+            launcherForHost: { _ in LocalHostLauncher(binaryPath: { "/configured/" + $0.binaryName }, extraArgs: { _ in ["--flag"] }, folderEvidence: { _ in .unknown }) })
         model.openSession(row(resolution: .confirmedAbsent))
         let command = try XCTUnwrap(factory.created.first?.startedCommand)
         XCTAssertEqual(command.agentArgv, ["/configured/codex", "--flag", "resume", "row"])
@@ -57,7 +57,7 @@ final class OpenSessionsModelTests: XCTestCase {
     func testTheLocalLaunchPassesTheAgentArgvPositionallyBehindTheWrapper() throws {
         let markers = try temporaryDirectory()
         let launcher = LocalHostLauncher(binaryPath: { _ in "/opt/my tools/codex" }, extraArgs: { _ in ["--flag='x'"] },
-                                         markerDirectory: markers)
+                                         folderEvidence: { _ in .unknown }, markerDirectory: markers)
         let launch = try launcher.prepare(AgentLaunchSpec(agent: .codex, mode: .resume(sessionID: "id with spaces"),
                                                           directory: "/a folder/it's here", host: .local))
         XCTAssertEqual(launch.displayArgv, ["/opt/my tools/codex", "--flag='x'", "resume", "id with spaces"])
@@ -82,22 +82,22 @@ final class OpenSessionsModelTests: XCTestCase {
         try db.join(sessionID: "row", via: .imported, agent: .claude,
             core: SessionCore(directory: "/row-directory", title: "Stored title"))
         let factory = FakeTerminalSurfaceFactory()
-        let app = AppModel(surfaceFactory: factory, indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
+        let app = AppModel(surfaceFactory: factory, engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
             database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             hostRegistry: Fixture.hostsWithoutFolderEvidence())
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["row": .resolving], summaries: [:]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["row": .resolving]))
         app.openSession(id: "row")
         XCTAssertEqual(factory.created.count, 1)
         let tab = try XCTUnwrap(app.openSessions.activeTab)
         app.openSessions.surface(try XCTUnwrap(tab.surface), didChangeState: .exited(status: 1))
         XCTAssertFalse(tab.resumeTargetMissing)
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["row": .unreadable], summaries: [:]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["row": .unreadable]))
         XCTAssertNil(app.openSessions.sessionKnown("row"))
         XCTAssertFalse(tab.resumeTargetMissing)
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 3, resolutions: ["row": .confirmedAbsent], summaries: [:]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 3, resolutions: ["row": .confirmedAbsent]))
         XCTAssertTrue(tab.resumeTargetMissing)
         // Older generations cannot replace the completed evidence.
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: [:], summaries: [:]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: [:]))
         XCTAssertEqual(app.openSessions.sessionKnown("row"), false)
     }
 
@@ -127,7 +127,7 @@ final class OpenSessionsModelTests: XCTestCase {
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "row", via: .imported, agent: .claude,
             core: SessionCore(directory: "/row-directory"))
-        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), indexSource: FakeIndexSource(CatalogFixtureIndex(projects: [])),
+        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
             database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         XCTAssertEqual(app.resumeArgv(for: Fixture.session("row", agent: .codex, project: "/transcript")),
             ["claude", "--resume", "row"])
@@ -517,7 +517,7 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertTrue(tab.resumeTargetMissing)
     }
 
-    func testADeletedWorkingDirectoryGetsItsOwnLine() throws {
+    func testADeletedWorkingDirectoryGetsItsOwnLine() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let model = modelForResumeTests(sessionKnown: { _ in true }, directoryEvidence: Fixture.localDirectoryEvidence)
@@ -526,6 +526,9 @@ final class OpenSessionsModelTests: XCTestCase {
         try FileManager.default.removeItem(at: directory)
         model.surface(try XCTUnwrap(tab.surface), didChangeState: .exited(status: 1))
         XCTAssertFalse(tab.resumeTargetMissing)
+        // The owning host is asked after the exit (asynchronously).
+        let deadline = Date().addingTimeInterval(2)
+        while tab.missingWorkingDirectory == nil, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(tab.missingWorkingDirectoryMessage, "The folder \(directory.path) no longer exists")
     }
 
@@ -1205,7 +1208,7 @@ final class OpenSessionsModelTests: XCTestCase {
             runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
             launcherForHost: { _ in LocalHostLauncher(binaryPath: { _ in "/bin/claude" },
-                availability: { _ in toolchainHealthy ? .available : .unavailable(reason: "doesn't run") }) })
+                availability: { _ in toolchainHealthy ? .available : .unavailable(reason: "doesn't run") }, folderEvidence: { _ in .unknown }) })
 
         let tab = model.newSession(agent: .claude, projectPath: "/p/a")
         let surface = tab.surface as? FakeTerminalSurface
@@ -1225,7 +1228,7 @@ final class OpenSessionsModelTests: XCTestCase {
             runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
             launcherForHost: { _ in LocalHostLauncher(binaryPath: { _ in "/bin/claude" },
-                availability: { _ in .unavailable(reason: "not found") }) })
+                availability: { _ in .unavailable(reason: "not found") }, folderEvidence: { _ in .unknown }) })
 
         let tab = model.newSession(agent: .claude, projectPath: "/p/a")
         (tab.surface as? FakeTerminalSurface)?.simulateExit(status: 1)
@@ -1240,7 +1243,7 @@ final class OpenSessionsModelTests: XCTestCase {
             appearanceProvider: { .default },
             runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
-            launcherForHost: { _ in LocalHostLauncher(binaryPath: { _ in "/bin/claude" }) },
+            launcherForHost: { _ in LocalHostLauncher(binaryPath: { _ in "/bin/claude" }, folderEvidence: { _ in .unknown }) },
             directoryEvidence: directoryEvidence)
         model.sessionKnown = sessionKnown
         return model
@@ -1253,9 +1256,11 @@ final class OpenSessionsModelTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let factory = FakeTerminalSurfaceFactory()
+        // This Mac's launcher, which proves a folder gone from its own stat.
         let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
             runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
+            launcherForHost: { _ in LocalHostLauncher() },
             directoryEvidence: Fixture.localDirectoryEvidence)
         var recorded: [String] = []
         model.launchDirectoryHandler = { _, _, path in recorded.append(path) }
@@ -1319,7 +1324,7 @@ final class OpenSessionsModelTests: XCTestCase {
             runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
             launcherForHost: { _ in LocalHostLauncher(binaryPath: { $0 == .codex ? "/bin/codex" : "/bin/claude" },
-                extraArgs: { $0 == .codex ? ["--dangerously-bypass-approvals-and-sandbox"] : ["--dangerously-skip-permissions"] }) })
+                extraArgs: { $0 == .codex ? ["--dangerously-bypass-approvals-and-sandbox"] : ["--dangerously-skip-permissions"] }, folderEvidence: { _ in .unknown }) })
 
         let tab = model.newSession(agent: .claude, projectPath: "/p/a")
         XCTAssertEqual(tab.displayArgv?.prefix(2).map { $0 },
@@ -1337,8 +1342,8 @@ final class OpenSessionsModelTests: XCTestCase {
 final class ImmediateReconciler: TempleUI.CodexAdopting {
     let id: String
     init(id: String) { self.id = id }
-    func reconcile(projectPath: String, startedAt: Date, adopt: @escaping (String) -> Void) {
-        adopt(id)
+    func reconcile(host: HostID, projectPath: String, startedAt: Date, adopt: @escaping (String, TranscriptLocator?) -> Void) {
+        adopt(id, nil)
     }
 }
 
@@ -1355,7 +1360,7 @@ private final class ObservingLauncher: HostLauncher {
 
 @MainActor
 private final class CountingLauncher: HostLauncher {
-    private let inner = LocalHostLauncher()
+    private let inner = LocalHostLauncher(folderEvidence: { _ in .unknown })
     private(set) var count = 0
     func prepare(_ spec: AgentLaunchSpec) throws -> AgentLaunch {
         count += 1

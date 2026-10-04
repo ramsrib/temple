@@ -92,8 +92,9 @@ public final class HistoryModel: ObservableObject {
     // MARK: Dependencies
 
     private let overlay: SessionOverlayStore
-    /// Runs off the main actor: the noise check stats each project once a read.
-    private let directoryEvidence: @Sendable (ProjectKey) -> DirectoryEvidence
+    /// The owning host's folder evidence for the noise check: asked once per
+    /// project a read, before a batch is classified.
+    private let directoryEvidence: @Sendable (ProjectKey) async -> DirectoryEvidence
     private let now: () -> Date
     /// The full-disk read of every host. Replaceable so tests feed events by hand.
     var catalog: () -> AsyncStream<HostCatalogEvent>
@@ -214,14 +215,15 @@ public final class HistoryModel: ObservableObject {
     init(overlay: SessionOverlayStore,
          catalog: (() -> AsyncStream<HostCatalogEvent>)? = nil,
          pathExists: (@Sendable (String) -> Bool)? = nil,
-         directoryEvidence: (@Sendable (ProjectKey) -> DirectoryEvidence)? = nil,
+         directoryEvidence: (@Sendable (ProjectKey) async -> DirectoryEvidence)? = nil,
          now: @escaping () -> Date = Date.init) {
         self.overlay = overlay
         self.catalog = catalog ?? { HostRegistry().catalog() }
         let local = LocalSessionSource()
         self.directoryEvidence = directoryEvidence ?? { key in
             guard key.host.isLocal else { return .unknown }
-            return pathExists.map { $0(key.path) ? .exists : .missing } ?? local.directoryEvidence(key.path)
+            if let pathExists { return pathExists(key.path) ? .exists : .missing }
+            return await local.directoryEvidence(key.path)
         }
         self.now = now
         // Membership, renames, retitles and archive state all show on the
@@ -325,14 +327,20 @@ public final class HistoryModel: ObservableObject {
                     self.storeFailures = failures
                 case .sessions(let batch, let read, let total):
                     // One summary per host, agent and id by the catalog's own
-                    // selection. The noise check — a stat per project,
-                    // memoised across the read — runs off the main actor, a
-                    // batch at a time so the order is kept.
+                    // selection. The noise check asks the owning host about
+                    // each project once a read, off the main actor, a batch
+                    // at a time so the order is kept.
                     let fresh = batch.filter { $0.locator.host == host }
-                    let known = exists
-                    let sorted = await Task.detached(priority: .userInitiated) {
-                        Self.classify(fresh, exists: known, directoryEvidence: directoryEvidence)
+                    let previously = exists
+                    let asked = await Task.detached(priority: .userInitiated) { () -> [ProjectKey: DirectoryEvidence] in
+                        var answers: [ProjectKey: DirectoryEvidence] = [:]
+                        for key in Set(fresh.map(Self.noiseKey)) where previously[key] == nil {
+                            answers[key] = await directoryEvidence(key)
+                        }
+                        return answers
                     }.value
+                    let answers = previously.merging(asked) { old, _ in old }
+                    let sorted = Self.classify(fresh, exists: answers) { answers[$0] ?? .unknown }
                     guard !Task.isCancelled else { return }
                     exists = sorted.exists
                     var disk = self.diskByKey
@@ -358,6 +366,11 @@ public final class HistoryModel: ObservableObject {
             self.readTask = nil
             self.rebuild()
         }
+    }
+
+    /// The one folder the noise check asks about for a summary.
+    nonisolated static func noiseKey(_ session: TranscriptSummary) -> ProjectKey {
+        ProjectKey(host: session.locator.host, path: session.cwd ?? session.directoryHint ?? "")
     }
 
     /// Splits a batch into rows and noise (`SessionFilter.isNoise`), carrying
