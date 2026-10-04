@@ -322,6 +322,36 @@ class HostSessionSourceContract: XCTestCase {
         XCTAssertEqual(fixture.parses, parses, "observing never parses")
     }
 
+    /// A primitive-only consumer registers nothing: what it observes must
+    /// still reach the listing `locate` trusts, both ways.
+    func test09bAnObservedFileIsLocatedWithoutARefreshAndItsRemovalToo() async throws {
+        try await observe()
+        let claudeID = uuid(), codexID = uuid()
+        let claude = try plantClaude(claudeID)
+        let codex = try plantCodex(codexID)
+        for file in [claude, codex] {
+            _ = try await waitForEvent { change in
+                if case .transcripts(_, let locators) = change { return locators.contains(file) }
+                return false
+            }
+        }
+        let found = try await locate([LocateRequest(id: claudeID), LocateRequest(id: codexID)])
+        XCTAssertEqual(found.complete, [.claude, .codex])
+        XCTAssertEqual(found.candidates[claudeID]?.map(\.locator), [claude])
+        XCTAssertEqual(found.candidates[codexID]?.map(\.locator), [codex])
+        XCTAssertEqual(found.candidates[codexID]?.first?.role, .selected)
+        guard case .present? = found.candidates[claudeID]?.first?.stat else { return XCTFail("not stat'ed") }
+        let before = events.all.count
+        try fixture.remove(claude)
+        try await waitUntil { self.events.all.dropFirst(before).contains { change in
+            if case .transcripts(_, let locators) = change { return locators.contains(claude) }
+            return false
+        } }
+        let gone = try await locate([LocateRequest(id: claudeID)])
+        XCTAssertEqual(gone.candidates[claudeID]?.count, 0, "a removed file leaves the listing")
+        XCTAssertEqual(gone.complete, [.claude, .codex])
+    }
+
     func test10ADroppedStreamResetsCoverageForward() async throws {
         try await observe()
         let before = try await locate([]).coverage

@@ -443,6 +443,9 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             self.work = nil
             let paths = self.pendingPaths; self.pendingPaths.removeAll()
             let raw = self.rawPaths; self.rawPaths.removeAll()
+            // The filename map follows every observed transcript, whether or
+            // not anyone registered interest in it: `locate` answers from it.
+            for path in raw { self.observeTranscriptPathLocked(path) }
             var changed = false
             for path in paths {
                 if self.reconcileFileLocked(URL(fileURLWithPath: path)) { changed = true }
@@ -455,6 +458,25 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         }
         work = item
         queue.asyncAfter(deadline: .now() + debounceInterval, execute: item)
+    }
+
+    /// One observed transcript path, into or out of the filename map.
+    private func observeTranscriptPathLocked(_ path: String) {
+        let url = URL(fileURLWithPath: path)
+        guard let store = stores.first(where: { $0.acceptsTranscript(url) }) else { return }
+        if Self.candidateStat(path) != .missing {
+            files[path] = (url, store.agent)
+            _ = recordFilenameLocked(path, store: store)
+            return
+        }
+        guard files.removeValue(forKey: path) != nil, let id = store.filenameID(at: url) else { return }
+        pathsByID[id]?.remove(path)
+        if pathsByID[id]?.isEmpty == true { pathsByID.removeValue(forKey: id) }
+        if selectedCodexPaths[id]?.path == path {
+            // The thread's pick is gone: the next one takes its place.
+            selectedCodexPaths.removeValue(forKey: id)
+            for remaining in (pathsByID[id] ?? []).sorted() { _ = recordFilenameLocked(remaining, store: store) }
+        }
     }
 
     private func enumerateLocked(subtree: String? = nil) {
