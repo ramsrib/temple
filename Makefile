@@ -5,6 +5,13 @@ BUNDLE_ID := com.sriramb.temple
 
 .PHONY: build test run demo demo-clean ghostty app open install stage release version clean
 
+# The SDK the SwiftPM targets build and link against, resolved once and shared
+# with Scripts/check-sdk-linkage.sh: Package.swift hands SDKROOT to the link
+# (see `linkAgainstBuildSDK`), so the workaround holds even when a toolchain's
+# `swift` is run directly rather than through the xcrun shim. Scoped to the
+# SwiftPM targets; the Xcode .app build (make app) chooses its own SDK.
+build test run demo: export SDKROOT := $(or $(SDKROOT),$(shell xcrun --sdk macosx --show-sdk-path))
+
 build: ## Compile the SwiftPM targets
 	@./Scripts/ghostty-stamp.sh check
 	swift build
