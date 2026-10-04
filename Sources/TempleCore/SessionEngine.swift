@@ -368,6 +368,8 @@ public actor SessionEngine: HostEngine {
     var currentCoverage: UInt64 { coverage }
     var currentReconnects: UInt64 { reconnects }
     func operationRevision(_ id: String) -> UInt64? { members[id]?.opRevision }
+    /// Test seam: the membership incarnation the engine currently holds for `id`.
+    func memberIncarnation(_ id: String) -> String? { members[id]?.incarnation }
 
     /// Test seam: database callbacks are held (in order) until released, so
     /// a test can deliver them late — after a leave and a rejoin, say.

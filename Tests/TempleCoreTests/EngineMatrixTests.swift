@@ -623,7 +623,9 @@ final class EngineMatrixTests: XCTestCase {
         XCTAssertTrue(try h.db.leave(sessionID: id, host: h.source.host))
         try join(h, id, path: claudePath(id))
         let fresh = try XCTUnwrap(try row(h, id)?.incarnation)
-        try await waitUntil("rejoin seen") { (await h.engine.operationRevision(id) ?? 0) > 0 }
+        // The leave may be processed first (member removed, revisions restart
+        // at 0) or not: what proves the rejoin was seen is its incarnation.
+        try await waitUntil("rejoin seen") { await h.engine.memberIncarnation(id) == fresh }
         let mark = h.recorder.snapshots.count
         gate.open()
         try await waitUntil("loaded") { self.isLoaded(h, id) }
