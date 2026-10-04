@@ -192,10 +192,13 @@ final class StoreTests: XCTestCase {
         try writeTranscript(#"{"session_id":"codex-id","ts":10,"text":"First"}"#, at: history)
         let store = CodexSessionStore(root: root)
         for _ in 0..<3 { XCTAssertEqual(store.loadSummary(at: file)?.historyPrompt, "First") }
-        XCTAssertEqual(store.shared.loads, 1)
+        // One read of each shared file (history.jsonl and session_index.jsonl),
+        // not one per map derived from them, and none for the later parses.
+        XCTAssertEqual(store.shared.fileReads, 2)
         try writeTranscript(#"{"session_id":"codex-id","ts":5,"text":"Earlier, found later"}"#, at: history)
         XCTAssertEqual(store.loadSummary(at: file)?.historyPrompt, "Earlier, found later")
-        XCTAssertEqual(store.shared.loads, 2)
+        XCTAssertEqual(store.loadSummary(at: file)?.sharedTitle, "Earlier, found later")
+        XCTAssertEqual(store.shared.fileReads, 4)
     }
 
     func testCodexSummaryIncludesOnlyRecordedHistoryPromptsAsFacts() throws {

@@ -46,7 +46,11 @@ public struct CodexSessionStore: TranscriptSummaryStore {
     /// signature (modification date, size, inode) changes.
     func sharedFacts() -> (titles: [String: String], historyPrompts: [String: String]) {
         let signature = [historyFile, sessionIndexFile].map(CodexSharedFactsCache.signature)
-        return shared.facts(for: signature) { (loadTitles(), loadSharedPrompts()) }
+        return shared.facts(for: signature) {
+            // Each file read and parsed once; both maps derive from that.
+            let history = loadHistoryTitles()
+            return (Self.titles(names: loadIndexThreadNames(), history: history), Self.prompts(history))
+        }
     }
 
     public func catalogParser() -> @Sendable (URL) -> TranscriptSummary? { catalogSummaryParser() }
@@ -57,8 +61,10 @@ public struct CodexSessionStore: TranscriptSummaryStore {
         return { store.parse(file: $0, sharedTitles: titles, historyPrompts: historyPrompts) }
     }
 
-    public func loadSharedPrompts() -> [String: String] {
-        loadHistoryTitles().compactMapValues { text in
+    public func loadSharedPrompts() -> [String: String] { Self.prompts(loadHistoryTitles()) }
+
+    private static func prompts(_ history: [String: String]) -> [String: String] {
+        history.compactMapValues { text in
             let cleaned = StoreIO.cleanTitle(text)
             return cleaned.isEmpty ? nil : cleaned
         }
@@ -293,8 +299,12 @@ public struct CodexSessionStore: TranscriptSummaryStore {
     /// to nothing (e.g. a lone-space prompt) are dropped so the next source
     /// gets its turn.
     public func loadTitles() -> [String: String] {
+        Self.titles(names: loadIndexThreadNames(), history: loadHistoryTitles())
+    }
+
+    private static func titles(names: [String: String], history: [String: String]) -> [String: String] {
         var titles: [String: String] = [:]
-        for source in [loadIndexThreadNames(), loadHistoryTitles()] {
+        for source in [names, history] {
             for (id, text) in source {
                 let cleaned = StoreIO.cleanTitle(text)
                 if !cleaned.isEmpty { titles[id] = cleaned }
@@ -306,6 +316,7 @@ public struct CodexSessionStore: TranscriptSummaryStore {
     /// Map `id → thread_name` from session_index.jsonl (written by app-server
     /// clients such as IDE companions; last entry per id wins).
     private func loadIndexThreadNames() -> [String: String] {
+        shared.countRead()
         guard let content = try? String(contentsOf: sessionIndexFile, encoding: .utf8) else {
             return [:]
         }
@@ -321,6 +332,7 @@ public struct CodexSessionStore: TranscriptSummaryStore {
 
     /// Map `session_id → earliest prompt text` from history.jsonl.
     private func loadHistoryTitles() -> [String: String] {
+        shared.countRead()
         guard let content = try? String(contentsOf: historyFile, encoding: .utf8) else {
             return [:]
         }
@@ -345,6 +357,11 @@ final class CodexSharedFactsCache: @unchecked Sendable {
     private var key: [Signature]?
     private var value: (titles: [String: String], historyPrompts: [String: String]) = ([:], [:])
     private(set) var loads = 0
+    private let readLock = NSLock()
+    private var reads = 0
+    /// Shared-file reads attempted (history.jsonl, session_index.jsonl).
+    var fileReads: Int { readLock.lock(); defer { readLock.unlock() }; return reads }
+    func countRead() { readLock.lock(); reads += 1; readLock.unlock() }
 
     static func signature(_ url: URL) -> Signature {
         let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
