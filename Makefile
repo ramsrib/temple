@@ -8,6 +8,7 @@ BUNDLE_ID := com.sriramb.temple
 build: ## Compile the SwiftPM targets
 	@./Scripts/ghostty-stamp.sh check
 	swift build
+	@./Scripts/check-sdk-linkage.sh
 
 test: ## Run the full test suite
 	@./Scripts/ghostty-stamp.sh check

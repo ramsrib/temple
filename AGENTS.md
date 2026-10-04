@@ -82,6 +82,18 @@ because the demo runs the other binary; check with
 remembering that Swift keeps strings of 15 bytes or fewer inline, where
 `strings` cannot see them.
 
+The two binaries can also differ in the **SDK they record** (`LC_BUILD_VERSION`),
+and macOS picks AppKit/SwiftUI behaviour by that, not by the source. Since
+Xcode 27, `swift build` (the Swift Build engine) linked the SwiftPM binary as
+built against SDK 14.0, its deployment target. The demo then ran with macOS 14
+compatibility behaviour: the sidebar drew 52pt below where it took clicks,
+under an empty band, while the .app was fine. It looked like a bundling
+difference and was taken for one. `Package.swift` hands the real
+SDK to the link (`linkAgainstBuildSDK`), and `make build` runs
+`Scripts/check-sdk-linkage.sh`. If the demo and the .app disagree on how
+something looks or where it takes clicks, check
+`otool -l <binary> | grep -A4 LC_BUILD_VERSION` before you compare anything else.
+
 ## A probe that fails once is not a verdict — macOS evaluates fresh binaries on first exec
 
 `AgentToolchain` decides which `claude`/`codex` Temple launches by running each

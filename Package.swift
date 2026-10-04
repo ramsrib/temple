@@ -1,6 +1,20 @@
 // swift-tools-version: 5.10
 import PackageDescription
 
+// Link the executables against the SDK they are built with, not the
+// deployment target. SwiftPM's Swift Build engine (the default since Swift
+// 6.4 / Xcode 27) links through `swiftc`, which gives clang the SDK as
+// `--sysroot`; clang reads an SDK's version only from `-isysroot` or SDKROOT,
+// so ld recorded 14.0 as the SDK. macOS then runs the binary with its
+// macOS 14 compatibility behaviour, under which the sidebar's scroll view
+// insets its clip view below the title bar *and* offsets the content by the
+// same 52pt: rows drew one and a half rows below where they took clicks, under
+// an empty band. `swift` (the xcrun shim) exports SDKROOT, so hand it on.
+// Scripts/check-sdk-linkage.sh, run by `make build`, checks the result.
+let linkAgainstBuildSDK: [LinkerSetting] = Context.environment["SDKROOT"].map {
+    [.unsafeFlags(["-Xclang-linker", "-isysroot", "-Xclang-linker", $0])]
+} ?? []
+
 let package = Package(
     name: "Temple",
     platforms: [.macOS(.v14)],
@@ -42,10 +56,12 @@ let package = Package(
 
         // Thin @main entry — launches TempleUI's app scene with the production
         // libghostty terminal factory (the PLAN.md "fuse").
-        .executableTarget(name: "Temple", dependencies: ["TempleUI", "TempleTerminal"]),
+        .executableTarget(name: "Temple", dependencies: ["TempleUI", "TempleTerminal"],
+                          linkerSettings: linkAgainstBuildSDK),
 
         // CLI that prints the real project → session index.
-        .executableTarget(name: "templectl", dependencies: ["TempleCore", "TempleLocalHost"]),
+        .executableTarget(name: "templectl", dependencies: ["TempleCore", "TempleLocalHost"],
+                          linkerSettings: linkAgainstBuildSDK),
 
         // Track T — libghostty engine.
         // Prebuilt embeddable artifact from Scripts/build-ghostty.sh (see
@@ -74,7 +90,8 @@ let package = Package(
         ),
 
         // Dev harness executable (like templectl is for TempleCore).
-        .executableTarget(name: "terminal-demo", dependencies: ["TempleTerminal", "TempleTerminalAPI"]),
+        .executableTarget(name: "terminal-demo", dependencies: ["TempleTerminal", "TempleTerminalAPI"],
+                          linkerSettings: linkAgainstBuildSDK),
 
         // Test doubles shared by test targets (FakeHostSource, SQL tracing).
         // Nothing in a product links it.
