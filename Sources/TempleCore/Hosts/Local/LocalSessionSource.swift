@@ -60,7 +60,11 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     private var pendingPaths: Set<String> = []
     /// Every transcript path observed since the last flush, member or not.
     private var rawPaths: Set<String> = []
-    private let sharedRevisions = SharedRevisionTracker()
+    /// The last shared-facts revision announced per agent.
+    private var announcedShared: [Agent: UInt64] = [:]
+    /// Test seam: called during a read at each phase, on the reading thread.
+    var readPhaseHook: (@Sendable (ReadPhase, URL) -> Void)?
+    enum ReadPhase { case sharedFactsAcquired, bytesRead }
     private var locateCount: UInt64 = 0
     private let readCounts = ReadCounters()
     private var work: DispatchWorkItem?
@@ -229,8 +233,8 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         // Arm before enumeration. Callbacks buffer behind the scan on this queue.
         armLocked()
         enumerateLocked()
-        for store in stores where !store.sharedFactURLs.isEmpty {
-            _ = sharedRevisions.revision(store.agent, key: store.sharedInputKey())
+        for store in stores {
+            if let revision = store.sharedRevision() { announcedShared[store.agent] = revision }
         }
         if !requests.isEmpty {
             for requestID in requests.keys { scheduleAdoptionDeadlineLocked(requestID) }
@@ -405,12 +409,10 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     /// dropped (the backoff stands), and everyone else is left alone rather
     /// than re-resolved on every Codex prompt.
     private func sharedFactsChangedLocked() {
-        for store in stores where !store.sharedFactURLs.isEmpty {
-            let before = sharedRevisions.current(store.agent)
-            let revision = sharedRevisions.revision(store.agent, key: store.sharedInputKey())
-            if revision != before {
-                for continuation in changeContinuations.values { continuation.yield(.sharedFacts(store.agent, revision: revision)) }
-            }
+        for store in stores {
+            guard let revision = store.sharedRevision(), revision > announcedShared[store.agent] ?? 0 else { continue }
+            announcedShared[store.agent] = revision
+            for continuation in changeContinuations.values { continuation.yield(.sharedFacts(store.agent, revision: revision)) }
         }
         var touched = false
         for id in registeredIDs.sorted() {
@@ -866,8 +868,8 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
                 }
                 let complete = Set(self.stores.filter { self.enumerationByAgent[$0.agent] == true }.map(\.agent))
                 var shared: [Agent: UInt64] = [:]
-                for store in self.stores where !store.sharedFactURLs.isEmpty {
-                    shared[store.agent] = self.sharedRevisions.revision(store.agent, key: store.sharedInputKey())
+                for store in self.stores {
+                    if let revision = store.sharedRevision() { shared[store.agent] = revision }
                 }
                 self.snapshotLocked()
                 continuation.resume(returning: LocateResult(coverage: self.generation, candidates: candidates,
@@ -902,8 +904,11 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         var summary: TranscriptSummary?
         var revision: UInt64?
         if facts, identity.verdict == .verified {
+            // Facts and revision come as one value: whatever changes after
+            // this, these facts keep the revision they were read at.
             let shared = store.sharedFactsSnapshot()
-            if !shared.key.isEmpty { revision = sharedRevisions.revision(store.agent, key: shared.key) }
+            revision = shared.revision
+            readPhaseHook?(.sharedFactsAcquired, url)
             let result = StoreIO.facts(at: url, format: store.format, shared: shared.facts)
             readCounts.parse(wider: result.widerRead)
             summary = result.summary
@@ -1151,23 +1156,6 @@ private struct RootMapping {
             current.deleteLastPathComponent()
         }
         return current.path
-    }
-}
-
-/// One revision per agent's shared inputs, bumped whenever their stat key
-/// changes; reads and listings take it under the same lock.
-final class SharedRevisionTracker: @unchecked Sendable {
-    private let lock = NSLock()
-    private var keys: [Agent: [SharedInputSignature]] = [:]
-    private var revisions: [Agent: UInt64] = [:]
-    func revision(_ agent: Agent, key: [SharedInputSignature]) -> UInt64 {
-        lock.lock(); defer { lock.unlock() }
-        if let known = keys[agent], known != key { revisions[agent, default: 0] &+= 1 }
-        keys[agent] = key
-        return revisions[agent, default: 0]
-    }
-    func current(_ agent: Agent) -> UInt64 {
-        lock.lock(); defer { lock.unlock() }; return revisions[agent, default: 0]
     }
 }
 

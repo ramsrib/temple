@@ -45,9 +45,10 @@ public struct CodexSessionStore: TranscriptSummaryStore {
     /// signature (modification date, size, inode) changes.
     func sharedFacts() -> SharedFacts { sharedFactsSnapshot().facts }
 
-    public func sharedFactsSnapshot() -> (facts: SharedFacts, key: [SharedInputSignature]) {
-        let signature = sharedInputKey()
-        return (shared.facts(for: signature) {
+    /// The shared facts and the revision they belong to, as one value: the
+    /// cache owns both, so a reader holding old facts keeps their revision.
+    public func sharedFactsSnapshot() -> (facts: SharedFacts, revision: UInt64?) {
+        let snapshot = shared.snapshot(currentKey: sharedInputKey) {
             // Each file read once; both maps derive from that.
             var inputs: [String: Data] = [:]
             for (name, url) in [(CodexFormat.historyInput, historyFile), (CodexFormat.sessionIndexInput, sessionIndexFile)] {
@@ -55,8 +56,14 @@ public struct CodexSessionStore: TranscriptSummaryStore {
                 inputs[name] = try? Data(contentsOf: url)
             }
             return CodexFormat().sharedFacts(inputs)
-        }, signature)
+        }
+        return (snapshot.facts, snapshot.revision)
     }
+
+    /// The inputs' current revision, from a stat of each; nothing is read.
+    public func sharedRevision() -> UInt64? { shared.revision(currentKey: sharedInputKey) }
+
+    private func sharedInputKey() -> [SharedInputSignature] { sharedFactURLs.map(SharedInputSignature.init) }
 
     public func catalogParser() -> @Sendable (URL) -> TranscriptSummary? { catalogSummaryParser() }
 
@@ -103,7 +110,8 @@ public struct CodexSessionStore: TranscriptSummaryStore {
 final class CodexSharedFactsCache: @unchecked Sendable {
     private let lock = NSLock()
     private var key: [SharedInputSignature]?
-    private var value = SharedFacts.empty
+    private var value: SharedFacts?
+    private var currentRevision: UInt64 = 0
     private(set) var loads = 0
     private let readLock = NSLock()
     private var reads = 0
@@ -111,11 +119,27 @@ final class CodexSharedFactsCache: @unchecked Sendable {
     var fileReads: Int { readLock.lock(); defer { readLock.unlock() }; return reads }
     func countRead() { readLock.lock(); reads += 1; readLock.unlock() }
 
-    func facts(for signature: [SharedInputSignature], load: () -> SharedFacts) -> SharedFacts {
+    /// Stats the inputs (under the lock, so no two callers disagree on the
+    /// order of changes) and moves to a new revision when they changed.
+    func revision(currentKey: () -> [SharedInputSignature]) -> UInt64 {
         lock.lock(); defer { lock.unlock() }
-        if key != signature {
-            value = load(); key = signature; loads += 1
-        }
-        return value
+        rekeyLocked(currentKey())
+        return currentRevision
+    }
+
+    /// The facts for the current inputs with their revision, as one value.
+    /// The facts are read at most once per revision.
+    func snapshot(currentKey: () -> [SharedInputSignature], load: () -> SharedFacts) -> (facts: SharedFacts, revision: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        rekeyLocked(currentKey())
+        if value == nil { value = load(); loads += 1 }
+        return (value ?? .empty, currentRevision)
+    }
+
+    private func rekeyLocked(_ next: [SharedInputSignature]) {
+        guard key != next else { return }
+        if key != nil { currentRevision &+= 1 }
+        key = next
+        value = nil
     }
 }

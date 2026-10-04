@@ -36,11 +36,12 @@ public protocol IncrementalSessionStore: SessionStore {
     /// A parser for many files in one read (`LocalSessionCatalog.stream`): any
     /// input shared by every file is read once, here, not once per file.
     func catalogParser() -> @Sendable (URL) -> TranscriptSummary?
-    /// The shared inputs' stat signatures (no read): what a shared-facts
-    /// revision is keyed by. Empty for an agent with none.
-    func sharedInputKey() -> [SharedInputSignature]
-    /// Shared facts with the key of the inputs they were read from.
-    func sharedFactsSnapshot() -> (facts: SharedFacts, key: [SharedInputSignature])
+    /// The shared inputs' current revision, from a stat (no read); nil for
+    /// an agent with none. It moves whenever the inputs changed.
+    func sharedRevision() -> UInt64?
+    /// Shared facts with the revision of the inputs they were read from,
+    /// acquired together (nil revision: no shared inputs).
+    func sharedFactsSnapshot() -> (facts: SharedFacts, revision: UInt64?)
 
 }
 
@@ -81,8 +82,8 @@ public extension IncrementalSessionStore {
         return header.map { CodexRolloutCandidate(sessionID: $0.id, cwd: $0.cwd, createdAt: $0.createdAt, filePath: url) }
     }
     func metadataHeader(at url: URL) -> CodexRolloutCandidate? { try? adoptionHeader(at: url) }
-    func sharedInputKey() -> [SharedInputSignature] { sharedFactURLs.map(SharedInputSignature.init) }
-    func sharedFactsSnapshot() -> (facts: SharedFacts, key: [SharedInputSignature]) { (.empty, []) }
+    func sharedRevision() -> UInt64? { nil }
+    func sharedFactsSnapshot() -> (facts: SharedFacts, revision: UInt64?) { (.empty, nil) }
     func catalogParser() -> @Sendable (URL) -> TranscriptSummary? {
         let store = self
         return { store.loadSummary(at: $0) }
