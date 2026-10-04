@@ -105,27 +105,6 @@ final class HostSessionSourceTests: XCTestCase {
         XCTAssertEqual(source.releasedIDs, ["next-remote"])
     }
 
-    func testStaleImportFactsAreDroppedAfterACoverageReset() async throws {
-        let source = FakeHostSource(host: .local)
-        let engine = SessionEngine(source: source, members: ["member"])
-        let stream = engine.start()
-        defer { engine.stop(); withExtendedLifetime(stream) {} }
-        try await wait { engine.publishedSnapshot?.generation == 1 }
-        source.gateNext()
-        let locator = TranscriptLocator(host: .local, path: "/unused/temporary")
-        let summary = TranscriptSummary(id: "temporary", agent: .claude, locator: locator,
-            modifiedAt: Date(), cwd: "/stale", firstPrompt: "Stale fact")
-        let read = Task { await engine.summaryForImport(summary) }
-        try await wait { source.hasPending }
-        source.send(.coverageReset(2))
-        try await wait { engine.publishedSnapshot?.generation == 2 }
-        source.resumePending(ResolutionBatch(generation: 1, results: ["temporary": .loaded(locator, summary, [])]))
-        let result = await read.value
-        XCTAssertNil(result)
-        try await wait { source.releasedIDs.contains("temporary") }
-        XCTAssertNil(engine.resolution(for: "temporary"))
-    }
-
     func testAStaleGenerationBatchIsDropped() async throws {
         let source = FakeHostSource(host: .local)
         let engine = SessionEngine(source: source, members: ["member"])

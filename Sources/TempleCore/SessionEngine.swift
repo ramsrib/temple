@@ -304,51 +304,6 @@ public final class SessionEngine: @unchecked Sendable {
         observers.values.forEach { $0.yield(next) }
         stateObservers.values.forEach { $0.yield(states) }
     }
-    /// Revalidate catalog facts through the same semantic seam. Temporary interest
-    /// is released only if no committed join acquired the id during the read.
-    public func summaryForImport(_ summary: TranscriptSummary) async -> TranscriptSummary? {
-        guard summary.locator.host == host else { return nil }
-        let cancellation = EngineCancellation()
-        let operation = UUID()
-        return await withTaskCancellationHandler {
-            guard !Task.isCancelled else { return nil }
-            return await withCheckedContinuation { continuation in
-                queue.async {
-                    guard !cancellation.isCancelled else { continuation.resume(returning: nil); return }
-                    let preceding = self.workTask
-                    self.workTask = Task { [weak self = self, source = self.source] in
-                        defer { self?.queue.async { [weak self = self] in self?.workTasks.removeValue(forKey: operation) } }
-                        await preceding?.value
-                        var facts: TranscriptSummary?
-                        var batchGeneration: UInt64 = 0
-                        if !Task.isCancelled {
-                            let request = ResolutionRequest(id: summary.id, agent: summary.agent, hint: summary.locator,
-                                wanted: [.agent, .directory, .title, .lastActiveAt], explicit: true)
-                            if let batch = try? await source.resolve([request]),
-                               case .loaded(let locator, let result, _) = batch.results[summary.id],
-                               locator.host == summary.locator.host, result?.id == summary.id,
-                               result?.locator == locator {
-                                facts = result; batchGeneration = batch.generation
-                            }
-                        }
-                        let result = Task.isCancelled ? nil : facts
-                        let acceptedGeneration = batchGeneration
-                        guard let self else { source.release([summary.id]); continuation.resume(returning: nil); return }
-                        self.queue.async {
-                            if !self.members.contains(summary.id) { source.release([summary.id]) }
-                            if self.running { self.advanceGenerationLocked(acceptedGeneration) }
-                            continuation.resume(returning: !cancellation.isCancelled && acceptedGeneration >= self.generation ? result : nil)
-                        }
-                    }
-                    self.workTasks[operation] = self.workTask
-                }
-            }
-        } onCancel: {
-            cancellation.cancel()
-            self.queue.async { self.workTasks[operation]?.cancel() }
-        }
-    }
-
     public func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult {
         let cancellation = EngineCancellation()
         let token = UUID()

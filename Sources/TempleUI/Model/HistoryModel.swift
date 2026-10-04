@@ -752,13 +752,11 @@ public final class HistoryModel: ObservableObject {
         pendingImport = nil
         let sessions = request.sessions.filter { !isInTemple($0.id) }
         guard !sessions.isEmpty else { return }
-        let entries = await overlay.prepareImports(sessions)
-        guard !Task.isCancelled else { return }
-        finishImport(entries, sessions: sessions, undoManager: undoManager)
+        finishImport(overlay.prepareImports(sessions), sessions: sessions, undoManager: undoManager)
     }
 
     private func finishImport(_ prepared: [PreparedSessionImport], sessions: [TranscriptSummary], undoManager: UndoManager?) {
-        // A session may have been opened or imported while parsing was in flight.
+        // Redo replays entries captured earlier: skip any that joined since.
         let entries = prepared.filter { !overlay.isTempleSession($0.id) }
         let ids = Set(entries.map(\.id))
         let sessions = sessions.filter { ids.contains($0.id) }

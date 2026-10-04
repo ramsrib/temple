@@ -372,14 +372,7 @@ public final class AppModel: ObservableObject {
                 }
             }
             .store(in: &cancellables)
-        if let source = resolvedIndexSource as? WatcherIndexSource {
-            source.setEnrichmentWanted(overlay.missingCoreFields)
-            let engines = source.engines
-            overlay.importSummaryReader = { summary in
-                guard let engine = engines.first(where: { $0.host == summary.locator.host }) else { return nil }
-                return await engine.summaryForImport(summary)
-            }
-        }
+        (resolvedIndexSource as? WatcherIndexSource)?.setEnrichmentWanted(overlay.missingCoreFields)
         wire()
         wireHistory(database: database)
         // NB: detection is NOT started here. It runs real binaries (`claude --version`),

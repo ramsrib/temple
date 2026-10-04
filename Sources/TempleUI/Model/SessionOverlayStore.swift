@@ -213,54 +213,23 @@ public final class SessionOverlayStore: ObservableObject {
     /// failures, keyed by id, with the error as thrown (ADR-023: not retried;
     /// a failed session simply stays out).
     public func importSessions(_ summaries: [TranscriptSummary]) -> [String: Error] {
-        importCore(summaries.map { ($0.id, $0.agent, $0.locator.localURL,
-            SessionCore(host: $0.locator.host, directory: $0.cwd,
-                directorySource: $0.cwd == nil ? nil : .transcript,
-                title: $0.titleFact, lastActiveAt: $0.modifiedAt)) })
+        importPreparedSessions(prepareImports(summaries))
     }
 
-    /// Revalidate catalog facts before committing an import. Parsing is bounded to four
-    /// workers and runs off-main; membership is checked again at commit time.
-    var importSummaryReader: @Sendable (TranscriptSummary) async -> TranscriptSummary? = { summary in
-        guard summary.locator.host.isLocal else { return nil }
-        let engine = SessionEngine(source: LocalSessionSource())
-        return await engine.summaryForImport(summary)
-    }
-
-    func prepareImports(_ sessions: [TranscriptSummary]) async -> [PreparedSessionImport] {
-        let sessions = sessions.filter { !templeSessions.contains($0.id) }
-        let read = importSummaryReader
-        guard !Task.isCancelled else { return [] }
-        return await withTaskGroup(of: (Int, PreparedSessionImport?).self) { group in
-            var next = 0
-            var results: [Int: PreparedSessionImport] = [:]
-            func enqueue(_ index: Int) {
-                let session = sessions[index]
-                group.addTask(priority: .userInitiated) {
-                    guard !Task.isCancelled else { return (index, nil) }
-                    let summary = await read(session)
-                    guard !Task.isCancelled else { return (index, nil) }
-                    let facts = summary?.id == session.id && summary?.locator.host == session.locator.host ? summary : nil
-                    return (index, PreparedSessionImport(id: session.id, agent: session.agent,
-                        path: session.locator.localURL, core: SessionCore(host: session.locator.host, directory: facts?.cwd,
-                            directorySource: facts?.cwd == nil ? nil : .transcript,
-                            title: facts?.titleFact, lastActiveAt: facts?.modifiedAt)))
-                }
-            }
-            while next < min(4, sessions.count), !Task.isCancelled { enqueue(next); next += 1 }
-            while let (index, entry) = await group.next() {
-                guard !Task.isCancelled else { group.cancelAll(); return [] }
-                results[index] = entry
-                if next < sessions.count { enqueue(next); next += 1 }
-            }
-            return Task.isCancelled ? [] : sessions.indices.compactMap { results[$0] }
+    /// The catalog row's own transcript facts, committed at join (NULL-only,
+    /// transcript-sourced). The engine verifies and enriches the member after
+    /// it joins, like any other; there is no second parse in between.
+    func prepareImports(_ sessions: [TranscriptSummary]) -> [PreparedSessionImport] {
+        sessions.filter { !templeSessions.contains($0.id) }.map { summary in
+            PreparedSessionImport(id: summary.id, agent: summary.agent, path: summary.locator.localURL,
+                core: SessionCore(host: summary.locator.host, directory: summary.cwd,
+                    directorySource: summary.cwd == nil ? nil : .transcript,
+                    title: summary.titleFact, lastActiveAt: summary.modifiedAt))
         }
     }
 
     public func importCatalogSessions(_ sessions: [TranscriptSummary]) async -> [String: Error] {
-        let entries = await prepareImports(sessions)
-        guard !Task.isCancelled else { return cancellationFailures(sessions.map(\.id)) }
-        return importPreparedSessions(entries)
+        importSessions(sessions)
     }
 
     func importPreparedSessions(_ entries: [PreparedSessionImport]) -> [String: Error] {
