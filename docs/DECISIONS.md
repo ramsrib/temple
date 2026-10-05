@@ -1433,12 +1433,26 @@ become the launch path. A catalog cache had to be something that file was not.
   list of agents for a missing key to disagree with. A failed listing, a
   store root that is not there (ADR-030) or that went away or was replaced
   during the read, a cancelled read and a lost transport complete nothing.
-  Nor does a listing that passed over a place a transcript could be: browsing
-  keeps its exclusions (Codex skips hidden entries; neither store follows a
-  symbolic link to a directory), but a listing that met a hidden directory, a
-  hidden file with a rollout's name, or a link to a directory is not
-  exhaustive, and an agent is completed only by an exhaustive one. A hidden
-  file that could not be a transcript (`.DS_Store`) changes nothing. The cache forgets a path, and History drops a
+  Nor does a listing that is not exhaustive. Browsing keeps its exclusions
+  (Codex skips hidden entries; neither store follows a symbolic link to a
+  directory), so what a listing lists cannot be the evidence; one
+  conservative rule (`ListingAudit`), applied in the same pass to every entry
+  either store's listing meets under its root, decides instead:
+
+  | the listing met                                        | exhaustive |
+  |--------------------------------------------------------|------------|
+  | a plain directory or file                              | yes        |
+  | `.DS_Store`                                            | yes        |
+  | any other hidden entry (dot name or hidden flag)       | no         |
+  | any symbolic link: to a file or a directory, hidden or not, dangling or not | no |
+  | an error reading an entry's metadata, or metadata that does not say | no |
+  | an error from the enumerator                           | no (the listing fails, as it did) |
+
+  A link's target is never inspected. Two review rounds found new holes in
+  classifying what a hidden entry or a link could hold; this rule does not
+  classify, and costs only completeness on stores that keep links or hidden
+  entries under their roots, which then browse as before and prove nothing
+  absent. The cache forgets a path, and History drops a
   row it showed before, only within completed coverage; until this, History
   pruned every row a read had not seen, so one failed store emptied that
   agent's history from the page.
