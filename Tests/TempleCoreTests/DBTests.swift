@@ -1320,6 +1320,10 @@ extension DBTests {
         XCTAssertEqual(try db.sessionState("x")?.archiveReason?.rawValue, "from_the_future")
     }
 
+    /// An idle cutoff every row in these tests passes (joins stamp now).
+    private static let idleCutoff = Date.distantFuture
+    private static let farFuture = Date.distantFuture
+
     private func missing(_ refs: [MembershipRef]) -> [AutoArchiveEntry] {
         refs.map { AutoArchiveEntry(ref: $0, reason: .transcriptMissing) }
     }
@@ -1356,14 +1360,14 @@ extension DBTests {
         try db.setOpenTabs(projectPath: "/p", sessionIDs: ["tab"])
         // Temple archived it, then an older build restored it: the reason
         // is left behind, and reads as kept.
-        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "stale")])), ["stale"])
+        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "stale")]), idleBefore: Self.idleCutoff), ["stale"])
         try olderBuildSetArchived(queue, false, "stale")
         let refs = try ["eligible", "pinned", "archived", "kept", "stale", "tab"].map { try ref(db, $0) }
         let wrongIncarnation = MembershipRef(id: "wrong-inc", host: .local, incarnation: "not-it")
         let wrongHost = MembershipRef(id: "remote", host: .local, incarnation: try XCTUnwrap(db.sessionState("remote")?.incarnation))
         let before = observed.snapshot().rows.count
 
-        XCTAssertEqual(try db.autoArchive(missing(refs + [wrongIncarnation, wrongHost])), ["eligible"])
+        XCTAssertEqual(try db.autoArchive(missing(refs + [wrongIncarnation, wrongHost]), idleBefore: Self.idleCutoff), ["eligible"])
         XCTAssertEqual(Array(observed.snapshot().rows.dropFirst(before)), ["eligible"], "one row change, after commit")
         let eligible = try XCTUnwrap(db.sessionState("eligible"))
         XCTAssertTrue(eligible.archived)
@@ -1376,7 +1380,7 @@ extension DBTests {
         for id in ["kept", "stale", "tab", "wrong-inc", "remote"] {
             XCTAssertFalse(try XCTUnwrap(db.sessionState(id)).archived, id)
         }
-        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "eligible")])), [], "already archived: nothing")
+        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "eligible")]), idleBefore: Self.idleCutoff), [], "already archived: nothing")
     }
 
     func testABatchArchiveIsOneTransaction() throws {
@@ -1387,7 +1391,7 @@ extension DBTests {
             refs.append(try ref(db, "s\(index)"))
         }
         trace.reset()
-        XCTAssertEqual(try db.autoArchive(missing(refs)).count, 50)
+        XCTAssertEqual(try db.autoArchive(missing(refs), idleBefore: Self.idleCutoff).count, 50)
         let statements = trace.statements
         XCTAssertEqual(statements.filter { $0.hasPrefix("BEGIN") }.count, 1, statements.joined(separator: "\n"))
         XCTAssertEqual(statements.filter { $0.hasPrefix("COMMIT") }.count, 1)
@@ -1399,7 +1403,7 @@ extension DBTests {
         let observed = ObservationBox()
         _ = db.observeRowChanges { observed.append(.rows, $0) }
         try db.join(sessionID: "s", via: .imported)
-        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "s")])), ["s"])
+        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "s")]), idleBefore: Self.idleCutoff), ["s"])
         let when = Date(timeIntervalSince1970: 1_800_000_000)
         try db.setArchived(false, sessionID: "s", at: when)
         var state = try XCTUnwrap(db.sessionState("s"))
@@ -1425,7 +1429,7 @@ extension DBTests {
     func testActivitySpendsAKeepAndARestoredRowsLeftoverReason() throws {
         let (db, queue) = try rawDatabase()
         for id in ["restored", "old-build", "archived"] { try db.join(sessionID: id, via: .imported) }
-        XCTAssertEqual(try db.autoArchive(missing(try ["restored", "old-build", "archived"].map { try ref(db, $0) })),
+        XCTAssertEqual(try db.autoArchive(missing(try ["restored", "old-build", "archived"].map { try ref(db, $0) }), idleBefore: Self.idleCutoff),
                        ["restored", "old-build", "archived"])
         try db.setArchived(false, sessionID: "restored")
         try olderBuildSetArchived(queue, false, "old-build")
@@ -1439,15 +1443,99 @@ extension DBTests {
         }
         XCTAssertEqual(try db.sessionState("archived")?.archiveReason, .transcriptMissing, "still Temple's archive")
         // Eligible again (the policy's idle week is what holds it off now).
-        XCTAssertEqual(try db.autoArchive([AutoArchiveEntry(ref: try ref(db, "restored"), reason: .folderMissing)]), ["restored"])
+        try db.observeLaunchDirectory(sessionID: "restored", host: .local, "/p")
+        XCTAssertEqual(try db.autoArchive([AutoArchiveEntry(ref: try ref(db, "restored"), reason: .folderMissing, directory: "/p")], idleBefore: Self.farFuture), ["restored"])
         XCTAssertEqual(try db.sessionState("restored")?.archiveReason, .folderMissing)
+    }
+
+    /// A keep is spent only by activity after the restore, compared with
+    /// the keep itself, never with the stored activity date.
+    func testOnlyActivityAfterTheRestoreSpendsTheKeep() throws {
+        let (db, queue) = try rawDatabase()
+        for id in ["late-flush", "equal", "future"] { try db.join(sessionID: id, via: .imported) }
+        XCTAssertEqual(try db.autoArchive(missing(try ["late-flush", "equal", "future"].map { try ref(db, $0) }),
+                                          idleBefore: Self.idleCutoff).count, 3)
+        let restoredAt = Date(timeIntervalSince1970: 1_900_000_000)
+        for id in ["late-flush", "equal", "future"] { try db.setArchived(false, sessionID: id, at: restoredAt) }
+
+        // Typing from before the restore, flushed after it: the date moves, the keep stays.
+        try db.touch(sessionID: "late-flush", host: .local, at: restoredAt.addingTimeInterval(-60))
+        var state = try XCTUnwrap(db.sessionState("late-flush"))
+        XCTAssertEqual(state.lastActiveAt, restoredAt.addingTimeInterval(-60))
+        XCTAssertEqual(state.keptAt, restoredAt)
+        XCTAssertEqual(state.archiveReason, .transcriptMissing)
+        // At the very instant of the restore: not after it.
+        try db.touch(sessionID: "equal", host: .local, at: restoredAt)
+        XCTAssertEqual(try db.sessionState("equal")?.keptAt, restoredAt)
+
+        // A stored activity date in the future (a transcript's mtime): later
+        // activity does not move it back, but does spend the keep.
+        let future = restoredAt.addingTimeInterval(86_400 * 365)
+        try queue.write { try $0.execute(sql: "UPDATE session_state SET last_active_at = ? WHERE id = 'future'", arguments: [future]) }
+        try db.touch(sessionID: "future", host: .local, at: restoredAt.addingTimeInterval(1))
+        state = try XCTUnwrap(db.sessionState("future"))
+        XCTAssertEqual(state.lastActiveAt, future, "never backwards")
+        XCTAssertNil(state.keptAt)
+        XCTAssertNil(state.archiveReason)
+        // ...and the plain case: a later touch spends it.
+        try db.touch(sessionID: "late-flush", host: .local, at: restoredAt.addingTimeInterval(1))
+        XCTAssertNil(try db.sessionState("late-flush")?.keptAt)
+    }
+
+    /// The write rechecks what the plan read, so another connection's
+    /// activity or launch folder between planning and commit wins.
+    func testTheArchiveWriteRechecksIdlenessAndTheFolderAgainstAnotherConnection() throws {
+        let (planner, path) = try database()
+        let other = try TempleDB(path: path)
+        let longAgo = Date(timeIntervalSince1970: 1_000_000_000)
+        for id in ["touched", "moved", "idle", "gone"] {
+            try planner.join(sessionID: id, via: .imported, agent: .claude,
+                             core: SessionCore(directory: "/gone", directorySource: .tab, lastActiveAt: longAgo))
+        }
+        // A row with no date at all (a legacy row) is idle, as the policy reads it.
+        let raw = try DatabaseQueue(path: path.path)
+        try raw.write { try $0.execute(sql: "INSERT INTO session_state (id) VALUES ('undated')") }
+        try raw.close()
+        let cutoff = Date(timeIntervalSince1970: 1_500_000_000)
+        let entries = try [
+            AutoArchiveEntry(ref: ref(planner, "touched"), reason: .transcriptMissing),
+            AutoArchiveEntry(ref: ref(planner, "moved"), reason: .folderMissing, directory: "/gone"),
+            AutoArchiveEntry(ref: ref(planner, "idle"), reason: .transcriptMissing),
+            AutoArchiveEntry(ref: ref(planner, "gone"), reason: .folderMissing, directory: "/gone"),
+            AutoArchiveEntry(ref: ref(planner, "gone"), reason: .folderMissing),   // no folder named: refused
+        ]
+        try other.touch(sessionID: "touched", host: .local, at: Date(timeIntervalSince1970: 1_600_000_000))
+        try other.observeLaunchDirectory(sessionID: "moved", host: .local, "/found")
+        XCTAssertEqual(try planner.autoArchive(Array(entries.prefix(4)), idleBefore: cutoff), ["idle", "gone"])
+        XCTAssertEqual(try planner.sessionState("gone")?.archiveReason, .folderMissing)
+
+        // Recent by its join date alone (no activity, no open): not idle.
+        try planner.join(sessionID: "joined-now", via: .imported)
+        XCTAssertEqual(try planner.autoArchive(missing([try ref(planner, "joined-now")]), idleBefore: cutoff), [])
+        XCTAssertEqual(try planner.autoArchive([entries[4]], idleBefore: Self.idleCutoff), [])
+        XCTAssertEqual(try planner.autoArchive(missing([try ref(planner, "undated")]), idleBefore: cutoff), ["undated"])
+    }
+
+    /// Undo Import may remove a row only Temple archived; a person's restore
+    /// of it is a decision, and keeps it.
+    func testUndoImportRefusesARowAPersonRestoredAfterTemplesArchive() throws {
+        let db = try TempleDB.inMemory()
+        for id in ["untouched", "restored", "undone"] { try db.join(sessionID: id, via: .imported, agent: .claude) }
+        XCTAssertEqual(try db.autoArchive(missing(try ["untouched", "restored", "undone"].map { try ref(db, $0) }),
+                                          idleBefore: Self.idleCutoff).count, 3)
+        try db.setArchived(false, sessionID: "restored")                                   // Restore
+        XCTAssertEqual(try db.restoreTempleArchives([try ref(db, "undone")]), ["undone"])  // the notice's Undo
+        XCTAssertTrue(try db.leave(sessionID: "untouched", host: .local))
+        XCTAssertFalse(try db.leave(sessionID: "restored", host: .local))
+        XCTAssertFalse(try db.leave(sessionID: "undone", host: .local))
+        XCTAssertNotNil(try db.sessionState("restored"))
     }
 
     func testRestoreTempleArchivesTouchesOnlyRowsStillCarryingTemplesArchive() throws {
         let db = try TempleDB.inMemory()
         for id in ["a", "b", "c"] { try db.join(sessionID: id, via: .imported) }
         let refs = try ["a", "b", "c"].map { try ref(db, $0) }
-        XCTAssertEqual(try db.autoArchive(missing(refs)), ["a", "b", "c"])
+        XCTAssertEqual(try db.autoArchive(missing(refs), idleBefore: Self.idleCutoff), ["a", "b", "c"])
         try db.setArchived(false, sessionID: "b")               // restored by hand since
         try db.setArchived(true, sessionID: "c")                // now the user's archive
         try db.join(sessionID: "d", via: .imported)
@@ -1468,7 +1556,7 @@ extension DBTests {
         XCTAssertEqual(try db.sessionState("user")?.archivedAt, first)
         try db.setArchived(true, sessionID: "user", at: later)
         XCTAssertEqual(try db.sessionState("user")?.archivedAt, first, "nothing changed, nothing written")
-        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "temple")]), at: first), ["temple"])
+        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "temple")]), idleBefore: Self.idleCutoff, at: first), ["temple"])
         XCTAssertEqual(try db.sessionState("temple")?.archivedAt, first)
         // The user archives what Temple had: it becomes theirs, dated now.
         try db.setArchived(true, sessionID: "temple", at: later)
@@ -1481,7 +1569,7 @@ extension DBTests {
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "temple", via: .imported, agent: .claude)
         try db.join(sessionID: "user", via: .imported, agent: .claude)
-        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "temple")])), ["temple"])
+        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "temple")]), idleBefore: Self.idleCutoff), ["temple"])
         try db.setArchived(true, sessionID: "user")
         XCTAssertTrue(try db.leave(sessionID: "temple", host: .local))
         XCTAssertFalse(try db.leave(sessionID: "user", host: .local))

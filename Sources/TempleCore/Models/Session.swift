@@ -23,8 +23,10 @@ public struct Session: Identifiable, Hashable, Sendable {
     /// The engine finished looking and no transcript carries this id: the
     /// row stays, but nothing on disk can resume it (pruned, or deleted).
     public var transcriptConfirmedMissing: Bool { resolution == .confirmedAbsent }
-    /// Archived by Temple, not by the user: the CLI had removed its
-    /// transcript (ADR-030). It comes back on its own if the file does.
+    /// Archived by Temple, not by the user (ADR-030): the CLI had removed its
+    /// transcript, or its folder no longer exists. Only a person brings it
+    /// back (the notice's Undo, Restore, opening it); a file or folder that
+    /// turns up again does not.
     public var archivedByTemple: Bool { state.archived && state.archiveReason != nil }
     public var transcript: TranscriptLocator? {
         guard case .loaded(let locator) = resolution, locator.host == host else { return nil }

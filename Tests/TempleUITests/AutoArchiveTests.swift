@@ -39,9 +39,26 @@ final class AutoArchiveTests: XCTestCase {
     private let clock = Date(timeIntervalSince1970: 1_900_000_000)
 
     /// Folder answers a test hands the sweep, and the questions it asked.
-    final class Folders {
+    /// While `held`, every answer waits until `release()`: the sweep is
+    /// suspended between gathering and planning.
+    @MainActor final class Folders {
         var evidence: [String: DirectoryEvidence] = [:]
         var asked: [String] = []
+        var held = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+        var waiting: Bool { !waiters.isEmpty }
+
+        func answer(_ path: String) async -> DirectoryEvidence {
+            asked.append(path)
+            if held { await withCheckedContinuation { waiters.append($0) } }
+            return evidence[path] ?? .unknown
+        }
+
+        func release() {
+            held = false
+            let pending = waiters; waiters.removeAll()
+            pending.forEach { $0.resume() }
+        }
     }
 
     @MainActor private struct Harness {
@@ -52,9 +69,18 @@ final class AutoArchiveTests: XCTestCase {
         let folders: Folders
         var generation: UInt64 = 0
 
-        mutating func publish(_ resolutions: [String: MemberResolution]) {
+        /// A snapshot as the engine publishes it: each verdict names the
+        /// membership it is about (the row's current one unless given).
+        mutating func publish(_ resolutions: [String: MemberResolution], memberships: [String: MembershipRef] = [:]) {
             generation += 1
-            model.receiveEngineSnapshot(EngineSnapshot(generation: generation, resolutions: resolutions))
+            var refs = memberships
+            for id in resolutions.keys where refs[id] == nil { refs[id] = ref(id) }
+            model.receiveEngineSnapshot(EngineSnapshot(generation: generation, resolutions: resolutions, memberships: refs))
+        }
+
+        func ref(_ id: String) -> MembershipRef? {
+            guard let state = state(id), let incarnation = state.incarnation else { return nil }
+            return MembershipRef(id: id, host: state.host, incarnation: incarnation)
         }
 
         /// Fire, let the sweep finish, until it stops re-arming itself (its
@@ -86,10 +112,7 @@ final class AutoArchiveTests: XCTestCase {
         let scheduler = ManualSweepScheduler()
         model.archiveSweepScheduler = scheduler.schedule
         let folders = Folders()
-        model.folderEvidence = { key in
-            folders.asked.append(key.path)
-            return folders.evidence[key.path] ?? .unknown
-        }
+        model.folderEvidence = { key in await folders.answer(key.path) }
         let clock = clock
         model.now = { clock }
         model.history.catalog = { AsyncStream { $0.finish() } }
@@ -150,20 +173,102 @@ final class AutoArchiveTests: XCTestCase {
             "both": state("both", "/gone", nil, nil), "here": state("here", "/here", nil, nil),
             "unknown": state("unknown", "/unknown", nil, nil), "no-folder": state("no-folder", nil, nil, nil),
             "kept": state("kept", "/gone", nil, Date()), "stale": state("stale", "/gone", .transcriptMissing, nil),
+            "rejoined": state("rejoined", nil, nil, nil),
             "no-incarnation": SessionState(id: "no-incarnation", pinned: false, archived: false, customName: nil, color: nil,
                                            generatedTitle: nil, lastOpenedAt: nil, joinedVia: nil, joinedAt: nil),
         ]
-        let resolutions: [String: MemberResolution] = ["a": .confirmedAbsent, "both": .confirmedAbsent,
-                                                       "no-incarnation": .confirmedAbsent]
-        XCTAssertEqual(AutoArchivePolicy.foldersToCheck(rows: rows.values, resolutions: resolutions, openSessionIDs: [], now: clock),
+        let ref = { (id: String) in MembershipRef(id: id, host: .local, incarnation: "i-\(id)") }
+        let snapshot = EngineSnapshot(
+            generation: 1,
+            resolutions: ["a": .confirmedAbsent, "both": .confirmedAbsent, "rejoined": .confirmedAbsent,
+                          "no-incarnation": .confirmedAbsent],
+            memberships: ["a": ref("a"), "both": ref("both"),
+                          // The verdict is about an earlier membership of the id.
+                          "rejoined": MembershipRef(id: "rejoined", host: .local, incarnation: "earlier")])
+        XCTAssertEqual(AutoArchivePolicy.foldersToCheck(rows: rows.values, snapshot: snapshot, openSessionIDs: [], now: clock),
                        [Fixture.key("/gone"), Fixture.key("/here"), Fixture.key("/unknown")])
         let plan = AutoArchivePolicy.plan(
-            rows: rows.values, resolutions: resolutions,
+            rows: rows.values, snapshot: snapshot,
             folders: [Fixture.key("/gone"): .missing, Fixture.key("/here"): .exists, Fixture.key("/unknown"): .unknown],
             openSessionIDs: [], now: clock)
-        XCTAssertEqual(plan.map(\.ref.id), ["a", "b", "both"])
+        XCTAssertEqual(plan.map(\.ref.id), ["a", "b", "both"], "not the rejoined row: the absence was another membership's")
         XCTAssertEqual(plan.map(\.reason), [.transcriptMissing, .folderMissing, .transcriptMissing], "the transcript wins")
+        XCTAssertEqual(plan.map(\.directory), [nil, "/gone", nil], "a folder archive names the folder")
         XCTAssertEqual(plan.first?.ref.incarnation, "i-a")
+    }
+
+    /// A verdict is about a membership. Leave and rejoin the same id (with an
+    /// old activity date, so it is idle) while the sweep waits on a folder:
+    /// the absence the snapshot still carries was the old membership's.
+    func testAnOldMembershipsAbsenceIsNotTheRejoinsWhileTheSweepIsSuspended() async throws {
+        var h = harness([row("a", project: nil), row("b", project: "/slow")])
+        h.publish(["a": .confirmedAbsent])
+        let old = try XCTUnwrap(h.ref("a"))
+        h.folders.held = true
+        h.scheduler.fire()
+        try await waitFor { h.folders.waiting }
+
+        XCTAssertTrue(try h.database.leave(sessionID: "a", host: .local))
+        try h.database.join(sessionID: "a", via: .imported, agent: .claude,
+                            core: SessionCore(lastActiveAt: Date(timeIntervalSince1970: 0)))
+        XCTAssertNotEqual(h.ref("a"), old)
+        h.folders.release()
+        await h.model.archiveSweep?.value
+        await h.settle()
+        XCTAssertEqual(h.archived(["a"]), [], "the rejoin is not proven gone")
+        XCTAssertNil(h.model.autoArchiveNotice)
+
+        // The engine's verdict about the new membership does.
+        h.publish(["a": .confirmedAbsent])
+        await h.settle()
+        XCTAssertEqual(h.archived(["a"]), ["a"])
+    }
+
+    /// While the sweep waits on folder evidence, the user acts: each act is
+    /// seen when it plans, because it plans after the wait.
+    func testWhatHappensDuringASuspendedSweepIsRespected() async throws {
+        let ids = ["control", "opened", "pinned", "restored", "left"]
+        var h = harness(ids.map { row($0, project: "/gone") })
+        h.folders.evidence = ["/gone": .missing]
+        h.overlay.setArchived(true, sessionID: "restored")
+        h.publish([:])
+        h.folders.held = true
+        h.scheduler.fire()
+        try await waitFor { h.folders.waiting }
+
+        h.model.openSessions.openSession(try XCTUnwrap(h.model.sessions.first { $0.id == "opened" }))
+        h.overlay.togglePin("pinned")
+        h.model.restoreSession("restored", undoManager: nil)
+        XCTAssertEqual(h.model.overlay.leave([SessionKey(id: "left", host: .local)]), ["left"])
+        h.folders.release()
+        await h.model.archiveSweep?.value
+        await h.settle()
+
+        XCTAssertEqual(h.archived(ids), ["control"])
+        XCTAssertNil(h.state("left"))
+        XCTAssertEqual(h.model.autoArchiveNotice?.memberships.map(\.id), ["control"])
+    }
+
+    /// A model nobody turned the sweep on for (every test fixture, every
+    /// tool) never archives anything.
+    func testTheSweepIsOffUnlessTheAppTurnsItOn() async throws {
+        let database = try TempleDB.inMemory()
+        Fixture.join([row("gone")], to: database)
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+                             engines: [FakeEngine(CatalogFixtureIndex(projects: []))], database: database,
+                             settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
+        let incarnation = try XCTUnwrap(database.sessionState("gone")?.incarnation)
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["gone": .confirmedAbsent],
+            memberships: ["gone": MembershipRef(id: "gone", host: .local, incarnation: incarnation)]))
+        try await Task.sleep(for: .milliseconds(1300))
+        XCTAssertEqual(try database.sessionState("gone")?.archived, false)
+        XCTAssertNil(model.autoArchiveNotice)
+    }
+
+    private func waitFor(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let end = Date().addingTimeInterval(3)
+        while !condition(), Date() < end { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertTrue(condition(), "condition never held", file: file, line: line)
     }
 
     // MARK: Folder gone
@@ -194,9 +299,9 @@ final class AutoArchiveTests: XCTestCase {
         await h.settle()
         XCTAssertEqual(h.model.autoArchiveNotice?.message, "Archived 2 sessions whose transcripts or folders are gone")
         XCTAssertEqual(h.model.autoArchiveNotice?.help,
-                       "Without a transcript on disk or its folder a session can't resume. They're in History under Archived; Restore brings one back.")
+                       "Without a transcript on disk or its folder a session can't resume. They're in Archived items (⌘⇧Y); Restore brings one back.")
         XCTAssertEqual(AppModel.AutoArchiveNotice(entries: [AutoArchiveEntry(ref: MembershipRef(id: "x", host: .local, incarnation: "i"), reason: .transcriptMissing)]).help,
-                       "Without a transcript on disk a session can't resume. They're in History under Archived; Restore brings one back.")
+                       "Without a transcript on disk a session can't resume. They're in Archived items (⌘⇧Y); Restore brings one back.")
     }
 
     func testTheSweepRunsAtLaunchAndWhenTheAppComesForward() async {

@@ -10,7 +10,9 @@ import TempleCore
 /// archived, no tab open or restored, idle for `idleAfter`, and not kept by
 /// a person (a keep lasts until the session's next activity). A candidate
 /// is archived on proof alone: its transcript is `.confirmedAbsent` (a
-/// completed enumeration), or its owning host says its folder is
+/// completed enumeration) for this very membership (the snapshot's host and
+/// incarnation for the id must be the row's: an old membership's verdict
+/// says nothing about a rejoin), or its owning host says its folder is
 /// `.missing`. Every other verdict, `.unknown` and `.exists` prove nothing.
 /// When both hold, the transcript is the reason.
 struct AutoArchivePolicy {
@@ -36,22 +38,29 @@ struct AutoArchivePolicy {
 
     /// The folders worth asking about: a candidate's, unless its transcript
     /// already decides it. One question per folder, however many rows.
-    static func foldersToCheck(rows: Dictionary<String, SessionState>.Values, resolutions: [String: MemberResolution],
+    /// The transcript verdict holds for this candidate: an absence the
+    /// engine proved for this very membership.
+    static func transcriptGone(_ ref: MembershipRef, in snapshot: EngineSnapshot?) -> Bool {
+        guard let snapshot else { return false }
+        return snapshot.resolutions[ref.id] == .confirmedAbsent && snapshot.memberships[ref.id] == ref
+    }
+
+    static func foldersToCheck(rows: Dictionary<String, SessionState>.Values, snapshot: EngineSnapshot?,
                                openSessionIDs: Set<String>, now: Date) -> Set<ProjectKey> {
         Set(candidates(rows: rows, openSessionIDs: openSessionIDs, now: now).compactMap { candidate in
-            resolutions[candidate.state.id] == .confirmedAbsent ? nil : Session(state: candidate.state).project
+            transcriptGone(candidate.ref, in: snapshot) ? nil : Session(state: candidate.state).project
         })
     }
 
-    static func plan(rows: Dictionary<String, SessionState>.Values, resolutions: [String: MemberResolution],
+    static func plan(rows: Dictionary<String, SessionState>.Values, snapshot: EngineSnapshot?,
                      folders: [ProjectKey: DirectoryEvidence], openSessionIDs: Set<String>,
                      now: Date) -> [AutoArchiveEntry] {
         candidates(rows: rows, openSessionIDs: openSessionIDs, now: now).compactMap { candidate in
-            if resolutions[candidate.state.id] == .confirmedAbsent {
+            if transcriptGone(candidate.ref, in: snapshot) {
                 return AutoArchiveEntry(ref: candidate.ref, reason: .transcriptMissing)
             }
             if let project = Session(state: candidate.state).project, folders[project] == .missing {
-                return AutoArchiveEntry(ref: candidate.ref, reason: .folderMissing)
+                return AutoArchiveEntry(ref: candidate.ref, reason: .folderMissing, directory: project.path)
             }
             return nil
         }

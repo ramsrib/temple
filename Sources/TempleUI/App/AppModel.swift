@@ -57,6 +57,7 @@ public final class AppModel: ObservableObject {
     func receiveEngineSnapshot(_ snapshot: EngineSnapshot) {
         if let latestEngineSnapshot, snapshot.generation < latestEngineSnapshot.generation { return }
         let resolutionsChanged = latestEngineSnapshot?.resolutions != snapshot.resolutions
+        let previousMemberships = latestEngineSnapshot?.memberships
         latestEngineSnapshot = snapshot
         applyingEngineSnapshot = true
         overlay.applyFacts(snapshot.facts)
@@ -68,7 +69,8 @@ public final class AppModel: ObservableObject {
             engineSet.ownershipChanged()
         }
         if rowPresentationDirty || resolutionsChanged { rebuildSessions() }
-        if resolutionsChanged { armArchiveSweep() }
+        // A verdict, or the membership a verdict is about, changed.
+        if resolutionsChanged || previousMemberships != snapshot.memberships { armArchiveSweep() }
         // An archived row is not resolved (the engine does not watch it),
         // so it is not waited for.
         if !sidebarRanksFrozen && builtSessions.allSatisfy({ row in
@@ -201,10 +203,23 @@ public final class AppModel: ObservableObject {
 
     /// The sweep's clock (tests move it).
     var now: () -> Date = Date.init
-    /// A cancellable one-shot scheduler for the sweep; tests fire it by hand.
-    var archiveSweepScheduler: (TimeInterval, @escaping @MainActor () -> Void) -> () -> Void = SessionOverlayStore.schedule
-    /// The owning host's answer about a folder (set in `init`; tests replace it).
+    /// A cancellable one-shot scheduler for the sweep. Off (never fires)
+    /// until the app turns it on (`enableArchiveSweep`): a model built by a
+    /// test or a tool archives nothing behind its back. Tests that sweep
+    /// install their own.
+    var archiveSweepScheduler: (TimeInterval, @escaping @MainActor () -> Void) -> () -> Void = { _, _ in {} }
+    /// The owning host's answer about a folder: nothing is known until the
+    /// app turns the sweep on.
     var folderEvidence: (ProjectKey) async -> DirectoryEvidence = { _ in .unknown }
+
+    /// The app's own sweep: a real timer and each host's folder evidence.
+    /// Called by the one view both entry points show (`StartupRootView`),
+    /// before `start()`.
+    public func enableArchiveSweep() {
+        archiveSweepScheduler = SessionOverlayStore.schedule
+        let hosts = hostRegistry
+        folderEvidence = { key in await hosts.entry(for: key.host)?.source.directoryEvidence(key.path) ?? .unknown }
+    }
     private var pendingArchiveSweep: (() -> Void)?
     /// The sweep in flight, if any: it awaits folder evidence before it plans.
     private(set) var archiveSweep: Task<Void, Never>?
@@ -238,7 +253,7 @@ public final class AppModel: ObservableObject {
             let reasons = Set(entries.map(\.reason))
             let without = reasons == [.transcriptMissing] ? "a transcript on disk"
                 : reasons == [.folderMissing] ? "its folder" : "a transcript on disk or its folder"
-            return "Without \(without) a session can't resume. They're in History under Archived; Restore brings one back."
+            return "Without \(without) a session can't resume. They're in Archived items (⌘⇧Y); Restore brings one back."
         }
     }
     @Published public private(set) var autoArchiveNotice: AutoArchiveNotice?
@@ -267,18 +282,21 @@ public final class AppModel: ObservableObject {
     /// changes arm one more sweep, which finds nothing left to do.
     private func runArchiveSweep() async {
         guard !openSessions.isQuitting else { return }
-        let resolutions = latestEngineSnapshot?.resolutions ?? [:]
         let folders = AutoArchivePolicy.foldersToCheck(
-            rows: overlay.rows.values, resolutions: resolutions,
+            rows: overlay.rows.values, snapshot: latestEngineSnapshot,
             openSessionIDs: Set(openSessions.openSessionIDsInTabOrder), now: now())
         var evidence: [ProjectKey: DirectoryEvidence] = [:]
         for folder in folders { evidence[folder] = await folderEvidence(folder) }
         guard !openSessions.isQuitting else { return }
+        // Planned again on the state as it is now: a tab opened, a pin, a
+        // restore or a leave during the folder checks is seen here (and the
+        // write's own guards catch what another connection did).
+        let at = now()
         let entries = AutoArchivePolicy.plan(
-            rows: overlay.rows.values, resolutions: latestEngineSnapshot?.resolutions ?? [:],
-            folders: evidence, openSessionIDs: Set(openSessions.openSessionIDsInTabOrder), now: now())
+            rows: overlay.rows.values, snapshot: latestEngineSnapshot,
+            folders: evidence, openSessionIDs: Set(openSessions.openSessionIDsInTabOrder), now: at)
         guard !entries.isEmpty else { return }
-        let archived = Set(overlay.autoArchive(entries))
+        let archived = Set(overlay.autoArchive(entries, idleBefore: at.addingTimeInterval(-AutoArchivePolicy.idleAfter)))
         guard !archived.isEmpty else { return }
         let done = entries.filter { archived.contains($0.ref.id) }
         let folderCount = done.filter { $0.reason == .folderMissing }.count
@@ -457,7 +475,6 @@ public final class AppModel: ObservableObject {
         self.engineSet = engineSet
         self.databaseDirectory = database.fileURL?.deletingLastPathComponent()
         self.notifications = NotificationController()
-        self.folderEvidence = { key in await hosts.entry(for: key.host)?.source.directoryEvidence(key.path) ?? .unknown }
         self.history = HistoryModel(overlay: overlay, catalog: { hosts.catalog() },
             directoryEvidence: { key in await hosts.entry(for: key.host)?.source.directoryEvidence(key.path) ?? .unknown })
 

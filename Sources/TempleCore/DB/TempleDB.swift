@@ -114,11 +114,16 @@ public struct ArchiveReason: RawRepresentable, Hashable, Sendable, Codable {
     }
 }
 
-/// One row Temple archives, and why.
+/// One row Temple archives, and why. A folder-missing archive also names
+/// the folder that was found gone: a row whose directory has changed since
+/// is not archived for it.
 public struct AutoArchiveEntry: Hashable, Sendable {
     public let ref: MembershipRef
     public let reason: ArchiveReason
-    public init(ref: MembershipRef, reason: ArchiveReason) { self.ref = ref; self.reason = reason }
+    public let directory: String?
+    public init(ref: MembershipRef, reason: ArchiveReason, directory: String? = nil) {
+        self.ref = ref; self.reason = reason; self.directory = directory
+    }
 }
 
 /// One membership as a snapshot named it: the id, the host that owns the
@@ -470,7 +475,7 @@ public final class TempleDB: @unchecked Sendable {
                 try database.execute(
                     sql: """
                         UPDATE session_state SET archived = 0, kept_at = ?
-                        WHERE id = ? AND (archived IS NOT 0 OR kept_at IS NULL)
+                        WHERE id = ? AND archived IS NOT 0
                         """,
                     arguments: [at, sessionID]
                 )
@@ -568,9 +573,9 @@ public final class TempleDB: @unchecked Sendable {
     /// Undo of an import: the one write that removes membership. It deletes
     /// the row only while the row still says nothing but how the session
     /// joined — imported, never pinned, named, colored, retitled, archived or
-    /// opened since, and not in a restorable tab. Temple's own archive of a
-    /// row whose transcript vanished (ADR-030) is not a decision and does not
-    /// block it. Anything else and the row
+    /// opened since, and not in a restorable tab. Temple's own archive
+    /// (ADR-030) is not a decision and does not block it; a person's restore
+    /// of it (`kept_at`) is, and does. Anything else and the row
     /// stays: it holds a decision the undo knows nothing about. A transcript
     /// title fill does not block undo: only generated_title records a retitle.
     /// Returns
@@ -589,7 +594,7 @@ public final class TempleDB: @unchecked Sendable {
                     DELETE FROM session_state
                     WHERE id = ? AND host = ? AND joined_via = ?
                       AND (? IS NULL OR agent IS ?) AND (? IS NULL OR incarnation IS ?)
-                      AND pinned = 0 AND (archived = 0 OR archive_reason IS NOT NULL)
+                      AND pinned = 0 AND (archived = 0 OR archive_reason IS NOT NULL) AND kept_at IS NULL
                       AND custom_name IS NULL AND color IS NULL
                       AND generated_title IS NULL AND last_opened_at IS NULL
                       AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
@@ -639,26 +644,35 @@ public final class TempleDB: @unchecked Sendable {
 
     /// Temple's own archive of rows nobody can resume any more (the CLI
     /// removed the transcript, or the folder is gone), in one transaction.
-    /// Each UPDATE carries every guard SQL can see: the membership, not
-    /// archived, not pinned (a refusal, never cleared), not kept, no reason
-    /// left from an earlier archive, and no restorable tab. Returns the ids
-    /// actually archived; each is announced after commit.
+    /// Each UPDATE carries every guard SQL can see, so a write from another
+    /// connection between planning and commit cannot be overridden: the
+    /// membership, not archived, not pinned (a refusal, never cleared), not
+    /// kept, no reason left from an earlier archive, no restorable tab, idle
+    /// since `idleBefore` by the same dates the policy reads (activity, else
+    /// last open, else join; none at all is idle), and for a missing folder,
+    /// still that folder. Returns the ids actually archived; each is
+    /// announced after commit.
     @discardableResult
-    public func autoArchive(_ entries: [AutoArchiveEntry], at: Date = Date()) throws -> [String] {
+    public func autoArchive(_ entries: [AutoArchiveEntry], idleBefore: Date, at: Date = Date()) throws -> [String] {
         guard !entries.isEmpty else { return [] }
         let archived = try db.write { database -> [String] in
             var archived: [String] = []
             for entry in entries {
                 let ref = entry.ref
+                if entry.reason == .folderMissing && entry.directory == nil { continue }
                 try database.execute(
                     sql: """
                         UPDATE session_state SET archived = 1, archive_reason = ?, archived_at = ?
                         WHERE id = ? AND host = ? AND incarnation = ?
                           AND archived = 0 AND pinned = 0
                           AND kept_at IS NULL AND archive_reason IS NULL
+                          AND (COALESCE(last_active_at, last_opened_at, joined_at) IS NULL
+                               OR COALESCE(last_active_at, last_opened_at, joined_at) <= ?)
+                          AND (? IS NULL OR directory = ?)
                           AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
                         """,
-                    arguments: [entry.reason.rawValue, at, ref.id, ref.host.rawValue, ref.incarnation, ref.id])
+                    arguments: [entry.reason.rawValue, at, ref.id, ref.host.rawValue, ref.incarnation,
+                                idleBefore, entry.directory, entry.directory, ref.id])
                 if database.changesCount > 0 { archived.append(ref.id) }
             }
             return archived
@@ -823,17 +837,27 @@ public final class TempleDB: @unchecked Sendable {
         return outcome
     }
 
-    /// Activity from a tab on `host`; never backwards. Activity spends a
-    /// keep (ADR-030): from here the idle week protects the row, and a
-    /// restored row's leftover reason (this build's record, or an older
-    /// build's restore) goes with it.
+    /// Activity from a tab on `host`, at `at`. Two separate effects in one
+    /// statement. The activity date only moves forward. And activity after
+    /// a person's restore spends their keep (ADR-030): from then the idle
+    /// week protects the row, and a restored row's leftover reason goes
+    /// with it. Only activity strictly after `kept_at` counts, compared
+    /// with the keep and not with the stored activity date: activity from
+    /// before the restore, flushed late, keeps it; activity after it spends
+    /// it even when the stored date is ahead (a transcript's future mtime).
+    /// A reason an older build's restore left behind has no stamp to compare
+    /// with, and any activity spends it.
     public func touch(sessionID: String, host: HostID, at: Date = Date()) throws {
         let changed = try db.write { database in
             try database.execute(sql: """
-                UPDATE session_state SET last_active_at = MAX(COALESCE(last_active_at, ?), ?), kept_at = NULL,
-                    archive_reason = CASE WHEN archived = 0 THEN NULL ELSE archive_reason END
-                WHERE id = ? AND host = ? AND (last_active_at IS NULL OR last_active_at < ?)
-                """, arguments: [at, at, sessionID, host.rawValue, at])
+                UPDATE session_state SET
+                    last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END,
+                    archive_reason = CASE WHEN archived = 0 AND (kept_at IS NULL OR ? > kept_at) THEN NULL ELSE archive_reason END,
+                    kept_at = CASE WHEN kept_at IS NOT NULL AND ? > kept_at THEN NULL ELSE kept_at END
+                WHERE id = ? AND host = ?
+                  AND (last_active_at IS NULL OR last_active_at < ? OR (kept_at IS NOT NULL AND ? > kept_at)
+                       OR (archived = 0 AND archive_reason IS NOT NULL AND kept_at IS NULL))
+                """, arguments: [at, at, at, at, sessionID, host.rawValue, at, at])
             return database.changesCount > 0
         }
         if changed { committedRowChange(sessionID) }

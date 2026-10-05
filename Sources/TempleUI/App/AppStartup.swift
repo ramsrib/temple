@@ -157,6 +157,9 @@ public struct StartupRootView: View {
                     .environmentObject(model)
                     .task {
                         appDelegate.model = model
+                        // The archive sweep is the app's alone (ADR-030):
+                        // models built by tests and tools never run it.
+                        model.enableArchiveSweep()
                         model.start()
                         // Snapshot runs must not take focus from the user's work.
                         if activateOnStart,

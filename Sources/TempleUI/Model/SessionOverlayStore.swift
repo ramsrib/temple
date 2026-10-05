@@ -423,9 +423,9 @@ public final class SessionOverlayStore: ObservableObject {
     // and changes nothing on screen; the next sweep plans it again.
 
     /// Archive rows nobody can resume any more. Returns the ids archived.
-    func autoArchive(_ entries: [AutoArchiveEntry]) -> [String] {
+    func autoArchive(_ entries: [AutoArchiveEntry], idleBefore: Date) -> [String] {
         do {
-            return try db.autoArchive(entries, at: now())
+            return try db.autoArchive(entries, idleBefore: idleBefore, at: now())
         } catch {
             TempleUILog.db.error("auto-archive failed: \(String(describing: error), privacy: .public)")
             return []
