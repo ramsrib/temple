@@ -1387,7 +1387,9 @@ become the launch path. A catalog cache had to be something that file was not.
   root is its normalized path and the inode it resolves to *on its
   filesystem*: an inode number means nothing off its own volume, so within a
   run the device (`st_dev`) is part of it, and on disk, where device numbers
-  are not stable across reboots, the volume's UUID is. A moved store, or
+  are not stable across reboots, the volume's UUID is. A volume that reports
+  no UUID has no identity that survives a relaunch, so its summaries are
+  reused within the run and never written to disk. A moved store, or
   another volume mounted at the path, is another root, and drops everything
   kept for the old one.
 - **A stamp is the whole validation, and it includes the change time.** Size,
@@ -1424,12 +1426,19 @@ become the launch path. A catalog cache had to be something that file was not.
   its signature would have reparsed every rollout after any Codex use. A
   shared-title change now costs no transcript read at all.
 - **Absence needs completed coverage, in the catalog too.** A catalog ends
-  with `.completed(agents:candidates:)`, naming only agents whose listing
-  finished and whose every thread was decided, with the store root still
-  there and still the same directory on the same filesystem when the read
-  ends. A failed listing, a store root that is not there (ADR-030) or that
-  went away or was replaced during the read, a cancelled read and a lost
-  transport complete nothing. The cache forgets a path, and History drops a
+  with `.completed(candidates:)`, one mapping whose keys are the agents whose
+  listing finished and whose every thread was decided, with the store root
+  still there and still the same directory on the same filesystem when the
+  read ends. An agent without a key proves nothing; there is no separate
+  list of agents for a missing key to disagree with. A failed listing, a
+  store root that is not there (ADR-030) or that went away or was replaced
+  during the read, a cancelled read and a lost transport complete nothing.
+  Nor does a listing that passed over a place a transcript could be: browsing
+  keeps its exclusions (Codex skips hidden entries; neither store follows a
+  symbolic link to a directory), but a listing that met a hidden directory, a
+  hidden file with a rollout's name, or a link to a directory is not
+  exhaustive, and an agent is completed only by an exhaustive one. A hidden
+  file that could not be a transcript (`.DS_Store`) changes nothing. The cache forgets a path, and History drops a
   row it showed before, only within completed coverage; until this, History
   pruned every row a read had not seen, so one failed store emptied that
   agent's history from the page.
@@ -1439,11 +1448,15 @@ become the launch path. A catalog cache had to be something that file was not.
   completion also carries `candidates`: per completed agent, every session
   id the listing found a transcript file named for, whatever reading it came
   to. That a session has no transcript on a host is proven only by its id
-  missing from the candidates of an agent the completion names
+  missing from the candidate set of an agent the completion covers
   (`CatalogBatch.provesNoTranscript`) — the one fact History may use to say
-  an archived member has none. Every host's catalog reports it; the
-  contract suite checks unreadable and mismatched files are candidates and a
-  removed one, after a completed listing, is not.
+  an archived member has none. Ids on both sides are spelled by the agent's
+  `candidateKey` (lowercased: Codex reads its UUIDs in any case, and a
+  case-insensitive volume finds a Claude file in any case), so a spelling
+  the agent would read as the same session never proves absence. Every
+  host's catalog reports it; the contract suite checks unreadable and
+  mismatched files are candidates, a mixed-case rollout is found in either
+  case, and a removed file, after a completed listing, is not a candidate.
 - **On disk: `history-catalog-cache.s<layout>-f<facts>.sqlite`, in the state
   directory.** The first History read after a relaunch takes every unchanged
   summary from it. This is safe where `index-cache.json` was not, for four
