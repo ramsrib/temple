@@ -433,7 +433,7 @@ Consequences and choices:
 ---
 
 ## ADR-017 — Archive is a visibility mask Temple owns; manual project order sits above recency
-**Date:** 2026-09-06 · **Status:** Accepted
+**Date:** 2026-09-06 · **Status:** Accepted; amended by ADR-030 (Temple archives a session nobody can resume, its transcript or its folder gone)
 
 The sidebar had grown past the point where "grouped by project, newest first"
 found anything: too many finished sessions, too many projects in an order nobody
@@ -1102,7 +1102,7 @@ as a search box over Temple's own sessions, not as history.
 ---
 
 ## ADR-029 — The row is the session; the transcript is enrichment
-**Date:** 2026-10-03 · **Status:** Accepted; amends ADR-007, ADR-009, ADR-011, ADR-027, ADR-028
+**Date:** 2026-10-03 · **Status:** Accepted; amends ADR-007, ADR-009, ADR-011, ADR-027, ADR-028; "the rest are kept" is amended by ADR-030
 
 Temple began as a browser over the CLIs' stores (ADR-007), so a sidebar row
 was a parsed transcript. ADR-023 made membership Temple's own record and
@@ -1223,7 +1223,7 @@ files on this Mac, which a session on another machine will never have.
   too: an opaque membership identity per row, backfilled and set by an
   insert trigger, so every insertion path — this build's join, a setter, an
   older build's own SQL — gets one, and a rejoin after a leave gets a new
-  one. `v12-project-host` (host in `project_state`/`open_tabs` keys) waits
+  one. `v13-project-host` (host in `project_state`/`open_tabs` keys) waits
   for remote, with process exclusion as its precondition.
 - **Recency is Temple's activity, not the file's.** A session resumed in
   another terminal does not move here, as it already did not un-archive
@@ -1249,7 +1249,7 @@ when in doubt. The Codex usage meter reads the local store only.
 **What remote needs, and only needs:** `RemoteSessionSource` passing the
 contract suite; an ssh `HostLauncher` (`prepare` and `availability`, with a
 `cd -- dir || exit` command so the agent never runs elsewhere); host entries
-in `HostRegistry` and a host picker; and `v12-project-host` (host in
+in `HostRegistry` and a host picker; and `v13-project-host` (host in
 `project_state`/`open_tabs` keys and `PersistedTab.host`; until then non-local
 project archive and order are memory-only and a restored chip takes its host
 from its row). The engine, the database's conflict handling and the sidebar,
@@ -1275,3 +1275,68 @@ Steady CPU while writing, in a release build: 0.61–0.72% of a core; the
 engine before this decision, re-run on the same machine, used 0.55%. Synthetic stores, so not directly comparable with ADR-027's
 real-store figures; they show the shape (no work per member write once filled),
 not a benchmark result to quote.
+
+---
+
+## ADR-030 — Temple archives what nobody can resume any more
+**Date:** 2026-10-05 · **Status:** Accepted; amends ADR-017 and ADR-029
+
+ADR-029 kept every row that never resolved: 173 of Sri's 337 members had no
+transcript on disk, most of them removed by Claude Code's retention cleanup,
+the rest ids that never got a file. Each sat dimmed in the rail, could not be
+resumed (`claude --resume <id>` answers "No conversation found"), and could
+only be archived a click at a time. A session whose project folder was deleted
+is the same: Temple will not launch an agent in a folder that is gone. ADR-017
+said archive is something you do. It still is, with one addition: when the
+CLI has already deleted the session, or the user the folder, Temple is
+reacting to that, not initiating anything.
+
+**Decisions.**
+
+- **Only on proof, only what nobody is using.** A row is archived by Temple
+  when its resolution is `.confirmedAbsent` (a completed enumeration of every
+  listing that could hold it) or its owning host says its folder is
+  `.missing`, and it is not pinned, has no tab open or restored, has had no
+  Temple activity for seven days, and was not kept by a person. A failed,
+  partial or cancelled listing, `unreadable`, `mismatch`, `incomplete`,
+  `awaitingCreation` and a folder that is `unknown` prove nothing and archive
+  nothing; a transport failure never does. A store root that does not exist is
+  a failed listing, not an empty store, and a folder under `/Volumes/<name>/`
+  is unknown unless that volume is mounted: an unplugged drive is not a deleted
+  project. When both reasons hold, the transcript is the reason. Seven days is
+  for the causes the cleanup is not (it removes only transcripts idle a month):
+  an id that never got a file, a deletion, a transcript under another config
+  dir. Nothing touched this week leaves on its own.
+- **Recorded, and reversed by a person.** `v12-archive-provenance` adds
+  `archive_reason` (NULL for the user's archive, `transcript_missing` or
+  `folder_missing` for Temple's), `kept_at` and `archived_at` (stamped by every
+  archive write, NULL for an archive from before it). The way back is the
+  notice's Undo or Restore, as for any archive; a file that turns up again
+  changes nothing, because a file is not a decision (ADR-017). Any unarchive a
+  person performs stamps `kept_at`, and a kept row is left alone until the
+  session's next activity, after which the idle week protects it: a Restore is
+  never undone by the next sweep. Undo Import still removes a row Temple
+  archived; it was not the user's decision.
+- **Archived rows are not watched.** The engine's members are the rows that
+  are not archived. Archiving one, by anyone, takes it out the way a leave
+  does (facts and verdict revoked); restoring it brings it back the way a join
+  does, freshly resolved. Watching what nobody can see, and whose files are
+  gone, buys nothing.
+- **Told once, undone from the notice.** One sweep is one line at the foot of
+  the sidebar ("Archived 172 sessions whose transcripts are gone", or folders,
+  or both) with Undo, merged if a second batch lands; it is not on the window's
+  undo stack, because the sweep was not the user's action. The archive tags
+  Temple's rows "No transcript" or "No folder" and says why.
+- **The engine still never writes.** The sweep gathers folder evidence for the
+  few rows that pass every other guard (no folder watching), then makes a pure
+  plan over the rows, the merged snapshot and that evidence, on the main actor
+  a second after resolutions or rows change, at launch and when the app comes
+  forward. The overlay writes it in one transaction under `id, host,
+  incarnation`, refusing pinned, kept and open-tab rows in SQL as well.
+
+**Amends ADR-017:** "archiving is something you do" gains "or something the
+CLI or the user's own deletion did, which Temple records". **Amends ADR-029:**
+"the rest are kept" becomes "the rest are kept until a completed enumeration
+proves them gone and a week has passed; then they are archived, labelled, and
+come back when a person restores them." The `v12-project-host` migration it
+reserved is `v13-project-host`.

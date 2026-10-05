@@ -107,6 +107,16 @@ open tabs; any other session returns the next time it is opened
   Archiving a session clears its pin; archiving a project only hides the pins
   inside it, and they return with the project. Nothing archived appears in the
   sidebar — `⌘⇧Y` is the way back.
+- Temple archives a session nobody can resume any more: its transcript is
+  gone (the CLI removed it, as Claude Code's retention cleanup does) or the
+  folder it ran in no longer exists. Only on proof (a completed listing of the
+  agent's store, or the folder's own host saying it is missing; a drive that is
+  not plugged in proves nothing) and only for a session that is not pinned, has
+  no tab open or restored, and has seen no activity for seven days. The foot of
+  the sidebar says so once, "Archived 3 sessions whose transcripts are gone",
+  with **Undo** and a dismiss; it stays until one of them or the end of the run.
+  It is not on `⌘Z`: the user did not do it. A session brought back by Undo,
+  Restore or opening is left alone until its next activity.
 - The sidebar's actions live in the title bar, at the trailing edge of its
   section: search and the sidebar toggle — Temple's own button, in place of
   the system one, so the two behave as one group. When
@@ -366,6 +376,11 @@ through which the others join.
   Searching matches a project by its path or by any session inside it. Opening an
   archived session anywhere else unarchives it too; a session resumed
   outside Temple stays archived, because activity on disk is not a decision.
+- A session Temple archived itself is tagged **No transcript** or **No folder**
+  after its title, with why ("No transcript on disk carries this session, so
+  Temple archived it. Restore brings it back."). Restore brings it back like any
+  other; a file that turns up again does not, and Temple does not watch an
+  archived session's files at all.
 - The palette, History, and archive fields include a `×` clear control. Esc
   dismisses any panel from anywhere. `⌘K`, `⌘⇧Y`, `⌘P`, and `⌘/` are mutually
   exclusive — presenting one dismisses the others, and `⌘Y` puts them away

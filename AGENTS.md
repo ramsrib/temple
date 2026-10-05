@@ -267,6 +267,16 @@ during that refactor:
   the row's host's `HostLauncher`; never build a command with this Mac's
   toolchain and hand it to another host. Directory checks go to the owning
   host too, and "unknown" must not be treated as "missing".
+- **Temple archives only what it can prove is gone, and only reversibly.**
+  The sweep acts on `.confirmedAbsent` (a completed enumeration) or the owning
+  host's `.missing` folder evidence alone, never on a failed, partial or
+  cancelled scan, `.unreadable`, `.mismatch`, `.incomplete`,
+  `.awaitingCreation` or `.unknown` (a missing store root and an unmounted
+  `/Volumes/<name>` are failures, not absences). Every automatic archive
+  records its reason and is undone by the notice's Undo or a Restore, which
+  keep the row until its next activity. Don't add an automatic archive path
+  without a reason column and a person's way back, don't put it on the
+  window's undo stack, and don't make the engine watch archived rows.
 - **Schema changes stay additive until remote ships.** Builds before ADR-029
   have no newer-schema guard, so a dropped or retyped column breaks the
   installed app running beside a dev build on the same file. `generated_title`

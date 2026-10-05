@@ -3,7 +3,13 @@
 exposing real projects.
 
     ./Scripts/demo-data.py          # writes /tmp/temple-demo/{claude,codex}-store
-    make demo                       # seeds + launches Temple against it
+    ./Scripts/demo-data.py --prune  # deletes the sessions recorded in pruned.txt
+    make demo                       # seeds, imports, prunes, launches Temple
+
+`--prune` plays Claude Code's retention cleanup: the PRUNED sessions are
+imported first (so they are Temple's), then their transcripts deleted, and
+Temple archives them on launch (ADR-030). A copy of each is kept beside it
+(`<file>.kept`), so copying one back shows that only Restore brings it back.
 
 The app reads its index from TEMPLE_CLAUDE_ROOT / TEMPLE_CODEX_ROOT, and keeps
 its own state (index cache, SQLite) in TEMPLE_STATE_DIR, so a demo run neither
@@ -17,6 +23,7 @@ writes that one to the real ~/.claude store, and demo-clean removes it.
 import json
 import os
 import shutil
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -58,6 +65,16 @@ CLAUDE_SESSIONS = {
         ("script to sync my brew packages across machines", 5000),
     ],
 }
+
+# Sessions whose transcripts `--prune` deletes, as the CLI's cleanup would:
+# all older than the week a session must sit idle before Temple archives it.
+PRUNED_PROJECT = "legacy-tools"
+PRUNED_SESSIONS = [
+    ("port the release script from bash to python", 9),
+    ("why does the nightly build only fail on tuesdays", 20),
+    ("document the old deploy runbook before we retire it", 45),
+]
+PRUNED_LIST = f"{DEMO}/pruned.txt"
 
 CODEX_SESSIONS = [
     ("acme-api", "audit the auth middleware for timing leaks", 70),
@@ -114,6 +131,24 @@ def main():
                              "content": "On it."}},
             ], when)
 
+    cwd = f"{PROJECTS}/{PRUNED_PROJECT}"
+    os.makedirs(cwd, exist_ok=True)
+    store_dir = os.path.join(CLAUDE_STORE, cwd.replace("/", "-"))
+    os.makedirs(store_dir, exist_ok=True)
+    pruned = []
+    for title, days_ago in PRUNED_SESSIONS:
+        sid = str(uuid.uuid4())
+        when = now - timedelta(days=days_ago)
+        stamp = when.isoformat().replace("+00:00", "Z")
+        path = os.path.join(store_dir, f"{sid}.jsonl")
+        write(path, [
+            {"type": "user", "message": {"role": "user", "content": title},
+             "cwd": cwd, "timestamp": stamp, "gitBranch": "main", "sessionId": sid},
+        ], when)
+        pruned.append(path)
+    with open(PRUNED_LIST, "w") as fh:
+        fh.write("".join(f"{path}\n" for path in pruned))
+
     day = f"{CODEX_STORE}/sessions/{now:%Y/%m/%d}"
     os.makedirs(day, exist_ok=True)
     history = []
@@ -135,9 +170,23 @@ def main():
         for entry in history:
             fh.write(json.dumps(entry) + "\n")
 
-    total = sum(len(v) for v in CLAUDE_SESSIONS.values()) + len(CODEX_SESSIONS)
-    print(f"seeded {total} sessions across {len(CLAUDE_SESSIONS)} projects in {DEMO}")
+    total = sum(len(v) for v in CLAUDE_SESSIONS.values()) + len(PRUNED_SESSIONS) + len(CODEX_SESSIONS)
+    print(f"seeded {total} sessions across {len(CLAUDE_SESSIONS) + 1} projects in {DEMO}")
+
+
+def prune():
+    """Delete the transcripts `main` recorded, keeping a copy of each."""
+    try:
+        with open(PRUNED_LIST) as fh:
+            paths = [line.strip() for line in fh if line.strip()]
+    except FileNotFoundError:
+        sys.exit(f"nothing to prune: {PRUNED_LIST} is missing (seed first)")
+    for path in paths:
+        if os.path.exists(path):
+            shutil.copy2(path, path + ".kept")
+            os.remove(path)
+    print(f"pruned {len(paths)} transcripts (copies kept as <file>.kept)")
 
 
 if __name__ == "__main__":
-    main()
+    prune() if sys.argv[1:] == ["--prune"] else main()
