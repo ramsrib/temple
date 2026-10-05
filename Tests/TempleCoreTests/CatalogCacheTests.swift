@@ -585,6 +585,14 @@ final class CatalogCacheTests: XCTestCase {
         for dir in [claudeRoot, project, codexRoot.appendingPathComponent("sessions"), rollouts] {
             try Data().write(to: dir.appendingPathComponent(".DS_Store"))
         }
+        // What Claude Code itself puts under a session folder: links to
+        // subagent transcripts, one of them dangling. Out of scope.
+        let subagents = project.appendingPathComponent("\(ids[0])/subagents")
+        try FileManager.default.createDirectory(at: subagents, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: subagents.appendingPathComponent("agent-a.jsonl"),
+                                                   withDestinationURL: project.appendingPathComponent("\(ids[1]).jsonl"))
+        try FileManager.default.createSymbolicLink(at: subagents.appendingPathComponent("agent-b.jsonl"),
+                                                   withDestinationURL: root.appendingPathComponent("gone.jsonl"))
         let (source, _) = source(disk: false)
         let listed = try await read(source)
         XCTAssertEqual(listed.summaries.count, 5)
@@ -592,19 +600,27 @@ final class CatalogCacheTests: XCTestCase {
         XCTAssertEqual(listed.events.last?.provesNoTranscript(id: uuid(), agent: .claude), true)
     }
 
-    /// A listing that met anything the rule does not allow (here a link) is
-    /// browsed as always and completes nothing for its agent.
+    /// A listing that met anything the rule does not allow in scope — a
+    /// link at project level, a link as a transcript — is browsed as always
+    /// and completes nothing for its agent.
     func testANonExhaustiveListingCompletesNothing() async throws {
         let shown = uuid()
         try claude(shown); try codex(uuid())
         let elsewhere = root.appendingPathComponent("elsewhere")
         try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
-        try FileManager.default.createSymbolicLink(at: claudeRoot.appendingPathComponent("-linked"), withDestinationURL: elsewhere)
+        let projectLink = claudeRoot.appendingPathComponent("-linked")
+        try FileManager.default.createSymbolicLink(at: projectLink, withDestinationURL: elsewhere)
         let (source, _) = source(disk: false)
-        let listed = try await read(source)
+        var listed = try await read(source)
         XCTAssertEqual(listed.summaries.filter { $0.agent == .claude }.map(\.id), [shown])
         XCTAssertEqual(listed.events.last?.completedAgents, [.codex])
         XCTAssertEqual(listed.events.last?.provesNoTranscript(id: uuid(), agent: .claude), false)
+        try FileManager.default.removeItem(at: projectLink)
+        let target = elsewhere.appendingPathComponent("\(uuid()).jsonl")
+        try Data("{}".utf8).write(to: target)
+        try FileManager.default.createSymbolicLink(at: project.appendingPathComponent(target.lastPathComponent), withDestinationURL: target)
+        listed = try await read(source)
+        XCTAssertEqual(listed.events.last?.completedAgents, [.codex], "a transcript that is a link")
     }
 
     /// A completion's mapping is the coverage: an agent with no set proves

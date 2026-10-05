@@ -267,6 +267,23 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             sharedFactsChangedLocked()
             return
         }
+        // Something that decides whether a listing is exhaustive (a link, a
+        // hidden entry) appeared, changed or went where transcripts are
+        // listed: list again, so completeness follows the one rule now and
+        // not as of the last full listing. Then handle the event as usual.
+        if stores.contains(where: { $0.inAuditScope(path) }),
+           ListingAudit.mayDecide(path, isLink: has(kFSEventStreamEventFlagItemIsSymlink)) {
+            let wasComplete = enumerationByAgent
+            enumerateLocked()
+            // An agent no longer exhaustively listed can no longer vouch for
+            // an absence it reported, and one listed exhaustively again can
+            // vouch for one it could not: either way coverage moves on, and
+            // consumers locate again rather than keep an old verdict.
+            if wasComplete != enumerationByAgent {
+                generation &+= 1
+                for continuation in changeContinuations.values { continuation.yield(.coverageReset(coverage: generation)) }
+            }
+        }
         // Codex sqlite/WAL/log traffic is rejected before stat or resolution.
         let isTranscript = stores.contains { $0.acceptsTranscript(url) }
         let directory = has(kFSEventStreamEventFlagItemIsDir)
@@ -374,10 +391,23 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
                 return root == subtree || root.hasPrefix(subtree + "/") || subtree.hasPrefix(root + "/")
             }) { continue }
             do {
-                let listed = try subtree.map { try store.enumerateSessionFiles(in: URL(fileURLWithPath: $0)) } ?? store.enumerateSessionFiles()
+                let listed: [URL]
+                if let subtree {
+                    listed = try store.enumerateSessionFiles(in: URL(fileURLWithPath: subtree))
+                } else {
+                    // Complete only when exhaustive by ADR-032's rule, the
+                    // same rule the catalog's absence evidence uses: a
+                    // listing that met a link or a hidden entry where
+                    // transcripts are looked for proves no member absent.
+                    let audited = try store.enumerateSessionFilesAudited()
+                    listed = audited.files
+                    enumerationByAgent[store.agent] = audited.exhaustive
+                    if !audited.exhaustive {
+                        LocalHostLog.watcher.notice("enumeration not exhaustive for \(store.agent.rawValue, privacy: .public): a link or hidden entry where transcripts are listed")
+                    }
+                }
                 // A subtree proves only its own coverage, never recovery of
                 // an earlier failed full-store filename lookup.
-                if subtree == nil { enumerationByAgent[store.agent] = true }
                 for file in listed {
                     let url = URL(fileURLWithPath: logicalPath(file.path) ?? RootMapping.alias(file.path))
                     next[url.path] = (url, store.agent)

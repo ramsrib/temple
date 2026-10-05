@@ -137,6 +137,9 @@ struct CodexSessionStore: TranscriptSummaryStore {
 
     func rootAvailable() -> Bool { StoreRootMissing.isDirectory(sessionsRoot) }
 
+    /// Everything under `sessions/`: the listing walks it to any depth.
+    func inAuditScope(_ path: String) -> Bool { path.hasPrefix(sessionsPrefix) }
+
     func acceptsTranscript(_ url: URL) -> Bool {
         url.pathExtension == "jsonl" && url.lastPathComponent.hasPrefix("rollout-") &&
             SessionPaths.normalized(url.path).hasPrefix(sessionsPrefix)

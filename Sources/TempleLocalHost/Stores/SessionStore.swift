@@ -49,6 +49,15 @@ struct EntryInspector: Sendable {
 /// | an error reading an entry's metadata              | no         |
 /// | an error from the enumerator                      | no (the listing fails) |
 ///
+/// Scope: exactly the entries the store's candidate listing walks — every
+/// entry it meets, at the levels where it looks for transcripts (Claude:
+/// the root's entries and the entries directly inside each project folder;
+/// Codex: everything under `sessions/`, which it walks to any depth).
+/// Anything deeper (Claude's `<project>/<session>/subagents/…`, which
+/// Claude Code fills with links of its own) is never walked, holds no
+/// candidate, and decides nothing. `inAuditScope` says the same for one
+/// path, for the engine's events.
+///
 /// A link's target is never inspected, and nothing about an entry is
 /// guessed: metadata that cannot be read, or does not say, is not
 /// exhaustive. Browsing is unaffected — what is listed is what was always
@@ -65,6 +74,19 @@ struct ListingAudit {
     /// One entry the listing met. Its metadata, for the listing's own use,
     /// or nil when it could not be read (which already made the listing
     /// not exhaustive).
+    /// Whether an event at `path` (in scope) could change a listing's
+    /// verdict: a link (the event says so, even for one that is gone), a
+    /// hidden name other than `.DS_Store`, or an entry now flagged hidden or
+    /// a link. Nothing about it is guessed past that.
+    static func mayDecide(_ path: String, isLink: Bool) -> Bool {
+        if isLink { return true }
+        let name = (path as NSString).lastPathComponent
+        if name.hasPrefix(".") { return !allowedHidden.contains(name) }
+        var info = stat()
+        guard lstat(path, &info) == 0 else { return false }
+        return (info.st_mode & S_IFMT) == S_IFLNK || (info.st_flags & UInt32(UF_HIDDEN)) != 0
+    }
+
     mutating func meet(_ url: URL) -> URLResourceValues? {
         let values: URLResourceValues
         do { values = try inspector.values(url, Self.keys) } catch { exhaustive = false; return nil }
@@ -91,6 +113,9 @@ protocol IncrementalSessionStore: SessionStore {
     /// a transcript's name, a symbolic link to a directory). Only an
     /// exhaustive listing is evidence that a session has no file (ADR-032).
     func enumerateSessionFilesAudited() throws -> (files: [URL], exhaustive: Bool)
+    /// Whether the audited listing walks `path` (a normalized path): where
+    /// a link or hidden entry decides exhaustiveness (`ListingAudit`).
+    func inAuditScope(_ path: String) -> Bool
     /// A missing subtree is empty only while the store root is there;
     /// without it the listing throws `StoreRootMissing` (ADR-030).
     func enumerateSessionFiles(in subtree: URL) throws -> [URL]
@@ -159,6 +184,7 @@ extension IncrementalSessionStore {
     func enumerateSessionFiles() throws -> [URL] { sessionFileURLs() }
     /// A store that cannot say what it skipped is never exhaustive.
     func enumerateSessionFilesAudited() throws -> (files: [URL], exhaustive: Bool) { (try enumerateSessionFiles(), false) }
+    func inAuditScope(_ path: String) -> Bool { false }
     func rootAvailable() -> Bool { true }
     func enumerateSessionFiles(in subtree: URL) throws -> [URL] {
         let prefix = SessionPaths.normalized(subtree.path)

@@ -82,6 +82,14 @@ struct ClaudeSessionStore: TranscriptSummaryStore {
 
     func rootAvailable() -> Bool { StoreRootMissing.isDirectory(root) }
 
+    /// The root's entries and the entries directly inside them: the two
+    /// levels the listing walks.
+    func inAuditScope(_ path: String) -> Bool {
+        let prefix = SessionPaths.normalized(root.path)
+        guard path.hasPrefix(prefix + "/") else { return false }
+        return (1...2).contains(path.dropFirst(prefix.count + 1).split(separator: "/").count)
+    }
+
     func acceptsTranscript(_ url: URL) -> Bool {
         let path = SessionPaths.normalized(url.path)
         let prefix = SessionPaths.normalized(root.path)

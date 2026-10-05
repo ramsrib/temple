@@ -190,6 +190,40 @@ final class ListingAuditTests: XCTestCase {
         }
     }
 
+    /// Scope: Claude's listing walks the root's entries and the entries
+    /// directly inside each project folder, and no deeper; Claude Code puts
+    /// links of its own in `<project>/<session>/subagents/`, where no
+    /// candidate can be, and they decide nothing. Codex's listing walks
+    /// everything under `sessions/`, so a link anywhere there counts.
+    func testOnlyWhatTheListingWalksIsInScope() throws {
+        let subagents = project.appendingPathComponent("\(UUID().uuidString.lowercased())/subagents")
+        try FileManager.default.createDirectory(at: subagents, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: subagents.appendingPathComponent("agent-real.jsonl"))
+        try link(subagents.appendingPathComponent("agent-linked.jsonl"), to: outside.appendingPathComponent("anything.jsonl"))
+        try link(subagents.appendingPathComponent("agent-dangling.jsonl"), to: root.appendingPathComponent("nothing-here"))
+        try Data().write(to: subagents.appendingPathComponent(".hidden"))
+        XCTAssertTrue(try audit(.claude), "links and hidden entries below a project's own entries are out of scope")
+
+        let claude = ClaudeSessionStore(root: claudeRoot)
+        let claudePrefix = SessionPaths.normalized(claudeRoot.path)
+        XCTAssertTrue(claude.inAuditScope(claudePrefix + "/-work-project"))
+        XCTAssertTrue(claude.inAuditScope(claudePrefix + "/-work-project/x.jsonl"))
+        XCTAssertFalse(claude.inAuditScope(claudePrefix + "/-work-project/session/subagents"))
+        XCTAssertFalse(claude.inAuditScope(claudePrefix))
+        XCTAssertFalse(claude.inAuditScope("/elsewhere/-p/x.jsonl"))
+        let codex = CodexSessionStore(root: sessions.deletingLastPathComponent())
+        let sessionsPath = SessionPaths.normalized(sessions.path)
+        XCTAssertTrue(codex.inAuditScope(sessionsPath + "/2026"))
+        XCTAssertTrue(codex.inAuditScope(sessionsPath + "/2026/10/01/deeper/still/x"))
+        XCTAssertFalse(codex.inAuditScope(SessionPaths.normalized(sessions.deletingLastPathComponent().path) + "/history.jsonl"))
+
+        // Deeper under Codex's root counts.
+        let deep = day.appendingPathComponent("nested")
+        try FileManager.default.createDirectory(at: deep, withIntermediateDirectories: true)
+        try link(deep.appendingPathComponent("link"), to: outside)
+        XCTAssertFalse(try audit(.codex))
+    }
+
     /// An error from the enumerator fails the listing, as it always did: no
     /// files, and certainly no completion.
     func testAnEnumeratorErrorFailsTheListing() throws {
