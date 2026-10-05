@@ -220,6 +220,28 @@ final class CatalogCacheTests: XCTestCase {
         XCTAssertEqual(try meta("schema"), "999", "left exactly as it was")
     }
 
+    /// The connection is closed before the lock is released: while the lock
+    /// is held the file is open, never the other way round.
+    func testTeardownClosesTheFileBeforeReleasingTheLock() throws {
+        let order = TeardownLog()
+        var disk: CatalogDiskCache? = CatalogDiskCache(directory: stateDir)
+        let loaded = expectation(description: "loaded")
+        disk?.load { _ in loaded.fulfill() }
+        wait(for: [loaded], timeout: 5)
+        XCTAssertFalse(disk?.isMemoryOnly ?? true)
+        let lock = disk!.lockURL
+        disk?.teardownProbe = { step in
+            // Each step checks whether another process could now take the
+            // file exclusively.
+            let probe = Darwin.open(lock.path, O_RDWR)
+            let free = flock(probe, LOCK_EX | LOCK_NB) == 0
+            close(probe)
+            order.append("\(step):\(free ? "free" : "held")")
+        }
+        disk = nil
+        XCTAssertEqual(order.steps, ["database:held", "lock:free"])
+    }
+
     // MARK: Sharing the file
 
     /// Two Temples at once (the installed app and a dev build) share one
@@ -462,6 +484,64 @@ final class CatalogCacheTests: XCTestCase {
         XCTAssertEqual(StoreIO.catalogParse(at: excluded, format: codexFormat, shared: .empty, reads: reads(head: false)), .failed)
     }
 
+    /// An inode number means nothing off its own filesystem: the same path
+    /// and inode on another device, or another volume, is another root.
+    func testARootIsItsFilesystemsToo() {
+        let here = CatalogRoot(path: "/r", inode: 7, device: 1, volume: "VOL-A")
+        XCTAssertTrue(here.matches(CatalogRoot(path: "/r", inode: 7, device: 1, volume: "VOL-A")))
+        XCTAssertFalse(here.matches(CatalogRoot(path: "/r", inode: 7, device: 2, volume: "VOL-A")), "another device")
+        XCTAssertFalse(here.matches(CatalogRoot(path: "/r", inode: 7, device: 1, volume: "VOL-B")), "another volume")
+        let fromDisk = CatalogRoot(path: "/r", inode: 7, volume: "VOL-A")
+        XCTAssertTrue(fromDisk.matches(here), "read back from disk: no device, the volume decides")
+        XCTAssertFalse(CatalogRoot(path: "/r", inode: 7, volume: "VOL-B").matches(here))
+        XCTAssertNotNil(CatalogRoot(claudeRoot)?.device)
+    }
+
+    /// A store root whose filesystem changed during the read — same path,
+    /// same inode number, another device — completes nothing.
+    func testARootOnAnotherFilesystemByTheEndCompletesNothing() async throws {
+        try claude(uuid()); try codex(uuid())
+        let calls = IdentityCalls()
+        let claudePath = SessionPaths.normalized(claudeRoot.path)
+        let catalog = LocalSessionCatalog(stores: [ClaudeSessionStore(root: claudeRoot), CodexSessionStore(root: codexRoot)],
+                                          cache: CatalogSummaryCache(), identify: { url in
+            guard let real = CatalogRoot(url) else { return nil }
+            let call = calls.next(real.path)
+            guard real.path == claudePath, call > 1 else { return real }
+            return CatalogRoot(path: real.path, inode: real.inode, device: (real.device ?? 0) + 1, volume: real.volume)
+        })
+        var events: [CatalogBatch] = []
+        for await event in catalog.stream() { events.append(event) }
+        XCTAssertEqual(events.last?.completedAgents, [.codex])
+    }
+
+    /// Kept on disk, a root is its volume: the same path and inode on
+    /// another volume reads everything again.
+    func testADiskRootOnAnotherVolumeKeepsNothing() async throws {
+        try claude(uuid()); try claude(uuid())
+        func catalog(volume: String) -> (LocalSessionCatalog, CatalogDiskCache, Counter) {
+            let disk = CatalogDiskCache(directory: stateDir)
+            let parses = Counter()
+            let catalog = LocalSessionCatalog(stores: [ClaudeSessionStore(root: claudeRoot)], cache: CatalogSummaryCache(disk: disk),
+                                              onParse: { parses.increment() }, identify: { url in
+                guard let real = CatalogRoot(url) else { return nil }
+                return CatalogRoot(path: real.path, inode: real.inode, device: real.device, volume: volume)
+            })
+            return (catalog, disk, parses)
+        }
+        let (first, firstDisk, firstParses) = catalog(volume: "VOL-A")
+        for await _ in first.stream() {}
+        firstDisk.sync()
+        XCTAssertEqual(firstParses.value, 2)
+        let (same, sameDisk, sameParses) = catalog(volume: "VOL-A")
+        for await _ in same.stream() {}
+        sameDisk.sync()
+        XCTAssertEqual(sameParses.value, 0, "the same volume: everything kept")
+        let (other, _, otherParses) = catalog(volume: "VOL-B")
+        for await _ in other.stream() {}
+        XCTAssertEqual(otherParses.value, 2, "another volume: nothing kept applies")
+    }
+
     // MARK: Completed coverage
 
     /// A store root that is not there completes nothing, for either agent;
@@ -469,12 +549,12 @@ final class CatalogCacheTests: XCTestCase {
     func testAMissingRootCompletesNothingAndAnEmptyOneCompletes() async throws {
         let (present, _) = source(disk: false)
         let empty = try await read(present)
-        XCTAssertEqual(empty.events.last, .completed(agents: [.claude, .codex]))
+        XCTAssertEqual(empty.events.last?.completedAgents, [.claude, .codex])
         try FileManager.default.removeItem(at: claudeRoot)
         try FileManager.default.removeItem(at: codexRoot)
         let (absent, _) = source(disk: false)
         let missing = try await read(absent)
-        XCTAssertEqual(missing.events.last, .completed(agents: []))
+        XCTAssertEqual(missing.events.last?.completedAgents, [])
         XCTAssertFalse(missing.events.contains { if case .storeFailed = $0 { return true }; return false })
     }
 
@@ -490,7 +570,7 @@ final class CatalogCacheTests: XCTestCase {
         let claudeDir = claudeRoot
         source.catalogListedHook = { try? FileManager.default.moveItem(at: claudeDir, to: aside) }
         let lost = try await read(source)
-        XCTAssertEqual(lost.events.last, .completed(agents: [.codex]))
+        XCTAssertEqual(lost.events.last?.completedAgents, [.codex])
         XCTAssertEqual(source.catalogCache.count, 3, "nothing forgotten for a root that went away")
         source.catalogListedHook = nil
         try FileManager.default.moveItem(at: aside, to: claudeRoot)
@@ -502,16 +582,16 @@ final class CatalogCacheTests: XCTestCase {
             try? FileManager.default.createDirectory(at: codexSessions, withIntermediateDirectories: true)
         }
         let replaced = try await read(source)
-        XCTAssertEqual(replaced.events.last, .completed(agents: [.claude]))
+        XCTAssertEqual(replaced.events.last?.completedAgents, [.claude])
         // And Codex's root simply gone.
         source.catalogListedHook = nil
         try FileManager.default.removeItem(at: codexSessions)
         try FileManager.default.moveItem(at: sessionsAside, to: codexSessions)
         let back = try await read(source)
-        XCTAssertEqual(back.events.last, .completed(agents: [.claude, .codex]))
+        XCTAssertEqual(back.events.last?.completedAgents, [.claude, .codex])
         source.catalogListedHook = { try? FileManager.default.moveItem(at: codexSessions, to: sessionsAside) }
         let gone = try await read(source)
-        XCTAssertEqual(gone.events.last, .completed(agents: [.claude]))
+        XCTAssertEqual(gone.events.last?.completedAgents, [.claude])
         XCTAssertEqual(source.catalogCache.count, 3)
     }
 
@@ -555,7 +635,7 @@ final class CatalogCacheTests: XCTestCase {
         locked.append(claudeRoot)
         let failed = try await read(source)
         XCTAssertTrue(failed.events.contains { if case .storeFailed(.claude?, _) = $0 { return true }; return false })
-        XCTAssertEqual(failed.events.last, .completed(agents: [.codex]))
+        XCTAssertEqual(failed.events.last?.completedAgents, [.codex])
         XCTAssertEqual(source.catalogCache.count, 3, "a failed listing forgets nothing")
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: claudeRoot.path)
         let before = parses(source)
@@ -581,7 +661,7 @@ final class CatalogCacheTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertEqual(source.catalogCache.count, 8, "a cancelled read forgets nothing")
         let whole = try await read(source)
-        XCTAssertEqual(whole.events.last, .completed(agents: [.claude]))
+        XCTAssertEqual(whole.events.last?.completedAgents, [.claude])
         XCTAssertEqual(source.catalogCache.count, 7, "a completed listing forgets the deleted file")
     }
 
@@ -663,6 +743,26 @@ final class CatalogCacheTests: XCTestCase {
         XCTAssertEqual(value10, [], "a truncated header records no session")
         XCTAssertEqual(parses(source), 2)
     }
+}
+
+private final class TeardownLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+    func append(_ step: String) { lock.lock(); recorded.append(step); lock.unlock() }
+    var steps: [String] { lock.lock(); defer { lock.unlock() }; return recorded }
+}
+
+private final class IdentityCalls: @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [String: Int] = [:]
+    func next(_ path: String) -> Int { lock.lock(); defer { lock.unlock() }; counts[path, default: 0] += 1; return counts[path]! }
+}
+
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.lock(); count += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
 }
 
 private final class SnapshotBox: @unchecked Sendable {

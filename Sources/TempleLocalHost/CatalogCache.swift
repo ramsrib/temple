@@ -60,16 +60,30 @@ struct CatalogStamp: Hashable, Sendable {
     }
 }
 
-/// Which directory an agent's store is, for the cache: its path and the
-/// inode of what that path resolves to. A store root replaced by another
-/// directory (a moved store, another volume mounted at the path, a
-/// `TEMPLE_*_ROOT` pointed elsewhere) is another root, and every summary
-/// kept for the old one goes.
+/// Which directory an agent's store is: its path, and the inode of what
+/// that path resolves to on the filesystem that holds it. A store root
+/// replaced by another directory (a moved store, another volume mounted at
+/// the path, a `TEMPLE_*_ROOT` pointed elsewhere) is another root: it
+/// completes no listing begun on the old one, and every summary kept for
+/// the old one goes.
+///
+/// An inode number means something only on its own filesystem, so the
+/// filesystem is part of the identity, twice over: `device` (`st_dev`) for
+/// comparisons within a run, and `volume`, the volume's UUID, for an
+/// identity kept on disk, where a device number is not stable across
+/// reboots. A root read back from disk has no device; two roots that both
+/// have one must agree on it.
 struct CatalogRoot: Hashable, Sendable {
     let path: String
     let inode: UInt64
+    let device: UInt64?
+    /// The volume's UUID; nil for a filesystem that reports none, which
+    /// then has only its path and inode to go on.
+    let volume: String?
 
-    init(path: String, inode: UInt64) { self.path = path; self.inode = inode }
+    init(path: String, inode: UInt64, device: UInt64? = nil, volume: String? = nil) {
+        self.path = path; self.inode = inode; self.device = device; self.volume = volume
+    }
 
     init?(_ url: URL?) {
         guard let url else { return nil }
@@ -77,6 +91,16 @@ struct CatalogRoot: Hashable, Sendable {
         guard stat(url.path, &info) == 0 else { return nil }
         path = SessionPaths.normalized(url.path)
         inode = UInt64(info.st_ino)
+        device = UInt64(UInt32(bitPattern: info.st_dev))
+        volume = (try? url.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
+    }
+
+    /// The same directory: path, inode and volume agree, and the device too
+    /// where both know it.
+    func matches(_ other: CatalogRoot) -> Bool {
+        guard path == other.path, inode == other.inode, volume == other.volume else { return false }
+        if let device, let otherDevice = other.device { return device == otherDevice }
+        return true
     }
 }
 
@@ -184,7 +208,7 @@ final class CatalogSummaryCache: @unchecked Sendable {
         locked {
             for (agent, stored) in snapshot {
                 if let current = agents[agent] {
-                    guard current.root == stored.root else { continue }
+                    guard current.root.matches(stored.root) else { continue }
                     var files = current.files
                     let decided = pending[agent] ?? [:]
                     for (key, entry) in stored.files where files[key] == nil && decided.index(forKey: key) == nil {
@@ -221,7 +245,12 @@ final class CatalogSummaryCache: @unchecked Sendable {
     /// disk kept is already here to compare.
     func begin(_ agent: Agent, root: CatalogRoot) {
         locked {
-            guard agents[agent]?.root != root else { return }
+            if let kept = agents[agent], kept.root.matches(root) {
+                // The same directory: what is kept stays, now with this
+                // run's device number to hold later comparisons to.
+                agents[agent]?.root = root
+                return
+            }
             agents[agent] = AgentEntries(root: root, files: [:])
             pending[agent] = nil
             pendingRoots.insert(agent)
@@ -233,7 +262,7 @@ final class CatalogSummaryCache: @unchecked Sendable {
     func lookup(_ agent: Agent, root: CatalogRoot, key: String, stamp: CatalogStamp) -> Outcome? {
         guard stamp.cacheable else { return nil }
         return locked {
-            guard let kept = agents[agent], kept.root == root, let entry = kept.files[key], entry.stamp == stamp else { return nil }
+            guard let kept = agents[agent], kept.root.matches(root), let entry = kept.files[key], entry.stamp == stamp else { return nil }
             return entry.outcome
         }
     }
@@ -241,7 +270,7 @@ final class CatalogSummaryCache: @unchecked Sendable {
     func record(_ agent: Agent, root: CatalogRoot, key: String, entry: Entry) {
         guard entry.stamp.cacheable else { return }
         locked {
-            guard agents[agent]?.root == root else { return }
+            guard agents[agent]?.root.matches(root) == true else { return }
             guard agents[agent]?.files[key] != entry else { return }
             agents[agent]?.files[key] = entry
             pending[agent, default: [:]][key] = .some(entry)
@@ -259,7 +288,7 @@ final class CatalogSummaryCache: @unchecked Sendable {
     /// it did not name is gone from the store.
     func complete(_ agent: Agent, root: CatalogRoot, listed: Set<String>) {
         locked {
-            guard let kept = agents[agent], kept.root == root else { return }
+            guard let kept = agents[agent], kept.root.matches(root) else { return }
             for key in kept.files.keys where !listed.contains(key) {
                 agents[agent]?.files.removeValue(forKey: key)
                 pending[agent, default: [:]][key] = .some(nil)

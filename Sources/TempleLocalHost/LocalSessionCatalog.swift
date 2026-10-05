@@ -9,15 +9,19 @@ struct LocalSessionCatalog: Sendable {
     private let cache: CatalogSummaryCache?
     private let onParse: @Sendable () -> Void
     private let onListed: @Sendable () -> Void
+    private let identify: @Sendable (URL?) -> CatalogRoot?
     /// `onListed` runs on the reading thread right after `.listed` is
-    /// emitted, before the first batch (a test seam).
+    /// emitted, before the first batch, and `identify` says which
+    /// directory a store root is (both test seams).
     init(stores: [any SessionStore] = [ClaudeSessionStore(), CodexSessionStore()],
          cache: CatalogSummaryCache? = nil, onParse: @escaping @Sendable () -> Void = {},
-         onListed: @escaping @Sendable () -> Void = {}) {
+         onListed: @escaping @Sendable () -> Void = {},
+         identify: @escaping @Sendable (URL?) -> CatalogRoot? = { CatalogRoot($0) }) {
         self.stores = stores
         self.cache = cache
         self.onParse = onParse
         self.onListed = onListed
+        self.identify = identify
     }
     func load() -> [TranscriptSummary] {
         FileDescriptorLimit.ensureRaised()
@@ -61,6 +65,10 @@ struct LocalSessionCatalog: Sendable {
         let store: any IncrementalSessionStore
         let root: CatalogRoot?
         let listed: Set<String>
+        /// The thread ids its files are named for: every id with a
+        /// candidate transcript, however it then read.
+        let threads: Set<String>
+        let identify: @Sendable (URL?) -> CatalogRoot?
 
         /// The root is there and is the directory that was listed. A root
         /// that went away, or was replaced, while the read went on proves
@@ -68,7 +76,8 @@ struct LocalSessionCatalog: Sendable {
         var stillCovered: Bool {
             guard store.rootAvailable() else { return false }
             guard store.catalogRoot != nil else { return true }
-            return root != nil && CatalogRoot(store.catalogRoot) == root
+            guard let root, let now = identify(store.catalogRoot) else { return false }
+            return now.matches(root)
         }
     }
 
@@ -94,7 +103,7 @@ struct LocalSessionCatalog: Sendable {
                 }
                 continue
             }
-            let root = CatalogRoot(incremental.catalogRoot)
+            let root = identify(incremental.catalogRoot)
             let files: [URL]
             var complete = true
             do {
@@ -122,7 +131,8 @@ struct LocalSessionCatalog: Sendable {
             let pass = AgentPass(store: incremental, reader: incremental.catalogReader(),
                                  shared: incremental.sharedFactsSnapshot().facts,
                                  cache: cacheRoot == nil ? nil : cache, root: cacheRoot, onParse: onParse)
-            for thread in TranscriptCandidates.catalogThreads(format: incremental.format, listed: Array(urls.keys)) {
+            let threads = TranscriptCandidates.catalogThreads(format: incremental.format, listed: Array(urls.keys))
+            for thread in threads {
                 // Ordered by the file the pick reads first, not by the newest
                 // of the thread's files: a rollout the pick passes over must
                 // not pull its thread ahead of newer sessions. This stat
@@ -140,7 +150,8 @@ struct LocalSessionCatalog: Sendable {
                 }))
             }
             if complete {
-                completed.append(Listing(store: incremental, root: root, listed: Set(files.map { SessionPaths.normalized($0.path) })))
+                completed.append(Listing(store: incremental, root: root, listed: Set(files.map { SessionPaths.normalized($0.path) }),
+                                         threads: Set(threads.map(\.threadID)), identify: identify))
             }
         }
         entries.sort { newestFirst ? $0.modified > $1.modified : $0.modified < $1.modified }
@@ -170,7 +181,8 @@ struct LocalSessionCatalog: Sendable {
         for listing in covered {
             if let cache, let root = listing.root { cache.complete(listing.store.agent, root: root, listed: listing.listed) }
         }
-        emit(.completed(agents: Set(covered.map(\.store.agent))))
+        emit(.completed(agents: Set(covered.map(\.store.agent)),
+                        candidates: Dictionary(covered.map { ($0.store.agent, $0.threads) }, uniquingKeysWith: { $0.union($1) })))
     }
 }
 

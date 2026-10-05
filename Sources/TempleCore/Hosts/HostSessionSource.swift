@@ -29,8 +29,10 @@ public protocol HostSessionSource: Sendable {
     /// anything about a Temple row.
     ///
     /// The stream ends with `.completed` naming the agents whose listing
-    /// finished and whose every thread was then decided; a cancelled read,
-    /// a failed listing or a transport failure leaves its agents out.
+    /// finished and whose every thread was then decided, with the ids each
+    /// such listing found a transcript file for (whether or not it read);
+    /// a cancelled read, a failed listing or a transport failure leaves its
+    /// agents out.
     func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error>
     func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult
     func changes() -> AsyncThrowingStream<SourceChange, Error>
@@ -156,7 +158,31 @@ public enum CatalogBatch: Sendable, Equatable {
     /// An agent whose listing failed, or whose store root is not there (an
     /// unmounted volume proves nothing gone, ADR-030), is never named; a
     /// read that was cancelled or lost its transport sends none.
-    case completed(agents: Set<Agent>)
+    ///
+    /// `candidates`, per agent in `agents`: every session id the completed
+    /// listing found a transcript file named for, whatever reading it came
+    /// to — a summary, a partial one, an exclusion, a failed or unreadable
+    /// read, another session's identity. A missing summary is not absence;
+    /// absence is an id missing here (`provesNoTranscript`).
+    case completed(agents: Set<Agent>, candidates: [Agent: Set<String>])
+}
+
+public extension CatalogBatch {
+    /// The agents a `.completed` names; nil for any other batch.
+    var completedAgents: Set<Agent>? {
+        if case .completed(let agents, _) = self { return agents }
+        return nil
+    }
+
+    /// For a `.completed` batch: true when the listing of `agent` completed
+    /// and found no transcript file for `id` at all — the one proof that a
+    /// session has no transcript on this host. False when a file was there
+    /// (however it read) or the agent's listing did not complete; nil for
+    /// any other batch.
+    func provesNoTranscript(id: String, agent: Agent) -> Bool? {
+        guard case .completed(let agents, let candidates) = self else { return nil }
+        return agents.contains(agent) && !(candidates[agent]?.contains(id) ?? false)
+    }
 }
 
 public struct AdoptionRequest: Sendable {

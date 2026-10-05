@@ -81,7 +81,7 @@ final class LocalSessionCatalogTests: XCTestCase {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("temple-catalog-missing-\(UUID().uuidString)")
         let events = await collect(LocalSessionCatalog(stores: [ClaudeSessionStore(root: missing)]).stream())
-        XCTAssertEqual(events, [.listed(total: 0), .completed(agents: [])])
+        XCTAssertEqual(events, [.listed(total: 0), .completed(agents: [], candidates: [:])])
     }
 
     /// The tab cancels its read when it goes away. The reader must notice at

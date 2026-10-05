@@ -428,7 +428,7 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
                     continuation.finish(throwing: LocateError.transport("fake transport broken"))
                     return
                 }
-                let (failed, summaries) = self.catalogSnapshot(query)
+                let (failed, summaries, candidates) = self.catalogSnapshot(query)
                 for agent in failed { continuation.yield(.storeFailed(agent: agent, message: "fake listing failed")) }
                 continuation.yield(.listed(total: summaries.count))
                 var start = 0
@@ -440,7 +440,8 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
                     await Task.yield()
                 }
                 if !Task.isCancelled {
-                    continuation.yield(.completed(agents: Set(Agent.allCases.filter { query.agents.contains($0) && !failed.contains($0) })))
+                    let complete = Set(Agent.allCases.filter { query.agents.contains($0) && !failed.contains($0) })
+                    continuation.yield(.completed(agents: complete, candidates: candidates.filter { complete.contains($0.key) }))
                 }
                 continuation.finish()
             }
@@ -449,7 +450,9 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
     }
 
     /// The agent's own pick per thread, parsed, newest first.
-    private func catalogSnapshot(_ query: CatalogQuery) -> (failed: [Agent], summaries: [TranscriptSummary]) {
+    /// `candidates`: per listed agent, every thread id a listed file is
+    /// named for, however it then read.
+    private func catalogSnapshot(_ query: CatalogQuery) -> (failed: [Agent], summaries: [TranscriptSummary], candidates: [Agent: Set<String>]) {
         let paths: [(Agent, String)] = locked {
             counts.roundTrips += 1
             counts.listings += 1
@@ -461,10 +464,13 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
         // The same per-thread pick as the local catalog and member
         // resolution, made before anything is parsed — or looked up.
         var summaries: [TranscriptSummary] = []
+        var candidates: [Agent: Set<String>] = [:]
         for agent in Agent.allCases {
             let format = TranscriptFormats.format(for: agent)
             let (shared, _) = locked { sharedFacts(agent) }
-            for thread in TranscriptCandidates.catalogThreads(format: format, listed: paths.filter { $0.0 == agent }.map(\.1)) {
+            let threads = TranscriptCandidates.catalogThreads(format: format, listed: paths.filter { $0.0 == agent }.map(\.1))
+            if query.agents.contains(agent) { candidates[agent] = Set(threads.map(\.threadID)) }
+            for thread in threads {
                 let picked = TranscriptCandidates.catalogPick(thread) { path -> TranscriptCandidates.CatalogAttempt<TranscriptSummary> in
                     locked {
                         guard let file = files[path] else { kept[path] = nil; return .missing }
@@ -515,7 +521,7 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
             lhs.modifiedAt == rhs.modifiedAt ? lhs.id < rhs.id
                 : (query.newestFirst ? lhs.modifiedAt > rhs.modifiedAt : lhs.modifiedAt < rhs.modifiedAt)
         }
-        return (failed, summaries)
+        return (failed, summaries, candidates)
     }
 
     /// Codex only: the one rollout header in the window for this folder.

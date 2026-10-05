@@ -550,16 +550,16 @@ class HostSessionSourceContract: XCTestCase {
         try plantClaude(kept)
         try plantCodex(uuid())
         let all = try await catalogRead()
-        XCTAssertEqual(all.events.last, .completed(agents: [.claude, .codex]))
+        XCTAssertEqual(all.events.last?.completedAgents, [.claude, .codex])
         let value1 = try await catalogRead(CatalogQuery(agents: [.claude])).events.last
-        XCTAssertEqual(value1, .completed(agents: [.claude]))
+        XCTAssertEqual(value1?.completedAgents, [.claude])
         try fixture.remove(goneFile)
         let after = try await catalogRead()
         XCTAssertEqual(Set(after.summaries.map(\.id)).intersection([gone, kept]), [kept])
-        XCTAssertEqual(after.events.last, .completed(agents: [.claude, .codex]), "the deletion is proven within completed coverage")
+        XCTAssertEqual(after.events.last?.completedAgents, [.claude, .codex], "the deletion is proven within completed coverage")
         try fixture.breakListing(.codex)
         let value2 = try await catalogRead().events.last
-        XCTAssertEqual(value2, .completed(agents: [.claude]))
+        XCTAssertEqual(value2?.completedAgents, [.claude])
     }
 
     /// The work-count half of the cache contract: an unchanged store is
@@ -646,6 +646,38 @@ class HostSessionSourceContract: XCTestCase {
         let value9 = try await catalogRead(query).summaries.map(\.locator)
         XCTAssertEqual(value9, [canonical])
         XCTAssertEqual(fixture.catalogParses, base + 1, "the older rollout's kept summary stands in")
+    }
+
+    /// A completed listing names every id it found a transcript file for,
+    /// however the file read: unreadable, another session's, fine. Only an
+    /// id with no file at all, in an agent whose listing completed, is
+    /// proven to have no transcript; an agent whose listing failed proves
+    /// nothing.
+    func test13jCompletionNamesEveryCandidateWhateverItRead() async throws {
+        let good = uuid(), unreadable = uuid(), named = uuid(), recorded = uuid(), rollout = uuid()
+        let goodFile = try plantClaude(good)
+        let lockedFile = try plantClaude(unreadable)
+        try fixture.makeUnreadable(lockedFile)
+        try fixture.put(agent: .claude, name: "\(named).jsonl", data: claudeData(recorded))
+        try plantCodex(rollout)
+        let first = try await catalogRead()
+        guard case .completed(let agents, let candidates)? = first.events.last else { return XCTFail("no completion") }
+        XCTAssertEqual(agents, [.claude, .codex])
+        XCTAssertTrue(candidates[.claude, default: []].isSuperset(of: [good, unreadable, named]))
+        XCTAssertEqual(candidates[.codex], [rollout])
+        XCTAssertEqual(first.summaries.map(\.id).filter { [unreadable, named].contains($0) }, [], "listed as candidates, shown as nothing")
+        XCTAssertEqual(first.events.last?.provesNoTranscript(id: unreadable, agent: .claude), false)
+        XCTAssertEqual(first.events.last?.provesNoTranscript(id: named, agent: .claude), false)
+        XCTAssertEqual(first.events.last?.provesNoTranscript(id: recorded, agent: .claude), true, "no file is named for it")
+        XCTAssertEqual(first.events.last?.provesNoTranscript(id: rollout, agent: .claude), true, "another agent's file is not this one's")
+        try fixture.remove(goodFile)
+        let after = try await catalogRead()
+        XCTAssertEqual(after.events.last?.provesNoTranscript(id: good, agent: .claude), true, "removed, after a completed listing")
+        try fixture.breakListing(.codex)
+        let broken = try await catalogRead()
+        XCTAssertEqual(broken.events.last?.provesNoTranscript(id: rollout, agent: .codex), false, "a failed listing proves nothing")
+        XCTAssertEqual(broken.events.last?.provesNoTranscript(id: uuid(), agent: .codex), false)
+        XCTAssertNil(CatalogBatch.listed(total: 0).provesNoTranscript(id: good, agent: .claude))
     }
 
     // MARK: 14 adoption

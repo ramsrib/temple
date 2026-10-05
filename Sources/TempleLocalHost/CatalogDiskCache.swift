@@ -16,7 +16,7 @@ import TempleCore
 /// dev build share the state directory — so nothing here ever deletes a
 /// file another process may have open:
 /// - The file name carries the table layout and the facts version
-///   (`history-catalog-cache.s1-f1.sqlite`): a build with other parsers
+///   (`history-catalog-cache.s2-f1.sqlite`): a build with other parsers
 ///   uses another file, and never touches this one.
 /// - Every process using the file holds a shared `flock` on its lock file
 ///   (`<file>.lock`) for as long as it has the file open.
@@ -32,7 +32,7 @@ import TempleCore
 final class CatalogDiskCache: @unchecked Sendable {
     /// The table layout. Bump with any change to the tables, or to the
     /// fields of `TranscriptSummary` (`CatalogCacheTests` counts them).
-    static let schemaVersion = 1
+    static let schemaVersion = 2
 
     static func fileName(schema: Int = schemaVersion, facts: Int = TranscriptFormats.factsVersion) -> String {
         "history-catalog-cache.s\(schema)-f\(facts).sqlite"
@@ -66,8 +66,19 @@ final class CatalogDiskCache: @unchecked Sendable {
         self.busyTimeout = busyTimeout
     }
 
+    /// Called with "database" once the connection is closed and "lock" once
+    /// the lock is released, in that order (a test seam).
+    var teardownProbe: (@Sendable (String) -> Void)?
+
+    /// The connection goes before the lock: while this process holds the
+    /// file open it holds the lock, or another could rebuild the file
+    /// under a connection still open here.
     deinit {
-        if lockDescriptor >= 0 { close(lockDescriptor) }
+        try? database?.close()
+        database = nil
+        teardownProbe?("database")
+        if lockDescriptor >= 0 { close(lockDescriptor); lockDescriptor = -1 }
+        teardownProbe?("lock")
     }
 
     /// The default file, in `TempleState.directory` (so `TEMPLE_STATE_DIR`
@@ -100,10 +111,12 @@ final class CatalogDiskCache: @unchecked Sendable {
         do {
             return try database.read { db in
                 var result: [Agent: CatalogSummaryCache.AgentEntries] = [:]
-                for row in try Row.fetchAll(db, sql: "SELECT agent, path, inode FROM roots") {
+                for row in try Row.fetchAll(db, sql: "SELECT agent, path, inode, volume FROM roots") {
                     guard let agent = Agent(rawValue: row["agent"]) else { continue }
                     let inode: Int64 = row["inode"]
-                    result[agent] = .init(root: CatalogRoot(path: row["path"], inode: UInt64(bitPattern: inode)), files: [:])
+                    // No device: it is not stable across reboots. The volume is.
+                    result[agent] = .init(root: CatalogRoot(path: row["path"], inode: UInt64(bitPattern: inode),
+                                                            volume: row["volume"]), files: [:])
                 }
                 let cursor = try Row.fetchCursor(db, sql: "SELECT * FROM entries")
                 while let row = try cursor.next() {
@@ -124,13 +137,15 @@ final class CatalogDiskCache: @unchecked Sendable {
         do {
             try database.write { db in
                 for (agent, root) in changes.roots {
-                    let stored = try Row.fetchOne(db, sql: "SELECT path, inode FROM roots WHERE agent = ?", arguments: [agent.rawValue])
-                    let same = stored.map { $0["path"] as String == root.path && UInt64(bitPattern: $0["inode"] as Int64) == root.inode } ?? false
+                    let stored = try Row.fetchOne(db, sql: "SELECT path, inode, volume FROM roots WHERE agent = ?", arguments: [agent.rawValue])
+                    let same = stored.map {
+                        CatalogRoot(path: $0["path"], inode: UInt64(bitPattern: $0["inode"] as Int64), volume: $0["volume"]).matches(root)
+                    } ?? false
                     guard !same else { continue }
                     // Another root: nothing kept under the old one applies.
                     try db.execute(sql: "DELETE FROM entries WHERE agent = ?", arguments: [agent.rawValue])
-                    try db.execute(sql: "INSERT OR REPLACE INTO roots (agent, path, inode) VALUES (?, ?, ?)",
-                                   arguments: [agent.rawValue, root.path, Int64(bitPattern: root.inode)])
+                    try db.execute(sql: "INSERT OR REPLACE INTO roots (agent, path, inode, volume) VALUES (?, ?, ?, ?)",
+                                   arguments: [agent.rawValue, root.path, Int64(bitPattern: root.inode), root.volume])
                 }
                 for (agent, files) in changes.files {
                     for (key, entry) in files {
@@ -241,7 +256,7 @@ final class CatalogDiskCache: @unchecked Sendable {
         try database.write { db in
             try db.execute(sql: """
                 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS roots (agent TEXT PRIMARY KEY, path TEXT NOT NULL, inode INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS roots (agent TEXT PRIMARY KEY, path TEXT NOT NULL, inode INTEGER NOT NULL, volume TEXT);
                 CREATE TABLE IF NOT EXISTS entries (
                     agent TEXT NOT NULL, key TEXT NOT NULL,
                     size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL, ctime_ns INTEGER NOT NULL, inode INTEGER NOT NULL,

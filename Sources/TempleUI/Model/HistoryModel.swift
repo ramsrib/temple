@@ -437,7 +437,7 @@ public final class HistoryModel: ObservableObject {
             pass.progress[host] = (read, total)
             readState = pass.summed
             rebuild()
-        case .completed(let agents):
+        case .completed(let agents, _):
             pass.completed[host, default: []].formUnion(agents)
         }
     }

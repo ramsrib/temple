@@ -410,7 +410,7 @@ final class HistoryTests: XCTestCase {
             history.refresh()
             pending?.yield(.listed(total: rows.count))
             pending?.yield(.sessions(rows, read: rows.count, total: rows.count))
-            pending?.yield(.completed(agents: [.claude]))
+            pending?.yield(.completed(agents: [.claude], candidates: [:]))
             pending?.finish()
             await waitFor { history.readState == .done }
         }
@@ -434,14 +434,14 @@ final class HistoryTests: XCTestCase {
             history.refresh()
             await waitFor { history.readState == .done }
         }
-        await read([.listed(total: 3), .sessions([a, gone, codex], read: 3, total: 3), .completed(agents: [.claude, .codex])])
+        await read([.listed(total: 3), .sessions([a, gone, codex], read: 3, total: 3), .completed(agents: [.claude, .codex], candidates: [:])])
         XCTAssertEqual(ids(history.allRows), ["a", "gone", "x"])
         await read([.listed(total: 1), .sessions([a], read: 1, total: 1)])
         XCTAssertEqual(ids(history.allRows), ["a", "gone", "x"], "no completion: nothing proven gone")
         await read([.listed(total: 1), .storeFailed(agent: .codex, message: "denied"), .sessions([a], read: 1, total: 1),
-                    .completed(agents: [.claude])])
+                    .completed(agents: [.claude], candidates: [:])])
         XCTAssertEqual(ids(history.allRows), ["a", "x"], "Claude's listing completed; Codex's failed and keeps its row")
-        await read([.listed(total: 1), .sessions([a], read: 1, total: 1), .completed(agents: [.claude, .codex])])
+        await read([.listed(total: 1), .sessions([a], read: 1, total: 1), .completed(agents: [.claude, .codex], candidates: [:])])
         XCTAssertEqual(ids(history.allRows), ["a"])
     }
 
