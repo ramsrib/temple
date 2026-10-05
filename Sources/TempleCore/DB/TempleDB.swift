@@ -575,7 +575,8 @@ public final class TempleDB: @unchecked Sendable {
     /// joined — imported, never pinned, named, colored, retitled, archived or
     /// opened since, and not in a restorable tab. Temple's own archive
     /// (ADR-030) is not a decision and does not block it; a person's restore
-    /// of it (`kept_at`) is, and does. Anything else and the row
+    /// of it is, and does: `kept_at`, or the reason an older build's restore
+    /// left on an unarchived row. Anything else and the row
     /// stays: it holds a decision the undo knows nothing about. A transcript
     /// title fill does not block undo: only generated_title records a retitle.
     /// Returns
@@ -594,7 +595,8 @@ public final class TempleDB: @unchecked Sendable {
                     DELETE FROM session_state
                     WHERE id = ? AND host = ? AND joined_via = ?
                       AND (? IS NULL OR agent IS ?) AND (? IS NULL OR incarnation IS ?)
-                      AND pinned = 0 AND (archived = 0 OR archive_reason IS NOT NULL) AND kept_at IS NULL
+                      AND pinned = 0 AND kept_at IS NULL
+                      AND ((archived = 0 AND archive_reason IS NULL) OR (archived != 0 AND archive_reason IS NOT NULL))
                       AND custom_name IS NULL AND color IS NULL
                       AND generated_title IS NULL AND last_opened_at IS NULL
                       AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)

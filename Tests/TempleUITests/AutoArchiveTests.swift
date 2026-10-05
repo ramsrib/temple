@@ -371,6 +371,26 @@ final class AutoArchiveTests: XCTestCase {
         XCTAssertEqual(h.model.autoArchiveNotice?.memberships.map(\.id), ["a"])
     }
 
+    /// Activity from before a Restore, still waiting to be written when the
+    /// Restore lands, does not spend the keep, even with a stored activity
+    /// date in the future: the write carries when the activity happened.
+    func testActivityFromBeforeARestoreFlushedAfterItKeepsTheKeep() throws {
+        let h = harness([row("a")])
+        let future = Date(timeIntervalSince1970: (Date().timeIntervalSince1970 + 86_400 * 365).rounded())
+        try h.database.touch(sessionID: "a", host: .local, at: future)
+        XCTAssertEqual(try h.database.autoArchive([AutoArchiveEntry(ref: XCTUnwrap(h.ref("a")), reason: .transcriptMissing)],
+                                                  idleBefore: .distantFuture), ["a"])
+        h.overlay.touch("a", host: .local, at: Date().addingTimeInterval(-60))   // typed before the Restore
+        h.model.restoreSession("a", undoManager: nil)
+        h.overlay.flushPendingTouches()
+        XCTAssertNotNil(h.state("a")?.keptAt, "activity from before the restore")
+        XCTAssertEqual(h.state("a")?.lastActiveAt, future, "never backwards")
+
+        h.overlay.touch("a", host: .local, at: Date().addingTimeInterval(1))
+        h.overlay.flushPendingTouches()
+        XCTAssertNil(h.state("a")?.keptAt, "activity after it")
+    }
+
     /// Nothing watches an archived row's transcript, and a file that turns
     /// up again is not a decision: only a person brings the row back.
     func testATranscriptThatTurnsUpAgainChangesNothing() async {

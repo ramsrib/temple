@@ -1529,6 +1529,14 @@ extension DBTests {
         XCTAssertFalse(try db.leave(sessionID: "restored", host: .local))
         XCTAssertFalse(try db.leave(sessionID: "undone", host: .local))
         XCTAssertNotNil(try db.sessionState("restored"))
+
+        // An older build's Restore: unarchived, the reason left behind, no stamp.
+        let (raw, queue) = try rawDatabase()
+        try raw.join(sessionID: "old-build", via: .imported, agent: .claude)
+        XCTAssertEqual(try raw.autoArchive(missing([try ref(raw, "old-build")]), idleBefore: Self.idleCutoff), ["old-build"])
+        try olderBuildSetArchived(queue, false, "old-build")
+        XCTAssertNil(try raw.sessionState("old-build")?.keptAt)
+        XCTAssertFalse(try raw.leave(sessionID: "old-build", host: .local))
     }
 
     func testRestoreTempleArchivesTouchesOnlyRowsStillCarryingTemplesArchive() throws {

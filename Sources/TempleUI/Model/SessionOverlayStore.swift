@@ -318,13 +318,18 @@ public final class SessionOverlayStore: ObservableObject {
     /// holding the same id changes nothing.
     public func touch(_ id: String, host: HostID, at: Date? = nil) {
         guard var row = rows[id], row.host == host else { return }
-        let date = max(row.lastActiveAt ?? .distantPast, at ?? now())
+        let event = at ?? now()
+        let date = max(row.lastActiveAt ?? .distantPast, event)
         if row.lastActiveAt != date {
             row.lastActiveAt = date
             rows[id] = row
             rowChanges.send(RowChange(id: id, recencyOnly: true))
         }
-        pendingTouches[id] = max(pendingTouches[id] ?? .distantPast, date)
+        // The write gets when the activity happened, not the presented date:
+        // the database keeps its own date monotonic, and a keep is spent
+        // only by activity after the restore (ADR-030), which a stored
+        // future date must not fake.
+        pendingTouches[id] = max(pendingTouches[id] ?? .distantPast, event)
         touchHosts[id] = host
         guard touchTimers[id] == nil else { return }
         touchTimers[id] = scheduleTouch(30) { [weak self] in self?.flushTouch(id) }
