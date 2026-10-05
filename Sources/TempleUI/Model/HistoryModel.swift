@@ -2,30 +2,29 @@ import Foundation
 import Combine
 import TempleCore
 
-/// The segmented control: which side of the Temple line a row must be on.
-public enum HistoryScope: String, CaseIterable, Identifiable, Sendable {
-    case all, inTemple, notInTemple
-
-    public var id: String { rawValue }
-
-    public var label: String {
-        switch self {
-        case .all: "All"
-        case .inTemple: "In Temple"
-        case .notInTemple: "Not in Temple"
-        }
-    }
-}
-
-/// The History tab's state: a snapshot of every session on disk, joined with
-/// what Temple knows of each, and the page's view state over it (search,
+/// The History tab's state: every session Temple or the disk knows about,
+/// one status per row, and the page's view state over it (search, scope,
 /// filters, selection, the import in flight).
 ///
-/// The live index holds Temple's sessions only (ADR-027), so this reads the
-/// disk itself, through the host catalog, when the tab is shown and on
-/// Refresh — never watched. The tab's view state lives as long as the tab:
-/// `reset()` runs when it closes. Filters are a question, not a setting, and
+/// Two lifetimes. **Data** outlives the tab: the projection
+/// (`HistoryProjector`) keeps the catalog rows, the members and the
+/// prepared rows, and the last snapshot stays installed, so reopening
+/// History shows them at once and refreshes underneath. **View state** is
+/// the tab's: `reset()` clears search, scope, filters, the chip, selection
+/// and notices when it closes. Filters are a question, not a setting, and
 /// are never persisted.
+///
+/// The main actor never sorts, filters, groups or formats rows. Every input
+/// (catalog batches, members, archived projects, open tabs, the query) goes
+/// to the projection as a value; it answers with one coherent
+/// `HistorySnapshot`, which is installed in one assignment, then the
+/// selection is reconciled against its index. A snapshot built for a query
+/// that has since changed never lands (`generation`).
+///
+/// The live index holds Temple's sessions only (ADR-027), so the disk is
+/// read through the host catalog when the tab is shown and on Refresh, never
+/// watched. Members come from SQLite rows, so they (archived ones included)
+/// are on the page before any disk read.
 @MainActor
 public final class HistoryModel: ObservableObject {
 
@@ -62,14 +61,15 @@ public final class HistoryModel: ObservableObject {
         public let message: String
     }
 
-    /// The selection bar's transient line after an import or its undo.
+    /// The selection bar's transient line after an import, a restore or an
+    /// archive, or their undo.
     public struct Notice: Equatable {
         public let text: String
         public let offersUndo: Bool
     }
 
     public enum EscapeOutcome: Equatable {
-        case clearedSearch, clearedSelection, leave
+        case clearedSearch, clearedChip, clearedSelection, leave
     }
 
     /// What floats over the bottom of the page: the transient line after an
@@ -82,11 +82,37 @@ public final class HistoryModel: ObservableObject {
         case selection(count: Int)
     }
 
-    /// A project in the popup, with how many sessions on disk it holds.
-    public struct ProjectCount: Equatable, Sendable {
-        public let key: ProjectKey
-        public var path: String { key.path }
-        public let count: Int
+    public typealias ProjectCount = TempleUI.ProjectCount
+
+    /// A command on the page's selection, from a key or the selection bar.
+    public enum Command: Equatable {
+        case moveCursor(by: Int, extend: Bool)
+        case moveToEnd(top: Bool, extend: Bool)
+        case moveByDay(forward: Bool, extend: Bool)
+        case selectAll
+        case open
+        case archiveSelection
+        case restoreSelection
+        case importSelection
+    }
+
+    /// What the selection bar says and offers, counted once per selection or
+    /// snapshot change rather than per render.
+    public struct SelectionSummary: Equatable {
+        public var count = 0
+        /// Outside rows Import would bring in.
+        public var importable = 0
+        public var archived = 0
+        /// Every selected row can be archived (as last projected).
+        public var archivable = false
+        public var allArchived: Bool { count > 0 && archived == count }
+    }
+
+    /// The "Archived just now" chip: a filter over exactly the sidebar
+    /// notice's memberships.
+    public struct JustArchivedChip: Equatable {
+        public let memberships: Set<MembershipRef>
+        public var count: Int { memberships.count }
     }
 
     // MARK: Dependencies
@@ -105,39 +131,45 @@ public final class HistoryModel: ObservableObject {
     /// Archive several members as one undoable step. `changed` hears each
     /// undo (false) and redo (true), so the page can say what happened.
     var archiveMembers: ([String], UndoManager?, _ changed: @escaping @MainActor (Bool) -> Void) -> Void = { _, _, _ in }
-    /// Whether a session runs in an open tab on the row's host: undoing its
-    /// import must not pull it out from under that tab.
+    /// Restore these memberships as one undoable step (ADR-031), reporting
+    /// what the write did; `changed` hears each undo and redo.
+    var restoreMembers: ([MembershipRef], UndoManager?, _ changed: @escaping @MainActor (AppModel.RestoreChange) -> Void)
+        -> AppModel.RestoreReport = { _, _, _ in AppModel.RestoreReport(restored: 0, undoable: false) }
+    var restoreProjectAction: (ProjectKey, UndoManager?) -> Void = { _, _ in }
+    var showInSidebar: (String) -> Void = { _ in }
+    /// Whether a session runs in an open tab on the row's host, asked live
+    /// when an action runs: undoing an import or archiving must not pull a
+    /// session out from under its tab.
     var hasOpenTab: (HistoryKey) -> Bool = { _ in false }
-
-    // MARK: Snapshot
-
-    /// The disk as last read, one entry per host, agent and session id. Each
-    /// host's catalog already picked one file per thread (the one the agent
-    /// would resume), so nothing here chooses between files.
-    private var diskByKey: [HistoryKey: TranscriptSummary] = [:]
-    /// Temple's own copies come from the live index — fresher titles and
-    /// times. Kept as delivered; keyed by id only when a rebuild needs it.
+    /// Temple's own rows, with the engine's verdicts.
     var memberRows: () -> [Session] = { [] }
     var openMember: (Session) -> Void = { _ in }
-    private var noiseKeys: Set<HistoryKey> = []
-    private var joinedByKey: [HistoryKey: SessionState] = [:]
+
+    // MARK: Data
+
+    let projector: HistoryProjector
+    /// The page as last projected. Retained when the tab closes.
+    @Published public private(set) var snapshot: HistorySnapshot = .empty
+    /// Each open tab's activity, by session and host: the dots. A change
+    /// re-renders the rows whose dot changed, nothing else.
+    @Published public private(set) var activity: [SessionKey: ActivityState] = [:]
 
     @Published public private(set) var readState: ReadState = .idle
     @Published public private(set) var lastUpdated: Date?
     @Published public private(set) var storeFailures: [StoreFailure] = []
 
-    /// Every non-noise session on disk, newest first.
-    @Published public private(set) var allRows: [HistoryRow] = []
-    /// `allRows` through search and filters, in the same order.
-    @Published public private(set) var visibleRows: [HistoryRow] = []
-    @Published public private(set) var groups: [HistoryRowDayGroup] = []
-    @Published public private(set) var inTempleCount = 0
-    /// Members whose transcript the engine proved gone: listed, but nothing
-    /// on disk backs them (`HistoryRow.transcriptMissing`).
-    @Published public private(set) var transcriptMissingCount = 0
-    @Published public private(set) var agentCounts: [Agent: Int] = [:]
-    /// Projects for the popup, by session count, most first.
-    @Published public private(set) var projects: [ProjectCount] = []
+    public var allRows: [HistoryRow] { snapshot.allRows }
+    /// `allRows` through scope, filters, chip and search, in the same order.
+    public var visibleRows: [HistoryRow] { snapshot.visibleRows }
+    public var groups: [HistoryRowDayGroup] { snapshot.groups }
+    /// In Temple and not archived.
+    public var inTempleCount: Int { snapshot.counts.inTemple }
+    public var archivedCount: Int { snapshot.counts.archived }
+    /// Members nothing on disk backs (`HistoryRow.transcriptMissing`).
+    public var transcriptMissingCount: Int { snapshot.counts.transcriptMissing }
+    public var agentCounts: [Agent: Int] { snapshot.counts.agents }
+    /// Projects for the popup, by row count, most first.
+    public var projects: [ProjectCount] { snapshot.projects }
 
     // MARK: View state
 
@@ -146,19 +178,24 @@ public final class HistoryModel: ObservableObject {
     /// first, so neither acts on the query from before the typing.
     @Published public var draft = "" { didSet { if draft != oldValue { draftChanged() } } }
     /// The applied search. Setting it (the ⌘K bridge) brings the field along.
+    /// Any assignment — an unchanged one too — brings the field along and
+    /// ends a pending debounce: a bridge that sets the query must not have
+    /// the old typing land on its page a moment later.
     @Published public var query = "" {
         didSet {
-            guard query != oldValue else { return }
+            debounceTask?.cancel()
+            debounceTask = nil
             if draft != query { draft = query }
+            guard query != oldValue else { return }
             filtersChanged()
         }
     }
     @Published public var scope: HistoryScope = .all { didSet { if scope != oldValue { filtersChanged() } } }
     @Published public var agentFilter: Agent? { didSet { if agentFilter != oldValue { filtersChanged() } } }
     @Published public var projectKeyFilter: ProjectKey? { didSet { if projectKeyFilter != oldValue { filtersChanged() } } }
+    @Published public var justArchivedChip: JustArchivedChip? { didSet { if justArchivedChip != oldValue { filtersChanged() } } }
 
-
-    @Published public private(set) var selection: Set<HistoryKey> = []
+    @Published public private(set) var selection: Set<HistoryKey> = [] { didSet { refreshSelectionSummary() } }
     /// The row the keyboard is on: arrows move from it, ⇧ extends to it.
     @Published public private(set) var cursorID: HistoryKey?
     /// Where a ⇧-extension is measured from.
@@ -172,6 +209,7 @@ public final class HistoryModel: ObservableObject {
     /// (sidebar search, a chip being renamed), whose keys are not History's.
     /// Not published: nothing on screen draws from it.
     public var searchFieldFocused = false
+    @Published public private(set) var selectionSummary = SelectionSummary()
 
     @Published public var pendingImport: ImportRequest?
     @Published public var importFailure: ImportFailure?
@@ -183,36 +221,86 @@ public final class HistoryModel: ObservableObject {
     /// change: arrows and Return work without a click.
     private var wantsInitialSelection = true
     private var readTask: Task<Void, Never>?
+    private var readID = 0
+    private var readProgress: [HostID: (read: Int, total: Int?)] = [:]
+    private var readFailures: [StoreFailure] = []
+    private var readAwaitsFirstSnapshot = false
+    /// Catalog rows handed to the pump and not yet taken by a projection.
+    /// Over `catalogBacklogLimit`, a read's lanes wait (lossless
+    /// backpressure, `HistoryCatalogRead`) and the backlog goes at once.
+    private var pendingCatalogRows = 0
+    private var backlogWaiters: [CheckedContinuation<Void, Never>] = []
+    var catalogBacklogLimit = 2_000
+    /// Catalog rows waiting for the pump (for tests).
+    var catalogBacklog: Int { pendingCatalogRows }
+    /// Progress lands at most every `coalesceInterval`, the latest always
+    /// last: a re-render of the page per batch is work for a counter.
+    private var lastProgressPublish: Date?
+    private var progressTask: Task<Void, Never>?
     private var noticeTask: Task<Void, Never>?
     private var importedTask: Task<Void, Never>?
     private var debounceTask: Task<Void, Never>?
     private var rebuildScheduled = false
+    /// Snapshots installed. Diagnostic: an unchanged projection installs none.
     private(set) var rebuildCount = 0
-    private var presentedMembers: Set<Session> = []
-    private var presentedArchivedProjects: Set<ProjectKey> = []
+    /// Main-actor time spent installing snapshots, for measurement.
+    private(set) var installDurations: [TimeInterval] = []
+    /// Overlay reads made by the page's own derived state; the row inputs
+    /// and the selection bar make none (a test counts this).
+    private(set) var overlayLookups = 0
 
-    /// Members attached to a catalog row use disk time. Activity alone
-    /// cannot change anything such a row presents, so it must not trigger a
-    /// catalog union and sort. A member standing alone — no catalog row, or
-    /// only another host's or agent's — shows its own activity time.
-    private var presentationMembers: Set<Session> {
-        Set(currentMembers.map { member in
-            guard attachesToCatalog(member.state) else { return member }
-            var state = member.state
-            state.lastActiveAt = nil
-            return Session(state: state, resolution: member.resolution)
-        })
-    }
-    /// The tab is on screen. Off screen, a change only marks the page dirty:
-    /// re-sorting a few thousand rows for a page nobody is looking at, on
-    /// every membership or live-index change, is work for nothing.
+    /// The tab is on screen. Off screen, a member change only marks the page
+    /// dirty: it is projected when the page is next shown.
     private var isActive = false
-    private var needsRebuild = false
+    private var membersDirty = true
+    private var openTabKeys: Set<SessionKey> = []
     private var cancellables: Set<AnyCancellable> = []
+
+    // The projection pump: one at a time, in order, coalesced.
+    private var pending = HistoryProjectionInput()
+    private var pendingUrgent = false
+    private var pumpTask: Task<Void, Never>?
+    private var coalesceWait: Task<Void, Never>?
+    private var lastInstall: Date?
+    /// Bumped by every change to the question the page asks.
+    private(set) var generation: UInt64 = 0
+    /// Test seam: awaited between a projection's return and its install.
+    var beforeInstall: (@MainActor () async -> Void)?
+    /// The generations installed, in order (diagnostic).
+    private(set) var installedGenerations: [UInt64] = []
+
+    // Commands on the selection: one rule (ADR-031).
+    //
+    // - Every command (arrows, ⌘A, Return, ⌘⌫, Restore N, the selection's
+    //   Import) comes in through `issue`, unconditionally: whoever issues it
+    //   checks nothing.
+    // - Accepting a command first applies what is typed (a pending debounce),
+    //   and only then. If the page answering the current input is installed
+    //   and nothing is recorded, it runs now; otherwise it is recorded with
+    //   the generation it targets.
+    // - Any newer input cancels every recorded command: a keystroke that
+    //   changes the search, a scope, filter or chip change, Esc, the tab
+    //   leaving, a bridge into History.
+    // - When the targeted generation installs, recorded commands run one at a
+    //   time; before each, the generation and a cancellation token are
+    //   checked, and the first mismatch drops the rest. A command runs against
+    //   the installed page and checks there whether it applies; one that does
+    //   not does nothing. Running a command never applies typing and never
+    //   records a command.
+    // - A command that leaves the page or puts something in front of it
+    //   (Return that opens a tab, Import that asks with its sheet) is
+    //   terminal: once it runs, every command still recorded is cancelled, in
+    //   the same call. A command never runs while a sheet or alert is up: it
+    //   does nothing and cancels the rest. The app cancels too, at once,
+    //   whenever its active tab moves off History.
+    private var recordedCommands: [(target: UInt64, command: Command, undoManager: UndoManager?)] = []
+    private var commandToken = 0
 
     var noticeDuration: TimeInterval = 4
     var importedDuration: TimeInterval = 2
     var queryDebounce: TimeInterval = 0.12
+    /// Catalog batches after the first land at most this often.
+    var coalesceInterval: TimeInterval = 0.1
 
     /// `catalog` and `directoryEvidence` are the host registry's (AppModel
     /// wires them); `pathExists` is a test's stand-in for this Mac's
@@ -222,7 +310,8 @@ public final class HistoryModel: ObservableObject {
          catalog: @escaping () -> AsyncStream<HostCatalogEvent>,
          pathExists: (@Sendable (String) -> Bool)? = nil,
          directoryEvidence: (@Sendable (ProjectKey) async -> DirectoryEvidence)? = nil,
-         now: @escaping () -> Date = Date.init) {
+         now: @escaping @Sendable () -> Date = Date.init,
+         notificationCenter: NotificationCenter = .default) {
         self.overlay = overlay
         self.catalog = catalog
         self.directoryEvidence = directoryEvidence ?? { key in
@@ -230,30 +319,45 @@ public final class HistoryModel: ObservableObject {
             return pathExists(key.path) ? .exists : .missing
         }
         self.now = now
+        self.projector = HistoryProjector(now: now)
         // Membership, renames, retitles and archive state all show on the
-        // page. A burst (a bulk import, live retitles) is one rebuild.
+        // page. A burst (a bulk import, live retitles) is one projection.
         overlay.objectWillChange
             .sink { [weak self] _ in self?.scheduleRebuild() }
             .store(in: &cancellables)
         // Activity publishes nothing (`SessionOverlayStore.rows`), but a
-        // member standing alone shows its own activity time: check, and
-        // rebuild only if the page would change.
+        // member standing alone shows its own activity time: the projection
+        // decides whether the page changed.
         overlay.rowChanges
             .filter(\.recencyOnly)
             .sink { [weak self] _ in self?.scheduleRebuild() }
+            .store(in: &cancellables)
+        // A new day retitles "Today"; a new zone or locale moves every row's
+        // day and time text. Each re-formats the page even when nothing else
+        // arrives, with a fresh calendar and fresh formatters.
+        Publishers.MergeMany([Notification.Name.NSCalendarDayChanged, .NSSystemTimeZoneDidChange,
+                              NSLocale.currentLocaleDidChangeNotification].map {
+                notificationCenter.publisher(for: $0)
+            })
+            .receive(on: RunLoop.main)
+            .sink { [weak self] note in
+                if note.name == .NSSystemTimeZoneDidChange { NSTimeZone.resetSystemTimeZone() }
+                self?.enqueue(HistoryProjectionInput(rebuildAll: true), urgent: true)
+            }
             .store(in: &cancellables)
     }
 
     func rowsChanged() { scheduleRebuild() }
 
     /// The header's counts: what the page lists, not what is on disk. The
-    /// list is the union of the catalog and Temple's members, so a member
-    /// whose transcript is gone is counted — and named, rather than passed
-    /// off as a file Finder would contradict.
+    /// three narrow scopes partition the total, so the line can say so; a
+    /// member whose transcript is gone is counted, and named.
     public var countsLine: String {
-        var line = "\(allRows.count.formatted()) sessions · \(inTempleCount.formatted()) in Temple"
-        if transcriptMissingCount > 0 {
-            line += " · \(transcriptMissingCount.formatted()) without a transcript"
+        let counts = snapshot.counts
+        var line = "\(counts.all.formatted()) sessions · \(counts.inTemple.formatted()) in Temple"
+            + " · \(counts.archived.formatted()) archived"
+        if counts.transcriptMissing > 0 {
+            line += " · \(counts.transcriptMissing.formatted()) without a transcript"
         }
         return line
     }
@@ -265,37 +369,36 @@ public final class HistoryModel: ObservableObject {
 
     // MARK: Lifecycle
 
-    /// The tab came on screen (opened, or switched back to): catch up on what
-    /// changed while it was away, then take a fresh snapshot. Rows already on
-    /// the page stay while it reads.
+    /// The tab came on screen (opened, or switched back to). The retained
+    /// snapshot is already on the page; members are caught up from SQLite
+    /// (before any disk read), then a fresh read runs underneath.
     public func activate() {
         isActive = true
         if selection.isEmpty { wantsInitialSelection = true }
-        rebuild()
+        sendMembers(urgent: true)
+        reconcileSelection()
         refresh()
     }
 
-    /// The tab left the screen: stop reading for nobody, and stop rebuilding.
+    /// The tab left the screen: stop reading for nobody.
     public func deactivate() {
         isActive = false
+        cancelPendingCommands()
         guard readTask != nil else { return }
         readTask?.cancel()
         readTask = nil
+        readID += 1
+        releaseBacklog()
         if case .reading = readState { readState = lastUpdated == nil ? .idle : .done }
     }
 
-    /// The tab closed: its view state goes with it.
+    /// The tab closed: its view state goes with it. The rows stay — the
+    /// projection keeps them, and the page shows them at once next time.
     public func reset() {
         deactivate()
-        diskByKey = [:]
-        noiseKeys = []
-        joinedByKey = [:]
-        storeFailures = []
-        lastUpdated = nil
-        readState = .idle
         pendingImport = nil
         importFailure = nil
-        notice = nil
+        dismissNotice()
         justImported = []
         selection = []
         cursorID = nil
@@ -303,142 +406,91 @@ public final class HistoryModel: ObservableObject {
         wantsInitialSelection = true
         debounceTask?.cancel()
         debounceTask = nil
+        cancelPendingCommands()
         draft = ""
-        query = ""; scope = .all; agentFilter = nil; projectKeyFilter = nil
-        // Directly, not through `invalidate()`: the tab is gone, and its page
-        // must open empty next time rather than flash the old snapshot.
-        rebuild()
+        query = ""; scope = .all; agentFilter = nil; projectKeyFilter = nil; justArchivedChip = nil
     }
 
     /// ⌘R, and every activation. A read already running is replaced.
-    /// Every host is read at once; progress is the sum over the hosts heard
-    /// from, and a host that fails says so for itself only.
-    ///
-    /// Each host's batches run in a lane of their own, in order: the noise
-    /// check asks the owning host about each project once a read, and a
-    /// host whose folder checks stall holds up its own rows, never another
-    /// host's. The lanes are child tasks of the read, so ending it (Refresh,
-    /// the tab leaving the screen) cancels any folder check still in flight.
+    /// Every host is read at once (`HistoryCatalogRead`); progress is the sum
+    /// over the hosts heard from, and a host that fails says so for itself
+    /// only. Rows already on the page stay while it reads.
     public func refresh() {
         readTask?.cancel()
+        readID += 1
+        releaseBacklog()
+        let id = readID
+        progressTask?.cancel()
+        progressTask = nil
+        lastProgressPublish = nil
         readState = .reading(read: 0, total: nil)
+        readProgress = [:]
+        readFailures = []
+        readAwaitsFirstSnapshot = true
         let stream = catalog()
-        let directoryEvidence = directoryEvidence
-        let pass = ReadPass()
+        let evidence = directoryEvidence
+        var memberFolders: [HostID: Set<ProjectKey>] = [:]
+        for member in currentMembers { if let project = member.project { memberFolders[project.host, default: []].insert(project) } }
+        let folders = memberFolders
         readTask = Task { [weak self] in
-            await withTaskGroup(of: Void.self) { group in
-                var lanes: [HostID: AsyncStream<CatalogBatch>.Continuation] = [:]
-                for await event in stream {
-                    if Task.isCancelled { break }
-                    if lanes[event.host] == nil {
-                        let (batches, lane) = AsyncStream<CatalogBatch>.makeStream()
-                        lanes[event.host] = lane
-                        let host = event.host
-                        group.addTask { [weak self] in
-                            await Self.runLane(batches, host: host, pass: pass, directoryEvidence: directoryEvidence) {
-                                batch, asked in self?.apply(batch, host: host, asked: asked, pass: pass)
-                            }
-                        }
-                    }
-                    lanes[event.host]?.yield(event.batch)
-                }
-                for lane in lanes.values { lane.finish() }
+            let completion = await HistoryCatalogRead.run(stream, memberFolders: folders, directoryEvidence: evidence) {
+                [weak self] event in await self?.receive(event, read: id)
             }
-            guard let self, !Task.isCancelled else { return }
-            // Gone from disk since the last read: dropped only where a host
-            // said its agent's listing completed. A failed or missing store,
-            // a host that lost its transport, keeps what it showed before.
-            self.diskByKey = self.diskByKey.filter { key, _ in
-                pass.seen.contains(key) || !(key.agent.map { pass.completed[key.host]?.contains($0) == true } ?? false)
-            }
-            self.storeFailures = pass.failures
+            guard let self, let completion, !Task.isCancelled, id == self.readID else { return }
+            // Gone from disk since the last read: dropped now the read is
+            // whole. The read is done when the page shows all of it.
+            self.enqueue(HistoryProjectionInput(catalog: [.complete(completion)]), urgent: true)
+            while let pump = self.pumpTask { await pump.value }
+            guard !Task.isCancelled, id == self.readID else { return }
+            self.progressTask?.cancel()
+            self.progressTask = nil
+            self.storeFailures = self.readFailures
             self.lastUpdated = self.now()
             self.readState = .done
             self.readTask = nil
-            self.rebuild()
         }
     }
 
-    /// One read's running totals, across its hosts' lanes.
-    @MainActor private final class ReadPass {
-        var seen: Set<HistoryKey> = []
-        /// Per host, the agents whose catalog listing completed (`.completed`).
-        var completed: [HostID: Set<Agent>] = [:]
-        var failures: [StoreFailure] = []
-        var exists: [ProjectKey: DirectoryEvidence] = [:]
-        var progress: [HostID: (read: Int, total: Int?)] = [:]
-
-        var summed: ReadState {
-            let read = progress.values.reduce(0) { $0 + $1.read }
-            let total: Int? = progress.values.contains { $0.total == nil } ? nil
-                : progress.values.reduce(0) { $0 + ($1.total ?? 0) }
-            return .reading(read: read, total: total)
+    private func receive(_ event: HistoryCatalogRead.Event, read id: Int) async {
+        guard id == readID else { return }
+        switch event {
+        case .progress(let host, let read, let total):
+            readProgress[host] = (read, total)
+            let sum = readProgress.values.reduce(0) { $0 + $1.read }
+            let whole: Int? = readProgress.values.contains { $0.total == nil } ? nil
+                : readProgress.values.reduce(0) { $0 + ($1.total ?? 0) }
+            publishProgress(.reading(read: sum, total: whole), read: id)
+        case .failed(let failure, _):
+            readFailures.append(failure)
+            storeFailures = readFailures
+        case .delta(let delta):
+            // The first batch of a read lands at once; later ones coalesce,
+            // unless the backlog is over its bound.
+            pendingCatalogRows += delta.rowCount
+            enqueue(HistoryProjectionInput(catalog: [delta]),
+                    urgent: readAwaitsFirstSnapshot || pendingCatalogRows >= catalogBacklogLimit)
+            readAwaitsFirstSnapshot = false
+            while pendingCatalogRows >= catalogBacklogLimit, id == readID {
+                await withCheckedContinuation { backlogWaiters.append($0) }
+            }
         }
     }
 
-    /// One host's batches, in order, off the main actor: a batch of sessions
-    /// first has its projects' folders checked with the owning host (each
-    /// once a read), then lands on the page. Stops at cancellation, with
-    /// nothing more asked or applied.
-    private nonisolated static func runLane(
-        _ batches: AsyncStream<CatalogBatch>, host: HostID, pass: ReadPass,
-        directoryEvidence: @escaping @Sendable (ProjectKey) async -> DirectoryEvidence,
-        apply: @escaping @MainActor (CatalogBatch, [ProjectKey: DirectoryEvidence]) -> Void
-    ) async {
-        for await batch in batches {
-            guard !Task.isCancelled else { return }
-            var asked: [ProjectKey: DirectoryEvidence] = [:]
-            if case .sessions(let rows, _, _) = batch {
-                let previously = await pass.exists
-                for key in Set(rows.filter { $0.locator.host == host }.map(noiseKey)) where previously[key] == nil {
-                    asked[key] = await directoryEvidence(key)
-                    guard !Task.isCancelled else { return }
-                }
-            }
-            await apply(batch, asked)
+    private func publishProgress(_ state: ReadState, read id: Int) {
+        let wait = lastProgressPublish.map { coalesceInterval - Date().timeIntervalSince($0) } ?? 0
+        guard wait > 0 else {
+            progressTask?.cancel()
+            progressTask = nil
+            lastProgressPublish = Date()
+            if readState != state { readState = state }
+            return
         }
-    }
-
-    /// One host's batch onto the page, with the folder answers its lane
-    /// asked for. Nothing lands from a read that has ended.
-    private func apply(_ batch: CatalogBatch, host: HostID, asked: [ProjectKey: DirectoryEvidence], pass: ReadPass) {
-        guard !Task.isCancelled else { return }
-        switch batch {
-        case .listed(let total):
-            pass.progress[host] = (0, total)
-            readState = pass.summed
-        case .storeFailed(let agent, let message):
-            // A host that failed as a whole failed for every agent, and has
-            // nothing more to read.
-            for agent in agent.map({ [$0] }) ?? Agent.allCases {
-                pass.failures.append(StoreFailure(host: host, agent: agent, message: message))
-            }
-            if agent == nil {
-                let read = pass.progress[host]?.read ?? 0
-                pass.progress[host] = (read, read)
-                readState = pass.summed
-            }
-            storeFailures = pass.failures
-        case .sessions(let batch, let read, let total):
-            // One summary per host, agent and id by the catalog's own selection.
-            let fresh = batch.filter { $0.locator.host == host }
-            let answers = pass.exists.merging(asked) { old, _ in old }
-            let sorted = Self.classify(fresh, exists: answers) { answers[$0] ?? .unknown }
-            pass.exists = sorted.exists
-            var disk = diskByKey
-            for session in fresh {
-                let key = HistoryKey(session)
-                pass.seen.insert(key)
-                disk[key] = session
-                noiseKeys.remove(key)
-            }
-            diskByKey = disk
-            noiseKeys.formUnion(sorted.noise)
-            pass.progress[host] = (read, total)
-            readState = pass.summed
-            rebuild()
-        case .completed(let candidates):
-            pass.completed[host, default: []].formUnion(candidates.keys)
+        progressTask?.cancel()
+        progressTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            guard let self, !Task.isCancelled, id == self.readID, case .reading = self.readState else { return }
+            self.lastProgressPublish = Date()
+            if self.readState != state { self.readState = state }
         }
     }
 
@@ -468,19 +520,146 @@ public final class HistoryModel: ObservableObject {
         return (kept, noise, exists)
     }
 
+    // MARK: Inputs to the projection
+
+    /// The tabs open now, with their activity (AppModel keeps this current).
+    func openTabsChanged(_ tabs: [SessionKey: ActivityState]) {
+        if activity != tabs { activity = tabs }
+        let keys = Set(tabs.keys)
+        guard keys != openTabKeys else { return }
+        openTabKeys = keys
+        enqueue(HistoryProjectionInput(openTabs: keys), urgent: true)
+    }
+
+    private func sendMembers(urgent: Bool) {
+        membersDirty = false
+        enqueue(HistoryProjectionInput(members: currentMembers, archivedProjects: overlay.archivedProjectKeys,
+                                       openTabs: openTabKeys), urgent: urgent)
+    }
+
+    /// A member, a title or an archive flag changed. objectWillChange fires
+    /// before the change lands, so this looks a turn later; off screen it
+    /// only marks the members dirty.
+    private func scheduleRebuild() {
+        guard isActive else { membersDirty = true; return }
+        guard !rebuildScheduled else { return }
+        rebuildScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.rebuildScheduled = false
+                guard self.isActive else { self.membersDirty = true; return }
+                self.sendMembers(urgent: true)
+            }
+        }
+    }
+
+    private var currentQuery: HistoryQuery {
+        HistoryQuery(scope: scope, agent: agentFilter, project: projectKeyFilter,
+                     search: normalizedQuery, justArchived: justArchivedChip?.memberships)
+    }
+
+    private func enqueue(_ input: HistoryProjectionInput, urgent: Bool) {
+        pending.merge(input)
+        if urgent {
+            pendingUrgent = true
+            coalesceWait?.cancel()
+        }
+        guard pumpTask == nil else { return }
+        pumpTask = Task { [weak self] in await self?.runPump() }
+    }
+
+    /// One projection at a time, in order. Catalog batches after a read's
+    /// first wait out `coalesceInterval` since the last install; anything
+    /// the user did (a query, a restore) goes at once. The projection runs
+    /// on its own actor; only the install comes back here.
+    private func runPump() async {
+        while !pending.isEmpty {
+            if !pendingUrgent, let last = lastInstall {
+                let wait = coalesceInterval - Date().timeIntervalSince(last)
+                if wait > 0 {
+                    let sleeper = Task<Void, Never> { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+                    coalesceWait = sleeper
+                    await sleeper.value
+                    coalesceWait = nil
+                }
+            }
+            var input = pending
+            pending = HistoryProjectionInput()
+            pendingUrgent = false
+            releaseBacklog()
+            input.generation = generation
+            guard let next = await projector.apply(input) else { continue }
+            if let beforeInstall { await beforeInstall() }
+            // Superseded: the query changed while this was built, and the
+            // input that changed it is already pending.
+            guard next.generation == generation else { continue }
+            install(next)
+        }
+        pumpTask = nil
+    }
+
+    /// The main actor's whole share of a projection: one assignment, the
+    /// selection checked against the snapshot's index, and anything waiting
+    /// for this query's answer.
+    private func install(_ next: HistorySnapshot) {
+        let started = Date()
+        snapshot = next
+        rebuildCount += 1
+        installedGenerations.append(next.generation)
+        lastInstall = Date()
+        reconcileSelection()
+        drainRecordedCommands()
+        installDurations.append(Date().timeIntervalSince(started))
+    }
+
+    /// A selected row that left the view is not selected: nothing hidden can
+    /// be imported or archived by a key press.
+    private func reconcileSelection() {
+        let index = snapshot.indexByKey
+        if selection.contains(where: { index[$0] == nil }) {
+            selection = selection.filter { index[$0] != nil }
+        } else {
+            refreshSelectionSummary()
+        }
+        if let cursorID, index[cursorID] == nil { self.cursorID = nil }
+        if let anchorID, index[anchorID] == nil { self.anchorID = nil }
+        if wantsInitialSelection, selection.isEmpty, snapshot.generation == generation,
+           let first = snapshot.visibleRows.first {
+            wantsInitialSelection = false
+            select(only: first.id)
+        }
+    }
+
+    /// Waits until every input so far is projected and installed, the
+    /// overlay's deferred member check included. For tests and tools.
+    func settle() async {
+        for _ in 0..<2 {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.main.async { continuation.resume() }
+            }
+            pendingUrgent = true
+            coalesceWait?.cancel()
+            while let pump = pumpTask { await pump.value }
+        }
+    }
+
+    /// The same as the old synchronous rebuild, for callers that only need
+    /// the page caught up: members re-sent, then everything settled.
+    func rebuild() async {
+        sendMembers(urgent: true)
+        await settle()
+    }
+
     // MARK: Derived
 
     /// The row is a member's: its catalog entry (if any) matched the
     /// member's host and agent.
     public func isInTemple(_ row: HistoryRow) -> Bool { row.isMember }
 
-    /// In Temple and put away (the session, or its whole project).
-    public func isArchived(_ session: HistoryRow) -> Bool {
-        isInTemple(session)
-            && (overlay.isArchived(session.sessionID) || (session.project.map { overlay.isProjectArchived($0) } ?? false))
-    }
-
-    public func joinedState(_ key: HistoryKey) -> SessionState? { joinedByKey[key] }
+    /// In Temple and put away (the session, or its whole project), as
+    /// projected.
+    public func isArchived(_ row: HistoryRow) -> Bool { row.isArchived }
 
     /// How a catalog entry stands against Temple's membership, which is
     /// keyed by the session id alone.
@@ -494,7 +673,7 @@ public final class HistoryModel: ObservableObject {
     /// member's known agent both match. An agentless (legacy) member on the
     /// same host attaches when exactly one agent lists the id there; when
     /// two do, which one it is cannot be told, so neither attaches.
-    static func standing(of key: HistoryKey, member: SessionState?, otherAgentListed: Bool) -> Standing {
+    nonisolated static func standing(of key: HistoryKey, member: SessionState?, otherAgentListed: Bool) -> Standing {
         guard let member else { return .outside }
         guard member.host == key.host else { return .conflict(.host(member.host)) }
         if let agent = member.agent {
@@ -503,35 +682,16 @@ public final class HistoryModel: ObservableObject {
         return otherAgentListed ? .conflict(.host(member.host)) : .member
     }
 
-    /// Whether `rebuild` attaches this member to a catalog row: the same
-    /// rule, asked from the member's side.
-    private func attachesToCatalog(_ member: SessionState) -> Bool {
-        let agents = member.agent.map { [$0] } ?? Agent.allCases
-        return agents.contains { agent in
-            let key = HistoryKey(host: member.host, agent: agent, sessionID: member.id)
-            return diskByKey[key] != nil
-                && Self.standing(of: key, member: member, otherAgentListed: otherAgentListed(key)) == .member
-        }
-    }
-
-    private func otherAgentListed(_ key: HistoryKey) -> Bool {
-        Agent.allCases.contains { agent in
-            agent != key.agent && diskByKey[HistoryKey(host: key.host, agent: agent, sessionID: key.sessionID)] != nil
-        }
-    }
-
     /// The live answer for an import: against the rows as they are now,
-    /// not as the page last drew them.
+    /// not as the page last drew them. Only a session with no row at all is
+    /// outside: a member, on whatever host or agent, never is (`standing`).
     private func isImportable(_ summary: TranscriptSummary) -> Bool {
-        let key = HistoryKey(summary)
-        return Self.standing(of: key, member: overlay.rows[summary.id],
-                             otherAgentListed: otherAgentListed(key)) == .outside
+        overlayLookups += 1
+        return overlay.rows[summary.id] == nil
     }
 
-    /// Search or a filter is narrowing the page ("Showing 47 of 3,810").
-    public var isNarrowed: Bool {
-        !normalizedQuery.isEmpty || scope != .all || agentFilter != nil || projectKeyFilter != nil
-    }
+    /// Search, a filter or the chip is narrowing the page ("Showing 47 of 3,810").
+    public var isNarrowed: Bool { !currentQuery.isDefault }
 
     public var isReading: Bool {
         if case .reading = readState { return true }
@@ -544,133 +704,29 @@ public final class HistoryModel: ObservableObject {
         return nil
     }
 
+    /// The project filter names a project that is archived: the page offers
+    /// Restore project under the toolbar.
+    public var filteredProjectIsArchived: Bool {
+        projectKeyFilter.map { snapshot.archivedProjects.contains($0) } ?? false
+    }
+
     private var normalizedQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
-
-    /// Something the page shows changed: rebuild now if it is on screen,
-    /// else when it next is.
-    private func invalidate() {
-        if isActive { rebuild() } else { needsRebuild = true }
-    }
-
-    private func scheduleRebuild() {
-        guard isActive else { needsRebuild = true; return }
-        guard !rebuildScheduled else { return }
-        rebuildScheduled = true
-        // objectWillChange fires BEFORE the change lands: rebuild a turn later.
-        DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.rebuildScheduled = false
-                if self.presentationMembers != self.presentedMembers
-                    || self.overlay.archivedProjectKeys != self.presentedArchivedProjects {
-                    self.invalidate()
-                }
-            }
-        }
-    }
-
-    /// Recompute every derived list from the snapshot. A few thousand structs:
-    /// cheap, and never run from a view body. Each published value is
-    /// assigned only when it changed, so a write the page does not show (a
-    /// title arriving for some open tab) re-renders nothing.
-    func rebuild() {
-        rebuildCount += 1
-        presentedMembers = presentationMembers
-        presentedArchivedProjects = overlay.archivedProjectKeys
-        needsRebuild = false
-        let members = Dictionary(currentMembers.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        var attached: Set<String> = []
-        var rows: [HistoryRow] = []
-        rows.reserveCapacity(diskByKey.count + members.count)
-        for (key, disk) in diskByKey {
-            let member = members[key.sessionID]
-            switch Self.standing(of: key, member: member?.state, otherAgentListed: otherAgentListed(key)) {
-            case .member:
-                rows.append(HistoryRow(member: member, catalog: disk))
-                attached.insert(key.sessionID)
-            case .conflict(let conflict):
-                if !noiseKeys.contains(key) { rows.append(HistoryRow(catalog: disk, conflict: conflict)) }
-            case .outside:
-                if !noiseKeys.contains(key) { rows.append(HistoryRow(catalog: disk)) }
-            }
-        }
-        rows += members.values.filter { !attached.contains($0.id) }.map { HistoryRow(member: $0) }
-        joinedByKey = Dictionary(rows.compactMap { row in row.member.map { (row.id, $0.state) } },
-                                 uniquingKeysWith: { first, _ in first })
-        rows.sort { lhs, rhs in
-            guard lhs.updatedAt == rhs.updatedAt else { return lhs.updatedAt > rhs.updatedAt }
-            if lhs.sessionID != rhs.sessionID { return lhs.sessionID < rhs.sessionID }
-            if lhs.host != rhs.host { return lhs.host.rawValue < rhs.host.rawValue }
-            return (lhs.agent?.rawValue ?? "") < (rhs.agent?.rawValue ?? "")
-        }
-        assign(\.allRows, rows)
-        assign(\.inTempleCount, rows.reduce(0) { $0 + ($1.isMember ? 1 : 0) })
-        assign(\.transcriptMissingCount, rows.reduce(0) { $0 + ($1.transcriptMissing ? 1 : 0) })
-        var agents: [Agent: Int] = [:]
-        var projectCounts: [ProjectKey: Int] = [:]
-        for row in rows {
-            if let agent = row.agent { agents[agent, default: 0] += 1 }
-            if let project = row.project { projectCounts[project, default: 0] += 1 }
-        }
-        assign(\.agentCounts, agents)
-        assign(\.projects, projectCounts
-            .map { ProjectCount(key: $0.key, count: $0.value) }
-            .sorted { $0.count == $1.count ? $0.path < $1.path : $0.count > $1.count })
-
-        let needle = normalizedQuery
-        let visible = rows.filter { session in
-            switch scope {
-            case .all: break
-            case .inTemple: if !session.isMember { return false }
-            case .notInTemple: if session.isMember { return false }
-            }
-            if let agentFilter, session.agent != agentFilter { return false }
-            if let projectKeyFilter, session.project != projectKeyFilter { return false }
-            return needle.isEmpty || Self.matches(session, needle)
-        }
-        assign(\.visibleRows, visible)
-        assign(\.groups, HistoryRowGrouping.groups(visible, now: now()))
-
-        // A selected row that left the view is not selected: nothing hidden
-        // can be imported by a key press.
-        let visibleIDs = Set(visible.map(\.id))
-        let kept = selection.intersection(visibleIDs)
-        if kept != selection { selection = kept }
-        if let cursorID, !visibleIDs.contains(cursorID) { self.cursorID = nil }
-        if let anchorID, !visibleIDs.contains(anchorID) { self.anchorID = nil }
-        if wantsInitialSelection, selection.isEmpty, let first = visible.first {
-            wantsInitialSelection = false
-            select(only: first.id)
-        }
-    }
-
-    private func assign<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<HistoryModel, Value>,
-                                          _ value: Value) {
-        if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
-    }
-
-    /// Case-insensitive substring over everything the row shows or hides in
-    /// its tooltip, plus an id prefix (a pasted id from a log finds its row).
-    /// No ranking: order is chronology.
-    static func matches(_ session: HistoryRow, _ needle: String) -> Bool {
-        if session.title.localizedCaseInsensitiveContains(needle) { return true }
-        if session.projectPath.localizedCaseInsensitiveContains(needle) { return true }
-        if let branch = session.gitBranch, branch.localizedCaseInsensitiveContains(needle) { return true }
-        if let preview = session.lastMessagePreview, preview.localizedCaseInsensitiveContains(needle) { return true }
-        return session.sessionID.lowercased().hasPrefix(needle.lowercased())
-    }
 
     /// Every filter change — search included — clears the selection and puts
     /// the cursor on the first row of the new view.
     private func filtersChanged() {
+        cancelPendingCommands()
         selection = []
         cursorID = nil
         anchorID = nil
         wantsInitialSelection = true
-        invalidate()
+        generation += 1
+        enqueue(HistoryProjectionInput(query: currentQuery), urgent: true)
     }
 
     private func draftChanged() {
+        // A keystroke is newer input: what was recorded before it goes.
+        cancelPendingCommands()
         debounceTask?.cancel()
         debounceTask = nil
         guard draft != query else { return }
@@ -695,9 +751,81 @@ public final class HistoryModel: ObservableObject {
         flushQuery()
     }
 
+    /// The scope control. Picking any segment clears the chip.
+    public func pickScope(_ next: HistoryScope) {
+        justArchivedChip = nil
+        scope = next
+    }
+
+    public func clearChip() { justArchivedChip = nil }
+
     // MARK: Selection
 
     public enum ClickModifier { case none, command, shift }
+
+    /// Accepts a command: applies what is typed, then runs it now if the page
+    /// answers the current input, else records it for the generation it
+    /// targets (see the rule above).
+    public func issue(_ command: Command, undoManager: UndoManager? = nil) {
+        flushQuery()
+        if snapshot.generation == generation, recordedCommands.isEmpty {
+            perform(command, undoManager: undoManager)
+        } else {
+            recordedCommands.append((generation, command, undoManager))
+        }
+    }
+
+    /// Withdraws every recorded command: newer input arrived.
+    public func cancelPendingCommands() {
+        recordedCommands = []
+        commandToken += 1
+    }
+
+    /// Runs the recorded commands for the page just installed, one at a time,
+    /// stopping at the first that no longer targets it or was cancelled.
+    private func drainRecordedCommands() {
+        let token = commandToken
+        while let next = recordedCommands.first {
+            guard token == commandToken, next.target == generation, next.target == snapshot.generation else {
+                recordedCommands = []
+                return
+            }
+            recordedCommands.removeFirst()
+            perform(next.command, undoManager: next.undoManager)
+        }
+    }
+
+    /// A sheet or alert is in front of the page.
+    private var modalUp: Bool { pendingImport != nil || importFailure != nil }
+
+    /// Commands recorded and not yet run.
+    var waitingCommandCount: Int { recordedCommands.count }
+
+    private func perform(_ command: Command, undoManager: UndoManager?) {
+        guard !modalUp else { return cancelPendingCommands() }
+        var terminal = false
+        switch command {
+        case .moveCursor(let delta, let extend): performMoveCursor(by: delta, extend: extend)
+        case .moveToEnd(let top, let extend): performMoveToEnd(top: top, extend: extend)
+        case .moveByDay(let forward, let extend): performMoveByDay(forward: forward, extend: extend)
+        case .selectAll: performSelectAll()
+        case .open: terminal = performOpen(undoManager: undoManager)
+        case .archiveSelection: performArchiveSelection(undoManager: undoManager)
+        case .restoreSelection: performRestoreSelection(undoManager: undoManager)
+        case .importSelection: performImportSelection()
+        }
+        // It left the page, or put something in front of it: nothing
+        // recorded after it may act on a page the user is no longer on.
+        if terminal || modalUp { cancelPendingCommands() }
+    }
+
+    /// The pump took the backlog (or the read ended): a waiting lane goes on.
+    private func releaseBacklog() {
+        pendingCatalogRows = 0
+        let waiters = backlogWaiters
+        backlogWaiters = []
+        waiters.forEach { $0.resume() }
+    }
 
     public func click(_ id: HistoryKey, modifier: ClickModifier = .none) {
         wantsInitialSelection = false
@@ -721,49 +849,56 @@ public final class HistoryModel: ObservableObject {
     }
 
     private func range(from start: HistoryKey, to end: HistoryKey) -> Set<HistoryKey> {
-        let ids = visibleRows.map(\.id)
-        guard let a = ids.firstIndex(of: start), let b = ids.firstIndex(of: end) else { return [end] }
-        return Set(ids[min(a, b)...max(a, b)])
+        let index = snapshot.indexByKey
+        guard let a = index[start], let b = index[end] else { return [end] }
+        return Set(snapshot.visibleRows[min(a, b)...max(a, b)].map(\.id))
     }
 
     /// ↑/↓ (⇧ extends from the anchor).
-    public func moveCursor(by delta: Int, extend: Bool = false) {
-        let ids = visibleRows.map(\.id)
-        guard !ids.isEmpty else { return }
+    public func moveCursor(by delta: Int, extend: Bool = false) { issue(.moveCursor(by: delta, extend: extend)) }
+
+    private func performMoveCursor(by delta: Int, extend: Bool) {
+        let rows = snapshot.visibleRows
+        guard !rows.isEmpty else { return }
         let target: Int
-        if let cursorID, let index = ids.firstIndex(of: cursorID) {
-            target = max(0, min(ids.count - 1, index + delta))
+        if let cursorID, let index = snapshot.indexByKey[cursorID] {
+            target = max(0, min(rows.count - 1, index + delta))
         } else {
-            target = delta >= 0 ? 0 : ids.count - 1
+            target = delta >= 0 ? 0 : rows.count - 1
         }
-        moveCursor(to: ids[target], extend: extend)
+        moveCursor(to: rows[target].id, extend: extend)
     }
 
     /// ⌘↑/⌘↓.
-    public func moveCursorToEnd(top: Bool, extend: Bool = false) {
+    public func moveCursorToEnd(top: Bool, extend: Bool = false) { issue(.moveToEnd(top: top, extend: extend)) }
+
+    private func performMoveToEnd(top: Bool, extend: Bool) {
         guard let id = top ? visibleRows.first?.id : visibleRows.last?.id else { return }
         moveCursor(to: id, extend: extend)
     }
 
     /// ⌥↑/⌥↓: the first row of the previous / next day. Up from inside a day
     /// lands on that day's first row first, like a paragraph jump.
-    public func moveCursorByDay(forward: Bool, extend: Bool = false) {
-        guard !groups.isEmpty else { return }
-        let current = cursorID.flatMap { id in groups.firstIndex { $0.sessions.contains { $0.id == id } } }
+    public func moveCursorByDay(forward: Bool, extend: Bool = false) { issue(.moveByDay(forward: forward, extend: extend)) }
+
+    private func performMoveByDay(forward: Bool, extend: Bool) {
+        let starts = snapshot.groupStarts
+        guard !starts.isEmpty else { return }
+        let position = cursorID.flatMap { snapshot.indexByKey[$0] }
+        let current = position.map { index in (starts.lastIndex { $0 <= index }) ?? 0 }
         let target: Int
-        if let current {
+        if let current, let position {
             if forward {
-                target = min(groups.count - 1, current + 1)
-            } else if groups[current].sessions.first?.id != cursorID {
+                target = min(starts.count - 1, current + 1)
+            } else if starts[current] != position {
                 target = current
             } else {
                 target = max(0, current - 1)
             }
         } else {
-            target = forward ? 0 : groups.count - 1
+            target = forward ? 0 : starts.count - 1
         }
-        guard let id = groups[target].sessions.first?.id else { return }
-        moveCursor(to: id, extend: extend)
+        moveCursor(to: snapshot.visibleRows[starts[target]].id, extend: extend)
     }
 
     private func moveCursor(to id: HistoryKey, extend: Bool) {
@@ -778,7 +913,9 @@ public final class HistoryModel: ObservableObject {
     }
 
     /// ⌘A: everything in the current view — search and filters applied.
-    public func selectAll() {
+    public func selectAll() { issue(.selectAll) }
+
+    private func performSelectAll() {
         wantsInitialSelection = false
         selection = Set(visibleRows.map(\.id))
         if cursorID == nil { cursorID = visibleRows.first?.id }
@@ -793,7 +930,25 @@ public final class HistoryModel: ObservableObject {
 
     /// The selected rows in page order.
     public var selectedRows: [HistoryRow] {
-        visibleRows.filter { selection.contains($0.id) }
+        let index = snapshot.indexByKey
+        return selection.compactMap { index[$0] }.sorted().map { snapshot.visibleRows[$0] }
+    }
+
+    /// Everything a row view draws from: its prepared row and the three small
+    /// inputs that change on their own. Reads no overlay, no tab list, no
+    /// formatter; the activity is one lookup in a small map.
+    struct RowInputs: Equatable {
+        let row: HistoryRow
+        let selected: Bool
+        let justImported: Bool
+        /// The open tab's activity; nil when the session has no tab on the
+        /// row's host (another host's or agent's row is not that session).
+        let activity: ActivityState?
+    }
+
+    func rowInputs(_ row: HistoryRow) -> RowInputs {
+        RowInputs(row: row, selected: selection.contains(row.id), justImported: justImported.contains(row.id),
+                  activity: row.isMember ? activity[SessionKey(id: row.sessionID, host: row.host)] : nil)
     }
 
     /// What the bulk Import would bring in.
@@ -801,15 +956,37 @@ public final class HistoryModel: ObservableObject {
         selectedRows.filter(\.canImport).compactMap(\.catalog)
     }
 
-    /// Esc: clear search → clear selection → leave (the caller goes back to
-    /// the previous tab; History stays open).
+    private func refreshSelectionSummary() {
+        let index = snapshot.indexByKey
+        var summary = SelectionSummary()
+        var archivable = true
+        for key in selection {
+            guard let position = index[key] else { continue }
+            let row = snapshot.visibleRows[position]
+            summary.count += 1
+            if row.canImport { summary.importable += 1 }
+            if row.isArchived { summary.archived += 1 }
+            if !row.canArchive { archivable = false }
+        }
+        summary.archivable = summary.count > 0 && archivable
+        if summary != selectionSummary { selectionSummary = summary }
+    }
+
+    /// Esc: clear search → clear the chip → clear selection → leave (the
+    /// caller goes back to the previous tab; History stays open).
     public func escape() -> EscapeOutcome {
+        // A Return (or anything else) still recorded is withdrawn first.
+        cancelPendingCommands()
         // Esc straight after typing still clears the search: the ladder reads
         // what is in the field, not what the list has caught up to.
         flushQuery()
         if !query.isEmpty {
             clearSearch()
             return .clearedSearch
+        }
+        if justArchivedChip != nil {
+            clearChip()
+            return .clearedChip
         }
         if !selection.isEmpty {
             clearSelection()
@@ -820,39 +997,66 @@ public final class HistoryModel: ObservableObject {
 
     public func requestSearchFocus() { focusSearchRequest += 1 }
 
-    // MARK: Opening
+    // MARK: Opening and restoring
 
-    /// Return / double-click. A tab is a process, so with two or more rows
-    /// selected Return opens nothing — Import and Archive are the bulk verbs.
-    public func openSelected() {
-        // Typing then Return at once opens the first match, not the row that
-        // was selected before the typing.
-        flushQuery()
+    /// Return. A tab is a process, so with two or more rows selected Return
+    /// opens nothing, but when every one is archived it restores them:
+    /// Restore starts nothing. With a query still being answered, Return
+    /// waits for the answer, so typing then Return opens the first match.
+    public func openSelected(undoManager: UndoManager? = nil) { issue(.open, undoManager: undoManager) }
+
+    /// Returns whether it opened (or focused) a tab.
+    private func performOpen(undoManager: UndoManager?) -> Bool {
+        if selection.count >= 2 {
+            if selectionSummary.allArchived { performRestoreSelection(undoManager: undoManager) }
+            return false
+        }
         guard selection.count == 1, let id = selection.first,
-              let session = visibleRows.first(where: { $0.id == id }) else { return }
-        open(session)
+              let position = snapshot.indexByKey[id] else { return false }
+        return primaryAction(snapshot.visibleRows[position], undoManager: undoManager)
     }
 
-    public func canArchive(_ session: HistoryRow) -> Bool {
-        isInTemple(session) && !isArchived(session) && !hasOpenTab(session.id)
+    /// A row's primary action: Open (which restores an archived session on
+    /// the way, ADR-017's one implicit unarchive), or for an archived row
+    /// that cannot resume, Restore.
+    /// Returns whether it opened (or focused) a tab.
+    @discardableResult
+    public func primaryAction(_ row: HistoryRow, undoManager: UndoManager? = nil) -> Bool {
+        if row.isArchived, !row.canResume {
+            restore([row], undoManager: undoManager)
+            return false
+        }
+        return open(row)
     }
 
-    public func archive(_ session: HistoryRow, undoManager: UndoManager?) {
-        guard canArchive(session), let member = session.member else { return }
+    /// The live check an action makes: in Temple, not archived now, and no
+    /// tab open on it now.
+    public func canArchive(_ row: HistoryRow) -> Bool {
+        guard let member = row.member else { return false }
+        overlayLookups += 1
+        let archived = overlay.isArchived(member.id)
+            || (row.project.map { overlay.isProjectArchived($0) } ?? false)
+        return !archived && !hasOpenTab(row.id)
+    }
+
+    public func archive(_ row: HistoryRow, undoManager: UndoManager?) {
+        guard canArchive(row), let member = row.member else { return }
         archiveMember(member.id, undoManager)
     }
 
-    /// The selection bar offers Archive only when it would archive every
-    /// selected row: a bulk verb that silently skips some is worse than none.
+    /// Archive N, and ⌘⌫, act only when they would archive every selected
+    /// row: a bulk verb that silently skips some is worse than none. Checked
+    /// live; the bar shows `selectionSummary.archivable`.
     public var canArchiveSelection: Bool {
         let rows = selectedRows
         return !rows.isEmpty && rows.allSatisfy(canArchive)
     }
 
-    /// The selection bar's Archive N: the rows an upgrade surfaces (legacy,
-    /// transcript-less, folderless) are otherwise a click each. One undo step,
-    /// with the same notice and Undo the import uses.
-    public func archiveSelected(undoManager: UndoManager?) {
+    /// The selection bar's Archive N and ⌘⌫. One undo step, with the same
+    /// notice and Undo the import uses.
+    public func archiveSelected(undoManager: UndoManager?) { issue(.archiveSelection, undoManager: undoManager) }
+
+    private func performArchiveSelection(undoManager: UndoManager?) {
         guard canArchiveSelection else { return }
         let ids = selectedRows.compactMap { $0.member?.id }
         clearSelection()
@@ -871,15 +1075,71 @@ public final class HistoryModel: ObservableObject {
         count == 1 ? "Archive undone" : "\(count) archives undone"
     }
 
-    public func open(_ session: HistoryRow) {
-        guard session.canResume else { return }
-        if let member = session.member { openMember(member) }
-        else if let catalog = session.catalog { openSession(catalog) }
+    /// Restore brings each session back on its own (ADR-031): one in an
+    /// archived project comes back without the rest of it. One undo step.
+    /// It restores the memberships the rows show (id, host, incarnation): a
+    /// session that left and joined again since the page was drawn is not
+    /// the one restored.
+    public func restore(_ rows: [HistoryRow], undoManager: UndoManager?) {
+        let refs = rows.filter(\.isArchived).compactMap { row -> MembershipRef? in
+            guard let state = row.member?.state, let incarnation = state.incarnation else { return nil }
+            return MembershipRef(id: state.id, host: state.host, incarnation: incarnation)
+        }
+        guard !refs.isEmpty else { return }
+        let report = restoreMembers(refs, undoManager) { [weak self] change in
+            switch change {
+            case .undone: self?.showNotice(Notice(text: "Restore undone", offersUndo: false))
+            case .redone(let report): self?.announce(report)
+            }
+        }
+        announce(report)
+    }
+
+    /// What a Restore did, in its own numbers. Undo only for a step this
+    /// operation put on the stack: otherwise ⌘Z would undo something else.
+    private func announce(_ report: AppModel.RestoreReport) {
+        guard report.restored > 0 else {
+            showNotice(Notice(text: Self.nothingRestoredNotice, offersUndo: false))
+            return
+        }
+        showNotice(Notice(text: Self.restoredNotice(report.restored), offersUndo: report.undoable))
+    }
+
+    static let nothingRestoredNotice = "Nothing to restore; it changed since the list loaded."
+
+    /// The bar's Restore N, and Return on an all-archived selection.
+    public func restoreSelected(undoManager: UndoManager?) { issue(.restoreSelection, undoManager: undoManager) }
+
+    private func performRestoreSelection(undoManager: UndoManager?) {
+        let rows = selectedRows.filter(\.isArchived)
+        guard !rows.isEmpty else { return }
+        clearSelection()
+        restore(rows, undoManager: undoManager)
+    }
+
+    /// Restore project: the mask comes off, and every session in it that is
+    /// not archived itself comes back with it.
+    public func restoreProject(_ key: ProjectKey, undoManager: UndoManager?) {
+        restoreProjectAction(key, undoManager)
+        showNotice(Notice(text: "\(key.displayName) restored", offersUndo: undoManager != nil))
+    }
+
+    static func restoredNotice(_ count: Int) -> String {
+        count == 1 ? "1 session restored" : "\(count) sessions restored"
+    }
+
+    /// Opens (or focuses) the row's session in a tab; returns whether it did.
+    @discardableResult
+    public func open(_ row: HistoryRow) -> Bool {
+        guard row.canResume else { return false }
+        if let member = row.member { openMember(member) }
+        else if let catalog = row.catalog { openSession(catalog) }
+        else { return false }
+        return true
     }
 
     public func open(_ session: TranscriptSummary) { openSession(session) }
     public func requestImport(_ rows: [HistoryRow]) { requestImport(rows.filter(\.canImport).compactMap(\.catalog)) }
-
 
     public func showOnly(project key: ProjectKey) { projectKeyFilter = key }
 
@@ -889,7 +1149,15 @@ public final class HistoryModel: ObservableObject {
     /// Temple are left out of the count and the copy; nothing to import, no
     /// sheet.
     public func requestImport(_ sessions: [TranscriptSummary]? = nil) {
-        let candidates = (sessions ?? selectedOutsideRows).filter(isImportable)
+        // The selection's Import is a command; a row's own acts on its row.
+        guard let sessions else { return issue(.importSelection) }
+        askToImport(sessions)
+    }
+
+    private func performImportSelection() { askToImport(selectedOutsideRows) }
+
+    private func askToImport(_ sessions: [TranscriptSummary]) {
+        let candidates = sessions.filter(isImportable)
         guard !candidates.isEmpty else { return }
         pendingImport = makeImportRequest(for: candidates)
     }
@@ -904,10 +1172,10 @@ public final class HistoryModel: ObservableObject {
 
     public func cancelImport() { pendingImport = nil }
 
-    /// A project that is archived lists its sessions in the archive (⌘⇧Y),
-    /// not the sidebar — so the copy says so rather than promise a sidebar
-    /// row that never appears. Projects are keyed by the host the session
-    /// lives on: the same path on another host is another project.
+    /// A project that is archived lists its sessions in History's Archived
+    /// scope, not the sidebar — so the copy says so rather than promise a
+    /// sidebar row that never appears. Projects are keyed by the host the
+    /// session lives on: the same path on another host is another project.
     static func importRequest(for sessions: [TranscriptSummary],
                               title: (TranscriptSummary) -> String = { $0.catalogTitle },
                               isProjectArchived: (ProjectKey) -> Bool = { _ in false }) -> ImportRequest {
@@ -926,7 +1194,7 @@ public final class HistoryModel: ObservableObject {
         var places: [String] = []
         if !sidebar.isEmpty { places.append("in the sidebar under \(projectList(sidebar))") }
         if !archive.isEmpty {
-            places.append("in the archive under \(projectList(archive)), which \(archive.count == 1 ? "is" : "are") archived")
+            places.append("in History under Archived, because \(projectList(archive)) \(archive.count == 1 ? "is" : "are") archived")
         }
         let destination = places.joined(separator: ", and ")
         if sessions.count == 1, let session = sessions.first {
@@ -969,6 +1237,7 @@ public final class HistoryModel: ObservableObject {
         let sessions = request.sessions.filter(isImportable)
         guard !sessions.isEmpty else { return }
         finishImport(sessions, undoManager: undoManager)
+        await settle()
     }
 
     private func finishImport(_ sessions: [TranscriptSummary], undoManager: UndoManager?) {
@@ -1011,7 +1280,7 @@ public final class HistoryModel: ObservableObject {
                                                onlyTitle: failedTitles.first ?? ""),
                 message: lines.joined(separator: "\n"))
         }
-        invalidate()
+        sendMembers(urgent: true)
     }
 
     /// "Couldn't import 1 of 1 sessions" said less than the title would:
@@ -1067,7 +1336,7 @@ public final class HistoryModel: ObservableObject {
         showNotice(Notice(text: Self.undoNotice(total: keys.count, left: leftKeys.count,
                                                 open: open.count, changed: candidates.count - leftKeys.count),
                           offersUndo: false))
-        invalidate()
+        sendMembers(urgent: true)
         return leftKeys
     }
 

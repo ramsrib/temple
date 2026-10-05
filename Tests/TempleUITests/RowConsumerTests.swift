@@ -19,6 +19,15 @@ final class RowConsumerTests: XCTestCase {
         }
     }
 
+    /// History's rows in `scope`, members only (no disk read).
+    private func historyPage(_ app: AppModel, _ scope: HistoryScope = .archived) async -> [String] {
+        app.history.catalog = { AsyncStream { $0.finish() } }
+        app.history.activate()
+        app.history.scope = scope
+        await app.history.settle()
+        return app.history.visibleRows.map(\.sessionID)
+    }
+
     private func key(_ path: String, host: HostID = .local) -> ProjectKey {
         ProjectKey(host: host, path: path)
     }
@@ -152,7 +161,7 @@ final class RowConsumerTests: XCTestCase {
         }
     }
 
-    func testArchiveStillReadsLiveRecencyAfterFrozenValueUpdates() async throws {
+    func testHistorysArchivedScopeReadsLiveRecencyAfterFrozenValueUpdates() async throws {
         let app = try model([Fixture.row("a", project: "/a", updated: 30),
                              Fixture.row("b", project: "/b", updated: 20), Fixture.row("b2", project: "/b", updated: 10)])
         freeze(app)
@@ -162,33 +171,37 @@ final class RowConsumerTests: XCTestCase {
         app.overlay.touch("b2", host: .local, at: Date(timeIntervalSince1970: 40))
         await nextPresentationTurn()
         assertFrozenPresentation(app, order)
-        XCTAssertEqual(app.archivedSessionResults("").map(\.id), ["b2", "a"])
+        let first = await historyPage(app)
+        XCTAssertEqual(first, ["b2", "a"])
         app.archiveProject(key("/a"), undoManager: nil)
         app.archiveProject(key("/b"), undoManager: nil)
         app.overlay.touch("a", host: .local, at: Date(timeIntervalSince1970: 50))
         await nextPresentationTurn()
         assertFrozenPresentation(app, order)
-        XCTAssertEqual(app.archivedProjects.map(\.path), ["/a", "/b"])
-        XCTAssertEqual(app.archivedProjects.last?.sessions.map(\.id), ["b2", "b"])
+        await app.history.settle()
+        XCTAssertEqual(app.history.visibleRows.map(\.sessionID), ["a", "b2", "b"])
         app.overlay.touch("b", host: .local, at: Date(timeIntervalSince1970: 60))
         await nextPresentationTurn()
         assertFrozenPresentation(app, order)
-        XCTAssertEqual(app.archivedProjects.map(\.path), ["/b", "/a"])
-        XCTAssertEqual(app.archivedProjects.first?.sessions.map(\.id), ["b", "b2"])
+        await app.history.settle()
+        XCTAssertEqual(app.history.visibleRows.map(\.sessionID), ["b", "a", "b2"])
+        app.history.deactivate()
     }
-
-    func testAgentlessArchiveReturnRestoresBothFlagsAsOneUndoGroup() throws {
+    func testAgentlessArchiveReturnRestoresBothFlagsAsOneUndoGroup() async throws {
         let app = try model([Fixture.row("agentless", agent: nil, project: "/a", updated: 20)])
         freeze(app)
         let order = [(key("/a"), ["agentless"])]
         app.archiveSession("agentless", undoManager: nil)
         app.archiveProject(key("/a"), undoManager: nil)
         assertFrozenPresentation(app, order)
-        let entry = ArchiveView.Entry.session(app.sessions[0])
-        XCTAssertEqual(ArchiveView.returnHint(for: entry, model: app), "restore session")
+        let archived = await historyPage(app)
+        XCTAssertEqual(archived, ["agentless"])
+        XCTAssertFalse(app.history.visibleRows[0].canResume, "no agent: Return restores")
         let undo = UndoManager()
         undo.groupsByEvent = false
-        ArchiveView.activateSelection([entry], selection: 0, model: app, undoManager: undo)
+        undo.beginUndoGrouping()
+        app.history.openSelected(undoManager: undo)
+        undo.endUndoGrouping()
         XCTAssertFalse(app.overlay.isArchived("agentless"))
         XCTAssertFalse(app.overlay.isProjectArchived(key("/a")))
         assertFrozenPresentation(app, order)
@@ -203,8 +216,8 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertFalse(app.overlay.isArchived("agentless"))
         XCTAssertFalse(app.overlay.isProjectArchived(key("/a")))
         assertFrozenPresentation(app, order)
+        app.history.deactivate()
     }
-
     func testBurstTouchesCoalescePresentationWithoutRegroupingAfterFreeze() async throws {
         let app = try model([Fixture.row("a", project: "/a", updated: 20),
                              Fixture.row("b", project: "/b", updated: 10)])
@@ -293,9 +306,10 @@ final class RowConsumerTests: XCTestCase {
     }
 
     /// The surfaces that do show recency redraw themselves on activity —
-    /// AppModel still publishes nothing. The launcher's recent projects and
-    /// the archive's order are what those views draw; each one's refresh
-    /// fires when that changes and stays quiet when it does not.
+    /// AppModel still publishes nothing. The launcher's recent projects are
+    /// what it draws; its refresh fires when that changes and stays quiet
+    /// when it does not. (History's Archived scope follows recency through
+    /// its own projection.)
     func testVisibleRecencyConsumersRefreshThemselvesWhileTheModelStaysSilent() async throws {
         let app = try model([Fixture.row("a", project: "/a", updated: 30),
                              Fixture.row("b", project: "/b", updated: 20), Fixture.row("b2", project: "/b", updated: 10),
@@ -308,25 +322,19 @@ final class RowConsumerTests: XCTestCase {
         // subscriber (AppModel included) has taken the change.
         let launcher = RecencyRefresh()
         launcher.watch(app.overlay) { AnyHashable(LauncherView.recentPresentation(app)) }
-        let archive = RecencyRefresh()
-        archive.watch(app.overlay) { AnyHashable(ArchiveView.presentation(app)) }
         XCTAssertEqual(LauncherView.recentProjects(app).map(\.path), ["/a", "/b"])
-        XCTAssertEqual(ArchiveView.presentation(app).map(\.id), ["session:b2", "session:c"])
         let cost = PresentationCost(app)
 
         app.overlay.touch("b", host: .local, at: Date(timeIntervalSince1970: 100))
         await nextPresentationTurn()
         XCTAssertEqual(launcher.revision, 1, "the recent list reordered: it redraws")
         XCTAssertEqual(LauncherView.recentProjects(app).map(\.path), ["/b", "/a"])
-        XCTAssertEqual(archive.revision, 0, "nothing archived moved")
         app.overlay.touch("b", host: .local, at: Date(timeIntervalSince1970: 101))
         await nextPresentationTurn()
         XCTAssertEqual(launcher.revision, 1, "same order, same times: no redraw")
 
         app.overlay.touch("c", host: .local, at: Date(timeIntervalSince1970: 200))
         await nextPresentationTurn()
-        XCTAssertEqual(archive.revision, 1, "the archive reordered: it reloads")
-        XCTAssertEqual(ArchiveView.presentation(app).map(\.id), ["session:c", "session:b2"])
         XCTAssertEqual(launcher.revision, 1, "an archived session is not on the launcher")
 
         try await settle()
@@ -438,14 +446,14 @@ final class RowConsumerTests: XCTestCase {
         app.history.activate()
         let deadline = Date().addingTimeInterval(2)
         while app.history.readState != .done && Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
-        await nextPresentationTurn()
+        await app.history.settle()
         let member = try XCTUnwrap(app.history.allRows.first { $0.member != nil })
         XCTAssertNil(member.catalog, "the box's entry does not attach to this Mac's member")
         XCTAssertEqual(app.history.allRows.count, 2)
         let builds = app.history.rebuildCount
         app.overlay.touch("shared", host: .local, at: Date(timeIntervalSince1970: 400))
         await nextPresentationTurn()
-        await nextPresentationTurn()
+        await app.history.settle()
         XCTAssertEqual(app.history.rebuildCount, builds + 1)
         XCTAssertEqual(app.history.allRows.first { $0.member != nil }?.updatedAt, Date(timeIntervalSince1970: 400))
     }
@@ -454,23 +462,23 @@ final class RowConsumerTests: XCTestCase {
         let app = try model([Fixture.row("catalog", project: "/p", updated: 20),
                              Fixture.row("missing", updated: 10)])
         try await read(app, events: [.sessions([Fixture.session("catalog", project: "/p", updated: 5)], read: 1, total: 1)])
-        await nextPresentationTurn()
+        await app.history.settle()
         let builds = app.history.rebuildCount
         let chronology = app.history.allRows.map(\.sessionID)
         for tick in 1...100 { app.overlay.touch("catalog", host: .local, at: Date(timeIntervalSince1970: Double(100 + tick))) }
         await nextPresentationTurn()
-        await nextPresentationTurn()
+        await app.history.settle()
         XCTAssertEqual(app.history.rebuildCount, builds)
         XCTAssertEqual(app.history.allRows.map(\.sessionID), chronology)
         XCTAssertEqual(app.history.allRows.last?.updatedAt, Date(timeIntervalSince1970: 5))
         // An absent member DOES use row time, while titles still update for both.
         app.overlay.touch("missing", host: .local, at: Date(timeIntervalSince1970: 400))
         await nextPresentationTurn()
-        await nextPresentationTurn()
+        await app.history.settle()
         XCTAssertEqual(app.history.rebuildCount, builds + 1)
         XCTAssertEqual(app.history.allRows.first?.updatedAt, Date(timeIntervalSince1970: 400))
         app.overlay.rename("catalog", to: "New catalog member title")
-        await nextPresentationTurn()
+        await app.history.settle()
         XCTAssertEqual(app.history.rebuildCount, builds + 2)
         XCTAssertEqual(app.history.allRows.last?.title, "New catalog member title")
     }
@@ -541,23 +549,22 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertFalse(app.history.canArchive(HistoryRow(catalog: Fixture.session("outside", project: "/outside"))))
     }
 
-    func testArchiveReturnRestoresNonResumableSelectionWithoutDismissing() throws {
+    func testHistoryReturnRestoresANonResumableArchivedRowAndOpensNothing() async throws {
         let app = try model([Fixture.row("unknown")])
         app.archiveSession("unknown", undoManager: nil)
-        app.archivePresented = true
-        let entry = ArchiveView.Entry.session(app.sessions[0])
-        XCTAssertEqual(ArchiveView.returnHint(for: entry, model: app), "restore session")
+        let archived = await historyPage(app)
+        XCTAssertEqual(archived, ["unknown"])
         let undo = UndoManager()
         undo.beginUndoGrouping()
-        ArchiveView.activateSelection([entry], selection: 0, model: app, undoManager: undo)
+        app.history.openSelected(undoManager: undo)
         undo.endUndoGrouping()
         XCTAssertFalse(app.overlay.rows["unknown"]!.archived)
         XCTAssertTrue(app.openSessions.tabs.isEmpty)
-        XCTAssertTrue(app.archivePresented)
+        XCTAssertTrue(app.historyActive || app.openSessions.activeTab == nil, "nothing navigated away")
         undo.undo()
         XCTAssertTrue(app.overlay.rows["unknown"]!.archived)
+        app.history.deactivate()
     }
-
     func testProjectFinderRevealRequiresLocalHostEvenWithTheSamePath() {
         let local = SessionRowProject(key: ProjectKey(host: .local, path: "/same"), sessions: [])
         let remote = SessionRowProject(key: ProjectKey(host: HostID(rawValue: "remote"), path: "/same"), sessions: [])
@@ -604,23 +611,27 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(app.launcherDefaultProjectKey?.path, "/old")
     }
 
-    func testArchiveIncludesMembersWithoutTranscriptsAndDirectories() throws {
+    func testHistoryArchivedIncludesMembersWithoutTranscriptsAndDirectories() async throws {
         let app = try model([Fixture.row("missing", project: "/gone", title: "Kept"), Fixture.row("unknown", title: "Directoryless")])
         app.overlay.setArchived(true, sessionID: "missing")
         app.overlay.setArchived(true, sessionID: "unknown")
-        XCTAssertEqual(Set(app.archiveGroups("").flatMap(\.project.sessions).map(\.id)), ["missing", "unknown"])
-        XCTAssertEqual(app.archiveGroups("directoryless").first?.name, "No project")
-        XCTAssertNil(app.archiveGroups("directoryless").first?.project.sessions.first?.directory)
+        let archived = await historyPage(app)
+        XCTAssertEqual(Set(archived), ["missing", "unknown"])
+        let directoryless = try XCTUnwrap(app.history.visibleRows.first { $0.sessionID == "unknown" })
+        XCTAssertEqual(directoryless.projectName, "No project")
+        XCTAssertNil(directoryless.project)
         app.restoreSession("unknown", undoManager: nil)
-        XCTAssertFalse(app.archivedSessionResults("").contains { $0.id == "unknown" })
+        await app.history.settle()
+        XCTAssertFalse(app.history.visibleRows.contains { $0.sessionID == "unknown" })
+        app.history.deactivate()
     }
-
     private func read(_ app: AppModel, events: [CatalogBatch]) async throws {
         app.history.catalog = { AsyncStream { c in events.forEach { c.yield($0) }; c.finish() } }
         app.history.activate()
         let deadline = Date().addingTimeInterval(2)
         while app.history.readState != .done && Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
         XCTAssertEqual(app.history.readState, .done)
+        await app.history.settle()
     }
 
     func testTempleRowsWithoutATranscriptAreTaggedOnlyFromACompletedResolution() async throws {
@@ -633,17 +644,19 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(app.history.allRows.filter(\.transcriptMissing).map(\.sessionID), ["absent"])
         XCTAssertTrue(app.history.allRows.allSatisfy { !$0.canResume })
         app.history.scope = .inTemple
+        await app.history.settle()
         app.history.openSelected()
+        await app.history.settle()
         XCTAssertTrue(app.openSessions.tabs.isEmpty)
         // A stale absence cannot replace newer unresolved evidence.
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["unknown": .confirmedAbsent]))
-        app.history.rebuild()
+        await app.history.rebuild()
         XCTAssertFalse(app.history.allRows.first { $0.sessionID == "unknown" }!.transcriptMissing)
         // Cancelling a later scan leaves the member union and its evidence intact.
         app.history.catalog = { AsyncStream { _ in } }
         app.history.refresh()
         app.history.deactivate()
-        app.history.rebuild()
+        await app.history.rebuild()
         XCTAssertEqual(app.history.allRows.count, 5)
         XCTAssertEqual(app.history.allRows.filter(\.transcriptMissing).map(\.sessionID), ["absent"])
     }
@@ -670,7 +683,7 @@ final class RowConsumerTests: XCTestCase {
         // The noisy disk entry was retained, so a later join reveals its disk facts.
         app.overlay.join("noisy-outside", via: .imported, agent: .claude,
             core: SessionCore(directory: "/", title: "New member", lastActiveAt: Date(timeIntervalSince1970: 200)))
-        app.history.rebuild()
+        await app.history.rebuild()
         let joined = try XCTUnwrap(app.history.allRows.first { $0.sessionID == "noisy-outside" })
         XCTAssertEqual(joined.updatedAt, noisy.updatedAt)
         XCTAssertEqual(joined.title, "New member")
@@ -712,7 +725,7 @@ final class RowConsumerTests: XCTestCase {
         app.archiveProject(other, undoManager: nil)
         XCTAssertFalse(app.overlay.isProjectArchived(local))
         XCTAssertTrue(app.overlay.isProjectArchived(other))
-        XCTAssertEqual(app.archivedProjects.map(\.key), [other])
+        XCTAssertEqual(app.overlay.archivedProjectKeys, [other])
         XCTAssertEqual(app.displayProjects.map(\.key), [local])
         app.restoreProject(other, undoManager: nil)
         app.moveProject(other, before: local)

@@ -297,7 +297,7 @@ public final class AppModel: ObservableObject {
             let reasons = Set(entries.map(\.reason))
             let without = reasons == [.transcriptMissing] ? "a transcript on disk"
                 : reasons == [.folderMissing] ? "its folder" : "a transcript on disk or its folder"
-            return "Without \(without) a session can't resume. They're in Archived items (⌘⇧Y); Restore brings one back."
+            return "Without \(without) a session can't resume. View lists them in History; Restore brings one back, Undo brings them all back."
         }
     }
     @Published public private(set) var autoArchiveNotice: AutoArchiveNotice?
@@ -431,7 +431,6 @@ public final class AppModel: ObservableObject {
     }
 
     @Published public var commandPalettePresented = false
-    @Published public var archivePresented = false
     @Published public var newSessionPickerPresented = false
 
     // ⌘P project switcher (ProjectSwitcherHUD) — modelled on ⌘⇥, not on ⌘K:
@@ -466,10 +465,10 @@ public final class AppModel: ObservableObject {
         return tab.find
     }
 
-    /// A floating panel is up (⌘K / ⌘⇧Y / ⌘N / ⌘/): it owns the keyboard,
+    /// A floating panel is up (⌘K / ⌘N / ⌘/): it owns the keyboard,
     /// so find must not open — or claim focus — underneath it.
     public var panelPresented: Bool {
-        commandPalettePresented || archivePresented
+        commandPalettePresented
             || newSessionPickerPresented || shortcutsPresented
     }
 
@@ -694,18 +693,23 @@ public final class AppModel: ObservableObject {
                 guard let self, let tabID,
                       let tab = self.openSessions.tabs.first(where: { $0.id == tabID })
                 else { return }
-                if let sid = tab.sessionID {
-                    self.highlightedID = sid
-                    // Opening is the one thing that un-hides: you went looking
-                    // for it, so it belongs back in the rail. Disk activity
-                    // does NOT — a session resumed in another terminal must
-                    // stay put away.
-                    if self.overlay.isArchived(sid) {
-                        self.overlay.setArchived(false, sessionID: sid)
-                    }
-                }
-                if self.overlay.isProjectArchived(tab.projectKey) {
-                    self.overlay.setProjectArchived(false, key: tab.projectKey)
+                // Opening is the one thing that un-hides: you went looking
+                // for it, so it belongs back in the rail. Disk activity does
+                // NOT — a session resumed in another terminal must stay put
+                // away. It brings back that one session, never the rest of an
+                // archived project (ADR-031): the project's mask is taken
+                // apart into its other sessions' own flags, as Restore does.
+                // Not on the undo stack: undo would re-archive a row whose
+                // tab is open.
+                let sid = tab.sessionID
+                if let sid { self.highlightedID = sid }
+                let masked = self.overlay.isProjectArchived(tab.projectKey)
+                if let sid, self.overlay.isArchived(sid) || masked {
+                    _ = self.overlay.restoreSessions([sid], unmasking: masked ? [tab.projectKey] : [])
+                } else if masked {
+                    // A new session in an archived project: the project's
+                    // other sessions stay away.
+                    _ = self.overlay.restoreSessions([], unmasking: [tab.projectKey])
                 }
             }
             .store(in: &cancellables)
@@ -760,6 +764,11 @@ public final class AppModel: ObservableObject {
         history.memberRows = { [weak self] in self?.sessions ?? [] }
         history.archiveMember = { [weak self] in self?.archiveSession($0, undoManager: $1) }
         history.archiveMembers = { [weak self] in self?.archiveSessions($0, undoManager: $1, changed: $2) }
+        history.restoreMembers = { [weak self] in
+            self?.restoreSessions($0, undoManager: $1, changed: $2) ?? RestoreReport(restored: 0, undoable: false)
+        }
+        history.restoreProjectAction = { [weak self] in self?.restoreProject($0, undoManager: $1) }
+        history.showInSidebar = { [weak self] in self?.showInSidebar($0) }
         history.openMember = { [weak self] in self?.openSessions.openSession($0) }
         var historyWasOpen = false
         openSessions.$tabs
@@ -769,12 +778,51 @@ public final class AppModel: ObservableObject {
                 historyWasOpen = open
             }
             .store(in: &cancellables)
+        // The active tab moving off History ends any replay of its commands at
+        // once, in the same call: not when the page disappears a turn later.
+        openSessions.$activeTabID
+            .sink { [weak self] id in
+                guard let self else { return }
+                let tab = id.flatMap { id in self.openSessions.tabs.first { $0.id == id } }
+                if tab?.kind != .history { self.history.cancelPendingCommands() }
+            }
+            .store(in: &cancellables)
+        // History's dots and its Archive offer read which sessions have a tab
+        // and what each is doing: a small map, kept current here, instead of
+        // the page observing the whole app model.
+        openSessions.$tabs
+            .map { tabs in
+                Publishers.MergeMany(tabs.filter { $0.kind == .session }.map { tab in
+                    tab.$activity.map { _ in () }.merge(with: tab.$sessionID.map { _ in () })
+                })
+                .prepend(())
+            }
+            .switchToLatest()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in self?.publishOpenTabs() }
+            .store(in: &cancellables)
+    }
+
+    private func publishOpenTabs() {
+        var open: [SessionKey: ActivityState] = [:]
+        for tab in openSessions.tabs where tab.kind == .session {
+            guard let id = tab.sessionID else { continue }
+            open[SessionKey(id: id, host: tab.host)] = tab.activity
+        }
+        history.openTabsChanged(open)
     }
 
     /// ⌘K's dead end points at the door: the palette's "Search history for
     /// …" row opens History already narrowed to the query.
+    /// It asks in the All scope, as ⌘K's search does; an earlier visit's
+    /// scope, filters and chip give way.
     public func searchHistory(_ query: String) {
         commandPalettePresented = false
+        history.cancelPendingCommands()
+        history.justArchivedChip = nil
+        history.scope = .all
+        history.agentFilter = nil
+        history.projectKeyFilter = nil
         history.query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         openSessions.openHistory()
     }
@@ -1191,6 +1239,8 @@ public final class AppModel: ObservableObject {
     /// "Show in History"). Filters left from an earlier visit give way —
     /// "Not in Temple", another agent or project would hide the session.
     public func showInHistory(sessionID: String) {
+        history.cancelPendingCommands()
+        history.justArchivedChip = nil
         history.scope = .all
         history.agentFilter = nil
         history.projectKeyFilter = nil
@@ -1198,11 +1248,7 @@ public final class AppModel: ObservableObject {
         openSessions.openHistory()
     }
 
-    /// The index can surface the same session id under more than one project
-    /// (the pre-recency palette silently uniqued through a Dictionary). Lists
-    /// keyed by id — ForEach identity, selection maps — must never see a
-    /// duplicate, so they dedupe up front, first occurrence wins.
-    // MARK: Archive browser (⌘⇧Y)
+    // MARK: Archive
 
     /// Whether the user has ever arranged the sidebar by hand.
     public var hasManualProjectOrder: Bool { !overlay.projectKeyOrder.isEmpty }
@@ -1262,17 +1308,78 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    /// Restore is one click too, from a panel whose first row is lit on open —
-    /// so it undoes the same way archive does.
-    public func restoreSession(_ id: String, undoManager: UndoManager?) {
-        overlay.setArchived(false, sessionID: id)
-        registerUndo(undoManager, name: "Restore Session") { [overlay] in
-            overlay.setArchived(true, sessionID: id)
-        } redo: { [overlay] in
-            overlay.setArchived(false, sessionID: id)
-        }
+    /// Restore from History (ADR-031): each session comes back on its own,
+    /// including one whose project is archived (the rest of the project stays
+    /// away), as one undo step. Undo puts every touched row back exactly as
+    /// it was: a Temple archive stays Temple's, with its reason and date, and
+    /// a project mask the restore took apart goes back on. `changed` hears
+    /// each undo (false) and redo (true).
+    /// History hands over the memberships its rows show (id, host,
+    /// incarnation); the write restores only those, as Redo does.
+    /// Reports what the write did: how many sessions came back, and whether
+    /// an undo step was registered for it (none when nothing changed).
+    /// `changed` hears each undo and redo with the same report.
+    @discardableResult
+    public func restoreSessions(_ memberships: [MembershipRef], undoManager: UndoManager?,
+                                changed: @escaping @MainActor (RestoreChange) -> Void = { _ in }) -> RestoreReport {
+        guard let record = overlay.restore(memberships), !record.isEmpty else { return RestoreReport(restored: 0, undoable: false) }
+        let restored = record.restored
+        registerRestoreUndo(undoManager, name: restored.count == 1 ? "Restore Session" : "Restore Sessions",
+                            memberships: restored, record: record, changed: changed)
+        return RestoreReport(restored: restored.count, undoable: undoManager != nil)
     }
 
+    /// What a Restore, or its Redo, actually did.
+    public struct RestoreReport: Equatable, Sendable {
+        public let restored: Int
+        /// This operation put a step on the undo stack.
+        public let undoable: Bool
+    }
+
+    /// An undo of a Restore, or a redo with what it restored.
+    public enum RestoreChange: Equatable, Sendable {
+        case undone
+        case redone(RestoreReport)
+    }
+
+    /// A session's current membership, restored (tools and tests).
+    public func restoreSession(_ id: String, undoManager: UndoManager?) {
+        guard let row = overlay.rows[id], let incarnation = row.incarnation else { return }
+        restoreSessions([MembershipRef(id: id, host: row.host, incarnation: incarnation)], undoManager: undoManager)
+    }
+
+    private func registerRestoreUndo(_ undoManager: UndoManager?, name: String, memberships: [MembershipRef],
+                                     record: SessionOverlayStore.RestoreRecord,
+                                     changed: @escaping @MainActor (RestoreChange) -> Void) {
+        guard let undoManager else { return }
+        undoManager.registerUndo(withTarget: self) { [weak undoManager] model in
+            MainActor.assumeIsolated {
+                model.overlay.revert(record)
+                changed(.undone)
+                guard let undoManager else { return }
+                undoManager.registerUndo(withTarget: model) { [weak undoManager] model in
+                    MainActor.assumeIsolated {
+                        // Redo restores the same memberships, afresh, and records
+                        // afresh, so the next undo reverts what this redo found. A
+                        // membership that left and joined again since is not the
+                        // one restored: it is skipped, and so is its project.
+                        guard let again = model.overlay.restore(memberships), !again.isEmpty else {
+                            changed(.redone(RestoreReport(restored: 0, undoable: false)))
+                            return
+                        }
+                        model.registerRestoreUndo(undoManager, name: name, memberships: again.restored,
+                                                  record: again, changed: changed)
+                        changed(.redone(RestoreReport(restored: again.restored.count, undoable: true)))
+                    }
+                }
+                undoManager.setActionName(name)
+            }
+        }
+        undoManager.setActionName(name)
+    }
+
+    /// Restore project: the mask comes off, and every session in it that is
+    /// not itself archived comes back with it.
     public func restoreProject(_ key: ProjectKey, undoManager: UndoManager?) {
         overlay.setProjectArchived(false, key: key)
         registerUndo(undoManager, name: "Restore Project") { [overlay] in
@@ -1300,67 +1407,6 @@ public final class AppModel: ObservableObject {
         undoManager.setActionName(name)
     }
 
-    /// Archived projects, newest activity first. Nothing archive-related lives
-    /// in the sidebar, so this panel is the only way back.
-    public var archivedProjects: [SessionRowProject] {
-        rowProjects.filter { overlay.isProjectArchived($0.key) }
-            .map { SessionRowProject(key: $0.key, sessions: $0.sessions.sorted(by: Self.moreRecentRow)) }
-            .sorted(by: SessionRowProject.moreRecent)
-    }
-
-    public func archivedProjectResults(_ query: String) -> [SessionRowProject] {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return archivedProjects.filter { q.isEmpty || $0.path.localizedCaseInsensitiveContains(q) || !SessionRowSearch.rank($0.sessions, query: q).isEmpty }
-    }
-
-    public func archivedSessionResults(_ query: String) -> [Session] {
-        let rows = sessions.filter { $0.state.archived && !($0.project.map { overlay.isProjectArchived($0) } ?? false) }
-        return query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? rows.sorted(by: Self.moreRecentRow) : SessionRowSearch.rank(rows, query: query)
-    }
-
-    public struct ArchiveGroup: Identifiable, Equatable {
-        public let project: SessionRowProject
-        public let wholeProject: Bool
-        /// An archive header for directoryless rows, never a session directory.
-        public let directoryless: Bool
-        public var id: ProjectKey { project.key }
-        public var name: String { directoryless ? "No project" : project.name }
-    }
-
-    public func archiveGroups(_ query: String) -> [ArchiveGroup] {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        func matching(_ project: SessionRowProject) -> [Session] {
-            if q.isEmpty || project.path.localizedCaseInsensitiveContains(q) { return project.sessions }
-            return SessionRowSearch.rank(project.sessions, query: q)
-        }
-        let whole = archivedProjects.compactMap { project -> ArchiveGroup? in
-            let rows = matching(project)
-            return rows.isEmpty ? nil : ArchiveGroup(project: SessionRowProject(key: project.key, sessions: rows), wholeProject: true, directoryless: false)
-        }
-        // Directoryless members remain archivable and restorable. The empty
-        // path is a header identity only; the underlying Session stays nil.
-        let partialRows = archivedSessionResults("")
-        let grouped = Dictionary(grouping: partialRows) { $0.project ?? ProjectKey(host: $0.host, path: "") }
-        let partialProjects: [SessionRowProject] = grouped.map { SessionRowProject(key: $0.key, sessions: $0.value) }
-        let ordered = partialProjects.sorted { $0.lastActivity == $1.lastActivity ? $0.key.path < $1.key.path : $0.lastActivity > $1.lastActivity }
-        let partial: [ArchiveGroup] = ordered.compactMap { project -> ArchiveGroup? in
-                let rows = matching(project)
-                return rows.isEmpty ? nil : ArchiveGroup(project: SessionRowProject(key: project.key, sessions: rows), wholeProject: false, directoryless: rows.allSatisfy { $0.project == nil })
-            }
-        return whole + partial
-    }
-
-    public func toggleArchive() {
-        let presenting = !archivePresented
-        archivePresented = presenting
-        guard presenting else { return }
-        commandPalettePresented = false
-        newSessionPickerPresented = false
-        shortcutsPresented = false
-        cancelProjectSwitcher()
-        cancelTabSwitcher()
-    }
-
     /// ⌘Y and View ▸ Session History: open or focus the History tab; pressed
     /// while it is the active tab, back to the tab before it (History stays
     /// open). A floating panel is put away first, as every presenter does —
@@ -1372,11 +1418,54 @@ public final class AppModel: ObservableObject {
         commandPalettePresented = false
         newSessionPickerPresented = false
         shortcutsPresented = false
-        archivePresented = false
         cancelProjectSwitcher()
         cancelTabSwitcher()
         if panelWasUp, historyActive { return }
         openSessions.openOrLeaveHistory()
+    }
+
+    /// ⌘⇧Y and View ▸ Archived Sessions: History in the Archived scope, with
+    /// search, agent and project filters left as they are (ADR-031). Pressed
+    /// on History already showing Archived, it is ⌘Y: back to the tab before.
+    public func showArchived() {
+        if historyActive, history.scope == .archived, !panelPresented {
+            toggleHistory()
+            return
+        }
+        commandPalettePresented = false
+        newSessionPickerPresented = false
+        shortcutsPresented = false
+        cancelProjectSwitcher()
+        cancelTabSwitcher()
+        history.cancelPendingCommands()
+        history.scope = .archived
+        openSessions.openHistory()
+    }
+
+    /// The auto-archive notice's View: History in the Archived scope,
+    /// narrowed by the "Archived just now" chip to exactly the notice's
+    /// memberships. Filters left from an earlier visit give way.
+    public func viewAutoArchived() {
+        guard let notice = autoArchiveNotice else { return }
+        history.cancelPendingCommands()
+        history.query = ""
+        history.agentFilter = nil
+        history.projectKeyFilter = nil
+        history.scope = .archived
+        history.justArchivedChip = HistoryModel.JustArchivedChip(memberships: Set(notice.memberships))
+        openSessions.openHistory()
+    }
+
+    /// A sidebar project header's "Show in History": every session of the
+    /// project, archived ones one segment away.
+    public func showInHistory(project key: ProjectKey) {
+        history.cancelPendingCommands()
+        history.justArchivedChip = nil
+        history.query = ""
+        history.agentFilter = nil
+        history.scope = .all
+        history.projectKeyFilter = key
+        openSessions.openHistory()
     }
 
     public func toggleCommandPalette() {
@@ -1385,7 +1474,6 @@ public final class AppModel: ObservableObject {
         guard presenting else { return }
         newSessionPickerPresented = false
         shortcutsPresented = false
-        archivePresented = false
         cancelProjectSwitcher()
         cancelTabSwitcher()
     }
@@ -1403,7 +1491,6 @@ public final class AppModel: ObservableObject {
         guard presenting else { return }
         commandPalettePresented = false
         newSessionPickerPresented = false
-        archivePresented = false
         cancelProjectSwitcher()
         cancelTabSwitcher()
     }
@@ -1425,7 +1512,6 @@ public final class AppModel: ObservableObject {
         newSessionPickerPresented = true
         commandPalettePresented = false
         shortcutsPresented = false
-        archivePresented = false
         cancelProjectSwitcher()
         cancelTabSwitcher()
     }
@@ -1460,7 +1546,6 @@ public final class AppModel: ObservableObject {
             // Panels are mutually exclusive (same rule as ⌘K/⌘N/⌘/): the
             // HUD must not stack over an open palette.
             commandPalettePresented = false
-            archivePresented = false
             newSessionPickerPresented = false
             shortcutsPresented = false
             cancelTabSwitcher()
@@ -1560,7 +1645,6 @@ public final class AppModel: ObservableObject {
         } else {
             // Panels are mutually exclusive (same rule as ⌘K/⌘N/⌘/).
             commandPalettePresented = false
-            archivePresented = false
             newSessionPickerPresented = false
             shortcutsPresented = false
             cancelProjectSwitcher()

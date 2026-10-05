@@ -2,8 +2,9 @@ import SwiftUI
 import AppKit
 import TempleCore
 
-/// The History tab: every session on disk, by day, each marked in Temple or
-/// not — and the one door through which the others join (Import).
+/// The History tab: every session Temple or the disk knows about, by day,
+/// one status per row (ADR-031) — and the one door through which outside
+/// sessions join (Import) and archived ones come back (Restore).
 ///
 /// Built on `ScrollView` + `LazyVStack` with the selection held in
 /// `HistoryModel`, not on `List`: `List` has never been used under
@@ -13,12 +14,14 @@ import TempleCore
 /// `layoutPriority`; the selection bar floats in a `ZStack` over the list,
 /// the banner is a plain row.
 ///
-/// Keys (arrows, Return, Esc, ⌘A/⌘I/⌘R/⌘C/⌘F) are handled by RootView's
+/// The page observes `HistoryModel` only, not the app model: every row is
+/// prepared by the projection, so drawing one looks nothing up.
+///
+/// Keys (arrows, Return, Esc, ⌘A/⌘I/⌘R/⌘C/⌘F/⌘⌫) are handled by RootView's
 /// KeyCatcher while this tab is active (HistoryKeys), so they work whether
 /// the search field or nothing at all has focus — and stand aside when some
 /// other field (sidebar search, a chip rename) has it.
 struct HistoryTabView: View {
-    @EnvironmentObject var model: AppModel
     @ObservedObject var history: HistoryModel
     @Environment(\.undoManager) private var undoManager
 
@@ -37,7 +40,7 @@ struct HistoryTabView: View {
     /// of it, not merely onto the screen underneath it.
     static let dayHeaderHeight: CGFloat = 30
 
-    private var compact: Bool { (width ?? PageChrome.pageWidth) < 720 }
+    private var compact: Bool { (width ?? PageChrome.pageWidth) < 780 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -102,10 +105,8 @@ struct HistoryTabView: View {
                 .padding(.top, PageChrome.top)
                 .padding(.bottom, 18)
             toolbar
-            if history.isNarrowed {
-                Text("Showing \(history.visibleRows.count.formatted()) of \(history.allRows.count.formatted())")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+            if history.isNarrowed || history.filteredProjectIsArchived {
+                narrowedLine
                     .padding(.top, 8)
             }
             if case .reading(let read, let total) = history.readState {
@@ -177,9 +178,8 @@ struct HistoryTabView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
-            // Debounced into `history.query` by the model: filtering is
-            // cheap, but a rebuild per keystroke resets the selection under
-            // fast typing for nothing.
+            // Debounced into `history.query` by the model: a projection per
+            // keystroke resets the selection under fast typing for nothing.
             TextField("Search history", text: $history.draft)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
@@ -203,12 +203,15 @@ struct HistoryTabView: View {
         .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
+    /// Picking any segment clears the "Archived just now" chip.
     private var scopePicker: some View {
-        FlatSegmentedPicker(label: "Show", selection: $history.scope, options: Array(HistoryScope.allCases),
-                            optionTitle: { $0.label }, width: 290)
+        FlatSegmentedPicker(label: "Show",
+                            selection: Binding(get: { history.scope }, set: { history.pickScope($0) }),
+                            options: Array(HistoryScope.allCases),
+                            optionTitle: { $0.label }, width: 390)
     }
 
-    /// Counts are over the whole disk, not the filtered view.
+    /// Counts are over every row, not the filtered view.
     private var agentMenu: some View {
         Menu {
             Picker("", selection: $history.agentFilter) {
@@ -232,7 +235,7 @@ struct HistoryTabView: View {
             Picker("", selection: $history.projectKeyFilter) {
                 Text("Any project").tag(ProjectKey?.none)
                 ForEach(history.projects, id: \.key) { project in
-                    Text("\(project.key.displayName) — \(Self.parentFolder(project.path))")
+                    Text("\(project.displayName) — \(project.parentFolder)")
                         .tag(ProjectKey?.some(project.key))
                 }
             }
@@ -245,10 +248,51 @@ struct HistoryTabView: View {
         .modifier(FlatToolbarMenu(width: 150))
     }
 
-    /// The folder a project sits in, home abbreviated: "~/Projects/active".
-    static func parentFolder(_ path: String) -> String {
-        let parent = URL(fileURLWithPath: path).deletingLastPathComponent().path
-        return (parent as NSString).abbreviatingWithTildeInPath
+    /// "Showing 173 of 3,812", then the chip and the archived project's
+    /// Restore, each where one applies.
+    private var narrowedLine: some View {
+        HStack(spacing: 6) {
+            if history.isNarrowed {
+                Text("Showing \(history.visibleRows.count.formatted()) of \(history.allRows.count.formatted())")
+            }
+            if let chip = history.justArchivedChip {
+                separator
+                HStack(spacing: 4) {
+                    Text("Archived just now · \(chip.count.formatted())")
+                    Button {
+                        history.clearChip()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8.5, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 12, height: 12)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(Palette.controlFill, in: Capsule())
+                .help("The sessions Temple archived during this run. Clear it to see everything archived.")
+            }
+            if let project = history.projectKeyFilter, history.filteredProjectIsArchived {
+                separator
+                Text("\(project.displayName) is archived")
+                separator
+                Button("Restore project") { history.restoreProject(project, undoManager: undoManager) }
+                    .buttonStyle(.plain)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.primary)
+                    .help("Puts \(project.displayName) back in the sidebar with every session you have not archived yourself.")
+            }
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+    }
+
+    private var separator: some View {
+        Text("·").foregroundStyle(.tertiary)
     }
 
     private func readingLine(read: Int, total: Int?) -> some View {
@@ -266,7 +310,8 @@ struct HistoryTabView: View {
     private func failureBanner(_ failure: HistoryModel.StoreFailure) -> some View {
         let failed = Set(history.storeFailures.filter { $0.host == failure.host }.map(\.agent))
         let others = Agent.allCases.filter { !failed.contains($0) }
-        let shown = history.allRows.filter { $0.host == failure.host && $0.agent.map(others.contains) == true }.count
+        let byAgent = history.snapshot.counts.hostAgents[failure.host] ?? [:]
+        let shown = others.reduce(0) { $0 + (byAgent[$1] ?? 0) }
         let names = others.map(\.displayName).joined(separator: " and ")
         let place = failure.host.isLocal ? "" : " on \(failure.host.displayName)"
         var text = "Couldn't read the \(failure.agent.displayName) session store\(place): \(failure.message)"
@@ -304,13 +349,14 @@ struct HistoryTabView: View {
     }
 
     private var list: some View {
-        ScrollViewReader { proxy in
+        let actions = HistoryRowActions(history: history)
+        return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                     ForEach(history.groups) { group in
                         Section {
                             ForEach(group.sessions) { session in
-                                row(session)
+                                HistoryPageRow(inputs: history.rowInputs(session), actions: actions)
                                     .equatable()
                                     // A target reaching one header above the
                                     // row: scrolling it into view clears the
@@ -351,52 +397,6 @@ struct HistoryTabView: View {
     struct Headroom: Hashable { let key: HistoryKey }
     static func headroomID(_ key: HistoryKey) -> Headroom { Headroom(key: key) }
 
-    /// A row's inputs as plain values, so a row re-renders only when what it
-    /// shows changed — not on every arrow press, streamed batch, notice tick
-    /// or live-index publish that re-runs this body.
-    private func row(_ session: HistoryRow) -> HistoryPageRow {
-        let inTemple = history.isInTemple(session)
-        let archived = history.isArchived(session)
-        // Only the row Temple's member is attached to wears its tab, color
-        // and joined state: another host's or agent's row with the same id
-        // is not that session.
-        let openTab = inTemple ? model.openSessions.openTab(forSessionID: session.sessionID).flatMap { $0.host == session.host ? $0 : nil } : nil
-        return HistoryPageRow(
-            session: session,
-            title: session.title,
-            resumeArgv: session.resumeArgv,
-            selected: history.selection.contains(session.id),
-            inTemple: inTemple,
-            archived: archived,
-            justImported: history.justImported.contains(session.id),
-            activity: openTab?.activity,
-            colorMark: inTemple ? TabColorMark.color(for: session.sessionID, in: model) : nil,
-            membershipTooltip: Self.membershipTooltip(history.joinedState(session.id)),
-            actions: HistoryRowActions(history: history, showInSidebar: { [weak model] id in
-                model?.showInSidebar(id)
-            }))
-    }
-
-    /// "In Temple · opened Sep 25" — how and when it joined, where known.
-    static func membershipTooltip(_ state: SessionState?) -> String {
-        guard let state, let date = state.joinedAt else { return "In Temple" }
-        let verb: String
-        switch state.joinedVia {
-        case .created: verb = "started"
-        case .opened: verb = "opened"
-        case .imported: verb = "imported"
-        case nil: return "In Temple"
-        }
-        return "In Temple · \(verb) \(dayFormatter.string(from: date))"
-    }
-
-    private static let dayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "MMM d"
-        return formatter
-    }()
-
     // MARK: Selection bar
 
     @ViewBuilder
@@ -421,18 +421,22 @@ struct HistoryTabView: View {
         .animation(.easeOut(duration: 0.18), value: history.notice)
     }
 
+    /// Counted once per selection change (`selectionSummary`), never by
+    /// walking the rows here.
     private var selectionBar: some View {
-        let selected = history.selectedRows
-        let outside = selected.filter(\.canImport).count
+        let summary = history.selectionSummary
         // A conflicting row's session is in Temple too, elsewhere.
-        let inTemple = selected.count - outside
-        let archivable = history.canArchiveSelection
+        let inTemple = summary.count - summary.importable
         return barChrome {
             HStack(spacing: 10) {
                 HStack(spacing: 0) {
-                    Text("\(selected.count.formatted()) selected")
+                    Text("\(summary.count.formatted()) selected")
                         .font(.system(size: 12, weight: .semibold))
-                    if outside == 0 {
+                    if summary.allArchived {
+                        Text(" · all archived").foregroundStyle(.secondary)
+                    } else if summary.archived > 0 {
+                        Text(" · \(summary.archived.formatted()) archived").foregroundStyle(.secondary)
+                    } else if summary.importable == 0 {
                         Text(" · all in Temple").foregroundStyle(.secondary)
                     } else if inTemple > 0 {
                         Text(" · \(inTemple.formatted()) already in Temple").foregroundStyle(.secondary)
@@ -440,19 +444,26 @@ struct HistoryTabView: View {
                 }
                 .font(.system(size: 12))
                 HStack(spacing: 10) {
-                    if outside > 0 { keyHint("⌘I", "import") }
+                    if summary.allArchived { keyHint("↩", "restore \(summary.count.formatted())") }
+                    if summary.archivable { keyHint("⌘⌫", "archive") }
+                    if summary.importable > 0 { keyHint("⌘I", "import") }
                     keyHint("esc", "deselect")
                 }
                 Spacer(minLength: 8)
                 Button("Deselect") { history.clearSelection() }
                     .controlSize(.regular)
-                if archivable {
-                    Button("Archive \(selected.count.formatted())") { history.archiveSelected(undoManager: undoManager) }
+                if summary.archived > 0 {
+                    Button("Restore \(summary.archived.formatted())") { history.restoreSelected(undoManager: undoManager) }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.regular)
                 }
-                if outside > 0 {
-                    Button("Import \(outside.formatted())…") { history.requestImport() }
+                if summary.archivable {
+                    Button("Archive \(summary.count.formatted())") { history.archiveSelected(undoManager: undoManager) }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                }
+                if summary.importable > 0 {
+                    Button("Import \(summary.importable.formatted())…") { history.requestImport() }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.regular)
                 }
@@ -559,6 +570,23 @@ struct HistoryTabView: View {
                 detail: "Sessions you run with Claude Code or Codex — here or in any terminal — appear here.")
         }
         let otherFilters = history.agentFilter != nil || history.projectKeyFilter != nil
+        if history.scope == .archived {
+            if history.justArchivedChip != nil {
+                return EmptyCopy(title: "None of the sessions archived just now are still archived",
+                                 action: ("Show all archived", { history.clearChip() }))
+            }
+            if !otherFilters {
+                return EmptyCopy(
+                    title: "Nothing archived",
+                    detail: "Archive a session from its sidebar menu, or select rows here and choose Archive. Temple also archives sessions whose transcript or folder is gone.")
+            }
+            return EmptyCopy(
+                title: "No archived sessions in \(activeFilterNames.filter { $0 != HistoryScope.archived.label }.joined(separator: " · "))",
+                action: ("Show all archived", {
+                    history.agentFilter = nil
+                    history.projectKeyFilter = nil
+                }))
+        }
         if !otherFilters, history.scope == .notInTemple {
             return EmptyCopy(
                 title: "Everything on disk is in Temple.",
@@ -592,42 +620,28 @@ struct HistoryTabView: View {
 /// equality: the row re-renders for what it shows, not for who it calls.
 private struct HistoryRowActions {
     let history: HistoryModel
-    let showInSidebar: (String) -> Void
 }
 
-/// One line per session, 34pt: time · badge · title (· activity) · project
-/// and branch · status. In Temple reads at full strength and ends in the gate
-/// mark; outside steps back a tone and ends in a quiet Import. The status
-/// column is a fixed width, so a row changing state never moves its
-/// neighbours.
+/// One line per session, 34pt: time · badge · title [· condition tag]
+/// [· activity] · project and branch · status. In Temple reads at full
+/// strength and ends in the gate mark; archived and outside rows step back a
+/// tone and end in a quiet Restore or Import. The status column is a fixed
+/// width, so a row changing state never moves its neighbours.
 ///
-/// Every input is a value and the view is `Equatable` (applied with
-/// `.equatable()`), so a body re-run of the page skips the rows whose inputs
-/// did not change. Nothing here observes the history or app model.
+/// Every input is a prepared value (`HistoryModel.RowInputs`) and the view
+/// is `Equatable` (applied with `.equatable()`), so a body re-run of the page
+/// skips the rows whose inputs did not change. Nothing here observes the
+/// history or app model, formats a date, or looks anything up.
 private struct HistoryPageRow: View, Equatable {
     @Environment(\.undoManager) private var undoManager
-    let session: HistoryRow
-    let title: String
-    let resumeArgv: [String]
-    let selected: Bool
-    let inTemple: Bool
-    let archived: Bool
-    let justImported: Bool
-    /// The open tab's activity; nil when the session has no tab.
-    let activity: ActivityState?
-    let colorMark: Color?
-    let membershipTooltip: String
+    let inputs: HistoryModel.RowInputs
     let actions: HistoryRowActions
 
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.session == rhs.session && lhs.title == rhs.title && lhs.resumeArgv == rhs.resumeArgv
-            && lhs.selected == rhs.selected && lhs.inTemple == rhs.inTemple
-            && lhs.archived == rhs.archived && lhs.justImported == rhs.justImported
-            && lhs.activity == rhs.activity && lhs.colorMark == rhs.colorMark
-            && lhs.membershipTooltip == rhs.membershipTooltip
-    }
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.inputs == rhs.inputs }
 
+    private var session: HistoryRow { inputs.row }
     private var history: HistoryModel { actions.history }
+    private var inTemple: Bool { session.standing == .inTemple }
 
     @State private var rawHovering = false
     @Environment(\.overlayActive) private var overlayActive
@@ -637,8 +651,7 @@ private struct HistoryPageRow: View, Equatable {
     var body: some View {
         HStack(spacing: 10) {
             HStack(spacing: 10) {
-                // No time for a row with no date (grouped under "Unknown date").
-                Text(session.updatedAt == .distantPast ? "" : Self.timeFormatter.string(from: session.updatedAt))
+                Text(session.timeText)
                     .font(.system(size: 11).monospacedDigit())
                     .foregroundStyle(.tertiary)
                     .frame(width: 44, alignment: .leading)
@@ -646,7 +659,7 @@ private struct HistoryPageRow: View, Equatable {
                     AgentBadge(agent: agent, size: 13).opacity(inTemple ? 1 : 0.55)
                 }
                 HStack(spacing: 6) {
-                    Text(title)
+                    Text(session.title)
                         .font(.system(size: 13))
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -654,7 +667,14 @@ private struct HistoryPageRow: View, Equatable {
                         // outside row: the state reads before the tag does.
                         .foregroundStyle(inTemple && !session.transcriptMissing
                                          ? Color.primary : Color.primary.opacity(0.72))
-                    if let activity {
+                    if let tag = session.conditionTag {
+                        Text(tag.label)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .help(session.tagTooltip ?? "")
+                    }
+                    if let activity = inputs.activity {
                         ActivityDot(state: activity)
                     }
                 }
@@ -663,28 +683,28 @@ private struct HistoryPageRow: View, Equatable {
             }
             .contentShape(Rectangle())
             .onTapGesture { history.click(session.id, modifier: Self.clickModifier()) }
-            .simultaneousGesture(TapGesture(count: 2).onEnded { history.open(session) })
-            status(lit: selected || hovering)
+            .simultaneousGesture(TapGesture(count: 2).onEnded { history.primaryAction(session, undoManager: undoManager) })
+            status(lit: inputs.selected || hovering)
                 .frame(width: 84, alignment: .trailing)
         }
         .padding(.horizontal, HistoryTabView.rowInset)
         .frame(height: HistoryTabView.rowHeight)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(selected ? Palette.selectionFill : hovering ? Palette.hoverFill : Color.clear))
+                .fill(inputs.selected ? Palette.selectionFill : hovering ? Palette.hoverFill : Color.clear))
         .overlay(alignment: .leading) {
-            if let colorMark {
-                Capsule().fill(colorMark).frame(width: 3).padding(.vertical, 6)
+            if let mark = session.colorMark {
+                Capsule().fill(mark.color).frame(width: 3).padding(.vertical, 6)
             }
         }
         .onHover { rawHovering = $0 }
-        .help(tooltip)
+        .help(session.rowTooltip)
         .contextMenu { contextMenu }
     }
 
     private var meta: some View {
         HStack(spacing: 0) {
-            Text(session.project?.displayName ?? "No project")
+            Text(session.projectName)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             if let branch = session.gitBranch, !branch.isEmpty {
@@ -700,37 +720,32 @@ private struct HistoryPageRow: View, Equatable {
         // characters beside empty space. A Text's max is its ideal width.
     }
 
+    /// The row's relationship, or its primary verb; never a condition (that
+    /// is the tag after the title).
     @ViewBuilder
     private func status(lit: Bool) -> some View {
-        if session.transcriptMissing {
-            // One line in the fixed 84pt column: "Transcript missing" wrapped.
-            // The column is not widened; at 900pt that width comes out of titles.
-            Text("No transcript")
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .help(session.member?.archivedByTemple == true
-                      ? "The session file is no longer on disk. Temple archived it."
-                      : "The session file is no longer on disk. Opening it will fail; archive it from here.")
-        } else if justImported {
+        switch session.standing {
+        case _ where inputs.justImported:
             Text("Imported")
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
-        } else if archived {
-            Text("Archived")
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
-        } else if inTemple {
+        case .archived:
+            Button("Restore") { history.restore([session], undoManager: undoManager) }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(lit ? Color.primary : Color.secondary.opacity(0.7))
+                .help(session.statusTooltip ?? "")
+        case .inTemple:
             TempleMark(size: 14, tint: lit ? .primary : .secondary)
-                .help(membershipTooltip)
-        } else if let conflict = session.conflict {
+                .help(session.membershipTooltip)
+        case .conflict(let conflict):
             // Its id is Temple's on another host or as another agent: shown
             // as the catalog has it, and not importable from here. The mark,
             // faint, says "in Temple, just not from here" — a dimmed "Import"
             // read as a disabled button worth trying again.
             TempleMark(size: 14, tint: Color(nsColor: .quaternaryLabelColor))
                 .help(conflict.message)
-        } else {
+        case .outside:
             Button("Import") { history.requestImport([session]) }
                 .buttonStyle(.plain)
                 .font(.system(size: 11, weight: .medium))
@@ -738,38 +753,37 @@ private struct HistoryPageRow: View, Equatable {
         }
     }
 
-    /// The last message (the overlay's old second line), then the details
-    /// that are not reliable enough to sit in a column.
-    private var tooltip: String {
-        var details: [String] = []
-        if let model = session.model { details.append(model) }
-        if let count = session.messageCount { details.append("\(count) messages") }
-        if let url = session.localURL { details.append((url.path as NSString).abbreviatingWithTildeInPath) }
-        return [session.conflict?.message, session.lastMessagePreview, details.joined(separator: " · ")]
-            .compactMap { $0 }
-            .joined(separator: "\n")
-    }
-
     @ViewBuilder
     private var contextMenu: some View {
-        // Members without a directory have no rail row, so History also owns
-        // an archive route. Open tabs must be closed first, as in the rail.
-        Button(activity != nil ? "Focus" : "Open") { history.open(session) }
-            .disabled(!session.canResume)
-        if history.canArchive(session) {
-            Button("Archive session") { history.archive(session, undoManager: undoManager) }
-        }
-        if let conflict = session.conflict {
-            Button("Import into Temple…") {}.disabled(true)
-            Text(conflict.message)
-        } else if !inTemple {
-            Button("Import into Temple…") { history.requestImport([session]) }
+        if session.isArchived {
+            Button("Open") { history.open(session) }
+                .disabled(!session.canResume)
+            Button("Restore") { history.restore([session], undoManager: undoManager) }
+            if session.projectArchived, let project = session.project {
+                Button("Restore project \(project.displayName)") {
+                    history.restoreProject(project, undoManager: undoManager)
+                }
+            }
+        } else {
+            // Members without a directory have no rail row, so History also
+            // owns an archive route. Open tabs must be closed first, as in the rail.
+            Button(inputs.activity != nil ? "Focus" : "Open") { history.open(session) }
+                .disabled(!session.canResume)
+            if session.canArchive {
+                Button("Archive session") { history.archive(session, undoManager: undoManager) }
+            }
+            if let conflict = session.conflict {
+                Button("Import into Temple…") {}.disabled(true)
+                Text(conflict.message)
+            } else if !session.isMember {
+                Button("Import into Temple…") { history.requestImport([session]) }
+            }
         }
         Divider()
         // A row that cannot resume (no folder or agent) has no command.
-        if !resumeArgv.isEmpty {
+        if session.hasResumeCommand {
             Button("Copy resume command") {
-                copyToPasteboard(resumeArgv.joined(separator: " "))
+                copyToPasteboard(session.resumeArgv.joined(separator: " "))
             }
         }
         Button("Copy session ID") { copyToPasteboard(session.sessionID) }
@@ -778,8 +792,8 @@ private struct HistoryPageRow: View, Equatable {
         }
         Divider()
         // The sidebar groups rows by folder: a row without one is not there.
-        if inTemple, !archived, session.project != nil {
-            Button("Show in sidebar") { actions.showInSidebar(session.sessionID) }
+        if inTemple, session.project != nil {
+            Button("Show in sidebar") { history.showInSidebar(session.sessionID) }
         }
         if let project = session.project {
             Button("Show only \(project.displayName)") { history.showOnly(project: project) }
@@ -792,13 +806,6 @@ private struct HistoryPageRow: View, Equatable {
         if flags.contains(.shift) { return .shift }
         return .none
     }
-
-    private static let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "HH:mm"
-        return formatter
-    }()
 }
 
 /// The toolbar's pop-up menus in the same flat shape as its search field.

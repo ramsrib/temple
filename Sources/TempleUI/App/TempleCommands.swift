@@ -117,8 +117,8 @@ public struct TempleCommands: Commands {
             }
             .keyboardShortcut("r")
             .disabled(!model.historyActive)
-            Button { model.toggleArchive() } label: {
-                Label("Archived Items", systemImage: "archivebox")
+            Button { model.showArchived() } label: {
+                Label("Archived Sessions", systemImage: "archivebox")
             }
             .keyboardShortcut("y", modifiers: [.command, .shift])
             Button { model.openSessions.showHome() } label: {

@@ -52,8 +52,8 @@ public final class SessionOverlayStore: ObservableObject {
     let rowChanges = PassthroughSubject<RowChange, Never>()
     private var rowObserver: UUID?
 
-    /// Archived projects: hidden from every browse surface, found again only
-    /// in the ⌘⇧Y archive browser. (An archived session is its row's flag.)
+    /// Archived projects: hidden from every browse surface, listed in
+    /// History's Archived scope. (An archived session is its row's flag.)
     @Published public private(set) var archivedProjectKeys: Set<ProjectKey>
     /// The sidebar order the user arranged, outermost first. Only projects the
     /// user has actually placed appear here; everything else stays on the
@@ -444,6 +444,53 @@ public final class SessionOverlayStore: ObservableObject {
         } catch {
             TempleUILog.db.error("restoring auto-archived sessions failed: \(String(describing: error), privacy: .public)")
             return []
+        }
+    }
+
+    /// What a Restore changed, for its Undo and Redo: every touched row as
+    /// it was, the memberships restored, and the projects whose mask it
+    /// lifted.
+    struct RestoreRecord {
+        let states: [ArchiveState]
+        let restored: [MembershipRef]
+        let unmasked: [ProjectKey]
+        var isEmpty: Bool { states.isEmpty && unmasked.isEmpty }
+    }
+
+    /// A person's Restore (ADR-031), of the sessions these ids name now:
+    /// each comes back on its own. A session whose project is archived takes
+    /// the project's mask apart into its siblings' own flags
+    /// (`TempleDB.restoreSessions`), so the rest of the project stays away.
+    /// `unmasking` lifts those projects' masks whatever the ids. Nil when the
+    /// write failed.
+    func restoreSessions(_ ids: [String], unmasking extra: [ProjectKey] = []) -> RestoreRecord? {
+        let refs = ids.compactMap { id -> MembershipRef? in
+            guard let row = rows[id], let incarnation = row.incarnation else { return nil }
+            return MembershipRef(id: id, host: row.host, incarnation: incarnation)
+        }
+        return restore(refs, unmasking: extra.filter { archivedProjectKeys.contains($0) })
+    }
+
+    /// The same, for exactly these memberships (Redo): one that left and
+    /// joined again since is not restored, and its project is not touched.
+    func restore(_ refs: [MembershipRef], unmasking extra: [ProjectKey] = []) -> RestoreRecord? {
+        do {
+            let outcome = try db.restoreSessions(refs, masked: archivedProjectKeys, unmasking: extra, at: now())
+            for key in outcome.unmasked { archivedProjectKeys.remove(key) }
+            return RestoreRecord(states: outcome.states, restored: outcome.restored, unmasked: outcome.unmasked)
+        } catch {
+            TempleUILog.db.error("restore failed: \(String(describing: error), privacy: .public)")
+            return nil
+        }
+    }
+
+    /// Undo of a Restore: rows exactly as they were, masks back on.
+    func revert(_ record: RestoreRecord) {
+        do {
+            try db.revertArchiveStates(record.states, maskingAgain: record.unmasked)
+            for key in record.unmasked { archivedProjectKeys.insert(key) }
+        } catch {
+            TempleUILog.db.error("undoing a restore failed: \(String(describing: error), privacy: .public)")
         }
     }
 

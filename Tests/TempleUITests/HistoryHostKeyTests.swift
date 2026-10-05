@@ -189,7 +189,7 @@ final class HistoryHostKeyTests: XCTestCase {
         XCTAssertEqual(both.inTempleCount, 1)
 
         XCTAssertTrue(overlay.join("legacy", via: .opened, agent: .claude).isJoined, "an agentless row takes the incoming agent")
-        both.rebuild()
+        await both.rebuild()
         XCTAssertEqual(Set(both.allRows.map(\.id)), [HistoryKey(claude), HistoryKey(codex)])
         XCTAssertEqual(try row(both, HistoryKey(claude)).member?.id, "legacy")
         XCTAssertEqual(try row(both, HistoryKey(codex)).conflict, .agent(.claude))
@@ -259,7 +259,7 @@ final class HistoryHostKeyTests: XCTestCase {
 
         // This Mac's row goes another way; the id then joins from the box.
         XCTAssertEqual(overlay.leave([SessionKey(id: "moved", host: .local)]), ["moved"])
-        history.rebuild()
+        await history.rebuild()
         XCTAssertTrue(try row(history, HistoryKey(box)).canImport)
         let second = undoManager()
         second.beginUndoGrouping()
@@ -295,7 +295,7 @@ final class HistoryHostKeyTests: XCTestCase {
             let first = try XCTUnwrap(db.sessionState("replaced")?.incarnation)
 
             XCTAssertEqual(overlay.leave([SessionKey(id: "replaced", host: .local)]), ["replaced"])
-            history.rebuild()
+            await history.rebuild()
             let again = undoManager()
             again.beginUndoGrouping()
             await history.confirmImport(HistoryModel.importRequest(for: [replacement]), undoManager: again)
@@ -346,6 +346,47 @@ final class HistoryHostKeyTests: XCTestCase {
         return LocalSessionSource(stores: [ClaudeSessionStore(root: root.appendingPathComponent("claude")),
                                            CodexSessionStore(root: root.appendingPathComponent("codex"))],
                                   monitorChanges: false)
+    }
+
+    /// End to end: this Mac's real catalog on a temporary store, through the
+    /// registry and History's adapter. Its completed Claude listing found a
+    /// file for an archived member whose transcript is another session's,
+    /// and one that is not JSON at all: neither is "No transcript". An
+    /// archived member with no file at all is.
+    func testACompletedLocalCatalogTagsOnlyAnArchivedMemberWithNoFile() async throws {
+        let root = try tempRoot()
+        let project = root.appendingPathComponent("claude/-work-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try claudeData("present", prompt: "Here", cwd: root.path).write(to: project.appendingPathComponent("present.jsonl"))
+        try claudeData("someone-else", prompt: "Not mine", cwd: root.path)
+            .write(to: project.appendingPathComponent("mismatched.jsonl"))
+        try Data("not json at all\n".utf8).write(to: project.appendingPathComponent("unreadable.jsonl"))
+        let source = LocalSessionSource(stores: [ClaudeSessionStore(root: root.appendingPathComponent("claude")),
+                                                 CodexSessionStore(root: root.appendingPathComponent("codex"))],
+                                        monitorChanges: false)
+        let hosts = registry([source])
+        var completion: CatalogBatch?
+        for await event in hosts.catalog() where event.batch.completedAgents != nil { completion = event.batch }
+        XCTAssertEqual(completion?.completedAgents?.contains(.claude), true, "the Claude listing completed")
+
+        let db = try TempleDB.inMemory()
+        for id in ["mismatched", "unreadable", "gone"] {
+            try db.join(sessionID: id, via: .opened, agent: .claude, core: SessionCore(directory: root.path, title: id))
+            try db.setArchived(true, sessionID: id)
+        }
+        let (history, _) = history(db, catalog: { hosts.catalog() })
+        await load(history)
+        history.scope = .archived
+        await history.settle()
+
+        let rows = Dictionary(uniqueKeysWithValues: history.visibleRows.map { ($0.sessionID, $0) })
+        XCTAssertEqual(Set(rows.keys), ["mismatched", "unreadable", "gone"])
+        XCTAssertEqual(rows["gone"]?.transcriptMissing, true, "no file at all: proven")
+        XCTAssertEqual(rows["gone"]?.conditionTag, .noTranscript)
+        XCTAssertEqual(rows["mismatched"]?.transcriptMissing, false, "another session's file is still a candidate")
+        XCTAssertEqual(rows["unreadable"]?.transcriptMissing, false, "a file that does not read is still a candidate")
+        XCTAssertNil(rows["unreadable"]?.conditionTag)
+        history.deactivate()
     }
 
     func testAFailingHostReportsItselfWhileAnotherLists() async throws {
@@ -423,6 +464,37 @@ final class HistoryHostKeyTests: XCTestCase {
         try await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertEqual(box.counters.evidenceChecks, 1, "the second folder was asked after the read ended")
         XCTAssertFalse(history.allRows.contains { $0.host == remote })
+    }
+
+    /// Through the production registry: a remote host floods its lane with
+    /// batches whose folder checks all stall, and only then does this Mac
+    /// list. Each host is consumed on its own, so this Mac's rows land while
+    /// the remote's are still held.
+    func testASaturatedStalledRemoteLaneHoldsUpNoLocalRows() async throws {
+        let remote = remote
+        let flooded = FakeGate()
+        let stalled = FakeGate()
+        let box = ScriptedCatalogSource(host: remote, after: flooded, batches: (0..<40).map { batch in
+            (0..<10).map { i in
+                TranscriptSummary(id: "r-\(batch)-\(i)", agent: .claude,
+                                  locator: TranscriptLocator(host: remote, path: "opaque:\(batch)-\(i)"),
+                                  modifiedAt: Date(), cwd: "/remote/\(batch)", firstPrompt: "Remote")
+            }
+        })
+        let mac = ScriptedCatalogSource(host: .local, before: flooded, batches: [[summary("mine")]])
+        let hosts = registry([box, mac])
+        let history = HistoryModel(overlay: SessionOverlayStore(db: try TempleDB.inMemory()),
+                                   catalog: { hosts.catalog() },
+                                   directoryEvidence: { key in
+                                       if key.host == remote { await stalled.wait() }
+                                       return .exists
+                                   })
+        history.activate()
+        await waitFor { history.allRows.map(\.sessionID) == ["mine"] }
+        XCTAssertTrue(history.isReading, "the remote is still held")
+        stalled.open()
+        await waitFor { history.readState == .done }
+        XCTAssertEqual(history.allRows.count, 401)
     }
 
     /// Progress is the sum over the hosts heard from; a host still listing
@@ -544,6 +616,48 @@ private final class NoLauncher: HostLauncher {
 }
 
 /// A host whose catalog answers only once its gate opens.
+/// A catalog that waits for `before`, yields its batches at once, then opens
+/// `after`.
+private final class ScriptedCatalogSource: HostSessionSource, @unchecked Sendable {
+    let host: HostID
+    let capabilities: Set<HostCapability> = [.catalog]
+    private let before: FakeGate?
+    private let after: FakeGate?
+    private let batches: [[TranscriptSummary]]
+    init(host: HostID, before: FakeGate? = nil, after: FakeGate? = nil, batches: [[TranscriptSummary]]) {
+        self.host = host; self.before = before; self.after = after; self.batches = batches
+    }
+
+    func locate(_ requests: [LocateRequest]) async throws -> LocateResult {
+        LocateResult(coverage: 1, candidates: [:], complete: [], sharedRevision: [:])
+    }
+    func read(_ locator: TranscriptLocator, agent: Agent, expecting id: String, facts: Bool) async throws -> TranscriptRead {
+        throw TranscriptReadError.missing
+    }
+    func directoryEvidence(_ path: String) async -> DirectoryEvidence { .unknown }
+    func proveAbsent(ids: Set<String>, agent: Agent) async -> AbsenceProof { .unproven }
+    func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult { .incomplete }
+    func changes() -> AsyncThrowingStream<SourceChange, Error> { AsyncThrowingStream { _ in } }
+    func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error> {
+        let before = before, after = after, batches = batches
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                await before?.wait()
+                let total = batches.reduce(0) { $0 + $1.count }
+                continuation.yield(.listed(total: total))
+                var read = 0
+                for batch in batches {
+                    read += batch.count
+                    continuation.yield(.sessions(batch, read: read, total: total))
+                }
+                after?.open()
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
 private final class SlowCatalogSource: HostSessionSource, @unchecked Sendable {
     func proveAbsent(ids: Set<String>, agent: Agent) async -> AbsenceProof { .unproven }
     let host: HostID

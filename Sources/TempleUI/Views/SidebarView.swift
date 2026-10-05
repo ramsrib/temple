@@ -18,6 +18,7 @@ struct SidebarView: View {
             sessionList
             if let notice = model.autoArchiveNotice {
                 AutoArchiveNoticeBar(notice: notice,
+                                     view: { model.viewAutoArchived() },
                                      undo: { model.undoAutoArchive() },
                                      dismiss: { model.dismissAutoArchiveNotice() })
                     .padding(.horizontal, 8)
@@ -320,10 +321,12 @@ struct SidebarView: View {
 
 /// Temple archived sessions nobody can resume any more, their transcript or
 /// their folder gone (ADR-030): said once, at the foot of the rail the rows
-/// left from, with Undo. Not a timer: it stays until Undo, × or the end of the run, and is
+/// left from, with View (History's Archived scope, narrowed to exactly these)
+/// and Undo. Not a timer: it stays until Undo, × or the end of the run, and is
 /// still there when a hidden sidebar comes back.
 private struct AutoArchiveNoticeBar: View {
     let notice: AppModel.AutoArchiveNotice
+    let view: () -> Void
     let undo: () -> Void
     let dismiss: () -> Void
 
@@ -334,6 +337,14 @@ private struct AutoArchiveNoticeBar: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .help(notice.help)
+            Text("·")
+                .font(.system(size: 11.5))
+                .foregroundStyle(.tertiary)
+            Button(action: view) {
+                Text("View")
+                    .font(.system(size: 11.5, weight: .semibold))
+            }
+            .buttonStyle(.plain)
             Text("·")
                 .font(.system(size: 11.5))
                 .foregroundStyle(.tertiary)
@@ -795,6 +806,7 @@ private struct ProjectDisclosure: View {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(project.path, forType: .string)
         }
+        Button("Show in History") { model.showInHistory(project: project.key) }
         Divider()
         if hasOpenTabs {
             // Named rather than merely greyed out, like the session row's item.

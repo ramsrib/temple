@@ -143,12 +143,11 @@ struct LauncherView: View {
             LauncherRow(icon: .symbol("clock.arrow.circlepath"), title: "Session history", shortcut: "⌘Y") {
                 model.toggleHistory()
             }
-            // The sidebar deliberately carries no archive affordance, so this is
-            // the one visible way back — always here, so the list is the same
-            // list every launch (a row that comes and goes is a row you can't
-            // learn), and the panel's empty state does the teaching.
-            LauncherRow(icon: .symbol("archivebox"), title: "Archived items", shortcut: "⌘⇧Y") {
-                model.toggleArchive()
+            // History's Archived scope (ADR-031). Always here, so the list is
+            // the same list every launch (a row that comes and goes is a row
+            // you can't learn), and the scope's empty state does the teaching.
+            LauncherRow(icon: .symbol("archivebox"), title: "Archived sessions", shortcut: "⌘⇧Y") {
+                model.showArchived()
             }
             // Only when there is somewhere to switch TO: with fewer than two
             // projects open the switcher has nothing to show, and a row that does

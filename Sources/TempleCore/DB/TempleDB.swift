@@ -216,6 +216,19 @@ public struct SessionState: Codable, Hashable, Sendable {
     }
 }
 
+/// A row's archive columns as a restore found them, so its Undo can put
+/// them back exactly: a Temple archive stays Temple's, with its reason and
+/// date (ADR-031).
+public struct ArchiveState: Hashable, Sendable {
+    public let id: String
+    public let host: HostID
+    public let incarnation: String?
+    public let archived: Bool
+    public let archiveReason: ArchiveReason?
+    public let archivedAt: Date?
+    public let keptAt: Date?
+}
+
 /// Per-project state: archived, and where the user placed it in the sidebar.
 /// A nil `position` is not "position zero" — it means the project has never
 /// been placed, and still sorts by the launch-frozen recency order.
@@ -706,6 +719,107 @@ public final class TempleDB: @unchecked Sendable {
         }
         restored.forEach(committedRowChange)
         return restored
+    }
+
+    // MARK: Restore (ADR-031)
+
+    /// What a Restore changed: every touched row as it was, the memberships
+    /// it restored, and the projects whose mask it lifted.
+    public struct RestoreOutcome: Sendable {
+        public let states: [ArchiveState]
+        public let restored: [MembershipRef]
+        public let unmasked: [ProjectKey]
+    }
+
+    /// A person's Restore of sessions, in one transaction. Each target is a
+    /// membership: a row that left and joined again since (another host or
+    /// incarnation under the id) is not it, and is skipped, along with its
+    /// project. A restored session whose project is in `masked` comes back
+    /// alone: the mask is converted lazily, only here, into the row flag of
+    /// every other member of that project that was not archived already
+    /// (reason, date and keep cleared, pins untouched, so a later restore of
+    /// one of them returns its pin as the project's restore would have), and
+    /// the mask is lifted. `unmasking` lifts these projects the same way
+    /// whatever the targets (a new session opened in an archived project).
+    /// Every restored session is unarchived and stamped kept, so the sweep
+    /// leaves it alone. The outcome records every touched row as it was, for
+    /// `revertArchiveStates`.
+    @discardableResult
+    public func restoreSessions(_ targets: [MembershipRef], masked: Set<ProjectKey>,
+                                unmasking explicit: [ProjectKey] = [], at: Date = Date()) throws -> RestoreOutcome {
+        guard !targets.isEmpty || !explicit.isEmpty else { return RestoreOutcome(states: [], restored: [], unmasked: []) }
+        let outcome = try db.write { database -> RestoreOutcome in
+            var matching: [(ref: MembershipRef, row: Row)] = []
+            for target in targets {
+                guard let row = try Row.fetchOne(database, sql: """
+                    SELECT id, host, incarnation, archived, archive_reason, archived_at, kept_at, directory
+                    FROM session_state WHERE id = ? AND host = ? AND incarnation = ?
+                    """, arguments: [target.id, target.host.rawValue, target.incarnation]) else { continue }
+                matching.append((target, row))
+            }
+            var projects = explicit
+            for (_, row) in matching {
+                guard let directory: String = row["directory"] else { continue }
+                let key = ProjectKey(host: HostID(rawValue: row["host"]), path: directory)
+                if masked.contains(key), !projects.contains(key) { projects.append(key) }
+            }
+            let targetIDs = Set(matching.map(\.ref.id))
+            var before: [ArchiveState] = []
+            for project in projects {
+                let others = try Row.fetchAll(database, sql: """
+                    SELECT id, host, incarnation, archived, archive_reason, archived_at, kept_at
+                    FROM session_state WHERE host = ? AND directory = ? AND archived = 0
+                    """, arguments: [project.host.rawValue, project.path])
+                    .map(Self.archiveState).filter { !targetIDs.contains($0.id) }
+                for row in others {
+                    try database.execute(sql: """
+                        UPDATE session_state SET archived = 1, archive_reason = NULL, archived_at = NULL, kept_at = NULL
+                        WHERE id = ? AND host = ? AND archived = 0
+                        """, arguments: [row.id, row.host.rawValue])
+                }
+                before += others
+                if project.host.isLocal {
+                    try database.execute(sql: "UPDATE project_state SET archived = 0 WHERE path = ?",
+                                         arguments: [project.path])
+                }
+            }
+            for (ref, row) in matching {
+                before.append(Self.archiveState(row))
+                try database.execute(sql: """
+                    UPDATE session_state SET archived = 0, kept_at = ?
+                    WHERE id = ? AND host = ? AND incarnation = ?
+                    """, arguments: [at, ref.id, ref.host.rawValue, ref.incarnation])
+            }
+            return RestoreOutcome(states: before, restored: matching.map(\.ref), unmasked: projects)
+        }
+        outcome.states.map(\.id).forEach(committedRowChange)
+        return outcome
+    }
+
+    /// Puts rows back exactly as `restoreSessions` found them (Undo), and
+    /// archives the projects whose mask it lifted. A row that left and
+    /// joined again since is a new membership and is not touched.
+    public func revertArchiveStates(_ states: [ArchiveState], maskingAgain projects: [ProjectKey]) throws {
+        try db.write { database in
+            for state in states {
+                try database.execute(sql: """
+                    UPDATE session_state SET archived = ?, archive_reason = ?, archived_at = ?, kept_at = ?
+                    WHERE id = ? AND host = ? AND incarnation IS ?
+                    """, arguments: [state.archived, state.archiveReason?.rawValue, state.archivedAt, state.keptAt,
+                                     state.id, state.host.rawValue, state.incarnation])
+            }
+            for project in projects where project.host.isLocal {
+                try database.execute(sql: "INSERT OR IGNORE INTO project_state (path) VALUES (?)", arguments: [project.path])
+                try database.execute(sql: "UPDATE project_state SET archived = 1 WHERE path = ?", arguments: [project.path])
+            }
+        }
+        states.map(\.id).forEach(committedRowChange)
+    }
+
+    private static func archiveState(_ row: Row) -> ArchiveState {
+        ArchiveState(id: row["id"], host: HostID(rawValue: row["host"]), incarnation: row["incarnation"],
+                     archived: row["archived"], archiveReason: (row["archive_reason"] as String?).map(ArchiveReason.init(rawValue:)),
+                     archivedAt: row["archived_at"], keptAt: row["kept_at"])
     }
 
     /// Hints never insert membership or change provenance, and do not trigger a

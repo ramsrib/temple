@@ -28,7 +28,7 @@ struct ShortcutsView: View {
         .init(keys: "⌘P", action: "Switch project — hold ⌘ and tap P to walk, release to land"),
         .init(keys: "⌘K", action: "Command palette (recent sessions + search)"),
         .init(keys: "⌘Y", action: "Session history"),
-        .init(keys: "⌘⇧Y", action: "Archived items"),
+        .init(keys: "⌘⇧Y", action: "Archived sessions, in History"),
         .init(keys: "↑ ↓ / Return", action: "Browse the sidebar / open the highlighted session"),
         .init(keys: "⌘B", action: "Toggle the sidebar"),
     ]

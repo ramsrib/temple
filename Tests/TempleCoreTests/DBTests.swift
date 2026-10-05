@@ -1573,6 +1573,86 @@ extension DBTests {
         XCTAssertEqual(try db.sessionState("temple")?.archivedAt, later)
     }
 
+    /// ADR-031: restoring one session of an archived project converts the
+    /// mask into the other members' own flags in one transaction (pins
+    /// untouched, no date), lifts it, keeps the restored one; the revert puts
+    /// every row and the mask back exactly, and leaves a rejoined row alone.
+    func testRestoringOneSessionOfAMaskedProjectConvertsTheMaskAndRevertsExactly() throws {
+        let db = try TempleDB.inMemory()
+        for id in ["target", "pinned", "away", "temple"] {
+            try db.join(sessionID: id, via: .imported, agent: .claude, core: SessionCore(directory: "/p/raven"))
+        }
+        try db.join(sessionID: "elsewhere", via: .imported, agent: .claude, core: SessionCore(directory: "/p/other"))
+        try db.setPinned(true, sessionID: "pinned")
+        try db.setArchived(true, sessionID: "away", at: Date(timeIntervalSince1970: 1_000))
+        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "temple")]), idleBefore: Self.idleCutoff,
+                                          at: Date(timeIntervalSince1970: 2_000)), ["temple"])
+        try db.setProjectArchived(true, path: "/p/raven")
+        let before = try ["target", "pinned", "away", "temple", "elsewhere"].map { try XCTUnwrap(db.sessionState($0)) }
+        let at = Date(timeIntervalSince1970: 3_000)
+
+        let raven = ProjectKey(host: .local, path: "/p/raven")
+        let outcome = try db.restoreSessions([try ref(db, "target")], masked: [raven], at: at)
+        let touched = outcome.states
+
+        XCTAssertEqual(Set(touched.map(\.id)), ["target", "pinned"], "only rows it changed")
+        XCTAssertEqual(outcome.restored, [try ref(db, "target")])
+        XCTAssertEqual(outcome.unmasked, [raven])
+        XCTAssertFalse(try XCTUnwrap(db.projectStates().first { $0.path == "/p/raven" }).archived)
+        let target = try XCTUnwrap(db.sessionState("target"))
+        XCTAssertFalse(target.archived)
+        XCTAssertEqual(target.keptAt, at, "a person's restore is kept")
+        let pinned = try XCTUnwrap(db.sessionState("pinned"))
+        XCTAssertTrue(pinned.archived)
+        XCTAssertTrue(pinned.pinned, "the mask hid the pin; the row flag keeps it for its own restore")
+        XCTAssertNil(pinned.archiveReason)
+        XCTAssertNil(pinned.archivedAt, "when the project was archived is not recorded")
+        XCTAssertEqual(try db.sessionState("away"), before[2], "already archived on its own: untouched")
+        XCTAssertEqual(try db.sessionState("temple"), before[3])
+        XCTAssertEqual(try db.sessionState("elsewhere"), before[4], "another project: untouched")
+
+        try db.revertArchiveStates(touched, maskingAgain: [ProjectKey(host: .local, path: "/p/raven")])
+        XCTAssertTrue(try XCTUnwrap(db.projectStates().first { $0.path == "/p/raven" }).archived)
+        XCTAssertEqual(try ["target", "pinned", "away", "temple", "elsewhere"].map { try XCTUnwrap(db.sessionState($0)) }, before)
+
+        // A Temple archive restored and reverted stays Temple's, dated.
+        let temple = try db.restoreSessions([try ref(db, "temple")], masked: [], at: at).states
+        XCTAssertFalse(try XCTUnwrap(db.sessionState("temple")).archived)
+        try db.revertArchiveStates(temple, maskingAgain: [])
+        XCTAssertEqual(try db.sessionState("temple"), before[3])
+
+        // A revert names the membership: a state recorded for another
+        // incarnation of the id writes nothing.
+        let stale = ArchiveState(id: "target", host: .local, incarnation: "another", archived: true,
+                                 archiveReason: nil, archivedAt: nil, keptAt: nil)
+        try db.revertArchiveStates([stale], maskingAgain: [])
+        XCTAssertEqual(try db.sessionState("target"), before[0])
+    }
+
+    /// A Restore names memberships: a target that left and joined again (here,
+    /// into another archived project) is not restored, and its new project's
+    /// mask is not taken apart.
+    func testARestoreSkipsAMembershipThatLeftAndJoinedAgain() throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "moved", via: .imported, agent: .claude, core: SessionCore(directory: "/p/a"))
+        try db.join(sessionID: "sibling", via: .imported, agent: .claude, core: SessionCore(directory: "/p/b"))
+        let old = try ref(db, "moved")
+        XCTAssertTrue(try db.leave(sessionID: "moved", host: .local))
+        try db.join(sessionID: "moved", via: .imported, agent: .claude, core: SessionCore(directory: "/p/b"))
+        try db.setProjectArchived(true, path: "/p/b")
+        let b = ProjectKey(host: .local, path: "/p/b")
+        let rejoined = try XCTUnwrap(db.sessionState("moved"))
+
+        let outcome = try db.restoreSessions([old], masked: [b])
+
+        XCTAssertTrue(outcome.restored.isEmpty)
+        XCTAssertTrue(outcome.unmasked.isEmpty)
+        XCTAssertTrue(outcome.states.isEmpty)
+        XCTAssertEqual(try db.sessionState("moved"), rejoined)
+        XCTAssertFalse(try XCTUnwrap(db.sessionState("sibling")).archived, "its project is not taken apart")
+        XCTAssertTrue(try XCTUnwrap(db.projectStates().first { $0.path == "/p/b" }).archived)
+    }
+
     func testLeaveUndoesAnImportTempleArchivedButNotOneTheUserDid() throws {
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "temple", via: .imported, agent: .claude)

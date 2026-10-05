@@ -433,7 +433,7 @@ Consequences and choices:
 ---
 
 ## ADR-017 — Archive is a visibility mask Temple owns; manual project order sits above recency
-**Date:** 2026-09-06 · **Status:** Accepted; amended by ADR-030 (Temple archives a session nobody can resume, its transcript or its folder gone)
+**Date:** 2026-09-06 · **Status:** Accepted; amended by ADR-030 (Temple archives a session nobody can resume, its transcript or its folder gone) and ADR-031 (archive is a scope of History; opening or restoring brings back one session, Restore project is named)
 
 The sidebar had grown past the point where "grouped by project, newest first"
 found anything: too many finished sessions, too many projects in an order nobody
@@ -1066,7 +1066,7 @@ scan of recent Codex logs, and continuation following (`←` / `/bg`, ADR-023),
 which is still to be built; the event classifier is where it lands.
 
 ## ADR-028 — History is a tab over the whole disk, and the one way in
-**Date:** 2026-10-02 · **Status:** Accepted; Temple's rows no longer take a live-index copy (ADR-029)
+**Date:** 2026-10-02 · **Status:** Accepted; Temple's rows no longer take a live-index copy (ADR-029); scopes All / In Temple / Archived / Not in Temple, In Temple excluding archived rows (ADR-031)
 
 With *All on disk* gone (ADR-027), sessions run elsewhere are on no surface,
 and ADR-023's "imported" join had no way to happen. The ⌘Y overlay also read
@@ -1410,6 +1410,148 @@ CLI or the user's own deletion did, which Temple records". **Amends ADR-029:**
 proves them gone and a week has passed; then they are archived, labelled, and
 come back when a person restores them." The `v12-project-host` migration it
 reserved is `v13-project-host`.
+
+---
+
+## ADR-031 — Archive is a scope of History
+**Date:** 2026-10-05 · **Status:** Accepted; amends ADR-017 and ADR-028
+
+After ADR-030, 173 of 337 members were archived, and the way back was a
+separate ⌘⇧Y popup shaped like the sidebar, while History listed the same
+sessions tagged "Archived" under In Temple. Two places to look for one lost
+session, and an In Temple scope that was half put-away rows. The rule now:
+the sidebar shows what is in play; History shows every session Temple or the
+disk knows about, one status per row. If a session is not in the sidebar,
+⌘Y and its name find it, and the row says why and what to do.
+
+**Decisions.**
+
+- **Archived is a scope, not a section or a sibling tab.** The control reads
+  All · In Temple · Archived · Not in Temple. In Temple means in Temple and not
+  archived (what the sidebar and ⌘K show), Archived means in Temple and put
+  away (by the row's flag or its project's mask), and the three narrow scopes
+  partition All, so the header can say "3,812 sessions · 164 in Temple · 173
+  archived". One list, one sort, one search, one selection model. A section
+  at the foot would break chronology and grow without bound, which is why
+  ADR-017 refused one in the sidebar; a sibling tab is the popup relocated.
+  The popup is gone. ⌘⇧Y (View ▸ Archived Sessions, the launcher's Archived
+  sessions) opens History in the Archived scope, leaving search and filters
+  as they are; pressed there, it goes back like ⌘Y. It is no longer one of the
+  mutually exclusive panels.
+- **One status per row.** The fixed status column holds the relationship or
+  the verb, never a condition: the gate mark (in Temple), **Restore**
+  (archived), **Import** (outside). Conditions are a tag after the title, for
+  any member: **No transcript**, **No folder**. The Restore tooltip states who
+  archived it and why, then what Restore does.
+- **Restore acts on one session.** History is a list of sessions, so archive
+  is a per-session status, and the project mask survives as one named verb,
+  **Restore project**. Restore on a session whose project is archived brings
+  back that session only: in one transaction the mask is converted lazily
+  into the row flag of every other member of that project not already
+  archived (reason, date and keep cleared, pins untouched), then lifted. No
+  migration, and nothing is rewritten for a project nobody touches; older
+  builds read the result as they read any archive. A converted row's
+  `archived_at` is NULL, because when the project was archived is not
+  recorded. Opening an archived session (ADR-017's implicit unarchive) uses
+  the same conversion, so opening one session of an archived project no
+  longer floods the sidebar with the rest. Restore project lifts the mask and
+  leaves every row's own flag as it is.
+- **Undo of a Restore is exact.** A Restore records the archive columns of
+  every row it touched (archived, reason, `archived_at`, `kept_at`) and Undo
+  writes them back under the row's incarnation, and puts a lifted mask back
+  on: a session Temple archived stays Temple's archive, with its reason and
+  date, rather than becoming the user's. Restore names memberships, not
+  ids: History hands over the membership each row showed (id, host,
+  incarnation), Redo hands over the same ones again, and the write checks
+  each. One that left and joined again in between is not the session
+  restored, and is skipped with its project. The page says what the write
+  did: the number actually restored, Undo only when this operation put a
+  step on the undo stack, and "Nothing to restore; it changed since the list
+  loaded." with no Undo when it restored nothing (Redo the same). Every
+  person's restore stamps `kept_at` (ADR-030), including one that only
+  lifted a mask.
+- **An archived member's missing transcript needs a completed listing that
+  found no file.** The engine does not watch archived rows (ADR-030), so for
+  a user-archived member "No transcript" can only come from the catalog's
+  completion, which names, per host and per completed agent (an agent it
+  does not name proves nothing), every session id that agent's listing found
+  a candidate file for (ADR-032's `.completed(candidates:)`), ids compared in
+  the host's candidate spelling (`provesNoTranscript`). The member's
+  transcript is missing only when its agent's listing completed and named no
+  file for its id (every agent's, for an agentless row). A missing usable
+  summary is not absence: a file that was unreadable, belonged to another
+  session, or changed under the read is a candidate, and the row keeps Open.
+  Another agent's file under the same id hides nothing, and an older read's
+  evidence is replaced by the latest. A host that sends no completion (a
+  failed or missing store, a lost transport, a cancelled read) proves
+  nothing, and History drops a row it showed before only within a completed
+  listing too. Folders come from the read's folder answers, asked for
+  members' projects too.
+- **The ways in.** The auto-archive notice gains **View**: History, Archived
+  scope, with an "Archived just now" chip that filters exactly the notice's
+  memberships (cleared by its ×, any scope pick, or Esc, whose ladder is
+  search, chip, selection, leave). The sidebar's project header and session
+  row gain **Show in History**. A project filter on an archived project shows
+  "raven is archived · Restore project". ⌘⌫ archives the selection when every
+  row can be archived; Return on an all-archived selection restores it. The
+  import sheet says a session bound for an archived project "will appear in
+  History under Archived".
+- **History is instant for members, and stays smooth at 10,000 rows.** "Look
+  in History" only holds if History answers at once. Members, archived ones
+  included, come from SQLite rows and are on the page before any file is
+  read. The page's data outlives the tab: closing History clears its search,
+  filters, selection and notices, and keeps the prepared rows, so reopening
+  shows them at once and refreshes underneath. Everything that shapes the
+  list (the membership union, noise, the chronology, counts, filtering,
+  search, day grouping, and each row's text, tags and tooltips) runs in a
+  projection off the main actor, fed immutable values, and keeps keyed rows,
+  merging a batch into the chronology rather than sorting it all again. It
+  publishes one coherent snapshot; the main actor installs it and checks the
+  selection against its index, nothing else. A snapshot built for a query the
+  page has moved past never lands. Catalog batches after a read's first are
+  coalesced (about 100 ms). Each host's stream is consumed on its own, so a
+  stalled host never holds up another; a host's lane waits only while the
+  rows handed to the page and not yet projected are over their bound, so
+  that backlog stays bounded and nothing is dropped. The hand-off from the
+  source to a lane is not bounded: batches are small (200 summaries) and a
+  10,000-row read is a few megabytes, so it is accepted rather than pushed
+  back to the host. An unchanged projection publishes
+  nothing; a new day, time zone or locale re-formats the page even when
+  nothing else arrives. Every way into History (Show in History, the ⌘K
+  bridge, which asks in All) clears the "Archived just now" chip.
+- **Commands on the selection follow one rule.** Arrows, ⌘A, Return, ⌘⌫,
+  Restore N and the selection's Import go to the model unconditionally; the
+  key router judges nothing. Accepting a command applies what is typed (a
+  pending debounce), and only then. If the page answering the current input
+  is installed and nothing is waiting, the command runs; otherwise it is
+  recorded with the generation it targets. Any newer input cancels every
+  recorded command: a keystroke that changes the search, a scope, filter or
+  chip change, Esc, the tab leaving, a bridge into History. When the
+  targeted generation installs, recorded commands run one at a time, the
+  generation and a cancellation token checked before each, and the first
+  mismatch drops the rest. A command runs against the installed page and
+  checks there whether it applies; one that does not does nothing. Running a
+  command never applies typing and never records a command. A command that
+  leaves the page or puts something in front of it (Return that opens a tab,
+  Import that asks with its sheet) is terminal: once it runs, every command
+  still recorded is cancelled in the same call. A command never runs while a
+  sheet or alert is up; it does nothing and cancels the rest. The app also
+  cancels, in the same call, whenever its active tab moves off History. So
+  typing then Return opens the first match, ⌘A then ⌘⌫ after a filter
+  archives what the filter shows, one Return opens one tab, and nothing acts
+  on rows the user never saw.
+- **Rows draw prepared.** A row looks nothing up when it draws, and the
+  page observes History alone, not the app model; tab activity reaches it as
+  a small map. The list stays a `LazyVStack`: the measured stalls were in
+  the model, not the container.
+
+**Amends ADR-017:** archived things "live only in the ⌘⇧Y archive browser"
+becomes "are a scope of History"; "starting a session in an archived project
+brings it back" becomes "opening a session brings back that session; Restore
+project is the one verb that acts on many, and it is named". **Amends
+ADR-028:** the scopes are All, In Temple, Archived and Not in Temple, and In
+Temple excludes archived rows; History reads members from the database
+before the disk, and keeps its rows when the tab closes.
 
 ---
 

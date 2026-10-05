@@ -149,6 +149,7 @@ struct SessionRow: View {
                 NSWorkspace.shared.activateFileViewerSelecting([url])
             }
         }
+        Button("Show in History") { model.showInHistory(sessionID: session.id) }
         if let tab = openTab {
             Divider()
             Button("Close tab") { model.openSessions.closeTab(tab.id) }

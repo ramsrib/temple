@@ -51,8 +51,8 @@ back to the first human prompt
 Temple browses only **its own sessions**: every session it has started,
 opened in a tab, or that you have pinned, renamed, colored or archived. A
 project appears when it holds one. Sessions run anywhere else are on no
-surface but one: not the sidebar, `⌘K`, the launcher, the `⌘N` picker, or the
-`⌘⇧Y` archive, and Temple does not watch them while it runs (ADR-027). The
+surface but one: not the sidebar, `⌘K`, the launcher, or the `⌘N` picker,
+and Temple does not watch them while it runs (ADR-027). The
 History tab (`⌘Y`) reads the whole disk when it is shown, lists them beside
 Temple's own, and is the door in: Import brings one in without running it, and
 opening one makes it a Temple session for good. Temple records how
@@ -94,19 +94,23 @@ open tabs; any other session returns the next time it is opened
   dedicated section and custom names become their displayed and searchable
   titles. A color mark set on a session's tab shows in the sidebar as a slim
   leading capsule, and as a wash over the session's row in the `⌘K` palette,
-  the `⌃⇥` tab switcher, and the `⌘Y` / `⌘⇧Y` browsers.
+  the `⌃⇥` tab switcher, and History.
 - A session-row context menu can open or focus the session, copy its resume
-  command or ID, reveal its source file in Finder, rename it, pin or unpin it,
-  archive it, and close its tab when open. A session with an open tab cannot be
-  archived until the tab is closed. A project header's menu reveals the folder in
-  Finder, copies its path, and archives the project. Archiving from either menu is
+  command or ID, reveal its source file in Finder, show it in History, rename
+  it, pin or unpin it, archive it, and close its tab when open. A session with
+  an open tab cannot be archived until the tab is closed. A project header's
+  menu reveals the folder in Finder, copies its path, shows the project in
+  History (every session of it, archived ones one segment away), and archives
+  the project. Archiving from either menu is
   one click and one `⌘Z` (Edit ▸ Undo Archive Session / Project) to take back; undo
   also returns the pin the archive dropped.
 - Archiving hides a session everywhere the index is browsed; archiving a project
   from its header context menu hides the project and every session in it.
   Archiving a session clears its pin; archiving a project only hides the pins
   inside it, and they return with the project. Nothing archived appears in the
-  sidebar — `⌘⇧Y` is the way back.
+  sidebar; History is the way back: its **Archived** scope (`⌘⇧Y`) lists every
+  archived session, and Restore brings one back
+  ([ADR-031](./DECISIONS.md#adr-031--archive-is-a-scope-of-history)).
 - Temple archives a session nobody can resume any more: its transcript is
   gone (the CLI removed it, as Claude Code's retention cleanup does) or the
   folder it ran in no longer exists. Only on proof (a completed listing of the
@@ -114,7 +118,9 @@ open tabs; any other session returns the next time it is opened
   not plugged in proves nothing) and only for a session that is not pinned, has
   no tab open or restored, and has seen no activity for seven days. The foot of
   the sidebar says so once, "Archived 3 sessions whose transcripts are gone",
-  with **Undo** and a dismiss; it stays until one of them or the end of the run.
+  with **View** (History's Archived scope, narrowed by an "Archived just now"
+  chip to exactly those sessions), **Undo** and a dismiss; it stays until Undo,
+  the dismiss or the end of the run.
   It is not on `⌘Z`: the user did not do it. A session brought back by Undo or
   Restore is not archived again until it has seen new activity.
 - The sidebar's actions live in the title bar, at the trailing edge of its
@@ -272,8 +278,9 @@ row uses the default agent.
 **Recent Projects** shows the sidebar's first five projects — the same manual
 order if one has been set (the heading then reads **Projects**), launch-frozen
 recency otherwise — with relative activity time on hover. **Get started** also
-carries **Archived items** (`⌘⇧Y`): the sidebar has no archive affordance, so
-this is the visible way back, and it is always there. Choosing one starts a brand-new
+carries **Archived sessions** (`⌘⇧Y`), History in its Archived scope: the
+sidebar lists nothing archived, so this is a visible way back, and it is always
+there. Choosing a project starts a brand-new
 session there with the default agent; it does not reopen an existing session.
 The home page is the general creation surface—there is no new-session modal or
 prompt composer.
@@ -300,48 +307,79 @@ prompt composer.
 A tab, not a panel: a singleton utility tab beside Settings, opened or focused
 by `⌘Y` or View ▸ Session History. Pressed while History is the active tab,
 `⌘Y` goes back to the tab you came from and leaves History open; pressed while
-⌘K or the archive is open over History, it only puts the panel away. It lists
-**every session on disk** — Temple's and everyone else's — and is the one door
-through which the others join.
+⌘K is open over History, it only puts the panel away. It lists **every session
+Temple or the disk knows about**, one status per row — Temple's (archived ones
+included) and everyone else's — and is the one door through which the others
+join and archived ones come back
+([ADR-028](./DECISIONS.md#adr-028--history-is-a-tab-over-the-whole-disk-and-the-one-way-in),
+[ADR-031](./DECISIONS.md#adr-031--archive-is-a-scope-of-history)).
 
 - **A snapshot, read on demand.** The page reads both stores when it is shown
   (opening it, or switching back to it) and on Refresh (`⌘R`, View ▸ Refresh
-  History). It is never watched. Rows stream in newest first under a
-  "Reading sessions on disk… 1,240 of 3,810" line; the header says what is in
-  the box ("3,810 sessions on disk · 340 in Temple") and when it was taken
-  ("Updated 2 min ago · Refresh"). Temple's own rows take the live index's
-  copy, so their titles are current. Noise (a folder that is gone, `/`, Codex
+  History). It is never watched. Temple's own rows, archived ones included,
+  come from its database and are on the page before any file is read; disk
+  rows stream in newest first under a "Reading sessions on disk… 1,240 of
+  3,810" line. The header says what is in the box ("3,812 sessions · 164 in
+  Temple · 173 archived", plus "· 3 without a transcript" while there are
+  any) and when it was taken ("Updated 2 min ago · Refresh"). Temple's rows
+  take the live index's copy, so their titles are current. Closing the tab
+  forgets its search, filters and selection but keeps the rows: reopening
+  shows them at once and refreshes underneath. The list is prepared off the
+  main thread, so a disk of ten thousand sessions streams in and searches
+  without stalling the window. Noise (a folder that is gone, `/`, Codex
   exec/SDK runs) stays hidden. A store that cannot be read is named in a
   banner with its error as thrown, and the other store's sessions still show,
   as do the rows it showed before: only a store that was listed completely
   can say a session is gone. A read parses only transcripts that changed
   since Temple last read them, across relaunches too (ADR-032).
 - **Rows.** One line per session, grouped under sticky Today / Yesterday /
-  date headers: time, agent badge, displayed title, the activity dot when a
-  tab is open, project and git branch, and a status column. Temple's rows
-  read at full strength and end in the gate mark (its tooltip says how and
-  when it joined); the rest step back a tone and end in a quiet **Import**.
-  Archived sessions are listed, tagged **Archived**, under In Temple. The
-  last message, model, message count and file path are in the tooltip.
+  date headers: time, agent badge, displayed title, a condition tag, the
+  activity dot when a tab is open, project and git branch, and a status
+  column. The status column holds the row's relationship or its verb: Temple's
+  rows in play read at full strength and end in the gate mark (its tooltip
+  says how and when it joined); archived rows step back a tone and end in a
+  quiet **Restore**, whose tooltip says who archived it and why ("You archived
+  it on Oct 2.", "No transcript on disk carries this session, so Temple
+  archived it…", "Its project raven is archived…"); outside rows step back
+  and end in **Import**. Conditions are a tag after the title, for any of
+  Temple's rows: **No transcript** or **No folder**. The last message, model,
+  message count and file path are in the tooltip.
 - **Search and filters** narrow the page in place and keep the day grouping:
   search matches the displayed and original titles, project, branch, the last
-  message, and a session-id prefix. A segmented **All / In Temple / Not in
-  Temple** control and agent and project popups (counts over the whole disk)
-  compose with it; "Showing 47 of 3,810" appears while anything narrows. Any
-  change clears the selection and puts it on the first row. Filters belong to
-  the tab and reset when it closes; nothing is persisted.
+  message, and a session-id prefix. A segmented **All / In Temple / Archived
+  / Not in Temple** control and agent and project popups (counts over every
+  row) compose with it; "Showing 47 of 3,810" appears while anything narrows.
+  The three narrow scopes partition All: In Temple is what the sidebar and
+  `⌘K` show, Archived is in Temple and put away. The project popup on an
+  archived project adds "raven is archived · **Restore project**". Any change
+  clears the selection and puts it on the first row. Filters belong to the
+  tab and reset when it closes; nothing is persisted.
 - **Selection** is the native vocabulary: click, `⌘`-click, `⇧`-click, arrows
   (`⇧` extends, `⌥` jumps a day, `⌘` to the ends), `⌘A` for everything in the
   current view. Hover is a separate fill and never moves the selection. On
   open the search field has focus and the first row is selected.
 - **Return or a double-click opens** the selected session — an outside one
-  joins as opened, like any resume. With two or more selected, Return does
-  nothing (a tab is a process); **Import** is the only bulk verb.
+  joins as opened, like any resume, and an archived one is restored on the
+  way. An archived row that cannot resume (no transcript, folder or agent) is
+  restored instead, and opens nothing. With two or more selected, Return opens
+  nothing (a tab is a process), but when every selected row is archived it
+  restores them all.
+- **Restore** brings back one session: one in an archived project comes back
+  on its own, and the rest of the project stays archived. **Restore project**
+  (the row's context menu, or the line under the toolbar) brings back the
+  project with every session in it you have not archived yourself. A restore
+  is one `⌘Z` (Edit ▸ Undo Restore Session / Sessions / Project), and undo puts
+  each row back exactly as it was: a session Temple archived stays Temple's.
+  The bar says "7 sessions restored · Undo".
+- **The selection bar** appears with two or more rows: "7 selected · all
+  archived" with **Restore 7**, "12 selected · 7 archived" with **Restore 7**,
+  **Archive N** when every selected row can be archived (also `⌘⌫`), and
+  **Import N…** for the rows outside Temple.
 - **Import** — a row's Import, its context menu, `⌘I`, or the selection bar
-  that appears with two or more rows ("12 selected · 3 already in Temple ·
-  Import 9…") — asks first, naming each session by its displayed title and
-  where it will appear (the sidebar, or the archive for a project that is
-  archived), and saying nothing runs and no file on disk changes. Imported
+  ("12 selected · 3 already in Temple · Import 9…") — asks first, naming each
+  session by its displayed title and where it will appear (the sidebar, or
+  History under Archived for a project that is archived), and saying nothing
+  runs and no file on disk changes. Imported
   rows join as *imported*, appear in the sidebar at once, and read "Imported"
   for a moment; you stay on History, and the "9 sessions imported · Undo" line
   stays even when the import empties the view (Not in Temple). `⌘Z` (Edit ▸
@@ -352,42 +390,35 @@ through which the others join.
   says which reason kept which. An undone session leaves the live index at
   once. A failed write is reported with its error and titles; the rest stay
   imported.
-- **Context menu:** Open/Focus, Import into Temple…, Copy resume command, Copy
-  session ID, Reveal session file in Finder, Show in sidebar (Temple rows: lights
-  the row and scrolls the rail to it, unless it is folded away in a collapsed
-  project or past a Show more), Show only *project*. Rename, pin, color and
-  archive stay in the sidebar.
+- **Context menu:** Open/Focus, Archive session, Import into Temple…, Copy
+  resume command, Copy session ID, Reveal session file in Finder, Show in
+  sidebar (Temple rows: lights the row and scrolls the rail to it, unless it is
+  folded away in a collapsed project or past a Show more), Show only *project*.
+  On an archived row: Open, Restore, Restore project *raven* (when its project
+  is archived), then the copies and Show only *project*. Rename, pin and color
+  stay in the sidebar.
 - **Keys** while History is active: `⌘F` focuses its search (Edit ▸ Find in
-  History), `⌘R` refreshes, `⌘C` copies the selection's resume commands, Esc
-  clears the search, then the selection, then goes back to the previous tab.
+  History), `⌘R` refreshes, `⌘C` copies the selection's resume commands, `⌘⌫`
+  archives the selection (when the search field is empty or not focused), Esc
+  clears the search, then the "Archived just now" chip, then the selection,
+  then goes back to the previous tab.
   Esc and Return act on what is typed, even within the search's debounce.
   The list's keys (arrows, Return, Esc, `⌘A`, `⌘C`) are History's only while
   its search field or no field has focus: in the sidebar search or a chip
   being renamed they stay that field's. While the import sheet is up, every key
   goes to it.
-- `⌘⇧Y` (View ▸ Archived Items) opens the archive browser — a centred window
-  shaped like the sidebar: archived projects first, each a restorable header
-  with every session it hides listed beneath, then sessions archived on their
-  own under a plain label of their project's name. A header says what is in the
-  box ("2 projects · 5 sessions") and search filters by folder or by session
-  title. Rows carry a visible Restore, strongest on the one highlighted row —
-  the pointer and the arrow keys move the same highlight — except sessions
-  inside an archived project, whose only way back is the project's own Restore;
-  opening one restores the project. Enter or a click on a loose session
-  restores and opens it; on a project it restores it in place. Restore undoes
-  with `⌘Z` like archive does. The keys are spelled out along the bottom.
-  Searching matches a project by its path or by any session inside it. Opening an
-  archived session anywhere else unarchives it too; a session resumed
+- `⌘⇧Y` (View ▸ Archived Sessions, the launcher's Archived sessions) opens
+  History in its Archived scope, leaving search and filters as they are;
+  pressed on History already showing Archived, it goes back like `⌘Y`. Opening
+  an archived session anywhere else unarchives it too; a session resumed
   outside Temple stays archived, because activity on disk is not a decision.
 - A session Temple archived itself is tagged **No transcript** or **No folder**
-  after its title, with why ("No transcript on disk carries this session, so
-  Temple archived it. Restore brings it back."). Restore brings it back like any
+  after its title, and its Restore says why. Restore brings it back like any
   other; a file that turns up again does not, and Temple does not watch an
   archived session's files at all.
-- The palette, History, and archive fields include a `×` clear control. Esc
-  dismisses any panel from anywhere. `⌘K`, `⌘⇧Y`, `⌘P`, and `⌘/` are mutually
-  exclusive — presenting one dismisses the others, and `⌘Y` puts them away
-  too.
+- The palette and History fields include a `×` clear control. Esc dismisses
+  any panel from anywhere. `⌘K`, `⌘P`, and `⌘/` are mutually exclusive —
+  presenting one dismisses the others, and `⌘Y` and `⌘⇧Y` put them away too.
 
 ## Notifications & activity
 
@@ -487,7 +518,7 @@ New Window; **Edit** replaces the system Find submenu with Find in Terminal
 (`⌘F`, retitled Find in History on the History tab), Find Next and Find
 Previous, disabled when no terminal is showing; **View** owns Toggle Sidebar
 at `⌘B` plus the palette, Session History, Refresh History (`⌘R`, on the
-History tab), archive, home, and shortcuts card; a **Project** menu mirrors the switcher and project
+History tab), Archived Sessions, home, and shortcuts card; a **Project** menu mirrors the switcher and project
 cycling; **Settings…** sits in the app menu. Menu items call the same actions
 as the shortcuts below — the in-app key monitor remains the keyboard's source
 of truth.
@@ -511,11 +542,12 @@ of truth.
 | **⌘K** | Command palette: open sessions by recency when empty; ranked search over everything when typed. |
 | **⌘Y** | History tab: every session on disk, by day; pressed on it, back to the previous tab. |
 | **⌘R / ⌘I / ⌘A** | On the History tab: refresh the snapshot / import the selection / select every row in view. |
-| **⌘⇧Y** | Archive: archived projects and sessions; unarchive or reopen from here. |
+| **⌘⌫** | On the History tab: archive the selection, when every selected row can be. |
+| **⌘⇧Y** | Archived sessions, in History: the History tab in its Archived scope; pressed there, back to the previous tab. |
 | **⌘/** | Open the Keyboard Shortcuts reference overlay. |
 | **⌘B** | Toggle the sidebar. |
 | **⌘,** | Open Settings as a tab. |
-| **Esc** | Dismiss the palette, archive, or shortcuts overlay from anywhere; close the find bar from its field; cancel busy-close confirmation. On the History tab: clear the search, then the selection, then go back. |
+| **Esc** | Dismiss the palette or shortcuts overlay from anywhere; close the find bar from its field; cancel busy-close confirmation. On the History tab: clear the search, then the "Archived just now" chip, then the selection, then go back. |
 
 ## Platform & packaging
 

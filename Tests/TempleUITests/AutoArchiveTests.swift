@@ -207,7 +207,7 @@ final class AutoArchiveTests: XCTestCase {
         XCTAssertEqual(Set(h.model.autoArchiveNotice?.memberships.map(\.id) ?? []), ["gone", "week"])
         XCTAssertFalse(undo.canUndo, "the sweep is not the user's action")
         XCTAssertFalse(h.model.visibleRows.contains { $0.id == "gone" }, "it leaves the rail and ⌘K")
-        XCTAssertTrue(h.model.archivedSessionResults("").contains { $0.id == "gone" && $0.archivedByTemple })
+        XCTAssertTrue(h.model.sessions.contains { $0.id == "gone" && $0.archivedByTemple })
         XCTAssertEqual(Set(h.folders.asked), ["/p"], "the candidates' folder")
         XCTAssertEqual(h.proofs.calls.count, 1, "one proof per host and agent, for every hinted row")
         XCTAssertEqual(h.proofs.calls.first?.2, ["gone", "week"])
@@ -458,9 +458,14 @@ final class AutoArchiveTests: XCTestCase {
         XCTAssertEqual(h.model.autoArchiveNotice?.message, "Archived 2 sessions whose folders are gone")
         XCTAssertEqual(AppModel.AutoArchiveNotice(entries: Array(h.model.autoArchiveNotice!.entries.prefix(1))).message,
                        "Archived 1 session whose folder is gone")
-        XCTAssertEqual(ArchiveView.templeArchiveTag(.folderMissing)?.text, "No folder")
-        XCTAssertEqual(ArchiveView.templeArchiveTag(.transcriptMissing)?.text, "No transcript")
-        XCTAssertNil(ArchiveView.templeArchiveTag(ArchiveReason(rawValue: "from_the_future")))
+        // History tags Temple's rows with the reason; one from a newer build
+        // that this one cannot name gets no tag.
+        let tag = { (id: String) in h.model.sessions.first { $0.id == id }.map { HistoryRow(member: $0).conditionTag } }
+        XCTAssertEqual(tag("gone"), .noFolder)
+        let future = Session(state: SessionState(id: "future", pinned: false, archived: true, customName: nil, color: nil,
+            generatedTitle: nil, lastOpenedAt: nil, joinedVia: nil, joinedAt: nil,
+            archiveReason: ArchiveReason(rawValue: "from_the_future")))
+        XCTAssertNil(HistoryRow(member: future).conditionTag)
     }
 
     func testAMixedSweepIsOneNoticeNamingBoth() async {
@@ -470,9 +475,9 @@ final class AutoArchiveTests: XCTestCase {
         await h.settle()
         XCTAssertEqual(h.model.autoArchiveNotice?.message, "Archived 2 sessions whose transcripts or folders are gone")
         XCTAssertEqual(h.model.autoArchiveNotice?.help,
-                       "Without a transcript on disk or its folder a session can't resume. They're in Archived items (⌘⇧Y); Restore brings one back.")
+                       "Without a transcript on disk or its folder a session can't resume. View lists them in History; Restore brings one back, Undo brings them all back.")
         XCTAssertEqual(AppModel.AutoArchiveNotice(entries: [AutoArchiveEntry(ref: MembershipRef(id: "x", host: .local, incarnation: "i"), reason: .transcriptMissing)]).help,
-                       "Without a transcript on disk a session can't resume. They're in Archived items (⌘⇧Y); Restore brings one back.")
+                       "Without a transcript on disk a session can't resume. View lists them in History; Restore brings one back, Undo brings them all back.")
     }
 
     func testTheSweepRunsAtLaunchAndWhenTheAppComesForward() async {
@@ -574,17 +579,23 @@ final class AutoArchiveTests: XCTestCase {
         XCTAssertEqual(h.reason("temple"), .transcriptMissing)
     }
 
-    func testRowsInAnArchivedProjectAreSweptAndTaggedInsideTheGroup() async {
+    func testRowsInAnArchivedProjectAreSweptAndTaggedInHistory() async {
         var h = harness([row("in-project", project: "/p/b"), row("loose", project: "/p/a")])
         h.overlay.setProjectArchived(true, key: Fixture.key("/p/b"))
         h.publish(["in-project": .confirmedAbsent, "loose": .confirmedAbsent])
         await h.settle()
         XCTAssertEqual(h.model.autoArchiveNotice?.count, 2)
-        let group = h.model.archiveGroups("").first { $0.project.key == Fixture.key("/p/b") }
-        XCTAssertEqual(group?.wholeProject, true)
-        XCTAssertEqual(group?.project.sessions.map(\.archivedByTemple), [true])
-        XCTAssertEqual(h.model.archivedSessionResults("").map(\.id), ["loose"])
-        XCTAssertTrue(h.model.archivedSessionResults("").allSatisfy(\.archivedByTemple))
+        let history = h.model.history
+        history.activate()
+        history.scope = .archived
+        await history.settle()
+        let rows = Dictionary(uniqueKeysWithValues: history.visibleRows.map { ($0.sessionID, $0) })
+        XCTAssertEqual(Set(rows.keys), ["in-project", "loose"])
+        XCTAssertEqual(rows["in-project"]?.archiveStatus, .withProject(Fixture.key("/p/b")), "the project's mask is what Restore undoes")
+        XCTAssertEqual(rows["in-project"]?.conditionTag, .noTranscript)
+        XCTAssertEqual(rows["loose"]?.archiveStatus, .byTemple(.transcriptMissing))
+        XCTAssertEqual(rows["loose"]?.conditionTag, .noTranscript)
+        history.deactivate()
 
         h.model.restoreProject(Fixture.key("/p/b"), undoManager: nil)
         XCTAssertEqual(h.archived(["in-project"]), ["in-project"], "restoring the project does not bring it back")
@@ -592,7 +603,7 @@ final class AutoArchiveTests: XCTestCase {
 
     /// The engine no longer resolves an archived row, so History reads the
     /// row's own record.
-    func testHistoryListsAnAutoArchivedRowUnderInTempleAsNoTranscript() async throws {
+    func testHistoryListsAnAutoArchivedRowUnderArchivedAsNoTranscript() async throws {
         var h = harness([row("gone")])
         h.publish(["gone": .confirmedAbsent])
         await h.settle()
@@ -600,12 +611,40 @@ final class AutoArchiveTests: XCTestCase {
         h.model.history.activate()
         let end = Date().addingTimeInterval(3)
         while h.model.history.readState != .done, Date() < end { try await Task.sleep(for: .milliseconds(10)) }
-        h.model.history.scope = .inTemple
-        try await Task.sleep(for: .milliseconds(50))
+        h.model.history.scope = .archived
+        await h.model.history.settle()
         let historyRow = try XCTUnwrap(h.model.history.visibleRows.first { $0.sessionID == "gone" })
         XCTAssertTrue(historyRow.transcriptMissing)
         XCTAssertTrue(historyRow.member?.archivedByTemple == true)
         XCTAssertFalse(h.model.history.canArchive(historyRow))
+    }
+
+    /// The notice's View: History in the Archived scope, narrowed by the
+    /// "Archived just now" chip to exactly what the notice archived, and not
+    /// to an archive the user made before it.
+    func testTheNoticesViewOpensHistoryOnExactlyWhatItArchived() async throws {
+        var h = harness([row("gone"), row("also-gone"), row("mine")])
+        h.overlay.setArchived(true, sessionID: "mine")
+        h.publish(["gone": .confirmedAbsent, "also-gone": .confirmedAbsent])
+        await h.settle()
+        let notice = try XCTUnwrap(h.model.autoArchiveNotice)
+        h.model.history.query = "leftover"
+
+        h.model.viewAutoArchived()
+
+        let history = h.model.history
+        XCTAssertTrue(h.model.historyActive)
+        XCTAssertEqual(history.scope, .archived)
+        XCTAssertEqual(history.query, "", "filters left from an earlier visit give way")
+        XCTAssertEqual(history.justArchivedChip?.memberships, Set(notice.memberships))
+        XCTAssertEqual(history.justArchivedChip?.count, 2)
+        history.activate()
+        await history.settle()
+        XCTAssertEqual(Set(history.visibleRows.map(\.sessionID)), ["gone", "also-gone"])
+        history.pickScope(.archived)
+        await history.settle()
+        XCTAssertEqual(Set(history.visibleRows.map(\.sessionID)), ["gone", "also-gone", "mine"])
+        history.deactivate()
     }
 
     func testOnlyARowChangeTheSweepCouldReadArmsIt() async {

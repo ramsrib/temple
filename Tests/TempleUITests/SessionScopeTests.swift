@@ -349,17 +349,20 @@ final class SessionScopeTests: XCTestCase {
     }
 
     /// Archiving a project writes a project row, not one per session in it, so
-    /// a project Temple never touched a session of stays out of the archive
-    /// browser as it does out of the sidebar.
-    func testTheArchiveBrowserIsScopedToo() {
+    /// a project Temple never touched a session of puts nothing in History's
+    /// Archived scope, as it puts nothing in the sidebar.
+    func testHistorysArchivedScopeIsScopedToo() async {
         let (model, overlay) = makeModel(mixedIndex(), database: database(touching: ["t1"]))
         overlay.setArchived(true, sessionID: "t1")
         overlay.setProjectArchived(true, key: Fixture.key("/p/outside"))
+        model.history.catalog = { AsyncStream { $0.finish() } }
+        model.history.activate()
+        model.history.scope = .archived
+        await model.history.settle()
 
-        XCTAssertEqual(model.archivedSessionResults("").map(\.id), ["t1"])
-        XCTAssertTrue(model.archivedProjects.isEmpty)
-        XCTAssertEqual(model.archiveGroups("").map(\.project.path), ["/p/temple"])
+        XCTAssertEqual(model.history.visibleRows.map(\.sessionID), ["t1"])
         XCTAssertFalse(overlay.isTempleSession("o1"))
+        model.history.deactivate()
     }
 
     func testOpeningASessionMakesItATempleSessionForGood() throws {

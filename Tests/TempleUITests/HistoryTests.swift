@@ -83,6 +83,7 @@ final class HistoryTests: XCTestCase {
     private func load(_ history: HistoryModel, file: StaticString = #filePath, line: UInt = #line) async {
         history.activate()
         await waitFor(file: file, line: line) { history.readState == .done }
+        await history.settle()
     }
 
     private func waitFor(file: StaticString = #filePath, line: UInt = #line,
@@ -308,28 +309,43 @@ final class HistoryTests: XCTestCase {
 
         XCTAssertEqual(h.history.allRows.count, 4)
         XCTAssertEqual(h.history.transcriptMissingCount, 1, "only a proven absence; resolving is not missing")
-        XCTAssertEqual(h.history.countsLine, "4 sessions · 3 in Temple · 1 without a transcript")
+        XCTAssertEqual(h.history.countsLine, "4 sessions · 3 in Temple · 0 archived · 1 without a transcript")
 
         resolutions["pruned"] = .resolving
         h.history.rowsChanged()
         await waitFor { h.history.transcriptMissingCount == 0 }
-        XCTAssertEqual(h.history.countsLine, "4 sessions · 3 in Temple", "no gap, no clause")
+        XCTAssertEqual(h.history.countsLine, "4 sessions · 3 in Temple · 0 archived", "no gap, no clause")
     }
 
-    func testArchivedTempleRowsAreShownTaggedUnderInTemple() async {
+    /// Archived is a scope of History (ADR-031): In Temple is what the
+    /// sidebar shows, Archived is in Temple and put away, and the three
+    /// narrow scopes partition All.
+    func testTheNarrowScopesPartitionAllAndArchivedRowsLeaveInTemple() async {
         let rows = [session("put-away", hoursAgo: 1), session("project-away", project: "/p/b", hoursAgo: 2),
-                    session("outside", hoursAgo: 3)]
-        let h = harness(rows, members: ["put-away", "project-away"])
+                    session("in-play", hoursAgo: 3), session("outside", hoursAgo: 4)]
+        let h = harness(rows, members: ["put-away", "project-away", "in-play"])
         h.overlay.setArchived(true, sessionID: "put-away")
         h.overlay.setProjectArchived(true, key: Fixture.key("/p/b"))
 
         await load(h.history)
-        h.history.scope = .inTemple
+        XCTAssertEqual(h.history.countsLine, "4 sessions · 1 in Temple · 2 archived")
+        var partition: [String] = []
+        for scope in [HistoryScope.inTemple, .archived, .notInTemple] {
+            h.history.scope = scope
+            await h.history.settle()
+            partition += ids(h.history.visibleRows)
+            if scope == .inTemple { XCTAssertEqual(ids(h.history.visibleRows), ["in-play"]) }
+            if scope == .archived { XCTAssertEqual(ids(h.history.visibleRows), ["put-away", "project-away"]) }
+        }
+        XCTAssertEqual(Set(partition), Set(ids(h.history.allRows)))
+        XCTAssertEqual(partition.count, h.history.allRows.count)
 
-        XCTAssertEqual(ids(h.history.visibleRows), ["put-away", "project-away"])
-        XCTAssertTrue(h.history.isArchived(h.history.allRows[0]))
-        XCTAssertTrue(h.history.isArchived(h.history.allRows[1]))
-        XCTAssertFalse(h.history.isArchived(h.history.allRows[2]), "an outside row is never 'archived'")
+        h.history.scope = .all
+        await h.history.settle()
+        XCTAssertTrue(h.history.isArchived(h.history.row("put-away")))
+        XCTAssertEqual(h.history.row("put-away").standing, .archived(.byUser(at: h.history.row("put-away").member?.state.archivedAt)))
+        XCTAssertEqual(h.history.row("project-away").standing, .archived(.withProject(Fixture.key("/p/b"))))
+        XCTAssertFalse(h.history.isArchived(h.history.row("outside")), "an outside row is never 'archived'")
     }
 
     func testStreamingShowsRowsBeforeTheReadEndsAndRecordsStoreFailures() async {
@@ -346,7 +362,7 @@ final class HistoryTests: XCTestCase {
         continuation.yield(.storeFailed(agent: .codex, message: "permission denied"))
         continuation.yield(.sessions([session("a", hoursAgo: 1)], read: 1, total: 3))
         await waitFor { history.allRows.count == 1 }
-        XCTAssertEqual(history.readState, .reading(read: 1, total: 3))
+        await waitFor { history.readState == .reading(read: 1, total: 3) }
         XCTAssertEqual(history.storeFailures, [.init(host: .local, agent: .codex, message: "permission denied")])
         XCTAssertEqual(history.selectedIDs, ["a"], "the first row is selected as soon as there is one")
 
@@ -356,6 +372,7 @@ final class HistoryTests: XCTestCase {
                                      read: 3, total: 3))
         continuation.finish()
         await waitFor { history.readState == .done }
+        await history.settle()
         XCTAssertEqual(ids(history.allRows), ["newer", "a", "b"])
         XCTAssertEqual(history.selectedIDs, ["a"], "later batches never move the selection")
         XCTAssertEqual(history.cursorSessionID, "a")
@@ -414,6 +431,7 @@ final class HistoryTests: XCTestCase {
             pending?.finish()
             await waitFor { history.readState == .done }
         }
+        await history.settle()
         XCTAssertEqual(ids(history.allRows), ["a"])
     }
 
@@ -461,12 +479,14 @@ final class HistoryTests: XCTestCase {
         await load(h.history)
 
         h.history.query = "watch"
+        await h.history.settle()
         XCTAssertEqual(ids(h.history.visibleRows), ["t1", "t2", "t3", "y1", "y2"])
         XCTAssertEqual(h.history.groups.map(\.title), ["Today", "Yesterday"], "day grouping survives search")
         XCTAssertEqual(h.history.groups[0].sessions.map(\.sessionID), ["t1", "t2", "t3"])
         XCTAssertTrue(h.history.isNarrowed)
 
         h.history.query = "ABC1"
+        await h.history.settle()
         XCTAssertEqual(ids(h.history.visibleRows), ["abc123-def"], "a pasted id prefix finds its row")
     }
 
@@ -483,17 +503,23 @@ final class HistoryTests: XCTestCase {
         XCTAssertFalse(h.history.isNarrowed)
 
         h.history.scope = .notInTemple
+        await h.history.settle()
         XCTAssertEqual(ids(h.history.visibleRows), ["c-out", "x-out", "x-out-b", "x-beta"])
         h.history.agentFilter = .codex
+        await h.history.settle()
         XCTAssertEqual(ids(h.history.visibleRows), ["x-out", "x-out-b", "x-beta"])
         h.history.projectKeyFilter = Fixture.key("/p/a")
+        await h.history.settle()
         XCTAssertEqual(ids(h.history.visibleRows), ["x-out", "x-beta"])
         h.history.query = "alpha"
+        await h.history.settle()
         XCTAssertEqual(ids(h.history.visibleRows), ["x-out"])
 
         h.history.query = ""
+        await h.history.settle()
         XCTAssertEqual(ids(h.history.visibleRows), ["x-out", "x-beta"], "clearing search keeps the filters")
         h.history.scope = .inTemple
+        await h.history.settle()
         XCTAssertEqual(ids(h.history.visibleRows), [])
         // Counts are over the whole disk, not the view.
         XCTAssertEqual(h.history.agentCounts[.codex], 3)
@@ -508,12 +534,15 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(h.history.selectedIDs, ["a", "b", "c"])
 
         h.history.projectKeyFilter = Fixture.key("/p/b")
+        await h.history.settle()
         XCTAssertEqual(h.history.selectedIDs, ["c"])
 
         h.history.projectKeyFilter = nil
+        await h.history.settle()
         h.history.click("b")
         h.history.click("c", modifier: .command)
         h.history.query = "Title"
+        await h.history.settle()
         XCTAssertEqual(h.history.selectedIDs, ["a"])
     }
 
@@ -571,6 +600,7 @@ final class HistoryTests: XCTestCase {
         let h = harness(rows)
         await load(h.history)
         h.history.showOnly(project: Fixture.key("/p/b"))
+        await h.history.settle()
 
         h.history.selectAll()
 
@@ -594,9 +624,11 @@ final class HistoryTests: XCTestCase {
         let h = harness([session("a", hoursAgo: 1)])
         await load(h.history)
         h.history.query = "Title"
+        await h.history.settle()
 
         XCTAssertEqual(h.history.escape(), .clearedSearch)
         XCTAssertEqual(h.history.query, "")
+        await h.history.settle()
         XCTAssertEqual(h.history.escape(), .clearedSelection)
         XCTAssertTrue(h.history.selection.isEmpty)
         XCTAssertEqual(h.history.escape(), .leave)
@@ -616,10 +648,12 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(h.history.escape(), .clearedSearch, "Esc within the debounce clears the search…")
         XCTAssertEqual(h.history.draft, "")
         XCTAssertEqual(h.history.query, "")
+        await h.history.settle()
         XCTAssertEqual(h.history.selectedIDs, ["a"], "…and does not clear the selection")
 
         h.history.draft = "Bet"
         h.history.openSelected()
+        await h.history.settle()
         XCTAssertEqual(h.opened(), ["b"], "Return opens the first match of what was typed")
     }
 
@@ -630,6 +664,7 @@ final class HistoryTests: XCTestCase {
 
         h.history.draft = "Beta"
         await waitFor { h.history.query == "Beta" }
+        await h.history.settle()
         XCTAssertEqual(ids(h.history.visibleRows), ["b"])
 
         // Setting the query from outside (the ⌘K bridge) brings the field along.
@@ -657,20 +692,20 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(HistoryModel.projectList(["a", "b", "c", "d", "e"]), "a, b and 3 more projects")
     }
 
-    /// An archived project lists its sessions in the archive, so the copy
-    /// must not promise a sidebar row.
+    /// An archived project lists its sessions in History under Archived, so
+    /// the copy must not promise a sidebar row.
     func testImportCopyForAnArchivedProjectSaysTheArchive() {
         let archived: (ProjectKey) -> Bool = { $0 == Fixture.key("/x/raven") }
         let one = HistoryModel.importRequest(
             for: [session("a", project: "/x/raven", title: "Fix flaky test", hoursAgo: 1)],
             isProjectArchived: archived)
-        XCTAssertEqual(one.message, "It will appear in the archive under raven, which is archived. Nothing runs until you open it, and the session file on disk is not changed.")
+        XCTAssertEqual(one.message, "It will appear in History under Archived, because raven is archived. Nothing runs until you open it, and the session file on disk is not changed.")
 
         let mixed = HistoryModel.importRequest(
             for: [session("a", project: "/x/raven", hoursAgo: 1), session("b", project: "/x/raven", hoursAgo: 2),
                   session("c", project: "/x/dotfiles", hoursAgo: 3)],
             isProjectArchived: archived)
-        XCTAssertEqual(mixed.message, "They will appear in the sidebar under dotfiles, and in the archive under raven, which is archived. Nothing runs until you open one, and the session files on disk are not changed.")
+        XCTAssertEqual(mixed.message, "They will appear in the sidebar under dotfiles, and in History under Archived, because raven is archived. Nothing runs until you open one, and the session files on disk are not changed.")
     }
 
     /// The sheet names a session the way its row does: custom name, then the
@@ -690,7 +725,7 @@ final class HistoryTests: XCTestCase {
         let request = try XCTUnwrap(h.history.pendingImport)
         XCTAssertEqual(h.history.allRows.map(\.title), ["first prompt"])
         XCTAssertEqual(request.title, "Import “first prompt” into Temple?")
-        XCTAssertTrue(request.message.hasPrefix("It will appear in the archive under raven"))
+        XCTAssertTrue(request.message.hasPrefix("It will appear in History under Archived, because raven is archived"))
     }
 
     func testBulkImportSkipsTempleRowsJoinsTheRestAsImportedAndClearsSelection() async throws {
@@ -819,6 +854,7 @@ final class HistoryTests: XCTestCase {
         let h = harness(rows)
         await load(h.history)
         h.history.scope = .notInTemple
+        await h.history.settle()
         h.history.selectAll()
         XCTAssertEqual(h.history.bottomBar, .selection(count: 2))
         let manager = undoManager()
@@ -829,6 +865,288 @@ final class HistoryTests: XCTestCase {
 
         XCTAssertTrue(h.history.visibleRows.isEmpty, "everything left the Not in Temple view")
         XCTAssertEqual(h.history.bottomBar, .notice(.init(text: "2 sessions imported", offersUndo: true)))
+    }
+
+    // MARK: Commands while a projection is in flight
+
+    /// Holds every projection between its return and its install until
+    /// released; `held` is set once one is waiting.
+    private final class InstallGate {
+        var held: CheckedContinuation<Void, Never>?
+        var holding = true
+        func release() { holding = false; held?.resume(); held = nil }
+    }
+
+    private func gate(_ history: HistoryModel) -> InstallGate {
+        let gate = InstallGate()
+        history.beforeInstall = { [gate] in
+            guard gate.holding else { return }
+            await withCheckedContinuation { gate.held = $0 }
+        }
+        return gate
+    }
+
+    private func waitHeld(_ gate: InstallGate) async {
+        await waitFor { gate.held != nil }
+    }
+
+    /// A key, through the router's real dispatch (`HistoryKeys.route` then
+    /// `HistoryKeys.perform`), as RootView sends it.
+    @discardableResult
+    private func press(_ history: HistoryModel, _ keyCode: UInt16, _ characters: String = "",
+                       _ modifiers: NSEvent.ModifierFlags = [], focus: HistoryKeyFocus = .none) -> HistoryKeys.Effect? {
+        guard case .history(let command) = HistoryKeys.route(keyCode: keyCode, characters: characters, modifiers: modifiers,
+                                                             focus: focus, sheetAttached: false) else { return nil }
+        return HistoryKeys.perform(command, on: history, undoManager: nil)
+    }
+
+    /// Through the keyboard: a filter, then ⌘A and ⌘⌫ before its page lands.
+    /// The router checks nothing; ⌘⌫ is recorded behind ⌘A and archives
+    /// exactly what the new filter shows.
+    func testKeyboardSelectAllThenCommandDeleteAfterAFilter() async {
+        let h = harness([session("a", hoursAgo: 1), session("b", project: "/p/b", hoursAgo: 2),
+                         session("c", project: "/p/b", hoursAgo: 3)], members: ["a", "b", "c"])
+        var archived: [String] = []
+        h.history.archiveMembers = { ids, _, _ in archived += ids }
+        await load(h.history)
+        let gate = gate(h.history)
+
+        h.history.projectKeyFilter = Fixture.key("/p/b")
+        await waitHeld(gate)
+        XCTAssertEqual(press(h.history, 0, "a", [.command]), .handled)
+        XCTAssertEqual(press(h.history, 51, "\u{7f}", [.command]), .handled, "the router does not judge it")
+        XCTAssertTrue(archived.isEmpty)
+        XCTAssertEqual(h.history.waitingCommandCount, 2)
+
+        gate.release()
+        await h.history.settle()
+        XCTAssertEqual(Set(archived), ["b", "c"])
+    }
+
+    /// Type A, Return, type B: the keystroke cancels the Return; nothing
+    /// opens, on A's page or on B's.
+    func testTypingAfterReturnCancelsIt() async {
+        let rows = [session("a", title: "Alpha", hoursAgo: 1), session("b", title: "Beta", hoursAgo: 2)]
+        let h = harness(rows)
+        h.history.queryDebounce = 10
+        await load(h.history)
+        let gate = gate(h.history)
+
+        h.history.draft = "Alpha"
+        press(h.history, 36, focus: .historySearch)
+        await waitHeld(gate)
+        XCTAssertEqual(h.history.waitingCommandCount, 1)
+        h.history.draft = "Beta"
+        XCTAssertEqual(h.history.waitingCommandCount, 0, "a keystroke is newer input")
+        gate.release()
+        await h.history.settle()
+        XCTAssertTrue(h.opened().isEmpty)
+        XCTAssertEqual(h.history.query, "Alpha", "B is still typing; nothing applied it")
+    }
+
+    /// A command that brings newer input while recorded commands are being
+    /// run stops the rest: the arrow after it never runs, here or on the
+    /// next page.
+    func testNewerInputDuringReplayStopsTheRest() async {
+        let rows = [session("m1", project: "/p/b", hoursAgo: 1), session("m2", project: "/p/b", hoursAgo: 2),
+                    session("o1", project: "/p/b", hoursAgo: 3), session("o2", project: "/p/b", hoursAgo: 4)]
+        let h = harness(rows, members: ["m1", "m2"])
+        var archived: [String] = []
+        h.history.archiveMembers = { [weak history = h.history] ids, _, _ in
+            archived += ids
+            history?.scope = .notInTemple   // newer input, arriving mid-replay
+        }
+        await load(h.history)
+        h.history.scope = .inTemple
+        await h.history.settle()
+        let gate = gate(h.history)
+
+        h.history.projectKeyFilter = Fixture.key("/p/b")
+        await waitHeld(gate)
+        press(h.history, 0, "a", [.command])
+        press(h.history, 51, "\u{7f}", [.command])
+        press(h.history, 125)
+        XCTAssertEqual(h.history.waitingCommandCount, 3)
+        gate.release()
+        await h.history.settle()
+
+        XCTAssertEqual(Set(archived), ["m1", "m2"])
+        XCTAssertEqual(h.history.waitingCommandCount, 0)
+        XCTAssertEqual(h.history.selectedIDs, ["o1"], "the new page's first row; the ↓ was dropped")
+    }
+
+    /// Return, ↓, Return, all recorded while the page is built: the first
+    /// Return opens a tab and is terminal, so exactly one session opens.
+    func testAReplayedReturnThatOpensATabEndsTheReplay() async {
+        let rows = [session("r0", title: "Other", hoursAgo: 1), session("r1", title: "Match one", hoursAgo: 2),
+                    session("r2", title: "Match two", hoursAgo: 3)]
+        let h = harness(rows)
+        await load(h.history)
+        let gate = gate(h.history)
+
+        h.history.query = "match"
+        await waitHeld(gate)
+        press(h.history, 36)
+        press(h.history, 125)
+        press(h.history, 36)
+        XCTAssertEqual(h.history.waitingCommandCount, 3)
+        gate.release()
+        await h.history.settle()
+        XCTAssertEqual(h.opened(), ["r1"], "one tab, from the first Return")
+        XCTAssertEqual(h.history.waitingCommandCount, 0)
+    }
+
+    /// ⌘I then Return, recorded: the import's sheet goes up, and the Return
+    /// behind it does nothing.
+    func testAReplayedImportThatAsksEndsTheReplay() async {
+        let rows = [session("o1", hoursAgo: 1), session("o2", project: "/p/b", hoursAgo: 2)]
+        let h = harness(rows)
+        await load(h.history)
+        let gate = gate(h.history)
+
+        h.history.projectKeyFilter = Fixture.key("/p/b")
+        await waitHeld(gate)
+        press(h.history, 34, "i", [.command])
+        press(h.history, 36)
+        gate.release()
+        await h.history.settle()
+        XCTAssertEqual(h.history.pendingImport?.sessions.map(\.id), ["o2"])
+        XCTAssertTrue(h.opened().isEmpty, "nothing opened behind the sheet")
+        XCTAssertEqual(h.history.waitingCommandCount, 0)
+        // And with the sheet up, a command does nothing.
+        h.history.openSelected()
+        XCTAssertTrue(h.opened().isEmpty)
+    }
+
+    /// Return recorded, then Esc: withdrawn. Return recorded, then the tab
+    /// leaves: withdrawn.
+    func testEscapeAndLeavingWithdrawRecordedCommandsFromTheKeyboard() async {
+        let rows = [session("a", title: "Alpha", hoursAgo: 1), session("b", title: "Beta", hoursAgo: 2)]
+        let h = harness(rows)
+        await load(h.history)
+        let gate = gate(h.history)
+
+        h.history.query = "Beta"
+        await waitHeld(gate)
+        press(h.history, 36)
+        XCTAssertEqual(press(h.history, 53), .handled)
+        XCTAssertEqual(h.history.waitingCommandCount, 0)
+        gate.release()
+        await h.history.settle()
+        XCTAssertTrue(h.opened().isEmpty)
+
+        let again = self.gate(h.history)
+        h.history.query = "Beta"
+        await waitHeld(again)
+        press(h.history, 36)
+        h.history.deactivate()
+        XCTAssertEqual(h.history.waitingCommandCount, 0)
+        again.release()
+        await h.history.settle()
+        XCTAssertTrue(h.opened().isEmpty)
+    }
+
+    /// ⌘A then ⌘⌫ straight after a filter change act on what the new filter
+    /// shows, once it is shown, never on the old page.
+    func testSelectAllThenArchiveWaitForTheFilteredPage() async {
+        let h = harness([session("a", hoursAgo: 1), session("b", project: "/p/b", hoursAgo: 2)], members: ["a", "b"])
+        var archived: [String] = []
+        h.history.archiveMembers = { ids, _, _ in archived += ids }
+        await load(h.history)
+        let gate = gate(h.history)
+
+        h.history.projectKeyFilter = Fixture.key("/p/b")
+        await waitHeld(gate)
+        h.history.selectAll()
+        h.history.archiveSelected(undoManager: nil)
+        XCTAssertTrue(h.history.selection.isEmpty, "nothing selected from the page being replaced")
+        XCTAssertTrue(archived.isEmpty)
+        XCTAssertEqual(h.history.waitingCommandCount, 2)
+
+        gate.release()
+        await h.history.settle()
+        XCTAssertEqual(archived, ["b"], "only what the filter shows")
+        XCTAssertEqual(h.history.notice?.text, "1 session archived")
+    }
+
+    /// An arrow pressed while the filtered page is built moves from that
+    /// page's first row once it lands, and Return opens where it moved.
+    func testArrowThenReturnAfterAFilterActOnTheNewPage() async {
+        let rows = [session("r0", title: "Other", hoursAgo: 1), session("r1", title: "Match one", hoursAgo: 2),
+                    session("r2", title: "Match two", hoursAgo: 3), session("r3", title: "Match three", hoursAgo: 4)]
+        let h = harness(rows)
+        await load(h.history)
+        let gate = gate(h.history)
+
+        h.history.query = "match"
+        await waitHeld(gate)
+        h.history.moveCursor(by: 1)
+        h.history.openSelected()
+        XCTAssertTrue(h.opened().isEmpty)
+
+        gate.release()
+        await h.history.settle()
+        XCTAssertEqual(h.history.selectedIDs, ["r2"])
+        XCTAssertEqual(h.opened(), ["r2"])
+    }
+
+    /// Typing, then Return while its page is built, then Esc: the Return is
+    /// withdrawn, and nothing opens on the cleared search.
+    func testEscapeWithdrawsAReturnStillWaiting() async {
+        let rows = [session("a", title: "Alpha", hoursAgo: 1), session("b", title: "Beta", hoursAgo: 2)]
+        let h = harness(rows)
+        h.history.queryDebounce = 10
+        await load(h.history)
+        let gate = gate(h.history)
+
+        h.history.draft = "Beta"
+        h.history.openSelected()
+        await waitHeld(gate)
+        XCTAssertEqual(h.history.waitingCommandCount, 1)
+        XCTAssertEqual(h.history.escape(), .clearedSearch)
+        XCTAssertEqual(h.history.waitingCommandCount, 0)
+
+        gate.release()
+        await h.history.settle()
+        XCTAssertTrue(h.opened().isEmpty)
+        XCTAssertEqual(h.history.selectedIDs, ["a"])
+    }
+
+    /// A later filter change, or the tab leaving the screen, cancels what
+    /// was waiting rather than running it on a page nobody saw.
+    func testALaterFilterOrLeavingCancelsWaitingCommands() async {
+        let rows = [session("a", hoursAgo: 1), session("b", project: "/p/b", hoursAgo: 2)]
+        let h = harness(rows)
+        await load(h.history)
+        let gate = gate(h.history)
+
+        h.history.projectKeyFilter = Fixture.key("/p/b")
+        await waitHeld(gate)
+        h.history.selectAll()
+        h.history.projectKeyFilter = nil
+        XCTAssertEqual(h.history.waitingCommandCount, 0, "superseded by the newer question")
+        h.history.selectAll()
+        h.history.deactivate()
+        XCTAssertEqual(h.history.waitingCommandCount, 0, "the tab left")
+        gate.release()
+        await h.history.settle()
+        XCTAssertLessThanOrEqual(h.history.selection.count, 1, "no ⌘A ran")
+    }
+
+    /// A bridge that sets the query while typing is still debouncing ends
+    /// the debounce: the old typing does not land on the new page.
+    func testSettingTheQueryInsideTheDebounceWindowEndsIt() async {
+        let h = harness([session("a", title: "Alpha", hoursAgo: 1), session("b", title: "Beta", hoursAgo: 2)])
+        h.history.queryDebounce = 0.05
+        await load(h.history)
+
+        h.history.draft = "Beta"
+        h.history.query = ""   // unchanged: a bridge clearing the search
+        XCTAssertEqual(h.history.draft, "")
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        await h.history.settle()
+        XCTAssertEqual(h.history.query, "")
+        XCTAssertEqual(ids(h.history.visibleRows), ["a", "b"])
     }
 
     // MARK: Rebuild cost
@@ -849,7 +1167,8 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(h.history.allRows.map(\.title), ["Disk title"])
 
         h.history.activate()
-        XCTAssertEqual(h.history.inTempleCount, 1, "caught up on activation, before the read")
+        await h.history.settle()
+        XCTAssertEqual(h.history.inTempleCount, 1, "caught up on activation")
         XCTAssertEqual(h.history.allRows.map(\.title), ["Live title"])
     }
 
@@ -862,27 +1181,42 @@ final class HistoryTests: XCTestCase {
         let subscription = h.history.objectWillChange.sink { published += 1 }
         defer { subscription.cancel() }
 
-        h.history.rebuild()
-        h.history.rebuild()
+        let installs = h.history.rebuildCount
+        await h.history.rebuild()
+        await h.history.rebuild()
 
         XCTAssertEqual(published, 0)
+        XCTAssertEqual(h.history.rebuildCount, installs, "nothing changed, nothing installed")
     }
 
     // MARK: Tab lifecycle
 
-    func testClosingTheTabResetsItsViewState() async {
-        let h = harness([session("a", hoursAgo: 1)])
+    /// Closing the tab clears what the tab asked (filters, selection,
+    /// notices) and keeps what it learned: the rows are on the page the
+    /// moment it opens again, before any read.
+    func testClosingTheTabResetsItsViewStateAndKeepsItsRows() async {
+        let h = harness([session("a", hoursAgo: 1), session("b", hoursAgo: 2)])
         await load(h.history)
         h.history.scope = .notInTemple
         h.history.query = "x"
+        h.history.justArchivedChip = .init(memberships: [])
 
         h.history.reset()
+        XCTAssertTrue(h.history.selection.isEmpty)
+        await h.history.settle()
 
         XCTAssertEqual(h.history.scope, .all)
         XCTAssertEqual(h.history.query, "")
-        XCTAssertTrue(h.history.allRows.isEmpty)
-        XCTAssertNil(h.history.lastUpdated)
-        XCTAssertEqual(h.history.readState, .idle)
+        XCTAssertNil(h.history.justArchivedChip)
+        XCTAssertEqual(ids(h.history.allRows), ["a", "b"], "the rows stay")
+        XCTAssertEqual(ids(h.history.visibleRows), ["a", "b"], "answering the cleared question")
+
+        // Reopened with a read that never answers: the rows are there at once.
+        h.history.catalog = { AsyncStream { _ in } }
+        h.history.activate()
+        XCTAssertEqual(ids(h.history.visibleRows), ["a", "b"])
+        XCTAssertEqual(h.history.selectedIDs, ["a"], "the first row is selected straight away")
+        h.history.deactivate()
     }
 }
 
@@ -966,8 +1300,8 @@ final class HistoryTabTests: XCTestCase {
         XCTAssertEqual(model.history.scope, .all)
     }
 
-    /// ⌘Y over ⌘K or the archive, with History under it: the panel goes and
-    /// History stays — it does not also jump back to the previous tab.
+    /// ⌘Y over ⌘K, with History under it: the panel goes and History stays
+    /// — it does not also jump back to the previous tab.
     func testCommandYOverAPanelOnHistoryClosesThePanelAndStays() {
         let model = makeModel()
         model.openSessions.openSession(Fixture.session("a", project: "/p/a"))
@@ -977,11 +1311,6 @@ final class HistoryTabTests: XCTestCase {
         model.toggleHistory()
         XCTAssertFalse(model.commandPalettePresented)
         XCTAssertTrue(model.historyActive, "the palette went; History stayed")
-
-        model.toggleArchive()
-        model.toggleHistory()
-        XCTAssertFalse(model.archivePresented)
-        XCTAssertTrue(model.historyActive, "the archive went; History stayed")
 
         model.toggleHistory()
         XCTAssertFalse(model.historyActive, "with nothing over it, ⌘Y still goes back")
@@ -1122,15 +1451,28 @@ final class HistoryUndoEngineTests: XCTestCase {
 final class HistoryKeysTests: XCTestCase {
     private func route(_ keyCode: UInt16, _ characters: String = "", _ modifiers: NSEvent.ModifierFlags = [],
                        focus: HistoryKeyFocus = .none, sheet: Bool = false,
-                       searchSelection: Bool = false) -> HistoryKeyRoute {
+                       searchSelection: Bool = false, searchText: Bool = false) -> HistoryKeyRoute {
         HistoryKeys.route(keyCode: keyCode, characters: characters, modifiers: modifiers,
-                          focus: focus, sheetAttached: sheet, searchHasSelection: searchSelection)
+                          focus: focus, sheetAttached: sheet, searchHasSelection: searchSelection,
+                          searchHasText: searchText)
     }
 
     private enum Key {
         static let down: UInt16 = 125, up: UInt16 = 126, ret: UInt16 = 36, enter: UInt16 = 76, esc: UInt16 = 53
         static let a: UInt16 = 0, c: UInt16 = 8, f: UInt16 = 3, i: UInt16 = 34, r: UInt16 = 15
-        static let k: UInt16 = 40, w: UInt16 = 13, y: UInt16 = 16
+        static let k: UInt16 = 40, w: UInt16 = 13, y: UInt16 = 16, delete: UInt16 = 51
+    }
+
+    /// ⌘⌫ archives the selection, from the list or an empty search field;
+    /// with text in the field it deletes text, as in any field, and another
+    /// field keeps it.
+    func testCommandDeleteArchivesTheSelectionUnlessTheSearchHasText() {
+        XCTAssertEqual(route(Key.delete, "\u{7f}", [.command]), .history(.archiveSelection))
+        XCTAssertEqual(route(Key.delete, "\u{7f}", [.command], focus: .historySearch), .history(.archiveSelection))
+        XCTAssertEqual(route(Key.delete, "\u{7f}", [.command], focus: .historySearch, searchText: true), .general)
+        XCTAssertEqual(route(Key.delete, "\u{7f}", [.command], focus: .foreignField), .general)
+        XCTAssertEqual(route(Key.delete, "\u{7f}"), .general, "plain delete is not History's")
+        XCTAssertEqual(route(Key.delete, "\u{7f}", [.command, .option]), .general)
     }
 
     func testTheListTakesItsKeysWithNoFieldOrHistorysOwnSearchFocused() {
@@ -1206,5 +1548,812 @@ extension SessionOverlayStore.ImportOutcome {
         case .skipped: "skipped"
         case .failed(let error): "failed: \(error)"
         }
+    }
+}
+
+/// Archive lives in History (ADR-031): archiving from the sidebar, finding
+/// archived sessions in History's Archived scope, and bringing them back one
+/// at a time. Ported from the retired ⌘⇧Y browser's model cases, with the
+/// one-session restore that replaced "opening restores the project".
+@MainActor
+final class HistoryArchiveTests: XCTestCase {
+    private func makeModel(_ rows: [Session], database: TempleDB? = nil,
+                           resolutions: MemberResolution = .confirmedAbsent) -> (AppModel, SessionOverlayStore, TempleDB) {
+        let database = database ?? (try! TempleDB.inMemory())
+        Fixture.join(rows, to: database)
+        let overlay = SessionOverlayStore(db: database)
+        let model = AppModel(
+            surfaceFactory: FakeTerminalSurfaceFactory(),
+            engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
+            database: database,
+            settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+            overlay: overlay)
+        model.history.catalog = { AsyncStream { $0.finish() } }
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: Dictionary(uniqueKeysWithValues: model.sessions.map { ($0.id, resolutions) })))
+        return (model, overlay, database)
+    }
+
+    private func twoProjects() -> [Session] {
+        [Fixture.row("a1", project: "/p/a", title: "Alpha one", updated: 40),
+         Fixture.row("a2", project: "/p/a", title: "Alpha two", updated: 30),
+         Fixture.row("b1", project: "/p/b", title: "Beta one", updated: 20)]
+    }
+
+    /// The page as it stands, in `scope`, searched for `query`.
+    private func page(_ model: AppModel, _ scope: HistoryScope = .archived, query: String = "") async -> [String] {
+        let history = model.history
+        history.activate()
+        history.scope = scope
+        history.query = query
+        await history.settle()
+        return history.visibleRows.map(\.sessionID)
+    }
+
+    private func row(_ model: AppModel, _ id: String) -> HistoryRow? {
+        model.history.allRows.first { $0.sessionID == id }
+    }
+
+    private func undoManager() -> UndoManager {
+        let manager = UndoManager()
+        manager.groupsByEvent = false
+        return manager
+    }
+
+    private func settleSink() async {
+        // The active-tab sink lands on RunLoop.main.
+        await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
+    }
+
+    // MARK: Archiving a session
+
+    func testArchivingASessionMovesItFromEveryBrowseSurfaceToHistorysArchivedScope() async {
+        let (model, overlay, _) = makeModel(twoProjects())
+        overlay.togglePin("a1")
+        XCTAssertEqual(model.pinnedSessions.map(\.id), ["a1"])
+
+        overlay.setArchived(true, sessionID: "a1")
+
+        XCTAssertEqual(model.displayProjects.flatMap(\.sessions).map(\.id), ["a2", "b1"])
+        XCTAssertTrue(model.pinnedSessions.isEmpty)
+        XCTAssertFalse(model.paletteResults("").contains { $0.id == "a1" })
+        XCTAssertFalse(model.paletteResults("alpha").contains { $0.id == "a1" }, "not in ⌘K")
+        let archived = await page(model)
+        XCTAssertEqual(archived, ["a1"])
+        let searched = await page(model, query: "alpha")
+        XCTAssertEqual(searched, ["a1"])
+        let inTemple = await page(model, .inTemple)
+        XCTAssertEqual(inTemple, ["a2", "b1"], "In Temple is what the sidebar shows")
+        let all = await page(model, .all)
+        XCTAssertEqual(all, ["a1", "a2", "b1"], "All still lists it, tagged")
+        XCTAssertEqual(row(model, "a1")?.isArchived, true)
+
+        overlay.setArchived(false, sessionID: "a1")
+        XCTAssertEqual(model.displayProjects.flatMap(\.sessions).map(\.id), ["a1", "a2", "b1"])
+        let after = await page(model)
+        XCTAssertTrue(after.isEmpty)
+    }
+
+    /// Pinned-and-archived is a contradiction: one says always in front of me,
+    /// the other says put away. Unarchiving does not hand the pin back.
+    func testArchivingClearsThePinAndUnarchivingDoesNotRestoreIt() {
+        let (model, overlay, _) = makeModel(twoProjects())
+        overlay.togglePin("a1")
+
+        overlay.setArchived(true, sessionID: "a1")
+        XCTAssertFalse(overlay.isPinned("a1"))
+
+        overlay.setArchived(false, sessionID: "a1")
+        XCTAssertFalse(overlay.isPinned("a1"))
+        XCTAssertTrue(model.pinnedSessions.isEmpty)
+    }
+
+    /// One click archives; one keystroke takes it back. The pin the archive
+    /// dropped returns with the session, and redo re-archives.
+    func testArchivingFromTheSidebarIsUndoableAndRedoable() {
+        let (model, overlay, _) = makeModel(twoProjects())
+        let undo = undoManager()
+        overlay.togglePin("a1")
+
+        undo.beginUndoGrouping()
+        model.archiveSession("a1", undoManager: undo)
+        undo.endUndoGrouping()
+        XCTAssertTrue(overlay.isArchived("a1"))
+        XCTAssertFalse(overlay.isPinned("a1"))
+        XCTAssertEqual(undo.undoActionName, "Archive Session")
+
+        undo.undo()
+        XCTAssertFalse(overlay.isArchived("a1"))
+        XCTAssertTrue(overlay.isPinned("a1"), "undo brings the dropped pin back")
+
+        undo.redo()
+        XCTAssertTrue(overlay.isArchived("a1"))
+
+        undo.beginUndoGrouping()
+        model.archiveProject(Fixture.key("/p/b"), undoManager: undo)
+        undo.endUndoGrouping()
+        XCTAssertEqual(undo.undoActionName, "Archive Project")
+        undo.undo()
+        XCTAssertFalse(overlay.isProjectArchived(Fixture.key("/p/b")))
+    }
+
+    // MARK: Restore
+
+    /// Follow-up 1 of the auto-archive approval: Undo of a Restore puts the
+    /// row back exactly. A Temple archive stays Temple's, reason and date
+    /// included; it does not turn into the user's.
+    func testUndoingARestoreOfATempleArchiveKeepsItTemplesWithItsDate() async throws {
+        let (model, overlay, database) = makeModel([Fixture.row("gone", project: "/p/a")])
+        let ref = MembershipRef(id: "gone", host: .local, incarnation: try XCTUnwrap(database.sessionState("gone")?.incarnation))
+        let archivedAt = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertEqual(try database.autoArchive([AutoArchiveEntry(ref: ref, reason: .transcriptMissing)],
+                                                idleBefore: .distantFuture, at: archivedAt), ["gone"])
+        _ = await page(model)
+        let undo = undoManager()
+
+        undo.beginUndoGrouping()
+        model.history.restore([try XCTUnwrap(row(model, "gone"))], undoManager: undo)
+        undo.endUndoGrouping()
+        XCTAssertFalse(overlay.isArchived("gone"))
+        XCTAssertNotNil(try database.sessionState("gone")?.keptAt, "a person's restore is kept")
+        XCTAssertEqual(undo.undoActionName, "Restore Session")
+        XCTAssertEqual(model.history.notice, .init(text: "1 session restored", offersUndo: true))
+
+        undo.undo()
+        let state = try XCTUnwrap(database.sessionState("gone"))
+        XCTAssertTrue(state.archived)
+        XCTAssertEqual(state.archiveReason, .transcriptMissing, "still Temple's archive")
+        XCTAssertEqual(state.archivedAt, archivedAt, "with its own date")
+        XCTAssertNil(state.keptAt)
+        XCTAssertEqual(model.history.notice?.text, "Restore undone")
+
+        undo.redo()
+        XCTAssertFalse(overlay.isArchived("gone"))
+        undo.undo()
+        XCTAssertEqual(try database.sessionState("gone")?.archiveReason, .transcriptMissing, "and again after a redo")
+    }
+
+    /// Restore on a session whose project is archived brings back that
+    /// session only: the mask is taken apart into the other sessions' own
+    /// flags (pins untouched), the mask comes off, and one Undo reverses
+    /// all of it.
+    func testRestoringOneSessionOfAnArchivedProjectBringsBackOnlyThatSession() async throws {
+        let rows = [Fixture.row("a1", project: "/p/a", title: "Alpha one", updated: 40),
+                    Fixture.row("a2", project: "/p/a", title: "Alpha two", updated: 30),
+                    Fixture.row("a3", project: "/p/a", title: "Alpha three", updated: 20),
+                    Fixture.row("b1", project: "/p/b", title: "Beta one", updated: 10)]
+        let (model, overlay, database) = makeModel(rows)
+        overlay.togglePin("a2")
+        overlay.setArchived(true, sessionID: "a3")
+        let a3Before = try XCTUnwrap(database.sessionState("a3"))
+        overlay.setProjectArchived(true, key: Fixture.key("/p/a"))
+        let archived = await page(model)
+        XCTAssertEqual(archived, ["a1", "a2", "a3"])
+        XCTAssertEqual(row(model, "a1")?.archiveStatus, .withProject(Fixture.key("/p/a")))
+        XCTAssertEqual(row(model, "a1")?.statusTooltip,
+                       "Its project a is archived. Restore brings back this session; the rest of a stays archived.")
+        let undo = undoManager()
+
+        undo.beginUndoGrouping()
+        model.history.restore([try XCTUnwrap(row(model, "a1"))], undoManager: undo)
+        undo.endUndoGrouping()
+
+        XCTAssertFalse(overlay.isProjectArchived(Fixture.key("/p/a")), "the mask is off")
+        XCTAssertFalse(try XCTUnwrap(database.sessionState("a1")).archived)
+        let a2 = try XCTUnwrap(database.sessionState("a2"))
+        XCTAssertTrue(a2.archived, "the rest of the project stays away, now by its own flag")
+        XCTAssertNil(a2.archiveReason)
+        XCTAssertTrue(a2.pinned, "pins untouched: restoring it later returns its pin, as the project's restore would")
+        XCTAssertEqual(try database.sessionState("a3"), a3Before, "already archived on its own: untouched")
+        XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
+        XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["a1"])
+        let stillArchived = await page(model)
+        XCTAssertEqual(stillArchived, ["a2", "a3"])
+        XCTAssertEqual(row(model, "a2")?.archiveStatus, .byUser(at: nil))
+
+        undo.undo()
+        XCTAssertTrue(overlay.isProjectArchived(Fixture.key("/p/a")), "the mask is back")
+        XCTAssertFalse(try XCTUnwrap(database.sessionState("a2")).archived)
+        XCTAssertTrue(try XCTUnwrap(database.sessionState("a2")).pinned)
+        XCTAssertNil(try XCTUnwrap(database.sessionState("a1")).keptAt)
+        XCTAssertEqual(try database.sessionState("a3"), a3Before)
+        XCTAssertFalse(undo.canUndo, "one undo step")
+        XCTAssertTrue(model.displayProjects.allSatisfy { $0.path != "/p/a" })
+    }
+
+    /// Restore project lifts the mask and leaves every row's own flag as it
+    /// is: a session archived on its own (by Temple or the user) stays away.
+    func testRestoreProjectLeavesRowFlagsAlone() async throws {
+        let (model, overlay, _) = makeModel(twoProjects())
+        overlay.setArchived(true, sessionID: "a2")
+        overlay.setProjectArchived(true, key: Fixture.key("/p/a"))
+        model.history.projectKeyFilter = Fixture.key("/p/a")
+        _ = await page(model, .all)
+        XCTAssertTrue(model.history.filteredProjectIsArchived, "the page offers Restore project")
+        let undo = undoManager()
+
+        undo.beginUndoGrouping()
+        model.history.restoreProject(Fixture.key("/p/a"), undoManager: undo)
+        undo.endUndoGrouping()
+
+        XCTAssertFalse(overlay.isProjectArchived(Fixture.key("/p/a")))
+        XCTAssertTrue(overlay.isArchived("a2"))
+        XCTAssertEqual(model.displayProjects.first { $0.path == "/p/a" }?.sessions.map(\.id), ["a1"])
+        XCTAssertEqual(model.history.notice?.text, "a restored")
+        XCTAssertEqual(undo.undoActionName, "Restore Project")
+        await model.history.settle()
+        XCTAssertFalse(model.history.filteredProjectIsArchived)
+    }
+
+    /// Return on an archived row that cannot resume restores it and opens
+    /// nothing; Return on an all-archived selection restores every one.
+    func testReturnRestoresWhatCannotOpenAndAWholeArchivedSelection() async throws {
+        let (model, overlay, _) = makeModel([Fixture.row("no-folder", title: "No folder"),
+                                             Fixture.row("x", project: "/p", updated: 20),
+                                             Fixture.row("y", project: "/p", updated: 10),
+                                             Fixture.row("live", project: "/p", updated: 5)])
+        for id in ["no-folder", "x", "y"] { overlay.setArchived(true, sessionID: id) }
+        _ = await page(model)
+        model.history.click(try XCTUnwrap(row(model, "no-folder")).id)
+        let undo = undoManager()
+
+        undo.beginUndoGrouping()
+        model.history.openSelected(undoManager: undo)
+        undo.endUndoGrouping()
+        XCTAssertFalse(overlay.isArchived("no-folder"))
+        XCTAssertTrue(model.openSessions.tabs.isEmpty, "a Restore starts nothing")
+        undo.undo()
+        XCTAssertTrue(overlay.isArchived("no-folder"))
+
+        await model.history.settle()
+        model.history.selectAll()
+        XCTAssertTrue(model.history.selectionSummary.allArchived)
+        undo.beginUndoGrouping()
+        model.history.openSelected(undoManager: undo)
+        undo.endUndoGrouping()
+        let stillArchived = ["no-folder", "x", "y"].filter { overlay.isArchived($0) }
+        XCTAssertEqual(stillArchived, [])
+        XCTAssertEqual(model.history.notice?.text, "3 sessions restored")
+        XCTAssertTrue(model.openSessions.tabs.isEmpty)
+
+        // A mixed selection: Return opens nothing and restores nothing.
+        overlay.setArchived(true, sessionID: "x")
+        _ = await page(model, .all)
+        model.history.selectAll()
+        XCTAssertEqual(model.history.selectionSummary.archived, 1)
+        model.history.openSelected(undoManager: nil)
+        XCTAssertTrue(overlay.isArchived("x"))
+        XCTAssertTrue(model.openSessions.tabs.isEmpty)
+    }
+
+    /// ⌘⌫ archives the selection only when every row of it can be archived.
+    func testCommandDeleteArchivesOnlyAWhollyArchivableSelection() async {
+        let (model, overlay, _) = makeModel(twoProjects())
+        overlay.setArchived(true, sessionID: "b1")
+        _ = await page(model, .all)
+        model.history.selectAll()
+        XCTAssertFalse(model.history.selectionSummary.archivable, "one is archived already")
+        XCTAssertFalse(model.history.canArchiveSelection)
+        model.history.archiveSelected(undoManager: nil)
+        XCTAssertFalse(overlay.isArchived("a1"))
+
+        _ = await page(model, .inTemple)
+        model.history.selectAll()
+        XCTAssertTrue(model.history.selectionSummary.archivable)
+        model.history.archiveSelected(undoManager: nil)
+        XCTAssertTrue(overlay.isArchived("a1") && overlay.isArchived("a2"))
+        XCTAssertEqual(model.history.notice?.text, "2 sessions archived")
+    }
+
+    // MARK: Projects
+
+    func testAnArchivedProjectsSessionsAreListedUnderArchived() async {
+        let (model, overlay, _) = makeModel(twoProjects())
+
+        overlay.setProjectArchived(true, key: Fixture.key("/p/a"))
+
+        XCTAssertEqual(model.displayProjects.map(\.path), ["/p/b"])
+        XCTAssertEqual(model.projectPickerResults("").map(\.path), ["/p/b"])
+        let archived = await page(model)
+        XCTAssertEqual(archived, ["a1", "a2"])
+        let searched = await page(model, query: "alpha two")
+        XCTAssertEqual(searched, ["a2"], "found by what you remember about it")
+        model.history.showOnly(project: Fixture.key("/p/a"))
+        await model.history.settle()
+        XCTAssertTrue(model.history.filteredProjectIsArchived)
+
+        overlay.setProjectArchived(false, key: Fixture.key("/p/a"))
+        XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
+    }
+
+    /// The index can list one session id under two projects; History's rows
+    /// are keyed by host, agent and id, so each session appears once.
+    func testHistoryListsEachArchivedSessionOnce() async {
+        let (model, overlay, _) = makeModel([Fixture.row("dup", project: "/p/a", title: "Shared", updated: 10),
+                                             Fixture.row("dup", project: "/p/b", title: "Shared", updated: 10)])
+        overlay.setProjectArchived(true, key: Fixture.key("/p/a"))
+        overlay.setProjectArchived(true, key: Fixture.key("/p/b"))
+        let all = await page(model, .all)
+        XCTAssertEqual(all, ["dup"])
+    }
+
+    // MARK: Opening
+
+    /// Opening is the one implicit unarchive, and it brings back that one
+    /// session: the rest of an archived project stays away (ADR-031).
+    func testOpeningAnArchivedSessionInAnArchivedProjectBringsBackOnlyThatSession() async {
+        let rows = twoProjects()
+        let (model, overlay, database) = makeModel(rows)
+        overlay.setArchived(true, sessionID: "a1")
+        overlay.setProjectArchived(true, key: Fixture.key("/p/a"))
+
+        model.openSessions.openSession(rows[0])
+        await settleSink()
+
+        XCTAssertFalse(overlay.isArchived("a1"))
+        XCTAssertFalse(overlay.isProjectArchived(Fixture.key("/p/a")))
+        XCTAssertTrue(overlay.isArchived("a2"), "the rest of the project stays archived")
+        XCTAssertNil(try database.sessionState("a2")?.archiveReason)
+        XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
+        XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["a1"])
+    }
+
+    /// The sink lands a run-loop turn late. Open archived A and land on B
+    /// inside one turn, and a sink that read "the active tab" would see B
+    /// twice: A stays put away despite being opened.
+    func testOpeningThenSwitchingWithinOneTurnStillUnarchivesTheOpenedSession() async {
+        let rows = twoProjects()
+        let (model, overlay, _) = makeModel(rows)
+        overlay.setArchived(true, sessionID: "a1")
+        overlay.setProjectArchived(true, key: Fixture.key("/p/a"))
+
+        model.openSessions.openSession(rows[0])   // a1
+        model.openSessions.openSession(rows[2])   // b1, now active
+        await settleSink()
+
+        XCTAssertEqual(model.openSessions.activeTab?.sessionID, "b1")
+        XCTAssertFalse(overlay.isArchived("a1"))
+        XCTAssertFalse(overlay.isProjectArchived(Fixture.key("/p/a")))
+    }
+
+    /// Index churn is not a decision: a session resumed in some other terminal
+    /// updates its file, and must stay archived.
+    func testDiskActivityDoesNotUnarchive() throws {
+        let rows = twoProjects()
+        let database = try TempleDB.inMemory()
+        let (model, overlay, _) = makeModel(rows, database: database)
+        overlay.setArchived(true, sessionID: "a1")
+        overlay.setProjectArchived(true, key: Fixture.key("/p/b"))
+
+        let summaries = ["a1", "b1"].map { id in
+            TranscriptSummary(id: id, agent: .claude,
+                locator: TranscriptLocator(host: .local, path: "/tmp/\(id).jsonl"),
+                modifiedAt: Date(timeIntervalSince1970: 500), cwd: "/changed", firstPrompt: "Changed externally")
+        }
+        model.receiveEngineSnapshot(.authorized(generation: 2, resolutions: [:],
+            summaries: Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0) }), in: database))
+
+        XCTAssertTrue(overlay.isArchived("a1"))
+        XCTAssertTrue(overlay.isProjectArchived(Fixture.key("/p/b")))
+        XCTAssertEqual(model.displayProjects.flatMap(\.sessions).map(\.id), ["a2"])
+    }
+
+    // MARK: Navigation
+
+    /// ⌘⇧Y is History in the Archived scope; it puts a floating panel away
+    /// like ⌘Y, keeps search and filters, and pressed on History already
+    /// showing Archived it goes back like ⌘Y.
+    func testCommandShiftYOpensHistoryInTheArchivedScope() {
+        let (model, _, _) = makeModel(twoProjects())
+        model.openSessions.openSession(twoProjects()[2])
+        let sessionTab = model.openSessions.activeTabID
+        model.history.query = "alpha"
+        model.history.agentFilter = .claude
+        model.toggleCommandPalette()
+
+        model.showArchived()
+        XCTAssertFalse(model.commandPalettePresented)
+        XCTAssertTrue(model.historyActive)
+        XCTAssertEqual(model.history.scope, .archived)
+        XCTAssertEqual(model.history.query, "alpha", "search is left as it is")
+        XCTAssertEqual(model.history.agentFilter, .claude)
+
+        model.showArchived()
+        XCTAssertEqual(model.openSessions.activeTabID, sessionTab, "again on Archived: back, like ⌘Y")
+        XCTAssertNotNil(model.openSessions.historyTab)
+
+        model.toggleHistory()
+        model.history.scope = .all
+        model.showArchived()
+        XCTAssertTrue(model.historyActive, "on History in another scope it switches scope and stays")
+        XCTAssertEqual(model.history.scope, .archived)
+    }
+
+    /// The app's tab moving off History cancels what History recorded, in
+    /// the same call.
+    func testActivatingAnotherTabCancelsRecordedCommandsAtOnce() async throws {
+        let (model, _, _) = makeModel(twoProjects())
+        _ = await page(model, .all)
+        model.openSessions.openHistory()
+        var held: CheckedContinuation<Void, Never>?
+        var holding = true
+        model.history.beforeInstall = {
+            guard holding else { return }
+            await withCheckedContinuation { held = $0 }
+        }
+        model.history.query = "alpha"
+        while held == nil { await Task.yield() }
+        model.history.openSelected()
+        XCTAssertEqual(model.history.waitingCommandCount, 1)
+
+        model.openSessions.openSession(twoProjects()[2])
+        XCTAssertEqual(model.history.waitingCommandCount, 0, "cancelled by the activation itself")
+
+        holding = false
+        held?.resume()
+        await model.history.settle()
+        XCTAssertEqual(model.openSessions.tabs.filter { $0.kind == .session }.compactMap(\.sessionID), ["b1"])
+    }
+
+    /// A Restore whose every membership changed since the page was drawn
+    /// says so, offers no Undo, and leaves ⌘Z to the action before it.
+    func testARestoreThatRestoresNothingSaysSoAndOffersNoUndo() async throws {
+        let rows = [Fixture.row("a1", project: "/p/a", updated: 40), Fixture.row("z", project: "/p/z", updated: 10)]
+        let (model, overlay, _) = makeModel(rows)
+        overlay.setProjectArchived(true, key: Fixture.key("/p/a"))
+        _ = await page(model)
+        let shown = try XCTUnwrap(row(model, "a1"))
+        let undo = undoManager()
+        undo.beginUndoGrouping()
+        model.archiveSession("z", undoManager: undo)
+        undo.endUndoGrouping()
+
+        XCTAssertEqual(overlay.leave([SessionKey(id: "a1", host: .local)]), ["a1"])
+        _ = overlay.join("a1", via: .imported, agent: .claude, core: SessionCore(directory: "/p/y"))
+        // As in the app: the event's group is only opened by a registration.
+        model.history.restore([shown], undoManager: undo)
+
+        XCTAssertEqual(model.history.notice,
+                       HistoryModel.Notice(text: "Nothing to restore; it changed since the list loaded.", offersUndo: false))
+        XCTAssertEqual(undo.undoActionName, "Archive Session", "nothing of the restore's on the stack")
+        undo.undo()
+        XCTAssertFalse(overlay.isArchived("z"), "⌘Z undoes the action before it")
+    }
+
+    /// A Restore that restores some of what it was given announces the real
+    /// count.
+    func testAPartlySkippedRestoreAnnouncesTheRealCount() async throws {
+        let rows = [Fixture.row("a1", project: "/p/a", updated: 40), Fixture.row("a2", project: "/p/a", updated: 30)]
+        let (model, overlay, _) = makeModel(rows)
+        overlay.setProjectArchived(true, key: Fixture.key("/p/a"))
+        _ = await page(model)
+        let shown = try ["a1", "a2"].map { try XCTUnwrap(row(model, $0)) }
+        XCTAssertEqual(overlay.leave([SessionKey(id: "a2", host: .local)]), ["a2"])
+        _ = overlay.join("a2", via: .imported, agent: .claude, core: SessionCore(directory: "/p/y"))
+        let undo = undoManager()
+
+        undo.beginUndoGrouping()
+        model.history.restore(shown, undoManager: undo)
+        undo.endUndoGrouping()
+
+        XCTAssertEqual(model.history.notice, HistoryModel.Notice(text: "1 session restored", offersUndo: true))
+        XCTAssertFalse(overlay.isArchived("a1"))
+        XCTAssertEqual(undo.undoActionName, "Restore Session")
+        undo.undo()
+        XCTAssertEqual(model.history.notice?.text, "Restore undone")
+        undo.redo()
+        XCTAssertEqual(model.history.notice, HistoryModel.Notice(text: "1 session restored", offersUndo: true))
+    }
+
+    /// Every bridge into History clears the "Archived just now" chip, and
+    /// ⌘K's "Search history for…" asks in All with no leftover filters.
+    func testBridgesIntoHistoryClearTheChipAndTheSearchBridgeAsksAll() {
+        let (model, _, _) = makeModel(twoProjects())
+        let chip = HistoryModel.JustArchivedChip(memberships: [MembershipRef(id: "a1", host: .local, incarnation: "i")])
+        model.history.justArchivedChip = chip
+        model.showInHistory(project: Fixture.key("/p/b"))
+        XCTAssertNil(model.history.justArchivedChip)
+        model.history.justArchivedChip = chip
+        model.showInHistory(sessionID: "a1")
+        XCTAssertNil(model.history.justArchivedChip)
+        model.history.justArchivedChip = chip
+        model.history.scope = .archived
+        model.history.agentFilter = .codex
+        model.history.projectKeyFilter = Fixture.key("/p/a")
+        model.searchHistory("alpha")
+        XCTAssertNil(model.history.justArchivedChip)
+        XCTAssertEqual(model.history.scope, .all)
+        XCTAssertNil(model.history.agentFilter)
+        XCTAssertNil(model.history.projectKeyFilter)
+        XCTAssertEqual(model.history.query, "alpha")
+    }
+
+    /// Navigating while the search is still debouncing: the typing does not
+    /// land on the page the bridge opened.
+    func testABridgeInsideTheDebounceWindowDropsThePendingTyping() async {
+        let (model, _, _) = makeModel(twoProjects())
+        model.history.queryDebounce = 0.05
+        model.history.draft = "zzz"
+        model.showInHistory(project: Fixture.key("/p/a"))
+        XCTAssertEqual(model.history.draft, "")
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(model.history.query, "")
+    }
+
+    /// Restore carries the membership the row showed: a session that left
+    /// and joined again (into another archived project) after the page was
+    /// drawn is not the one restored, and its new project is left alone.
+    func testRestoreFromAStalePageSkipsAMembershipThatLeftAndJoinedAgain() async throws {
+        let rows = [Fixture.row("a1", project: "/p/a", updated: 40), Fixture.row("x1", project: "/p/x", updated: 20)]
+        let (model, overlay, database) = makeModel(rows)
+        overlay.setProjectArchived(true, key: Fixture.key("/p/a"))
+        _ = await page(model)
+        let shown = try XCTUnwrap(row(model, "a1"))
+
+        // Before the page catches up (no await in between).
+        XCTAssertEqual(overlay.leave([SessionKey(id: "a1", host: .local)]), ["a1"])
+        _ = overlay.join("a1", via: .imported, agent: .claude, core: SessionCore(directory: "/p/x"))
+        overlay.setProjectArchived(true, key: Fixture.key("/p/x"))
+        let rejoined = try XCTUnwrap(database.sessionState("a1"))
+        model.history.restore([shown], undoManager: nil)
+
+        XCTAssertEqual(try database.sessionState("a1"), rejoined, "the new membership is not the one shown")
+        XCTAssertTrue(overlay.isProjectArchived(Fixture.key("/p/x")))
+        XCTAssertFalse(try XCTUnwrap(database.sessionState("x1")).archived, "its project is not taken apart")
+        XCTAssertTrue(overlay.isProjectArchived(Fixture.key("/p/a")))
+    }
+
+    /// Redo restores the memberships the Restore restored. One that left and
+    /// joined again in between (here into another archived project) is not
+    /// it: Redo leaves it, and that project's mask, alone.
+    func testRedoSkipsAMembershipThatLeftAndJoinedAgainSinceTheUndo() async throws {
+        let rows = [Fixture.row("a1", project: "/p/a", updated: 40), Fixture.row("a2", project: "/p/a", updated: 30),
+                    Fixture.row("x1", project: "/p/x", updated: 20)]
+        let (model, overlay, database) = makeModel(rows)
+        overlay.setProjectArchived(true, key: Fixture.key("/p/a"))
+        _ = await page(model)
+        let undo = undoManager()
+        undo.beginUndoGrouping()
+        model.history.restore([try XCTUnwrap(row(model, "a1"))], undoManager: undo)
+        undo.endUndoGrouping()
+        XCTAssertFalse(overlay.isProjectArchived(Fixture.key("/p/a")))
+        undo.undo()
+        XCTAssertTrue(overlay.isProjectArchived(Fixture.key("/p/a")))
+
+        XCTAssertEqual(overlay.leave([SessionKey(id: "a1", host: .local)]), ["a1"])
+        _ = overlay.join("a1", via: .imported, agent: .claude, core: SessionCore(directory: "/p/x"))
+        overlay.setProjectArchived(true, key: Fixture.key("/p/x"))
+        let rejoined = try XCTUnwrap(database.sessionState("a1"))
+
+        XCTAssertTrue(undo.canRedo)
+        undo.redo()
+
+        XCTAssertEqual(try database.sessionState("a1"), rejoined, "the new membership is not the one restored")
+        XCTAssertTrue(overlay.isProjectArchived(Fixture.key("/p/x")), "its project's mask is not taken apart")
+        XCTAssertFalse(try XCTUnwrap(database.sessionState("x1")).archived)
+        XCTAssertTrue(overlay.isProjectArchived(Fixture.key("/p/a")))
+        XCTAssertFalse(try XCTUnwrap(database.sessionState("a2")).archived)
+    }
+
+    /// "Show in History" from a sidebar project header: every session of the
+    /// project, archived ones one segment away.
+    func testShowInHistoryForAProjectFiltersToIt() {
+        let (model, _, _) = makeModel(twoProjects())
+        model.history.query = "zzz"
+        model.history.scope = .notInTemple
+        model.showInHistory(project: Fixture.key("/p/a"))
+        XCTAssertTrue(model.historyActive)
+        XCTAssertEqual(model.history.projectKeyFilter, Fixture.key("/p/a"))
+        XCTAssertEqual(model.history.scope, .all)
+        XCTAssertEqual(model.history.query, "")
+    }
+
+    /// The chip filters exactly the given memberships, clears on any scope
+    /// pick, and is Esc's second rung.
+    func testTheArchivedJustNowChipFiltersExactlyItsMemberships() async throws {
+        let (model, overlay, database) = makeModel(twoProjects())
+        for id in ["a1", "a2", "b1"] { overlay.setArchived(true, sessionID: id) }
+        let refs = try ["a1", "b1"].map { id in
+            MembershipRef(id: id, host: .local, incarnation: try XCTUnwrap(database.sessionState(id)?.incarnation))
+        }
+        let history = model.history
+        history.justArchivedChip = .init(memberships: Set(refs))
+        let chipped = await page(model)
+        XCTAssertEqual(chipped, ["a1", "b1"])
+        XCTAssertTrue(history.isNarrowed)
+
+        history.pickScope(.archived)
+        XCTAssertNil(history.justArchivedChip, "picking any segment, the same one included, clears it")
+        await history.settle()
+        XCTAssertEqual(history.visibleRows.map(\.sessionID), ["a1", "a2", "b1"])
+
+        history.justArchivedChip = .init(memberships: Set(refs))
+        history.query = ""
+        XCTAssertEqual(history.escape(), .clearedChip)
+        XCTAssertNil(history.justArchivedChip)
+
+        // A membership that left and joined again is not the one archived.
+        history.justArchivedChip = .init(memberships: [MembershipRef(id: "a2", host: .local, incarnation: "another")])
+        await history.settle()
+        XCTAssertTrue(history.visibleRows.isEmpty)
+    }
+
+    // MARK: Rows
+
+    /// Every status and condition a member can be in, with its words.
+    func testStandingTagsAndTooltipsForEveryKindOfArchive() {
+        let builder = HistoryRowBuilder()
+        let day = Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: 2, hour: 12))!
+        func member(_ id: String, archived: Bool = false, reason: ArchiveReason? = nil, at: Date? = nil,
+                    kept: Date? = nil, directory: String? = "/x/raven", resolution: MemberResolution? = nil,
+                    agent: Agent? = .claude) -> Session {
+            Session(state: SessionState(id: id, pinned: false, archived: archived, customName: nil, color: nil,
+                generatedTitle: nil, lastOpenedAt: nil, joinedVia: .opened, joinedAt: day, agent: agent,
+                directory: directory, title: id, incarnation: "i", archiveReason: reason, keptAt: kept,
+                archivedAt: at), resolution: resolution)
+        }
+        var context = HistoryRowBuilder.Context()
+        func build(_ session: Session) -> HistoryRow {
+            builder.row(member: session, catalog: nil, conflict: nil, context: context)
+        }
+
+        let user = build(member("user", archived: true, at: day))
+        XCTAssertEqual(user.standing, .archived(.byUser(at: day)))
+        XCTAssertEqual(user.statusTooltip, "You archived it on Oct 2. Restore puts it back in the sidebar.")
+        XCTAssertNil(user.conditionTag, "the user's own archive is not a condition")
+        XCTAssertEqual(build(member("old", archived: true)).statusTooltip,
+                       "You archived it. Restore puts it back in the sidebar.", "no date before v12")
+
+        let transcript = build(member("t", archived: true, reason: .transcriptMissing))
+        XCTAssertEqual(transcript.standing, .archived(.byTemple(.transcriptMissing)))
+        XCTAssertEqual(transcript.conditionTag, .noTranscript)
+        XCTAssertEqual(transcript.statusTooltip,
+                       "No transcript on disk carries this session, so Temple archived it; it can't be resumed. Restore puts it back in the sidebar anyway.")
+        XCTAssertEqual(transcript.tagTooltip, transcript.statusTooltip)
+        XCTAssertFalse(transcript.canResume)
+
+        let folder = build(member("f", archived: true, reason: .folderMissing))
+        XCTAssertEqual(folder.conditionTag, .noFolder)
+        XCTAssertEqual(folder.statusTooltip,
+                       "The folder /x/raven no longer exists, so Temple archived it. Restore puts it back in the sidebar anyway.")
+        XCTAssertFalse(folder.canResume)
+
+        context.archivedProjects = [Fixture.key("/x/raven")]
+        let masked = build(member("m"))
+        XCTAssertEqual(masked.standing, .archived(.withProject(Fixture.key("/x/raven"))))
+        XCTAssertTrue(masked.projectArchived)
+        XCTAssertTrue(masked.canResume, "opening restores it on the way")
+        context.archivedProjects = []
+
+        let kept = build(member("k", kept: day, resolution: .confirmedAbsent))
+        XCTAssertEqual(kept.standing, .inTemple)
+        XCTAssertEqual(kept.conditionTag, .noTranscript)
+        XCTAssertEqual(kept.tagTooltip,
+                       "No transcript on disk carries this session, so it can't be resumed. You restored it, so it stays in the sidebar.")
+        XCTAssertEqual(build(member("n", resolution: .confirmedAbsent)).tagTooltip,
+                       "The session file is no longer on disk. Opening it will fail; archive it from here.")
+        XCTAssertEqual(kept.statusTooltip, "In Temple · opened Oct 2")
+
+        context.folders = [Fixture.key("/x/raven"): .missing]
+        let noFolder = build(member("nf"))
+        XCTAssertEqual(noFolder.conditionTag, .noFolder)
+        XCTAssertEqual(noFolder.tagTooltip, "The folder /x/raven no longer exists. Opening it starts nothing.")
+        context.folders = [Fixture.key("/x/raven"): .unknown]
+        XCTAssertNil(build(member("unknown")).conditionTag, "unknown is not missing")
+
+        // An unknown reason from a newer build still reads as Temple's.
+        XCTAssertEqual(build(member("future", archived: true, reason: ArchiveReason(rawValue: "from_the_future"))).statusTooltip,
+                       "Temple archived it. Restore puts it back in the sidebar.")
+    }
+
+    /// Follow-up 2, and the cross-branch rule: the engine does not watch
+    /// archived rows, so a user's archived row has "No transcript" only when
+    /// a listing proven complete for its agent found no file for it. A file
+    /// that was found but did not read (unreadable, mismatched) is a
+    /// candidate, not an absence; another agent's listing proves nothing.
+    func testAnArchivedMembersTranscriptIsMissingOnlyWhenACompletedListingFoundNoFile() {
+        let builder = HistoryRowBuilder()
+        let member = Session(state: SessionState(id: "away", pinned: false, archived: true, customName: nil, color: nil,
+            generatedTitle: nil, lastOpenedAt: nil, joinedVia: .opened, joinedAt: nil, agent: .claude,
+            directory: "/p", title: "Away", incarnation: "i"))
+        var context = HistoryRowBuilder.Context()
+        func missing() -> Bool { builder.row(member: member, catalog: nil, conflict: nil, context: context).transcriptMissing }
+        XCTAssertFalse(missing(), "no evidence today: nothing is proven")
+        context.coverage = [.local: CatalogCoverage(candidates: [.codex: []])]
+        XCTAssertFalse(missing(), "another agent's listing proves nothing about a Claude session")
+        context.coverage = [.local: CatalogCoverage(candidates: [.claude: ["away"]])]
+        XCTAssertFalse(missing(), "a candidate that did not read is not absence")
+        context.coverage = [HostID(rawValue: "box"): CatalogCoverage(candidates: [.claude: []])]
+        XCTAssertFalse(missing(), "another host's listing proves nothing")
+        context.coverage = [.local: CatalogCoverage(candidates: [.claude: ["someone-else"], .codex: ["away"]])]
+        let proven = builder.row(member: member, catalog: nil, conflict: nil, context: context)
+        XCTAssertTrue(proven.transcriptMissing, "the Claude file was removed; a Codex file with its id hides nothing")
+        XCTAssertEqual(proven.conditionTag, .noTranscript)
+        XCTAssertFalse(proven.canResume)
+        XCTAssertEqual(proven.tagTooltip,
+                       "No transcript on disk carries this session, so it can't be resumed. Restore puts it back in the sidebar anyway.")
+    }
+
+    /// The same rule through a read's completion: unreadable and mismatched
+    /// candidates are not absent, a removed file is; summaries the read did
+    /// not deliver leave only inside the completed listing.
+    func testACompletedReadsCandidatesDecideAbsenceNotItsSummaries() async {
+        func member(_ id: String, agent: Agent = .claude) -> Session {
+            Session(state: SessionState(id: id, pinned: false, archived: true, customName: nil, color: nil,
+                generatedTitle: nil, lastOpenedAt: nil, joinedVia: .opened, joinedAt: nil, agent: agent,
+                directory: "/p", title: id, incarnation: "i-\(id)"))
+        }
+        let outside = { (id: String, agent: Agent) in
+            TranscriptSummary(id: id, agent: agent, locator: TranscriptLocator(host: .local, path: "/tmp/\(id)"),
+                              modifiedAt: Date(timeIntervalSince1970: 100), cwd: "/p", firstPrompt: id)
+        }
+        let projector = HistoryProjector()
+        _ = await projector.apply(HistoryProjectionInput(
+            catalog: [.upsert([outside("stale", .claude), outside("codex-stale", .codex)], noise: [], folders: [:])],
+            members: [member("unreadable"), member("mismatched"), member("removed"), member("codex", agent: .codex)]))
+        let completion = CatalogCompletion(seen: [], coverage: [
+            .local: CatalogCoverage(candidates: [.claude: ["unreadable", "mismatched", "stale"]])])
+        let snapshot = await projector.apply(HistoryProjectionInput(catalog: [.complete(completion)]))
+        let rows = Dictionary(uniqueKeysWithValues: (snapshot?.allRows ?? []).map { ($0.sessionID, $0) })
+        XCTAssertEqual(rows["unreadable"]?.transcriptMissing, false)
+        XCTAssertEqual(rows["mismatched"]?.transcriptMissing, false)
+        XCTAssertEqual(rows["removed"]?.transcriptMissing, true)
+        XCTAssertEqual(rows["codex"]?.transcriptMissing, false, "Codex's listing did not complete")
+        XCTAssertNil(rows["stale"], "no usable summary this read: the outside row goes")
+        XCTAssertNotNil(rows["codex-stale"], "outside the completed listing it stays")
+    }
+
+    /// Absence is the host side's own rule (`provesNoTranscript`), in its
+    /// candidate spelling (`TranscriptFormat.candidateKey`): an id spelled
+    /// differently that the agent reads as the same session is not absent.
+    func testCandidateIDsFollowTheHostsSpelling() {
+        let spell = { (agent: Agent, id: String) in TranscriptFormats.format(for: agent).candidateKey(id) }
+        let coverage = CatalogCoverage(candidates: [.codex: [spell(.codex, "ABC-123")], .claude: [spell(.claude, "Mixed-Case")]])
+        XCTAssertFalse(coverage.provesAbsent("abc-123", agent: .codex))
+        XCTAssertFalse(coverage.provesAbsent("ABC-123", agent: .codex))
+        XCTAssertFalse(coverage.provesAbsent("Mixed-Case", agent: .claude))
+        XCTAssertTrue(coverage.provesAbsent("other", agent: .claude))
+        XCTAssertEqual(coverage.completedAgents, [.codex, .claude])
+    }
+    /// Members, archived ones included, are on the page from SQLite before
+    /// any disk read lands.
+    func testMembersAreOnThePageBeforeAnyDiskRead() async {
+        let (model, overlay, _) = makeModel(twoProjects())
+        overlay.setArchived(true, sessionID: "a2")
+        model.history.catalog = { AsyncStream { _ in } }   // never answers
+        model.history.activate()
+        await model.history.settle()
+        XCTAssertTrue(model.history.isReading)
+        XCTAssertEqual(model.history.allRows.map(\.sessionID), ["a1", "a2", "b1"])
+        model.history.scope = .archived
+        await model.history.settle()
+        XCTAssertEqual(model.history.visibleRows.map(\.sessionID), ["a2"])
+        model.history.deactivate()
+    }
+
+    /// The page draws from prepared rows: building every row's inputs and
+    /// the bar's summary reads no overlay, and re-sending unchanged members
+    /// installs nothing.
+    func testThePageReadsNoOverlayAndAnUnchangedProjectionInstallsNothing() async {
+        let (model, overlay, _) = makeModel(twoProjects())
+        overlay.setArchived(true, sessionID: "b1")
+        _ = await page(model, .all)
+        let history = model.history
+        history.selectAll()
+        let lookups = history.overlayLookups
+        let installs = history.rebuildCount
+        var published = 0
+        let subscription = history.objectWillChange.sink { published += 1 }
+        defer { subscription.cancel() }
+
+        for row in history.visibleRows { _ = history.rowInputs(row) }
+        _ = history.selectionSummary
+        _ = history.countsLine
+        _ = history.filteredProjectIsArchived
+        _ = history.bottomBar
+        XCTAssertEqual(history.overlayLookups, lookups, "no overlay read while drawing")
+
+        await history.rebuild()
+        XCTAssertEqual(history.rebuildCount, installs)
+        XCTAssertEqual(published, 0)
     }
 }
