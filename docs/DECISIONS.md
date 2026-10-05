@@ -1158,7 +1158,8 @@ files on this Mac, which a session on another machine will never have.
   grown on the same inode stays loaded until one of those happens).
   `index-cache.json` is gone (removed once, so an older build installed
   alongside keeps its own): SQLite is the fast launch path, and the sidebar
-  draws from it before the engine runs.
+  draws from it before the engine runs. (History's catalog keeps a cache of
+  its own, for browsing only: ADR-032.)
 - **One primitive seam per host.** `HostSessionSource` lists and stats
   (`locate`), reads one transcript (`read`, identity and facts with the
   signature the read saw), reports changes (`changes`, with a coverage reset
@@ -1362,3 +1363,108 @@ CLI or the user's own deletion did, which Temple records". **Amends ADR-029:**
 proves them gone and a week has passed; then they are archived, labelled, and
 come back when a person restores them." The `v12-project-host` migration it
 reserved is `v13-project-host`.
+
+---
+
+## ADR-032 — History's catalog cache
+**Date:** 2026-10-05 · **Status:** Accepted; amends ADR-029
+
+History read every transcript on disk every time it was shown. On synthetic
+stores shaped like real ones (about 280 KB per transcript, half Claude, half
+Codex), a full read of 10,000 transcripts took 67–110 s and one of 2,000 took
+14–23 s, and closing the tab threw the result away, so the next open paid it
+again. ADR-029 had just retired `index-cache.json`, and for a good reason: the
+sidebar drew from it, so a stale entry was a wrong sidebar, and SQLite had
+become the launch path. A catalog cache had to be something that file was not.
+
+**Decisions.**
+
+- **The host source keeps what its catalog read.** `LocalSessionSource` owns a
+  `CatalogSummaryCache`, as long-lived as the source (the app), so closing and
+  reopening History, or refreshing it, parses only what changed. One entry per
+  transcript the catalog read, keyed by agent, store root (its normalized path
+  and the inode it resolves to: a moved store or another volume at the path is
+  another root, and drops everything kept for the old one) and normalized
+  transcript path; each holds the summary and the stamp its read saw.
+- **A stamp is the whole validation, and it includes the change time.** Size,
+  modification time and change time to the nanosecond, and the inode, from
+  one `lstat`. An entry answers only for exactly that stamp. The change time
+  is what makes this safe: it moves on every write, truncation, chmod or
+  rename onto the path, and no ordinary process can set it, so a same-size
+  rewrite that puts the old modification time back is still seen. Not the
+  device, which is not stable across reboots on every volume.
+- **Pick first, then look up; keep only what verified.** The catalog chooses
+  each thread's file by member resolution's rule (`TranscriptCandidates`)
+  before anything kept is consulted, so a new revert is read at once and an
+  older rollout's entry stands in only when the rule picks it again. Only a
+  read whose identity verified and whose stamps before and after agreed is
+  kept. An unreadable, mismatched or incomplete file keeps nothing and loses
+  what was kept for it; it is read again every time and shows nothing, never
+  its old summary or an older rollout. A verified file whose bytes state no
+  session (a Codex subagent rollout) is kept as such, so it is not reparsed.
+- **Shared inputs are applied, never kept.** `TranscriptFormat.withShared` is
+  the one way facts carry Codex's `history.jsonl` and `session_index.jsonl`
+  fields, so an entry is kept without them and every use applies the current
+  ones. Codex appends to `history.jsonl` on every prompt; keying entries on
+  its signature would have reparsed every rollout after any Codex use. A
+  shared-title change now costs no transcript read at all.
+- **Absence needs completed coverage, in the catalog too.** A catalog ends
+  with `.completed(agents:)`, naming only agents whose listing finished and
+  whose every thread was decided. A failed listing, a store root that is not
+  there (ADR-030), a cancelled read and a lost transport complete nothing.
+  The cache forgets a path, and History drops a row it showed before, only
+  within completed coverage; until this, History pruned every row a read had
+  not seen, so one failed store emptied that agent's history from the page.
+- **On disk: `history-catalog-cache.sqlite`, in the state directory.** The
+  first History read after a relaunch takes every unchanged summary from it.
+  This is safe where `index-cache.json` was not, for four reasons. It caches
+  summaries of external transcripts for browsing and nothing else: the
+  catalog is its only reader, and it holds no membership, never fills a row
+  and never populates `session_state`; membership, member titles and archive
+  state always come from current rows. Every entry is checked against the
+  file's current stamp before use, exactly like one kept in memory, so a
+  stale entry costs a parse, never a wrong row. It is disposable: a file of
+  an older layout or older parsers (`schemaVersion`,
+  `TranscriptFormats.factsVersion`, which **moves with any change to what a
+  format's facts produce**) or that cannot be read is deleted and rebuilt;
+  one written by a newer build is left alone and this process keeps its
+  summaries in memory only. And it is written only with what a read changed,
+  in one transaction when the read ends: an unchanged refresh writes nothing,
+  and there is no timer (`index-cache.json` rewrote 2.2 MB every five seconds).
+  It loads off the main thread while the stores are listed.
+- **The seam carries the contract, not the cache.** Caching is host-internal;
+  `HostSessionSource.catalog` states what any source's catalog must honour
+  (pick before lookup, a kept summary only under the stamp it was read at,
+  shared inputs applied fresh, `.completed` only for completed listings), and
+  `withShared` and `factsVersion` live in `TempleCore/Formats` so a remote
+  source caches the same way. The contract suite checks it against the local
+  source and `FakeHostSource`, whose stamp carries a change counter as a
+  remote host's `stat` would carry a change time.
+- **Cold reads got cheaper too.** Parsers keep the last message's raw text and
+  clean it once, not once per message; `cleanTitle` stops collapsing a long
+  message once its capped result is decided; and lines are split on bytes,
+  not by walking grapheme clusters. All three are byte-identical to before:
+  the format golden file was re-recorded with the parsers as they stood
+  before this change, with new long-Unicode fixtures, and randomized parity
+  tests pin `cleanTitle` and the line splitter against the old code.
+
+**Known limitations, kept:** a stamp cannot see a change made with the system
+clock set back to the old change time (root only), or, on a filesystem that
+reports no change time, a same-size rewrite within the modification time's
+resolution. The first read after a relaunch still lists every store before it
+shows anything (0.1 s at 2,000 transcripts, 0.4 s at 10,000); showing the
+last snapshot at once is History's to do, not the catalog's.
+
+**Measured** with a release-built harness calling `LocalSessionSource.catalog`
+on the synthetic stores (`/private/tmp/history-perf`, one process per launch,
+caches warm, ranges over three launches; "before" is the same harness on the
+previous commit, whose every read is a full parse):
+
+| | 2,000 transcripts | 10,000 transcripts |
+|---|---|---|
+| full read, before | 13.6–19.7 s | 67.2–104.0 s |
+| first launch, cold (first batch / whole) | 0.12–0.15 s / 0.40–0.51 s | 0.43 s / 1.98–2.35 s |
+| refresh, one transcript changed | 0.07 s, 1 parse | 0.36–0.38 s, 1 parse |
+| refresh, nothing changed | 0.07 s, 0 parses | 0.34 s, 0 parses |
+| relaunch, first read from disk (first batch / whole) | 0.10 s / 0.11 s, 0 parses | 0.43–0.44 s / 0.49–0.50 s, 0 parses |
+| disk cache size | 1.3 MB | 6.5 MB |

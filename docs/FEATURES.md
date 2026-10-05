@@ -312,7 +312,10 @@ through which the others join.
   ("Updated 2 min ago · Refresh"). Temple's own rows take the live index's
   copy, so their titles are current. Noise (a folder that is gone, `/`, Codex
   exec/SDK runs) stays hidden. A store that cannot be read is named in a
-  banner with its error as thrown, and the other store's sessions still show.
+  banner with its error as thrown, and the other store's sessions still show,
+  as do the rows it showed before: only a store that was listed completely
+  can say a session is gone. A read parses only transcripts that changed
+  since Temple last read them, across relaunches too (ADR-032).
 - **Rows.** One line per session, grouped under sticky Today / Yesterday /
   date headers: time, agent badge, displayed title, the activity dot when a
   tab is open, project and git branch, and a status column. Temple's rows
