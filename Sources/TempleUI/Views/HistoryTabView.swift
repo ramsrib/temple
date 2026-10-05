@@ -26,7 +26,8 @@ struct HistoryTabView: View {
     @Environment(\.undoManager) private var undoManager
 
     @FocusState private var searchFocused: Bool
-    /// The page's width; nil until measured (`PageWidthMemory`).
+    /// The detail pane's width — what it offers, never what the page's own
+    /// content would like — nil until measured (`PageWidthMemory`).
     @State private var width: CGFloat? = PageWidthMemory.last
 
     /// The page caps at this width and centres beyond it.
@@ -40,19 +41,47 @@ struct HistoryTabView: View {
     /// of it, not merely onto the screen underneath it.
     static let dayHeaderHeight: CGFloat = 30
 
-    private var compact: Bool { (width ?? PageChrome.pageWidth) < 780 }
+    /// How the toolbar lays out, by the pane's width: one row when it fits
+    /// (1000 pt and up); else search on its own row with the scope and the
+    /// filters under it; under 680 pt the two filter menus become one. The
+    /// compact scope control is 344 pt, the narrowest at which "Not in
+    /// Temple" is not cut, and 680 is where it and both menus still fit.
+    enum Tier: Equatable { case narrow, compact, wide }
+
+    static func tier(paneWidth: CGFloat) -> Tier {
+        paneWidth < 680 ? .narrow : paneWidth < 1000 ? .compact : .wide
+    }
+
+    /// The project and branch column of a row, by the pane's width: hidden
+    /// under 600 pt, a fixed width otherwise, so it truncates before the
+    /// title does and never pushes the status column out.
+    static func metaWidth(paneWidth: CGFloat) -> CGFloat? {
+        paneWidth < 600 ? nil : paneWidth < 1000 ? 120 : 180
+    }
+
+    private var paneWidth: CGFloat { width ?? PageChrome.pageWidth }
+    private var tier: Tier { Self.tier(paneWidth: paneWidth) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            column(top, inset: Self.gutter)
-            content
+        // The pane is measured from outside the page, by what it offers: a
+        // reader in the page's own background reported the page's inflated
+        // width once its content overflowed, the toolbar never compacted, and
+        // the oversized page pushed the split view (and the sidebar) left.
+        // Clipped, so nothing on the page can ever widen the pane.
+        GeometryReader { pane in
+            VStack(alignment: .leading, spacing: 0) {
+                column(top, inset: Self.gutter)
+                content
+            }
+            .frame(width: pane.size.width, height: pane.size.height, alignment: .top)
+            .clipped()
+            .onAppear { recordWidth(pane.size.width) }
+            .onChange(of: pane.size.width) { _, new in recordWidth(new) }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         // The split view's own detail grey is not windowBackgroundColor, which
         // the sticky day headers are painted in: in dark the headers showed as
         // a lighter band. Paint the page so the two agree by construction.
         .background(Palette.panelBackground)
-        .measuringPageWidth($width)
         .onAppear {
             history.activate()
             FieldFocus.claim { searchFocused = true }
@@ -89,6 +118,11 @@ struct HistoryTabView: View {
         } message: { failure in
             Text(failure.message)
         }
+    }
+
+    private func recordWidth(_ measured: CGFloat) {
+        PageWidthMemory.last = measured
+        if width != measured { width = measured }
     }
 
     /// One centred, capped column — the header's and the list's widths agree,
@@ -153,27 +187,32 @@ struct HistoryTabView: View {
 
     @ViewBuilder
     private var toolbar: some View {
-        if compact {
-            VStack(alignment: .leading, spacing: 8) {
-                searchField
-                HStack(spacing: 8) {
-                    scopePicker
-                    Spacer(minLength: 8)
-                    agentMenu
-                    projectMenu
-                }
-            }
-        } else {
+        switch tier {
+        case .wide:
             HStack(spacing: 10) {
-                searchField
-                scopePicker
-                agentMenu
-                projectMenu
+                searchField(minWidth: 220)
+                scopePicker(width: 390)
+                agentMenu(width: 130)
+                projectMenu(width: 150)
+            }
+        case .compact, .narrow:
+            VStack(alignment: .leading, spacing: 8) {
+                searchField(minWidth: 160)
+                HStack(spacing: 8) {
+                    scopePicker(width: 344)
+                    Spacer(minLength: 8)
+                    if tier == .narrow {
+                        filterMenu
+                    } else {
+                        agentMenu(width: 120)
+                        projectMenu(width: 140)
+                    }
+                }
             }
         }
     }
 
-    private var searchField: some View {
+    private func searchField(minWidth: CGFloat) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 12))
@@ -199,53 +238,76 @@ struct HistoryTabView: View {
         }
         .padding(.horizontal, 9)
         .frame(height: 28)
-        .frame(maxWidth: .infinity)
+        .frame(minWidth: minWidth, maxWidth: .infinity)
         .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
     /// Picking any segment clears the "Archived just now" chip.
-    private var scopePicker: some View {
+    private func scopePicker(width: CGFloat) -> some View {
         FlatSegmentedPicker(label: "Show",
                             selection: Binding(get: { history.scope }, set: { history.pickScope($0) }),
                             options: Array(HistoryScope.allCases),
-                            optionTitle: { $0.label }, width: 390)
+                            optionTitle: { $0.label }, width: width)
     }
 
     /// Counts are over every row, not the filtered view.
-    private var agentMenu: some View {
-        Menu {
-            Picker("", selection: $history.agentFilter) {
-                Text("Any agent").tag(Agent?.none)
-                ForEach(Agent.allCases, id: \.self) { agent in
-                    Text("\(agent.displayName) (\((history.agentCounts[agent] ?? 0).formatted()))")
-                        .tag(Agent?.some(agent))
-                }
+    private var agentPicker: some View {
+        Picker("", selection: $history.agentFilter) {
+            Text("Any agent").tag(Agent?.none)
+            ForEach(Agent.allCases, id: \.self) { agent in
+                Text("\(agent.displayName) (\((history.agentCounts[agent] ?? 0).formatted()))")
+                    .tag(Agent?.some(agent))
             }
-            .pickerStyle(.inline)
-            .labelsHidden()
-        } label: {
+        }
+        .pickerStyle(.inline)
+        .labelsHidden()
+    }
+
+    private var projectPicker: some View {
+        Picker("", selection: $history.projectKeyFilter) {
+            Text("Any project").tag(ProjectKey?.none)
+            ForEach(history.projects, id: \.key) { project in
+                Text("\(project.displayName) — \(project.parentFolder)")
+                    .tag(ProjectKey?.some(project.key))
+            }
+        }
+        .pickerStyle(.inline)
+        .labelsHidden()
+    }
+
+    private func agentMenu(width: CGFloat) -> some View {
+        Menu { agentPicker } label: {
             Text(history.agentFilter?.displayName ?? "Any agent")
         }
         .menuIndicator(.visible)
-        .modifier(FlatToolbarMenu(width: 130))
+        .modifier(FlatToolbarMenu(width: width))
     }
 
-    private var projectMenu: some View {
-        Menu {
-            Picker("", selection: $history.projectKeyFilter) {
-                Text("Any project").tag(ProjectKey?.none)
-                ForEach(history.projects, id: \.key) { project in
-                    Text("\(project.displayName) — \(project.parentFolder)")
-                        .tag(ProjectKey?.some(project.key))
-                }
-            }
-            .pickerStyle(.inline)
-            .labelsHidden()
-        } label: {
+    private func projectMenu(width: CGFloat) -> some View {
+        Menu { projectPicker } label: {
             Text(history.projectKeyFilter.map(\.displayName) ?? "Any project")
         }
         .menuIndicator(.visible)
-        .modifier(FlatToolbarMenu(width: 150))
+        .modifier(FlatToolbarMenu(width: width))
+    }
+
+    /// Under 680 pt: the agent and project menus as one, labelled with what
+    /// is filtered ("Claude Code · raven") or "Filter".
+    private var filterMenu: some View {
+        Menu {
+            Section("Agent") { agentPicker }
+            Section("Project") { projectPicker }
+        } label: {
+            Text(Self.filterLabel(agent: history.agentFilter, project: history.projectKeyFilter))
+                .lineLimit(1)
+        }
+        .menuIndicator(.visible)
+        .modifier(FlatToolbarMenu(width: 110))
+    }
+
+    static func filterLabel(agent: Agent?, project: ProjectKey?) -> String {
+        let names = [agent?.displayName, project?.displayName].compactMap { $0 }
+        return names.isEmpty ? "Filter" : names.joined(separator: " · ")
     }
 
     /// "Showing 173 of 3,812", then the chip and the archived project's
@@ -350,13 +412,14 @@ struct HistoryTabView: View {
 
     private var list: some View {
         let actions = HistoryRowActions(history: history)
+        let metaWidth = Self.metaWidth(paneWidth: paneWidth)
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                     ForEach(history.groups) { group in
                         Section {
                             ForEach(group.sessions) { session in
-                                HistoryPageRow(inputs: history.rowInputs(session), actions: actions)
+                                HistoryPageRow(inputs: history.rowInputs(session), metaWidth: metaWidth, actions: actions)
                                     .equatable()
                                     // A target reaching one header above the
                                     // row: scrolling it into view clears the
@@ -635,9 +698,11 @@ private struct HistoryRowActions {
 private struct HistoryPageRow: View, Equatable {
     @Environment(\.undoManager) private var undoManager
     let inputs: HistoryModel.RowInputs
+    /// The project and branch column's width; nil hides it (a narrow pane).
+    let metaWidth: CGFloat?
     let actions: HistoryRowActions
 
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.inputs == rhs.inputs }
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.inputs == rhs.inputs && lhs.metaWidth == rhs.metaWidth }
 
     private var session: HistoryRow { inputs.row }
     private var history: HistoryModel { actions.history }
@@ -670,7 +735,8 @@ private struct HistoryPageRow: View, Equatable {
                     if let tag = session.conditionTag {
                         Text(tag.label)
                             .font(.system(size: 11))
-                            .foregroundStyle(.tertiary)
+                            // Secondary, a step down: tertiary was too faint in dark.
+                            .foregroundStyle(Color.secondary.opacity(0.8))
                             .lineLimit(1)
                             .help(session.tagTooltip ?? "")
                     }
@@ -679,7 +745,9 @@ private struct HistoryPageRow: View, Equatable {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                meta
+                if let metaWidth {
+                    meta.frame(width: metaWidth, alignment: .leading)
+                }
             }
             .contentShape(Rectangle())
             .onTapGesture { history.click(session.id, modifier: Self.clickModifier()) }
@@ -714,10 +782,12 @@ private struct HistoryPageRow: View, Equatable {
             }
         }
         .lineLimit(1)
-        .truncationMode(.middle)
-        // No frame(maxWidth:) here: it is greedy, so the row's HStack handed
-        // this column half the leftover width and titles cut off at ~30
-        // characters beside empty space. A Text's max is its ideal width.
+        .truncationMode(.tail)
+        // A fixed width (`metaWidth`), not frame(maxWidth:) and not a layout
+        // priority: maxWidth is greedy (the row's HStack handed this column
+        // half the leftover width and titles cut off beside empty space), and
+        // layout priorities are on AGENTS.md's list of detail-pane modifiers
+        // that have broken the sidebar's titlebar inset.
     }
 
     /// The row's relationship, or its primary verb; never a condition (that

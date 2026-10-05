@@ -350,16 +350,13 @@ public final class HistoryModel: ObservableObject {
     func rowsChanged() { scheduleRebuild() }
 
     /// The header's counts: what the page lists, not what is on disk. The
-    /// three narrow scopes partition the total, so the line can say so; a
-    /// member whose transcript is gone is counted, and named.
+    /// three narrow scopes partition the total, and the line says only that;
+    /// a condition (no transcript, no folder) is the row's tag and the
+    /// sidebar notice's, not the header's.
     public var countsLine: String {
         let counts = snapshot.counts
-        var line = "\(counts.all.formatted()) sessions · \(counts.inTemple.formatted()) in Temple"
+        return "\(counts.all.formatted()) sessions · \(counts.inTemple.formatted()) in Temple"
             + " · \(counts.archived.formatted()) archived"
-        if counts.transcriptMissing > 0 {
-            line += " · \(counts.transcriptMissing.formatted()) without a transcript"
-        }
-        return line
     }
 
     private var currentMembers: [Session] {

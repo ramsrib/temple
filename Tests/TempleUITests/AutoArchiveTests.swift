@@ -203,7 +203,7 @@ final class AutoArchiveTests: XCTestCase {
         XCTAssertEqual(h.reason("gone"), .transcriptMissing)
         XCTAssertTrue(try XCTUnwrap(h.state("pinned")).pinned)
         XCTAssertEqual(h.model.autoArchiveNotice?.count, 2)
-        XCTAssertEqual(h.model.autoArchiveNotice?.message, "Archived 2 sessions whose transcripts are gone")
+        XCTAssertEqual(h.model.autoArchiveNotice?.message, "2 sessions archived: no transcript on disk")
         XCTAssertEqual(Set(h.model.autoArchiveNotice?.memberships.map(\.id) ?? []), ["gone", "week"])
         XCTAssertFalse(undo.canUndo, "the sweep is not the user's action")
         XCTAssertFalse(h.model.visibleRows.contains { $0.id == "gone" }, "it leaves the rail and ⌘K")
@@ -455,9 +455,9 @@ final class AutoArchiveTests: XCTestCase {
         XCTAssertEqual(h.archived(["gone", "gone-too", "here", "unknown", "recent", "no-folder"]), ["gone", "gone-too"])
         XCTAssertEqual(h.reason("gone"), .folderMissing)
         XCTAssertEqual(h.folders.asked.filter { $0 == "/gone" }.count, 1, "one stat per folder")
-        XCTAssertEqual(h.model.autoArchiveNotice?.message, "Archived 2 sessions whose folders are gone")
+        XCTAssertEqual(h.model.autoArchiveNotice?.message, "2 sessions archived: folder gone")
         XCTAssertEqual(AppModel.AutoArchiveNotice(entries: Array(h.model.autoArchiveNotice!.entries.prefix(1))).message,
-                       "Archived 1 session whose folder is gone")
+                       "1 session archived: folder gone")
         // History tags Temple's rows with the reason; one from a newer build
         // that this one cannot name gets no tag.
         let tag = { (id: String) in h.model.sessions.first { $0.id == id }.map { HistoryRow(member: $0).conditionTag } }
@@ -473,7 +473,7 @@ final class AutoArchiveTests: XCTestCase {
         h.folders.evidence = ["/gone": .missing, "/here": .exists]
         h.publish(["transcript": .confirmedAbsent])
         await h.settle()
-        XCTAssertEqual(h.model.autoArchiveNotice?.message, "Archived 2 sessions whose transcripts or folders are gone")
+        XCTAssertEqual(h.model.autoArchiveNotice?.message, "2 sessions archived: transcript or folder gone")
         XCTAssertEqual(h.model.autoArchiveNotice?.help,
                        "Without a transcript on disk or its folder a session can't resume. View lists them in History; Restore brings one back, Undo brings them all back.")
         XCTAssertEqual(AppModel.AutoArchiveNotice(entries: [AutoArchiveEntry(ref: MembershipRef(id: "x", host: .local, incarnation: "i"), reason: .transcriptMissing)]).help,
@@ -757,7 +757,7 @@ final class AutoArchiveTests: XCTestCase {
         XCTAssertEqual(app.autoArchiveNotice?.entries.map(\.ref.id).sorted(), ["legacy", "moved"])
         XCTAssertEqual(try db.sessionState("legacy")?.archiveReason, .transcriptMissing)
         XCTAssertEqual(try db.sessionState("moved")?.archiveReason, .folderMissing)
-        XCTAssertEqual(app.autoArchiveNotice?.message, "Archived 2 sessions whose transcripts or folders are gone")
+        XCTAssertEqual(app.autoArchiveNotice?.message, "2 sessions archived: transcript or folder gone")
         for id in ["present", "pinned", "recent", "unplugged"] {
             XCTAssertEqual(try db.sessionState(id)?.archived, false, id)
         }

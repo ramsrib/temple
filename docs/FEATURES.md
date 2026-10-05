@@ -117,10 +117,11 @@ open tabs; any other session returns the next time it is opened
   agent's store, or the folder's own host saying it is missing; a drive that is
   not plugged in proves nothing) and only for a session that is not pinned, has
   no tab open or restored, and has seen no activity for seven days. The foot of
-  the sidebar says so once, "Archived 3 sessions whose transcripts are gone",
-  with **View** (History's Archived scope, narrowed by an "Archived just now"
-  chip to exactly those sessions), **Undo** and a dismiss; it stays until Undo,
-  the dismiss or the end of the run.
+  the sidebar says so once, in two rows below the list: "3 sessions
+  archived: no transcript on disk" (or "folder gone", or "transcript or
+  folder gone") with a dismiss, then **View** (History's Archived scope,
+  narrowed by an "Archived just now" chip to exactly those sessions) and
+  **Undo**; it stays until Undo, the dismiss or the end of the run.
   It is not on `⌘Z`: the user did not do it. A session brought back by Undo or
   Restore is not archived again until it has seen new activity.
 - The sidebar's actions live in the title bar, at the trailing edge of its
@@ -320,8 +321,7 @@ join and archived ones come back
   come from its database and are on the page before any file is read; disk
   rows stream in newest first under a "Reading sessions on disk… 1,240 of
   3,810" line. The header says what is in the box ("3,812 sessions · 164 in
-  Temple · 173 archived", plus "· 3 without a transcript" while there are
-  any) and when it was taken ("Updated 2 min ago · Refresh"). Temple's rows
+  Temple · 173 archived") and when it was taken ("Updated 2 min ago · Refresh"). Temple's rows
   take the live index's copy, so their titles are current. Closing the tab
   forgets its search, filters and selection but keeps the rows: reopening
   shows them at once and refreshes underneath. The list is prepared off the
@@ -353,7 +353,12 @@ join and archived ones come back
   `⌘K` show, Archived is in Temple and put away. The project popup on an
   archived project adds "raven is archived · **Restore project**". Any change
   clears the selection and puts it on the first row. Filters belong to the
-  tab and reset when it closes; nothing is persisted.
+  tab and reset when it closes; nothing is persisted. In a pane under
+  1000 pt wide the search field takes a row of its own, with the scope and
+  filters under it; under 680 pt the agent and project menus become one
+  **Filter** menu, labelled with what is filtered. A row's Restore or Import
+  column always shows; its project column narrows, then (under 600 pt)
+  hides.
 - **Selection** is the native vocabulary: click, `⌘`-click, `⇧`-click, arrows
   (`⇧` extends, `⌥` jumps a day, `⌘` to the ends), `⌘A` for everything in the
   current view. Hover is a separate fill and never moves the selection. On

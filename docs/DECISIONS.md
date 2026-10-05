@@ -1430,8 +1430,10 @@ disk knows about, one status per row. If a session is not in the sidebar,
   All · In Temple · Archived · Not in Temple. In Temple means in Temple and not
   archived (what the sidebar and ⌘K show), Archived means in Temple and put
   away (by the row's flag or its project's mask), and the three narrow scopes
-  partition All, so the header can say "3,812 sessions · 164 in Temple · 173
-  archived". One list, one sort, one search, one selection model. A section
+  partition All, so the header says exactly that, "3,812 sessions · 164 in
+  Temple · 173 archived", and nothing more: a condition (no transcript, no
+  folder) is the row's tag and the sidebar notice's, not the header's. One
+  list, one sort, one search, one selection model. A section
   at the foot would break chronology and grow without bound, which is why
   ADR-017 refused one in the sidebar; a sibling tab is the popup relocated.
   The popup is gone. ⌘⇧Y (View ▸ Archived Sessions, the launcher's Archived
@@ -1488,7 +1490,11 @@ disk knows about, one status per row. If a session is not in the sidebar,
   listing too. Folders come from the read's folder answers, asked for
   members' projects too.
 - **The ways in.** The auto-archive notice gains **View**: History, Archived
-  scope, with an "Archived just now" chip that filters exactly the notice's
+  scope. It is two rows, the sentence ("3 sessions archived: no transcript
+  on disk", "…: folder gone", "…: transcript or folder gone") with its
+  dismiss, then View and Undo, so the sentence never shares a line with its
+  verbs; it sits below the rail's list, never over it. View opens with an
+  "Archived just now" chip that filters exactly the notice's
   memberships (cleared by its ×, any scope pick, or Esc, whose ladder is
   search, chip, selection, leave). The sidebar's project header and session
   row gain **Show in History**. A project filter on an archived project shows
@@ -1540,6 +1546,15 @@ disk knows about, one status per row. If a session is not in the sidebar,
   typing then Return opens the first match, ⌘A then ⌘⌫ after a filter
   archives what the filter shows, one Return opens one tab, and nothing acts
   on rows the user never saw.
+- **The page lays out by the pane it is given.** Its width is read from what
+  the detail pane offers, never from the page's own content, and the page is
+  clipped to it: a page that measured itself reported its overflow as its
+  width, never compacted, and pushed the split view (and the sidebar) left.
+  From 1000 pt the toolbar is one row; below, search has its own row with
+  the scope control and the filter menus under it; below 680 pt the agent
+  and project menus are one Filter menu. A row's fixed status column (where
+  Restore is) always shows; its project column is a fixed width that
+  truncates before the title, and is hidden below 600 pt.
 - **Rows draw prepared.** A row looks nothing up when it draws, and the
   page observes History alone, not the app model; tab activity reaches it as
   a small map. The list stays a `LazyVStack`: the measured stalls were in

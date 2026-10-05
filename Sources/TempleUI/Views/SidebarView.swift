@@ -330,38 +330,39 @@ private struct AutoArchiveNoticeBar: View {
     let undo: () -> Void
     let dismiss: () -> Void
 
+    /// Two rows, so the sentence never shares a line with its verbs: the
+    /// message (two lines at most) and the dismiss on top, View and Undo
+    /// under it at the trailing edge.
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(notice.message)
-                .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .help(notice.help)
-            Text("·")
-                .font(.system(size: 11.5))
-                .foregroundStyle(.tertiary)
-            Button(action: view) {
-                Text("View")
-                    .font(.system(size: 11.5, weight: .semibold))
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 6) {
+                Text(notice.message)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .help(notice.help)
+                Spacer(minLength: 4)
+                Button(action: dismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 14, height: 14)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Dismiss")
             }
-            .buttonStyle(.plain)
-            Text("·")
-                .font(.system(size: 11.5))
-                .foregroundStyle(.tertiary)
-            Button(action: undo) {
-                Text("Undo")
-                    .font(.system(size: 11.5, weight: .semibold))
+            HStack(spacing: 12) {
+                Spacer(minLength: 0)
+                Button(action: view) {
+                    Text("View").font(.system(size: 11.5, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                Button(action: undo) {
+                    Text("Undo").font(.system(size: 11.5, weight: .semibold))
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
-            Button(action: dismiss) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 14, height: 14)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Dismiss")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)

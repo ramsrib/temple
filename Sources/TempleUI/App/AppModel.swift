@@ -278,19 +278,13 @@ public final class AppModel: ObservableObject {
         public var memberships: [MembershipRef] { entries.map(\.ref) }
         public var count: Int { entries.count }
 
+        /// "3 sessions archived: no transcript on disk", "…: folder gone",
+        /// "…: transcript or folder gone".
         public var message: String {
             let reasons = Set(entries.map(\.reason))
-            let one = count == 1
-            let what: String
-            if reasons == [.transcriptMissing] {
-                what = one ? "transcript is" : "transcripts are"
-            } else if reasons == [.folderMissing] {
-                what = one ? "folder is" : "folders are"
-            } else {
-                what = one ? "transcript or folder is" : "transcripts or folders are"
-            }
-            return one ? "Archived 1 session whose \(what) gone"
-                : "Archived \(count.formatted()) sessions whose \(what) gone"
+            let why = reasons == [.transcriptMissing] ? "no transcript on disk"
+                : reasons == [.folderMissing] ? "folder gone" : "transcript or folder gone"
+            return "\(count == 1 ? "1 session" : "\(count.formatted()) sessions") archived: \(why)"
         }
 
         public var help: String {

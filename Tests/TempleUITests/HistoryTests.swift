@@ -294,9 +294,9 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(h.history.allRows.first?.updatedAt, disk.updatedAt)
     }
 
-    /// The header counts the union the page lists. A member whose transcript
-    /// the engine proved gone is one of those rows, but not a file on disk:
-    /// the line names it instead of calling every row "on disk".
+    /// The header counts the union the page lists, by the three scopes that
+    /// partition it. A member whose transcript the engine proved gone is one
+    /// of those rows; its condition is its tag's, not the header's.
     func testHeaderCountsTheListedRowsAndNamesTheOnesWithoutATranscript() async {
         let rows = [session("on-disk", hoursAgo: 1), session("outside", hoursAgo: 2)]
         let h = harness(rows, members: ["on-disk", "pruned", "still-resolving"])
@@ -309,12 +309,12 @@ final class HistoryTests: XCTestCase {
 
         XCTAssertEqual(h.history.allRows.count, 4)
         XCTAssertEqual(h.history.transcriptMissingCount, 1, "only a proven absence; resolving is not missing")
-        XCTAssertEqual(h.history.countsLine, "4 sessions · 3 in Temple · 0 archived · 1 without a transcript")
+        XCTAssertEqual(h.history.countsLine, "4 sessions · 3 in Temple · 0 archived")
 
         resolutions["pruned"] = .resolving
         h.history.rowsChanged()
         await waitFor { h.history.transcriptMissingCount == 0 }
-        XCTAssertEqual(h.history.countsLine, "4 sessions · 3 in Temple · 0 archived", "no gap, no clause")
+        XCTAssertEqual(h.history.countsLine, "4 sessions · 3 in Temple · 0 archived")
     }
 
     /// Archived is a scope of History (ADR-031): In Temple is what the
@@ -888,6 +888,25 @@ final class HistoryTests: XCTestCase {
 
     private func waitHeld(_ gate: InstallGate) async {
         await waitFor { gate.held != nil }
+    }
+
+    /// The page's layout follows the pane's width (what the split view
+    /// offers, not what the page would like): one toolbar row from 1000 pt,
+    /// search on its own row below that, one Filter menu under 680 pt; the
+    /// project column a fixed width, hidden under 600 pt.
+    func testTheToolbarAndRowsFollowThePanesWidth() {
+        XCTAssertEqual(HistoryTabView.tier(paneWidth: 1200), .wide)
+        XCTAssertEqual(HistoryTabView.tier(paneWidth: 1000), .wide)
+        XCTAssertEqual(HistoryTabView.tier(paneWidth: 999), .compact)
+        XCTAssertEqual(HistoryTabView.tier(paneWidth: 700), .compact)
+        XCTAssertEqual(HistoryTabView.tier(paneWidth: 680), .compact)
+        XCTAssertEqual(HistoryTabView.tier(paneWidth: 679), .narrow)
+        XCTAssertEqual(HistoryTabView.metaWidth(paneWidth: 1100), 180)
+        XCTAssertEqual(HistoryTabView.metaWidth(paneWidth: 700), 120)
+        XCTAssertNil(HistoryTabView.metaWidth(paneWidth: 599))
+        XCTAssertEqual(HistoryTabView.filterLabel(agent: nil, project: nil), "Filter")
+        XCTAssertEqual(HistoryTabView.filterLabel(agent: .claude, project: Fixture.key("/x/raven")),
+                       "\(Agent.claude.displayName) · raven")
     }
 
     /// A key, through the router's real dispatch (`HistoryKeys.route` then
