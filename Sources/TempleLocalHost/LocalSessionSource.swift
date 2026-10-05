@@ -371,7 +371,13 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
                 enumerationByAgent[store.agent] = false
                 // Preserve the last map for this agent; failed listing proves no absence.
                 for (path, entry) in files where entry.1 == store.agent { next[path] = entry }
-                LocalHostLog.watcher.error("enumeration failed: \(String(describing: error), privacy: .public)")
+                // A store root that isn't there is a normal state (an agent never
+                // installed), not an error worth flagging on every listing.
+                if error is StoreRootMissing {
+                    LocalHostLog.watcher.notice("enumeration incomplete: \(String(describing: error), privacy: .public)")
+                } else {
+                    LocalHostLog.watcher.error("enumeration failed: \(String(describing: error), privacy: .public)")
+                }
             }
         }
         files = next

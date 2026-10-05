@@ -115,8 +115,8 @@ open tabs; any other session returns the next time it is opened
   no tab open or restored, and has seen no activity for seven days. The foot of
   the sidebar says so once, "Archived 3 sessions whose transcripts are gone",
   with **Undo** and a dismiss; it stays until one of them or the end of the run.
-  It is not on `⌘Z`: the user did not do it. A session brought back by Undo,
-  Restore or opening is left alone until its next activity.
+  It is not on `⌘Z`: the user did not do it. A session brought back by Undo or
+  Restore is not archived again until it has seen new activity.
 - The sidebar's actions live in the title bar, at the trailing edge of its
   section: search and the sidebar toggle — Temple's own button, in place of
   the system one, so the two behave as one group. When
