@@ -43,13 +43,14 @@ struct HistoryTabView: View {
 
     /// How the toolbar lays out, by the pane's width: one row when it fits
     /// (1000 pt and up); else search on its own row with the scope and the
-    /// filters under it; under 680 pt the two filter menus become one. The
+    /// filters under it; under 692 pt the two filter menus become one. The
     /// compact scope control is 344 pt, the narrowest at which "Not in
-    /// Temple" is not cut, and 680 is where it and both menus still fit.
+    /// Temple" is not cut, and 692 is where it, both menus, their spacing
+    /// and the gutters still fit.
     enum Tier: Equatable { case narrow, compact, wide }
 
     static func tier(paneWidth: CGFloat) -> Tier {
-        paneWidth < 680 ? .narrow : paneWidth < 1000 ? .compact : .wide
+        paneWidth < 692 ? .narrow : paneWidth < 1000 ? .compact : .wide
     }
 
     /// The project and branch column of a row, by the pane's width: hidden
@@ -291,7 +292,7 @@ struct HistoryTabView: View {
         .modifier(FlatToolbarMenu(width: width))
     }
 
-    /// Under 680 pt: the agent and project menus as one, labelled with what
+    /// Under 692 pt: the agent and project menus as one, labelled with what
     /// is filtered ("Claude Code · raven") or "Filter".
     private var filterMenu: some View {
         Menu {

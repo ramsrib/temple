@@ -892,15 +892,15 @@ final class HistoryTests: XCTestCase {
 
     /// The page's layout follows the pane's width (what the split view
     /// offers, not what the page would like): one toolbar row from 1000 pt,
-    /// search on its own row below that, one Filter menu under 680 pt; the
+    /// search on its own row below that, one Filter menu under 692 pt; the
     /// project column a fixed width, hidden under 600 pt.
     func testTheToolbarAndRowsFollowThePanesWidth() {
         XCTAssertEqual(HistoryTabView.tier(paneWidth: 1200), .wide)
         XCTAssertEqual(HistoryTabView.tier(paneWidth: 1000), .wide)
         XCTAssertEqual(HistoryTabView.tier(paneWidth: 999), .compact)
         XCTAssertEqual(HistoryTabView.tier(paneWidth: 700), .compact)
-        XCTAssertEqual(HistoryTabView.tier(paneWidth: 680), .compact)
-        XCTAssertEqual(HistoryTabView.tier(paneWidth: 679), .narrow)
+        XCTAssertEqual(HistoryTabView.tier(paneWidth: 692), .compact)
+        XCTAssertEqual(HistoryTabView.tier(paneWidth: 691), .narrow)
         XCTAssertEqual(HistoryTabView.metaWidth(paneWidth: 1100), 180)
         XCTAssertEqual(HistoryTabView.metaWidth(paneWidth: 700), 120)
         XCTAssertNil(HistoryTabView.metaWidth(paneWidth: 599))

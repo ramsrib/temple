@@ -355,7 +355,7 @@ join and archived ones come back
   clears the selection and puts it on the first row. Filters belong to the
   tab and reset when it closes; nothing is persisted. In a pane under
   1000 pt wide the search field takes a row of its own, with the scope and
-  filters under it; under 680 pt the agent and project menus become one
+  filters under it; under 692 pt the agent and project menus become one
   **Filter** menu, labelled with what is filtered. A row's Restore or Import
   column always shows; its project column narrows, then (under 600 pt)
   hides.

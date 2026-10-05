@@ -1551,7 +1551,7 @@ disk knows about, one status per row. If a session is not in the sidebar,
   clipped to it: a page that measured itself reported its overflow as its
   width, never compacted, and pushed the split view (and the sidebar) left.
   From 1000 pt the toolbar is one row; below, search has its own row with
-  the scope control and the filter menus under it; below 680 pt the agent
+  the scope control and the filter menus under it; below 692 pt the agent
   and project menus are one Filter menu. A row's fixed status column (where
   Restore is) always shows; its project column is a fixed width that
   truncates before the title, and is hidden below 600 pt.
