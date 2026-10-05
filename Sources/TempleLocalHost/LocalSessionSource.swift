@@ -62,6 +62,23 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     /// Test seam: called by `proveAbsent` at the very end of its wait,
     /// before the delivery barrier.
     var proofWindowEndHook: (@Sendable () -> Void)?
+    /// Test seam: called by `proveAbsent` after its barrier, before it reads
+    /// back what it heard.
+    var proofBeforeReadbackHook: (@Sendable () -> Void)?
+    /// Test seam: whether the store root and every volume mounted inside it
+    /// are local filesystems.
+    var localFilesystemProbe: @Sendable (URL) -> Bool = { LocalSessionSource.storeOnLocalFilesystems($0) }
+    /// Test seam: called on the source's queue when a barrier is waiting,
+    /// with its sentinel file's path (before the file is made).
+    var barrierStartedHook: (@Sendable (URL) -> Void)?
+    /// Test seam: sentinel events are not routed to their barriers.
+    var sentinelDeliveryBlockedForTesting = false
+    /// Test seam: the barrier's timeout.
+    var barrierTimeoutOverride: TimeInterval?
+    /// Test seam: the sentinel folder now.
+    var sentinelFolderForTesting: URL? { queue.sync { sentinelFolder } }
+    /// Test seam: runs `body` on the source's queue.
+    func onQueueForTesting(_ body: @escaping @Sendable () -> Void) { queue.async(execute: body) }
     /// Events in an agent's listing scope, per running proof (ADR-030):
     /// each `proveAbsent` registers here and reads back what arrived.
     private var proofWatches: [UUID: ProofWatch] = [:]
@@ -199,8 +216,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         unresolvedCandidates.removeAll()
         running = false
         monitoring = false
-        loseObservationForProofsLocked()
-        failBarriersLocked()
+        invalidateProofsLocked()
         work?.cancel(); work = nil
         if let stream {
             FSEventStreamStop(stream); FSEventStreamInvalidate(stream); FSEventStreamRelease(stream)
@@ -213,8 +229,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     }
 
     private func armLocked() {
-        loseObservationForProofsLocked()
-        failBarriersLocked()
+        invalidateProofsLocked()
         if let stream {
             FSEventStreamStop(stream); FSEventStreamInvalidate(stream); FSEventStreamRelease(stream)
             self.stream = nil
@@ -278,16 +293,34 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         guard running else { return }
         func has(_ flag: Int) -> Bool { flags & UInt32(flag) != 0 }
         if has(kFSEventStreamEventFlagHistoryDone) { return }
-        if let sentinelFolder {
-            let raw = RootMapping.alias(rawPath), folder = RootMapping.alias(sentinelFolder.path)
-            if raw.hasPrefix(folder + "/") { sentinelArrivedLocked((raw as NSString).lastPathComponent); return }
-            if raw == folder { return }
-        }
         let dropped = has(kFSEventStreamEventFlagUserDropped) || has(kFSEventStreamEventFlagKernelDropped)
         let rootChanged = has(kFSEventStreamEventFlagRootChanged)
+        // A notification that says the stream lost track — wherever it points,
+        // the sentinel folder included — invalidates every running proof and
+        // pending barrier first, and is never a barrier's evidence.
+        let compromised = dropped || rootChanged || has(kFSEventStreamEventFlagMustScanSubDirs)
+            || has(kFSEventStreamEventFlagEventIdsWrapped)
+        if compromised { invalidateProofsLocked() }
+        if let sentinelFolder {
+            let raw = RootMapping.alias(rawPath), folder = RootMapping.alias(sentinelFolder.path)
+            if raw == folder || folder.hasPrefix(raw + "/") {
+                // The folder itself (or one above it) removed or moved: proofs
+                // relying on it fail, and a new one is made and watched.
+                if has(kFSEventStreamEventFlagItemRemoved) || has(kFSEventStreamEventFlagItemRenamed)
+                    || !FileManager.default.fileExists(atPath: sentinelFolder.path) {
+                    invalidateProofsLocked()
+                    sentinelFolderLostLocked()
+                }
+                return
+            }
+            if raw.hasPrefix(folder + "/") {
+                if !compromised { sentinelArrivedLocked((raw as NSString).lastPathComponent) }
+                return
+            }
+        }
         let path = logicalPath(rawPath)
         let rootLocation = path.map { p in roots.contains { $0.logical == p || $0.logical.hasPrefix(p + "/") } } ?? false
-        if !proofWatches.isEmpty { recordForProofsLocked(path, flags: flags, lostEverywhere: dropped || rootChanged) }
+        if !proofWatches.isEmpty, !compromised { recordForProofsLocked(path, flags: flags, lostEverywhere: false) }
         if dropped || rootChanged || rootLocation {
             // Lost events, or a watched root replaced: nothing seen before
             // can be vouched for (coverage moves on). A root that appeared
@@ -486,6 +519,9 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     public func proveAbsent(ids: Set<String>, agent: Agent) async -> AbsenceProof {
         // No store for the agent here: nothing was listed, nothing is proven.
         guard let store = stores.first(where: { $0.agent == agent }), !Task.isCancelled else { return .unproven }
+        // Only stores whose every filesystem in scope is a local one: a
+        // network or FUSE volume changes behind this Mac's event stream.
+        guard let root = store.catalogRoot, localFilesystems(root) else { return .unproven }
         let token = UUID()
         let observing = await onQueue { () -> Bool in
             self.proofWatches[token] = ProofWatch(agent: agent)
@@ -509,10 +545,13 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         proofWindowEndHook?()
         let delivered = await deliveryBarrier()
         guard !Task.isCancelled else { return await unproven() }
+        proofBeforeReadbackHook?()
         let (events, stillObserving) = await onQueue { () -> ([ScopeEvent], Bool) in
             let watch = self.proofWatches.removeValue(forKey: token)
             return (watch?.events ?? [ScopeEvent(path: "", kind: .lost)], self.monitoring)
         }
+        // Cancelled while the last hop waited: still nothing.
+        guard !Task.isCancelled else { return .unproven }
         return AbsenceProof.decide(ids: ids, format: store.format, listed: listing?.paths,
                                    exhaustive: listing?.exhaustive ?? false, events: events,
                                    observing: observing && stillObserving && delivered)
@@ -521,50 +560,111 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     /// The stream's latency, and a little.
     var proofQuiescence: TimeInterval { max(0.01, debounceInterval) + 0.05 }
     /// How long a barrier waits for its sentinel before it gives up.
-    var barrierTimeout: TimeInterval { max(0.01, debounceInterval) + 2 }
+    var barrierTimeout: TimeInterval { barrierTimeoutOverride ?? max(0.01, debounceInterval) + 2 }
 
-    /// A real delivery barrier: a sentinel file made, now, in a folder of
+    /// A delivery barrier: a sentinel file made, now, in a folder of
     /// Temple's own that the stream watches beside the stores, and the wait
-    /// until the stream delivers its event. FSEvents numbers events in the
-    /// order they happened and delivers a stream's in that order, so once
-    /// the sentinel's event is here every event for anything that happened
-    /// before it is too. (A flush alone is not a barrier: measured, an event
-    /// made just before `FSEventStreamFlushSync` arrives after it returns.)
-    /// False — no quiescence — when there is no stream, it stops or is armed
-    /// again meanwhile, or the sentinel does not arrive in time.
+    /// until the stream delivers its event. Within this Mac's per-host
+    /// stream, on local volumes, event IDs increase in the order events
+    /// enter the stream (Apple's FSEvents guide), so once the sentinel's
+    /// event is delivered, so is every event the stream already held. That
+    /// bounds delivery; it does not prove every earlier mutation had entered
+    /// the stream (ADR-030 accepts that residue). A flush alone is not a
+    /// barrier (measured: an event made just before
+    /// `FSEventStreamFlushSync` arrives after it returns). False — no
+    /// quiescence — on no stream, a stop, re-arm or lost-event notification
+    /// meanwhile, the sentinel folder gone, a timeout, or cancellation.
+    /// Every way a barrier ends removes its sentinel file.
     private func deliveryBarrier() async -> Bool {
         let name = UUID().uuidString
-        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-            queue.async {
-                guard let stream = self.stream, let folder = self.sentinelFolder else { continuation.resume(returning: false); return }
-                self.sentinelWaiters[name] = continuation
-                self.queue.asyncAfter(deadline: .now() + self.barrierTimeout) {
-                    self.sentinelWaiters.removeValue(forKey: name)?.resume(returning: false)
-                }
-                FSEventStreamRetain(stream)
-                let retained = RetainedStream(stream: stream)
-                DispatchQueue.global(qos: .utility).async {
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                queue.async {
+                    guard !Task.isCancelled, let stream = self.stream, let folder = self.sentinelFolder,
+                          FileManager.default.fileExists(atPath: folder.path) else {
+                        self.sentinelFolderLostLocked()
+                        continuation.resume(returning: false)
+                        return
+                    }
+                    self.sentinelWaiters[name] = continuation
+                    self.barrierStartedHook?(folder.appendingPathComponent(name))
+                    self.queue.asyncAfter(deadline: .now() + self.barrierTimeout) { self.endBarrierLocked(name, passed: false) }
+                    FSEventStreamRetain(stream)
+                    let retained = RetainedStream(stream: stream)
                     let file = folder.appendingPathComponent(name)
-                    FileManager.default.createFile(atPath: file.path, contents: nil)
-                    // Hastens delivery past the stream's latency.
-                    FSEventStreamFlushSync(retained.stream)
-                    FSEventStreamRelease(retained.stream)
+                    DispatchQueue.global(qos: .utility).async {
+                        let made = FileManager.default.createFile(atPath: file.path, contents: nil)
+                        // Hastens delivery past the stream's latency.
+                        if made { FSEventStreamFlushSync(retained.stream) }
+                        FSEventStreamRelease(retained.stream)
+                        self.queue.async {
+                            // The folder went under the barrier: it fails now.
+                            if !made { self.endBarrierLocked(name, passed: false); self.sentinelFolderLostLocked() }
+                            // Ended before the file existed (a timeout, a stop):
+                            // nothing will remove it but this.
+                            else if self.sentinelWaiters[name] == nil { try? FileManager.default.removeItem(at: file) }
+                        }
+                    }
                 }
             }
+        } onCancel: {
+            queue.async { self.endBarrierLocked(name, passed: false) }
         }
     }
 
-    /// The sentinel's event arrived: its barrier is passed.
-    private func sentinelArrivedLocked(_ name: String) {
-        guard let continuation = sentinelWaiters.removeValue(forKey: name) else { return }
+    /// The one way a barrier ends: its waiter answered, its file removed.
+    private func endBarrierLocked(_ name: String, passed: Bool) {
         if let folder = sentinelFolder { try? FileManager.default.removeItem(at: folder.appendingPathComponent(name)) }
-        continuation.resume(returning: true)
+        sentinelWaiters.removeValue(forKey: name)?.resume(returning: passed)
     }
 
-    /// The stream went or was replaced: no barrier waiting on it passes.
-    private func failBarriersLocked() {
-        let waiting = sentinelWaiters; sentinelWaiters.removeAll()
-        waiting.values.forEach { $0.resume(returning: false) }
+    /// The stream went or was replaced, or a notification was compromised:
+    /// no barrier waiting passes, and no running proof heard everything.
+    private func invalidateProofsLocked() {
+        for name in Array(sentinelWaiters.keys) { endBarrierLocked(name, passed: false) }
+        loseObservationForProofsLocked()
+    }
+
+    /// The sentinel folder is gone (deleted, moved): proofs relying on it
+    /// fail, and a new one is made and watched.
+    private func sentinelFolderLostLocked() {
+        guard let folder = sentinelFolder, !FileManager.default.fileExists(atPath: folder.path) else { return }
+        sentinelFolder = nil
+        invalidateProofsLocked()
+        if running, monitorChanges { armLocked() }
+    }
+
+    /// Whether the store root and every volume mounted inside it are local
+    /// filesystems (`localFilesystemProbe`, a test seam).
+    private func localFilesystems(_ root: URL) -> Bool { localFilesystemProbe(root) }
+
+    /// `MNT_LOCAL`, and not a network or FUSE type (some report local).
+    static func storeOnLocalFilesystems(_ root: URL) -> Bool {
+        let path = SessionPaths.normalized(root.resolvingSymlinksInPath().path)
+        func local(_ fs: statfs) -> Bool {
+            var name = fs.f_fstypename
+            let type = withUnsafeBytes(of: &name) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }.lowercased()
+            let remote = ["nfs", "smbfs", "afpfs", "webdav", "cifs", "ftp", "fuse", "osxfuse", "macfuse", "fusefs", "sshfs"]
+            return fs.f_flags & UInt32(MNT_LOCAL) != 0 && !remote.contains { type.hasPrefix($0) }
+        }
+        var info = statfs()
+        guard statfs(path, &info) == 0, local(info) else { return false }
+        var mounts: UnsafeMutablePointer<statfs>?
+        let count = getmntinfo(&mounts, MNT_NOWAIT)
+        guard count > 0, let mounts else { return false }
+        for index in 0..<Int(count) {
+            var mount = mounts[index]
+            let on = withUnsafeBytes(of: &mount.f_mntonname) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+            if SessionPaths.normalized(on).hasPrefix(path + "/"), !local(mount) { return false }
+        }
+        return true
+    }
+
+    /// The sentinel's event arrived, uncompromised: its barrier is passed.
+    /// A late one (its barrier already ended) only has its file removed.
+    private func sentinelArrivedLocked(_ name: String) {
+        if sentinelDeliveryBlockedForTesting { return }
+        endBarrierLocked(name, passed: true)
     }
 
     private func onQueue<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
