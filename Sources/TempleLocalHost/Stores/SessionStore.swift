@@ -20,18 +20,57 @@ struct StoreRootMissing: Error, LocalizedError {
     let root: URL
     var errorDescription: String? { "\(root.path) does not exist." }
 
-    /// Whether `url` is a symbolic link to a directory (one an enumerator
-    /// does not descend).
-    static func isLinkToDirectory(_ url: URL) -> Bool {
-        guard (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true else { return false }
-        return isDirectory(url)
-    }
-
     /// Whether `root` is a directory now (through symlinks).
     static func isDirectory(_ root: URL) -> Bool {
         var isDirectory: ObjCBool = false
         return FileManager.default.fileExists(atPath: root.resolvingSymlinksInPath().path, isDirectory: &isDirectory)
             && isDirectory.boolValue
+    }
+}
+
+/// How a listing reads an entry's own metadata — a seam a test can fail.
+struct EntryInspector: Sendable {
+    var values: @Sendable (URL, Set<URLResourceKey>) throws -> URLResourceValues
+    static let live = EntryInspector { try $0.resourceValues(forKeys: $1) }
+}
+
+/// Whether a store's listing saw everything a transcript could be in: the
+/// evidence a completed catalog gives for "this session has no transcript"
+/// (ADR-032). One conservative rule, applied to every entry the listing
+/// meets under the store root, in the same pass, for every store:
+///
+/// | the listing met                                   | exhaustive |
+/// |---------------------------------------------------|------------|
+/// | a plain directory or file                         | yes        |
+/// | `.DS_Store`                                       | yes        |
+/// | any other hidden entry (dot name or hidden flag)  | no         |
+/// | any symbolic link: to a file or a directory,      | no         |
+/// |   hidden or not, dangling or not                  |            |
+/// | an error reading an entry's metadata              | no         |
+/// | an error from the enumerator                      | no (the listing fails) |
+///
+/// A link's target is never inspected, and nothing about an entry is
+/// guessed: metadata that cannot be read, or does not say, is not
+/// exhaustive. Browsing is unaffected — what is listed is what was always
+/// listed; this only decides what the listing may prove.
+struct ListingAudit {
+    static let allowedHidden: Set<String> = [".DS_Store"]
+    static let keys: Set<URLResourceKey> = [.isSymbolicLinkKey, .isHiddenKey, .isDirectoryKey]
+
+    let inspector: EntryInspector
+    private(set) var exhaustive = true
+
+    init(_ inspector: EntryInspector) { self.inspector = inspector }
+
+    /// One entry the listing met. Its metadata, for the listing's own use,
+    /// or nil when it could not be read (which already made the listing
+    /// not exhaustive).
+    mutating func meet(_ url: URL) -> URLResourceValues? {
+        let values: URLResourceValues
+        do { values = try inspector.values(url, Self.keys) } catch { exhaustive = false; return nil }
+        if values.isSymbolicLink != false { exhaustive = false }
+        if values.isHidden != false && !Self.allowedHidden.contains(url.lastPathComponent) { exhaustive = false }
+        return values
     }
 }
 

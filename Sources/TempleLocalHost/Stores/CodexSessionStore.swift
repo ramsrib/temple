@@ -15,7 +15,10 @@ struct CodexSessionStore: TranscriptSummaryStore {
     /// file rather than twice for every rollout parsed.
     let shared = CodexSharedFactsCache()
 
-    init(root: URL? = nil) {
+    private let inspector: EntryInspector
+
+    init(root: URL? = nil, inspector: EntryInspector = .live) {
+        self.inspector = inspector
         // TEMPLE_CODEX_ROOT: see ClaudeSessionStore.
         let base = root
             ?? StoreIO.envRoot("TEMPLE_CODEX_ROOT")
@@ -98,11 +101,8 @@ struct CodexSessionStore: TranscriptSummaryStore {
         return try enumerateRollouts(in: subtree).files
     }
 
-    /// Rollouts under `directory`, hidden entries and symbolic links to
-    /// directories passed over as always — and `exhaustive` false when one
-    /// of those could hold a rollout: a hidden directory, a hidden file
-    /// with a rollout's name, a link to a directory. A hidden `.DS_Store`
-    /// could not, and changes nothing.
+    /// Rollouts under `directory`, hidden entries passed over and links not
+    /// followed, as always; every entry met goes through `ListingAudit`.
     private func enumerateRollouts(in directory: URL) throws -> (files: [URL], exhaustive: Bool) {
         let fm = FileManager.default
         let physicalRoot = directory.resolvingSymlinksInPath()
@@ -117,26 +117,22 @@ struct CodexSessionStore: TranscriptSummaryStore {
             return ([], true)
         }
         var failure: Error?
-        let keys: [URLResourceKey] = [.isHiddenKey, .isSymbolicLinkKey, .isDirectoryKey]
-        guard let enumerator = fm.enumerator(at: physicalRoot, includingPropertiesForKeys: keys,
+        guard let enumerator = fm.enumerator(at: physicalRoot, includingPropertiesForKeys: Array(ListingAudit.keys),
             options: [], errorHandler: { _, error in failure = error; return false })
         else { throw CocoaError(.fileReadUnknown) }
         var files: [URL] = []
-        var exhaustive = true
+        var audit = ListingAudit(inspector)
         for case let url as URL in enumerator {
-            let values = try? url.resourceValues(forKeys: Set(keys))
-            let named = url.pathExtension == "jsonl" && url.lastPathComponent.hasPrefix("rollout-")
-            if values?.isHidden == true {
-                // What `.skipsHiddenFiles` passed over, passed over still.
-                if values?.isDirectory == true { enumerator.skipDescendants(); exhaustive = false }
-                else if named { exhaustive = false }
+            let values = audit.meet(url)
+            // What `.skipsHiddenFiles` passed over, passed over still.
+            if values?.isHidden ?? url.lastPathComponent.hasPrefix(".") {
+                if values?.isDirectory == true { enumerator.skipDescendants() }
                 continue
             }
-            if values?.isSymbolicLink == true, StoreRootMissing.isDirectory(url) { exhaustive = false }
-            if named { files.append(url) }
+            if url.pathExtension == "jsonl" && url.lastPathComponent.hasPrefix("rollout-") { files.append(url) }
         }
         if let failure { throw failure }
-        return (files, exhaustive)
+        return (files, audit.exhaustive)
     }
 
     func rootAvailable() -> Bool { StoreRootMissing.isDirectory(sessionsRoot) }

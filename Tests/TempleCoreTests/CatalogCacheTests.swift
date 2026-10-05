@@ -575,74 +575,36 @@ final class CatalogCacheTests: XCTestCase {
 
     // MARK: Exhaustive listings
 
-    private func completedAgents(_ source: LocalSessionSource) async throws -> Set<Agent>? {
-        try await read(source).events.last?.completedAgents
-    }
-
-    /// A Codex listing that passed over a place a rollout could be — a
-    /// rollout with the hidden flag, a hidden directory, a symlinked day
-    /// directory — is browsed as always but proves nothing: Codex does not
-    /// complete. A hidden file that could not be a rollout changes nothing.
-    func testACodexListingThatSkippedAPlaceProvesNothing() async throws {
-        let shown = uuid()
-        try codex(shown)
+    /// A store shaped like a real one — project and day folders, transcripts,
+    /// Finder's `.DS_Store` here and there — completes both agents. The rule
+    /// itself, row by row, is `ListingAuditTests`.
+    func testARealWorldShapedStoreCompletes() async throws {
+        let ids = (0..<3).map { _ in uuid() }
+        for id in ids { try claude(id) }
+        try codex(uuid()); try codex(uuid())
+        for dir in [claudeRoot, project, codexRoot.appendingPathComponent("sessions"), rollouts] {
+            try Data().write(to: dir.appendingPathComponent(".DS_Store"))
+        }
         let (source, _) = source(disk: false)
-        try Data().write(to: rollouts.appendingPathComponent(".DS_Store"))
-        var agents = try await completedAgents(source)
-        XCTAssertEqual(agents, [.claude, .codex], "a .DS_Store could not hold a rollout")
-
-        let flagged = try codex(uuid())
-        var values = URLResourceValues(); values.isHidden = true
-        var flaggedURL = flagged
-        try flaggedURL.setResourceValues(values)
-        var rows = try await read(source).summaries
-        XCTAssertEqual(rows.map(\.id), [shown], "browsed as always: the hidden rollout is not shown")
-        agents = try await completedAgents(source)
-        XCTAssertEqual(agents, [.claude])
-        try FileManager.default.removeItem(at: flagged)
-
-        let hiddenDir = codexRoot.appendingPathComponent("sessions/.stash")
-        try FileManager.default.createDirectory(at: hiddenDir, withIntermediateDirectories: true)
-        try Data(#"{"type":"session_meta","payload":{"id":"x"}}"#.utf8)
-            .write(to: hiddenDir.appendingPathComponent("rollout-2026-10-01T10-00-00-\(uuid()).jsonl"))
-        agents = try await completedAgents(source)
-        XCTAssertEqual(agents, [.claude])
-        try FileManager.default.removeItem(at: hiddenDir)
-
-        let elsewhere = root.appendingPathComponent("day-elsewhere")
-        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
-        try FileManager.default.createSymbolicLink(at: codexRoot.appendingPathComponent("sessions/2026/10/02"), withDestinationURL: elsewhere)
-        rows = try await read(source).summaries
-        XCTAssertEqual(rows.map(\.id), [shown])
-        agents = try await completedAgents(source)
-        XCTAssertEqual(agents, [.claude])
-    }
-
-    /// Claude's listing: a symlinked project folder is passed over (as
-    /// always), so Claude does not complete; hidden project folders and
-    /// hidden files are listed like any other, and Claude does.
-    func testAClaudeListingThatSkippedAPlaceProvesNothing() async throws {
-        let id = uuid()
-        try claude(id)
-        let (source, _) = source(disk: false)
-        let hiddenProject = claudeRoot.appendingPathComponent(".-hidden-project")
-        try FileManager.default.createDirectory(at: hiddenProject, withIntermediateDirectories: true)
-        let inHidden = uuid()
-        try write(#"{"type":"user","sessionId":"\#(inHidden)","cwd":"/h","message":{"content":"Hidden folder"}}"#,
-                  to: hiddenProject.appendingPathComponent("\(inHidden).jsonl"))
-        var flagged = try claude(uuid())
-        var values = URLResourceValues(); values.isHidden = true
-        try flagged.setResourceValues(values)
         let listed = try await read(source)
-        XCTAssertEqual(listed.summaries.filter { $0.agent == .claude }.count, 3, "hidden places are listed")
+        XCTAssertEqual(listed.summaries.count, 5)
         XCTAssertEqual(listed.events.last?.completedAgents, [.claude, .codex])
+        XCTAssertEqual(listed.events.last?.provesNoTranscript(id: uuid(), agent: .claude), true)
+    }
 
-        let elsewhere = root.appendingPathComponent("project-elsewhere")
+    /// A listing that met anything the rule does not allow (here a link) is
+    /// browsed as always and completes nothing for its agent.
+    func testANonExhaustiveListingCompletesNothing() async throws {
+        let shown = uuid()
+        try claude(shown); try codex(uuid())
+        let elsewhere = root.appendingPathComponent("elsewhere")
         try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
-        try FileManager.default.createSymbolicLink(at: claudeRoot.appendingPathComponent("-linked-project"), withDestinationURL: elsewhere)
-        let linked = try await read(source)
-        XCTAssertEqual(linked.events.last?.completedAgents, [.codex])
-        XCTAssertEqual(linked.events.last?.provesNoTranscript(id: uuid(), agent: .claude), false)
+        try FileManager.default.createSymbolicLink(at: claudeRoot.appendingPathComponent("-linked"), withDestinationURL: elsewhere)
+        let (source, _) = source(disk: false)
+        let listed = try await read(source)
+        XCTAssertEqual(listed.summaries.filter { $0.agent == .claude }.map(\.id), [shown])
+        XCTAssertEqual(listed.events.last?.completedAgents, [.codex])
+        XCTAssertEqual(listed.events.last?.provesNoTranscript(id: uuid(), agent: .claude), false)
     }
 
     /// A completion's mapping is the coverage: an agent with no set proves
