@@ -1382,10 +1382,14 @@ become the launch path. A catalog cache had to be something that file was not.
 - **The host source keeps what its catalog read.** `LocalSessionSource` owns a
   `CatalogSummaryCache`, as long-lived as the source (the app), so closing and
   reopening History, or refreshing it, parses only what changed. One entry per
-  transcript the catalog read, keyed by agent, store root (its normalized path
-  and the inode it resolves to: a moved store or another volume at the path is
-  another root, and drops everything kept for the old one) and normalized
-  transcript path; each holds the summary and the stamp its read saw.
+  transcript the catalog read, keyed by agent, store root and normalized
+  transcript path; each holds the summary and the stamp its read saw. A store
+  root is its normalized path and the inode it resolves to *on its
+  filesystem*: an inode number means nothing off its own volume, so within a
+  run the device (`st_dev`) is part of it, and on disk, where device numbers
+  are not stable across reboots, the volume's UUID is. A moved store, or
+  another volume mounted at the path, is another root, and drops everything
+  kept for the old one.
 - **A stamp is the whole validation, and it includes the change time.** Size,
   modification time and change time to the nanosecond, and the inode, from
   one `lstat` taken at lookup — not the listing's, which may be many batches
@@ -1394,7 +1398,7 @@ become the launch path. A catalog cache had to be something that file was not.
   truncation, chmod or rename onto the path, and no ordinary process can set
   it, so a same-size rewrite that puts the old modification time back is
   still seen. Not the device, which is not stable across reboots on every
-  volume. A transcript that is a symbolic link is never kept: its `lstat`
+  volume (the store root's identity carries the filesystem). A transcript that is a symbolic link is never kept: its `lstat`
   describes the link, its read the target, so it is read every time.
 - **Pick first, then look up; keep only what verified and read whole.** The
   catalog chooses each thread's file by member resolution's rule
@@ -1405,9 +1409,10 @@ become the launch path. A catalog cache had to be something that file was not.
   succeeded: the catalog's parse says what it came to (`CatalogParse`), and
   a summary missing its tail, its wider head or its stat is shown as it
   always was but read again next time, while a failed head keeps and shows
-  nothing. An unreadable, mismatched or incomplete file keeps nothing and
-  loses what was kept for it; it is read again every time and shows nothing,
-  never its old summary or an older rollout. A file found missing loses
+  nothing. An unreadable file, one that records another session's identity
+  or none, and one whose head cannot be read show nothing, keep nothing and
+  lose what was kept for them; they are read again every time, and never
+  show their old summary or an older rollout. A file found missing loses
   nothing until a completed listing says it is gone (below). A verified file
   read whole whose bytes state no session (a Codex subagent rollout) is kept
   as such, a proven exclusion, so it is not reparsed; a failed read never
@@ -1419,14 +1424,26 @@ become the launch path. A catalog cache had to be something that file was not.
   its signature would have reparsed every rollout after any Codex use. A
   shared-title change now costs no transcript read at all.
 - **Absence needs completed coverage, in the catalog too.** A catalog ends
-  with `.completed(agents:)`, naming only agents whose listing finished and
-  whose every thread was decided, with the store root still there and still
-  the directory that was listed when the read ends. A failed listing, a
-  store root that is not there (ADR-030) or that went away or was replaced
-  during the read, a cancelled read and a lost transport complete nothing.
-  The cache forgets a path, and History drops a row it showed before, only
-  within completed coverage; until this, History pruned every row a read had
-  not seen, so one failed store emptied that agent's history from the page.
+  with `.completed(agents:candidates:)`, naming only agents whose listing
+  finished and whose every thread was decided, with the store root still
+  there and still the same directory on the same filesystem when the read
+  ends. A failed listing, a store root that is not there (ADR-030) or that
+  went away or was replaced during the read, a cancelled read and a lost
+  transport complete nothing. The cache forgets a path, and History drops a
+  row it showed before, only within completed coverage; until this, History
+  pruned every row a read had not seen, so one failed store emptied that
+  agent's history from the page.
+- **No summary is not no transcript.** A completed read that shows nothing
+  for a session has not shown the session has no transcript: the picked file
+  may be unreadable, another session's, or changing under the read. So the
+  completion also carries `candidates`: per completed agent, every session
+  id the listing found a transcript file named for, whatever reading it came
+  to. That a session has no transcript on a host is proven only by its id
+  missing from the candidates of an agent the completion names
+  (`CatalogBatch.provesNoTranscript`) — the one fact History may use to say
+  an archived member has none. Every host's catalog reports it; the
+  contract suite checks unreadable and mismatched files are candidates and a
+  removed one, after a completed listing, is not.
 - **On disk: `history-catalog-cache.s<layout>-f<facts>.sqlite`, in the state
   directory.** The first History read after a relaunch takes every unchanged
   summary from it. This is safe where `index-cache.json` was not, for four
