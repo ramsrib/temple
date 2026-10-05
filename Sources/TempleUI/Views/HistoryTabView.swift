@@ -709,7 +709,9 @@ private struct HistoryPageRow: View, Equatable {
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
-                .help("The session file is no longer on disk. Opening it will fail; archive it from here.")
+                .help(session.member?.archivedByTemple == true
+                      ? "The session file is no longer on disk. Temple archived it."
+                      : "The session file is no longer on disk. Opening it will fail; archive it from here.")
         } else if justImported {
             Text("Imported")
                 .font(.system(size: 11))

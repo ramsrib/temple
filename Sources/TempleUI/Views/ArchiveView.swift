@@ -244,6 +244,13 @@ struct ArchiveView: View {
             Text(model.displayTitle(session))
                 .font(.system(size: 13))
                 .lineLimit(1)
+            if session.archivedByTemple, let tag = Self.templeArchiveTag(session.state.archiveReason) {
+                Text(tag.text)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .help(tag.help)
+            }
             Spacer(minLength: 12)
             Text(RelativeTime.string(from: session.sortDate))
                 .font(.system(size: 11))
@@ -256,6 +263,18 @@ struct ArchiveView: View {
             Button(session.canResume ? "Open" : "Restore") { act(on: entry) }
             if !insideArchivedProject && session.canResume { Button("Restore") { restore(entry) } }
         }
+    }
+
+    /// Why Temple archived a session (ADR-030); nothing for a reason a
+    /// newer build wrote that this one cannot name.
+    static func templeArchiveTag(_ reason: ArchiveReason?) -> (text: String, help: String)? {
+        if reason == .transcriptMissing {
+            return ("No transcript", "No transcript on disk carries this session, so Temple archived it. Restore brings it back.")
+        }
+        if reason == .folderMissing {
+            return ("No folder", "The folder this session ran in no longer exists, so Temple archived it. Restore brings it back.")
+        }
+        return nil
     }
 
     private func hoverSelect(_ index: Int) {

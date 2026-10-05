@@ -90,7 +90,7 @@ public final class SessionOverlayStore: ObservableObject {
         self.scheduleFactRetry = scheduleFactRetry
         let states = (try? db.sessionStates()) ?? []
         self.rows = Dictionary(uniqueKeysWithValues: states.map { ($0.id, $0) })
-        // project_state is this Mac's (its host column is the deferred v12
+        // project_state is this Mac's (its host column is the deferred v13
         // migration), so every stored project is a local key.
         let projects = (try? db.projectStates()) ?? []
         self.archivedProjectKeys = Set(projects.lazy.filter(\.archived).map { ProjectKey(host: .local, path: $0.path) })
@@ -415,13 +415,37 @@ public final class SessionOverlayStore: ObservableObject {
     /// click. The DB write clears the pin in the same statement.
     public func setArchived(_ archived: Bool, sessionID id: String) {
         guard joinForSetter(id) else { return }
-        try? db.setArchived(archived, sessionID: id)
+        try? db.setArchived(archived, sessionID: id, at: now())
+    }
+
+    // MARK: Temple's archive (ADR-030)
+    // Thin and unretried like every setter here: a failed write is logged
+    // and changes nothing on screen; the next sweep plans it again.
+
+    /// Archive rows nobody can resume any more. Returns the ids archived.
+    func autoArchive(_ entries: [AutoArchiveEntry]) -> [String] {
+        do {
+            return try db.autoArchive(entries, at: now())
+        } catch {
+            TempleUILog.db.error("auto-archive failed: \(String(describing: error), privacy: .public)")
+            return []
+        }
+    }
+
+    /// The notice's Undo. Returns the ids restored.
+    func restoreTempleArchives(_ refs: [MembershipRef]) -> [String] {
+        do {
+            return try db.restoreTempleArchives(refs, at: now())
+        } catch {
+            TempleUILog.db.error("restoring auto-archived sessions failed: \(String(describing: error), privacy: .public)")
+            return []
+        }
     }
 
     public func isProjectArchived(_ key: ProjectKey) -> Bool { archivedProjectKeys.contains(key) }
     public func setProjectArchived(_ archived: Bool, key: ProjectKey) {
         if archived { archivedProjectKeys.insert(key) } else { archivedProjectKeys.remove(key) }
-        // Project-state host persistence is the explicitly deferred v12 migration.
+        // Project-state host persistence is the explicitly deferred v13 migration.
         if key.host.isLocal { try? db.setProjectArchived(archived, path: key.path) }
     }
     public func setProjectKeyOrder(_ keys: [ProjectKey]) {

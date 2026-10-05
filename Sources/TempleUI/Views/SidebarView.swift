@@ -16,9 +16,18 @@ struct SidebarView: View {
                 header
             }
             sessionList
+            if let notice = model.autoArchiveNotice {
+                AutoArchiveNoticeBar(notice: notice,
+                                     undo: { model.undoAutoArchive() },
+                                     dismiss: { model.dismissAutoArchiveNotice() })
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             Divider().opacity(0.4)
             footer
         }
+        .animation(.easeOut(duration: 0.18), value: model.autoArchiveNotice)
         .background(.ultraThinMaterial)
         // The rail's actions live in the title bar, where a Mac app keeps
         // them (Finder, Mail, Notes) — not in a row of their own over the
@@ -306,6 +315,47 @@ struct SidebarView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .frame(height: 36)
+    }
+}
+
+/// Temple archived sessions nobody can resume any more, their transcript or
+/// their folder gone (ADR-030): said once, at the foot of the rail the rows
+/// left from, with Undo. Not a timer: it stays until Undo, × or the end of the run, and is
+/// still there when a hidden sidebar comes back.
+private struct AutoArchiveNoticeBar: View {
+    let notice: AppModel.AutoArchiveNotice
+    let undo: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(notice.message)
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .help(notice.help)
+            Text("·")
+                .font(.system(size: 11.5))
+                .foregroundStyle(.tertiary)
+            Button(action: undo) {
+                Text("Undo")
+                    .font(.system(size: 11.5, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            Button(action: dismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 14, height: 14)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Palette.surfaceFill))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Palette.hairline))
     }
 }
 

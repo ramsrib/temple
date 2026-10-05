@@ -68,6 +68,7 @@ public final class AppModel: ObservableObject {
             engineSet.ownershipChanged()
         }
         if rowPresentationDirty || resolutionsChanged { rebuildSessions() }
+        if resolutionsChanged { armArchiveSweep() }
         // An archived row is not resolved (the engine does not watch it),
         // so it is not waited for.
         if !sidebarRanksFrozen && builtSessions.allSatisfy({ row in
@@ -196,6 +197,111 @@ public final class AppModel: ObservableObject {
 
     @Published public var isLoading = true
 
+    // MARK: Archive sweep (ADR-030)
+
+    /// The sweep's clock (tests move it).
+    var now: () -> Date = Date.init
+    /// A cancellable one-shot scheduler for the sweep; tests fire it by hand.
+    var archiveSweepScheduler: (TimeInterval, @escaping @MainActor () -> Void) -> () -> Void = SessionOverlayStore.schedule
+    /// The owning host's answer about a folder (set in `init`; tests replace it).
+    var folderEvidence: (ProjectKey) async -> DirectoryEvidence = { _ in .unknown }
+    private var pendingArchiveSweep: (() -> Void)?
+    /// The sweep in flight, if any: it awaits folder evidence before it plans.
+    private(set) var archiveSweep: Task<Void, Never>?
+    /// How long verdicts and row changes coalesce before one sweep: the
+    /// upgrade burst settles inside one drain, so it is one notice.
+    static let archiveSweepDelay: TimeInterval = 1
+
+    /// What one or more sweeps archived, and why, until Undo, × or the end
+    /// of the run.
+    public struct AutoArchiveNotice: Equatable {
+        public let entries: [AutoArchiveEntry]
+        public var memberships: [MembershipRef] { entries.map(\.ref) }
+        public var count: Int { entries.count }
+
+        public var message: String {
+            let reasons = Set(entries.map(\.reason))
+            let one = count == 1
+            let what: String
+            if reasons == [.transcriptMissing] {
+                what = one ? "transcript is" : "transcripts are"
+            } else if reasons == [.folderMissing] {
+                what = one ? "folder is" : "folders are"
+            } else {
+                what = one ? "transcript or folder is" : "transcripts or folders are"
+            }
+            return one ? "Archived 1 session whose \(what) gone"
+                : "Archived \(count.formatted()) sessions whose \(what) gone"
+        }
+
+        public var help: String {
+            let reasons = Set(entries.map(\.reason))
+            let without = reasons == [.transcriptMissing] ? "a transcript on disk"
+                : reasons == [.folderMissing] ? "its folder" : "a transcript on disk or its folder"
+            return "Without \(without) a session can't resume. They're in History under Archived; Restore brings one back."
+        }
+    }
+    @Published public private(set) var autoArchiveNotice: AutoArchiveNotice?
+
+    /// A verdict or a row changed, the app came forward, or it started:
+    /// plan once the burst settles. Already armed, it waits for the timer it
+    /// has; quitting, it arms nothing (the next launch sweeps again).
+    func armArchiveSweep() {
+        guard pendingArchiveSweep == nil, !openSessions.isQuitting else { return }
+        pendingArchiveSweep = archiveSweepScheduler(Self.archiveSweepDelay) { [weak self] in
+            guard let self else { return }
+            self.pendingArchiveSweep = nil
+            let previous = self.archiveSweep
+            self.archiveSweep = Task { @MainActor [weak self] in
+                await previous?.value
+                await self?.runArchiveSweep()
+            }
+        }
+    }
+
+    /// Gather the folder evidence the plan needs (only for rows that pass
+    /// every other guard and whose transcript does not already decide it,
+    /// so a handful of stats), then plan over in-memory state as it stands
+    /// and write. Not the user's action, so nothing is registered on the
+    /// window's undo stack: Undo lives on the notice. The writes' own row
+    /// changes arm one more sweep, which finds nothing left to do.
+    private func runArchiveSweep() async {
+        guard !openSessions.isQuitting else { return }
+        let resolutions = latestEngineSnapshot?.resolutions ?? [:]
+        let folders = AutoArchivePolicy.foldersToCheck(
+            rows: overlay.rows.values, resolutions: resolutions,
+            openSessionIDs: Set(openSessions.openSessionIDsInTabOrder), now: now())
+        var evidence: [ProjectKey: DirectoryEvidence] = [:]
+        for folder in folders { evidence[folder] = await folderEvidence(folder) }
+        guard !openSessions.isQuitting else { return }
+        let entries = AutoArchivePolicy.plan(
+            rows: overlay.rows.values, resolutions: latestEngineSnapshot?.resolutions ?? [:],
+            folders: evidence, openSessionIDs: Set(openSessions.openSessionIDsInTabOrder), now: now())
+        guard !entries.isEmpty else { return }
+        let archived = Set(overlay.autoArchive(entries))
+        guard !archived.isEmpty else { return }
+        let done = entries.filter { archived.contains($0.ref.id) }
+        let folderCount = done.filter { $0.reason == .folderMissing }.count
+        TempleUILog.db.notice("auto-archived \(done.count, privacy: .public) sessions: \(done.count - folderCount, privacy: .public) without a transcript, \(folderCount, privacy: .public) without a folder")
+        // A straggling batch joins the line already showing: one notice, one Undo.
+        let shown = autoArchiveNotice?.entries ?? []
+        let known = Set(shown.map(\.ref))
+        autoArchiveNotice = AutoArchiveNotice(entries: shown + done.filter { !known.contains($0.ref) })
+    }
+
+    /// The notice's Undo: exactly the memberships it archived, where they
+    /// still carry Temple's archive, come back kept.
+    public func undoAutoArchive() {
+        guard let notice = autoArchiveNotice else { return }
+        autoArchiveNotice = nil
+        let restored = overlay.restoreTempleArchives(notice.memberships)
+        TempleUILog.db.notice("restored \(restored.count, privacy: .public) auto-archived sessions (undo)")
+    }
+
+    public func dismissAutoArchiveNotice() {
+        autoArchiveNotice = nil
+    }
+
     // Sidebar UI state (U1)
     @Published public var searchText = ""
     @Published public var highlightedID: String?
@@ -314,6 +420,7 @@ public final class AppModel: ObservableObject {
 
     private var cancellables: Set<AnyCancellable> = []
     private var themeObserver: NSObjectProtocol?
+    private var activationObserver: NSObjectProtocol?
     public init(surfaceFactory: TerminalSurfaceFactory = StubTerminalSurfaceFactory(),
                 engines: [any HostEngine]? = nil,
                 registry: ProcessRegistry? = nil,
@@ -350,6 +457,7 @@ public final class AppModel: ObservableObject {
         self.engineSet = engineSet
         self.databaseDirectory = database.fileURL?.deletingLastPathComponent()
         self.notifications = NotificationController()
+        self.folderEvidence = { key in await hosts.entry(for: key.host)?.source.directoryEvidence(key.path) ?? .unknown }
         self.history = HistoryModel(overlay: overlay, catalog: { hosts.catalog() },
             directoryEvidence: { key in await hosts.entry(for: key.host)?.source.directoryEvidence(key.path) ?? .unknown })
 
@@ -385,6 +493,9 @@ public final class AppModel: ObservableObject {
                 }
                 self.rowPresentationDirty = true
                 if !change.recencyOnly {
+                    // Off the once-a-second activity path: only a change
+                    // the plan could read (a flag, a keep, membership).
+                    self.armArchiveSweep()
                     // A row joined, left or moved host: the merge follows it
                     // (after the facts being applied, if any).
                     if self.applyingEngineSnapshot { self.ownershipChangedWhileApplying = true }
@@ -620,6 +731,13 @@ public final class AppModel: ObservableObject {
             if self?.isLoading == true { self?.isLoading = false }
             self?.receiveEngineSnapshot(snapshot)
         }
+        // A folder can go while Temple is in the background: look again when
+        // the app comes forward, and once at launch (ADR-030).
+        armArchiveSweep()
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.armArchiveSweep() }
+            }
         // U10: follow macOS appearance live when theme == .system.
         themeObserver = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
@@ -644,6 +762,9 @@ public final class AppModel: ObservableObject {
 
     /// App-quit drain (ADR-010) → returns true once all surfaces are down.
     public func drainForQuit(completion: @escaping () -> Void) {
+        // A sweep still coalescing is dropped; the next launch redoes it.
+        pendingArchiveSweep?()
+        pendingArchiveSweep = nil
         // The last title an agent gave itself may still be coalescing.
         overlay.flushPendingTitles()
         overlay.flushPendingTouches()
