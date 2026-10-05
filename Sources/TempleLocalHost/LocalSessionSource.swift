@@ -509,8 +509,9 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     /// `agent` on this Mac: one fresh audited listing of the agent's store
     /// (ADR-032's rule and scope, not the filename map), a wait as long as
     /// the FSEvents stream's latency, then a delivery barrier (a sentinel
-    /// event, `deliveryBarrier`), so every event for anything that happened
-    /// up to the end of the wait has been heard; then what was heard in the
+    /// event, `deliveryBarrier`), so every event already in this Mac's
+    /// stream when the sentinel landed has been heard (not every mutation:
+    /// ADR-030 names what that leaves); then what was heard in the
     /// listing's scope over the whole span, judged by `AbsenceProof.decide`.
     /// No barrier (the stream gone, or armed again meanwhile), no
     /// quiescence. Cancelled at any point, it proves nothing. Runs off the
@@ -649,8 +650,11 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         }
         var info = statfs()
         guard statfs(path, &info) == 0, local(info) else { return false }
+        // `getmntinfo` hands back a buffer shared by every caller, and proofs
+        // for both agents run at once: take a private copy, ours to free.
         var mounts: UnsafeMutablePointer<statfs>?
-        let count = getmntinfo(&mounts, MNT_NOWAIT)
+        let count = getmntinfo_r_np(&mounts, MNT_NOWAIT)
+        defer { free(mounts) }
         guard count > 0, let mounts else { return false }
         for index in 0..<Int(count) {
             var mount = mounts[index]

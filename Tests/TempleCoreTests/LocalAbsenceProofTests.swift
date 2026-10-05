@@ -107,6 +107,19 @@ final class LocalAbsenceProofTests: XCTestCase {
         XCTAssertEqual(remote, .unproven)
     }
 
+    /// The volume check reads the mount table from proofs for both agents at
+    /// once: every concurrent caller gets the same, correct answer (the
+    /// shared-buffer `getmntinfo` could hand one caller another's buffer).
+    func testTheLocalVolumeCheckIsSafeToRunConcurrently() async {
+        let root = self.root!
+        let answers = await withTaskGroup(of: Bool.self) { group in
+            for _ in 0..<64 { group.addTask { LocalSessionSource.storeOnLocalFilesystems(root) } }
+            return await group.reduce(into: [Bool]()) { $0.append($1) }
+        }
+        XCTAssertEqual(answers.count, 64)
+        XCTAssertTrue(answers.allSatisfy { $0 }, "a temporary folder is local, every time")
+    }
+
     /// A notification that says the stream lost track invalidates a proof
     /// in flight, and is never a barrier's evidence — even one naming the
     /// barrier's own sentinel file.

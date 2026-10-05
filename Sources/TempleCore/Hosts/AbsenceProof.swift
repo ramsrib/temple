@@ -29,8 +29,9 @@ public struct AbsenceProof: Sendable, Equatable {
     /// The listing ran, completed, and met nothing it cannot see past
     /// (ADR-032's rule).
     public let exhaustive: Bool
-    /// Nothing that could change the answer happened from before the
-    /// listing to a stream latency after it, and the host was observing.
+    /// The host was observing, and nothing it heard from before the listing
+    /// to its delivery barrier could change the answer. What it heard, not
+    /// everything that happened: ADR-030 names the accepted gap.
     public let quiescent: Bool
     /// The asked ids with no file named for them (meaningful only with both
     /// of the above).
