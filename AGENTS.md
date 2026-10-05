@@ -271,10 +271,12 @@ during that refactor:
   The sweep acts on `.confirmedAbsent` (a completed enumeration) or the owning
   host's `.missing` folder evidence alone, never on a failed, partial or
   cancelled scan, `.unreadable`, `.mismatch`, `.incomplete`,
-  `.awaitingCreation` or `.unknown` (a missing store root and an unmounted
-  `/Volumes/<name>` are failures, not absences). Every automatic archive
-  records its reason and is undone by the notice's Undo or a Restore, which
-  keep the row until its next activity. Don't add an automatic archive path
+  `.awaitingCreation` or `.unknown` (a missing store root, Claude's or
+  Codex's, and a folder whose volume is not mounted are failures, not
+  absences), and only for the membership the verdict names. Every automatic
+  archive records its reason, is rechecked in its own SQL, and is undone by
+  the notice's Undo or a Restore, which keep the row until activity after
+  the restore. Don't add an automatic archive path
   without a reason column and a person's way back, don't put it on the
   window's undo stack, and don't make the engine watch archived rows.
 - **Schema changes stay additive until remote ships.** Builds before ADR-029

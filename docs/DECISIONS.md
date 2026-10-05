@@ -1300,10 +1300,19 @@ reacting to that, not initiating anything.
   Temple activity for seven days, and was not kept by a person. A failed,
   partial or cancelled listing, `unreadable`, `mismatch`, `incomplete`,
   `awaitingCreation` and a folder that is `unknown` prove nothing and archive
-  nothing; a transport failure never does. A store root that does not exist is
-  a failed listing, not an empty store, and a folder under `/Volumes/<name>/`
-  is unknown unless that volume is mounted: an unplugged drive is not a deleted
-  project. When both reasons hold, the transcript is the reason. Seven days is
+  nothing; a transport failure never does. A verdict is about one
+  membership: each snapshot names the host and incarnation it read, and an
+  absence proven for an earlier membership of an id says nothing about a
+  rejoin. A store root that does not exist, Claude's or Codex's, is a failed
+  listing, not an empty store (History still shows it as empty); so a row
+  that names no agent stays unproven while either store is unavailable, and
+  only its folder or a person can archive it. Soundness over coverage. A
+  folder is `missing` only when its nearest existing ancestor, resolved
+  through its symlinks, is on the filesystem the path should be on: under
+  `/Volumes/<name>/` that is the volume mounted at exactly that point, so an
+  unplugged drive, a leftover empty mount point and a symlink whose target
+  is gone are all `unknown`. An unplugged drive is not a deleted project.
+  When both reasons hold, the transcript is the reason. Seven days is
   for the causes the cleanup is not (it removes only transcripts idle a month):
   an id that never got a file, a deletion, a transcript under another config
   dir. Nothing touched this week leaves on its own.
@@ -1313,10 +1322,12 @@ reacting to that, not initiating anything.
   archive write, NULL for an archive from before it). The way back is the
   notice's Undo or Restore, as for any archive; a file that turns up again
   changes nothing, because a file is not a decision (ADR-017). Any unarchive a
-  person performs stamps `kept_at`, and a kept row is left alone until the
-  session's next activity, after which the idle week protects it: a Restore is
+  person performs stamps `kept_at`, and a kept row is left alone until
+  activity that happened after that stamp (not activity from before it that
+  is only written later), after which the idle week protects it: a Restore is
   never undone by the next sweep. Undo Import still removes a row Temple
-  archived; it was not the user's decision.
+  archived, which was not the user's decision, but not one a person restored
+  since, which was.
 - **Archived rows are not watched.** The engine's members are the rows that
   are not archived. Archiving one, by anyone, takes it out the way a leave
   does (facts and verdict revoked); restoring it brings it back the way a join
@@ -1329,10 +1340,14 @@ reacting to that, not initiating anything.
   Temple's rows "No transcript" or "No folder" and says why.
 - **The engine still never writes.** The sweep gathers folder evidence for the
   few rows that pass every other guard (no folder watching), then makes a pure
-  plan over the rows, the merged snapshot and that evidence, on the main actor
-  a second after resolutions or rows change, at launch and when the app comes
-  forward. The overlay writes it in one transaction under `id, host,
-  incarnation`, refusing pinned, kept and open-tab rows in SQL as well.
+  plan over the rows as they are after that wait, the merged snapshot and that
+  evidence, on the main actor a second after verdicts, memberships or rows
+  change, at launch and when the app comes forward. The overlay writes it in
+  one transaction under `id, host, incarnation`, and the SQL rechecks what
+  another connection could have changed since: pinned, kept, archived, an
+  open tab, the idle cutoff (by the same dates the plan reads) and, for a
+  missing folder, that the row still names that folder. Only the app runs it:
+  a model a test or a tool builds never sweeps.
 
 **Amends ADR-017:** "archiving is something you do" gains "or something the
 CLI or the user's own deletion did, which Temple records". **Amends ADR-029:**
