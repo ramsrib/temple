@@ -126,7 +126,7 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertTrue(pruned.resumeTargetAbsentAtLaunch)
         app.openSessions.surface(try XCTUnwrap(pruned.surface), didChangeState: .exited(status: 1))
         XCTAssertEqual(pruned.resumeTargetMissingMessage,
-                       "This session's transcript is no longer on disk, so Claude has nothing to resume. "
+                       "No transcript on disk carries this session, so Claude has nothing to resume. "
                        + "Archive it, or import a newer file from History.")
         XCTAssertTrue(pruned.offersArchiveForMissingTranscript)
 
