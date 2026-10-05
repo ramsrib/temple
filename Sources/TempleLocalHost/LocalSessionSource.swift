@@ -50,6 +50,9 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     private var announcedShared: [Agent: UInt64] = [:]
     /// Test seam: called during a read at each phase, on the reading thread.
     var readPhaseHook: (@Sendable (ReadPhase, URL) -> Void)?
+    /// Test seam: called on the catalog's reading thread once a read has
+    /// listed, before its first batch.
+    var catalogListedHook: (@Sendable () -> Void)?
     enum ReadPhase { case sharedFactsAcquired, bytesRead }
     private var locateCount: UInt64 = 0
     private let readCounts = ReadCounters()
@@ -80,17 +83,18 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     /// the state directory (`TEMPLE_STATE_DIR`), read on the first catalog.
     public convenience init(monitorChanges: Bool = true) {
         self.init(stores: [ClaudeSessionStore(), CodexSessionStore()], monitorChanges: monitorChanges,
-                  catalogDisk: CatalogDiskCache(url: CatalogDiskCache.defaultURL))
+                  catalogDisk: CatalogDiskCache(directory: CatalogDiskCache.defaultDirectory))
     }
 
     init(stores: [any IncrementalSessionStore],
          debounceInterval: TimeInterval = 0.3,
          monitorChanges: Bool = true,
-         catalogDisk: CatalogDiskCache? = nil) {
+         catalogDisk: CatalogDiskCache? = nil,
+         catalogLoadDeadline: TimeInterval = 2) {
         self.stores = stores
         self.debounceInterval = debounceInterval
         self.monitorChanges = monitorChanges
-        self.catalogCache = CatalogSummaryCache(disk: catalogDisk)
+        self.catalogCache = CatalogSummaryCache(disk: catalogDisk, loadDeadline: catalogLoadDeadline)
         self.sharedFactPaths = Set(stores.flatMap(\.sharedFactURLs).map { SessionPaths.normalized($0.path) })
     }
 
@@ -125,8 +129,10 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
 
     public func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error> {
         let counts = readCounts
+        let listed = catalogListedHook
         let catalog = LocalSessionCatalog(stores: stores.filter { query.agents.contains($0.agent) },
-                                          cache: catalogCache, onParse: { counts.catalogParse() })
+                                          cache: catalogCache, onParse: { counts.catalogParse() },
+                                          onListed: { listed?() })
         return AsyncThrowingStream { continuation in
             let task = Task {
                 for await event in catalog.stream(batchSize: query.batchSize, newestFirst: query.newestFirst) {

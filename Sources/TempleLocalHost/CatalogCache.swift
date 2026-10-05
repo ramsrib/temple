@@ -15,14 +15,21 @@ import TempleCore
 /// resolution goes unseen until the next write. Not the device: it is not
 /// stable across reboots for every volume, and a cache that misses after
 /// each reboot would be no cache.
+///
+/// A transcript that is a symbolic link is stamped as the link (`lstat`),
+/// while reading it reads its target, so its stamp says nothing about what
+/// was read: it is never kept (`cacheable` is false) and is read every time.
 struct CatalogStamp: Hashable, Sendable {
     let size: Int64
     let modifiedNanos: Int64
     let changedNanos: Int64
     let inode: UInt64
+    /// A regular file, whose stamp is the stamp of what a read reads.
+    let cacheable: Bool
 
-    init(size: Int64, modifiedNanos: Int64, changedNanos: Int64, inode: UInt64) {
+    init(size: Int64, modifiedNanos: Int64, changedNanos: Int64, inode: UInt64, cacheable: Bool = true) {
         self.size = size; self.modifiedNanos = modifiedNanos; self.changedNanos = changedNanos; self.inode = inode
+        self.cacheable = cacheable
     }
 
     init(_ info: stat) {
@@ -30,6 +37,7 @@ struct CatalogStamp: Hashable, Sendable {
         modifiedNanos = Int64(info.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(info.st_mtimespec.tv_nsec)
         changedNanos = Int64(info.st_ctimespec.tv_sec) * 1_000_000_000 + Int64(info.st_ctimespec.tv_nsec)
         inode = UInt64(info.st_ino)
+        cacheable = (info.st_mode & S_IFMT) == S_IFREG
     }
 
     /// The modification time as `FileSignature` reads it (for ordering only).
@@ -118,10 +126,17 @@ final class CatalogSummaryCache: @unchecked Sendable {
     private var pendingRoots: Set<Agent> = []
     private let disk: CatalogDiskCache?
     private var loadStarted = false
+    private var loadLanded = false
+    /// A read gave up waiting for the disk once: later reads do not wait
+    /// again (the load still merges whenever it lands).
+    private var loadAbandoned = false
     private let loaded = DispatchGroup()
+    /// How long one catalog read waits for the disk cache, at most.
+    let loadDeadline: TimeInterval
 
-    init(disk: CatalogDiskCache? = nil) {
+    init(disk: CatalogDiskCache? = nil, loadDeadline: TimeInterval = 2) {
         self.disk = disk
+        self.loadDeadline = loadDeadline
     }
 
     private func locked<T>(_ body: () throws -> T) rethrows -> T {
@@ -143,16 +158,24 @@ final class CatalogSummaryCache: @unchecked Sendable {
         // Held until the load lands: a group released while entered traps.
         disk.load { snapshot in
             self.merge(snapshot)
+            self.locked { self.loadLanded = true }
             self.loaded.leave()
         }
     }
 
-    /// Blocks until the disk cache is in memory, or `timeout` passes; a
-    /// cache that is slow to load is read without, never waited on forever.
-    func waitUntilLoaded(timeout: TimeInterval = 5) {
-        let started = locked { loadStarted }
-        guard started else { return }
-        _ = loaded.wait(timeout: .now() + timeout)
+    /// Blocks until the disk cache is in memory, `deadline` passes or
+    /// `cancelled` says so, whichever is first; one deadline per read, set
+    /// when it starts. A read that stops waiting goes on without the disk's
+    /// entries, and so does every later read: a load that stalled once is
+    /// not waited on again.
+    func waitUntilLoaded(deadline: Date, cancelled: () -> Bool = { false }) {
+        let skip = locked { !loadStarted || loadLanded || loadAbandoned }
+        guard !skip else { return }
+        while Date() < deadline && !cancelled() {
+            let slice = min(deadline.timeIntervalSinceNow, 0.05)
+            if loaded.wait(timeout: .now() + max(0, slice)) == .success { return }
+        }
+        locked { if !loadLanded { loadAbandoned = true } }
     }
 
     /// Entries from disk fill only what memory does not already know: what
@@ -208,13 +231,15 @@ final class CatalogSummaryCache: @unchecked Sendable {
     /// The kept outcome for `key`, when it was read under this root at
     /// exactly this stamp.
     func lookup(_ agent: Agent, root: CatalogRoot, key: String, stamp: CatalogStamp) -> Outcome? {
-        locked {
+        guard stamp.cacheable else { return nil }
+        return locked {
             guard let kept = agents[agent], kept.root == root, let entry = kept.files[key], entry.stamp == stamp else { return nil }
             return entry.outcome
         }
     }
 
     func record(_ agent: Agent, root: CatalogRoot, key: String, entry: Entry) {
+        guard entry.stamp.cacheable else { return }
         locked {
             guard agents[agent]?.root == root else { return }
             guard agents[agent]?.files[key] != entry else { return }

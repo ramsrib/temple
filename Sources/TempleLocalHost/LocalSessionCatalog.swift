@@ -8,11 +8,16 @@ struct LocalSessionCatalog: Sendable {
     private let stores: [any SessionStore]
     private let cache: CatalogSummaryCache?
     private let onParse: @Sendable () -> Void
+    private let onListed: @Sendable () -> Void
+    /// `onListed` runs on the reading thread right after `.listed` is
+    /// emitted, before the first batch (a test seam).
     init(stores: [any SessionStore] = [ClaudeSessionStore(), CodexSessionStore()],
-         cache: CatalogSummaryCache? = nil, onParse: @escaping @Sendable () -> Void = {}) {
+         cache: CatalogSummaryCache? = nil, onParse: @escaping @Sendable () -> Void = {},
+         onListed: @escaping @Sendable () -> Void = {}) {
         self.stores = stores
         self.cache = cache
         self.onParse = onParse
+        self.onListed = onListed
     }
     func load() -> [TranscriptSummary] {
         FileDescriptorLimit.ensureRaised()
@@ -31,16 +36,15 @@ struct LocalSessionCatalog: Sendable {
     /// the consumer's iteration (or cancelling its task) stops the read at the
     /// next batch boundary.
     func stream(batchSize: Int = 200, newestFirst: Bool = true) -> AsyncStream<Event> {
-        let stores = self.stores, cache = self.cache, onParse = self.onParse
+        let reader = self
         let size = max(1, batchSize)
         return AsyncStream { continuation in
             let cancelled = CatalogCancellation()
             continuation.onTermination = { _ in cancelled.cancel() }
             DispatchQueue.global(qos: .userInitiated).async {
-                Self.read(stores, cache: cache, onParse: onParse, batchSize: size, newestFirst: newestFirst,
-                          cancelled: cancelled) { continuation.yield($0) }
+                reader.read(batchSize: size, newestFirst: newestFirst, cancelled: cancelled) { continuation.yield($0) }
                 // Whatever this read learned is kept, finished or not.
-                cache?.flush()
+                reader.cache?.flush()
                 continuation.finish()
             }
         }
@@ -51,15 +55,33 @@ struct LocalSessionCatalog: Sendable {
         let parse: @Sendable () -> TranscriptSummary?
     }
 
-    private static func read(_ stores: [any SessionStore], cache: CatalogSummaryCache?, onParse: @escaping @Sendable () -> Void,
-                             batchSize: Int, newestFirst: Bool, cancelled: CatalogCancellation, emit: (Event) -> Void) {
+    /// A listing that finished, and how to tell, at the end of the read,
+    /// that its store is still the one it listed.
+    private struct Listing {
+        let store: any IncrementalSessionStore
+        let root: CatalogRoot?
+        let listed: Set<String>
+
+        /// The root is there and is the directory that was listed. A root
+        /// that went away, or was replaced, while the read went on proves
+        /// nothing about the files the read then found missing.
+        var stillCovered: Bool {
+            guard store.rootAvailable() else { return false }
+            guard store.catalogRoot != nil else { return true }
+            return root != nil && CatalogRoot(store.catalogRoot) == root
+        }
+    }
+
+    private func read(batchSize: Int, newestFirst: Bool, cancelled: CatalogCancellation, emit: (Event) -> Void) {
         FileDescriptorLimit.ensureRaised()
-        // The disk cache loads while the stores are listed.
+        // The disk cache loads while the stores are listed, under one
+        // deadline for the whole read.
         cache?.startLoading()
+        let loadDeadline = Date().addingTimeInterval(cache?.loadDeadline ?? 0)
         var entries: [Entry] = []
         // Listings that completed, with what they named: the cache forgets
         // the rest once every thread has been decided.
-        var completed: [(agent: Agent, root: CatalogRoot?, listed: Set<String>)] = []
+        var completed: [Listing] = []
         for store in stores {
             if cancelled.isCancelled { return }
             guard let incremental = store as? any IncrementalSessionStore else {
@@ -72,6 +94,7 @@ struct LocalSessionCatalog: Sendable {
                 }
                 continue
             }
+            let root = CatalogRoot(incremental.catalogRoot)
             let files: [URL]
             var complete = true
             do {
@@ -90,34 +113,40 @@ struct LocalSessionCatalog: Sendable {
             // thread never shows an older rollout while the one the agent
             // would resume exists.
             let urls = Dictionary(files.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
-            let root = cache == nil ? nil : CatalogRoot(incremental.catalogRoot)
-            if let cache, let root {
-                cache.waitUntilLoaded()
-                cache.begin(store.agent, root: root)
+            let cacheRoot = cache == nil ? nil : root
+            if let cache, let cacheRoot {
+                cache.waitUntilLoaded(deadline: loadDeadline) { cancelled.isCancelled }
+                if cancelled.isCancelled { return }
+                cache.begin(store.agent, root: cacheRoot)
             }
-            let pass = AgentPass(store: incremental, parser: incremental.catalogParser(),
+            let pass = AgentPass(store: incremental, reader: incremental.catalogReader(),
                                  shared: incremental.sharedFactsSnapshot().facts,
-                                 cache: root == nil ? nil : cache, root: root, onParse: onParse)
+                                 cache: cacheRoot == nil ? nil : cache, root: cacheRoot, onParse: onParse)
             for thread in TranscriptCandidates.catalogThreads(format: incremental.format, listed: Array(urls.keys)) {
                 // Ordered by the file the pick reads first, not by the newest
                 // of the thread's files: a rollout the pick passes over must
-                // not pull its thread ahead of newer sessions. That stat is
-                // also the first attempt's.
-                let first = thread.paths.first.map(CatalogStamp.of)
+                // not pull its thread ahead of newer sessions. This stat
+                // orders and nothing else: a batch may run long after it, so
+                // every attempt stamps its file again.
                 let modified: Date
-                if case .present(let stamp) = first { modified = stamp.modifiedAt } else { modified = .distantPast }
+                if let first = thread.paths.first, case .present(let stamp) = CatalogStamp.of(first) {
+                    modified = stamp.modifiedAt
+                } else { modified = .distantPast }
                 entries.append(Entry(modified: modified, parse: {
                     TranscriptCandidates.catalogPick(thread) { path in
                         guard let url = urls[path] else { return .missing }
-                        return pass.attempt(url, thread: thread.threadID, stat: path == thread.paths.first ? first : nil)
+                        return pass.attempt(url, thread: thread.threadID)
                     }
                 }))
             }
-            if complete { completed.append((store.agent, root, Set(files.map { SessionPaths.normalized($0.path) }))) }
+            if complete {
+                completed.append(Listing(store: incremental, root: root, listed: Set(files.map { SessionPaths.normalized($0.path) })))
+            }
         }
         entries.sort { newestFirst ? $0.modified > $1.modified : $0.modified < $1.modified }
         let total = entries.count
         emit(.listed(total: total))
+        onListed()
 
         var start = 0
         while start < total {
@@ -135,10 +164,13 @@ struct LocalSessionCatalog: Sendable {
             emit(.sessions(sessions, read: start, total: total))
         }
         if cancelled.isCancelled { return }
-        for listing in completed {
-            if let cache, let root = listing.root { cache.complete(listing.agent, root: root, listed: listing.listed) }
+        // Coverage is what is still true at the end: a listing whose root
+        // went away or was replaced during the read completes nothing.
+        let covered = completed.filter(\.stillCovered)
+        for listing in covered {
+            if let cache, let root = listing.root { cache.complete(listing.store.agent, root: root, listed: listing.listed) }
         }
-        emit(.completed(agents: Set(completed.map(\.agent))))
+        emit(.completed(agents: Set(covered.map(\.store.agent))))
     }
 }
 
@@ -146,11 +178,11 @@ extension LocalSessionCatalog {
     /// How often a file that changed while it was read is read again.
     static let readAttempts = 3
 
-    /// One agent's part of a read: its store, parser, the shared facts every
+    /// One agent's part of a read: its store, reader, the shared facts every
     /// summary it emits carries, and its view of the cache.
     struct AgentPass: Sendable {
         let store: any IncrementalSessionStore
-        let parser: @Sendable (URL) -> TranscriptSummary?
+        let reader: @Sendable (URL) -> CatalogParse
         let shared: SharedFacts
         /// Nil when nothing is kept for this agent (no cache, or a store
         /// whose root could not be identified).
@@ -162,19 +194,19 @@ extension LocalSessionCatalog {
         var format: any TranscriptFormat { store.format }
 
         /// One of a thread's files. A kept outcome is the answer when the
-        /// file's stamp now is the one it was read at; otherwise the file is
-        /// read the way the engine reads a member's: the identity the file
-        /// records is verified first, then its facts are parsed, and both
-        /// must come from one version of the file (stamped before and
+        /// file's stamp, taken now, is the one it was read at; otherwise the
+        /// file is read the way the engine reads a member's: the identity the
+        /// file records is verified first, then its facts are parsed, and
+        /// both must come from one version of the file (stamped before and
         /// after, change time included). A file's name is not its identity:
         /// Claude's facts take the session id from the file name, so
         /// `a.jsonl` recording session `b` would otherwise list — and import
         /// — as `a`, with `b`'s folder and title. A file whose recorded
         /// identity is another session's, or that records none, yields
         /// nothing for the thread, and nothing kept for it survives.
-        func attempt(_ url: URL, thread: String, stat known: CatalogStamp.Stat?) -> TranscriptCandidates.CatalogAttempt<TranscriptSummary> {
+        func attempt(_ url: URL, thread: String) -> TranscriptCandidates.CatalogAttempt<TranscriptSummary> {
             let key = SessionPaths.normalized(url.path)
-            if let cache, let root, case .present(let stamp) = known ?? CatalogStamp.of(url.path),
+            if let cache, let root, case .present(let stamp) = CatalogStamp.of(url.path),
                let kept = cache.lookup(agent, root: root, key: key, stamp: stamp) {
                 switch kept {
                 case .summary(let summary) where summary.id == thread && summary.locator.path == url.path:
@@ -186,12 +218,22 @@ extension LocalSessionCatalog {
                 }
             }
             let (result, kept) = read(url, thread: thread, key: key)
-            if !kept, let cache { cache.forget(agent, key: key) }
+            // A file that is there and reads as something else loses what
+            // was kept for it. A file found missing does not: what it held
+            // can never be used without the file, and that it is gone is for
+            // a completed listing to say (`complete`) — a store root that
+            // vanished mid-read makes every file look missing.
+            if !kept, let cache {
+                if case .missing = result {} else { cache.forget(agent, key: key) }
+            }
             return result
         }
 
         /// The read, and whether its outcome was kept (anything else forgets
-        /// what was kept for the file).
+        /// what was kept for the file). Kept: a summary every read of which
+        /// succeeded, and a proven exclusion. Never kept: a failed read, or a
+        /// summary missing a part it needed (shown, as before, but read
+        /// again next time).
         private func read(_ url: URL, thread: String, key: String)
             -> (TranscriptCandidates.CatalogAttempt<TranscriptSummary>, kept: Bool) {
             func gone() -> TranscriptCandidates.CatalogAttempt<TranscriptSummary> {
@@ -208,22 +250,28 @@ extension LocalSessionCatalog {
                 catch { return (LocalSessionSource.isMissing(error) ? .missing : gone(), false) }
                 guard verdict == .verified else { return (.failed, false) }
                 onParse()
-                guard let parsed = parser(url) else {
-                    if LocalSessionCatalog.isGone(url) { return (.missing, false) }
-                    // Verified, and its bytes state no session (a Codex
-                    // subagent rollout): kept as such, so it is not
+                let parsed: TranscriptSummary
+                let whole: Bool
+                switch reader(url) {
+                case .failed:
+                    return (gone(), false)
+                case .excluded:
+                    // Verified, read whole, and its bytes state no session (a
+                    // Codex subagent rollout): kept as such, so it is not
                     // reparsed every refresh.
-                    guard let cache, let root, stamp() == before else { return (.failed, false) }
+                    guard let cache, let root, stamp() == before else { return (gone(), false) }
                     cache.record(agent, root: root, key: key, entry: .init(stamp: before, outcome: .noSession))
                     return (.failed, true)
+                case .summary(let summary): parsed = summary; whole = true
+                case .incomplete(let summary): parsed = summary; whole = false
                 }
                 guard parsed.id == thread, let after = stamp() else { return (gone(), false) }
                 guard after == before else { continue }
-                let kept = format.withShared(parsed, .empty)
-                if let cache, let root {
-                    cache.record(agent, root: root, key: key, entry: .init(stamp: after, outcome: .summary(kept)))
+                let stripped = format.withShared(parsed, .empty)
+                if whole, let cache, let root {
+                    cache.record(agent, root: root, key: key, entry: .init(stamp: after, outcome: .summary(stripped)))
                 }
-                return (.read(format.withShared(kept, shared)), true)
+                return (.read(format.withShared(stripped, shared)), whole && after.cacheable)
             }
             return (.failed, false)
         }

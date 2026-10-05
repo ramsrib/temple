@@ -80,4 +80,8 @@ struct ClaudeSessionStore: TranscriptSummaryStore {
     func loadSummary(at fileURL: URL) -> TranscriptSummary? {
         StoreIO.summary(at: fileURL, format: ClaudeFormat(), shared: .empty)
     }
+
+    func catalogReader() -> @Sendable (URL) -> CatalogParse {
+        { StoreIO.catalogParse(at: $0, format: ClaudeFormat(), shared: .empty) }
+    }
 }

@@ -79,6 +79,11 @@ struct CodexSessionStore: TranscriptSummaryStore {
         return { StoreIO.summary(at: $0, format: CodexFormat(), shared: shared) }
     }
 
+    func catalogReader() -> @Sendable (URL) -> CatalogParse {
+        let shared = sharedFacts()
+        return { StoreIO.catalogParse(at: $0, format: CodexFormat(), shared: shared) }
+    }
+
     func sessionFileURLs() -> [URL] { (try? enumerateSessionFiles()) ?? [] }
 
     func enumerateSessionFiles() throws -> [URL] { try enumerateRollouts(in: sessionsRoot) }

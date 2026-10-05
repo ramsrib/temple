@@ -13,7 +13,8 @@ final class CatalogCacheTests: XCTestCase {
     private var codexRoot: URL { root.appendingPathComponent("codex") }
     private var project: URL { claudeRoot.appendingPathComponent("-work-project") }
     private var rollouts: URL { codexRoot.appendingPathComponent("sessions/2026/10/01") }
-    private var cacheURL: URL { root.appendingPathComponent("state/history-catalog-cache.sqlite") }
+    private var stateDir: URL { root.appendingPathComponent("state") }
+    private var cacheURL: URL { stateDir.appendingPathComponent(CatalogDiskCache.fileName()) }
     private var locked: [URL] = []
     private var clock = Date(timeIntervalSince1970: 1_800_000_000)
 
@@ -37,7 +38,7 @@ final class CatalogCacheTests: XCTestCase {
     /// A source over this test's stores, with the disk cache when asked;
     /// `claude` replaces the Claude root (a symlink to it, say).
     private func source(disk: Bool = true, claude: URL? = nil) -> (LocalSessionSource, CatalogDiskCache?) {
-        let cache = disk ? CatalogDiskCache(url: cacheURL) : nil
+        let cache = disk ? CatalogDiskCache(directory: stateDir) : nil
         let source = LocalSessionSource(stores: [ClaudeSessionStore(root: claude ?? claudeRoot), CodexSessionStore(root: codexRoot)],
                                         monitorChanges: false, catalogDisk: cache)
         return (source, cache)
@@ -139,7 +140,7 @@ final class CatalogCacheTests: XCTestCase {
             sharedTitle: nil, directoryHint: "/hint", laterPromptHint: "later", legacyTitleHint: "legacy", selectionKey: "key")
         XCTAssertEqual(Mirror(reflecting: summary).children.count, 19,
                        "TranscriptSummary changed: keep the new field in CatalogDiskCache and bump its schemaVersion")
-        let disk = CatalogDiskCache(url: cacheURL)
+        let disk = CatalogDiskCache(directory: stateDir)
         let stamp = CatalogStamp(size: 10, modifiedNanos: 1, changedNanos: 2, inode: UInt64.max)
         let root = CatalogRoot(path: "/p", inode: 9)
         disk.write(.init(roots: [.claude: root], files: [.claude: ["/p/id.jsonl": .init(stamp: stamp, outcome: .summary(summary)),
@@ -175,30 +176,343 @@ final class CatalogCacheTests: XCTestCase {
         XCTAssertEqual(parses(second), 0, "rebuilt")
     }
 
-    /// A file written by older parsers (or an older layout) is discarded and
-    /// rewritten; one from a newer build is left exactly as it is, and this
-    /// process keeps its summaries in memory only.
-    func testAnOlderCacheIsDiscardedAndANewerOneLeftAlone() async throws {
+    /// Other parsers use another file: a build with older (or newer) facts
+    /// never reads this one's summaries, and neither deletes the other's,
+    /// even while the other has its file open.
+    func testAnotherVersionUsesItsOwnFileAndLeavesThisOneOpen() async throws {
         try claude(uuid()); try codex(uuid())
         let (first, disk) = source()
         _ = try await read(first)
         disk?.sync()
+        let older = CatalogDiskCache(directory: stateDir, facts: TranscriptFormats.factsVersion - 1)
+        XCTAssertNotEqual(older.url, cacheURL)
+        let olderSource = LocalSessionSource(stores: [ClaudeSessionStore(root: claudeRoot), CodexSessionStore(root: codexRoot)],
+                                             monitorChanges: false, catalogDisk: older)
+        _ = try await read(olderSource)
+        XCTAssertEqual(parses(olderSource), 2, "another version's summaries are not used")
+        older.sync()
+        XCTAssertFalse(older.isMemoryOnly)
+        XCTAssertFalse(disk?.isMemoryOnly ?? true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: older.url.path))
+        // The first file, still open in `first`, is whole and still in use.
+        try claude(uuid())
+        _ = try await read(first)
+        disk?.sync()
+        let (second, _) = source()
+        _ = try await read(second)
+        XCTAssertEqual(parses(second), 0)
+    }
 
-        try setMeta("facts", String(TranscriptFormats.factsVersion - 1))
-        let (older, olderDisk) = source()
-        _ = try await read(older)
-        XCTAssertEqual(parses(older), 2, "older parsers' summaries are not used")
-        olderDisk?.sync()
-        XCTAssertEqual(try meta("facts"), String(TranscriptFormats.factsVersion), "rewritten at this version")
-
+    /// A file whose own record disagrees with its name is not ours: used by
+    /// nobody here, deleted by nobody, summaries kept in memory.
+    func testAFileThatSaysAnotherVersionIsLeftAlone() async throws {
+        try claude(uuid()); try codex(uuid())
+        let (first, disk) = source()
+        _ = try await read(first)
+        disk?.sync()
         try setMeta("schema", "999")
         let (newer, newerDisk) = source()
         _ = try await read(newer)
         XCTAssertEqual(parses(newer), 2)
         _ = try await read(newer)
         XCTAssertEqual(parses(newer), 2, "kept in memory all the same")
-        newerDisk?.sync()
-        XCTAssertEqual(try meta("schema"), "999", "a newer build's file is left alone")
+        XCTAssertTrue(newerDisk?.isMemoryOnly ?? false)
+        XCTAssertEqual(try meta("schema"), "999", "left exactly as it was")
+    }
+
+    // MARK: Sharing the file
+
+    /// Two Temples at once (the installed app and a dev build) share one
+    /// file: each reads what the other wrote, and neither falls back.
+    func testTwoUsersShareTheFile() async throws {
+        let a = uuid(), b = uuid()
+        try claude(a)
+        let (one, oneDisk) = source()
+        let (two, twoDisk) = source()
+        _ = try await read(one)
+        oneDisk?.sync()
+        try claude(b)
+        _ = try await read(two)
+        twoDisk?.sync()
+        XCTAssertEqual(parses(two), 1, "the second user read the first one's summary")
+        XCTAssertFalse(oneDisk?.isMemoryOnly ?? true)
+        XCTAssertFalse(twoDisk?.isMemoryOnly ?? true)
+        let (three, _) = source()
+        let rows = try await read(three).summaries
+        XCTAssertEqual(Set(rows.map(\.id)), [a, b])
+        XCTAssertEqual(parses(three), 0)
+    }
+
+    /// A transaction held elsewhere is contention, not damage: this process
+    /// keeps its summaries in memory for the run, and the file — with what
+    /// it held — is left as it was.
+    func testAHeldTransactionMeansMemoryOnlyAndTheFileStays() async throws {
+        try claude(uuid()); try codex(uuid())
+        let (first, disk) = source()
+        _ = try await read(first)
+        disk?.sync()
+        var holding = Configuration()
+        holding.allowsUnsafeTransactions = true
+        let holder = try DatabaseQueue(path: cacheURL.path, configuration: holding)
+        try holder.inDatabase { try $0.execute(sql: "BEGIN EXCLUSIVE") }
+        let busy = CatalogDiskCache(directory: stateDir, busyTimeout: 0.1)
+        let blocked = LocalSessionSource(stores: [ClaudeSessionStore(root: claudeRoot), CodexSessionStore(root: codexRoot)],
+                                         monitorChanges: false, catalogDisk: busy)
+        _ = try await read(blocked)
+        XCTAssertEqual(parses(blocked), 2)
+        busy.sync()
+        XCTAssertTrue(busy.isMemoryOnly)
+        _ = try await read(blocked)
+        XCTAssertEqual(parses(blocked), 2, "memory works all the same")
+        try holder.inDatabase { try $0.execute(sql: "COMMIT") }
+        let (after, _) = source()
+        _ = try await read(after)
+        XCTAssertEqual(parses(after), 0, "the file still holds every summary")
+    }
+
+    /// A corrupt file another process has open is not deleted under it:
+    /// memory only. Once nobody else holds it, it is rebuilt.
+    func testACorruptFileInUseElsewhereIsLeftAlone() async throws {
+        try claude(uuid())
+        let garbage = Data("not a database, not even close".utf8)
+        try garbage.write(to: cacheURL)
+        let lock = CatalogDiskCache(directory: stateDir).lockURL
+        let held = Darwin.open(lock.path, O_RDWR | O_CREAT, 0o644)
+        XCTAssertEqual(flock(held, LOCK_SH), 0)
+        let (inUse, inUseDisk) = source()
+        _ = try await read(inUse)
+        inUseDisk?.sync()
+        XCTAssertTrue(inUseDisk?.isMemoryOnly ?? false)
+        XCTAssertEqual(try Data(contentsOf: cacheURL), garbage, "not deleted while another process has it")
+        close(held)
+        let (sole, soleDisk) = source()
+        _ = try await read(sole)
+        soleDisk?.sync()
+        XCTAssertFalse(soleDisk?.isMemoryOnly ?? true, "rebuilt once nobody else holds it")
+        let (next, _) = source()
+        _ = try await read(next)
+        XCTAssertEqual(parses(next), 0)
+    }
+
+    /// A disk load that stalls is waited on once, up to the read's one
+    /// deadline, then the read goes on without it; later reads do not wait.
+    func testAStalledLoadIsWaitedOnOnceUnderOneDeadline() async throws {
+        try claude(uuid()); try codex(uuid())
+        let disk = CatalogDiskCache(directory: stateDir)
+        let gate = DispatchSemaphore(value: 0)
+        disk.stallForTesting(until: gate)
+        defer { gate.signal() }
+        let source = LocalSessionSource(stores: [ClaudeSessionStore(root: claudeRoot), CodexSessionStore(root: codexRoot)],
+                                        monitorChanges: false, catalogDisk: disk, catalogLoadDeadline: 0.4)
+        var started = Date()
+        let rows = try await read(source).summaries
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.5, "one deadline for the read, not one per store")
+        started = Date()
+        _ = try await read(source)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.3, "a stalled load is not waited on again")
+        XCTAssertEqual(parses(source), 2)
+    }
+
+    /// Cancelling a read that waits on the disk ends the wait: the read
+    /// stops there and never lists, even once the load lands.
+    func testCancellingEndsTheWaitForTheDisk() async throws {
+        try claude(uuid())
+        let disk = CatalogDiskCache(directory: stateDir)
+        let gate = DispatchSemaphore(value: 0)
+        disk.stallForTesting(until: gate)
+        let source = LocalSessionSource(stores: [ClaudeSessionStore(root: claudeRoot)], monitorChanges: false,
+                                        catalogDisk: disk, catalogLoadDeadline: 10)
+        let listed = Flag()
+        source.catalogListedHook = { _ = listed.setOnce() }
+        let reader = Task { for try await _ in source.catalog(CatalogQuery()) {} }
+        try await Task.sleep(for: .milliseconds(150))
+        reader.cancel()
+        try await Task.sleep(for: .milliseconds(400))
+        gate.signal()
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(listed.isSet, "the cancelled read stopped waiting and never listed")
+        XCTAssertEqual(parses(source), 0)
+    }
+
+    // MARK: Freshness
+
+    /// A file that changes after the read listed it, before its batch, is
+    /// read again: the stamp a kept summary answers to is taken at lookup.
+    func testAChangeAfterListingIsSeenAtLookup() async throws {
+        let id = uuid()
+        let file = try claude(id, prompt: "Before change")
+        try claude(uuid())
+        let (source, _) = source(disk: false)
+        _ = try await read(source)
+        let base = parses(source)
+        let rewrite = Data(try String(contentsOf: file).replacingOccurrences(of: "Before change", with: "After  change").utf8)
+        source.catalogListedHook = {
+            let modified = try? FileManager.default.attributesOfItem(atPath: file.path)[.modificationDate] as? Date
+            if let handle = try? FileHandle(forWritingTo: file) { try? handle.write(contentsOf: rewrite); try? handle.close() }
+            if let modified { try? FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: file.path) }
+        }
+        let rows = try await read(source).summaries
+        XCTAssertEqual(rows.first { $0.id == id }?.firstPrompt, "After change")
+        XCTAssertEqual(parses(source), base + 1)
+    }
+
+    /// A transcript that is a symbolic link is read every time: its own
+    /// stamp says nothing about its target, so nothing is kept for it.
+    func testASymlinkedTranscriptIsNeverServedStale() async throws {
+        let id = uuid()
+        let elsewhere = root.appendingPathComponent("elsewhere")
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        let target = try claude(id, prompt: "Target one")
+        let moved = elsewhere.appendingPathComponent(target.lastPathComponent)
+        try FileManager.default.moveItem(at: target, to: moved)
+        try FileManager.default.createSymbolicLink(at: target, withDestinationURL: moved)
+        let (source, _) = source(disk: false)
+        func prompt() async throws -> String?? {
+            try await read(source).summaries.first { $0.id == id }.map(\.firstPrompt)
+        }
+        let first = try await prompt()
+        XCTAssertEqual(first, "Target one")
+        // The target rewritten in place, same size, old mtime back.
+        let modified = try FileManager.default.attributesOfItem(atPath: moved.path)[.modificationDate] as? Date
+        let handle = try FileHandle(forWritingTo: moved)
+        try handle.write(contentsOf: Data(try String(contentsOf: moved).replacingOccurrences(of: "Target one", with: "Target two").utf8))
+        try handle.close()
+        if let modified { try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: moved.path) }
+        let rewritten = try await prompt()
+        XCTAssertEqual(rewritten, "Target two")
+        // The target replaced.
+        try Data(try String(contentsOf: moved).replacingOccurrences(of: "Target two", with: "Target new").utf8).write(to: moved, options: .atomic)
+        let replaced = try await prompt()
+        XCTAssertEqual(replaced, "Target new")
+        // The target gone.
+        try FileManager.default.removeItem(at: moved)
+        let dangling = try await prompt()
+        XCTAssertNil(dangling)
+        XCTAssertEqual(source.catalogCache.count, 0, "nothing is ever kept for a link")
+    }
+
+    // MARK: Read outcomes
+
+    /// A parse whose read failed is never kept, as an exclusion or anything
+    /// else: the transcript is read again and shown once it reads. A summary
+    /// missing a part it needed is shown and read again next time. A proven
+    /// exclusion is kept.
+    func testOnlyWholeReadsAreKept() async throws {
+        let id = uuid()
+        try claude(id)
+        let script = OutcomeScript([.failed, .incomplete, .whole, .whole])
+        let source = LocalSessionSource(stores: [ScriptedClaudeStore(root: claudeRoot, script: script)], monitorChanges: false)
+        let failed = try await read(source).summaries
+        XCTAssertEqual(failed, [], "a failed read shows nothing")
+        XCTAssertEqual(source.catalogCache.count, 0, "and keeps nothing, not even an exclusion")
+        let partial = try await read(source).summaries
+        XCTAssertEqual(partial.map(\.id), [id], "a partial summary is shown")
+        XCTAssertEqual(source.catalogCache.count, 0, "but not kept")
+        _ = try await read(source)
+        XCTAssertEqual(parses(source), 3)
+        _ = try await read(source)
+        XCTAssertEqual(parses(source), 3, "a whole read is kept")
+    }
+
+    /// Head, tail, wider-head and stat failures, injected into the catalog's
+    /// own parse: a head failure fails, the others leave the summary
+    /// incomplete (with the content the old parse gave), and only bytes
+    /// read whole can prove an exclusion.
+    func testInjectedReadFailuresAreNeverWhole() throws {
+        struct Injected: Error {}
+        let bigID = uuid()
+        let big = project.appendingPathComponent("\(bigID).jsonl")
+        let filler = #"{"type":"assistant","sessionId":"\#(bigID)","message":{"content":"\#(String(repeating: "f", count: 1000))"}}"#
+        try write(([#"{"type":"user","sessionId":"\#(bigID)","cwd":"/w","message":{"content":"Head prompt"}}"#]
+                   + Array(repeating: filler, count: 100) + [#"{"type":"summary","summary":"Tail title"}"#]).joined(separator: "\n"), to: big)
+        let wide = rollouts.appendingPathComponent("rollout-2026-10-01T10-00-00-\(uuid()).jsonl")
+        let wideID = String(wide.deletingPathExtension().lastPathComponent.dropFirst(28))
+        try write([#"{"type":"session_meta","payload":{"id":"\#(wideID)","cwd":"/w"}}"#,
+                   #"{"type":"response_item","payload":{"role":"user","content":"\#(String(repeating: "x", count: 80_000))"}}"#,
+                   #"{"type":"event_msg","payload":{"type":"user_message","message":"wide prompt"}}"#].joined(separator: "\n"), to: wide)
+        let excluded = rollouts.appendingPathComponent("rollout-2026-10-01T10-00-00-\(uuid()).jsonl")
+        try write(#"{"type":"session_meta","payload":{"id":"x","cwd":"/w","thread_source":"subagent"}}"#, to: excluded)
+        let file = StoreIO.Reads.file
+        func reads(head: Bool = true, tail: Bool = true, wider: Bool = true, signature: Bool = true) -> StoreIO.Reads {
+            StoreIO.Reads(signature: { signature ? file.signature($0) : nil },
+                          head: { url, n in
+                              if n == TranscriptBytes.defaultWindow { guard head else { throw Injected() } } else { guard wider else { throw Injected() } }
+                              return try file.head(url, n) },
+                          tail: { url, n in guard tail else { throw Injected() }; return try file.tail(url, n) })
+        }
+        let claudeFormat = ClaudeFormat(), codexFormat = CodexFormat()
+        let whole = StoreIO.catalogParse(at: big, format: claudeFormat, shared: .empty)
+        XCTAssertEqual(whole, StoreIO.summary(at: big, format: claudeFormat, shared: .empty).map { .summary($0) })
+        XCTAssertEqual(StoreIO.catalogParse(at: big, format: claudeFormat, shared: .empty, reads: reads(head: false)), .failed)
+        guard case .incomplete = StoreIO.catalogParse(at: big, format: claudeFormat, shared: .empty, reads: reads(tail: false)) else {
+            return XCTFail("a failed tail is incomplete")
+        }
+        guard case .incomplete = StoreIO.catalogParse(at: big, format: claudeFormat, shared: .empty, reads: reads(signature: false)) else {
+            return XCTFail("a failed stat is incomplete")
+        }
+        let wideWhole = StoreIO.catalogParse(at: wide, format: codexFormat, shared: .empty)
+        guard case .summary(let wideSummary) = wideWhole else { return XCTFail() }
+        XCTAssertEqual(wideSummary.firstPrompt, "wide prompt")
+        guard case .incomplete(let widePartial) = StoreIO.catalogParse(at: wide, format: codexFormat, shared: .empty, reads: reads(wider: false)) else {
+            return XCTFail("a failed wider head is incomplete")
+        }
+        XCTAssertNil(widePartial.firstPrompt)
+        XCTAssertEqual(StoreIO.catalogParse(at: excluded, format: codexFormat, shared: .empty), .excluded)
+        XCTAssertEqual(StoreIO.catalogParse(at: excluded, format: codexFormat, shared: .empty, reads: reads(head: false)), .failed)
+    }
+
+    // MARK: Completed coverage
+
+    /// A store root that is not there completes nothing, for either agent;
+    /// an existing empty one completes.
+    func testAMissingRootCompletesNothingAndAnEmptyOneCompletes() async throws {
+        let (present, _) = source(disk: false)
+        let empty = try await read(present)
+        XCTAssertEqual(empty.events.last, .completed(agents: [.claude, .codex]))
+        try FileManager.default.removeItem(at: claudeRoot)
+        try FileManager.default.removeItem(at: codexRoot)
+        let (absent, _) = source(disk: false)
+        let missing = try await read(absent)
+        XCTAssertEqual(missing.events.last, .completed(agents: []))
+        XCTAssertFalse(missing.events.contains { if case .storeFailed = $0 { return true }; return false })
+    }
+
+    /// A root that goes away, or is replaced, while the read goes on
+    /// completes nothing for its agent, and nothing kept for it is
+    /// forgotten; the other agent completes.
+    func testARootLostDuringTheReadCompletesNothing() async throws {
+        try claude(uuid()); try claude(uuid()); try codex(uuid())
+        let (source, _) = source(disk: false)
+        _ = try await read(source)
+        XCTAssertEqual(source.catalogCache.count, 3)
+        let aside = root.appendingPathComponent("claude-aside")
+        let claudeDir = claudeRoot
+        source.catalogListedHook = { try? FileManager.default.moveItem(at: claudeDir, to: aside) }
+        let lost = try await read(source)
+        XCTAssertEqual(lost.events.last, .completed(agents: [.codex]))
+        XCTAssertEqual(source.catalogCache.count, 3, "nothing forgotten for a root that went away")
+        source.catalogListedHook = nil
+        try FileManager.default.moveItem(at: aside, to: claudeRoot)
+        // Replaced by another directory at the same path.
+        let codexSessions = codexRoot.appendingPathComponent("sessions")
+        let sessionsAside = root.appendingPathComponent("sessions-aside")
+        source.catalogListedHook = {
+            try? FileManager.default.moveItem(at: codexSessions, to: sessionsAside)
+            try? FileManager.default.createDirectory(at: codexSessions, withIntermediateDirectories: true)
+        }
+        let replaced = try await read(source)
+        XCTAssertEqual(replaced.events.last, .completed(agents: [.claude]))
+        // And Codex's root simply gone.
+        source.catalogListedHook = nil
+        try FileManager.default.removeItem(at: codexSessions)
+        try FileManager.default.moveItem(at: sessionsAside, to: codexSessions)
+        let back = try await read(source)
+        XCTAssertEqual(back.events.last, .completed(agents: [.claude, .codex]))
+        source.catalogListedHook = { try? FileManager.default.moveItem(at: codexSessions, to: sessionsAside) }
+        let gone = try await read(source)
+        XCTAssertEqual(gone.events.last, .completed(agents: [.claude]))
+        XCTAssertEqual(source.catalogCache.count, 3)
     }
 
     // MARK: Roots
@@ -282,7 +596,7 @@ final class CatalogCacheTests: XCTestCase {
         disk?.sync()
         let (second, _) = source()
         second.catalogCache.startLoading()
-        second.catalogCache.waitUntilLoaded()
+        second.catalogCache.waitUntilLoaded(deadline: Date().addingTimeInterval(5))
         XCTAssertEqual(second.catalogCache.count, 1)
     }
 
@@ -362,11 +676,47 @@ private struct SlowClaudeStore: IncrementalSessionStore {
     init(root: URL) { inner = ClaudeSessionStore(root: root) }
     var agent: Agent { .claude }
     var catalogRoot: URL? { inner.catalogRoot }
+    func rootAvailable() -> Bool { inner.rootAvailable() }
     func loadSummaries() -> [TranscriptSummary] { inner.loadSummaries() }
     func sessionFileURLs() -> [URL] { inner.sessionFileURLs() }
     func enumerateSessionFiles() throws -> [URL] { try inner.enumerateSessionFiles() }
-    func loadSummary(at fileURL: URL) -> TranscriptSummary? {
-        Thread.sleep(forTimeInterval: 0.1)
-        return inner.loadSummary(at: fileURL)
+    func loadSummary(at fileURL: URL) -> TranscriptSummary? { inner.loadSummary(at: fileURL) }
+    func catalogReader() -> @Sendable (URL) -> CatalogParse {
+        let read = inner.catalogReader()
+        return { url in Thread.sleep(forTimeInterval: 0.1); return read(url) }
+    }
+}
+
+/// What each successive catalog parse of `ScriptedClaudeStore` comes to.
+private final class OutcomeScript: @unchecked Sendable {
+    enum Step { case failed, incomplete, whole }
+    private let lock = NSLock()
+    private var steps: [Step]
+    init(_ steps: [Step]) { self.steps = steps }
+    func next() -> Step { lock.lock(); defer { lock.unlock() }; return steps.isEmpty ? .whole : steps.removeFirst() }
+}
+
+/// Claude's store whose parses fail, come out partial or read whole, in
+/// the order its script says.
+private struct ScriptedClaudeStore: IncrementalSessionStore {
+    let inner: ClaudeSessionStore
+    let script: OutcomeScript
+    init(root: URL, script: OutcomeScript) { inner = ClaudeSessionStore(root: root); self.script = script }
+    var agent: Agent { .claude }
+    var catalogRoot: URL? { inner.catalogRoot }
+    func rootAvailable() -> Bool { inner.rootAvailable() }
+    func loadSummaries() -> [TranscriptSummary] { inner.loadSummaries() }
+    func sessionFileURLs() -> [URL] { inner.sessionFileURLs() }
+    func enumerateSessionFiles() throws -> [URL] { try inner.enumerateSessionFiles() }
+    func loadSummary(at fileURL: URL) -> TranscriptSummary? { inner.loadSummary(at: fileURL) }
+    func catalogReader() -> @Sendable (URL) -> CatalogParse {
+        let read = inner.catalogReader(), script = self.script
+        return { url in
+            switch script.next() {
+            case .failed: return .failed
+            case .incomplete: if case .summary(let summary) = read(url) { return .incomplete(summary) }; return .failed
+            case .whole: return read(url)
+            }
+        }
     }
 }

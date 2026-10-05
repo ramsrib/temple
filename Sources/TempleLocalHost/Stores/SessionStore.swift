@@ -67,6 +67,23 @@ protocol IncrementalSessionStore: SessionStore {
     /// The directory the catalog's kept summaries are tied to
     /// (`CatalogRoot`); nil keeps nothing for this store.
     var catalogRoot: URL? { get }
+    /// The catalog's parse, saying what it came to (`CatalogParse`), so
+    /// only an outcome every read of which succeeded is kept.
+    func catalogReader() -> @Sendable (URL) -> CatalogParse
+}
+
+/// What one catalog parse of a transcript came to. Only `summary` and
+/// `excluded` are ever kept (ADR-032).
+enum CatalogParse: Sendable, Equatable {
+    /// Every read the facts needed succeeded.
+    case summary(TranscriptSummary)
+    /// A summary, but a read it needed (the tail, a wider head, the stat)
+    /// failed: shown as it always was, never kept.
+    case incomplete(TranscriptSummary)
+    /// Read whole, and the bytes state no session: a proven exclusion.
+    case excluded
+    /// The read failed, or what was read proves nothing.
+    case failed
 }
 
 extension IncrementalSessionStore {
@@ -112,6 +129,13 @@ extension IncrementalSessionStore {
     func catalogParser() -> @Sendable (URL) -> TranscriptSummary? {
         let store = self
         return { store.loadSummary(at: $0) }
+    }
+    /// A store that only says "summary or nil" cannot tell a failed read
+    /// from an exclusion, nor a whole read from a partial one: its summaries
+    /// are shown and never kept.
+    func catalogReader() -> @Sendable (URL) -> CatalogParse {
+        let parser = catalogParser()
+        return { url in parser(url).map { .incomplete($0) } ?? .failed }
     }
 
 }
@@ -223,6 +247,67 @@ enum StoreIO {
         }
         if case .summary(let summary) = facts { return summary }
         return nil
+    }
+
+    /// The reads a catalog parse makes, so a test can fail any of them.
+    struct Reads: Sendable {
+        var signature: @Sendable (URL) -> (modificationDate: Date, fileSize: Int)?
+        var head: @Sendable (URL, Int) throws -> Data
+        var tail: @Sendable (URL, Int) throws -> Data
+
+        static let file = Reads(
+            signature: { StoreIO.fileSignature($0) },
+            head: { url, maxBytes in
+                let handle = try FileHandle(forReadingFrom: url)
+                defer { try? handle.close() }
+                return try handle.read(upToCount: maxBytes) ?? Data()
+            },
+            tail: { url, maxBytes in
+                let handle = try FileHandle(forReadingFrom: url)
+                defer { try? handle.close() }
+                let end = try handle.seekToEnd()
+                try handle.seek(toOffset: end > UInt64(maxBytes) ? end - UInt64(maxBytes) : 0)
+                return try handle.readToEnd() ?? Data()
+            })
+    }
+
+    /// `summary(at:)` for the catalog, saying what it came to: the same
+    /// bytes, the same facts, but a failed read is never silently empty. A
+    /// head that cannot be read fails the parse; a stat, tail or wider head
+    /// that cannot be read leaves the summary `incomplete` (it has exactly
+    /// the content `summary(at:)` gives, and is never kept). Bytes read
+    /// whole that state no session are `excluded`.
+    static func catalogParse(at url: URL, format: any TranscriptFormat, shared: SharedFacts,
+                             reads: Reads = .file) -> CatalogParse {
+        let maxBytes = readWindowBytes
+        let signature = reads.signature(url)
+        var whole = signature != nil
+        let head: Data
+        do { head = try reads.head(url, maxBytes) } catch { return .failed }
+        let size = signature?.fileSize ?? ((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? head.count)
+        var tail: Data?
+        if size > maxBytes {
+            let tailBytes = min(maxBytes, max(0, size - maxBytes))
+            if tailBytes > 0 {
+                do { tail = try reads.tail(url, tailBytes) } catch { whole = false }
+            }
+        }
+        let bytes = TranscriptBytes(head: head, tail: tail, fileSize: size, window: maxBytes)
+        let name = format.name(path: url.path)
+        let locator = TranscriptLocator(localURL: url)
+        let modifiedAt = signature?.modificationDate ?? modificationDate(url)
+        var facts = format.facts(bytes, name: name, locator: locator, modifiedAt: modifiedAt, shared: shared)
+        if case .needsWiderHead(let wider) = facts {
+            let widerHead: Data
+            do { widerHead = try reads.head(url, wider) } catch { widerHead = Data(); whole = false }
+            facts = format.facts(bytes.with(widerHead: widerHead), name: name, locator: locator,
+                                 modifiedAt: modifiedAt, shared: shared)
+        }
+        switch facts {
+        case .summary(let summary): return whole ? .summary(summary) : .incomplete(summary)
+        case .unparseable: return whole ? .excluded : .failed
+        case .needsWiderHead: return .failed
+        }
     }
 
     /// `summary(at:)` with what it cost: bytes read, and whether a wider
