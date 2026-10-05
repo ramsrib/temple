@@ -33,6 +33,8 @@ protocol SourceFixture: AnyObject {
     func makeListingNotExhaustive(_ agent: Agent) throws
     /// A new folder where the agent's transcripts are listed, reported.
     func makeFolderInScope(_ agent: Agent) throws
+    /// Holds the next absence proof inside its listing until released.
+    func holdNextProofListing() -> (reached: @Sendable () -> Bool, release: @Sendable () -> Void)
     /// Runs `body` inside the next absence proof, after its listing and
     /// before its wait.
     func duringNextProof(_ body: @escaping @Sendable () throws -> Void)
@@ -781,6 +783,56 @@ class HostSessionSourceContract: XCTestCase {
         XCTAssertFalse(proof.proves(asked))
     }
 
+    /// A proof that is cancelled — before it lists, while it lists, while
+    /// it waits — proves nothing.
+    func test18dACancelledProofProvesNothing() async throws {
+        try await observe()
+        let source = self.source
+        let id = uuid()
+        let early = Task { () -> AbsenceProof in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await source.proveAbsent(ids: [id], agent: .claude)
+        }
+        let cancelledEarly = await early.value
+        XCTAssertEqual(cancelledEarly, .unproven)
+
+        let held = fixture.holdNextProofListing()
+        let listing = Task { await source.proveAbsent(ids: [id], agent: .claude) }
+        try await waitUntil { held.reached() }
+        listing.cancel()
+        held.release()
+        let cancelledListing = await listing.value
+        XCTAssertEqual(cancelledListing, .unproven)
+
+        let start = FakeGate()
+        let box = TaskBox()
+        let waiting = Task { () -> AbsenceProof in
+            await start.wait()
+            return await source.proveAbsent(ids: [id], agent: .claude)
+        }
+        box.task = waiting
+        fixture.duringNextProof { box.task?.cancel() }
+        start.open()
+        let cancelledWaiting = await waiting.value
+        XCTAssertEqual(cancelledWaiting, .unproven)
+        // And the next proof, uncancelled, proves.
+        let settled = await settledProof([id], .claude)
+        XCTAssertTrue(settled.proves(id))
+    }
+
+    /// A transport that drops while a proof runs takes its observation with
+    /// it: nothing is proven.
+    func test18eATransportLostDuringAProofProvesNothing() async throws {
+        guard fixture.canBreakTransport else { throw XCTSkip("no transport to lose") }
+        try await observe()
+        let id = uuid()
+        let fixture = self.fixture!
+        fixture.duringNextProof { try fixture.breakTransport() }
+        let proof = await source.proveAbsent(ids: [id], agent: .claude)
+        XCTAssertFalse(proof.quiescent)
+        XCTAssertFalse(proof.proves(id))
+    }
+
     // MARK: 14 adoption
 
     func test14AdoptionNeedsExactlyOneEligibleHeader() async throws {
@@ -1034,6 +1086,11 @@ private final class LocalFixture: SourceFixture {
         let once = Flag()
         local.proofHook = { if once.setOnce() { try? body() } }
     }
+    func holdNextProofListing() -> (reached: @Sendable () -> Bool, release: @Sendable () -> Void) {
+        let once = Flag(), reached = Flag(), gate = DispatchSemaphore(value: 0)
+        local.proofListingHook = { if once.setOnce() { reached.set(); gate.wait() } }
+        return ({ reached.isSet }, { gate.signal() })
+    }
     func makeFolderInScope(_ agent: Agent) throws {
         let folder = agent == .claude ? claudeRoot.appendingPathComponent("-new-\(UUID().uuidString)")
             : codexRoot.appendingPathComponent("sessions/2026/10/\(UUID().uuidString)")
@@ -1130,6 +1187,11 @@ private final class FakeFixture: SourceFixture {
     func breakTransport() throws { fake.breakTransport() }
     func makeListingNotExhaustive(_ agent: Agent) throws { fake.setNotExhaustive(agent) }
     func makeFolderInScope(_ agent: Agent) throws { fake.makeFolder(agent) }
+    func holdNextProofListing() -> (reached: @Sendable () -> Bool, release: @Sendable () -> Void) {
+        let gate = FakeGate(), fake = self.fake
+        fake.proofListingGate = gate
+        return ({ gate.arrivals > 0 }, { fake.proofListingGate = nil; gate.open() })
+    }
     func duringNextProof(_ body: @escaping @Sendable () throws -> Void) {
         let once = Flag()
         fake.proofHook = { if once.setOnce() { try? body() } }
@@ -1144,4 +1206,13 @@ private final class FakeFixture: SourceFixture {
     var listings: Int { fake.counters.listings }
     var widerReads: Int { fake.counters.widerReads }
     func cleanup() {}
+}
+
+final class TaskBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Task<AbsenceProof, Never>?
+    var task: Task<AbsenceProof, Never>? {
+        get { lock.lock(); defer { lock.unlock() }; return value }
+        set { lock.lock(); value = newValue; lock.unlock() }
+    }
 }

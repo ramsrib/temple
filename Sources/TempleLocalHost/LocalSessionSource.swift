@@ -56,9 +56,20 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     /// Test seam: called by `proveAbsent` after its listing, before it
     /// waits out the stream's latency.
     var proofHook: (@Sendable () -> Void)?
+    /// Test seam: called by `proveAbsent` on the listing's thread, before
+    /// it lists.
+    var proofListingHook: (@Sendable () -> Void)?
+    /// Test seam: called by `proveAbsent` at the very end of its wait,
+    /// before the delivery barrier.
+    var proofWindowEndHook: (@Sendable () -> Void)?
     /// Events in an agent's listing scope, per running proof (ADR-030):
     /// each `proveAbsent` registers here and reads back what arrived.
     private var proofWatches: [UUID: ProofWatch] = [:]
+    /// A folder of Temple's own the stream watches beside the stores, for
+    /// delivery barriers' sentinel files; made when the stream is armed.
+    private var sentinelFolder: URL?
+    /// Barriers waiting for their sentinel's event, by its file name.
+    private var sentinelWaiters: [String: CheckedContinuation<Bool, Never>] = [:]
     enum ReadPhase { case sharedFactsAcquired, bytesRead }
     private var locateCount: UInt64 = 0
     private let readCounts = ReadCounters()
@@ -108,6 +119,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         if let stream {
             FSEventStreamStop(stream); FSEventStreamInvalidate(stream); FSEventStreamRelease(stream)
         }
+        if let sentinelFolder { try? FileManager.default.removeItem(at: sentinelFolder) }
     }
     public var isMonitoring: Bool {
         snapshotLock.lock(); defer { snapshotLock.unlock() }
@@ -188,6 +200,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         running = false
         monitoring = false
         loseObservationForProofsLocked()
+        failBarriersLocked()
         work?.cancel(); work = nil
         if let stream {
             FSEventStreamStop(stream); FSEventStreamInvalidate(stream); FSEventStreamRelease(stream)
@@ -201,6 +214,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
 
     private func armLocked() {
         loseObservationForProofsLocked()
+        failBarriersLocked()
         if let stream {
             FSEventStreamStop(stream); FSEventStreamInvalidate(stream); FSEventStreamRelease(stream)
             self.stream = nil
@@ -209,7 +223,13 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         // Enumeration-only control for the synthetic benchmark (and for
         // tests that inject every event): nothing from FSEvents arrives.
         guard monitorChanges else { return }
-        let requestedPaths = Set(roots.flatMap { [$0.watchPhysical, $0.watchLogical] })
+        if sentinelFolder == nil {
+            let folder = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+                .appendingPathComponent("temple-fsevents-\(UUID().uuidString)", isDirectory: true).resolvingSymlinksInPath()
+            if (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)) != nil { sentinelFolder = folder }
+        }
+        var requestedPaths = Set(roots.flatMap { [$0.watchPhysical, $0.watchLogical] })
+        if let sentinelFolder { requestedPaths.insert(sentinelFolder.path) }
         let paths = requestedPaths.filter { path in
             !requestedPaths.contains { other in other != path && path.hasPrefix(other + "/") }
         }
@@ -258,6 +278,11 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         guard running else { return }
         func has(_ flag: Int) -> Bool { flags & UInt32(flag) != 0 }
         if has(kFSEventStreamEventFlagHistoryDone) { return }
+        if let sentinelFolder {
+            let raw = RootMapping.alias(rawPath), folder = RootMapping.alias(sentinelFolder.path)
+            if raw.hasPrefix(folder + "/") { sentinelArrivedLocked((raw as NSString).lastPathComponent); return }
+            if raw == folder { return }
+        }
         let dropped = has(kFSEventStreamEventFlagUserDropped) || has(kFSEventStreamEventFlagKernelDropped)
         let rootChanged = has(kFSEventStreamEventFlagRootChanged)
         let path = logicalPath(rawPath)
@@ -449,42 +474,98 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
 
     /// A proof, taken now, that these sessions have no transcript file of
     /// `agent` on this Mac: one fresh audited listing of the agent's store
-    /// (ADR-032's rule and scope, not the filename map), then a wait as long
-    /// as the FSEvents stream's latency, and every event in the listing's
-    /// scope that arrived from before the listing to the end of the wait.
-    /// `AbsenceProof.decide` judges them. Runs off the caller's actor and off
-    /// the source's queue; only registering and reading back the events
-    /// touch the queue, briefly.
+    /// (ADR-032's rule and scope, not the filename map), a wait as long as
+    /// the FSEvents stream's latency, then a delivery barrier (a sentinel
+    /// event, `deliveryBarrier`), so every event for anything that happened
+    /// up to the end of the wait has been heard; then what was heard in the
+    /// listing's scope over the whole span, judged by `AbsenceProof.decide`.
+    /// No barrier (the stream gone, or armed again meanwhile), no
+    /// quiescence. Cancelled at any point, it proves nothing. Runs off the
+    /// caller's actor and off the source's queue; only registering and
+    /// reading back the events touch the queue, briefly.
     public func proveAbsent(ids: Set<String>, agent: Agent) async -> AbsenceProof {
-        guard let store = stores.first(where: { $0.agent == agent }) else {
-            // No store for the agent on this Mac: nothing here could hold it.
-            return AbsenceProof(exhaustive: true, quiescent: true, missing: ids)
-        }
+        // No store for the agent here: nothing was listed, nothing is proven.
+        guard let store = stores.first(where: { $0.agent == agent }), !Task.isCancelled else { return .unproven }
         let token = UUID()
         let observing = await onQueue { () -> Bool in
             self.proofWatches[token] = ProofWatch(agent: agent)
             return self.monitoring
         }
+        func unproven() async -> AbsenceProof {
+            await onQueue { self.proofWatches[token] = nil }
+            return .unproven
+        }
+        let hook = proofListingHook
         let listing: (paths: [String], exhaustive: Bool)? = await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
+                hook?()
                 let listed = try? store.enumerateSessionFilesAudited()
                 continuation.resume(returning: listed.map { ($0.files.map(\.path), $0.exhaustive) })
             }
         }
+        guard !Task.isCancelled else { return await unproven() }
         proofHook?()
-        try? await Task.sleep(for: .seconds(proofQuiescence))
+        do { try await Task.sleep(for: .seconds(proofQuiescence)) } catch { return await unproven() }
+        proofWindowEndHook?()
+        let delivered = await deliveryBarrier()
+        guard !Task.isCancelled else { return await unproven() }
         let (events, stillObserving) = await onQueue { () -> ([ScopeEvent], Bool) in
             let watch = self.proofWatches.removeValue(forKey: token)
             return (watch?.events ?? [ScopeEvent(path: "", kind: .lost)], self.monitoring)
         }
         return AbsenceProof.decide(ids: ids, format: store.format, listed: listing?.paths,
                                    exhaustive: listing?.exhaustive ?? false, events: events,
-                                   observing: observing && stillObserving)
+                                   observing: observing && stillObserving && delivered)
     }
 
-    /// The stream's latency, and a little: an event for anything that
-    /// happened before the wait began has been delivered by its end.
+    /// The stream's latency, and a little.
     var proofQuiescence: TimeInterval { max(0.01, debounceInterval) + 0.05 }
+    /// How long a barrier waits for its sentinel before it gives up.
+    var barrierTimeout: TimeInterval { max(0.01, debounceInterval) + 2 }
+
+    /// A real delivery barrier: a sentinel file made, now, in a folder of
+    /// Temple's own that the stream watches beside the stores, and the wait
+    /// until the stream delivers its event. FSEvents numbers events in the
+    /// order they happened and delivers a stream's in that order, so once
+    /// the sentinel's event is here every event for anything that happened
+    /// before it is too. (A flush alone is not a barrier: measured, an event
+    /// made just before `FSEventStreamFlushSync` arrives after it returns.)
+    /// False — no quiescence — when there is no stream, it stops or is armed
+    /// again meanwhile, or the sentinel does not arrive in time.
+    private func deliveryBarrier() async -> Bool {
+        let name = UUID().uuidString
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            queue.async {
+                guard let stream = self.stream, let folder = self.sentinelFolder else { continuation.resume(returning: false); return }
+                self.sentinelWaiters[name] = continuation
+                self.queue.asyncAfter(deadline: .now() + self.barrierTimeout) {
+                    self.sentinelWaiters.removeValue(forKey: name)?.resume(returning: false)
+                }
+                FSEventStreamRetain(stream)
+                let retained = RetainedStream(stream: stream)
+                DispatchQueue.global(qos: .utility).async {
+                    let file = folder.appendingPathComponent(name)
+                    FileManager.default.createFile(atPath: file.path, contents: nil)
+                    // Hastens delivery past the stream's latency.
+                    FSEventStreamFlushSync(retained.stream)
+                    FSEventStreamRelease(retained.stream)
+                }
+            }
+        }
+    }
+
+    /// The sentinel's event arrived: its barrier is passed.
+    private func sentinelArrivedLocked(_ name: String) {
+        guard let continuation = sentinelWaiters.removeValue(forKey: name) else { return }
+        if let folder = sentinelFolder { try? FileManager.default.removeItem(at: folder.appendingPathComponent(name)) }
+        continuation.resume(returning: true)
+    }
+
+    /// The stream went or was replaced: no barrier waiting on it passes.
+    private func failBarriersLocked() {
+        let waiting = sentinelWaiters; sentinelWaiters.removeAll()
+        waiting.values.forEach { $0.resume(returning: false) }
+    }
 
     private func onQueue<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
         await withCheckedContinuation { continuation in queue.async { continuation.resume(returning: body()) } }
@@ -951,4 +1032,9 @@ private struct ProofWatch {
         if events.count < Self.limit { events.append(event) }
         else if events.last?.kind != .lost { events.append(ScopeEvent(path: "", kind: .lost)) }
     }
+}
+
+/// A stream reference taken on the source's queue, retained, to flush off it.
+private struct RetainedStream: @unchecked Sendable {
+    let stream: FSEventStreamRef
 }

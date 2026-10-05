@@ -237,7 +237,20 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
             proofWatches[token]?.events.append(event)
         }
     }
-    public func breakTransport(_ broken: Bool = true) { locked { transportBroken = broken } }
+    /// A transport that drops takes every running proof's observation with it.
+    public func breakTransport(_ broken: Bool = true) {
+        locked {
+            transportBroken = broken
+            if broken { recordLocked(ScopeEvent(path: "", kind: .lost), agent: nil) }
+        }
+    }
+
+    /// Held, when set, inside every `proveAbsent`'s listing: a test can
+    /// cancel a proof while it lists.
+    public var proofListingGate: FakeGate? {
+        get { locked { gateForProofListing } } set { locked { gateForProofListing = newValue } }
+    }
+    private var gateForProofListing: FakeGate?
 
     /// What a dropped event stream (or a reconnect) does: coverage moves on.
     /// Unannounced, a consumer learns of it from its next `locate`.
@@ -560,9 +573,13 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
     /// One listing of the agent's files, the hook, a turn, then what was
     /// recorded meanwhile: the same decision every host makes.
     public func proveAbsent(ids: Set<String>, agent: Agent) async -> AbsenceProof {
+        guard !Task.isCancelled else { return .unproven }
         let token = UUID()
+        locked { proofWatches[token] = (agent, []) }
+        func unproven() -> AbsenceProof { locked { proofWatches[token] = nil }; return .unproven }
+        await proofListingGate?.wait()
+        guard !Task.isCancelled else { return unproven() }
         let (listed, exhaustive, observing): ([String]?, Bool, Bool) = locked {
-            proofWatches[token] = (agent, [])
             counts.roundTrips += 1
             guard !transportBroken else { return (nil, false, false) }
             guard !brokenListings.contains(agent) else { return (nil, false, true) }
@@ -570,9 +587,12 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
         }
         proofHook?()
         await Task.yield()
-        let events = locked { proofWatches.removeValue(forKey: token)?.events ?? [] }
+        guard !Task.isCancelled else { return unproven() }
+        // Observation must have lasted to the end: a transport that dropped
+        // meanwhile left its mark, and one that is down now proves nothing.
+        let (events, stillObserving) = locked { (proofWatches.removeValue(forKey: token)?.events ?? [], !transportBroken) }
         return AbsenceProof.decide(ids: ids, format: TranscriptFormats.format(for: agent), listed: listed,
-                                   exhaustive: exhaustive, events: events, observing: observing)
+                                   exhaustive: exhaustive, events: events, observing: observing && stillObserving)
     }
 
     /// Codex only: the one rollout header in the window for this folder.

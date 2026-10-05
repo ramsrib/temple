@@ -66,11 +66,22 @@ final class AutoArchiveTests: XCTestCase {
         /// Per agent, what the proof says; absent agents prove every id.
         var answers: [Agent: (exhaustive: Bool, quiescent: Bool, present: Set<String>)] = [:]
         var calls: [(HostID, Agent, Set<String>)] = []
+        /// Hosts whose proofs wait until `release(host)`.
+        var held: Set<HostID> = []
+        private var waiters: [HostID: [CheckedContinuation<Void, Never>]] = [:]
+        func waiting(_ host: HostID) -> Bool { !(waiters[host] ?? []).isEmpty }
 
-        func prove(_ host: HostID, _ agent: Agent, _ ids: Set<String>) -> AbsenceProof {
+        func prove(_ host: HostID, _ agent: Agent, _ ids: Set<String>) async -> AbsenceProof {
             calls.append((host, agent, ids))
+            if held.contains(host) { await withCheckedContinuation { waiters[host, default: []].append($0) } }
             let answer = answers[agent] ?? (true, true, [])
             return AbsenceProof(exhaustive: answer.exhaustive, quiescent: answer.quiescent, missing: ids.subtracting(answer.present))
+        }
+
+        func release(_ host: HostID) {
+            held.remove(host)
+            let pending = waiters.removeValue(forKey: host) ?? []
+            pending.forEach { $0.resume() }
         }
     }
 
@@ -273,6 +284,47 @@ final class AutoArchiveTests: XCTestCase {
         XCTAssertEqual(h.timers.armed, [AppModel.periodicSweepInterval, AppModel.periodicSweepInterval], "and the next tick")
     }
 
+    /// A proof asked for one membership proves nothing about another: a
+    /// leave and rejoin while the proof runs (and a new hint for the
+    /// rejoin) archives nothing until a proof is asked for the rejoin.
+    func testAProofForAnEarlierMembershipProvesNothingAboutARejoin() async throws {
+        var h = harness([row("a", project: nil)])
+        h.publish(["a": .confirmedAbsent])
+        let old = try XCTUnwrap(h.ref("a"))
+        h.proofs.held = [.local]
+        h.scheduler.fire()
+        try await waitFor { h.proofs.waiting(.local) }
+
+        XCTAssertTrue(try h.database.leave(sessionID: "a", host: .local))
+        try h.database.join(sessionID: "a", via: .imported, agent: .claude,
+                            core: SessionCore(lastActiveAt: Date(timeIntervalSince1970: 0)))
+        XCTAssertNotEqual(h.ref("a"), old)
+        h.publish(["a": .confirmedAbsent])
+        h.proofs.release(.local)
+        await h.model.archiveSweep?.value
+        XCTAssertEqual(h.archived(["a"]), [], "the proof was asked for the old membership")
+
+        await h.settle()
+        XCTAssertEqual(h.archived(["a"]), ["a"], "a proof asked for the rejoin")
+    }
+
+    /// Every host's proofs run at once, and a host's archives are written
+    /// as soon as its own proofs are in: a slow host holds up nobody else.
+    func testAHostsArchivesAreWrittenWithoutWaitingForASlowerHost() async throws {
+        let remote = HostID(rawValue: "build-box")
+        var h = harness([row("here", project: nil), Fixture.row("there", project: nil, title: "there", host: remote)])
+        h.publish(["here": .confirmedAbsent, "there": .confirmedAbsent])
+        h.proofs.held = [remote]
+        h.scheduler.fire()
+        try await waitFor { h.proofs.waiting(remote) }
+        try await waitFor { h.archived(["here"]) == ["here"] }
+        XCTAssertEqual(h.archived(["there"]), [], "still proving")
+        h.proofs.release(remote)
+        await h.model.archiveSweep?.value
+        XCTAssertEqual(h.archived(["here", "there"]), ["here", "there"])
+        XCTAssertEqual(h.model.autoArchiveNotice?.count, 2, "one notice")
+    }
+
     func testThePlanIsPureAndStable() {
         let state = { (id: String, directory: String?, reason: ArchiveReason?, kept: Date?) in
             SessionState(id: id, pinned: false, archived: false, customName: nil, color: nil, generatedTitle: nil,
@@ -299,12 +351,15 @@ final class AutoArchiveTests: XCTestCase {
         XCTAssertEqual(AutoArchivePolicy.foldersToCheck(rows: rows.values, snapshot: snapshot, openSessionIDs: [], now: clock),
                        [Fixture.key("/gone"), Fixture.key("/here"), Fixture.key("/unknown")])
         let requests = AutoArchivePolicy.proofRequests(rows: rows.values, snapshot: snapshot, openSessionIDs: [], now: clock)
-        XCTAssertEqual(requests, [.init(host: .local, agent: .claude): ["a", "both"], .init(host: .local, agent: .codex): ["a", "both"]],
+        XCTAssertEqual(requests.mapValues { Set($0.keys) },
+                       [.init(host: .local, agent: .claude): ["a", "both"], .init(host: .local, agent: .codex): ["a", "both"]],
                        "no agent recorded: every agent's proof")
+        XCTAssertEqual(requests[.init(host: .local, agent: .claude)]?["a"], ref("a"), "each with the membership it was asked for")
         let proven = AbsenceProof(exhaustive: true, quiescent: true, missing: ["a", "both"])
         let plan = AutoArchivePolicy.plan(
             rows: rows.values, snapshot: snapshot,
             proofs: [.init(host: .local, agent: .claude): proven, .init(host: .local, agent: .codex): proven],
+            requested: requests,
             folders: [Fixture.key("/gone"): .missing, Fixture.key("/here"): .exists, Fixture.key("/unknown"): .unknown],
             openSessionIDs: [], now: clock)
         XCTAssertEqual(plan.map(\.ref.id), ["a", "b", "both"], "not the rejoined row: the absence was another membership's")
@@ -625,7 +680,11 @@ final class AutoArchiveTests: XCTestCase {
         let db = try TempleDB(path: path)
         XCTAssertNil(try db.sessionState("legacy")?.archiveReason)
         // Observing: an absence is proven only by a host watching its store.
-        let source = LocalSessionSource(stores: [ClaudeSessionStore(root: storeRoot)], debounceInterval: 0.01)
+        // Both agents' stores: a row with no agent recorded needs both proofs.
+        let codex = root.appendingPathComponent("codex")
+        try FileManager.default.createDirectory(at: codex.appendingPathComponent("sessions"), withIntermediateDirectories: true)
+        let source = LocalSessionSource(stores: [ClaudeSessionStore(root: storeRoot), CodexSessionStore(root: codex)],
+                                        debounceInterval: 0.01)
         let engine = SessionEngine(source: source, database: db)
         let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [engine], database: db,
                            settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
@@ -634,6 +693,8 @@ final class AutoArchiveTests: XCTestCase {
         // This Mac's real folder evidence, as the local host answers it.
         app.folderEvidence = { await source.directoryEvidence($0.path) }
         app.proveAbsence = { _, agent, ids in await source.proveAbsent(ids: ids, agent: agent) }
+        // A proof the fixture's own writes disturbed is tried again, soon.
+        app.sweepTimer = { _, action in SessionOverlayStore.schedule(0.2, action) }
         app.start()
         return (app, db, engine)
     }

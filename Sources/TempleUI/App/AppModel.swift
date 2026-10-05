@@ -214,7 +214,7 @@ public final class AppModel: ObservableObject {
     /// The owning host's proof that sessions have no transcript of an agent,
     /// taken now (`HostSessionSource.proveAbsent`): nothing is proven until
     /// the app turns the sweep on.
-    var proveAbsence: (HostID, Agent, Set<String>) async -> AbsenceProof = { _, _, _ in .unproven }
+    var proveAbsence: @Sendable (HostID, Agent, Set<String>) async -> AbsenceProof = { _, _, _ in .unproven }
     /// A cancellable one-shot timer for the sweep's slow schedule (hourly)
     /// and its retries after a proof that was not quiescent. Off until the
     /// app turns the sweep on.
@@ -332,22 +332,51 @@ public final class AppModel: ObservableObject {
         var evidence: [ProjectKey: DirectoryEvidence] = [:]
         for folder in folders { evidence[folder] = await folderEvidence(folder) }
         guard !openSessions.isQuitting else { return }
-        // The transcript proofs last, right before the write: one per host
-        // and agent, for the rows the engine hints are gone (ADR-030).
+        // The transcript proofs last, right before the writes: one per host
+        // and agent, for the rows the engine hints are gone (ADR-030). Every
+        // host's proofs run at once, and each host's archives are written as
+        // soon as its own proofs are in, so a slow host does not widen the
+        // window after another host's proof.
         let requests = AutoArchivePolicy.proofRequests(
             rows: overlay.rows.values, snapshot: latestEngineSnapshot,
             openSessionIDs: Set(openSessions.openSessionIDsInTabOrder), now: now())
-        var proofs: [AutoArchivePolicy.ProofKey: AbsenceProof] = [:]
-        for (key, ids) in requests { proofs[key] = await proveAbsence(key.host, key.agent, ids) }
+        let hosts = Set(AutoArchivePolicy.candidates(rows: overlay.rows.values,
+                                                     openSessionIDs: Set(openSessions.openSessionIDsInTabOrder),
+                                                     now: now()).map(\.ref.host))
+        let prove = proveAbsence
+        var allProofs: [AutoArchivePolicy.ProofKey: AbsenceProof] = [:]
+        await withTaskGroup(of: (HostID, [AutoArchivePolicy.ProofKey: AbsenceProof]).self) { group in
+            for host in hosts {
+                let asks = requests.filter { $0.key.host == host }.mapValues { Set($0.keys) }
+                group.addTask {
+                    await withTaskGroup(of: (AutoArchivePolicy.ProofKey, AbsenceProof).self) { agents in
+                        for (key, ids) in asks { agents.addTask { (key, await prove(key.host, key.agent, ids)) } }
+                        var proofs: [AutoArchivePolicy.ProofKey: AbsenceProof] = [:]
+                        for await (key, proof) in agents { proofs[key] = proof }
+                        return (host, proofs)
+                    }
+                }
+            }
+            for await (host, proofs) in group {
+                allProofs.merge(proofs) { $1 }
+                writeArchives(host: host, proofs: proofs, requested: requests, folders: evidence)
+            }
+        }
+        retryProofsIfNeeded(allProofs)
+    }
+
+    /// One host's archives, planned on the state as it is now — a tab
+    /// opened, a pin, a restore or a leave during the checks is seen here
+    /// (and the write's own guards catch what another connection did) —
+    /// and written in one transaction.
+    private func writeArchives(host: HostID, proofs: [AutoArchivePolicy.ProofKey: AbsenceProof],
+                               requested: [AutoArchivePolicy.ProofKey: [String: MembershipRef]],
+                               folders: [ProjectKey: DirectoryEvidence]) {
         guard !openSessions.isQuitting else { return }
-        retryProofsIfNeeded(proofs)
-        // Planned again on the state as it is now: a tab opened, a pin, a
-        // restore or a leave during the checks is seen here (and the write's
-        // own guards catch what another connection did).
         let at = now()
         let entries = AutoArchivePolicy.plan(
-            rows: overlay.rows.values, snapshot: latestEngineSnapshot, proofs: proofs,
-            folders: evidence, openSessionIDs: Set(openSessions.openSessionIDsInTabOrder), now: at)
+            rows: overlay.rows.values, snapshot: latestEngineSnapshot, proofs: proofs, requested: requested,
+            folders: folders, openSessionIDs: Set(openSessions.openSessionIDsInTabOrder), now: at, host: host)
         guard !entries.isEmpty else { return }
         let archived = Set(overlay.autoArchive(entries, idleBefore: at.addingTimeInterval(-AutoArchivePolicy.idleAfter)))
         guard !archived.isEmpty else { return }
