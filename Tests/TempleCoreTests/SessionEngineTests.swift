@@ -304,6 +304,36 @@ final class SessionEngineTests: XCTestCase {
         try await eventually { recorder.latest.first?.title == "physical event" }
     }
 
+    /// ADR-030: a store that is not there proves nothing. With Claude's
+    /// store present and empty and Codex's root missing, a Claude member is
+    /// proven absent, a Codex member is not, and a member that names no
+    /// agent (a legacy row, which either store could hold) is not either.
+    /// Each verdict names the membership it is about.
+    func testAMissingCodexRootLeavesCodexAndAgentlessMembersUnproven() async throws {
+        let claudeRoot = try root()
+        let codexBase = try root().appendingPathComponent("missing-codex")
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "claude-member", via: .imported, agent: .claude)
+        try db.join(sessionID: "codex-member", via: .imported, agent: .codex)
+        try db.join(sessionID: "agentless", via: .imported)
+        let source = LocalSessionSource(stores: [ClaudeSessionStore(root: claudeRoot), CodexSessionStore(root: codexBase)],
+                                        debounceInterval: 0.02, monitorChanges: false)
+        let watcher = SessionEngine(source: source, database: db)
+        let recorder = try await start(watcher)
+        defer { recorder.stop() }
+        XCTAssertEqual(watcher.resolution(for: "claude-member"), .confirmedAbsent)
+        XCTAssertEqual(watcher.resolution(for: "codex-member"), .incomplete)
+        XCTAssertEqual(watcher.resolution(for: "agentless"), .incomplete)
+        let incarnation = try XCTUnwrap(db.sessionState("claude-member")?.incarnation)
+        XCTAssertEqual(recorder.indices.last?.memberships["claude-member"],
+                       MembershipRef(id: "claude-member", host: .local, incarnation: incarnation))
+
+        // The store appears: absence is provable again.
+        try FileManager.default.createDirectory(at: codexBase.appendingPathComponent("sessions"), withIntermediateDirectories: true)
+        await watcher.requestResolution("codex-member")
+        try await eventually { watcher.resolution(for: "codex-member") == .confirmedAbsent }
+    }
+
     func testDroppedEventsRecoverAndFailedEnumerationDoesNotProveAbsence() async throws {
         let root = try root()
         try claude(root, id: "kept")
@@ -912,6 +942,8 @@ final class SessionEngineTests: XCTestCase {
 
     func testCodexFailedEnumerationKeepsMissingMemberIncompleteUntilRecovery() async throws {
         let root = try root()
+        // An empty store that is there (a missing one would stay incomplete, ADR-030).
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("sessions"), withIntermediateDirectories: true)
         let member = UUID().uuidString.lowercased()
         let store = EngineCountingStore(CodexSessionStore(root: root))
         store.failEnumeration = true

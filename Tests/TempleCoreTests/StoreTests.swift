@@ -26,22 +26,51 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(try ClaudeSessionStore(root: parent).enumerateSessionFiles(), [])
     }
 
-    /// A folder on a drive that is not plugged in stats as ENOENT, exactly
-    /// like a deleted one. Under /Volumes/<name>/ the volume itself must be
-    /// there before anything is called missing (ADR-030 archives on it).
-    func testAFolderOnAnUnmountedVolumeIsUnknownNotMissing() throws {
+    func testAMissingCodexRootFailsTheListingButAMissingDayDoesNot() throws {
         let parent = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: parent) }
-        XCTAssertEqual(LocalSessionSource.evidence(parent.path), .exists)
-        XCTAssertEqual(LocalSessionSource.evidence(parent.appendingPathComponent("deleted").path), .missing)
-        let unplugged = "/Volumes/temple-unmounted-\(UUID().uuidString)"
-        XCTAssertEqual(LocalSessionSource.evidence(unplugged + "/project"), .unknown)
-        XCTAssertEqual(LocalSessionSource.evidence(unplugged), .unknown)
-        XCTAssertEqual(LocalSessionSource.volumeRoot(unplugged + "/a/b"), unplugged)
-        XCTAssertNil(LocalSessionSource.volumeRoot("/Users/me/Volumes/x"))
-        // On a volume that is mounted, a folder that is not there is missing.
-        if let mounted = try? FileManager.default.contentsOfDirectory(atPath: "/Volumes").first {
-            XCTAssertEqual(LocalSessionSource.evidence("/Volumes/\(mounted)/temple-no-such-\(UUID().uuidString)"), .missing)
+        let noBase = CodexSessionStore(root: parent.appendingPathComponent("missing"))
+        XCTAssertThrowsError(try noBase.enumerateSessionFiles()) { XCTAssertTrue($0 is StoreRootMissing) }
+        let noSessions = CodexSessionStore(root: parent)
+        XCTAssertThrowsError(try noSessions.enumerateSessionFiles()) { XCTAssertTrue($0 is StoreRootMissing) }
+        XCTAssertEqual(noSessions.sessionFileURLs(), [], "the tolerant listing stays tolerant")
+        try FileManager.default.createDirectory(at: parent.appendingPathComponent("sessions"), withIntermediateDirectories: true)
+        XCTAssertEqual(try noSessions.enumerateSessionFiles(), [])
+        XCTAssertEqual(try noSessions.enumerateSessionFiles(in: parent.appendingPathComponent("sessions/2026/10/05")), [],
+                       "a day folder that is gone, in a store that is there")
+    }
+
+    /// A folder on a drive that is not plugged in stats as ENOENT, exactly
+    /// like a deleted one. Under a volumes root the folder's nearest existing
+    /// ancestor must be the mounted volume itself (ADR-030 archives on it).
+    func testFolderEvidenceRequiresTheVolumeToBeMounted() throws {
+        let parent = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let volumes = parent.appendingPathComponent("Volumes")
+        let evidence = { (path: String) in LocalSessionSource.evidence(path, volumesRoot: volumes.path) }
+        XCTAssertEqual(evidence(parent.path), .exists)
+        XCTAssertEqual(evidence(parent.appendingPathComponent("deleted/project").path), .missing)
+
+        // No volumes directory at all, then an empty one: the drive is not there.
+        XCTAssertEqual(evidence(volumes.appendingPathComponent("Drive/project").path), .unknown)
+        try FileManager.default.createDirectory(at: volumes, withIntermediateDirectories: true)
+        XCTAssertEqual(evidence(volumes.appendingPathComponent("Drive/project").path), .unknown)
+        // A leftover mount point is a plain directory on the boot volume, not the drive.
+        try FileManager.default.createDirectory(at: volumes.appendingPathComponent("Drive"), withIntermediateDirectories: true)
+        XCTAssertEqual(evidence(volumes.appendingPathComponent("Drive/project").path), .unknown)
+        // Reached through a symlink from elsewhere: the same.
+        let link = parent.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: volumes.appendingPathComponent("Drive"))
+        XCTAssertEqual(evidence(link.appendingPathComponent("project").path), .unknown)
+        // A symlink on the way whose target is gone: unknown, not missing.
+        let dangling = parent.appendingPathComponent("dangling")
+        try FileManager.default.createSymbolicLink(at: dangling, withDestinationURL: parent.appendingPathComponent("gone"))
+        XCTAssertEqual(evidence(dangling.appendingPathComponent("project").path), .unknown)
+        // The real /Volumes: a name nothing is mounted at is unknown.
+        XCTAssertEqual(LocalSessionSource.evidence("/Volumes/temple-unmounted-\(UUID().uuidString)/project"), .unknown)
+        // The boot volume's link resolves off /Volumes: a folder gone there is gone.
+        if FileManager.default.fileExists(atPath: "/Volumes/Macintosh HD") {
+            XCTAssertEqual(LocalSessionSource.evidence("/Volumes/Macintosh HD/private/tmp/temple-no-such-\(UUID().uuidString)"), .missing)
         }
     }
 

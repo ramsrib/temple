@@ -93,8 +93,16 @@ struct CodexSessionStore: TranscriptSummaryStore {
     private func enumerateRollouts(in directory: URL) throws -> [URL] {
         let fm = FileManager.default
         let physicalRoot = directory.resolvingSymlinksInPath()
+        // A missing day folder inside an available store is an empty one; a
+        // missing store root is a failed listing, never a completed empty
+        // scan (ADR-030), as for Claude. The catalog reads it as empty.
         do { _ = try fm.contentsOfDirectory(atPath: physicalRoot.path) }
-        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return [] }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            if SessionPaths.normalized(directory.path) == SessionPaths.normalized(sessionsRoot.path) {
+                throw StoreRootMissing(root: sessionsRoot)
+            }
+            return []
+        }
         var failure: Error?
         guard let enumerator = fm.enumerator(at: physicalRoot, includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles], errorHandler: { _, error in failure = error; return false })
