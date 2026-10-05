@@ -19,6 +19,13 @@ extension SessionStore {
 struct StoreRootMissing: Error, LocalizedError {
     let root: URL
     var errorDescription: String? { "\(root.path) does not exist." }
+
+    /// Whether `root` is a directory now (through symlinks).
+    static func isDirectory(_ root: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: root.resolvingSymlinksInPath().path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+    }
 }
 
 /// Path-level capabilities required by the live engine. Full-disk catalogs
@@ -32,7 +39,12 @@ protocol IncrementalSessionStore: SessionStore {
     /// Unlike the catalog's tolerant listing, resolution must distinguish errors
     /// from a completed empty scan.
     func enumerateSessionFiles() throws -> [URL]
+    /// A missing subtree is empty only while the store root is there;
+    /// without it the listing throws `StoreRootMissing` (ADR-030).
     func enumerateSessionFiles(in subtree: URL) throws -> [URL]
+    /// The store's root directory is there. A file or folder gone under a
+    /// root that is gone proves nothing about the file.
+    func rootAvailable() -> Bool
     func filenameID(at url: URL) -> String?
     /// Codex resume priority from the canonical filename (timestamp + rollout ID).
     func rolloutSelectionKey(at url: URL) -> String?
@@ -74,6 +86,7 @@ extension IncrementalSessionStore {
     }
 
     func enumerateSessionFiles() throws -> [URL] { sessionFileURLs() }
+    func rootAvailable() -> Bool { true }
     func enumerateSessionFiles(in subtree: URL) throws -> [URL] {
         let prefix = SessionPaths.normalized(subtree.path)
         return try enumerateSessionFiles().filter { SessionPaths.normalized($0.path).hasPrefix(prefix + "/") }

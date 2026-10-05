@@ -384,6 +384,14 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             _ = recordFilenameLocked(path, store: store)
             return
         }
+        // Gone with its store root (a volume gone, a store moved), before
+        // the root's own event arrives: that proves nothing about the file.
+        // The map keeps it, and the agent is no longer completely listed
+        // until a full listing succeeds again.
+        guard store.rootAvailable() else {
+            enumerationByAgent[store.agent] = false
+            return
+        }
         guard files.removeValue(forKey: path) != nil, let id = store.filenameID(at: url) else { return }
         pathsByID[id]?.remove(path)
         if pathsByID[id]?.isEmpty == true { pathsByID.removeValue(forKey: id) }

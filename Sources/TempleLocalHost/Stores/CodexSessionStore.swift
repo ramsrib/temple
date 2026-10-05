@@ -98,7 +98,7 @@ struct CodexSessionStore: TranscriptSummaryStore {
         // scan (ADR-030), as for Claude. The catalog reads it as empty.
         do { _ = try fm.contentsOfDirectory(atPath: physicalRoot.path) }
         catch let error as CocoaError where error.code == .fileReadNoSuchFile {
-            if SessionPaths.normalized(directory.path) == SessionPaths.normalized(sessionsRoot.path) {
+            if SessionPaths.normalized(directory.path) == SessionPaths.normalized(sessionsRoot.path) || !rootAvailable() {
                 throw StoreRootMissing(root: sessionsRoot)
             }
             return []
@@ -112,6 +112,8 @@ struct CodexSessionStore: TranscriptSummaryStore {
         if let failure { throw failure }
         return files
     }
+
+    func rootAvailable() -> Bool { StoreRootMissing.isDirectory(sessionsRoot) }
 
     func acceptsTranscript(_ url: URL) -> Bool {
         url.pathExtension == "jsonl" && url.lastPathComponent.hasPrefix("rollout-") &&

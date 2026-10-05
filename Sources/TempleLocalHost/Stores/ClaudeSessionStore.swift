@@ -59,8 +59,15 @@ struct ClaudeSessionStore: TranscriptSummaryStore {
         do {
             return try FileManager.default.contentsOfDirectory(at: subtree.resolvingSymlinksInPath(), includingPropertiesForKeys: nil)
                 .filter { $0.pathExtension == "jsonl" }
-        } catch let error as CocoaError where error.code == .fileReadNoSuchFile { return [] }
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            // A project folder gone from a store that is there is empty; one
+            // gone with the store proves nothing.
+            guard rootAvailable() else { throw StoreRootMissing(root: root) }
+            return []
+        }
     }
+
+    func rootAvailable() -> Bool { StoreRootMissing.isDirectory(root) }
 
     func acceptsTranscript(_ url: URL) -> Bool {
         let path = SessionPaths.normalized(url.path)

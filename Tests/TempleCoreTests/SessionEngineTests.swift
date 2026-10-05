@@ -278,6 +278,37 @@ final class SessionEngineTests: XCTestCase {
         try await eventually { recorder.latest.isEmpty }
     }
 
+    /// The store root goes (a volume unmounted, a store moved) and FSEvents
+    /// delivers a descendant's event before the root's own. A folder or file
+    /// gone with its root proves nothing: no member may become absent, and
+    /// the agent is no longer completely listed until a full listing works.
+    func testAStoreRootGoneBeforeItsEventProvesNothingFromADescendantEvent() async throws {
+        for descendant in ["directory", "file"] {
+            let parent = try root()
+            let store = parent.appendingPathComponent("store")
+            let file = try claude(store, id: "member")
+            try claude(store, id: "other")
+            let watcher = try memberEngine(LocalSessionSource(stores: [ClaudeSessionStore(root: store)], debounceInterval: 0.02,
+                                                              monitorChanges: false), members: ["member", "other"])
+            let recorder = try await start(watcher)
+            guard case .loaded? = watcher.resolution(for: "member") else { recorder.stop(); return XCTFail("\(descendant): not loaded") }
+            try FileManager.default.moveItem(at: store, to: parent.appendingPathComponent("away"))
+            if descendant == "directory" {
+                watcher.reconcileEvent(path: file.deletingLastPathComponent().path,
+                                       flags: UInt32(kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagItemRemoved))
+            } else {
+                watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemRemoved))
+            }
+            // (No fresh request here: one lists the whole store again, which
+            // fails on the missing root and would hide the bug.)
+            try await Task.sleep(for: .milliseconds(800))
+            for id in ["member", "other"] {
+                XCTAssertNotEqual(watcher.resolution(for: id), .confirmedAbsent, "\(descendant): \(id)")
+            }
+            recorder.stop()
+        }
+    }
+
     func testMissingRootAndRetargetedSymlinkAreRearmed() async throws {
         let parent = try root()
         let missing = parent.appendingPathComponent("missing")
@@ -1111,6 +1142,7 @@ private final class EngineCountingStore: IncrementalSessionStore, @unchecked Sen
         lock.lock(); listingCount += 1; lock.unlock()
         return try inner.enumerateSessionFiles(in: subtree)
     }
+    func rootAvailable() -> Bool { inner.rootAvailable() }
     func acceptsTranscript(_ url: URL) -> Bool { inner.acceptsTranscript(url) }
     func filenameID(at url: URL) -> String? { inner.filenameID(at: url) }
     func rolloutSelectionKey(at url: URL) -> String? { inner.rolloutSelectionKey(at: url) }
