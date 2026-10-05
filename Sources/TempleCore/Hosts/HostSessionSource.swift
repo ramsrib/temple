@@ -14,6 +14,23 @@ public enum HostCapability: Hashable, Sendable {
 public protocol HostSessionSource: Sendable {
     var host: HostID { get }
     var capabilities: Set<HostCapability> { get }
+    /// The whole store, a thread at a time, for browsing (History). Each
+    /// thread's file is picked by member resolution's rule *before* anything
+    /// is read (`TranscriptCandidates.catalogThreads` / `catalogPick`), and a
+    /// file yields a summary only once its recorded identity is the thread's.
+    ///
+    /// A source may keep summaries between calls (ADR-032); how is its own
+    /// business, but what it emits must be what a fresh read of the picked
+    /// file would produce now: a kept summary is used only while the file's
+    /// signature — by the host's own stat, change time included where the
+    /// host has one — is the one its read started and ended with, and shared
+    /// inputs are applied fresh (`TranscriptFormat.withShared`), never kept.
+    /// Nothing a catalog keeps is membership: it never fills or proves
+    /// anything about a Temple row.
+    ///
+    /// The stream ends with `.completed` naming the agents whose listing
+    /// finished and whose every thread was then decided; a cancelled read,
+    /// a failed listing or a transport failure leaves its agents out.
     func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error>
     func adopt(_ request: AdoptionRequest) async throws -> AdoptionResult
     func changes() -> AsyncThrowingStream<SourceChange, Error>
@@ -125,11 +142,21 @@ public struct CatalogQuery: Sendable {
     }
 }
 
+/// What a catalog reports, in order: one `listed`, any number of
+/// `storeFailed` and `sessions`, then — only when the read ran to its end —
+/// one `completed`.
 public enum CatalogBatch: Sendable, Equatable {
     case listed(total: Int)
     /// A store (or, with no agent, the whole host) could not be listed.
     case storeFailed(agent: Agent?, message: String)
     case sessions([TranscriptSummary], read: Int, total: Int)
+    /// Completed-enumeration evidence: these agents' listings finished and
+    /// every thread they named was emitted or decided against. Only within
+    /// these agents may a consumer drop a summary this read did not emit.
+    /// An agent whose listing failed, or whose store root is not there (an
+    /// unmounted volume proves nothing gone, ADR-030), is never named; a
+    /// read that was cancelled or lost its transport sends none.
+    case completed(agents: Set<Agent>)
 }
 
 public struct AdoptionRequest: Sendable {

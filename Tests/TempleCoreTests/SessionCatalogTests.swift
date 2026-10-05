@@ -74,11 +74,14 @@ final class LocalSessionCatalogTests: XCTestCase {
         XCTAssertEqual(ids, ["kept"])
     }
 
+    /// A store root that is not there lists nothing and shows no error — and
+    /// completes nothing: an unmounted volume proves no session gone, so a
+    /// consumer must keep what it showed from that store (ADR-030).
     func testEmptyDiskListsZeroAndFinishes() async {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("temple-catalog-missing-\(UUID().uuidString)")
         let events = await collect(LocalSessionCatalog(stores: [ClaudeSessionStore(root: missing)]).stream())
-        XCTAssertEqual(events, [.listed(total: 0)])
+        XCTAssertEqual(events, [.listed(total: 0), .completed(agents: [])])
     }
 
     /// The tab cancels its read when it goes away. The reader must notice at

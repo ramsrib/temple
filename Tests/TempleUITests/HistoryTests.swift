@@ -383,7 +383,8 @@ final class HistoryTests: XCTestCase {
     }
 
     /// The tab leaving the screen cancels its read; a later refresh replaces
-    /// the snapshot whole, dropping sessions gone from disk.
+    /// the snapshot whole, dropping sessions gone from disk — where the host
+    /// says the agent's listing completed.
     func testDeactivateCancelsAndARefreshPrunesVanishedRows() async {
         let database = try! TempleDB.inMemory()
         let overlay = SessionOverlayStore(db: database)
@@ -409,9 +410,38 @@ final class HistoryTests: XCTestCase {
             history.refresh()
             pending?.yield(.listed(total: rows.count))
             pending?.yield(.sessions(rows, read: rows.count, total: rows.count))
+            pending?.yield(.completed(agents: [.claude]))
             pending?.finish()
             await waitFor { history.readState == .done }
         }
+        XCTAssertEqual(ids(history.allRows), ["a"])
+    }
+
+    /// A row missing from a read proves it gone only within the coverage the
+    /// read completed. A read with no completion (a dropped transport, a
+    /// store root that is not there), or one that completed only another
+    /// agent, keeps the rows it did not see; the same read with the agent's
+    /// listing completed drops them.
+    func testARowIsDroppedOnlyWithinCompletedCoverage() async {
+        let database = try! TempleDB.inMemory()
+        let overlay = SessionOverlayStore(db: database)
+        var reads: [[CatalogBatch]] = []
+        let history = HistoryModel(overlay: overlay, catalog: { Self.stream(reads.removeFirst()) },
+                                   pathExists: { _ in true }, now: { [now] in now })
+        let a = session("a", hoursAgo: 1), gone = session("gone", hoursAgo: 2), codex = session("x", agent: .codex, hoursAgo: 3)
+        func read(_ events: [CatalogBatch]) async {
+            reads.append(events)
+            history.refresh()
+            await waitFor { history.readState == .done }
+        }
+        await read([.listed(total: 3), .sessions([a, gone, codex], read: 3, total: 3), .completed(agents: [.claude, .codex])])
+        XCTAssertEqual(ids(history.allRows), ["a", "gone", "x"])
+        await read([.listed(total: 1), .sessions([a], read: 1, total: 1)])
+        XCTAssertEqual(ids(history.allRows), ["a", "gone", "x"], "no completion: nothing proven gone")
+        await read([.listed(total: 1), .storeFailed(agent: .codex, message: "denied"), .sessions([a], read: 1, total: 1),
+                    .completed(agents: [.claude])])
+        XCTAssertEqual(ids(history.allRows), ["a", "x"], "Claude's listing completed; Codex's failed and keeps its row")
+        await read([.listed(total: 1), .sessions([a], read: 1, total: 1), .completed(agents: [.claude, .codex])])
         XCTAssertEqual(ids(history.allRows), ["a"])
     }
 

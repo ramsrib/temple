@@ -40,8 +40,9 @@ let package = Package(
         // the shared-facts cache behind `LocalSessionSource`, its one public
         // type. The pure agent formats stay in TempleCore/Formats, where a
         // remote host reuses them. TempleUI names it in one composition file
-        // (`Hosts/LocalHost.swift`); templectl imports it directly.
-        .target(name: "TempleLocalHost", dependencies: ["TempleCore"]),
+        // (`Hosts/LocalHost.swift`); templectl imports it directly. GRDB
+        // backs the catalog's disposable summary cache (ADR-032).
+        .target(name: "TempleLocalHost", dependencies: ["TempleCore", .product(name: "GRDB", package: "GRDB.swift")]),
 
         // Terminal seam (PLAN.md "Decoupling interfaces"): TerminalSurface
         // protocol + stub. Imports AppKit; free of ghostty and TempleCore.

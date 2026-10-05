@@ -1385,13 +1385,17 @@ public struct EngineMetrics: Sendable, Equatable {
     public var sharedTransfers: UInt64 = 0
     /// Operations that failed on transport and wait out a backoff.
     public var retries: UInt64 = 0
+    /// Transcripts a host's catalog parsed (a cached summary is not a parse).
+    /// Separate from `parses`, which counts member reads.
+    public var catalogParses: UInt64 = 0
 
     public init(parses: UInt64 = 0, verifications: UInt64 = 0, publications: UInt64 = 0, observations: UInt64 = 0,
                 enumerations: UInt64 = 0, locates: UInt64 = 0, reads: UInt64 = 0, widerReads: UInt64 = 0,
-                sharedTransfers: UInt64 = 0, retries: UInt64 = 0) {
+                sharedTransfers: UInt64 = 0, retries: UInt64 = 0, catalogParses: UInt64 = 0) {
         self.parses = parses; self.verifications = verifications; self.publications = publications
         self.observations = observations; self.enumerations = enumerations
         self.locates = locates; self.reads = reads; self.widerReads = widerReads
         self.sharedTransfers = sharedTransfers; self.retries = retries
+        self.catalogParses = catalogParses
     }
 }

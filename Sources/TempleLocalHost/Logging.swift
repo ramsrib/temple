@@ -4,4 +4,5 @@ import os
 /// TempleCore, so `log stream` filters keep working across the move.
 enum LocalHostLog {
     static let watcher = Logger(subsystem: "com.sriramb.temple.core", category: "watcher")
+    static let catalog = Logger(subsystem: "com.sriramb.temple.core", category: "catalog")
 }

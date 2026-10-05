@@ -13,7 +13,10 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
         /// Listing passes (each `locate` lists once, like one `find`).
         public var listings = 0
         public var reads = 0
+        /// Member reads that parsed facts.
         public var parses = 0
+        /// Transcripts the catalog parsed (a kept summary is not one).
+        public var catalogParses = 0
         public var widerReads = 0
         public var bytesRead = 0
         /// The ids each `locate` asked about, in order.
@@ -50,7 +53,24 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
         var modifiedAt: Date
         var identity: UInt64
         var unreadable = false
+        /// The host's change time: moves on every write and every change
+        /// of access, and nothing sets it back.
+        var changed: UInt64 = 0
     }
+    /// The catalog's kept summaries (ADR-032), as a remote source would keep
+    /// them: by path, under the stamp the read saw, shared fields stripped.
+    private struct Kept {
+        let stamp: KeptStamp
+        let summary: TranscriptSummary?
+    }
+    private struct KeptStamp: Equatable {
+        let modifiedAt: Date
+        let size: Int
+        let identity: UInt64
+        let changed: UInt64
+    }
+    private var kept: [String: Kept] = [:]
+    private var changeClock: UInt64 = 0
     private let lock = NSLock()
     private var files: [String: File] = [:]
     /// Paths listings still name after their file went (`removeKeepingListing`).
@@ -97,7 +117,8 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
             clock = clock.addingTimeInterval(1)
             let identity: UInt64
             if inPlace, let old = files[path] { identity = old.identity } else { identity = hasInodes ? nextIdentity : 0; nextIdentity += 1 }
-            files[path] = File(agent: agent, data: data, modifiedAt: modifiedAt ?? clock, identity: identity)
+            changeClock += 1
+            files[path] = File(agent: agent, data: data, modifiedAt: modifiedAt ?? clock, identity: identity, changed: changeClock)
             staleListed.removeValue(forKey: path)
             return changeLocked(path, agent: agent)
         }
@@ -109,7 +130,8 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
         let change: SourceChange? = locked {
             guard var file = files[path] else { return nil }
             clock = clock.addingTimeInterval(1)
-            file.data.append(data); file.modifiedAt = clock
+            changeClock += 1
+            file.data.append(data); file.modifiedAt = clock; file.changed = changeClock
             files[path] = file
             return changeLocked(path, agent: file.agent)
         }
@@ -120,7 +142,8 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
         let change: SourceChange? = locked {
             guard var file = files[path] else { return nil }
             clock = clock.addingTimeInterval(1)
-            file.data = file.data.prefix(size); file.modifiedAt = clock
+            changeClock += 1
+            file.data = file.data.prefix(size); file.modifiedAt = clock; file.changed = changeClock
             files[path] = file
             return changeLocked(path, agent: file.agent)
         }
@@ -143,8 +166,26 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
     }
 
     public func setUnreadable(_ path: String, _ unreadable: Bool = true) {
-        locked { files[path]?.unreadable = unreadable }
+        locked {
+            guard files[path] != nil else { return }
+            changeClock += 1
+            files[path]?.unreadable = unreadable; files[path]?.changed = changeClock
+        }
     }
+
+    /// Rewrites a file in place to `data` and puts its old modification time
+    /// back — what a restore tool does. Only the change time tells.
+    public func rewriteRestoringModificationTime(_ path: String, _ data: Data) {
+        locked {
+            guard var file = files[path] else { return }
+            changeClock += 1
+            file.data = data; file.changed = changeClock
+            files[path] = file
+        }
+    }
+
+    /// Summaries the catalog keeps now.
+    public var keptSummaries: Int { locked { kept.count } }
 
     /// Replaces one of an agent's shared inputs (nil removes it), bumping its revision.
     public func setShared(_ agent: Agent, _ name: String, _ data: Data?) {
@@ -398,6 +439,9 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
                     start = end
                     await Task.yield()
                 }
+                if !Task.isCancelled {
+                    continuation.yield(.completed(agents: Set(Agent.allCases.filter { query.agents.contains($0) && !failed.contains($0) })))
+                }
                 continuation.finish()
             }
             continuation.onTermination = { _ in task.cancel() }
@@ -415,38 +459,56 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
         let broken = locked { brokenListings }
         let failed = Agent.allCases.filter { query.agents.contains($0) && broken.contains($0) }
         // The same per-thread pick as the local catalog and member
-        // resolution, made before anything is parsed.
+        // resolution, made before anything is parsed — or looked up.
         var summaries: [TranscriptSummary] = []
         for agent in Agent.allCases {
             let format = TranscriptFormats.format(for: agent)
+            let (shared, _) = locked { sharedFacts(agent) }
             for thread in TranscriptCandidates.catalogThreads(format: format, listed: paths.filter { $0.0 == agent }.map(\.1)) {
                 let picked = TranscriptCandidates.catalogPick(thread) { path -> TranscriptCandidates.CatalogAttempt<TranscriptSummary> in
                     locked {
-                        guard let file = files[path] else { return .missing }
+                        guard let file = files[path] else { kept[path] = nil; return .missing }
+                        let stamp = KeptStamp(modifiedAt: file.modifiedAt, size: file.data.count, identity: file.identity, changed: file.changed)
+                        if let entry = kept[path], entry.stamp == stamp {
+                            guard let summary = entry.summary, summary.id == thread.threadID else { return .failed }
+                            return .read(format.withShared(summary, shared))
+                        }
+                        kept[path] = nil
                         guard !file.unreadable else { return .failed }
                         // The recorded identity decides, as for a member's
                         // read: a file named for this thread that records
                         // another session, or none, is not this thread's.
                         guard let (lines, _) = try? Self.identityLines(file.data, scan: format.identityScan),
                               format.identity(lines: lines, expecting: thread.threadID) == .verified else { return .failed }
-                        counts.parses += 1
+                        counts.catalogParses += 1
                         let locator = TranscriptLocator(host: host, path: path)
                         let window = TranscriptBytes.defaultWindow
                         var input = TranscriptBytes(head: Data(file.data.prefix(window)),
                                                     tail: file.data.count > window ? Data(file.data.suffix(min(window, file.data.count - window))) : nil,
                                                     fileSize: file.data.count)
-                        let (shared, _) = sharedFacts(agent)
                         var result = format.facts(input, name: format.name(path: path), locator: locator, modifiedAt: file.modifiedAt, shared: shared)
                         if case .needsWiderHead(let size) = result {
                             counts.widerReads += 1
                             input = input.with(widerHead: Data(file.data.prefix(size)))
                             result = format.facts(input, name: format.name(path: path), locator: locator, modifiedAt: file.modifiedAt, shared: shared)
                         }
-                        if case .summary(let summary) = result, summary.id == thread.threadID { return .read(summary) }
+                        if case .summary(let summary) = result, summary.id == thread.threadID {
+                            kept[path] = Kept(stamp: stamp, summary: format.withShared(summary, .empty))
+                            return .read(summary)
+                        }
+                        if case .unparseable = result { kept[path] = Kept(stamp: stamp, summary: nil) }
                         return .failed
                     }
                 }
                 if let picked { summaries.append(picked) }
+            }
+        }
+        // A completed listing: nothing is kept for a path it did not name.
+        locked {
+            let listed = Set(paths.map(\.1))
+            let complete = Set(Agent.allCases.filter { query.agents.contains($0) && !broken.contains($0) })
+            kept = kept.filter { path, entry in
+                listed.contains(path) || !(entry.summary.map { complete.contains($0.agent) } ?? true)
             }
         }
         summaries.sort { lhs, rhs in

@@ -22,6 +22,9 @@ protocol SourceFixture: AnyObject {
     func makeUnreadable(_ locator: TranscriptLocator) throws
     /// Same bytes count, written in place, with a later modification time.
     func rewriteSameSize(_ locator: TranscriptLocator) throws
+    /// `data` (the same size as the file) written in place, and the old
+    /// modification time put back: only the host's change time tells.
+    func rewriteKeepingModificationTime(_ locator: TranscriptLocator, _ data: Data) throws
     /// A path the agent's store would use for `name`, without creating it.
     func path(agent: Agent, name: String) -> String
     func breakListing(_ agent: Agent) throws
@@ -37,6 +40,8 @@ protocol SourceFixture: AnyObject {
     func missingDirectory() -> String
     func unsearchableDirectory() throws -> String
     var parses: Int { get }
+    /// Transcripts the catalog parsed (a summary it kept is not a parse).
+    var catalogParses: Int { get }
     var listings: Int { get }
     var widerReads: Int { get }
     func cleanup()
@@ -524,6 +529,125 @@ class HostSessionSourceContract: XCTestCase {
         XCTAssertFalse(all.contains { $0.cwd == "/elsewhere" || $0.cwd == "/silent" })
     }
 
+    // MARK: 13e-i catalog completion and kept summaries (ADR-032)
+
+    private func catalogRead(_ query: CatalogQuery = CatalogQuery()) async throws -> (summaries: [TranscriptSummary], events: [CatalogBatch]) {
+        var events: [CatalogBatch] = []
+        for try await batch in source.catalog(query) { events.append(batch) }
+        let summaries = events.flatMap { batch -> [TranscriptSummary] in
+            if case .sessions(let rows, _, _) = batch { return rows }
+            return []
+        }
+        return (summaries, events)
+    }
+
+    /// A read that ran to its end says which agents' listings it covered,
+    /// last; an agent whose listing failed is not among them, and only
+    /// within the ones named does a missing summary mean a missing file.
+    func test13eACompletedReadNamesTheAgentsItCovered() async throws {
+        let gone = uuid(), kept = uuid()
+        let goneFile = try plantClaude(gone)
+        try plantClaude(kept)
+        try plantCodex(uuid())
+        let all = try await catalogRead()
+        XCTAssertEqual(all.events.last, .completed(agents: [.claude, .codex]))
+        let value1 = try await catalogRead(CatalogQuery(agents: [.claude])).events.last
+        XCTAssertEqual(value1, .completed(agents: [.claude]))
+        try fixture.remove(goneFile)
+        let after = try await catalogRead()
+        XCTAssertEqual(Set(after.summaries.map(\.id)).intersection([gone, kept]), [kept])
+        XCTAssertEqual(after.events.last, .completed(agents: [.claude, .codex]), "the deletion is proven within completed coverage")
+        try fixture.breakListing(.codex)
+        let value2 = try await catalogRead().events.last
+        XCTAssertEqual(value2, .completed(agents: [.claude]))
+    }
+
+    /// The work-count half of the cache contract: an unchanged store is
+    /// browsed without parsing a transcript, and one appended-to transcript
+    /// costs one parse.
+    func test13fAnUnchangedCatalogParsesNothingAndAChangeOnlyItsFile() async throws {
+        let a = uuid(), b = uuid(), c = uuid()
+        let fileA = try plantClaude(a)
+        try plantClaude(b)
+        try plantCodex(c)
+        let first = try await catalogRead()
+        XCTAssertEqual(Set(first.summaries.map(\.id)), [a, b, c])
+        let base = fixture.catalogParses
+        XCTAssertGreaterThanOrEqual(base, 3)
+        let again = try await catalogRead()
+        XCTAssertEqual(fixture.catalogParses, base, "an unchanged catalog parses nothing")
+        XCTAssertEqual(again.summaries, first.summaries)
+        try fixture.append(fileA, Data("\n{\"type\":\"assistant\",\"sessionId\":\"\(a)\",\"message\":{\"content\":\"Later turn\"}}".utf8))
+        let appended = try await catalogRead()
+        XCTAssertEqual(fixture.catalogParses, base + 1, "only the appended transcript is read again")
+        XCTAssertEqual(appended.summaries.first { $0.id == a }?.lastMessagePreview, "Later turn")
+        XCTAssertEqual(appended.summaries.first { $0.id == b }, first.summaries.first { $0.id == b })
+    }
+
+    /// Whatever happened to the file, a kept summary is never shown for a
+    /// version of it the read did not see: a same-size rewrite that put the
+    /// old modification time back, a truncation, a replacement, a file that
+    /// became unreadable (its thread then shows nothing).
+    func test13gAKeptSummaryNeverOutlivesTheFileItWasReadFrom() async throws {
+        let id = uuid()
+        let file = try plantClaude(id, prompt: "Original prompt")
+        func prompt() async throws -> String?? {
+            try await catalogRead().summaries.first { $0.id == id }.map(\.firstPrompt)
+        }
+        let value3 = try await prompt()
+        XCTAssertEqual(value3, "Original prompt")
+        try fixture.rewriteKeepingModificationTime(file, claudeData(id, prompt: "Rewritten promp"))
+        let value4 = try await prompt()
+        XCTAssertEqual(value4, "Rewritten promp", "same size, same mtime: the change time tells")
+        let header = claudeData(id).split(separator: 0x0a, omittingEmptySubsequences: false)[0].count
+        try fixture.truncate(file, to: header)
+        let value5 = try await prompt()
+        XCTAssertEqual(value5, .some(nil), "truncated to its header: no prompt any more")
+        try fixture.replace(file, claudeData(id, prompt: "Replaced"))
+        let value6 = try await prompt()
+        XCTAssertEqual(value6, "Replaced")
+        try fixture.makeUnreadable(file)
+        let unreadable = try await prompt()
+        XCTAssertNil(unreadable, "an unreadable file shows nothing, not what it said before")
+    }
+
+    /// Shared inputs are applied fresh to kept summaries: a new Codex title
+    /// shows on the next read without a transcript parse.
+    func test13hSharedTitlesAreAppliedFreshWithoutReparsing() async throws {
+        let id = uuid()
+        try plantCodex(id)
+        let query = CatalogQuery(agents: [.codex])
+        let value7 = try await catalogRead(query).summaries.first?.sharedTitle
+        XCTAssertNil(value7)
+        let base = fixture.catalogParses
+        try fixture.setCodexHistory(Data(#"{"session_id":"\#(id)","ts":1,"text":"Shared title"}"#.utf8))
+        let row = try await catalogRead(query).summaries.first
+        XCTAssertEqual(row?.sharedTitle, "Shared title")
+        XCTAssertEqual(row?.historyPrompt, "Shared title")
+        XCTAssertEqual(fixture.catalogParses, base, "a shared-input change reads no transcript")
+    }
+
+    /// The pick comes first and the cache only answers for the picked file:
+    /// a new revert is read and shown at once; once it is gone, the older
+    /// rollout's kept summary stands in again without a parse.
+    func test13iTheThreadsFileIsPickedBeforeAnythingKeptIsUsed() async throws {
+        let thread = uuid()
+        let canonical = try plantCodex(thread)
+        let query = CatalogQuery(agents: [.codex])
+        let value8 = try await catalogRead(query).summaries.map(\.locator)
+        XCTAssertEqual(value8, [canonical])
+        let base = fixture.catalogParses
+        let revert = try plantCodex(thread, name: rolloutName(thread, stamp: "2026-10-01T11-00-00", rollout: uuid()), prompt: "Revert prompt")
+        let reverted = try await catalogRead(query).summaries
+        XCTAssertEqual(reverted.map(\.locator), [revert])
+        XCTAssertEqual(reverted.first?.firstPrompt, "Revert prompt")
+        XCTAssertEqual(fixture.catalogParses, base + 1, "only the new revert is read")
+        try fixture.remove(revert)
+        let value9 = try await catalogRead(query).summaries.map(\.locator)
+        XCTAssertEqual(value9, [canonical])
+        XCTAssertEqual(fixture.catalogParses, base + 1, "the older rollout's kept summary stands in")
+    }
+
     // MARK: 14 adoption
 
     func test14AdoptionNeedsExactlyOneEligibleHeader() async throws {
@@ -756,6 +880,13 @@ private final class LocalFixture: SourceFixture {
         try FileManager.default.setAttributes([.modificationDate: clock], ofItemAtPath: locator.path)
         local.reconcileEvent(path: locator.path, flags: UInt32(kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile))
     }
+    func rewriteKeepingModificationTime(_ locator: TranscriptLocator, _ data: Data) throws {
+        let url = URL(fileURLWithPath: locator.path)
+        let modified = try FileManager.default.attributesOfItem(atPath: locator.path)[.modificationDate] as? Date
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.write(contentsOf: data); try handle.truncate(atOffset: UInt64(data.count)); try handle.close()
+        if let modified { try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: locator.path) }
+    }
     func breakListing(_ agent: Agent) throws {
         let directory = agent == .claude ? claudeRoot : codexRoot.appendingPathComponent("sessions")
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: directory.path)
@@ -797,6 +928,7 @@ private final class LocalFixture: SourceFixture {
         return parent.appendingPathComponent("child").path
     }
     var parses: Int { Int(local.metrics.parses) }
+    var catalogParses: Int { Int(local.metrics.catalogParses) }
     var listings: Int { Int(local.metrics.enumerations) }
     var widerReads: Int { Int(local.metrics.widerReads) }
     func cleanup() {
@@ -832,6 +964,9 @@ private final class FakeFixture: SourceFixture {
     func remove(_ locator: TranscriptLocator) throws { fake.remove(locator.path) }
     func makeUnreadable(_ locator: TranscriptLocator) throws { fake.setUnreadable(locator.path) }
     func rewriteSameSize(_ locator: TranscriptLocator) throws { fake.append(locator.path, Data()) }
+    func rewriteKeepingModificationTime(_ locator: TranscriptLocator, _ data: Data) throws {
+        fake.rewriteRestoringModificationTime(locator.path, data)
+    }
     func breakListing(_ agent: Agent) throws { fake.breakListing(agent) }
     func replaceDuringNextRead(_ locator: TranscriptLocator, with data: Data) throws {
         let once = Flag(), fake = self.fake
@@ -851,6 +986,7 @@ private final class FakeFixture: SourceFixture {
     func missingDirectory() -> String { "/home/me/gone" }
     func unsearchableDirectory() throws -> String { fake.makeUnsearchable("/home/sealed"); return "/home/sealed/child" }
     var parses: Int { fake.counters.parses }
+    var catalogParses: Int { fake.counters.catalogParses }
     var listings: Int { fake.counters.listings }
     var widerReads: Int { fake.counters.widerReads }
     func cleanup() {}

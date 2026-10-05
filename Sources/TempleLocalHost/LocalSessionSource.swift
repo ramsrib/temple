@@ -53,6 +53,9 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     enum ReadPhase { case sharedFactsAcquired, bytesRead }
     private var locateCount: UInt64 = 0
     private let readCounts = ReadCounters()
+    /// The catalog's kept summaries (ADR-032): as long-lived as this source,
+    /// so a History tab closed and opened again reads only what changed.
+    let catalogCache: CatalogSummaryCache
     private var work: DispatchWorkItem?
     private var requests: [UUID: LocalAdoptionWindow] = [:]
     private var candidates: [String: RolloutHeader] = [:]
@@ -73,17 +76,21 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
 
     /// This Mac's two stores, at their real roots or the `TEMPLE_*_ROOT`
     /// overrides. `monitorChanges: false` never arms FSEvents (templectl's
-    /// one-shot reads).
+    /// one-shot reads). The catalog's summaries are kept on disk too, in
+    /// the state directory (`TEMPLE_STATE_DIR`), read on the first catalog.
     public convenience init(monitorChanges: Bool = true) {
-        self.init(stores: [ClaudeSessionStore(), CodexSessionStore()], monitorChanges: monitorChanges)
+        self.init(stores: [ClaudeSessionStore(), CodexSessionStore()], monitorChanges: monitorChanges,
+                  catalogDisk: CatalogDiskCache(url: CatalogDiskCache.defaultURL))
     }
 
     init(stores: [any IncrementalSessionStore],
          debounceInterval: TimeInterval = 0.3,
-         monitorChanges: Bool = true) {
+         monitorChanges: Bool = true,
+         catalogDisk: CatalogDiskCache? = nil) {
         self.stores = stores
         self.debounceInterval = debounceInterval
         self.monitorChanges = monitorChanges
+        self.catalogCache = CatalogSummaryCache(disk: catalogDisk)
         self.sharedFactPaths = Set(stores.flatMap(\.sharedFactURLs).map { SessionPaths.normalized($0.path) })
     }
 
@@ -117,7 +124,9 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     }
 
     public func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error> {
-        let catalog = LocalSessionCatalog(stores: stores.filter { query.agents.contains($0.agent) })
+        let counts = readCounts
+        let catalog = LocalSessionCatalog(stores: stores.filter { query.agents.contains($0.agent) },
+                                          cache: catalogCache, onParse: { counts.catalogParse() })
         return AsyncThrowingStream { continuation in
             let task = Task {
                 for await event in catalog.stream(batchSize: query.batchSize, newestFirst: query.newestFirst) {
@@ -425,6 +434,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         snapshotLock.lock(); var result = snapshotMetrics; snapshotLock.unlock()
         let reads = readCounts.values
         result.reads = reads.reads; result.parses = reads.parses; result.widerReads = reads.wider
+        result.catalogParses = reads.catalog
         result.sharedTransfers = UInt64(stores.reduce(0) { $0 + $1.sharedTransfers })
         return result
     }
@@ -812,10 +822,13 @@ private struct RootMapping {
 
 private final class ReadCounters: @unchecked Sendable {
     private let lock = NSLock()
-    private var reads: UInt64 = 0, parses: UInt64 = 0, wider: UInt64 = 0
+    private var reads: UInt64 = 0, parses: UInt64 = 0, wider: UInt64 = 0, catalog: UInt64 = 0
     func read() { lock.lock(); reads &+= 1; lock.unlock() }
     func parse(wider isWider: Bool) { lock.lock(); parses &+= 1; if isWider { wider &+= 1 }; lock.unlock() }
-    var values: (reads: UInt64, parses: UInt64, wider: UInt64) { lock.lock(); defer { lock.unlock() }; return (reads, parses, wider) }
+    func catalogParse() { lock.lock(); catalog &+= 1; lock.unlock() }
+    var values: (reads: UInt64, parses: UInt64, wider: UInt64, catalog: UInt64) {
+        lock.lock(); defer { lock.unlock() }; return (reads, parses, wider, catalog)
+    }
 }
 
 /// Cancellation can race registration; the action is installed under the same lock.

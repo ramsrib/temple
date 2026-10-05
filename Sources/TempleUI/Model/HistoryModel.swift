@@ -345,8 +345,12 @@ public final class HistoryModel: ObservableObject {
                 for lane in lanes.values { lane.finish() }
             }
             guard let self, !Task.isCancelled else { return }
-            // Gone from disk since the last read: drop it now the read is whole.
-            self.diskByKey = self.diskByKey.filter { pass.seen.contains($0.key) }
+            // Gone from disk since the last read: dropped only where a host
+            // said its agent's listing completed. A failed or missing store,
+            // a host that lost its transport, keeps what it showed before.
+            self.diskByKey = self.diskByKey.filter { key, _ in
+                pass.seen.contains(key) || !(key.agent.map { pass.completed[key.host]?.contains($0) == true } ?? false)
+            }
             self.storeFailures = pass.failures
             self.lastUpdated = self.now()
             self.readState = .done
@@ -358,6 +362,8 @@ public final class HistoryModel: ObservableObject {
     /// One read's running totals, across its hosts' lanes.
     @MainActor private final class ReadPass {
         var seen: Set<HistoryKey> = []
+        /// Per host, the agents whose catalog listing completed (`.completed`).
+        var completed: [HostID: Set<Agent>] = [:]
         var failures: [StoreFailure] = []
         var exists: [ProjectKey: DirectoryEvidence] = [:]
         var progress: [HostID: (read: Int, total: Int?)] = [:]
@@ -431,6 +437,8 @@ public final class HistoryModel: ObservableObject {
             pass.progress[host] = (read, total)
             readState = pass.summed
             rebuild()
+        case .completed(let agents):
+            pass.completed[host, default: []].formUnion(agents)
         }
     }
 

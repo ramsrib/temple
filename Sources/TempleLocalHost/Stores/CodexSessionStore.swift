@@ -29,6 +29,7 @@ struct CodexSessionStore: TranscriptSummaryStore {
 
     var watchedURLs: [URL] { [sessionsRoot.deletingLastPathComponent(), sessionsRoot] }
     var sharedFactURLs: [URL] { [historyFile, sessionIndexFile] }
+    var catalogRoot: URL? { sessionsRoot }
     func loadSummaries() -> [TranscriptSummary] {
         let shared = sharedFacts()
         let files = sessionFileURLs()

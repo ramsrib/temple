@@ -64,7 +64,9 @@ protocol IncrementalSessionStore: SessionStore {
     /// Shared facts with the revision of the inputs they were read from,
     /// acquired together (nil revision: no shared inputs).
     func sharedFactsSnapshot() -> (facts: SharedFacts, revision: UInt64?)
-
+    /// The directory the catalog's kept summaries are tied to
+    /// (`CatalogRoot`); nil keeps nothing for this store.
+    var catalogRoot: URL? { get }
 }
 
 extension IncrementalSessionStore {
@@ -104,6 +106,7 @@ extension IncrementalSessionStore {
         return try format.header(firstLine: StoreIO.readFirstLine(url, maxBytes: CodexFormat.headerLineBytes))
     }
     var sharedTransfers: Int { 0 }
+    var catalogRoot: URL? { nil }
     func sharedRevision() -> UInt64? { nil }
     func sharedFactsSnapshot() -> (facts: SharedFacts, revision: UInt64?) { (.empty, nil) }
     func catalogParser() -> @Sendable (URL) -> TranscriptSummary? {

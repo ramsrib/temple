@@ -18,6 +18,7 @@ struct ClaudeSessionStore: TranscriptSummaryStore {
     }
 
     var watchedURLs: [URL] { [root] }
+    var catalogRoot: URL? { root }
 
     func loadSummaries() -> [TranscriptSummary] {
         let files = sessionFileURLs()
