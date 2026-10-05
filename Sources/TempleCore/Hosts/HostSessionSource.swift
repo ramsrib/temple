@@ -49,6 +49,13 @@ public protocol HostSessionSource: Sendable {
     /// Owning-host directory evidence, by whatever transport the host uses;
     /// unknown must not be treated as missing.
     func directoryEvidence(_ path: String) async -> DirectoryEvidence
+    /// Proof, taken now, that these sessions have no transcript of `agent`
+    /// on this host (ADR-030): one fresh, audited listing of the agent's
+    /// store (ADR-032's rule, not any kept map), a wait as long as the
+    /// host's change stream takes to report, and what it reported over that
+    /// whole span, judged by `AbsenceProof.decide`. Nothing the host or an
+    /// engine keeps between calls stands in for it.
+    func proveAbsent(ids: Set<String>, agent: Agent) async -> AbsenceProof
 }
 
 public struct LocateRequest: Sendable, Equatable {

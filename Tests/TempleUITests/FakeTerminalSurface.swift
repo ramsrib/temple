@@ -278,6 +278,7 @@ enum Fixture {
 
 /// A local source with no transcripts, no catalog and no folder evidence.
 final class FolderAgnosticSource: HostSessionSource, @unchecked Sendable {
+    func proveAbsent(ids: Set<String>, agent: Agent) async -> AbsenceProof { .unproven }
     let host = HostID.local
     let capabilities: Set<HostCapability> = []
     func locate(_ requests: [LocateRequest]) async throws -> LocateResult {

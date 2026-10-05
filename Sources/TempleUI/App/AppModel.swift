@@ -58,7 +58,6 @@ public final class AppModel: ObservableObject {
         if let latestEngineSnapshot, snapshot.generation < latestEngineSnapshot.generation { return }
         let resolutionsChanged = latestEngineSnapshot?.resolutions != snapshot.resolutions
         let previousMemberships = latestEngineSnapshot?.memberships
-        let previousAbsences = latestEngineSnapshot?.absenceCoverage
         latestEngineSnapshot = snapshot
         applyingEngineSnapshot = true
         overlay.applyFacts(snapshot.facts)
@@ -70,12 +69,8 @@ public final class AppModel: ObservableObject {
             engineSet.ownershipChanged()
         }
         if rowPresentationDirty || resolutionsChanged { rebuildSessions() }
-        // A verdict, the membership a verdict is about, or the coverage an
-        // absence was proven at changed (a sweep that found its absence
-        // re-proven under a newer coverage plans again against it).
-        if resolutionsChanged || previousMemberships != snapshot.memberships || previousAbsences != snapshot.absenceCoverage {
-            armArchiveSweep()
-        }
+        // A verdict, or the membership a verdict is about, changed.
+        if resolutionsChanged || previousMemberships != snapshot.memberships { armArchiveSweep() }
         // An archived row is not resolved (the engine does not watch it),
         // so it is not waited for.
         if !sidebarRanksFrozen && builtSessions.allSatisfy({ row in
@@ -216,14 +211,58 @@ public final class AppModel: ObservableObject {
     /// The owning host's answer about a folder: nothing is known until the
     /// app turns the sweep on.
     var folderEvidence: (ProjectKey) async -> DirectoryEvidence = { _ in .unknown }
+    /// The owning host's proof that sessions have no transcript of an agent,
+    /// taken now (`HostSessionSource.proveAbsent`): nothing is proven until
+    /// the app turns the sweep on.
+    var proveAbsence: (HostID, Agent, Set<String>) async -> AbsenceProof = { _, _, _ in .unproven }
+    /// A cancellable one-shot timer for the sweep's slow schedule (hourly)
+    /// and its retries after a proof that was not quiescent. Off until the
+    /// app turns the sweep on.
+    var sweepTimer: (TimeInterval, @escaping @MainActor () -> Void) -> () -> Void = { _, _ in {} }
+    /// The slow sweep: verdicts can stand still while the disk changes.
+    static let periodicSweepInterval: TimeInterval = 3600
+    /// After a proof that was not quiescent (sessions being written while
+    /// the sweep listed), the next tries: a few, spaced, then the hourly
+    /// sweep. Never a tight loop.
+    static let proofRetryDelays: [TimeInterval] = [15, 60, 300]
+    private var pendingPeriodicSweep: (() -> Void)?
+    private var pendingProofRetry: (() -> Void)?
+    private var proofRetries = 0
 
     /// The app's own sweep: a real timer and each host's folder evidence.
     /// Called by the one view both entry points show (`StartupRootView`),
     /// before `start()`.
     public func enableArchiveSweep() {
         archiveSweepScheduler = SessionOverlayStore.schedule
+        sweepTimer = SessionOverlayStore.schedule
         let hosts = hostRegistry
         folderEvidence = { key in await hosts.entry(for: key.host)?.source.directoryEvidence(key.path) ?? .unknown }
+        proveAbsence = { host, agent, ids in await hosts.entry(for: host)?.source.proveAbsent(ids: ids, agent: agent) ?? .unproven }
+        armPeriodicSweep()
+    }
+
+    /// Every hour, a sweep whether or not a verdict moved.
+    func armPeriodicSweep() {
+        pendingPeriodicSweep?()
+        pendingPeriodicSweep = sweepTimer(Self.periodicSweepInterval) { [weak self] in
+            guard let self else { return }
+            self.pendingPeriodicSweep = nil
+            self.armArchiveSweep()
+            self.armPeriodicSweep()
+        }
+    }
+
+    /// A proof that could not be taken quietly is tried again later, a
+    /// bounded number of times; a sweep whose proofs were all quiet resets it.
+    private func retryProofsIfNeeded(_ proofs: [AutoArchivePolicy.ProofKey: AbsenceProof]) {
+        guard proofs.values.contains(where: { $0.exhaustive && !$0.quiescent }) else { proofRetries = 0; return }
+        guard pendingProofRetry == nil, proofRetries < Self.proofRetryDelays.count else { return }
+        let delay = Self.proofRetryDelays[proofRetries]
+        proofRetries += 1
+        pendingProofRetry = sweepTimer(delay) { [weak self] in
+            self?.pendingProofRetry = nil
+            self?.armArchiveSweep()
+        }
     }
     private var pendingArchiveSweep: (() -> Void)?
     /// The sweep in flight, if any: it awaits folder evidence before it plans.
@@ -293,17 +332,22 @@ public final class AppModel: ObservableObject {
         var evidence: [ProjectKey: DirectoryEvidence] = [:]
         for folder in folders { evidence[folder] = await folderEvidence(folder) }
         guard !openSessions.isQuitting else { return }
+        // The transcript proofs last, right before the write: one per host
+        // and agent, for the rows the engine hints are gone (ADR-030).
+        let requests = AutoArchivePolicy.proofRequests(
+            rows: overlay.rows.values, snapshot: latestEngineSnapshot,
+            openSessionIDs: Set(openSessions.openSessionIDsInTabOrder), now: now())
+        var proofs: [AutoArchivePolicy.ProofKey: AbsenceProof] = [:]
+        for (key, ids) in requests { proofs[key] = await proveAbsence(key.host, key.agent, ids) }
+        guard !openSessions.isQuitting else { return }
+        retryProofsIfNeeded(proofs)
         // Planned again on the state as it is now: a tab opened, a pin, a
-        // restore or a leave during the folder checks is seen here (and the
-        // write's own guards catch what another connection did).
+        // restore or a leave during the checks is seen here (and the write's
+        // own guards catch what another connection did).
         let at = now()
-        let planned = latestEngineSnapshot
         let entries = AutoArchivePolicy.plan(
-            rows: overlay.rows.values, snapshot: planned,
+            rows: overlay.rows.values, snapshot: latestEngineSnapshot, proofs: proofs,
             folders: evidence, openSessionIDs: Set(openSessions.openSessionIDsInTabOrder), now: at)
-            // Right before the write, against what each owning engine
-            // publishes now, not what reached the merged snapshot.
-            .filter { AutoArchivePolicy.stillProven($0, planned: planned, current: engineSet.engine(for: $0.ref.host)?.latestSnapshot) }
         guard !entries.isEmpty else { return }
         let archived = Set(overlay.autoArchive(entries, idleBefore: at.addingTimeInterval(-AutoArchivePolicy.idleAfter)))
         guard !archived.isEmpty else { return }

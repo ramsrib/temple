@@ -255,6 +255,7 @@ final class RemoteHostSeamTests: XCTestCase {
 }
 
 private final class RemoteFixtureSource: HostSessionSource, @unchecked Sendable {
+    func proveAbsent(ids: Set<String>, agent: Agent) async -> AbsenceProof { .unproven }
     let host: HostID
     let capabilities: Set<HostCapability> = [.liveChanges, .catalog]
     private let lock = NSLock()

@@ -545,6 +545,7 @@ private final class NoLauncher: HostLauncher {
 
 /// A host whose catalog answers only once its gate opens.
 private final class SlowCatalogSource: HostSessionSource, @unchecked Sendable {
+    func proveAbsent(ids: Set<String>, agent: Agent) async -> AbsenceProof { .unproven }
     let host: HostID
     let capabilities: Set<HostCapability> = [.catalog]
     private let gate: FakeGate

@@ -2,7 +2,6 @@ import XCTest
 import AppKit
 import GRDB
 import TempleCore
-import TempleTestSupport
 @testable import TempleUI
 @testable import TempleLocalHost
 
@@ -62,15 +61,46 @@ final class AutoArchiveTests: XCTestCase {
         }
     }
 
+    /// The hosts' proofs a test hands the sweep, and the calls it made.
+    @MainActor final class Proofs {
+        /// Per agent, what the proof says; absent agents prove every id.
+        var answers: [Agent: (exhaustive: Bool, quiescent: Bool, present: Set<String>)] = [:]
+        var calls: [(HostID, Agent, Set<String>)] = []
+
+        func prove(_ host: HostID, _ agent: Agent, _ ids: Set<String>) -> AbsenceProof {
+            calls.append((host, agent, ids))
+            let answer = answers[agent] ?? (true, true, [])
+            return AbsenceProof(exhaustive: answer.exhaustive, quiescent: answer.quiescent, missing: ids.subtracting(answer.present))
+        }
+    }
+
+    /// Timers the sweep armed (the hourly sweep, proof retries), fired by hand.
+    @MainActor final class Timers {
+        var armed: [TimeInterval] = []
+        private var pending: [Int: @MainActor () -> Void] = [:]
+        private var next = 0
+        func schedule(_ delay: TimeInterval, _ action: @escaping @MainActor () -> Void) -> () -> Void {
+            next += 1; armed.append(delay)
+            let id = next
+            pending[id] = action
+            return { [weak self] in MainActor.assumeIsolated { _ = self?.pending.removeValue(forKey: id) } }
+        }
+        /// Fires whatever is armed (the test knows which delay that is).
+        func fire(_ delay: TimeInterval) {
+            let actions = pending.sorted { $0.key < $1.key }.map(\.value)
+            pending.removeAll()
+            actions.forEach { $0() }
+        }
+    }
+
     @MainActor private struct Harness {
         let model: AppModel
         let overlay: SessionOverlayStore
         let database: TempleDB
         let scheduler: ManualSweepScheduler
         let folders: Folders
-        /// The engine the model's sweep rechecks against right before it
-        /// writes: what the test publishes is what it publishes.
-        let engine: FakeEngine
+        let proofs: Proofs
+        let timers: Timers
         var generation: UInt64 = 0
 
         /// A snapshot as the engine publishes it: each verdict names the
@@ -79,9 +109,7 @@ final class AutoArchiveTests: XCTestCase {
             generation += 1
             var refs = memberships
             for id in resolutions.keys where refs[id] == nil { refs[id] = ref(id) }
-            let snapshot = EngineSnapshot(generation: generation, resolutions: resolutions, memberships: refs)
-            engine.publish(snapshot)
-            model.receiveEngineSnapshot(snapshot)
+            model.receiveEngineSnapshot(EngineSnapshot(generation: generation, resolutions: resolutions, memberships: refs))
         }
 
         func ref(_ id: String) -> MembershipRef? {
@@ -110,9 +138,8 @@ final class AutoArchiveTests: XCTestCase {
         let overlay = SessionOverlayStore(db: database)
         let persistence = UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults())
         persistence.save(saved)
-        let engine = FakeEngine(CatalogFixtureIndex(projects: []))
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
-                             engines: [engine],
+                             engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
                              persistence: persistence, database: database,
                              settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
                              overlay: overlay, hostRegistry: Fixture.hostsWithoutFolderEvidence())
@@ -120,10 +147,15 @@ final class AutoArchiveTests: XCTestCase {
         model.archiveSweepScheduler = scheduler.schedule
         let folders = Folders()
         model.folderEvidence = { key in await folders.answer(key.path) }
+        let proofs = Proofs()
+        model.proveAbsence = { host, agent, ids in await proofs.prove(host, agent, ids) }
+        let timers = Timers()
+        model.sweepTimer = timers.schedule
         let clock = clock
         model.now = { clock }
         model.history.catalog = { AsyncStream { $0.finish() } }
-        return Harness(model: model, overlay: overlay, database: database, scheduler: scheduler, folders: folders, engine: engine)
+        return Harness(model: model, overlay: overlay, database: database, scheduler: scheduler, folders: folders,
+                       proofs: proofs, timers: timers)
     }
 
     private func row(_ id: String, project: String? = "/p", updated: TimeInterval = 0) -> Session {
@@ -165,8 +197,80 @@ final class AutoArchiveTests: XCTestCase {
         XCTAssertFalse(undo.canUndo, "the sweep is not the user's action")
         XCTAssertFalse(h.model.visibleRows.contains { $0.id == "gone" }, "it leaves the rail and ⌘K")
         XCTAssertTrue(h.model.archivedSessionResults("").contains { $0.id == "gone" && $0.archivedByTemple })
-        XCTAssertEqual(Set(h.folders.asked), ["/p"], "only the folder of rows the transcript did not decide")
+        XCTAssertEqual(Set(h.folders.asked), ["/p"], "the candidates' folder")
+        XCTAssertEqual(h.proofs.calls.count, 1, "one proof per host and agent, for every hinted row")
+        XCTAssertEqual(h.proofs.calls.first?.2, ["gone", "week"])
         XCTAssertLessThanOrEqual(h.folders.asked.count, 2, "one question per folder per sweep")
+    }
+
+    /// The engine's verdict is a hint; the proof taken at the sweep decides.
+    /// A file there, a listing that cannot see everything, a listing that
+    /// was not quiet: nothing archived for the transcript. Proven: archived.
+    func testATranscriptIsArchivedOnlyOnAProofTakenAtTheSweep() async throws {
+        var h = harness([row("a"), row("b", project: nil)])
+        h.proofs.answers[.claude] = (true, true, ["a", "b"])
+        h.publish(["a": .confirmedAbsent, "b": .confirmedAbsent])
+        await h.settle()
+        XCTAssertEqual(h.archived(["a", "b"]), [], "a file is there after all")
+        h.proofs.answers[.claude] = (false, true, [])
+        h.model.armArchiveSweep(); await h.settle()
+        XCTAssertEqual(h.archived(["a", "b"]), [], "not exhaustive")
+        h.proofs.answers[.claude] = (true, false, [])
+        h.model.armArchiveSweep(); await h.settle()
+        XCTAssertEqual(h.archived(["a", "b"]), [], "not quiescent")
+        h.folders.evidence["/p"] = .missing
+        h.model.armArchiveSweep(); await h.settle()
+        XCTAssertEqual(h.archived(["a", "b"]), ["a"], "an unproven hint leaves the folder to decide")
+        XCTAssertEqual(h.reason("a"), .folderMissing)
+        h.proofs.answers[.claude] = nil
+        h.model.armArchiveSweep(); await h.settle()
+        XCTAssertEqual(h.archived(["b"]), ["b"])
+        XCTAssertEqual(h.reason("b"), .transcriptMissing)
+    }
+
+    /// A row that never recorded its agent needs every agent's proof.
+    func testARowWithNoAgentNeedsEveryAgentsProof() async throws {
+        var h = harness([Fixture.row("x", agent: nil, project: nil, title: "x")])
+        h.proofs.answers[.codex] = (true, false, [])
+        h.publish(["x": .confirmedAbsent])
+        await h.settle()
+        XCTAssertEqual(h.archived(["x"]), [])
+        XCTAssertEqual(Set(h.proofs.calls.map(\.1)), [.claude, .codex])
+        h.proofs.answers[.codex] = nil
+        h.model.armArchiveSweep(); await h.settle()
+        XCTAssertEqual(h.archived(["x"]), ["x"])
+    }
+
+    /// A proof that was not quiet is tried again a bounded number of times,
+    /// spaced, then left to the hourly sweep — never a tight loop. A quiet
+    /// one resets the count.
+    func testANoisyProofIsRetriedABoundedNumberOfTimes() async throws {
+        var h = harness([row("a", project: nil)])
+        h.proofs.answers[.claude] = (true, false, [])
+        h.publish(["a": .confirmedAbsent])
+        await h.settle()
+        for delay in AppModel.proofRetryDelays {
+            XCTAssertEqual(h.timers.armed.last, delay)
+            h.timers.fire(delay)
+            await h.settle()
+        }
+        let armed = h.timers.armed.count
+        h.model.armArchiveSweep(); await h.settle()
+        XCTAssertEqual(h.timers.armed.count, armed, "retries spent: no more until the hourly sweep")
+        XCTAssertEqual(h.archived(["a"]), [])
+        h.proofs.answers[.claude] = nil
+        h.model.armArchiveSweep(); await h.settle()
+        XCTAssertEqual(h.archived(["a"]), ["a"])
+    }
+
+    /// The app's sweep runs hourly as well as on verdicts.
+    func testTheAppSweepsHourly() async {
+        let h = harness([row("a", project: nil)])
+        h.model.armPeriodicSweep()
+        XCTAssertEqual(h.timers.armed, [AppModel.periodicSweepInterval])
+        h.timers.fire(AppModel.periodicSweepInterval)
+        XCTAssertTrue(h.scheduler.isArmed, "an hourly tick arms a sweep")
+        XCTAssertEqual(h.timers.armed, [AppModel.periodicSweepInterval, AppModel.periodicSweepInterval], "and the next tick")
     }
 
     func testThePlanIsPureAndStable() {
@@ -194,8 +298,13 @@ final class AutoArchiveTests: XCTestCase {
                           "rejoined": MembershipRef(id: "rejoined", host: .local, incarnation: "earlier")])
         XCTAssertEqual(AutoArchivePolicy.foldersToCheck(rows: rows.values, snapshot: snapshot, openSessionIDs: [], now: clock),
                        [Fixture.key("/gone"), Fixture.key("/here"), Fixture.key("/unknown")])
+        let requests = AutoArchivePolicy.proofRequests(rows: rows.values, snapshot: snapshot, openSessionIDs: [], now: clock)
+        XCTAssertEqual(requests, [.init(host: .local, agent: .claude): ["a", "both"], .init(host: .local, agent: .codex): ["a", "both"]],
+                       "no agent recorded: every agent's proof")
+        let proven = AbsenceProof(exhaustive: true, quiescent: true, missing: ["a", "both"])
         let plan = AutoArchivePolicy.plan(
             rows: rows.values, snapshot: snapshot,
+            proofs: [.init(host: .local, agent: .claude): proven, .init(host: .local, agent: .codex): proven],
             folders: [Fixture.key("/gone"): .missing, Fixture.key("/here"): .exists, Fixture.key("/unknown"): .unknown],
             openSessionIDs: [], now: clock)
         XCTAssertEqual(plan.map(\.ref.id), ["a", "b", "both"], "not the rejoined row: the absence was another membership's")
@@ -254,62 +363,6 @@ final class AutoArchiveTests: XCTestCase {
         XCTAssertEqual(h.archived(ids), ["control"])
         XCTAssertNil(h.state("left"))
         XCTAssertEqual(h.model.autoArchiveNotice?.memberships.map(\.id), ["control"])
-    }
-
-    /// The sweep's last check, against the engine itself: an absence the
-    /// engine withdrew (its coverage changed) while the merged snapshot the
-    /// plan read still showed it archives nothing — not while the re-lookup
-    /// is held, and not once it proves the absence again under a newer
-    /// coverage the plan never saw. Only a plan against the current
-    /// publication writes.
-    func testASweepAgainstAWithdrawnAbsenceArchivesNothing() async throws {
-        let database = try TempleDB.inMemory()
-        Fixture.join([row("gone")], to: database)
-        let source = FakeHostSource(host: .local)
-        let engine = SessionEngine(source: source, database: database)
-        let overlay = SessionOverlayStore(db: database)
-        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [engine],
-                             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()), database: database,
-                             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
-                             overlay: overlay, hostRegistry: Fixture.hostsWithoutFolderEvidence())
-        let scheduler = ManualSweepScheduler()
-        model.archiveSweepScheduler = scheduler.schedule
-        model.folderEvidence = { _ in .unknown }
-        let clock = clock
-        model.now = { clock }
-        model.history.catalog = { AsyncStream { $0.finish() } }
-        await engine.start()
-        defer { Task { await engine.stop() } }
-        try await waitFor { engine.latestSnapshot?.resolutions["gone"] == .confirmedAbsent }
-        let stale = try XCTUnwrap(engine.latestSnapshot)
-
-        // Coverage moves; the re-lookup is held. The model still holds the
-        // snapshot that proved the absence.
-        let gate = FakeGate()
-        source.locateGate = gate
-        source.dropEvents()
-        try await waitFor { engine.latestSnapshot?.resolutions["gone"] == .incomplete }
-        model.receiveEngineSnapshot(stale)
-        scheduler.fire()
-        await model.archiveSweep?.value
-        XCTAssertEqual(try database.sessionState("gone")?.archived, false, "withdrawn: nothing archived")
-
-        // Proven again, under a newer coverage the plan's snapshot predates.
-        gate.open()
-        try await waitFor { engine.latestSnapshot?.resolutions["gone"] == .confirmedAbsent }
-        model.armArchiveSweep()
-        scheduler.fire()
-        await model.archiveSweep?.value
-        XCTAssertEqual(try database.sessionState("gone")?.archived, false, "planned against an older coverage")
-
-        // Planned against what the engine publishes now: archived.
-        model.receiveEngineSnapshot(try XCTUnwrap(engine.latestSnapshot))
-        for _ in 0..<3 where scheduler.isArmed {
-            scheduler.fire()
-            await model.archiveSweep?.value
-        }
-        XCTAssertEqual(try database.sessionState("gone")?.archived, true)
-        XCTAssertEqual(try database.sessionState("gone")?.archiveReason, .transcriptMissing)
     }
 
     /// A model nobody turned the sweep on for (every test fixture, every
@@ -571,8 +624,8 @@ final class AutoArchiveTests: XCTestCase {
         try v11Database(at: path, existingFolder: folder.path)
         let db = try TempleDB(path: path)
         XCTAssertNil(try db.sessionState("legacy")?.archiveReason)
-        let source = LocalSessionSource(stores: [ClaudeSessionStore(root: storeRoot)], debounceInterval: 0.01,
-                                        monitorChanges: false)
+        // Observing: an absence is proven only by a host watching its store.
+        let source = LocalSessionSource(stores: [ClaudeSessionStore(root: storeRoot)], debounceInterval: 0.01)
         let engine = SessionEngine(source: source, database: db)
         let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [engine], database: db,
                            settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
@@ -580,6 +633,7 @@ final class AutoArchiveTests: XCTestCase {
         app.archiveSweepScheduler = { _, action in SessionOverlayStore.schedule(0.05, action) }
         // This Mac's real folder evidence, as the local host answers it.
         app.folderEvidence = { await source.directoryEvidence($0.path) }
+        app.proveAbsence = { _, agent, ids in await source.proveAbsent(ids: ids, agent: agent) }
         app.start()
         return (app, db, engine)
     }

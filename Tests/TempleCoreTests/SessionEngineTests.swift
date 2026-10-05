@@ -278,79 +278,6 @@ final class SessionEngineTests: XCTestCase {
         try await eventually { recorder.latest.isEmpty }
     }
 
-    /// ADR-032's one rule decides the engine's completeness too: a member
-    /// whose transcript is behind a link where transcripts are listed (here
-    /// a linked project folder) is not proven absent, nor is any other
-    /// member of that agent. A link where no transcript is listed (Claude
-    /// Code's own `subagents/` links) changes nothing.
-    func testAnAgentWhoseListingIsNotExhaustiveProvesNoMemberAbsent() async throws {
-        let store = try root()
-        try claude(store, id: "present")
-        let elsewhere = try root()
-        try claude(elsewhere, id: "linked")
-        let subagents = store.appendingPathComponent("project/present/subagents")
-        try FileManager.default.createDirectory(at: subagents, withIntermediateDirectories: true)
-        try FileManager.default.createSymbolicLink(at: subagents.appendingPathComponent("agent-x.jsonl"),
-                                                   withDestinationURL: elsewhere.appendingPathComponent("nothing.jsonl"))
-        let plain = try memberEngine(LocalSessionSource(stores: [ClaudeSessionStore(root: store)], debounceInterval: 0.02,
-                                                        monitorChanges: false), members: ["present", "linked", "absent"])
-        var recorder = try await start(plain)
-        XCTAssertEqual(plain.resolution(for: "linked"), .confirmedAbsent, "no link in scope: a completed listing")
-        XCTAssertEqual(plain.resolution(for: "absent"), .confirmedAbsent)
-        recorder.stop()
-
-        try FileManager.default.createSymbolicLink(at: store.appendingPathComponent("-linked-project"),
-                                                   withDestinationURL: elsewhere.appendingPathComponent("project"))
-        let linked = try memberEngine(LocalSessionSource(stores: [ClaudeSessionStore(root: store)], debounceInterval: 0.02,
-                                                         monitorChanges: false), members: ["present", "linked", "absent"])
-        recorder = try await start(linked)
-        defer { recorder.stop() }
-        guard case .loaded? = linked.resolution(for: "present") else { return XCTFail("present: not loaded") }
-        XCTAssertEqual(linked.resolution(for: "linked"), .incomplete)
-        XCTAssertEqual(linked.resolution(for: "absent"), .incomplete)
-    }
-
-    /// A link appearing where transcripts are listed, after a completed
-    /// listing, takes completeness away at once: the source re-lists,
-    /// coverage moves on, and a member it had proven absent no longer is.
-    func testALinkAppearingInScopeWithdrawsAnAbsence() async throws {
-        let store = try root()
-        try claude(store, id: "present")
-        let elsewhere = try root()
-        try claude(elsewhere, id: "linked")
-        let watcher = try memberEngine(LocalSessionSource(stores: [ClaudeSessionStore(root: store)], debounceInterval: 0.02,
-                                                          monitorChanges: false), members: ["present", "linked"])
-        let recorder = try await start(watcher)
-        defer { recorder.stop() }
-        XCTAssertEqual(watcher.resolution(for: "linked"), .confirmedAbsent)
-        let link = store.appendingPathComponent("-linked-project")
-        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: elsewhere.appendingPathComponent("project"))
-        watcher.reconcileEvent(path: link.path, flags: UInt32(kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemIsSymlink))
-        try await eventually { watcher.resolution(for: "linked") == .incomplete }
-        // Gone again: the next listing is exhaustive, and the absence returns.
-        try FileManager.default.removeItem(at: link)
-        watcher.reconcileEvent(path: link.path, flags: UInt32(kFSEventStreamEventFlagItemRemoved | kFSEventStreamEventFlagItemIsSymlink))
-        try await eventually { watcher.resolution(for: "linked") == .confirmedAbsent }
-    }
-
-    /// Codex: a rollout in a hidden folder under `sessions/` is never listed,
-    /// so the listing is not exhaustive and no Codex member is proven absent.
-    func testAHiddenFolderUnderCodexSessionsProvesNoMemberAbsent() async throws {
-        let base = try root()
-        let thread = UUID().uuidString.lowercased()
-        let hidden = base.appendingPathComponent("sessions/2026/10/.stash")
-        try FileManager.default.createDirectory(at: hidden, withIntermediateDirectories: true)
-        try #"{"type":"session_meta","payload":{"id":"\#(thread)","cwd":"/w","timestamp":"2026-10-01T10:00:00Z"}}"#
-            .write(to: hidden.appendingPathComponent("rollout-2026-10-01T10-00-00-\(thread).jsonl"), atomically: true, encoding: .utf8)
-        let db = try TempleDB.inMemory()
-        try db.join(sessionID: thread, via: .imported, agent: .codex)
-        let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: base)], debounceInterval: 0.02,
-                                                               monitorChanges: false), database: db)
-        let recorder = try await start(watcher)
-        defer { recorder.stop() }
-        XCTAssertEqual(watcher.resolution(for: thread), .incomplete)
-    }
-
     /// The store root goes (a volume unmounted, a store moved) and FSEvents
     /// delivers a descendant's event before the root's own. A folder or file
     /// gone with its root proves nothing: no member may become absent, and
@@ -1211,14 +1138,6 @@ private final class EngineCountingStore: IncrementalSessionStore, @unchecked Sen
         let callback = afterListing; afterListing = nil; callback?()
         return listed
     }
-    func enumerateSessionFilesAudited() throws -> (files: [URL], exhaustive: Bool) {
-        lock.lock(); listingCount += 1; lock.unlock()
-        if failEnumeration { throw CocoaError(.fileReadNoPermission) }
-        let listed = try inner.enumerateSessionFilesAudited()
-        let callback = afterListing; afterListing = nil; callback?()
-        return listed
-    }
-    func inAuditScope(_ path: String) -> Bool { inner.inAuditScope(path) }
     func enumerateSessionFiles(in subtree: URL) throws -> [URL] {
         lock.lock(); listingCount += 1; lock.unlock()
         return try inner.enumerateSessionFiles(in: subtree)

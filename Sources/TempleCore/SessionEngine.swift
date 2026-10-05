@@ -58,6 +58,7 @@ public actor SessionEngine: HostEngine {
     private var coverageKnown = false
     private var reconnects: UInt64 = 0
     private var sharedRevision: [Agent: UInt64] = [:]
+    private var complete: Set<Agent> = []
     private var members: [String: Member] = [:]
     private var membershipLoaded = false
     private var membershipDelay: TimeInterval = 1
@@ -156,7 +157,7 @@ public actor SessionEngine: HostEngine {
         guard !running else { return }
         running = true
         runEpoch &+= 1
-        coverage = 0; coverageKnown = false; reconnects = 0; sharedRevision = [:]
+        coverage = 0; coverageKnown = false; reconnects = 0; complete = []; sharedRevision = [:]
         locateDelay = 1; membershipDelay = 1
         // Arm observation before the first listing: the source starts
         // watching on subscription, and a locate after it sees the result.
@@ -428,25 +429,6 @@ public actor SessionEngine: HostEngine {
         members[id] = member
     }
 
-    /// Every absence this engine published is withdrawn, now: the coverage
-    /// it was proven under is gone (a completeness change, a coverage reset,
-    /// a reconnect). Each becomes `.incomplete` and is published before any
-    /// re-lookup starts, so nothing — the archive sweep above all — can act
-    /// on an absence the source no longer backs. (Wider than the agent that
-    /// lost coverage, and than agentless members: a coverage reset does not
-    /// say which agent moved, and every member is located again anyway.)
-    private func withdrawAbsences(_ ids: some Sequence<String>) {
-        var withdrew = false
-        for id in ids where members[id]?.resolution == .confirmedAbsent {
-            members[id]?.resolution = .incomplete
-            members[id]?.absenceCoverage = nil
-            withdrew = true
-        }
-        guard withdrew else { return }
-        snapshotDirty = true
-        publishNow()
-    }
-
     /// Revocations reach the consumer at once: a write it is still retrying
     /// for revoked facts must stop now, not at the next pass.
     private func publishIfRevoked() {
@@ -510,8 +492,7 @@ public actor SessionEngine: HostEngine {
         reconnects &+= 1
         // The stream could not vouch for what happened while it was down:
         // like a coverage reset, every member is located again with its
-        // enrichment re-armed, and no absence stands meanwhile.
-        withdrawAbsences(Array(members.keys))
+        // enrichment re-armed.
         for id in members.keys {
             members[id]?.resetBudget()
             members[id]?.failures.removeAll()
@@ -531,9 +512,6 @@ public actor SessionEngine: HostEngine {
             var affected = Set(ids.filter { members[$0] != nil })
             for locator in locators { affected.formUnion(byLocator[locator] ?? []) }
             guard !affected.isEmpty else { return }
-            // A file named for a member, or one of its candidates, changed:
-            // it may have a transcript now. Its absence goes at once.
-            withdrawAbsences(affected)
             counters.observations &+= UInt64(affected.count)
             mirror.setCounters(counters)
             // Work in flight is stale either way (C6). A member with facts to
@@ -561,10 +539,8 @@ public actor SessionEngine: HostEngine {
             guard next > coverage || !coverageKnown else { return }
             coverage = next
             coverageKnown = true
-            // Nothing observed before can be vouched for: no absence stands,
-            // and every member is located again, with its parse budget
-            // re-armed.
-            withdrawAbsences(Array(members.keys))
+            // Nothing observed before can be vouched for: every member is
+            // located again, with its parse budget re-armed.
             for id in members.keys {
                 members[id]?.resetBudget()
                 members[id]?.failures.removeAll()
@@ -728,11 +704,9 @@ public actor SessionEngine: HostEngine {
             coverage = located.coverage
             if !first {
                 // New coverage: nothing seen under the old one can be vouched
-                // for. No absence stands; every member's facts are revoked
-                // and its enrichment re-armed; members outside this batch are
-                // located again, and this batch — listed under the new
-                // coverage — goes on.
-                withdrawAbsences(Array(members.keys))
+                // for. Every member's facts are revoked and its enrichment
+                // re-armed; members outside this batch are located again,
+                // and this batch — listed under the new coverage — goes on.
                 for id in members.keys {
                     let current = isCurrent(id, batch, batch.revisions)
                     members[id]?.resetBudget()
@@ -745,6 +719,7 @@ public actor SessionEngine: HostEngine {
             }
         }
         for (agent, revision) in located.sharedRevision { sharedFactsAdvanced(agent, to: revision) }
+        complete = located.complete
         var reads: [(String, ReadPlan)] = []
         for id in ids {
             guard isCurrent(id, batch, revisions), var member = members[id] else { continue }
@@ -772,7 +747,7 @@ public actor SessionEngine: HostEngine {
                 }
             }
             member.pass = Pass(epoch: batch.epoch, opRevision: member.opRevision, incarnation: member.incarnation,
-                               coverage: coverage, complete: located.complete, explicit: member.pendingExplicit, queue: present)
+                               coverage: coverage, explicit: member.pendingExplicit, queue: present)
             member.pendingExplicit = false
             members[id] = member
             if let plan = step(id, after: nil) { reads.append((id, plan)) }
@@ -1091,14 +1066,11 @@ public actor SessionEngine: HostEngine {
             verdict = failure
         } else if member.awaitingCreation {
             verdict = .awaitingCreation
-        } else if pass.coverage == coverage, eligibleAgentsComplete(member, in: pass.complete) {
-            // Only a lookup completed against complete coverage at the
-            // current generation proves an absence.
+        } else if eligibleAgentsComplete(member) {
             verdict = .confirmedAbsent
         } else {
             verdict = .incomplete
         }
-        member.absenceCoverage = verdict == .confirmedAbsent ? pass.coverage : nil
         if pass.loaded == nil, final, member.facts != nil { member.facts = nil; snapshotDirty = true }
         if member.resolution != verdict { snapshotDirty = true }
         member.resolution = verdict
@@ -1114,7 +1086,7 @@ public actor SessionEngine: HostEngine {
 
     /// Absence needs every listing that could hold the member: its agent's,
     /// or every agent's when the row does not know it.
-    private func eligibleAgentsComplete(_ member: Member, in complete: Set<Agent>) -> Bool {
+    private func eligibleAgentsComplete(_ member: Member) -> Bool {
         if let agent = member.agent { return complete.contains(agent) }
         return Set(Agent.allCases).isSubset(of: complete)
     }
@@ -1162,16 +1134,15 @@ public actor SessionEngine: HostEngine {
         snapshotDirty = false
         let resolutions = members.mapValues(\.resolution)
         let facts = members.compactMapValues(\.facts)
-        let absences = members.compactMapValues { $0.resolution == .confirmedAbsent ? $0.absenceCoverage : nil }
         var memberships: [String: MembershipRef] = [:]
         for (id, member) in members {
             if let incarnation = member.incarnation { memberships[id] = MembershipRef(id: id, host: host, incarnation: incarnation) }
         }
         if let published, published.resolutions == resolutions, published.facts == facts,
-           published.memberships == memberships, published.absenceCoverage == absences { return }
+           published.memberships == memberships { return }
         generation &+= 1
         let snapshot = EngineSnapshot(generation: generation, resolutions: resolutions, facts: facts,
-                                      memberships: memberships, absenceCoverage: absences)
+                                      memberships: memberships)
         published = snapshot
         counters.publications &+= 1
         mirror.setCounters(counters)
@@ -1200,8 +1171,6 @@ private struct Member {
     var awaitingCreation = false
     var opRevision: UInt64 = 0
     var resolution: MemberResolution = .resolving
-    /// The coverage generation a `.confirmedAbsent` was proven at.
-    var absenceCoverage: UInt64?
     var everSettled = false
     var candidates: [TranscriptCandidate] = []
     var verified: (locator: TranscriptLocator, signature: TranscriptSignature)?
@@ -1253,9 +1222,6 @@ private struct Pass {
     var opRevision: UInt64
     let incarnation: String?
     let coverage: UInt64
-    /// The agents its listing found complete, at `coverage`: what an
-    /// absence it settles on rests on.
-    let complete: Set<Agent>
     let explicit: Bool
     var queue: [TranscriptCandidate]
     var loaded: TranscriptLocator?

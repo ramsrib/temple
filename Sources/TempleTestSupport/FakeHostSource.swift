@@ -167,9 +167,10 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
 
     public func setUnreadable(_ path: String, _ unreadable: Bool = true) {
         locked {
-            guard files[path] != nil else { return }
+            guard let file = files[path] else { return }
             changeClock += 1
             files[path]?.unreadable = unreadable; files[path]?.changed = changeClock
+            recordLocked(ScopeEvent(path: path, kind: .file), agent: file.agent)
         }
     }
 
@@ -181,6 +182,7 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
             changeClock += 1
             file.data = data; file.changed = changeClock
             files[path] = file
+            recordLocked(ScopeEvent(path: path, kind: .file), agent: file.agent)
         }
     }
 
@@ -201,24 +203,46 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
     public func removeDirectory(_ path: String) { locked { _ = directories.remove(path) } }
     /// Directories under this path cannot be checked: evidence is unknown.
     public func makeUnsearchable(_ path: String) { locked { _ = unsearchable.insert(path) } }
-    /// An agent's listing fails (or works again). Its completeness changes,
-    /// and like every completeness change (ADR-032) that moves coverage on
-    /// and is announced.
     public func breakListing(_ agent: Agent, _ broken: Bool = true) {
-        let next: UInt64? = locked {
-            let changed = broken ? brokenListings.insert(agent).inserted : brokenListings.remove(agent) != nil
-            guard changed else { return nil }
-            coverage += 1
-            return coverage
+        locked { if broken { brokenListings.insert(agent) } else { brokenListings.remove(agent) } }
+    }
+
+    /// The agent's listing meets something it cannot see past (a link, a
+    /// hidden entry, ADR-032): it lists, but proves no absence.
+    public func setNotExhaustive(_ agent: Agent, _ value: Bool = true) {
+        locked { if value { notExhaustive.insert(agent) } else { notExhaustive.remove(agent) } }
+    }
+    private var notExhaustive: Set<Agent> = []
+
+    /// A new folder where the agent's transcripts are listed.
+    public func makeFolder(_ agent: Agent) {
+        record(ScopeEvent(path: "/new-folder", kind: .directory), agent: agent)
+    }
+
+    /// Runs inside every `proveAbsent`, after its listing and before its
+    /// wait, without the host's lock: a test can change the store mid-proof.
+    public var proofHook: (@Sendable () -> Void)? {
+        get { locked { hookForProof } } set { locked { hookForProof = newValue } }
+    }
+    private var hookForProof: (@Sendable () -> Void)?
+    /// Per running proof: its agent, and what happened in that agent's store.
+    private var proofWatches: [UUID: (agent: Agent?, events: [ScopeEvent])] = [:]
+
+    /// Something happened in an agent's store (nil: everywhere).
+    private func record(_ event: ScopeEvent, agent: Agent?) {
+        locked { recordLocked(event, agent: agent) }
+    }
+    private func recordLocked(_ event: ScopeEvent, agent: Agent?) {
+        for (token, watch) in proofWatches where agent == nil || watch.agent == agent {
+            proofWatches[token]?.events.append(event)
         }
-        if let next { emit(.coverageReset(coverage: next)) }
     }
     public func breakTransport(_ broken: Bool = true) { locked { transportBroken = broken } }
 
     /// What a dropped event stream (or a reconnect) does: coverage moves on.
     /// Unannounced, a consumer learns of it from its next `locate`.
     public func dropEvents(announce: Bool = true) {
-        let next: UInt64 = locked { coverage += 1; return coverage }
+        let next: UInt64 = locked { coverage += 1; recordLocked(ScopeEvent(path: "", kind: .lost), agent: nil); return coverage }
         if announce { emit(.coverageReset(coverage: next)) }
     }
 
@@ -252,6 +276,7 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
     }
 
     private func changeLocked(_ path: String, agent: Agent) -> SourceChange {
+        recordLocked(ScopeEvent(path: path, kind: .file), agent: agent)
         let id = TranscriptFormats.format(for: agent).name(path: path)?.threadID
         return .transcripts(ids: id.map { [$0] } ?? [], locators: [TranscriptLocator(host: host, path: path)])
     }
@@ -530,6 +555,24 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
                 : (query.newestFirst ? lhs.modifiedAt > rhs.modifiedAt : lhs.modifiedAt < rhs.modifiedAt)
         }
         return (failed, summaries, candidates)
+    }
+
+    /// One listing of the agent's files, the hook, a turn, then what was
+    /// recorded meanwhile: the same decision every host makes.
+    public func proveAbsent(ids: Set<String>, agent: Agent) async -> AbsenceProof {
+        let token = UUID()
+        let (listed, exhaustive, observing): ([String]?, Bool, Bool) = locked {
+            proofWatches[token] = (agent, [])
+            counts.roundTrips += 1
+            guard !transportBroken else { return (nil, false, false) }
+            guard !brokenListings.contains(agent) else { return (nil, false, true) }
+            return (listedPathsLocked(agent), !notExhaustive.contains(agent), true)
+        }
+        proofHook?()
+        await Task.yield()
+        let events = locked { proofWatches.removeValue(forKey: token)?.events ?? [] }
+        return AbsenceProof.decide(ids: ids, format: TranscriptFormats.format(for: agent), listed: listed,
+                                   exhaustive: exhaustive, events: events, observing: observing)
     }
 
     /// Codex only: the one rollout header in the window for this folder.

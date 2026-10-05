@@ -28,6 +28,14 @@ protocol SourceFixture: AnyObject {
     /// A path the agent's store would use for `name`, without creating it.
     func path(agent: Agent, name: String) -> String
     func breakListing(_ agent: Agent) throws
+    /// The agent's listing meets something it cannot see past (ADR-032):
+    /// a hidden folder where transcripts are listed.
+    func makeListingNotExhaustive(_ agent: Agent) throws
+    /// A new folder where the agent's transcripts are listed, reported.
+    func makeFolderInScope(_ agent: Agent) throws
+    /// Runs `body` inside the next absence proof, after its listing and
+    /// before its wait.
+    func duringNextProof(_ body: @escaping @Sendable () throws -> Void)
     /// Replace the file once, mid-read: after the next read's bytes, before
     /// its closing stat.
     func replaceDuringNextRead(_ locator: TranscriptLocator, with data: Data) throws
@@ -160,19 +168,6 @@ class HostSessionSourceContract: XCTestCase {
     }
 
     func locate(_ requests: [LocateRequest]) async throws -> LocateResult { try await source.locate(requests) }
-
-    /// What a host completes once it has caught up. A write's metadata or a
-    /// removal may change the tree's shape (ADR-032): a host may withdraw
-    /// completeness until it has listed again, never longer.
-    func eventuallyComplete(_ requests: [LocateRequest]) async throws -> Set<Agent> {
-        var complete = try await locate(requests).complete
-        let deadline = Date().addingTimeInterval(3)
-        while complete != Set(Agent.allCases), Date() < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-            complete = try await locate(requests).complete
-        }
-        return complete
-    }
 
     // MARK: 1–4 locate
 
@@ -404,8 +399,7 @@ class HostSessionSourceContract: XCTestCase {
             }
         }
         let found = try await locate([LocateRequest(id: claudeID), LocateRequest(id: codexID)])
-        let completeAfterWrites = try await eventuallyComplete([LocateRequest(id: claudeID)])
-        XCTAssertEqual(completeAfterWrites, [.claude, .codex])
+        XCTAssertEqual(found.complete, [.claude, .codex])
         XCTAssertEqual(found.candidates[claudeID]?.map(\.locator), [claude])
         XCTAssertEqual(found.candidates[codexID]?.map(\.locator), [codex])
         XCTAssertEqual(found.candidates[codexID]?.first?.role, .selected)
@@ -418,8 +412,7 @@ class HostSessionSourceContract: XCTestCase {
         } }
         let gone = try await locate([LocateRequest(id: claudeID)])
         XCTAssertEqual(gone.candidates[claudeID]?.count, 0, "a removed file leaves the listing")
-        let completeAfterRemoval = try await eventuallyComplete([LocateRequest(id: claudeID)])
-        XCTAssertEqual(completeAfterRemoval, [.claude, .codex])
+        XCTAssertEqual(gone.complete, [.claude, .codex])
     }
 
     func test10ADroppedStreamResetsCoverageForward() async throws {
@@ -708,26 +701,84 @@ class HostSessionSourceContract: XCTestCase {
         XCTAssertEqual(completion.provesNoTranscript(id: thread, agent: .claude), false, "Claude was not listed: nothing proven")
     }
 
-    /// Completeness changes only with coverage: an agent whose listing
-    /// stops working is incomplete under a newer coverage than the one it
-    /// was complete under, and the change is announced, so nothing proven
-    /// under the old one stands.
-    func test13lACompletenessChangeMovesCoverageOn() async throws {
-        try plantCodex(uuid())
-        try await observe()
-        let before = try await locate([])
-        XCTAssertTrue(before.complete.contains(.codex))
-        try fixture.breakListing(.codex)
-        var after = try await locate([])
-        let deadline = Date().addingTimeInterval(3)
-        while after.complete.contains(.codex), Date() < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-            after = try await locate([])
+    // MARK: 18 absence proofs (ADR-030)
+
+    /// A proof that a host had time to settle: a test that wants
+    /// quiescence retries a few times, as the archive sweep would (a real
+    /// stream may still be delivering what the test itself just wrote).
+    private func settledProof(_ ids: Set<String>, _ agent: Agent) async -> AbsenceProof {
+        var proof = await source.proveAbsent(ids: ids, agent: agent)
+        for _ in 0..<5 where !proof.quiescent {
+            try? await Task.sleep(for: .milliseconds(100))
+            proof = await source.proveAbsent(ids: ids, agent: agent)
         }
-        XCTAssertFalse(after.complete.contains(.codex))
-        XCTAssertGreaterThan(after.coverage, before.coverage)
-        let reset = try await waitForEvent { if case .coverageReset(let c) = $0 { return c > before.coverage }; return false }
-        XCTAssertNotNil(reset)
+        return proof
+    }
+
+    /// Exhaustive and quiescent, a proof names exactly the asked ids with
+    /// no file named for them — a file that is unreadable, or records
+    /// another session, still counts as there.
+    func test18aAnExhaustiveQuiescentListingProvesWhatHasNoFile() async throws {
+        let present = uuid(), unreadable = uuid(), named = uuid(), gone = uuid()
+        try plantClaude(present)
+        try fixture.makeUnreadable(try plantClaude(unreadable))
+        try fixture.put(agent: .claude, name: "\(named).jsonl", data: claudeData(uuid()))
+        try await observe()
+        let proof = await settledProof([present, unreadable, named, gone], .claude)
+        XCTAssertTrue(proof.exhaustive)
+        XCTAssertTrue(proof.quiescent)
+        XCTAssertEqual(proof.missing, [gone])
+        XCTAssertTrue(proof.proves(gone))
+        XCTAssertFalse(proof.proves(present))
+        XCTAssertFalse(proof.proves(unreadable))
+        XCTAssertFalse(proof.proves(named))
+    }
+
+    /// Something the listing cannot see past, a listing that fails, a store
+    /// that is not there: nothing is proven.
+    func test18bANonExhaustiveOrFailedListingProvesNothing() async throws {
+        try await observe()
+        try fixture.makeListingNotExhaustive(.claude)
+        let hidden = await settledProof([uuid()], .claude)
+        XCTAssertFalse(hidden.exhaustive)
+        XCTAssertFalse(hidden.proves(hidden.missing.first ?? ""))
+        try fixture.breakListing(.codex)
+        let broken = await source.proveAbsent(ids: [uuid()], agent: .codex)
+        XCTAssertFalse(broken.exhaustive)
+        XCTAssertEqual(broken.missing, [])
+    }
+
+    /// While the proof runs: a folder made where transcripts are listed,
+    /// or anything touching a file named for an asked id, makes it not
+    /// quiescent. Writes to another session's transcript, and a new
+    /// transcript for another session, do not: neither can make the asked
+    /// file appear, and sessions being worked on beside the sweep must not
+    /// starve it.
+    func test18cOnlyAChangeThatCouldMatterDisturbsAProof() async throws {
+        let asked = uuid(), busy = uuid()
+        let busyFile = try plantClaude(busy)
+        try await observe()
+        let fixture = self.fixture!
+        let appendLine = Data("\n{\"type\":\"assistant\",\"sessionId\":\"\(busy)\"}".utf8)
+        fixture.duringNextProof { for _ in 0..<5 { try fixture.append(busyFile, appendLine) } }
+        var proof = await settledProof([asked], .claude)
+        XCTAssertTrue(proof.quiescent, "appends to another session's transcript")
+        XCTAssertTrue(proof.proves(asked))
+
+        let otherName = "\(uuid()).jsonl", otherData = claudeData(uuid())
+        fixture.duringNextProof { _ = try fixture.put(agent: .claude, name: otherName, data: otherData) }
+        proof = await settledProof([asked], .claude)
+        XCTAssertTrue(proof.proves(asked), "a new transcript for another session")
+
+        fixture.duringNextProof { try fixture.makeFolderInScope(.claude) }
+        proof = await source.proveAbsent(ids: [asked], agent: .claude)
+        XCTAssertFalse(proof.quiescent, "a folder made where transcripts are listed")
+
+        let askedName = "\(asked).jsonl", askedData = claudeData(asked)
+        fixture.duringNextProof { _ = try fixture.put(agent: .claude, name: askedName, data: askedData) }
+        proof = await source.proveAbsent(ids: [asked], agent: .claude)
+        XCTAssertFalse(proof.quiescent, "a file named for the asked id arrived during the proof")
+        XCTAssertFalse(proof.proves(asked))
     }
 
     // MARK: 14 adoption
@@ -908,7 +959,7 @@ private final class LocalFixture: SourceFixture {
         try FileManager.default.createDirectory(at: root.appendingPathComponent("codex/sessions/2026/10/01"), withIntermediateDirectories: true)
         local = LocalSessionSource(stores: [ClaudeSessionStore(root: root.appendingPathComponent("claude")),
                                             CodexSessionStore(root: root.appendingPathComponent("codex"))],
-                                   debounceInterval: 0.01, coverageScanInterval: 0.05)
+                                   debounceInterval: 0.01)
     }
 
     func path(agent: Agent, name: String) -> String {
@@ -973,8 +1024,21 @@ private final class LocalFixture: SourceFixture {
         let directory = agent == .claude ? claudeRoot : codexRoot.appendingPathComponent("sessions")
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: directory.path)
         locked.append(directory)
-        // What FSEvents reports for a chmod of the store root.
-        local.reconcileEvent(path: directory.path, flags: UInt32(kFSEventStreamEventFlagItemInodeMetaMod | kFSEventStreamEventFlagItemIsDir))
+    }
+    func makeListingNotExhaustive(_ agent: Agent) throws {
+        let directory = agent == .claude ? claudeRoot.appendingPathComponent(".stash")
+            : codexRoot.appendingPathComponent("sessions/.stash")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+    func duringNextProof(_ body: @escaping @Sendable () throws -> Void) {
+        let once = Flag()
+        local.proofHook = { if once.setOnce() { try? body() } }
+    }
+    func makeFolderInScope(_ agent: Agent) throws {
+        let folder = agent == .claude ? claudeRoot.appendingPathComponent("-new-\(UUID().uuidString)")
+            : codexRoot.appendingPathComponent("sessions/2026/10/\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        local.reconcileEvent(path: folder.path, flags: UInt32(kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemIsDir))
     }
     func replaceDuringNextRead(_ locator: TranscriptLocator, with data: Data) throws {
         let once = Flag()
@@ -1064,6 +1128,12 @@ private final class FakeFixture: SourceFixture {
         fake.readPhaseHook = { path in if path == locator.path { fake.append(path, Data("\n{}".utf8)) } }
     }
     func breakTransport() throws { fake.breakTransport() }
+    func makeListingNotExhaustive(_ agent: Agent) throws { fake.setNotExhaustive(agent) }
+    func makeFolderInScope(_ agent: Agent) throws { fake.makeFolder(agent) }
+    func duringNextProof(_ body: @escaping @Sendable () throws -> Void) {
+        let once = Flag()
+        fake.proofHook = { if once.setOnce() { try? body() } }
+    }
     func dropEvents() throws { fake.dropEvents() }
     func setCodexHistory(_ data: Data) throws { fake.setShared(.codex, CodexFormat.historyInput, data) }
     func existingDirectory() throws -> String { fake.addDirectory("/home/me/project"); return "/home/me/project" }

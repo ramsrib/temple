@@ -56,14 +56,14 @@ struct EntryInspector: Sendable {
 /// Anything deeper (Claude's `<project>/<session>/subagents/…`, which
 /// Claude Code fills with links of its own) is never walked, holds no
 /// candidate, and decides nothing. `inAuditScope` says the same for one
-/// path: which events can make an agent's coverage dirty.
+/// path: which events a running absence proof hears.
 ///
 /// A link's target is never inspected, and nothing about an entry is
 /// guessed: metadata that cannot be read, or does not say, is not
 /// exhaustive. Browsing is unaffected — what is listed is what was always
 /// listed; this only decides what the listing may prove.
 struct ListingAudit {
-    static let allowedHidden: Set<String> = [".DS_Store"]
+    static let allowedHidden = AbsenceProof.allowedHiddenNames
     static let keys: Set<URLResourceKey> = [.isSymbolicLinkKey, .isHiddenKey, .isDirectoryKey]
 
     let inspector: EntryInspector

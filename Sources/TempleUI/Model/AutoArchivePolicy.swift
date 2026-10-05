@@ -9,12 +9,15 @@ import TempleCore
 /// A row is a candidate only when nobody is using it: not pinned, not
 /// archived, no tab open or restored, idle for `idleAfter`, and not kept by
 /// a person (a keep lasts until the session's next activity). A candidate
-/// is archived on proof alone: its transcript is `.confirmedAbsent` (a
-/// completed enumeration) for this very membership (the snapshot's host and
-/// incarnation for the id must be the row's: an old membership's verdict
-/// says nothing about a rejoin), or its owning host says its folder is
-/// `.missing`. Every other verdict, `.unknown` and `.exists` prove nothing.
-/// When both hold, the transcript is the reason.
+/// is archived on proof alone, taken when the sweep decides:
+/// - its transcript, when the engine's `.confirmedAbsent` for this very
+///   membership (the snapshot's host and incarnation for the id must be the
+///   row's: an old membership's verdict says nothing about a rejoin) — only
+///   a hint — is borne out by the owning host's `proveAbsent`, taken just
+///   now, for every agent that could hold the row;
+/// - or its folder, when the owning host says it is `.missing`.
+/// Every other verdict, an unproven hint, `.unknown` and `.exists` prove
+/// nothing. When both hold, the transcript is the reason.
 struct AutoArchivePolicy {
     /// Claude's retention cleanup removes only transcripts idle 30 days or
     /// more; the week is for the other causes (an id that never got a file,
@@ -36,40 +39,62 @@ struct AutoArchivePolicy {
         }
     }
 
-    /// The folders worth asking about: a candidate's, unless its transcript
-    /// already decides it. One question per folder, however many rows.
-    /// The transcript verdict holds for this candidate: an absence the
-    /// engine proved for this very membership.
+    /// The engine's hint for this candidate: an absence it reported for this
+    /// very membership. A hint makes the row worth a proof, nothing more.
     static func transcriptGone(_ ref: MembershipRef, in snapshot: EngineSnapshot?) -> Bool {
         guard let snapshot else { return false }
         return snapshot.resolutions[ref.id] == .confirmedAbsent && snapshot.memberships[ref.id] == ref
     }
 
-    /// The last check before a write: an entry archived for its transcript
-    /// still stands only if the owning engine publishes, now, the same
-    /// absence for the same membership at the same coverage generation the
-    /// plan saw. An engine that withdrew it (coverage moved, a candidate
-    /// appeared) while the plan was made, or whose publication has not
-    /// reached the merged snapshot yet, archives nothing. Folder entries
-    /// were checked against fresh evidence already.
-    static func stillProven(_ entry: AutoArchiveEntry, planned: EngineSnapshot?, current: EngineSnapshot?) -> Bool {
-        guard entry.reason == .transcriptMissing else { return true }
-        guard let current, transcriptGone(entry.ref, in: current) else { return false }
-        return planned?.absenceCoverage[entry.ref.id] == current.absenceCoverage[entry.ref.id]
+    /// One proof per host and agent.
+    struct ProofKey: Hashable {
+        let host: HostID
+        let agent: Agent
     }
 
+    /// Every agent whose store could hold the row: its own, or all of them
+    /// when the row never recorded one.
+    static func agents(for state: SessionState) -> [Agent] { state.agent.map { [$0] } ?? Agent.allCases }
+
+    /// The proofs a sweep asks for: per host and agent, the hinted
+    /// candidates that agent could hold. One call each, however many rows.
+    static func proofRequests(rows: Dictionary<String, SessionState>.Values, snapshot: EngineSnapshot?,
+                              openSessionIDs: Set<String>, now: Date) -> [ProofKey: Set<String>] {
+        var requests: [ProofKey: Set<String>] = [:]
+        for candidate in candidates(rows: rows, openSessionIDs: openSessionIDs, now: now)
+        where transcriptGone(candidate.ref, in: snapshot) {
+            for agent in agents(for: candidate.state) {
+                requests[ProofKey(host: candidate.ref.host, agent: agent), default: []].insert(candidate.ref.id)
+            }
+        }
+        return requests
+    }
+
+    /// The folders worth asking about: every candidate's, hinted or not (a
+    /// hint the proof does not bear out leaves the folder to decide). One
+    /// question per folder, however many rows.
     static func foldersToCheck(rows: Dictionary<String, SessionState>.Values, snapshot: EngineSnapshot?,
                                openSessionIDs: Set<String>, now: Date) -> Set<ProjectKey> {
         Set(candidates(rows: rows, openSessionIDs: openSessionIDs, now: now).compactMap { candidate in
-            transcriptGone(candidate.ref, in: snapshot) ? nil : Session(state: candidate.state).project
+            Session(state: candidate.state).project
         })
     }
 
+    /// The transcript is gone: hinted, and proven just now by every agent
+    /// that could hold it.
+    static func transcriptProven(_ candidate: (state: SessionState, ref: MembershipRef), snapshot: EngineSnapshot?,
+                                 proofs: [ProofKey: AbsenceProof]) -> Bool {
+        guard transcriptGone(candidate.ref, in: snapshot) else { return false }
+        return agents(for: candidate.state).allSatisfy { agent in
+            proofs[ProofKey(host: candidate.ref.host, agent: agent)]?.proves(candidate.ref.id) == true
+        }
+    }
+
     static func plan(rows: Dictionary<String, SessionState>.Values, snapshot: EngineSnapshot?,
-                     folders: [ProjectKey: DirectoryEvidence], openSessionIDs: Set<String>,
-                     now: Date) -> [AutoArchiveEntry] {
+                     proofs: [ProofKey: AbsenceProof], folders: [ProjectKey: DirectoryEvidence],
+                     openSessionIDs: Set<String>, now: Date) -> [AutoArchiveEntry] {
         candidates(rows: rows, openSessionIDs: openSessionIDs, now: now).compactMap { candidate in
-            if transcriptGone(candidate.ref, in: snapshot) {
+            if transcriptProven(candidate, snapshot: snapshot, proofs: proofs) {
                 return AutoArchiveEntry(ref: candidate.ref, reason: .transcriptMissing)
             }
             if let project = Session(state: candidate.state).project, folders[project] == .missing {
