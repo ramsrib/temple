@@ -440,8 +440,7 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
                     await Task.yield()
                 }
                 if !Task.isCancelled {
-                    let complete = Set(Agent.allCases.filter { query.agents.contains($0) && !failed.contains($0) })
-                    continuation.yield(.completed(agents: complete, candidates: candidates.filter { complete.contains($0.key) }))
+                    continuation.yield(.completed(candidates: candidates.filter { !failed.contains($0.key) }))
                 }
                 continuation.finish()
             }
@@ -469,7 +468,7 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
             let format = TranscriptFormats.format(for: agent)
             let (shared, _) = locked { sharedFacts(agent) }
             let threads = TranscriptCandidates.catalogThreads(format: format, listed: paths.filter { $0.0 == agent }.map(\.1))
-            if query.agents.contains(agent) { candidates[agent] = Set(threads.map(\.threadID)) }
+            if query.agents.contains(agent) { candidates[agent] = Set(threads.map { format.candidateKey($0.threadID) }) }
             for thread in threads {
                 let picked = TranscriptCandidates.catalogPick(thread) { path -> TranscriptCandidates.CatalogAttempt<TranscriptSummary> in
                     locked {

@@ -95,13 +95,20 @@ struct CatalogRoot: Hashable, Sendable {
         volume = (try? url.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
     }
 
-    /// The same directory: path, inode and volume agree, and the device too
-    /// where both know it.
+    /// The same directory: path, inode and volume agree, and the
+    /// filesystem is known to be the same — by device where both know it
+    /// (within a run), else by a volume UUID both have (one side read back
+    /// from disk). A root on a volume with no UUID therefore never matches
+    /// one read from disk: without a stable volume identity, nothing kept
+    /// across launches is reused.
     func matches(_ other: CatalogRoot) -> Bool {
         guard path == other.path, inode == other.inode, volume == other.volume else { return false }
         if let device, let otherDevice = other.device { return device == otherDevice }
-        return true
+        return volume != nil
     }
+
+    /// A root that can be kept on disk: one with a stable volume identity.
+    var persistable: Bool { volume != nil }
 }
 
 /// The local catalog's kept summaries (ADR-032), one per transcript the
@@ -229,8 +236,15 @@ final class CatalogSummaryCache: @unchecked Sendable {
         let changes: CatalogDiskCache.Changes? = locked {
             guard !pending.isEmpty || !pendingRoots.isEmpty else { return nil }
             var roots: [Agent: CatalogRoot] = [:]
-            for agent in Set(pending.keys).union(pendingRoots) { roots[agent] = agents[agent]?.root }
-            let changes = CatalogDiskCache.Changes(roots: roots, files: pending)
+            var files: [Agent: [String: Entry?]] = [:]
+            for agent in Set(pending.keys).union(pendingRoots) {
+                // A root with no stable volume identity is kept in memory
+                // only: on disk it could not be told from another volume's.
+                guard let root = agents[agent]?.root, root.persistable else { continue }
+                roots[agent] = root
+                files[agent] = pending[agent]
+            }
+            let changes = CatalogDiskCache.Changes(roots: roots, files: files)
             pending = [:]; pendingRoots = []
             return changes
         }

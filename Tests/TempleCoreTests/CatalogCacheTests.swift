@@ -494,6 +494,12 @@ final class CatalogCacheTests: XCTestCase {
         let fromDisk = CatalogRoot(path: "/r", inode: 7, volume: "VOL-A")
         XCTAssertTrue(fromDisk.matches(here), "read back from disk: no device, the volume decides")
         XCTAssertFalse(CatalogRoot(path: "/r", inode: 7, volume: "VOL-B").matches(here))
+        // No volume UUID: the device decides within a run, and nothing read
+        // back from disk is ever the same root.
+        let noVolume = CatalogRoot(path: "/r", inode: 7, device: 1)
+        XCTAssertTrue(noVolume.matches(CatalogRoot(path: "/r", inode: 7, device: 1)))
+        XCTAssertFalse(CatalogRoot(path: "/r", inode: 7).matches(noVolume))
+        XCTAssertFalse(noVolume.persistable)
         XCTAssertNotNil(CatalogRoot(claudeRoot)?.device)
     }
 
@@ -537,9 +543,116 @@ final class CatalogCacheTests: XCTestCase {
         for await _ in same.stream() {}
         sameDisk.sync()
         XCTAssertEqual(sameParses.value, 0, "the same volume: everything kept")
-        let (other, _, otherParses) = catalog(volume: "VOL-B")
+        let (other, otherDisk, otherParses) = catalog(volume: "VOL-B")
         for await _ in other.stream() {}
+        otherDisk.sync()
         XCTAssertEqual(otherParses.value, 2, "another volume: nothing kept applies")
+    }
+
+    /// A volume with no UUID has no identity that survives a relaunch: its
+    /// summaries are reused within the run, never written to disk.
+    func testARootWithoutAVolumeIdentityIsKeptInMemoryOnly() async throws {
+        try claude(uuid()); try claude(uuid())
+        func catalog() -> (LocalSessionCatalog, CatalogDiskCache, Counter) {
+            let disk = CatalogDiskCache(directory: stateDir)
+            let parses = Counter()
+            let catalog = LocalSessionCatalog(stores: [ClaudeSessionStore(root: claudeRoot)], cache: CatalogSummaryCache(disk: disk),
+                                              onParse: { parses.increment() }, identify: { url in
+                guard let real = CatalogRoot(url) else { return nil }
+                return CatalogRoot(path: real.path, inode: real.inode, device: real.device, volume: nil)
+            })
+            return (catalog, disk, parses)
+        }
+        let (first, firstDisk, firstParses) = catalog()
+        for await _ in first.stream() {}
+        for await _ in first.stream() {}
+        firstDisk.sync()
+        XCTAssertEqual(firstParses.value, 2, "reused within the run")
+        let (relaunch, _, relaunchParses) = catalog()
+        for await _ in relaunch.stream() {}
+        XCTAssertEqual(relaunchParses.value, 2, "nothing reused across launches")
+    }
+
+    // MARK: Exhaustive listings
+
+    private func completedAgents(_ source: LocalSessionSource) async throws -> Set<Agent>? {
+        try await read(source).events.last?.completedAgents
+    }
+
+    /// A Codex listing that passed over a place a rollout could be — a
+    /// rollout with the hidden flag, a hidden directory, a symlinked day
+    /// directory — is browsed as always but proves nothing: Codex does not
+    /// complete. A hidden file that could not be a rollout changes nothing.
+    func testACodexListingThatSkippedAPlaceProvesNothing() async throws {
+        let shown = uuid()
+        try codex(shown)
+        let (source, _) = source(disk: false)
+        try Data().write(to: rollouts.appendingPathComponent(".DS_Store"))
+        var agents = try await completedAgents(source)
+        XCTAssertEqual(agents, [.claude, .codex], "a .DS_Store could not hold a rollout")
+
+        let flagged = try codex(uuid())
+        var values = URLResourceValues(); values.isHidden = true
+        var flaggedURL = flagged
+        try flaggedURL.setResourceValues(values)
+        var rows = try await read(source).summaries
+        XCTAssertEqual(rows.map(\.id), [shown], "browsed as always: the hidden rollout is not shown")
+        agents = try await completedAgents(source)
+        XCTAssertEqual(agents, [.claude])
+        try FileManager.default.removeItem(at: flagged)
+
+        let hiddenDir = codexRoot.appendingPathComponent("sessions/.stash")
+        try FileManager.default.createDirectory(at: hiddenDir, withIntermediateDirectories: true)
+        try Data(#"{"type":"session_meta","payload":{"id":"x"}}"#.utf8)
+            .write(to: hiddenDir.appendingPathComponent("rollout-2026-10-01T10-00-00-\(uuid()).jsonl"))
+        agents = try await completedAgents(source)
+        XCTAssertEqual(agents, [.claude])
+        try FileManager.default.removeItem(at: hiddenDir)
+
+        let elsewhere = root.appendingPathComponent("day-elsewhere")
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: codexRoot.appendingPathComponent("sessions/2026/10/02"), withDestinationURL: elsewhere)
+        rows = try await read(source).summaries
+        XCTAssertEqual(rows.map(\.id), [shown])
+        agents = try await completedAgents(source)
+        XCTAssertEqual(agents, [.claude])
+    }
+
+    /// Claude's listing: a symlinked project folder is passed over (as
+    /// always), so Claude does not complete; hidden project folders and
+    /// hidden files are listed like any other, and Claude does.
+    func testAClaudeListingThatSkippedAPlaceProvesNothing() async throws {
+        let id = uuid()
+        try claude(id)
+        let (source, _) = source(disk: false)
+        let hiddenProject = claudeRoot.appendingPathComponent(".-hidden-project")
+        try FileManager.default.createDirectory(at: hiddenProject, withIntermediateDirectories: true)
+        let inHidden = uuid()
+        try write(#"{"type":"user","sessionId":"\#(inHidden)","cwd":"/h","message":{"content":"Hidden folder"}}"#,
+                  to: hiddenProject.appendingPathComponent("\(inHidden).jsonl"))
+        var flagged = try claude(uuid())
+        var values = URLResourceValues(); values.isHidden = true
+        try flagged.setResourceValues(values)
+        let listed = try await read(source)
+        XCTAssertEqual(listed.summaries.filter { $0.agent == .claude }.count, 3, "hidden places are listed")
+        XCTAssertEqual(listed.events.last?.completedAgents, [.claude, .codex])
+
+        let elsewhere = root.appendingPathComponent("project-elsewhere")
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: claudeRoot.appendingPathComponent("-linked-project"), withDestinationURL: elsewhere)
+        let linked = try await read(source)
+        XCTAssertEqual(linked.events.last?.completedAgents, [.codex])
+        XCTAssertEqual(linked.events.last?.provesNoTranscript(id: uuid(), agent: .claude), false)
+    }
+
+    /// A completion's mapping is the coverage: an agent with no set proves
+    /// nothing, one with an empty set proves every id absent.
+    func testAMissingCandidateSetIsNotAnEmptyOne() {
+        XCTAssertEqual(CatalogBatch.completed(candidates: [:]).provesNoTranscript(id: "x", agent: .claude), false)
+        XCTAssertEqual(CatalogBatch.completed(candidates: [.codex: []]).provesNoTranscript(id: "x", agent: .claude), false)
+        XCTAssertEqual(CatalogBatch.completed(candidates: [.claude: []]).provesNoTranscript(id: "x", agent: .claude), true)
+        XCTAssertEqual(CatalogBatch.completed(candidates: [.claude: ["x"]]).provesNoTranscript(id: "X", agent: .claude), false)
+        XCTAssertEqual(CatalogBatch.completed(candidates: [.claude: []]).completedAgents, [.claude])
     }
 
     // MARK: Completed coverage
@@ -613,7 +726,7 @@ final class CatalogCacheTests: XCTestCase {
         // In memory too: a root whose identity changed drops what was kept.
         let cache = CatalogSummaryCache()
         let stamp = CatalogStamp(size: 1, modifiedNanos: 1, changedNanos: 1, inode: 1)
-        let old = CatalogRoot(path: "/r", inode: 1), new = CatalogRoot(path: "/r", inode: 2)
+        let old = CatalogRoot(path: "/r", inode: 1, device: 1), new = CatalogRoot(path: "/r", inode: 2, device: 1)
         cache.begin(.claude, root: old)
         cache.record(.claude, root: old, key: "/r/a", entry: .init(stamp: stamp, outcome: .noSession))
         XCTAssertEqual(cache.lookup(.claude, root: old, key: "/r/a", stamp: stamp), .noSession)
@@ -780,6 +893,7 @@ private struct SlowClaudeStore: IncrementalSessionStore {
     func loadSummaries() -> [TranscriptSummary] { inner.loadSummaries() }
     func sessionFileURLs() -> [URL] { inner.sessionFileURLs() }
     func enumerateSessionFiles() throws -> [URL] { try inner.enumerateSessionFiles() }
+    func enumerateSessionFilesAudited() throws -> (files: [URL], exhaustive: Bool) { try inner.enumerateSessionFilesAudited() }
     func loadSummary(at fileURL: URL) -> TranscriptSummary? { inner.loadSummary(at: fileURL) }
     func catalogReader() -> @Sendable (URL) -> CatalogParse {
         let read = inner.catalogReader()
@@ -808,6 +922,7 @@ private struct ScriptedClaudeStore: IncrementalSessionStore {
     func loadSummaries() -> [TranscriptSummary] { inner.loadSummaries() }
     func sessionFileURLs() -> [URL] { inner.sessionFileURLs() }
     func enumerateSessionFiles() throws -> [URL] { try inner.enumerateSessionFiles() }
+    func enumerateSessionFilesAudited() throws -> (files: [URL], exhaustive: Bool) { try inner.enumerateSessionFilesAudited() }
     func loadSummary(at fileURL: URL) -> TranscriptSummary? { inner.loadSummary(at: fileURL) }
     func catalogReader() -> @Sendable (URL) -> CatalogParse {
         let read = inner.catalogReader(), script = self.script

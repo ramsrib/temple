@@ -138,6 +138,13 @@ public protocol TranscriptFormat: Sendable {
     /// `x`: a summary kept across a change to the shared inputs is brought up
     /// to date by this alone, with no transcript read (ADR-032).
     func withShared(_ summary: TranscriptSummary, _ shared: SharedFacts) -> TranscriptSummary
+    /// A session id as catalog candidates spell it (`CatalogBatch
+    /// .completed`), applied to listed thread ids and to queried ids alike.
+    /// Lowercased: Codex reads its UUIDs case-insensitively (`name` keeps
+    /// them lowercase), and a case-insensitive volume finds a Claude file
+    /// whatever case its id is asked in. Folding more spellings together
+    /// only ever makes absence harder to prove, never easier.
+    func candidateKey(_ id: String) -> String
 }
 
 public extension TranscriptFormat {
@@ -146,6 +153,7 @@ public extension TranscriptFormat {
     func sharedFacts(_ inputs: [String: Data]) -> SharedFacts { .empty }
     func header(firstLine: Data) throws -> AdoptionCandidate? { nil }
     func withShared(_ summary: TranscriptSummary, _ shared: SharedFacts) -> TranscriptSummary { summary }
+    func candidateKey(_ id: String) -> String { id.lowercased() }
 }
 
 public enum TranscriptFormats {

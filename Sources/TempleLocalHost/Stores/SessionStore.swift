@@ -20,6 +20,13 @@ struct StoreRootMissing: Error, LocalizedError {
     let root: URL
     var errorDescription: String? { "\(root.path) does not exist." }
 
+    /// Whether `url` is a symbolic link to a directory (one an enumerator
+    /// does not descend).
+    static func isLinkToDirectory(_ url: URL) -> Bool {
+        guard (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true else { return false }
+        return isDirectory(url)
+    }
+
     /// Whether `root` is a directory now (through symlinks).
     static func isDirectory(_ root: URL) -> Bool {
         var isDirectory: ObjCBool = false
@@ -39,6 +46,12 @@ protocol IncrementalSessionStore: SessionStore {
     /// Unlike the catalog's tolerant listing, resolution must distinguish errors
     /// from a completed empty scan.
     func enumerateSessionFiles() throws -> [URL]
+    /// `enumerateSessionFiles()`, saying whether it saw everything that
+    /// could hold a transcript: false when it passed over a place a file
+    /// named for a session could be (a hidden directory, a hidden file with
+    /// a transcript's name, a symbolic link to a directory). Only an
+    /// exhaustive listing is evidence that a session has no file (ADR-032).
+    func enumerateSessionFilesAudited() throws -> (files: [URL], exhaustive: Bool)
     /// A missing subtree is empty only while the store root is there;
     /// without it the listing throws `StoreRootMissing` (ADR-030).
     func enumerateSessionFiles(in subtree: URL) throws -> [URL]
@@ -105,6 +118,8 @@ extension IncrementalSessionStore {
     }
 
     func enumerateSessionFiles() throws -> [URL] { sessionFileURLs() }
+    /// A store that cannot say what it skipped is never exhaustive.
+    func enumerateSessionFilesAudited() throws -> (files: [URL], exhaustive: Bool) { (try enumerateSessionFiles(), false) }
     func rootAvailable() -> Bool { true }
     func enumerateSessionFiles(in subtree: URL) throws -> [URL] {
         let prefix = SessionPaths.normalized(subtree.path)

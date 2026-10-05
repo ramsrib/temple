@@ -152,36 +152,42 @@ public enum CatalogBatch: Sendable, Equatable {
     /// A store (or, with no agent, the whole host) could not be listed.
     case storeFailed(agent: Agent?, message: String)
     case sessions([TranscriptSummary], read: Int, total: Int)
-    /// Completed-enumeration evidence: these agents' listings finished and
-    /// every thread they named was emitted or decided against. Only within
-    /// these agents may a consumer drop a summary this read did not emit.
-    /// An agent whose listing failed, or whose store root is not there (an
-    /// unmounted volume proves nothing gone, ADR-030), is never named; a
-    /// read that was cancelled or lost its transport sends none.
+    /// Completed-enumeration evidence, one mapping: its keys are the agents
+    /// whose listing finished — exhaustively, passing over nothing a
+    /// transcript could be in — and whose every thread was emitted or
+    /// decided against; only within them may a consumer drop a summary this
+    /// read did not emit. An agent whose listing failed, skipped a place a
+    /// transcript could be, or whose store root is not there (an unmounted
+    /// volume proves nothing gone, ADR-030) is not a key; a read that was
+    /// cancelled or lost its transport sends none.
     ///
-    /// `candidates`, per agent in `agents`: every session id the completed
-    /// listing found a transcript file named for, whatever reading it came
-    /// to — a summary, a partial one, an exclusion, a failed or unreadable
-    /// read, another session's identity. A missing summary is not absence;
-    /// absence is an id missing here (`provesNoTranscript`).
-    case completed(agents: Set<Agent>, candidates: [Agent: Set<String>])
+    /// Each value: every session id that agent's listing found a transcript
+    /// file named for, whatever reading it came to — a summary, a partial
+    /// one, an exclusion, a failed or unreadable read, another session's
+    /// identity — spelled by `TranscriptFormat.candidateKey`. A missing
+    /// summary is not absence; absence is an id missing from an agent's
+    /// set (`provesNoTranscript`). An agent with no set proves nothing.
+    case completed(candidates: [Agent: Set<String>])
 }
 
 public extension CatalogBatch {
-    /// The agents a `.completed` names; nil for any other batch.
+    /// The agents a `.completed` covers; nil for any other batch.
     var completedAgents: Set<Agent>? {
-        if case .completed(let agents, _) = self { return agents }
+        if case .completed(let candidates) = self { return Set(candidates.keys) }
         return nil
     }
 
-    /// For a `.completed` batch: true when the listing of `agent` completed
-    /// and found no transcript file for `id` at all — the one proof that a
+    /// For a `.completed` batch: true when `agent`'s listing completed and
+    /// found no transcript file for `id` at all — the one proof that a
     /// session has no transcript on this host. False when a file was there
     /// (however it read) or the agent's listing did not complete; nil for
-    /// any other batch.
+    /// any other batch. The id is compared in the agent's candidate
+    /// spelling, so a spelling the agent itself would read as the same
+    /// session never proves absence.
     func provesNoTranscript(id: String, agent: Agent) -> Bool? {
-        guard case .completed(let agents, let candidates) = self else { return nil }
-        return agents.contains(agent) && !(candidates[agent]?.contains(id) ?? false)
+        guard case .completed(let candidates) = self else { return nil }
+        guard let found = candidates[agent] else { return false }
+        return !found.contains(TranscriptFormats.format(for: agent).candidateKey(id))
     }
 }
 

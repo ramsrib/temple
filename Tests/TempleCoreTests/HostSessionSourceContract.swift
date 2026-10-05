@@ -661,8 +661,8 @@ class HostSessionSourceContract: XCTestCase {
         try fixture.put(agent: .claude, name: "\(named).jsonl", data: claudeData(recorded))
         try plantCodex(rollout)
         let first = try await catalogRead()
-        guard case .completed(let agents, let candidates)? = first.events.last else { return XCTFail("no completion") }
-        XCTAssertEqual(agents, [.claude, .codex])
+        guard case .completed(let candidates)? = first.events.last else { return XCTFail("no completion") }
+        XCTAssertEqual(Set(candidates.keys), [.claude, .codex])
         XCTAssertTrue(candidates[.claude, default: []].isSuperset(of: [good, unreadable, named]))
         XCTAssertEqual(candidates[.codex], [rollout])
         XCTAssertEqual(first.summaries.map(\.id).filter { [unreadable, named].contains($0) }, [], "listed as candidates, shown as nothing")
@@ -678,6 +678,19 @@ class HostSessionSourceContract: XCTestCase {
         XCTAssertEqual(broken.events.last?.provesNoTranscript(id: rollout, agent: .codex), false, "a failed listing proves nothing")
         XCTAssertEqual(broken.events.last?.provesNoTranscript(id: uuid(), agent: .codex), false)
         XCTAssertNil(CatalogBatch.listed(total: 0).provesNoTranscript(id: good, agent: .claude))
+    }
+
+    /// Ids are compared the way the agent reads them: a rollout whose name
+    /// spells its UUID in capitals is a candidate however the id is asked.
+    func test13kCandidatesAreComparedInTheAgentsOwnSpelling() async throws {
+        let thread = uuid()
+        try fixture.put(agent: .codex, name: rolloutName(thread.uppercased()), data: codexData(thread))
+        let read = try await catalogRead(CatalogQuery(agents: [.codex]))
+        let completion = try XCTUnwrap(read.events.last)
+        XCTAssertEqual(completion.provesNoTranscript(id: thread, agent: .codex), false)
+        XCTAssertEqual(completion.provesNoTranscript(id: thread.uppercased(), agent: .codex), false, "a mixed-case query is the same session")
+        XCTAssertEqual(completion.provesNoTranscript(id: uuid(), agent: .codex), true)
+        XCTAssertEqual(completion.provesNoTranscript(id: thread, agent: .claude), false, "Claude was not listed: nothing proven")
     }
 
     // MARK: 14 adoption

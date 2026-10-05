@@ -107,7 +107,11 @@ struct LocalSessionCatalog: Sendable {
             let files: [URL]
             var complete = true
             do {
-                files = try incremental.enumerateSessionFiles()
+                let listing = try incremental.enumerateSessionFilesAudited()
+                files = listing.files
+                // A listing that passed over a place a transcript could be
+                // proves nothing gone: browse it, complete nothing.
+                complete = listing.exhaustive
             } catch is StoreRootMissing {
                 // No store yet is nothing to list here, not a failure to
                 // show — and not proof that anything is gone (ADR-030).
@@ -150,8 +154,9 @@ struct LocalSessionCatalog: Sendable {
                 }))
             }
             if complete {
+                let format = incremental.format
                 completed.append(Listing(store: incremental, root: root, listed: Set(files.map { SessionPaths.normalized($0.path) }),
-                                         threads: Set(threads.map(\.threadID)), identify: identify))
+                                         threads: Set(threads.map { format.candidateKey($0.threadID) }), identify: identify))
             }
         }
         entries.sort { newestFirst ? $0.modified > $1.modified : $0.modified < $1.modified }
@@ -181,8 +186,7 @@ struct LocalSessionCatalog: Sendable {
         for listing in covered {
             if let cache, let root = listing.root { cache.complete(listing.store.agent, root: root, listed: listing.listed) }
         }
-        emit(.completed(agents: Set(covered.map(\.store.agent)),
-                        candidates: Dictionary(covered.map { ($0.store.agent, $0.threads) }, uniquingKeysWith: { $0.union($1) })))
+        emit(.completed(candidates: Dictionary(covered.map { ($0.store.agent, $0.threads) }, uniquingKeysWith: { $0.union($1) })))
     }
 }
 

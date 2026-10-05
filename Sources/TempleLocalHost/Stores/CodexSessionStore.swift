@@ -86,17 +86,24 @@ struct CodexSessionStore: TranscriptSummaryStore {
 
     func sessionFileURLs() -> [URL] { (try? enumerateSessionFiles()) ?? [] }
 
-    func enumerateSessionFiles() throws -> [URL] { try enumerateRollouts(in: sessionsRoot) }
+    func enumerateSessionFiles() throws -> [URL] { try enumerateRollouts(in: sessionsRoot).files }
+
+    func enumerateSessionFilesAudited() throws -> (files: [URL], exhaustive: Bool) { try enumerateRollouts(in: sessionsRoot) }
 
     func enumerateSessionFiles(in subtree: URL) throws -> [URL] {
         let path = SessionPaths.normalized(subtree.path)
         let prefix = SessionPaths.normalized(sessionsRoot.path)
         if path == prefix || prefix.hasPrefix(path + "/") { return try enumerateSessionFiles() }
         guard path.hasPrefix(prefix + "/") else { return [] }
-        return try enumerateRollouts(in: subtree)
+        return try enumerateRollouts(in: subtree).files
     }
 
-    private func enumerateRollouts(in directory: URL) throws -> [URL] {
+    /// Rollouts under `directory`, hidden entries and symbolic links to
+    /// directories passed over as always — and `exhaustive` false when one
+    /// of those could hold a rollout: a hidden directory, a hidden file
+    /// with a rollout's name, a link to a directory. A hidden `.DS_Store`
+    /// could not, and changes nothing.
+    private func enumerateRollouts(in directory: URL) throws -> (files: [URL], exhaustive: Bool) {
         let fm = FileManager.default
         let physicalRoot = directory.resolvingSymlinksInPath()
         // A missing day folder inside an available store is an empty one; a
@@ -107,16 +114,29 @@ struct CodexSessionStore: TranscriptSummaryStore {
             if SessionPaths.normalized(directory.path) == SessionPaths.normalized(sessionsRoot.path) || !rootAvailable() {
                 throw StoreRootMissing(root: sessionsRoot)
             }
-            return []
+            return ([], true)
         }
         var failure: Error?
-        guard let enumerator = fm.enumerator(at: physicalRoot, includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles], errorHandler: { _, error in failure = error; return false })
+        let keys: [URLResourceKey] = [.isHiddenKey, .isSymbolicLinkKey, .isDirectoryKey]
+        guard let enumerator = fm.enumerator(at: physicalRoot, includingPropertiesForKeys: keys,
+            options: [], errorHandler: { _, error in failure = error; return false })
         else { throw CocoaError(.fileReadUnknown) }
         var files: [URL] = []
-        for case let url as URL in enumerator where url.pathExtension == "jsonl" && url.lastPathComponent.hasPrefix("rollout-") { files.append(url) }
+        var exhaustive = true
+        for case let url as URL in enumerator {
+            let values = try? url.resourceValues(forKeys: Set(keys))
+            let named = url.pathExtension == "jsonl" && url.lastPathComponent.hasPrefix("rollout-")
+            if values?.isHidden == true {
+                // What `.skipsHiddenFiles` passed over, passed over still.
+                if values?.isDirectory == true { enumerator.skipDescendants(); exhaustive = false }
+                else if named { exhaustive = false }
+                continue
+            }
+            if values?.isSymbolicLink == true, StoreRootMissing.isDirectory(url) { exhaustive = false }
+            if named { files.append(url) }
+        }
         if let failure { throw failure }
-        return files
+        return (files, exhaustive)
     }
 
     func rootAvailable() -> Bool { StoreRootMissing.isDirectory(sessionsRoot) }

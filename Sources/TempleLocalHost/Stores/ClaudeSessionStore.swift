@@ -33,7 +33,13 @@ struct ClaudeSessionStore: TranscriptSummaryStore {
 
     func sessionFileURLs() -> [URL] { (try? enumerateSessionFiles()) ?? [] }
 
-    func enumerateSessionFiles() throws -> [URL] {
+    func enumerateSessionFiles() throws -> [URL] { try enumerateSessionFilesAudited().files }
+
+    /// Project folders are the root's directories; a symbolic link to a
+    /// directory there is not one of them (it is not listed, as always),
+    /// so a listing that met one is not exhaustive. Hidden entries are
+    /// listed like any other.
+    func enumerateSessionFilesAudited() throws -> (files: [URL], exhaustive: Bool) {
         let fm = FileManager.default
         let dirs: [URL]
         // A missing root is not an empty store: it fails the listing, so no
@@ -42,12 +48,16 @@ struct ClaudeSessionStore: TranscriptSummaryStore {
         do { dirs = try fm.contentsOfDirectory(at: root.resolvingSymlinksInPath(), includingPropertiesForKeys: [.isDirectoryKey]) }
         catch let error as CocoaError where error.code == .fileReadNoSuchFile { throw StoreRootMissing(root: root) }
         var files: [URL] = []
+        var exhaustive = true
         for dir in dirs {
-            guard try dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else { continue }
+            guard try dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else {
+                if StoreRootMissing.isLinkToDirectory(dir) { exhaustive = false }
+                continue
+            }
             files += try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
                 .filter { $0.pathExtension == "jsonl" }
         }
-        return files
+        return (files, exhaustive)
     }
 
     func enumerateSessionFiles(in subtree: URL) throws -> [URL] {
