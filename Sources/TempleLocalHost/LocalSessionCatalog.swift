@@ -57,6 +57,9 @@ struct LocalSessionCatalog: Sendable {
             let files: [URL]
             do {
                 files = try incremental.enumerateSessionFiles()
+            } catch is StoreRootMissing {
+                // No store yet is nothing to list here, not a failure to show.
+                files = []
             } catch {
                 emit(.storeFailed(agent: store.agent, message: error.localizedDescription))
                 continue

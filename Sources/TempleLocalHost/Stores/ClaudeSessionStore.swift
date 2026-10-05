@@ -35,8 +35,11 @@ struct ClaudeSessionStore: TranscriptSummaryStore {
     func enumerateSessionFiles() throws -> [URL] {
         let fm = FileManager.default
         let dirs: [URL]
+        // A missing root is not an empty store: it fails the listing, so no
+        // member is proven absent by a volume that is not mounted or a
+        // store that moved (ADR-030). The catalog reads it as empty.
         do { dirs = try fm.contentsOfDirectory(at: root.resolvingSymlinksInPath(), includingPropertiesForKeys: [.isDirectoryKey]) }
-        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return [] }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { throw StoreRootMissing(root: root) }
         var files: [URL] = []
         for dir in dirs {
             guard try dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else { continue }

@@ -14,10 +14,23 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     /// error — is unknown.
     public func directoryEvidence(_ path: String) async -> DirectoryEvidence { Self.evidence(path) }
 
+    /// `.missing` only when the path is provably gone. A path on a volume
+    /// that is not mounted stats as ENOENT too, so under `/Volumes/<name>/`
+    /// the volume itself must be there; otherwise nothing is known (an
+    /// unplugged drive is not a deleted project, ADR-030).
     static func evidence(_ path: String) -> DirectoryEvidence {
         var info = stat()
         if stat(path, &info) == 0 { return (info.st_mode & S_IFMT) == S_IFDIR ? .exists : .missing }
-        return errno == ENOENT || errno == ENOTDIR ? .missing : .unknown
+        guard errno == ENOENT || errno == ENOTDIR else { return .unknown }
+        if let volume = volumeRoot(path), stat(volume, &info) != 0 { return .unknown }
+        return .missing
+    }
+
+    /// `/Volumes/<name>` for a path under it (or that volume itself), else nil.
+    static func volumeRoot(_ path: String) -> String? {
+        let components = (path as NSString).standardizingPath.split(separator: "/", omittingEmptySubsequences: true)
+        guard components.count >= 2, components[0] == "Volumes", path.hasPrefix("/") else { return nil }
+        return "/Volumes/\(components[1])"
     }
     public let host = HostID.local
     public let capabilities: Set<HostCapability> = [.liveChanges, .revealInFinder, .catalog]

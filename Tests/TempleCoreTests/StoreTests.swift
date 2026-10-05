@@ -12,6 +12,39 @@ final class StoreTests: XCTestCase {
         return root
     }
 
+    /// ADR-030 archives on a completed enumeration's absence, so a Claude
+    /// store whose root is not there (an unmounted volume, a store that
+    /// moved) must fail the resolution listing, never return an empty one.
+    /// An existing empty root is a completed, empty scan.
+    func testAMissingClaudeRootFailsTheListingAndAnEmptyOneDoesNot() throws {
+        let parent = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let missing = ClaudeSessionStore(root: parent.appendingPathComponent("missing"))
+        XCTAssertThrowsError(try missing.enumerateSessionFiles()) { XCTAssertTrue($0 is StoreRootMissing) }
+        XCTAssertThrowsError(try missing.enumerateSessionFiles(in: parent.appendingPathComponent("missing")))
+        XCTAssertEqual(missing.sessionFileURLs(), [], "the tolerant listing stays tolerant")
+        XCTAssertEqual(try ClaudeSessionStore(root: parent).enumerateSessionFiles(), [])
+    }
+
+    /// A folder on a drive that is not plugged in stats as ENOENT, exactly
+    /// like a deleted one. Under /Volumes/<name>/ the volume itself must be
+    /// there before anything is called missing (ADR-030 archives on it).
+    func testAFolderOnAnUnmountedVolumeIsUnknownNotMissing() throws {
+        let parent = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        XCTAssertEqual(LocalSessionSource.evidence(parent.path), .exists)
+        XCTAssertEqual(LocalSessionSource.evidence(parent.appendingPathComponent("deleted").path), .missing)
+        let unplugged = "/Volumes/temple-unmounted-\(UUID().uuidString)"
+        XCTAssertEqual(LocalSessionSource.evidence(unplugged + "/project"), .unknown)
+        XCTAssertEqual(LocalSessionSource.evidence(unplugged), .unknown)
+        XCTAssertEqual(LocalSessionSource.volumeRoot(unplugged + "/a/b"), unplugged)
+        XCTAssertNil(LocalSessionSource.volumeRoot("/Users/me/Volumes/x"))
+        // On a volume that is mounted, a folder that is not there is missing.
+        if let mounted = try? FileManager.default.contentsOfDirectory(atPath: "/Volumes").first {
+            XCTAssertEqual(LocalSessionSource.evidence("/Volumes/\(mounted)/temple-no-such-\(UUID().uuidString)"), .missing)
+        }
+    }
+
     private func writeTranscript(_ content: String, at file: URL) throws {
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)

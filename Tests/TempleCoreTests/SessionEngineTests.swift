@@ -288,7 +288,9 @@ final class SessionEngineTests: XCTestCase {
         let watcher = try memberEngine(LocalSessionSource(stores: [ClaudeSessionStore(root: missing)], debounceInterval: 0.02, monitorChanges: false), members: ["linked"])
         let recorder = try await start(watcher)
         defer { recorder.stop() }
-        XCTAssertEqual(watcher.resolution(for: "linked"), .confirmedAbsent)
+        // A root that is not there is a failed listing, not an empty store:
+        // it proves nothing absent (ADR-030 archives on that proof).
+        XCTAssertEqual(watcher.resolution(for: "linked"), .incomplete)
         try FileManager.default.createSymbolicLink(at: missing, withDestinationURL: first)
         watcher.reconcileEvent(path: missing.path, flags: UInt32(kFSEventStreamEventFlagRootChanged))
         try await eventually { recorder.latest.first?.title == "first" }

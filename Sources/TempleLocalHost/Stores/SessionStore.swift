@@ -13,6 +13,14 @@ extension SessionStore {
     var watchedURLs: [URL] { [] }
 }
 
+/// A store's root directory does not exist. Resolution must treat it as a
+/// failed listing, never a completed empty one, or every member of that
+/// agent would be proven absent (ADR-030); the catalog shows it as empty.
+struct StoreRootMissing: Error, LocalizedError {
+    let root: URL
+    var errorDescription: String? { "\(root.path) does not exist." }
+}
+
 /// Path-level capabilities required by the live engine. Full-disk catalogs
 /// continue to accept any SessionStore.
 protocol IncrementalSessionStore: SessionStore {
