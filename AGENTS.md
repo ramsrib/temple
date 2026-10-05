@@ -246,6 +246,11 @@ during that refactor:
   a launcher failure (`.failed`) keeps the tab with its reason however long
   the process lived. A host whose launcher returns no channel never records
   a folder from a tab. Copying a row into a restored chip writes nothing.
+- **Destructive-ish actions take their proof at decision time, through the
+  host seam.** Archiving a row because its transcript is gone asks the
+  owning host's `proveAbsent` right before the write (ADR-030); long-lived
+  engine state — a published `.confirmedAbsent`, a cached completeness — is a
+  hint and is never load-bearing for such an action.
 - **The engine never writes the database.** `SessionEngine` reads rows and
   publishes authorized facts; only `FactPersister`, called from the app (or
   writable templectl), writes them, under the `(id, host, incarnation)`

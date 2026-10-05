@@ -1294,16 +1294,28 @@ reacting to that, not initiating anything.
 
 **Decisions.**
 
+- **The proof is taken when the sweep decides, through the host seam.**
+  The engine's `.confirmedAbsent` is a hint: it makes an idle row a
+  candidate and arms a sweep, and dims the row; it may lag the truth by a
+  sweep (accepted). Right before it writes, the sweep asks the owning host's
+  `proveAbsent` — one call per host and agent for that sweep's hinted
+  candidates, every agent for a row that never recorded one — and archives
+  for the transcript only an id the proof says is missing from a listing
+  that was exhaustive (ADR-032's rule) and quiescent: from before the
+  listing to the change stream's latency after it, nothing happened that
+  could make a file named for an asked id appear or change what the
+  listing covers (`AbsenceProof.decide` has the table; writes to other
+  sessions' transcripts do not count, since FSEvents reports even an append
+  as a creation and live sessions would otherwise starve the sweep). A
+  proof that was not quiescent is tried again a bounded number of times
+  (15 s, 1 min, 5 min), then left to the hourly sweep; sweeps run at
+  launch, on hints (coalesced) and hourly. An unproven hint leaves the
+  folder to decide. Accepted race: a file created in the gap after the
+  quiescence wait and before the write; there is no automatic un-archive
+  (decided against), and Undo or Restore brings the row back.
 - **Only on proof, only what nobody is using.** A row is archived by Temple
-  when its resolution is `.confirmedAbsent` (a completed enumeration of every
-  listing that could hold it; a listing is completed only when it is
-  exhaustive by ADR-032's rule, the same rule History's catalog uses, so a
-  transcript behind a link or a hidden entry where transcripts are listed
-  is never taken for none; an absence is withdrawn the moment its coverage
-  changes, and the sweep, right before it writes, archives a row for its
-  transcript only if the owning engine still publishes the same absence at
-  the same coverage generation the plan saw) or its owning host says its folder is
-  `.missing`, and it is not pinned, has no tab open or restored, has had no
+  when its transcript is proven gone at decision time, or its owning host
+  says its folder is `.missing`, and it is not pinned, has no tab open or restored, has had no
   Temple activity for seven days, and was not kept by a person. A failed,
   partial or cancelled listing, `unreadable`, `mismatch`, `incomplete`,
   `awaitingCreation` and a folder that is `unknown` prove nothing and archive
@@ -1460,48 +1472,12 @@ become the launch path. A catalog cache had to be something that file was not.
   Claude Code itself keeps in `<project>/<session>/subagents/` decide
   nothing; Codex's walks everything under `sessions/`, to any depth.
 
-  One rule for both consumers: the engine's completeness — what
-  `.confirmedAbsent`, and so ADR-030's archiving, rests on — comes from the
-  same audited listing. An agent whose full listing is not exhaustive is
-  incomplete, and no member of it is proven absent.
-
-  Between listings, completeness is one state machine per agent, not a
-  classification of events (two review rounds found holes in deciding,
-  event by event, which ones could matter):
-
-  - **Dirty at once.** Every event that could change the tree's shape for
-    the agent advances its revision and makes it incomplete immediately,
-    even if it already was: any directory event in scope, any removal,
-    rename or metadata change (flags, xattrs, mode, owner), any hidden name
-    or link, a subtree rescan, a single-file event under a missing root,
-    any listing error. Decided from the event alone — nothing is read from
-    the disk to decide — so a hidden flag cleared or a hidden file deleted
-    is as much a change as one set or made. Only a plain create or content
-    write to a file with a plain name leaves coverage alone.
-  - **Complete only from a scan that is still current.** Completeness comes
-    back only from a full audited listing whose revision, taken when it
-    started, is still the agent's when it finishes: an event during the
-    scan wins, and a follow-up decides.
-  - **One scheduler.** Per agent, one scan in flight and at most one
-    follow-up, at least two seconds apart; events during a scan only mark
-    the follow-up, so a burst is a bounded number of scans. A failed scan (a
-    missing root, an error) is retried on a bounded backoff with no event
-    needed. Scans run off the source's queue, so invalidation on it is
-    never held up by a listing. (The full listing a run starts with, or a
-    recovery runs, is on that queue with nothing able to come between it
-    and its verdict; it counts as a current scan.)
-  - **One transition.** One function changes completeness, and every
-    change, either way, moves the coverage generation on and is announced.
-  - **The engine withdraws first.** A coverage change publishes every
-    `.confirmedAbsent` as `.incomplete` at once — before any re-lookup —
-    for every member (wider than the agent that moved, and its agentless
-    members, because a coverage reset does not say which agent moved and
-    every member is located again anyway). A transcript event for a member
-    withdraws its absence the same way. An absence is produced only by a
-    lookup completed against complete coverage at the current generation,
-    and the snapshot carries that generation (`absenceCoverage`).
-  - **Candidates are separate.** The filename map follows events as it
-    always did; nothing about it is coverage evidence.
+  One rule for both of its consumers: History's per-read completion
+  (`.completed(candidates:)`, below) and the absence proof ADR-030's sweep
+  takes at decision time (`HostSessionSource.proveAbsent`). The engine's own
+  completeness stays what it was (complete after a successful full listing);
+  its `.confirmedAbsent` is a hint that dims a row and arms the sweep, and
+  nothing destructive rests on it.
 
   A link's target is never inspected. Two review rounds found new holes in
   classifying what a hidden entry or a link could hold; this rule does not
