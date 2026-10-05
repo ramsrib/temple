@@ -1304,7 +1304,9 @@ reacting to that, not initiating anything.
   membership: each snapshot names the host and incarnation it read, and an
   absence proven for an earlier membership of an id says nothing about a
   rejoin. A store root that does not exist, Claude's or Codex's, is a failed
-  listing, not an empty store (History still shows it as empty); so a row
+  listing, not an empty store (History still shows it as empty), and a
+  folder or file gone under a root that is gone proves nothing even when
+  its event arrives before the root's; so a row
   that names no agent stays unproven while either store is unavailable, and
   only its folder or a person can archive it. Soundness over coverage. A
   folder is `missing` only when its nearest existing ancestor, resolved
@@ -1312,6 +1314,9 @@ reacting to that, not initiating anything.
   `/Volumes/<name>/` that is the volume mounted at exactly that point, so an
   unplugged drive, a leftover empty mount point and a symlink whose target
   is gone are all `unknown`. An unplugged drive is not a deleted project.
+  The launcher asks the same question the same way (one implementation), so
+  it no longer says such a folder "no longer exists"; the launch goes ahead
+  and the wrapper's own `cd` decides.
   When both reasons hold, the transcript is the reason. Seven days is
   for the causes the cleanup is not (it removes only transcripts idle a month):
   an id that never got a file, a deletion, a transcript under another config
@@ -1327,7 +1332,9 @@ reacting to that, not initiating anything.
   is only written later), after which the idle week protects it: a Restore is
   never undone by the next sweep. Undo Import still removes a row Temple
   archived, which was not the user's decision, but not one a person restored
-  since, which was.
+  since, which was (including an older build's restore, which leaves the
+  reason on an unarchived row). The activity that spends a keep is dated
+  when it happened, not when it was written.
 - **Archived rows are not watched.** The engine's members are the rows that
   are not archived. Archiving one, by anyone, takes it out the way a leave
   does (facts and verdict revoked); restoring it brings it back the way a join
