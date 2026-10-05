@@ -131,6 +131,24 @@ class HostSessionSourceContract: XCTestCase {
         }
     }
 
+    /// Wait until the source has stopped listing on its own: with live
+    /// observation armed, a late event for a file the test just planted (or
+    /// an OS "rescan needed" under load) legitimately re-lists, and a walk
+    /// counted across that window is noise, not the behaviour under test.
+    func settleListings(quietFor quiet: TimeInterval = 0.15, timeout: TimeInterval = 3) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        var last = fixture.listings, stableSince = Date()
+        while Date() < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+            let now = fixture.listings
+            if now != last { last = now; stableSince = Date() }
+            else if Date().timeIntervalSince(stableSince) >= quiet { return }
+        }
+        // Never settling is itself a finding (persistent rescan churn), not
+        // a baseline to measure from.
+        XCTFail("the source kept listing for \(timeout)s; no quiet baseline to measure from")
+    }
+
     func waitForEvent(_ match: @escaping (SourceChange) -> Bool) async throws -> SourceChange? {
         try await waitUntil { self.events.all.contains(where: match) }
         return events.all.first(where: match)
@@ -188,6 +206,7 @@ class HostSessionSourceContract: XCTestCase {
         let file = try plantClaude(id)
         try await observe()
         let gone = TranscriptLocator(host: source.host, path: fixture.path(agent: .claude, name: "\(uuid()).jsonl"))
+        try await settleListings()
         let before = fixture.listings
         let result = try await locate([LocateRequest(id: id, agent: .claude, hint: gone), LocateRequest(id: lost, agent: .claude, hint: gone)])
         XCTAssertEqual(result.candidates[id]?.map(\.locator), [file])
