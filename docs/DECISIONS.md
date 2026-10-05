@@ -1306,8 +1306,19 @@ reacting to that, not initiating anything.
   could make a file named for an asked id appear or change what the
   listing covers (`AbsenceProof.decide` has the table; writes to other
   sessions' transcripts do not count, since FSEvents reports even an append
-  as a creation and live sessions would otherwise starve the sweep). A
-  proof that was not quiescent is tried again a bounded number of times
+  as a creation and live sessions would otherwise starve the sweep). The
+  window ends at a real delivery barrier, not a guess about latency: a
+  sentinel file made in a folder of Temple's own that the stream also
+  watches, and the wait for its event, which FSEvents delivers after every
+  earlier one (a flush alone is not a barrier: measured, an event made just
+  before `FSEventStreamFlushSync` arrives after it returns). No barrier, a
+  stream stopped or re-armed, a dropped transport, a cancelled proof, or an
+  agent with no store configured on the host: nothing is proven. A proof
+  is for the memberships it was asked about: a leave and rejoin while it
+  runs proves nothing about the rejoin. Every host's proofs run at once,
+  and each host's archives are written, in one transaction, as soon as its
+  own proofs are in, so a slow host does not widen the accepted window for
+  another. A proof that was not quiescent is tried again a bounded number of times
   (15 s, 1 min, 5 min), then left to the hourly sweep; sweeps run at
   launch, on hints (coalesced) and hourly. An unproven hint leaves the
   folder to decide. Accepted race: a file created in the gap after the
