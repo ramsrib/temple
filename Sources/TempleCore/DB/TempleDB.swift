@@ -92,6 +92,47 @@ public enum SessionCoreField: Hashable, Sendable {
     case agent, directory, title, lastActiveAt
 }
 
+/// Why Temple, not the user, archived a row (ADR-030). NULL in the column
+/// is the user's archive (or an older build's). A value this build does not
+/// know, written by a newer one, still reads as Temple's archive with its
+/// reason unknown: never a throw, which would empty every load.
+public struct ArchiveReason: RawRepresentable, Hashable, Sendable, Codable {
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
+    /// The CLI had already removed the session's transcript.
+    public static let transcriptMissing = ArchiveReason(rawValue: "transcript_missing")
+    /// The folder the session ran in no longer exists.
+    public static let folderMissing = ArchiveReason(rawValue: "folder_missing")
+
+    public init(from decoder: any Decoder) throws {
+        rawValue = try decoder.singleValueContainer().decode(String.self)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+/// One row Temple archives, and why.
+public struct AutoArchiveEntry: Hashable, Sendable {
+    public let ref: MembershipRef
+    public let reason: ArchiveReason
+    public init(ref: MembershipRef, reason: ArchiveReason) { self.ref = ref; self.reason = reason }
+}
+
+/// One membership as a snapshot named it: the id, the host that owns the
+/// row, and the row's incarnation. A write that names it lands only on that
+/// membership, never on a row that left and joined again since.
+public struct MembershipRef: Hashable, Sendable {
+    public let id: String
+    public let host: HostID
+    public let incarnation: String
+    public init(id: String, host: HostID, incarnation: String) {
+        self.id = id; self.host = host; self.incarnation = incarnation
+    }
+}
+
 public struct SessionState: Codable, Hashable, Sendable {
     public let id: String
     public let pinned: Bool
@@ -117,13 +158,24 @@ public struct SessionState: Codable, Hashable, Sendable {
     /// rejoin after a leave is a new row, so a new value), kept by repeated
     /// joins. Opaque; nil only for a row read from a pre-v11 file.
     public let incarnation: String?
+    /// Why Temple archived the row itself (ADR-030); nil for the user's
+    /// archive. On a row that is no longer archived it is the record of a
+    /// restore, and reads as kept until the session's next activity.
+    public let archiveReason: ArchiveReason?
+    /// A person brought the row back out of the archive: the sweep leaves it
+    /// alone until the session's next activity (`touch` spends the keep).
+    public let keptAt: Date?
+    /// When the row was last archived, by anyone. Nil for an archive from
+    /// before v12 (never backfilled) and for a row never archived.
+    public let archivedAt: Date?
 
     public init(id: String, pinned: Bool, archived: Bool, customName: String?, color: String?,
                 generatedTitle: String?, lastOpenedAt: Date?, joinedVia: JoinedVia?, joinedAt: Date?,
                 agent: Agent? = nil, transcriptPath: String? = nil,
                 host: HostID = .local, directory: String? = nil,
                 directorySource: DirectorySource? = nil, title: String? = nil,
-                lastActiveAt: Date? = nil, incarnation: String? = nil) {
+                lastActiveAt: Date? = nil, incarnation: String? = nil,
+                archiveReason: ArchiveReason? = nil, keptAt: Date? = nil, archivedAt: Date? = nil) {
         self.id = id; self.pinned = pinned; self.archived = archived
         self.customName = customName; self.color = color; self.generatedTitle = generatedTitle
         self.lastOpenedAt = lastOpenedAt; self.joinedVia = joinedVia; self.joinedAt = joinedAt
@@ -131,6 +183,7 @@ public struct SessionState: Codable, Hashable, Sendable {
         self.host = host; self.directory = directory; self.directorySource = directorySource
         self.title = title; self.lastActiveAt = lastActiveAt
         self.incarnation = incarnation
+        self.archiveReason = archiveReason; self.keptAt = keptAt; self.archivedAt = archivedAt
     }
 
     public init(from decoder: any Decoder) throws {
@@ -152,6 +205,9 @@ public struct SessionState: Codable, Hashable, Sendable {
         title = try c.decodeIfPresent(String.self, forKey: .title)
         lastActiveAt = try c.decodeIfPresent(Date.self, forKey: .lastActiveAt)
         incarnation = try c.decodeIfPresent(String.self, forKey: .incarnation)
+        archiveReason = try c.decodeIfPresent(ArchiveReason.self, forKey: .archiveReason)
+        keptAt = try c.decodeIfPresent(Date.self, forKey: .keptAt)
+        archivedAt = try c.decodeIfPresent(Date.self, forKey: .archivedAt)
     }
 }
 
@@ -392,16 +448,33 @@ public final class TempleDB: @unchecked Sendable {
     /// Archiving also clears the pin, in the same statement: two writes could
     /// land one without the other and leave a session both put away and pinned
     /// after a restart. Unarchiving leaves the pin column alone.
-    public func setArchived(_ archived: Bool, sessionID: String) throws {
+    ///
+    /// This is a person's archive (ADR-030): archiving clears any reason
+    /// Temple recorded and any keep, and stamps `archived_at`; unarchiving
+    /// stamps `kept_at`, so the sweep leaves the row alone until the
+    /// session's next activity. A repeated restore writes nothing.
+    public func setArchived(_ archived: Bool, sessionID: String, at: Date = Date()) throws {
         try updateState(sessionID) { database in
-            try database.execute(
-                sql: """
-                    UPDATE session_state
-                    SET archived = ?, pinned = CASE WHEN ? THEN 0 ELSE pinned END
-                    WHERE id = ? AND (archived IS NOT ? OR (? AND pinned != 0))
-                    """,
-                arguments: [archived, archived, sessionID, archived, archived]
-            )
+            if archived {
+                try database.execute(
+                    sql: """
+                        UPDATE session_state
+                        SET archived = 1, pinned = 0, archive_reason = NULL, kept_at = NULL,
+                            archived_at = CASE WHEN archived = 1 AND archive_reason IS NULL THEN archived_at ELSE ? END
+                        WHERE id = ? AND (archived IS NOT 1 OR pinned != 0
+                            OR archive_reason IS NOT NULL OR kept_at IS NOT NULL)
+                        """,
+                    arguments: [at, sessionID]
+                )
+            } else {
+                try database.execute(
+                    sql: """
+                        UPDATE session_state SET archived = 0, kept_at = ?
+                        WHERE id = ? AND (archived IS NOT 0 OR kept_at IS NULL)
+                        """,
+                    arguments: [at, sessionID]
+                )
+            }
         }
     }
 
@@ -495,7 +568,9 @@ public final class TempleDB: @unchecked Sendable {
     /// Undo of an import: the one write that removes membership. It deletes
     /// the row only while the row still says nothing but how the session
     /// joined — imported, never pinned, named, colored, retitled, archived or
-    /// opened since, and not in a restorable tab. Anything else and the row
+    /// opened since, and not in a restorable tab. Temple's own archive of a
+    /// row whose transcript vanished (ADR-030) is not a decision and does not
+    /// block it. Anything else and the row
     /// stays: it holds a decision the undo knows nothing about. A transcript
     /// title fill does not block undo: only generated_title records a retitle.
     /// Returns
@@ -514,7 +589,7 @@ public final class TempleDB: @unchecked Sendable {
                     DELETE FROM session_state
                     WHERE id = ? AND host = ? AND joined_via = ?
                       AND (? IS NULL OR agent IS ?) AND (? IS NULL OR incarnation IS ?)
-                      AND pinned = 0 AND archived = 0
+                      AND pinned = 0 AND (archived = 0 OR archive_reason IS NOT NULL)
                       AND custom_name IS NULL AND color IS NULL
                       AND generated_title IS NULL AND last_opened_at IS NULL
                       AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
@@ -558,6 +633,63 @@ public final class TempleDB: @unchecked Sendable {
             committedRowChange(sessionID)
         }
         return left
+    }
+
+    // MARK: Temple's archive (ADR-030)
+
+    /// Temple's own archive of rows nobody can resume any more (the CLI
+    /// removed the transcript, or the folder is gone), in one transaction.
+    /// Each UPDATE carries every guard SQL can see: the membership, not
+    /// archived, not pinned (a refusal, never cleared), not kept, no reason
+    /// left from an earlier archive, and no restorable tab. Returns the ids
+    /// actually archived; each is announced after commit.
+    @discardableResult
+    public func autoArchive(_ entries: [AutoArchiveEntry], at: Date = Date()) throws -> [String] {
+        guard !entries.isEmpty else { return [] }
+        let archived = try db.write { database -> [String] in
+            var archived: [String] = []
+            for entry in entries {
+                let ref = entry.ref
+                try database.execute(
+                    sql: """
+                        UPDATE session_state SET archived = 1, archive_reason = ?, archived_at = ?
+                        WHERE id = ? AND host = ? AND incarnation = ?
+                          AND archived = 0 AND pinned = 0
+                          AND kept_at IS NULL AND archive_reason IS NULL
+                          AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
+                        """,
+                    arguments: [entry.reason.rawValue, at, ref.id, ref.host.rawValue, ref.incarnation, ref.id])
+                if database.changesCount > 0 { archived.append(ref.id) }
+            }
+            return archived
+        }
+        archived.forEach(committedRowChange)
+        return archived
+    }
+
+    /// Undo of Temple's archive (the notice's Undo): only rows that still
+    /// carry it under the same membership come back, kept, so the next sweep
+    /// leaves them alone. The reason stays as the record until the next
+    /// activity. Returns the ids restored.
+    @discardableResult
+    public func restoreTempleArchives(_ refs: [MembershipRef], at: Date = Date()) throws -> [String] {
+        guard !refs.isEmpty else { return [] }
+        let restored = try db.write { database -> [String] in
+            var restored: [String] = []
+            for ref in refs {
+                try database.execute(
+                    sql: """
+                        UPDATE session_state SET archived = 0, kept_at = ?
+                        WHERE id = ? AND host = ? AND incarnation = ?
+                          AND archived = 1 AND archive_reason IS NOT NULL
+                        """,
+                    arguments: [at, ref.id, ref.host.rawValue, ref.incarnation])
+                if database.changesCount > 0 { restored.append(ref.id) }
+            }
+            return restored
+        }
+        restored.forEach(committedRowChange)
+        return restored
     }
 
     /// Hints never insert membership or change provenance, and do not trigger a
@@ -614,7 +746,10 @@ public final class TempleDB: @unchecked Sendable {
             host: HostID(rawValue: (row["host"] as String?) ?? ""), directory: row["directory"],
             directorySource: (row["directory_source"] as String?).flatMap(DirectorySource.init(rawValue:)),
             title: row["title"], lastActiveAt: row["last_active_at"],
-            incarnation: row["incarnation"]
+            incarnation: row["incarnation"],
+            archiveReason: (row["archive_reason"] as String?).map(ArchiveReason.init(rawValue:)),
+            keptAt: row["kept_at"],
+            archivedAt: row["archived_at"]
         )
     }
 
@@ -688,11 +823,17 @@ public final class TempleDB: @unchecked Sendable {
         return outcome
     }
 
-    /// Activity from a tab on `host`; never backwards.
+    /// Activity from a tab on `host`; never backwards. Activity spends a
+    /// keep (ADR-030): from here the idle week protects the row, and a
+    /// restored row's leftover reason (this build's record, or an older
+    /// build's restore) goes with it.
     public func touch(sessionID: String, host: HostID, at: Date = Date()) throws {
         let changed = try db.write { database in
-            try database.execute(sql: "UPDATE session_state SET last_active_at = MAX(COALESCE(last_active_at, ?), ?) WHERE id = ? AND host = ? AND (last_active_at IS NULL OR last_active_at < ?)",
-                                 arguments: [at, at, sessionID, host.rawValue, at])
+            try database.execute(sql: """
+                UPDATE session_state SET last_active_at = MAX(COALESCE(last_active_at, ?), ?), kept_at = NULL,
+                    archive_reason = CASE WHEN archived = 0 THEN NULL ELSE archive_reason END
+                WHERE id = ? AND host = ? AND (last_active_at IS NULL OR last_active_at < ?)
+                """, arguments: [at, at, sessionID, host.rawValue, at])
             return database.changesCount > 0
         }
         if changed { committedRowChange(sessionID) }
@@ -987,6 +1128,18 @@ public final class TempleDB: @unchecked Sendable {
                     UPDATE session_state SET incarnation = lower(hex(randomblob(16))) WHERE rowid = NEW.rowid;
                 END
                 """)
+        }
+        // Who archived a row, and when (ADR-030). Additive: no backfill, so
+        // every existing archive stays the user's, with no date, and older
+        // builds keep working on the file (one that unarchives leaves the
+        // reason behind, which reads as kept). `v13-project-host` is
+        // reserved for remote.
+        migrator.registerMigration("v12-archive-provenance") { database in
+            try database.alter(table: "session_state") { table in
+                table.add(column: "archive_reason", .text)
+                table.add(column: "kept_at", .datetime)
+                table.add(column: "archived_at", .datetime)  // NULL for an archive from before this
+            }
         }
         return migrator
     }

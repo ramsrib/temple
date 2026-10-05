@@ -1,6 +1,7 @@
 import XCTest
 import Darwin
 @testable import TempleCore
+import TempleTestSupport
 import GRDB
 
 final class DBTests: XCTestCase {
@@ -263,13 +264,13 @@ final class DBTests: XCTestCase {
         "v1", "v2-open-tab-metadata", "v3-generated-title",
         "v4-session-color", "v5-open-tab-active", "v6-ui-state",
         "v7-project-state", "v8-session-join", "v9-session-transcript",
-        "v10-session-core",
+        "v10-session-core", "v11-session-incarnation",
     ]
 
     /// The migrations older builds shipped, frozen as they spelled them:
-    /// v1–v9 (the builds with no newer-schema guard) and v10. Never edited
-    /// to follow production — that is the point of a frozen copy.
-    static func legacyMigrator(through last: String = "v10-session-core") -> DatabaseMigrator {
+    /// v1–v9 (the builds with no newer-schema guard), v10 and v11. Never
+    /// edited to follow production — that is the point of a frozen copy.
+    static func legacyMigrator(through last: String = "v11-session-incarnation") -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
         var stop = false
         func register(_ identifier: String, _ migrate: @escaping (Database) throws -> Void) {
@@ -356,6 +357,20 @@ final class DBTests: XCTestCase {
                 table.add(column: "last_active_at", .datetime)
             }
             try database.execute(sql: "UPDATE session_state SET title = generated_title WHERE title IS NULL")
+        }
+
+        register("v11-session-incarnation") { database in
+            try database.alter(table: "session_state") { table in
+                table.add(column: "incarnation", .text)
+            }
+            try database.execute(sql: "UPDATE session_state SET incarnation = lower(hex(randomblob(16))) WHERE incarnation IS NULL")
+            try database.execute(sql: """
+                CREATE TRIGGER session_state_incarnation AFTER INSERT ON session_state
+                WHEN NEW.incarnation IS NULL
+                BEGIN
+                    UPDATE session_state SET incarnation = lower(hex(randomblob(16))) WHERE rowid = NEW.rowid;
+                END
+                """)
         }
         return migrator
     }
@@ -1213,8 +1228,8 @@ extension DBTests {
         XCTAssertEqual(try reopened.sessionState("old-build")?.incarnation?.count, 32)
     }
 
-    /// A build that knows v11 meeting a file a later build migrated (here,
-    /// the host-keyed project state planned as v12): update-required, and
+    /// A build that knows v12 meeting a file a later build migrated (here,
+    /// the host-keyed project state planned as v13): update-required, and
     /// not a byte written.
     func testAFileFromANewerBuildStopsThisOneWithoutAWrite() throws {
         let (db, path) = try database()
@@ -1223,7 +1238,7 @@ extension DBTests {
         let queue = try DatabaseQueue(path: path.path)
         try queue.write { raw in
             try raw.execute(sql: "ALTER TABLE project_state ADD COLUMN host TEXT NOT NULL DEFAULT ''")
-            try raw.execute(sql: "INSERT INTO grdb_migrations(identifier) VALUES ('v12-project-host')")
+            try raw.execute(sql: "INSERT INTO grdb_migrations(identifier) VALUES ('v13-project-host')")
         }
         try queue.close()
         let before = try Data(contentsOf: path)
@@ -1233,6 +1248,243 @@ extension DBTests {
             XCTAssertEqual(try Data(contentsOf: path), before)
             XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: directory.path)), filesBefore)
         }
+    }
+
+    // MARK: Archive provenance (ADR-030)
+
+    private func fixture(_ name: String) -> URL {
+        URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/\(name)")
+    }
+
+    /// A file a v11 build wrote (frozen migrator) takes v12 additively:
+    /// every existing archive stays the user's, nothing is kept, and the
+    /// v11 build, which has the newer-schema guard, now refuses the file.
+    func testArchiveProvenanceMigratesAV11FileAdditively() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("temple-db-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let path = directory.appendingPathComponent("temple.sqlite")
+        paths.append(path)
+        try Self.writeLegacyDatabase(at: path, upTo: "v11-session-incarnation")
+        let legacy = try DatabaseQueue(path: path.path)
+        let incarnation = try legacy.read { try String.fetchOne($0, sql: "SELECT incarnation FROM session_state WHERE id = 's'") }
+        try legacy.close()
+
+        let migrated = try TempleDB(path: path)
+        let state = try XCTUnwrap(migrated.sessionState("s"))
+        XCTAssertTrue(state.archived)
+        XCTAssertNil(state.archiveReason, "an existing archive is the user's")
+        XCTAssertNil(state.keptAt)
+        XCTAssertNil(state.archivedAt, "never backfilled")
+        XCTAssertEqual(state.incarnation, incarnation)
+        XCTAssertFalse(Session(state: state).archivedByTemple)
+
+        let queue = try DatabaseQueue(path: path.path)
+        defer { try? queue.close() }
+        let v11 = Self.legacyMigrator(through: "v11-session-incarnation")
+        XCTAssertTrue(try queue.read { try v11.hasBeenSuperseded($0) }, "a guarded v11 build refuses the file")
+        XCTAssertTrue(try queue.read { try v11.hasCompletedMigrations($0) })
+    }
+
+    func testSessionStateDecodesV11FixtureAndAnUnknownArchiveReason() throws {
+        for name in ["session-state-v9.json", "session-state-v11.json"] {
+            let state = try JSONDecoder().decode(SessionState.self, from: Data(contentsOf: fixture(name)))
+            XCTAssertNil(state.archiveReason, name)
+            XCTAssertNil(state.keptAt, name)
+            XCTAssertNil(state.archivedAt, name)
+        }
+        let v11 = try JSONDecoder().decode(SessionState.self, from: Data(contentsOf: fixture("session-state-v11.json")))
+        XCTAssertEqual(v11.id, "legacy-v11")
+        XCTAssertTrue(v11.archived)
+        XCTAssertEqual(v11.host, .local)
+        XCTAssertEqual(v11.directory, "/old/project")
+        XCTAssertEqual(v11.directorySource, .tab)
+        XCTAssertEqual(v11.title, "Agent title")
+        XCTAssertEqual(v11.lastActiveAt, Date(timeIntervalSinceReferenceDate: 200))
+        XCTAssertEqual(v11.incarnation, "0123456789abcdef0123456789abcdef")
+
+        // A reason a newer build wrote: Temple's archive, reason unknown.
+        let future = try JSONDecoder().decode(SessionState.self,
+            from: Data(#"{"id":"f","archived":true,"archiveReason":"from_the_future"}"#.utf8))
+        XCTAssertEqual(future.archiveReason?.rawValue, "from_the_future")
+        XCTAssertTrue(Session(state: future).archivedByTemple)
+        let current = SessionState(id: "c", pinned: false, archived: true, customName: nil, color: nil, generatedTitle: nil,
+                                   lastOpenedAt: nil, joinedVia: nil, joinedAt: nil, incarnation: "i",
+                                   archiveReason: .transcriptMissing, keptAt: Date(timeIntervalSinceReferenceDate: 5),
+                                   archivedAt: Date(timeIntervalSinceReferenceDate: 4))
+        XCTAssertEqual(try JSONDecoder().decode(SessionState.self, from: JSONEncoder().encode(current)), current)
+
+        // And from the database: a value this build does not know reads non-nil.
+        let (db, queue) = try rawDatabase()
+        try db.join(sessionID: "x", via: .opened)
+        try queue.write { try $0.execute(sql: "UPDATE session_state SET archived = 1, archive_reason = 'from_the_future' WHERE id = 'x'") }
+        XCTAssertEqual(try db.sessionState("x")?.archiveReason?.rawValue, "from_the_future")
+    }
+
+    private func missing(_ refs: [MembershipRef]) -> [AutoArchiveEntry] {
+        refs.map { AutoArchiveEntry(ref: $0, reason: .transcriptMissing) }
+    }
+
+    private func ref(_ db: TempleDB, _ id: String) throws -> MembershipRef {
+        let state = try XCTUnwrap(db.sessionState(id))
+        return MembershipRef(id: id, host: state.host, incarnation: try XCTUnwrap(state.incarnation))
+    }
+
+    /// An in-memory database with a handle on its queue, for SQL an older
+    /// build would run against the same file.
+    private func rawDatabase() throws -> (TempleDB, DatabaseQueue) {
+        let queue = try DatabaseQueue()
+        return (try TempleDB(database: queue), queue)
+    }
+
+    /// A pre-ADR-030 build's archive or restore: its own SQL, which knows
+    /// nothing of the reason or the keep.
+    private func olderBuildSetArchived(_ queue: DatabaseQueue, _ archived: Bool, _ id: String) throws {
+        try queue.write { try $0.execute(sql: "UPDATE session_state SET archived = ? WHERE id = ?", arguments: [archived, id]) }
+    }
+
+    func testArchiveMissingTranscriptsArchivesOnlyWhatEveryGuardAllows() throws {
+        let (db, queue) = try rawDatabase()
+        let observed = ObservationBox()
+        _ = db.observeRowChanges { observed.append(.rows, $0) }
+        for id in ["eligible", "pinned", "archived", "kept", "stale", "tab", "wrong-inc"] {
+            try db.join(sessionID: id, via: .imported, agent: .claude)
+        }
+        try db.join(sessionID: "remote", via: .imported, agent: .claude, core: SessionCore(host: HostID(rawValue: "box")))
+        try db.setPinned(true, sessionID: "pinned")
+        try db.setArchived(true, sessionID: "archived")
+        try db.setArchived(true, sessionID: "kept"); try db.setArchived(false, sessionID: "kept")
+        try db.setOpenTabs(projectPath: "/p", sessionIDs: ["tab"])
+        // Temple archived it, then an older build restored it: the reason
+        // is left behind, and reads as kept.
+        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "stale")])), ["stale"])
+        try olderBuildSetArchived(queue, false, "stale")
+        let refs = try ["eligible", "pinned", "archived", "kept", "stale", "tab"].map { try ref(db, $0) }
+        let wrongIncarnation = MembershipRef(id: "wrong-inc", host: .local, incarnation: "not-it")
+        let wrongHost = MembershipRef(id: "remote", host: .local, incarnation: try XCTUnwrap(db.sessionState("remote")?.incarnation))
+        let before = observed.snapshot().rows.count
+
+        XCTAssertEqual(try db.autoArchive(missing(refs + [wrongIncarnation, wrongHost])), ["eligible"])
+        XCTAssertEqual(Array(observed.snapshot().rows.dropFirst(before)), ["eligible"], "one row change, after commit")
+        let eligible = try XCTUnwrap(db.sessionState("eligible"))
+        XCTAssertTrue(eligible.archived)
+        XCTAssertEqual(eligible.archiveReason, .transcriptMissing)
+        XCTAssertTrue(Session(state: eligible).archivedByTemple)
+        let pinned = try XCTUnwrap(db.sessionState("pinned"))
+        XCTAssertTrue(pinned.pinned, "a pin is a refusal, never cleared")
+        XCTAssertFalse(pinned.archived)
+        XCTAssertNil(try db.sessionState("archived")?.archiveReason, "the user's archive stays the user's")
+        for id in ["kept", "stale", "tab", "wrong-inc", "remote"] {
+            XCTAssertFalse(try XCTUnwrap(db.sessionState(id)).archived, id)
+        }
+        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "eligible")])), [], "already archived: nothing")
+    }
+
+    func testABatchArchiveIsOneTransaction() throws {
+        let (db, trace) = try SQLTrace.database()
+        var refs: [MembershipRef] = []
+        for index in 0..<50 {
+            try db.join(sessionID: "s\(index)", via: .imported)
+            refs.append(try ref(db, "s\(index)"))
+        }
+        trace.reset()
+        XCTAssertEqual(try db.autoArchive(missing(refs)).count, 50)
+        let statements = trace.statements
+        XCTAssertEqual(statements.filter { $0.hasPrefix("BEGIN") }.count, 1, statements.joined(separator: "\n"))
+        XCTAssertEqual(statements.filter { $0.hasPrefix("COMMIT") }.count, 1)
+        XCTAssertEqual(statements.filter { $0.hasPrefix("UPDATE session_state") }.count, 50)
+    }
+
+    func testAPersonsUnarchiveStampsAKeepOnceAndTheirArchiveClearsTemples() throws {
+        let db = try TempleDB.inMemory()
+        let observed = ObservationBox()
+        _ = db.observeRowChanges { observed.append(.rows, $0) }
+        try db.join(sessionID: "s", via: .imported)
+        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "s")])), ["s"])
+        let when = Date(timeIntervalSince1970: 1_800_000_000)
+        try db.setArchived(false, sessionID: "s", at: when)
+        var state = try XCTUnwrap(db.sessionState("s"))
+        XCTAssertFalse(state.archived)
+        XCTAssertEqual(state.keptAt, when)
+        XCTAssertEqual(state.archiveReason, .transcriptMissing, "the reason stays as the record")
+        let count = observed.snapshot().rows.count
+        try db.setArchived(false, sessionID: "s", at: when.addingTimeInterval(60))
+        XCTAssertEqual(observed.snapshot().rows.count, count, "a repeated restore writes nothing")
+        XCTAssertEqual(try db.sessionState("s")?.keptAt, when)
+
+        try db.setArchived(true, sessionID: "s")
+        state = try XCTUnwrap(db.sessionState("s"))
+        XCTAssertTrue(state.archived)
+        XCTAssertNil(state.archiveReason, "a person's archive is theirs")
+        XCTAssertNil(state.keptAt)
+    }
+
+    /// Nothing watches an archived row's files, so a keep is spent by the
+    /// session's next activity instead: from then the idle week protects
+    /// it. A restored row's leftover reason, this build's or an older
+    /// build's, goes with it; an archived row's reason never does.
+    func testActivitySpendsAKeepAndARestoredRowsLeftoverReason() throws {
+        let (db, queue) = try rawDatabase()
+        for id in ["restored", "old-build", "archived"] { try db.join(sessionID: id, via: .imported) }
+        XCTAssertEqual(try db.autoArchive(missing(try ["restored", "old-build", "archived"].map { try ref(db, $0) })),
+                       ["restored", "old-build", "archived"])
+        try db.setArchived(false, sessionID: "restored")
+        try olderBuildSetArchived(queue, false, "old-build")
+        XCTAssertNotNil(try db.sessionState("restored")?.keptAt)
+
+        let at = Date(timeIntervalSince1970: 1_900_000_000)
+        for id in ["restored", "old-build", "archived"] { try db.touch(sessionID: id, host: .local, at: at) }
+        for id in ["restored", "old-build"] {
+            let state = try XCTUnwrap(db.sessionState(id))
+            XCTAssertNil(state.keptAt, id); XCTAssertNil(state.archiveReason, id); XCTAssertFalse(state.archived, id)
+        }
+        XCTAssertEqual(try db.sessionState("archived")?.archiveReason, .transcriptMissing, "still Temple's archive")
+        // Eligible again (the policy's idle week is what holds it off now).
+        XCTAssertEqual(try db.autoArchive([AutoArchiveEntry(ref: try ref(db, "restored"), reason: .folderMissing)]), ["restored"])
+        XCTAssertEqual(try db.sessionState("restored")?.archiveReason, .folderMissing)
+    }
+
+    func testRestoreTempleArchivesTouchesOnlyRowsStillCarryingTemplesArchive() throws {
+        let db = try TempleDB.inMemory()
+        for id in ["a", "b", "c"] { try db.join(sessionID: id, via: .imported) }
+        let refs = try ["a", "b", "c"].map { try ref(db, $0) }
+        XCTAssertEqual(try db.autoArchive(missing(refs)), ["a", "b", "c"])
+        try db.setArchived(false, sessionID: "b")               // restored by hand since
+        try db.setArchived(true, sessionID: "c")                // now the user's archive
+        try db.join(sessionID: "d", via: .imported)
+        let when = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(try db.restoreTempleArchives(refs + [MembershipRef(id: "d", host: .local, incarnation: "x")], at: when), ["a"])
+        let a = try XCTUnwrap(db.sessionState("a"))
+        XCTAssertFalse(a.archived); XCTAssertEqual(a.keptAt, when); XCTAssertEqual(a.archiveReason, .transcriptMissing)
+        XCTAssertTrue(try db.sessionState("c")!.archived, "the user's archive is not Temple's to undo")
+    }
+
+    /// Every archive write records when: the user's and Temple's alike. A
+    /// repeated archive keeps the first date; an unarchive leaves it.
+    func testEveryArchiveWriteStampsArchivedAt() throws {
+        let db = try TempleDB.inMemory()
+        for id in ["user", "temple"] { try db.join(sessionID: id, via: .imported) }
+        let first = Date(timeIntervalSince1970: 1_800_000_000), later = first.addingTimeInterval(3600)
+        try db.setArchived(true, sessionID: "user", at: first)
+        XCTAssertEqual(try db.sessionState("user")?.archivedAt, first)
+        try db.setArchived(true, sessionID: "user", at: later)
+        XCTAssertEqual(try db.sessionState("user")?.archivedAt, first, "nothing changed, nothing written")
+        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "temple")]), at: first), ["temple"])
+        XCTAssertEqual(try db.sessionState("temple")?.archivedAt, first)
+        // The user archives what Temple had: it becomes theirs, dated now.
+        try db.setArchived(true, sessionID: "temple", at: later)
+        XCTAssertEqual(try db.sessionState("temple")?.archivedAt, later)
+        try db.setArchived(false, sessionID: "temple", at: later)
+        XCTAssertEqual(try db.sessionState("temple")?.archivedAt, later)
+    }
+
+    func testLeaveUndoesAnImportTempleArchivedButNotOneTheUserDid() throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "temple", via: .imported, agent: .claude)
+        try db.join(sessionID: "user", via: .imported, agent: .claude)
+        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "temple")])), ["temple"])
+        try db.setArchived(true, sessionID: "user")
+        XCTAssertTrue(try db.leave(sessionID: "temple", host: .local))
+        XCTAssertFalse(try db.leave(sessionID: "user", host: .local))
     }
 
     func testSessionStateDecodesRowsWrittenWithoutAnIncarnation() throws {

@@ -98,7 +98,7 @@ let package = Package(
         // Nothing in a product links it.
         .target(name: "TempleTestSupport", dependencies: ["TempleCore"]),
 
-        .testTarget(name: "TempleCoreTests", dependencies: ["TempleCore", "TempleLocalHost", "TempleTestSupport"], exclude: ["Fixtures/session-state-v8.json", "Fixtures/session-state-v9.json", "Fixtures/format-golden.json"]),
+        .testTarget(name: "TempleCoreTests", dependencies: ["TempleCore", "TempleLocalHost", "TempleTestSupport"], exclude: ["Fixtures/session-state-v8.json", "Fixtures/session-state-v9.json", "Fixtures/session-state-v11.json", "Fixtures/format-golden.json"]),
         .testTarget(name: "TempleUITests", dependencies: ["TempleUI", "TempleLocalHost", "TempleTestSupport"]),
         .testTarget(name: "TempleTerminalTests", dependencies: ["TempleTerminal", "TempleUI"]),
     ]
