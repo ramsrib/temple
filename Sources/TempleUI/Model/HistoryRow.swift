@@ -59,7 +59,14 @@ public struct HistoryRow: Identifiable, Equatable, Sendable {
     /// Outside Temple and free to join from this row.
     public var canImport: Bool { member == nil && conflict == nil }
     public var canResume: Bool { conflict == nil && (member?.canResume ?? (catalog != nil)) }
-    public var transcriptMissing: Bool { catalog == nil && member?.transcriptConfirmedMissing == true }
+    /// Proven by the engine, or, for a row Temple archived for it (which the
+    /// engine no longer watches), recorded in the row. A catalog row is a
+    /// file on disk, so never.
+    public var transcriptMissing: Bool {
+        guard catalog == nil, let member else { return false }
+        return member.transcriptConfirmedMissing
+            || (member.archivedByTemple && member.state.archiveReason == .transcriptMissing)
+    }
     public var localURL: URL? { catalog?.locator.localURL ?? member?.transcript?.localURL }
     public var gitBranch: String? { catalog?.gitBranch }
     public var model: String? { catalog?.model }

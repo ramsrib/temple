@@ -199,7 +199,9 @@ public actor SessionEngine: HostEngine {
             do {
                 if membershipReadFailures > 0 { membershipReadFailures -= 1; throw EngineTestError.injected }
                 let rows = try database.sessionStates(host: host)
-                for row in rows where members[row.id] == nil {
+                // An archived row is not watched (ADR-030): its files are
+                // nobody's business until a person brings it back.
+                for row in rows where members[row.id] == nil && !row.archived {
                     var member = Member(row: row, readOnly: database.isReadOnly)
                     if prestartAwaiting.contains(row.id) { member.awaitingCreation = true; member.resolution = .awaitingCreation }
                     members[row.id] = member
@@ -247,7 +249,7 @@ public actor SessionEngine: HostEngine {
 
     /// Membership is the database's: the row is re-read, so callbacks that
     /// arrive late or out of order can neither resurrect a member that left
-    /// nor miss a rejoin.
+    /// nor miss a rejoin. An archived row is not a member here.
     func reconcileMembership(_ id: String, awaitingCreation: Bool) {
         guard running, membershipLoaded else {
             if awaitingCreation { prestartAwaiting.insert(id) }
@@ -261,7 +263,10 @@ public actor SessionEngine: HostEngine {
         let row: SessionState?
         do { row = try database.sessionState(id) }
         catch { return }   // A failed read proves nothing; the member stays as it was.
-        guard let row, row.host == host else {
+        // Archiving takes a member out like a leave (its facts and verdict
+        // are revoked); unarchiving brings it back like a join, with a fresh
+        // resolution.
+        guard let row, row.host == host, !row.archived else {
             if members.removeValue(forKey: id) != nil { removed(id) }
             return
         }

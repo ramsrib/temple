@@ -68,7 +68,10 @@ public final class AppModel: ObservableObject {
             engineSet.ownershipChanged()
         }
         if rowPresentationDirty || resolutionsChanged { rebuildSessions() }
+        // An archived row is not resolved (the engine does not watch it),
+        // so it is not waited for.
         if !sidebarRanksFrozen && builtSessions.allSatisfy({ row in
+            if row.state.archived { return true }
             switch snapshot.resolutions[row.id] {
             case .loaded, .confirmedAbsent, .unreadable, .mismatch: return true
             default: return false
