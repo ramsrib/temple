@@ -9,11 +9,19 @@ public struct EngineSnapshot: Equatable, Sendable {
     public let generation: UInt64
     public let resolutions: [String: MemberResolution]
     public let facts: [String: AuthorizedFacts]
+    /// Which membership each resolution describes (the engine's host and the
+    /// row's incarnation, as the engine read it). A verdict is about that
+    /// membership only: after a leave and rejoin under the same id it says
+    /// nothing about the new one until the engine publishes again. Absent
+    /// for a member whose row has no incarnation (or an engine without a
+    /// database).
+    public let memberships: [String: MembershipRef]
     public init(generation: UInt64, resolutions: [String: MemberResolution],
-                facts: [String: AuthorizedFacts] = [:]) {
+                facts: [String: AuthorizedFacts] = [:], memberships: [String: MembershipRef] = [:]) {
         self.generation = generation
         self.resolutions = resolutions
         self.facts = facts
+        self.memberships = memberships
     }
 }
 

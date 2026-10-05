@@ -1134,9 +1134,15 @@ public actor SessionEngine: HostEngine {
         snapshotDirty = false
         let resolutions = members.mapValues(\.resolution)
         let facts = members.compactMapValues(\.facts)
-        if let published, published.resolutions == resolutions, published.facts == facts { return }
+        var memberships: [String: MembershipRef] = [:]
+        for (id, member) in members {
+            if let incarnation = member.incarnation { memberships[id] = MembershipRef(id: id, host: host, incarnation: incarnation) }
+        }
+        if let published, published.resolutions == resolutions, published.facts == facts,
+           published.memberships == memberships { return }
         generation &+= 1
-        let snapshot = EngineSnapshot(generation: generation, resolutions: resolutions, facts: facts)
+        let snapshot = EngineSnapshot(generation: generation, resolutions: resolutions, facts: facts,
+                                      memberships: memberships)
         published = snapshot
         counters.publications &+= 1
         mirror.setCounters(counters)
