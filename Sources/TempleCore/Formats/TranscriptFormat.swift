@@ -131,6 +131,13 @@ public protocol TranscriptFormat: Sendable {
     var sharedInputs: [String] { get }
     /// Shared facts from those inputs' bytes; a missing input is absent.
     func sharedFacts(_ inputs: [String: Data]) -> SharedFacts
+    /// `summary` with every field that comes from shared inputs replaced by
+    /// what `shared` states (nil where it states nothing). `facts` applies
+    /// shared facts through this and nothing else, so for any bytes
+    /// `facts(…, shared: s)` is `withShared(facts(…, shared: x), s)` for every
+    /// `x`: a summary kept across a change to the shared inputs is brought up
+    /// to date by this alone, with no transcript read (ADR-032).
+    func withShared(_ summary: TranscriptSummary, _ shared: SharedFacts) -> TranscriptSummary
 }
 
 public extension TranscriptFormat {
@@ -138,6 +145,7 @@ public extension TranscriptFormat {
     var sharedInputs: [String] { [] }
     func sharedFacts(_ inputs: [String: Data]) -> SharedFacts { .empty }
     func header(firstLine: Data) throws -> AdoptionCandidate? { nil }
+    func withShared(_ summary: TranscriptSummary, _ shared: SharedFacts) -> TranscriptSummary { summary }
 }
 
 public enum TranscriptFormats {
@@ -147,6 +155,13 @@ public enum TranscriptFormats {
         case .codex: CodexFormat()
         }
     }
+
+    /// The version of what `facts` produces from given bytes. A summary kept
+    /// across launches (ADR-032) records it and is discarded when it moves,
+    /// so **bump it with any change to a format's facts** — a field read
+    /// differently, a new field, a different title rule. `FormatGoldenTests`
+    /// fails on such a change; this is the number that must move with it.
+    public static let factsVersion = 1
 }
 
 public enum TranscriptVerification: Equatable, Sendable {
@@ -161,9 +176,39 @@ enum TranscriptText {
 
     /// Parse one JSONL line into a dictionary; nil on malformed input.
     static func jsonObject(_ line: Substring) -> [String: Any]? {
-        guard let data = line.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        guard let data = line.data(using: .utf8) else { return nil }
+        return jsonObject(data)
+    }
+
+    static func jsonObject(_ line: Data) -> [String: Any]? {
+        guard let obj = try? JSONSerialization.jsonObject(with: line) else { return nil }
         return obj as? [String: Any]
+    }
+
+    /// A transcript's lines, each as the UTF-8 bytes `jsonObject` parses:
+    /// exactly what `lines(_:)` and `Substring.data(using: .utf8)` gave,
+    /// without walking the text's grapheme clusters to find the breaks.
+    ///
+    /// The bytes are decoded first (ill-formed sequences become U+FFFD, as
+    /// before), then split on the decoded bytes. A "\n" is a character of
+    /// its own except right after "\r", where the two are one "\r\n"
+    /// character that `split(separator: "\n")` does not split at: a line
+    /// break is therefore every 0x0A byte not preceded by 0x0D, and no other
+    /// byte (a line feed never belongs to a multi-byte sequence, nor to a
+    /// repaired one). Empty lines are dropped, as `split` drops them.
+    static func lineData(_ data: Data) -> [Data] {
+        var text = String(decoding: data, as: UTF8.self)
+        var lines: [Data] = []
+        text.withUTF8 { bytes in
+            var start = 0
+            for index in bytes.indices where bytes[index] == 0x0a {
+                if index > 0 && bytes[index - 1] == 0x0d { continue }
+                if index > start { lines.append(Data(UnsafeBufferPointer(rebasing: bytes[start..<index]))) }
+                start = index + 1
+            }
+            if bytes.count > start { lines.append(Data(UnsafeBufferPointer(rebasing: bytes[start...]))) }
+        }
+        return lines
     }
 
     static func parseDate(_ s: String?) -> Date? {
@@ -171,9 +216,38 @@ enum TranscriptText {
         return (try? isoWithFraction.parse(s)) ?? (try? isoPlain.parse(s))
     }
 
-    /// Collapse whitespace and cap length for a one-line title.
+    /// Collapse whitespace and cap length for a one-line title: every run of
+    /// whitespace characters becomes one space, leading and trailing runs go,
+    /// and a result longer than `cap` characters keeps `cap` and gains "…".
+    ///
+    /// Exactly `s.split(whereSeparator: \.isWhitespace).joined(separator: " ")`
+    /// capped, without collapsing all of a long message: it stops as soon as
+    /// the outcome is decided. Appending to a string can change only its last
+    /// character (a grapheme break depends on what precedes it and on the
+    /// one scalar after it, so only the break at the join is new — a space
+    /// can absorb a combining mark that followed a newline, say). So once the
+    /// collapsed prefix holds `cap + 2` characters, its first `cap + 1` are
+    /// final: the whole result is longer than `cap`, and those are its first.
+    /// `appended` counts characters added, an upper bound on the prefix's
+    /// count (joins can only merge); the real count is taken only when that
+    /// bound says it may be enough. `TranscriptTextTests` pins the parity.
     static func cleanTitle(_ s: String, cap: Int = 200) -> String {
-        let collapsed = s.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        var collapsed = ""
+        var pendingSpace = false
+        var appended = 0
+        for character in s {
+            if character.isWhitespace {
+                if !collapsed.isEmpty { pendingSpace = true }
+                continue
+            }
+            if pendingSpace { collapsed.append(" "); appended += 1; pendingSpace = false }
+            collapsed.append(character)
+            appended += 1
+            if appended >= cap + 2 {
+                appended = collapsed.count
+                if appended >= cap + 2 { return String(collapsed.prefix(cap)) + "…" }
+            }
+        }
         return collapsed.count > cap ? String(collapsed.prefix(cap)) + "…" : collapsed
     }
 

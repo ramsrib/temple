@@ -99,9 +99,8 @@ public struct CodexFormat: TranscriptFormat {
 
     public func facts(_ bytes: TranscriptBytes, name: TranscriptName?, locator: TranscriptLocator,
                       modifiedAt: Date, shared: SharedFacts) -> TranscriptFacts {
-        let head = String(decoding: bytes.head, as: UTF8.self)
-        let segments = [head] + (bytes.tail.map { [String(decoding: $0, as: UTF8.self)] } ?? [])
-        guard let firstLine = head.split(separator: "\n").first,
+        let segments = [TranscriptText.lineData(bytes.head)] + (bytes.tail.map { [TranscriptText.lineData($0)] } ?? [])
+        guard let firstLine = segments[0].first,
               let firstObject = TranscriptText.jsonObject(firstLine),
               (firstObject["type"] as? String) == "session_meta",
               let payload = firstObject["payload"] as? [String: Any],
@@ -114,14 +113,15 @@ public struct CodexFormat: TranscriptFormat {
             (payload["timestamp"] as? String) ?? (firstObject["timestamp"] as? String))
         var count = 0
         var model = payload["model_provider"] as? String
-        var preview: String?
+        // The last turn's text, raw: cleaned once, after the loop.
+        var previewText: String?
         var fallbackTitle: String?
         var tailFallbackTitle: String?
         let git = payload["git"] as? [String: Any]
         let branch = git?["branch"] as? String
 
         for (segmentIndex, segment) in segments.enumerated() {
-            for (lineIndex, line) in segment.split(separator: "\n").enumerated() {
+            for (lineIndex, line) in segment.enumerated() {
                 let obj: [String: Any]?
                 if segmentIndex == 0 && lineIndex == 0 {
                     obj = firstObject
@@ -138,21 +138,23 @@ public struct CodexFormat: TranscriptFormat {
                 if isTurn && type != "session_meta" {
                     count += 1
                     if let text = Self.text(from: item), !text.isEmpty {
-                        preview = TranscriptText.cleanTitle(text, cap: 160)
+                        previewText = text
                         // `user_message` events hold the typed prompt; the
                         // role-user response_items also carry injected
                         // AGENTS.md instructions, so they can't title. Only
                         // the head segment can claim the FIRST prompt — a
                         // tail match in a large file may be a later turn, so
                         // it is kept as a last resort behind the deep scan.
+                        // Cleaned only while the title it would set is open.
                         if payloadType == "user_message" {
-                            let cleaned = TranscriptText.cleanTitle(text)
-                            if !cleaned.isEmpty {
-                                if segmentIndex == 0 {
-                                    if fallbackTitle == nil { fallbackTitle = cleaned }
-                                } else if tailFallbackTitle == nil {
-                                    tailFallbackTitle = cleaned
+                            if segmentIndex == 0 {
+                                if fallbackTitle == nil {
+                                    let cleaned = TranscriptText.cleanTitle(text)
+                                    if !cleaned.isEmpty { fallbackTitle = cleaned }
                                 }
+                            } else if tailFallbackTitle == nil {
+                                let cleaned = TranscriptText.cleanTitle(text)
+                                if !cleaned.isEmpty { tailFallbackTitle = cleaned }
                             }
                         }
                     }
@@ -168,28 +170,32 @@ public struct CodexFormat: TranscriptFormat {
             else { return .needsWiderHead(bytes: Self.promptScanBytes) }
         }
 
-        return .summary(TranscriptSummary(
+        return .summary(withShared(TranscriptSummary(
             id: id,
             agent: .codex,
             locator: locator,
             modifiedAt: modifiedAt,
             cwd: cwd,
             firstPrompt: fallbackTitle,
-            historyPrompt: shared.prompts[id],
             createdAt: createdAt,
             gitBranch: branch,
             model: model,
             messageCount: count > 0 ? count : nil,
-            lastMessagePreview: preview,
+            lastMessagePreview: previewText.map { TranscriptText.cleanTitle($0, cap: 160) },
             originator: payload["originator"] as? String,
-            sharedTitle: shared.titles[id],
             laterPromptHint: tailFallbackTitle,
             selectionKey: name?.selectionKey
-        ))
+        ), shared))
+    }
+
+    /// The thread's shared title and history prompt, by the summary's id —
+    /// the only fields shared inputs feed, set here and nowhere else.
+    public func withShared(_ summary: TranscriptSummary, _ shared: SharedFacts) -> TranscriptSummary {
+        summary.sharing(title: shared.titles[summary.id], prompt: shared.prompts[summary.id])
     }
 
     private static func firstUserMessage(in head: Data) -> String? {
-        for line in TranscriptText.lines(head) {
+        for line in TranscriptText.lineData(head) {
             guard let obj = TranscriptText.jsonObject(line),
                   let item = obj["payload"] as? [String: Any],
                   (item["type"] as? String) == "user_message",

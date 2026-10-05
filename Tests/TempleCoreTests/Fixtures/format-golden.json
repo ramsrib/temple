@@ -410,6 +410,43 @@
     }
   },
   {
+    "file" : "claude\/-work-project\/long-unicode.jsonl",
+    "filenameID" : "long-unicode",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "directoryHint" : "\/work\/project",
+      "firstPrompt" : "word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é …",
+      "id" : "long-unicode",
+      "lastMessagePreview" : "tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp g…",
+      "legacyTitleHint" : "word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é …",
+      "messageCount" : "3",
+      "modifiedAt" : "1700000027.0",
+      "path" : "claude\/-work-project\/long-unicode.jsonl",
+      "recordedTitle" : "🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accen…"
+    }
+  },
+  {
+    "file" : "claude\/-work-project\/long-tail.jsonl",
+    "filenameID" : "long-tail",
+    "header" : "nil",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "claude",
+      "cwd" : "\/work",
+      "id" : "long-tail",
+      "lastMessagePreview" : "",
+      "laterPromptHint" : "crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab …",
+      "legacyTitleHint" : "crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab …",
+      "messageCount" : "123",
+      "modifiedAt" : "1700000028.0",
+      "path" : "claude\/-work-project\/long-tail.jsonl"
+    }
+  },
+  {
     "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-minimal.jsonl",
     "header" : "throws",
     "identity" : "verified",
@@ -417,7 +454,7 @@
     "summary" : {
       "agent" : "codex",
       "id" : "c-minimal",
-      "modifiedAt" : "1700000027.0",
+      "modifiedAt" : "1700000029.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-minimal.jsonl"
     }
   },
@@ -430,7 +467,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-sid",
-      "modifiedAt" : "1700000028.0",
+      "modifiedAt" : "1700000030.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-session-id.jsonl"
     }
   },
@@ -443,7 +480,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-own",
-      "modifiedAt" : "1700000029.0",
+      "modifiedAt" : "1700000031.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-both.jsonl"
     }
   },
@@ -492,7 +529,7 @@
       "agent" : "codex",
       "cwd" : "\/lead",
       "id" : "c-lead",
-      "modifiedAt" : "1700000036.0",
+      "modifiedAt" : "1700000038.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-leading-newline.jsonl"
     }
   },
@@ -511,7 +548,7 @@
       "lastMessagePreview" : "via text",
       "messageCount" : "6",
       "model" : "gpt-5",
-      "modifiedAt" : "1700000037.0",
+      "modifiedAt" : "1700000039.0",
       "originator" : "codex-tui",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-full.jsonl"
     }
@@ -526,7 +563,7 @@
       "createdAt" : "1770091506.789",
       "cwd" : "\/w",
       "id" : "c-top",
-      "modifiedAt" : "1700000038.0",
+      "modifiedAt" : "1700000040.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-top-timestamp.jsonl"
     }
   },
@@ -543,7 +580,7 @@
       "lastMessagePreview" : "wide prompt",
       "laterPromptHint" : "wide prompt",
       "messageCount" : "1",
-      "modifiedAt" : "1700000039.0",
+      "modifiedAt" : "1700000041.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-wide.jsonl"
     }
   },
@@ -559,7 +596,7 @@
       "lastMessagePreview" : "last",
       "laterPromptHint" : "tail prompt",
       "messageCount" : "2",
-      "modifiedAt" : "1700000040.0",
+      "modifiedAt" : "1700000042.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-beyond.jsonl"
     }
   },
@@ -574,7 +611,7 @@
       "id" : "c-bare",
       "lastMessagePreview" : "instructions only",
       "messageCount" : "1",
-      "modifiedAt" : "1700000041.0",
+      "modifiedAt" : "1700000043.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-bare.jsonl"
     }
   },
@@ -591,7 +628,7 @@
       "lastMessagePreview" : "medium prompt",
       "laterPromptHint" : "medium prompt",
       "messageCount" : "1",
-      "modifiedAt" : "1700000042.0",
+      "modifiedAt" : "1700000044.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-medium.jsonl"
     }
   },
@@ -610,7 +647,7 @@
       "agent" : "codex",
       "createdAt" : "1767225600.0",
       "id" : "c-nocwd",
-      "modifiedAt" : "1700000044.0",
+      "modifiedAt" : "1700000046.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-no-cwd.jsonl"
     }
   },
@@ -623,7 +660,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-notime",
-      "modifiedAt" : "1700000045.0",
+      "modifiedAt" : "1700000047.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-no-time.jsonl"
     }
   },
@@ -666,7 +703,7 @@
       "id" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
       "lastMessagePreview" : "canonical",
       "messageCount" : "1",
-      "modifiedAt" : "1700000050.0",
+      "modifiedAt" : "1700000052.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl"
     }
   },
@@ -682,7 +719,7 @@
       "createdAt" : "1790852400.0",
       "cwd" : "\/w",
       "id" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
-      "modifiedAt" : "1700000051.0",
+      "modifiedAt" : "1700000053.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-2026-10-01T11-00-00-0199A213-81C0-7800-8AA1-BBAB2A035A54_0199a213-81c0-7800-8aa1-bbab2a0aaaaa.jsonl"
     }
   },
@@ -695,7 +732,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
-      "modifiedAt" : "1700000052.0",
+      "modifiedAt" : "1700000054.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-2026-02-30T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl"
     }
   },
@@ -710,7 +747,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
-      "modifiedAt" : "1700000053.0",
+      "modifiedAt" : "1700000055.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-2024-02-29T23-59-59-0199a213-81c0-7800-8aa1-bbab2a035a54.jsonl"
     }
   },
@@ -723,7 +760,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "x",
-      "modifiedAt" : "1700000054.0",
+      "modifiedAt" : "1700000056.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-not-a-uuid.jsonl"
     }
   },
@@ -739,7 +776,7 @@
       "id" : "c-hist",
       "lastMessagePreview" : "rollout prompt",
       "messageCount" : "1",
-      "modifiedAt" : "1700000055.0",
+      "modifiedAt" : "1700000057.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-hist.jsonl"
     }
   },
@@ -752,7 +789,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-index",
-      "modifiedAt" : "1700000056.0",
+      "modifiedAt" : "1700000058.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-index.jsonl"
     }
   },
@@ -765,7 +802,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-blank",
-      "modifiedAt" : "1700000057.0",
+      "modifiedAt" : "1700000059.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-blank-hist.jsonl"
     }
   },
@@ -781,8 +818,41 @@
       "id" : "c-array",
       "lastMessagePreview" : "array text",
       "messageCount" : "1",
-      "modifiedAt" : "1700000058.0",
+      "modifiedAt" : "1700000060.0",
       "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-content-array.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-long-unicode.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf l…",
+      "id" : "c-long-uni",
+      "lastMessagePreview" : "para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 …",
+      "messageCount" : "3",
+      "modifiedAt" : "1700000061.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-long-unicode.jsonl"
+    }
+  },
+  {
+    "file" : "codex-plain\/sessions\/2026\/10\/01\/rollout-long-tail.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "head prompt",
+      "id" : "c-long-tail",
+      "lastMessagePreview" : "؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́acce…",
+      "laterPromptHint" : "؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para …",
+      "messageCount" : "2",
+      "modifiedAt" : "1700000062.0",
+      "path" : "codex-plain\/sessions\/2026\/10\/01\/rollout-long-tail.jsonl"
     }
   },
   {
@@ -793,7 +863,7 @@
     "summary" : {
       "agent" : "codex",
       "id" : "c-minimal",
-      "modifiedAt" : "1700000059.0",
+      "modifiedAt" : "1700000063.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-minimal.jsonl"
     }
   },
@@ -806,7 +876,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-sid",
-      "modifiedAt" : "1700000060.0",
+      "modifiedAt" : "1700000064.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-session-id.jsonl"
     }
   },
@@ -819,7 +889,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-own",
-      "modifiedAt" : "1700000061.0",
+      "modifiedAt" : "1700000065.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-both.jsonl"
     }
   },
@@ -868,7 +938,7 @@
       "agent" : "codex",
       "cwd" : "\/lead",
       "id" : "c-lead",
-      "modifiedAt" : "1700000068.0",
+      "modifiedAt" : "1700000072.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-leading-newline.jsonl"
     }
   },
@@ -888,7 +958,7 @@
       "lastMessagePreview" : "via text",
       "messageCount" : "6",
       "model" : "gpt-5",
-      "modifiedAt" : "1700000069.0",
+      "modifiedAt" : "1700000073.0",
       "originator" : "codex-tui",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-full.jsonl",
       "sharedTitle" : "earliest full"
@@ -904,7 +974,7 @@
       "createdAt" : "1770091506.789",
       "cwd" : "\/w",
       "id" : "c-top",
-      "modifiedAt" : "1700000070.0",
+      "modifiedAt" : "1700000074.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-top-timestamp.jsonl"
     }
   },
@@ -921,7 +991,7 @@
       "lastMessagePreview" : "wide prompt",
       "laterPromptHint" : "wide prompt",
       "messageCount" : "1",
-      "modifiedAt" : "1700000071.0",
+      "modifiedAt" : "1700000075.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-wide.jsonl"
     }
   },
@@ -937,7 +1007,7 @@
       "lastMessagePreview" : "last",
       "laterPromptHint" : "tail prompt",
       "messageCount" : "2",
-      "modifiedAt" : "1700000072.0",
+      "modifiedAt" : "1700000076.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-beyond.jsonl"
     }
   },
@@ -952,7 +1022,7 @@
       "id" : "c-bare",
       "lastMessagePreview" : "instructions only",
       "messageCount" : "1",
-      "modifiedAt" : "1700000073.0",
+      "modifiedAt" : "1700000077.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-bare.jsonl"
     }
   },
@@ -969,7 +1039,7 @@
       "lastMessagePreview" : "medium prompt",
       "laterPromptHint" : "medium prompt",
       "messageCount" : "1",
-      "modifiedAt" : "1700000074.0",
+      "modifiedAt" : "1700000078.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-medium.jsonl"
     }
   },
@@ -988,7 +1058,7 @@
       "agent" : "codex",
       "createdAt" : "1767225600.0",
       "id" : "c-nocwd",
-      "modifiedAt" : "1700000076.0",
+      "modifiedAt" : "1700000080.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-no-cwd.jsonl"
     }
   },
@@ -1001,7 +1071,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-notime",
-      "modifiedAt" : "1700000077.0",
+      "modifiedAt" : "1700000081.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-no-time.jsonl"
     }
   },
@@ -1045,7 +1115,7 @@
       "id" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
       "lastMessagePreview" : "canonical",
       "messageCount" : "1",
-      "modifiedAt" : "1700000082.0",
+      "modifiedAt" : "1700000086.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl",
       "sharedTitle" : "thread a prompt"
     }
@@ -1062,7 +1132,7 @@
       "createdAt" : "1790852400.0",
       "cwd" : "\/w",
       "id" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
-      "modifiedAt" : "1700000083.0",
+      "modifiedAt" : "1700000087.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-2026-10-01T11-00-00-0199A213-81C0-7800-8AA1-BBAB2A035A54_0199a213-81c0-7800-8aa1-bbab2a0aaaaa.jsonl"
     }
   },
@@ -1076,7 +1146,7 @@
       "cwd" : "\/w",
       "historyPrompt" : "thread a prompt",
       "id" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
-      "modifiedAt" : "1700000084.0",
+      "modifiedAt" : "1700000088.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-2026-02-30T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl",
       "sharedTitle" : "thread a prompt"
     }
@@ -1092,7 +1162,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
-      "modifiedAt" : "1700000085.0",
+      "modifiedAt" : "1700000089.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-2024-02-29T23-59-59-0199a213-81c0-7800-8aa1-bbab2a035a54.jsonl"
     }
   },
@@ -1105,7 +1175,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "x",
-      "modifiedAt" : "1700000086.0",
+      "modifiedAt" : "1700000090.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-not-a-uuid.jsonl"
     }
   },
@@ -1122,7 +1192,7 @@
       "id" : "c-hist",
       "lastMessagePreview" : "rollout prompt",
       "messageCount" : "1",
-      "modifiedAt" : "1700000087.0",
+      "modifiedAt" : "1700000091.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-hist.jsonl",
       "sharedTitle" : "history first"
     }
@@ -1136,7 +1206,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-index",
-      "modifiedAt" : "1700000088.0",
+      "modifiedAt" : "1700000092.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-index.jsonl",
       "sharedTitle" : "companion thread"
     }
@@ -1150,7 +1220,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-blank",
-      "modifiedAt" : "1700000089.0",
+      "modifiedAt" : "1700000093.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-blank-hist.jsonl",
       "sharedTitle" : "blank falls to index"
     }
@@ -1167,8 +1237,43 @@
       "id" : "c-array",
       "lastMessagePreview" : "array text",
       "messageCount" : "1",
-      "modifiedAt" : "1700000090.0",
+      "modifiedAt" : "1700000094.0",
       "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-content-array.jsonl"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-long-unicode.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf l…",
+      "historyPrompt" : "é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prep…",
+      "id" : "c-long-uni",
+      "lastMessagePreview" : "para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 …",
+      "messageCount" : "3",
+      "modifiedAt" : "1700000095.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-long-unicode.jsonl",
+      "sharedTitle" : "é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prep…"
+    }
+  },
+  {
+    "file" : "codex-shared\/sessions\/2026\/10\/01\/rollout-long-tail.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "head prompt",
+      "id" : "c-long-tail",
+      "lastMessagePreview" : "؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́acce…",
+      "laterPromptHint" : "؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para …",
+      "messageCount" : "2",
+      "modifiedAt" : "1700000096.0",
+      "path" : "codex-shared\/sessions\/2026\/10\/01\/rollout-long-tail.jsonl"
     }
   },
   {
@@ -1179,7 +1284,7 @@
     "summary" : {
       "agent" : "codex",
       "id" : "c-minimal",
-      "modifiedAt" : "1700000091.0",
+      "modifiedAt" : "1700000097.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-minimal.jsonl"
     }
   },
@@ -1192,7 +1297,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-sid",
-      "modifiedAt" : "1700000092.0",
+      "modifiedAt" : "1700000098.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-session-id.jsonl"
     }
   },
@@ -1205,7 +1310,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-own",
-      "modifiedAt" : "1700000093.0",
+      "modifiedAt" : "1700000099.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-both.jsonl"
     }
   },
@@ -1254,7 +1359,7 @@
       "agent" : "codex",
       "cwd" : "\/lead",
       "id" : "c-lead",
-      "modifiedAt" : "1700000100.0",
+      "modifiedAt" : "1700000106.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-leading-newline.jsonl"
     }
   },
@@ -1273,7 +1378,7 @@
       "lastMessagePreview" : "via text",
       "messageCount" : "6",
       "model" : "gpt-5",
-      "modifiedAt" : "1700000101.0",
+      "modifiedAt" : "1700000107.0",
       "originator" : "codex-tui",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-full.jsonl"
     }
@@ -1288,7 +1393,7 @@
       "createdAt" : "1770091506.789",
       "cwd" : "\/w",
       "id" : "c-top",
-      "modifiedAt" : "1700000102.0",
+      "modifiedAt" : "1700000108.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-top-timestamp.jsonl"
     }
   },
@@ -1305,7 +1410,7 @@
       "lastMessagePreview" : "wide prompt",
       "laterPromptHint" : "wide prompt",
       "messageCount" : "1",
-      "modifiedAt" : "1700000103.0",
+      "modifiedAt" : "1700000109.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-wide.jsonl"
     }
   },
@@ -1321,7 +1426,7 @@
       "lastMessagePreview" : "last",
       "laterPromptHint" : "tail prompt",
       "messageCount" : "2",
-      "modifiedAt" : "1700000104.0",
+      "modifiedAt" : "1700000110.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-beyond.jsonl"
     }
   },
@@ -1336,7 +1441,7 @@
       "id" : "c-bare",
       "lastMessagePreview" : "instructions only",
       "messageCount" : "1",
-      "modifiedAt" : "1700000105.0",
+      "modifiedAt" : "1700000111.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-bare.jsonl"
     }
   },
@@ -1353,7 +1458,7 @@
       "lastMessagePreview" : "medium prompt",
       "laterPromptHint" : "medium prompt",
       "messageCount" : "1",
-      "modifiedAt" : "1700000106.0",
+      "modifiedAt" : "1700000112.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-medium.jsonl"
     }
   },
@@ -1372,7 +1477,7 @@
       "agent" : "codex",
       "createdAt" : "1767225600.0",
       "id" : "c-nocwd",
-      "modifiedAt" : "1700000108.0",
+      "modifiedAt" : "1700000114.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-no-cwd.jsonl"
     }
   },
@@ -1385,7 +1490,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-notime",
-      "modifiedAt" : "1700000109.0",
+      "modifiedAt" : "1700000115.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-no-time.jsonl"
     }
   },
@@ -1428,7 +1533,7 @@
       "id" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
       "lastMessagePreview" : "canonical",
       "messageCount" : "1",
-      "modifiedAt" : "1700000114.0",
+      "modifiedAt" : "1700000120.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl"
     }
   },
@@ -1444,7 +1549,7 @@
       "createdAt" : "1790852400.0",
       "cwd" : "\/w",
       "id" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
-      "modifiedAt" : "1700000115.0",
+      "modifiedAt" : "1700000121.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-2026-10-01T11-00-00-0199A213-81C0-7800-8AA1-BBAB2A035A54_0199a213-81c0-7800-8aa1-bbab2a0aaaaa.jsonl"
     }
   },
@@ -1457,7 +1562,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
-      "modifiedAt" : "1700000116.0",
+      "modifiedAt" : "1700000122.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-2026-02-30T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl"
     }
   },
@@ -1472,7 +1577,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
-      "modifiedAt" : "1700000117.0",
+      "modifiedAt" : "1700000123.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-2024-02-29T23-59-59-0199a213-81c0-7800-8aa1-bbab2a035a54.jsonl"
     }
   },
@@ -1485,7 +1590,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "x",
-      "modifiedAt" : "1700000118.0",
+      "modifiedAt" : "1700000124.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-not-a-uuid.jsonl"
     }
   },
@@ -1501,7 +1606,7 @@
       "id" : "c-hist",
       "lastMessagePreview" : "rollout prompt",
       "messageCount" : "1",
-      "modifiedAt" : "1700000119.0",
+      "modifiedAt" : "1700000125.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-hist.jsonl"
     }
   },
@@ -1514,7 +1619,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-index",
-      "modifiedAt" : "1700000120.0",
+      "modifiedAt" : "1700000126.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-index.jsonl",
       "sharedTitle" : "only the index"
     }
@@ -1528,7 +1633,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-blank",
-      "modifiedAt" : "1700000121.0",
+      "modifiedAt" : "1700000127.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-blank-hist.jsonl"
     }
   },
@@ -1544,8 +1649,41 @@
       "id" : "c-array",
       "lastMessagePreview" : "array text",
       "messageCount" : "1",
-      "modifiedAt" : "1700000122.0",
+      "modifiedAt" : "1700000128.0",
       "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-content-array.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-long-unicode.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf l…",
+      "id" : "c-long-uni",
+      "lastMessagePreview" : "para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 …",
+      "messageCount" : "3",
+      "modifiedAt" : "1700000129.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-long-unicode.jsonl"
+    }
+  },
+  {
+    "file" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-long-tail.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "head prompt",
+      "id" : "c-long-tail",
+      "lastMessagePreview" : "؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́acce…",
+      "laterPromptHint" : "؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para …",
+      "messageCount" : "2",
+      "modifiedAt" : "1700000130.0",
+      "path" : "codex-index-only\/sessions\/2026\/10\/01\/rollout-long-tail.jsonl"
     }
   },
   {
@@ -1556,7 +1694,7 @@
     "summary" : {
       "agent" : "codex",
       "id" : "c-minimal",
-      "modifiedAt" : "1700000123.0",
+      "modifiedAt" : "1700000131.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-minimal.jsonl"
     }
   },
@@ -1569,7 +1707,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-sid",
-      "modifiedAt" : "1700000124.0",
+      "modifiedAt" : "1700000132.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-session-id.jsonl"
     }
   },
@@ -1582,7 +1720,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-own",
-      "modifiedAt" : "1700000125.0",
+      "modifiedAt" : "1700000133.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-both.jsonl"
     }
   },
@@ -1631,7 +1769,7 @@
       "agent" : "codex",
       "cwd" : "\/lead",
       "id" : "c-lead",
-      "modifiedAt" : "1700000132.0",
+      "modifiedAt" : "1700000140.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-leading-newline.jsonl"
     }
   },
@@ -1650,7 +1788,7 @@
       "lastMessagePreview" : "via text",
       "messageCount" : "6",
       "model" : "gpt-5",
-      "modifiedAt" : "1700000133.0",
+      "modifiedAt" : "1700000141.0",
       "originator" : "codex-tui",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-full.jsonl"
     }
@@ -1665,7 +1803,7 @@
       "createdAt" : "1770091506.789",
       "cwd" : "\/w",
       "id" : "c-top",
-      "modifiedAt" : "1700000134.0",
+      "modifiedAt" : "1700000142.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-top-timestamp.jsonl"
     }
   },
@@ -1682,7 +1820,7 @@
       "lastMessagePreview" : "wide prompt",
       "laterPromptHint" : "wide prompt",
       "messageCount" : "1",
-      "modifiedAt" : "1700000135.0",
+      "modifiedAt" : "1700000143.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-wide.jsonl"
     }
   },
@@ -1698,7 +1836,7 @@
       "lastMessagePreview" : "last",
       "laterPromptHint" : "tail prompt",
       "messageCount" : "2",
-      "modifiedAt" : "1700000136.0",
+      "modifiedAt" : "1700000144.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-beyond.jsonl"
     }
   },
@@ -1713,7 +1851,7 @@
       "id" : "c-bare",
       "lastMessagePreview" : "instructions only",
       "messageCount" : "1",
-      "modifiedAt" : "1700000137.0",
+      "modifiedAt" : "1700000145.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-bare.jsonl"
     }
   },
@@ -1730,7 +1868,7 @@
       "lastMessagePreview" : "medium prompt",
       "laterPromptHint" : "medium prompt",
       "messageCount" : "1",
-      "modifiedAt" : "1700000138.0",
+      "modifiedAt" : "1700000146.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-medium.jsonl"
     }
   },
@@ -1749,7 +1887,7 @@
       "agent" : "codex",
       "createdAt" : "1767225600.0",
       "id" : "c-nocwd",
-      "modifiedAt" : "1700000140.0",
+      "modifiedAt" : "1700000148.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-no-cwd.jsonl"
     }
   },
@@ -1762,7 +1900,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-notime",
-      "modifiedAt" : "1700000141.0",
+      "modifiedAt" : "1700000149.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-no-time.jsonl"
     }
   },
@@ -1805,7 +1943,7 @@
       "id" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
       "lastMessagePreview" : "canonical",
       "messageCount" : "1",
-      "modifiedAt" : "1700000146.0",
+      "modifiedAt" : "1700000154.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl"
     }
   },
@@ -1821,7 +1959,7 @@
       "createdAt" : "1790852400.0",
       "cwd" : "\/w",
       "id" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
-      "modifiedAt" : "1700000147.0",
+      "modifiedAt" : "1700000155.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-2026-10-01T11-00-00-0199A213-81C0-7800-8AA1-BBAB2A035A54_0199a213-81c0-7800-8aa1-bbab2a0aaaaa.jsonl"
     }
   },
@@ -1834,7 +1972,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "0199a213-81c0-7800-8aa1-bbab2a035a53",
-      "modifiedAt" : "1700000148.0",
+      "modifiedAt" : "1700000156.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-2026-02-30T10-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl"
     }
   },
@@ -1849,7 +1987,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "0199a213-81c0-7800-8aa1-bbab2a035a54",
-      "modifiedAt" : "1700000149.0",
+      "modifiedAt" : "1700000157.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-2024-02-29T23-59-59-0199a213-81c0-7800-8aa1-bbab2a035a54.jsonl"
     }
   },
@@ -1862,7 +2000,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "x",
-      "modifiedAt" : "1700000150.0",
+      "modifiedAt" : "1700000158.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-2026-10-01T10-00-00-not-a-uuid.jsonl"
     }
   },
@@ -1878,7 +2016,7 @@
       "id" : "c-hist",
       "lastMessagePreview" : "rollout prompt",
       "messageCount" : "1",
-      "modifiedAt" : "1700000151.0",
+      "modifiedAt" : "1700000159.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-hist.jsonl"
     }
   },
@@ -1891,7 +2029,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-index",
-      "modifiedAt" : "1700000152.0",
+      "modifiedAt" : "1700000160.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-index.jsonl",
       "sharedTitle" : "index beside bad history"
     }
@@ -1905,7 +2043,7 @@
       "agent" : "codex",
       "cwd" : "\/w",
       "id" : "c-blank",
-      "modifiedAt" : "1700000153.0",
+      "modifiedAt" : "1700000161.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-blank-hist.jsonl"
     }
   },
@@ -1921,8 +2059,41 @@
       "id" : "c-array",
       "lastMessagePreview" : "array text",
       "messageCount" : "1",
-      "modifiedAt" : "1700000154.0",
+      "modifiedAt" : "1700000162.0",
       "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-content-array.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-long-unicode.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf l…",
+      "id" : "c-long-uni",
+      "lastMessagePreview" : "para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 …",
+      "messageCount" : "3",
+      "modifiedAt" : "1700000163.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-long-unicode.jsonl"
+    }
+  },
+  {
+    "file" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-long-tail.jsonl",
+    "header" : "throws",
+    "identity" : "verified",
+    "identityOther" : "mismatch",
+    "summary" : {
+      "agent" : "codex",
+      "cwd" : "\/w",
+      "firstPrompt" : "head prompt",
+      "id" : "c-long-tail",
+      "lastMessagePreview" : "؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́acce…",
+      "laterPromptHint" : "؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para sep ؀ prepend é 日本語 word ́accent 👨‍👩‍👧 🇺🇸🇬🇧 tab bed crlf line nbsp gap para …",
+      "messageCount" : "2",
+      "modifiedAt" : "1700000164.0",
+      "path" : "codex-invalid-utf8\/sessions\/2026\/10\/01\/rollout-long-tail.jsonl"
     }
   }
 ]

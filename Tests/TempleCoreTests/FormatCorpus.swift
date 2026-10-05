@@ -107,6 +107,20 @@ enum FormatCorpus {
         try claude("many-turns", (0..<40).map { i in
             i % 2 == 0 ? "{\"type\":\"user\",\"message\":{\"content\":\"turn \(i)\"}}" : "{\"type\":\"assistant\",\"message\":{\"content\":\"reply \(i)\",\"model\":\"m\(i)\"}}"
         })
+        // Long messages and whitespace that is not a plain space, around and
+        // across the title and preview caps (`TranscriptText.cleanTitle`).
+        try claude("long-unicode", [
+            json(["type": "user", "sessionId": "long-unicode", "message": ["content": longUnicode(0)]]),
+            json(["type": "assistant", "sessionId": "long-unicode", "message": ["content": longUnicode(1)]]),
+            json(["type": "queue-operation", "operation": "enqueue", "content": longUnicode(2)]),
+            json(["type": "summary", "summary": longUnicode(3)]),
+            json(["type": "user", "sessionId": "long-unicode", "message": ["content": [["type": "text", "text": longUnicode(4)]]]]),
+        ])
+        var longTail = [json(["type": "system", "sessionId": "long-tail", "cwd": "/work"])]
+        longTail += Array(repeating: assistantFiller, count: 200)
+        longTail.append(json(["type": "user", "sessionId": "long-tail", "message": ["content": longUnicode(5)]]))
+        longTail.append(json(["type": "assistant", "sessionId": "long-tail", "message": ["content": "\n\t \u{a0}"]]))
+        try claude("long-tail", longTail)
 
         // MARK: Codex
         func codex(_ root: String, _ name: String, _ lines: [String], expected: String, raw: Data? = nil) throws {
@@ -166,6 +180,16 @@ enum FormatCorpus {
             try codex(root, "rollout-index.jsonl", [meta(#"{"id":"c-index","cwd":"/w"}"#)], expected: "c-index")
             try codex(root, "rollout-blank-hist.jsonl", [meta(#"{"id":"c-blank","cwd":"/w"}"#)], expected: "c-blank")
             try codex(root, "rollout-content-array.jsonl", [meta(#"{"id":"c-array","cwd":"/w"}"#), #"{"type":"event_msg","payload":{"type":"user_message","content":[{"input_text":""},{"input_text":"array text"}]}}"#], expected: "c-array")
+            try codex(root, "rollout-long-unicode.jsonl", [
+                meta(#"{"id":"c-long-uni","cwd":"/w"}"#),
+                json(["type": "event_msg", "payload": ["type": "user_message", "message": " \n\t "]]),
+                json(["type": "event_msg", "payload": ["type": "user_message", "message": longUnicode(6)]]),
+                json(["type": "event_msg", "payload": ["type": "agent_message", "message": longUnicode(7)]]),
+            ], expected: "c-long-uni")
+            try codex(root, "rollout-long-tail.jsonl", [
+                meta(#"{"id":"c-long-tail","cwd":"/w"}"#), userMessage("head prompt"), padding(140_000),
+                json(["type": "event_msg", "payload": ["type": "user_message", "message": longUnicode(8)]]),
+            ], expected: "c-long-tail")
         }
         // Shared inputs per root.
         try write("""
@@ -175,6 +199,7 @@ enum FormatCorpus {
         {"session_id":"c-full","text":"no timestamp"}
         {"session_id":"c-full","ts":5,"text":"earliest full"}
         {"session_id":"\(threadA)","ts":1,"text":"thread a prompt"}
+        \(json(["session_id": "c-long-uni", "ts": 1, "text": longUnicode(9)]))
         not json
         """, "codex-shared/history.jsonl")
         try write("""
@@ -190,6 +215,31 @@ enum FormatCorpus {
         try write(invalid, "codex-invalid-utf8/history.jsonl")
         try write(#"{"id":"c-index","thread_name":"index beside bad history"}"#, "codex-invalid-utf8/session_index.jsonl")
         return fixtures
+    }
+}
+
+extension FormatCorpus {
+    /// One JSONL line, keys sorted so the bytes are reproducible.
+    static func json(_ object: [String: Any]) -> String {
+        String(decoding: try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
+    }
+
+    /// A long message whose whitespace is every kind the title cleaner
+    /// collapses (runs, tabs, CRLF, NBSP, a paragraph separator) beside
+    /// characters a careless cut would split or merge: a combining mark right
+    /// after a newline (it joins the space that replaces the newline), an
+    /// Arabic prepend before one, ZWJ families and flags. `variant` shifts
+    /// where they fall against the 160- and 200-character caps.
+    static func longUnicode(_ variant: Int) -> String {
+        let pieces = ["word", "\n\u{301}accent", "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}", "\u{1F1FA}\u{1F1F8}\u{1F1EC}\u{1F1E7}",
+                      "tab\t\tbed", "crlf\r\nline", "nbsp\u{a0}\u{a0}gap", "para\u{2029}sep", "\u{600}\nprepend",
+                      "e\u{301}", "  ", "\u{65E5}\u{672C}\u{8A9E}"]
+        var text = String(repeating: " ", count: variant % 3)
+        for index in 0..<(70 + variant * 7) {
+            text += pieces[(index + variant) % pieces.count]
+            text += index % 5 == 0 ? " \t \n " : " "
+        }
+        return text
     }
 }
 

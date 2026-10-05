@@ -33,9 +33,10 @@ public struct ClaudeFormat: TranscriptFormat {
         let last = TranscriptText.lastComponent(locator.path)
         let id = name?.threadID ?? (String(last) as NSString).deletingPathExtension
         let encodedDirName = ((locator.path as NSString).deletingLastPathComponent as NSString).lastPathComponent
-        let head = String(decoding: bytes.head, as: UTF8.self)
-        guard !head.isEmpty else { return .unparseable }
-        let segments = [head] + (bytes.tail.map { [String(decoding: $0, as: UTF8.self)] } ?? [])
+        // Decoding never makes non-empty bytes empty: an empty head is the
+        // only empty text.
+        guard !bytes.head.isEmpty else { return .unparseable }
+        let segments = [bytes.head] + (bytes.tail.map { [$0] } ?? [])
 
         var cwd: String?
         var createdAt: Date?
@@ -49,13 +50,15 @@ public struct ClaudeFormat: TranscriptFormat {
         var validTypedLine = false
         var count = 0
         var model: String?
-        var preview: String?
+        // The last message's text, raw: only the last one is the preview,
+        // so it is cleaned once, after the loop, not once per message.
+        var previewText: String?
         var branch: String?
         var summary: String?
 
         for (segmentIndex, segment) in segments.enumerated() {
             let inHead = segmentIndex == 0
-            for line in segment.split(separator: "\n") {
+            for line in TranscriptText.lineData(segment) {
                 guard let obj = TranscriptText.jsonObject(line) else { continue }
                 let type = obj["type"] as? String
                 if type != nil { validTypedLine = true }
@@ -75,12 +78,13 @@ public struct ClaudeFormat: TranscriptFormat {
                     if let message = obj["message"] as? [String: Any] {
                         if let value = message["model"] as? String { model = value }
                         if let text = Self.text(from: message["content"]), !text.isEmpty {
-                            preview = TranscriptText.cleanTitle(text, cap: 160)
+                            previewText = text
                             if type == "user" {
                                 if anyUserTitle == nil { anyUserTitle = text }
-                                if Self.isLikelyHumanPrompt(text) {
-                                    if inHead { if humanTitle == nil { humanTitle = text } }
-                                    else if tailPrompt == nil { tailPrompt = text }
+                                // Asked only while the answer can still land.
+                                let open = inHead ? humanTitle == nil : tailPrompt == nil
+                                if open, Self.isLikelyHumanPrompt(text) {
+                                    if inHead { humanTitle = text } else { tailPrompt = text }
                                 }
                             }
                         }
@@ -111,7 +115,7 @@ public struct ClaudeFormat: TranscriptFormat {
             gitBranch: branch,
             model: model,
             messageCount: count > 0 ? count : nil,
-            lastMessagePreview: preview,
+            lastMessagePreview: previewText.map { TranscriptText.cleanTitle($0, cap: 160) },
             recordedTitle: summary,
             directoryHint: cwd == nil ? Self.decodeDirName(encodedDirName) : nil,
             laterPromptHint: firstPrompt == nil ? tailPrompt.map { TranscriptText.cleanTitle($0) } : nil,

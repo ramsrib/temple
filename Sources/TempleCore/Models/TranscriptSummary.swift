@@ -78,6 +78,21 @@ public struct TranscriptSummary: Hashable, Sendable {
     }
 }
 
+extension TranscriptSummary {
+    /// This summary with its shared-input fields (`sharedTitle`,
+    /// `historyPrompt`) replaced; every other field as it is. The one way a
+    /// format applies shared facts (`TranscriptFormat.withShared`).
+    func sharing(title: String?, prompt: String?) -> TranscriptSummary {
+        TranscriptSummary(id: id, agent: agent, locator: locator, modifiedAt: modifiedAt, cwd: cwd,
+                          firstPrompt: firstPrompt, historyPrompt: prompt, createdAt: createdAt,
+                          gitBranch: gitBranch, model: model, messageCount: messageCount,
+                          lastMessagePreview: lastMessagePreview, originator: originator,
+                          recordedTitle: recordedTitle, sharedTitle: title, directoryHint: directoryHint,
+                          laterPromptHint: laterPromptHint, legacyTitleHint: legacyTitleHint,
+                          selectionKey: selectionKey)
+    }
+}
+
 public extension TranscriptSummary {
     /// The title a transcript can give a row: only what the CLI recorded —
     /// Claude's summary, Codex's shared title, the first prompt, the history
