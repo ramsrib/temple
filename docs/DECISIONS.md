@@ -1296,7 +1296,10 @@ reacting to that, not initiating anything.
 
 - **Only on proof, only what nobody is using.** A row is archived by Temple
   when its resolution is `.confirmedAbsent` (a completed enumeration of every
-  listing that could hold it) or its owning host says its folder is
+  listing that could hold it; a listing is completed only when it is
+  exhaustive by ADR-032's rule, the same rule History's catalog uses, so a
+  transcript behind a link or a hidden entry where transcripts are listed
+  is never taken for none) or its owning host says its folder is
   `.missing`, and it is not pinned, has no tab open or restored, has had no
   Temple activity for seven days, and was not kept by a person. A failed,
   partial or cancelled listing, `unreadable`, `mismatch`, `incomplete`,
@@ -1447,6 +1450,21 @@ become the launch path. A catalog cache had to be something that file was not.
   | any symbolic link: to a file or a directory, hidden or not, dangling or not | no |
   | an error reading an entry's metadata, or metadata that does not say | no |
   | an error from the enumerator                           | no (the listing fails, as it did) |
+
+  Scope: exactly the entries the candidate listing walks. Claude's walks the
+  root's entries and the entries directly inside each project folder
+  (transcripts are `<root>/<project>/<id>.jsonl`) and no deeper, so the links
+  Claude Code itself keeps in `<project>/<session>/subagents/` decide
+  nothing; Codex's walks everything under `sessions/`, to any depth.
+
+  One rule for both consumers: the engine's completeness — what
+  `.confirmedAbsent`, and so ADR-030's archiving, rests on — comes from the
+  same audited listing. An agent whose full listing is not exhaustive is
+  incomplete, and no member of it is proven absent. A link or hidden entry
+  appearing, changing or going in scope (an FSEvents event) makes the
+  source list again; if an agent's completeness changed, coverage moves on
+  and every member is located again, so an absence the listing no longer
+  backs is withdrawn, and one it backs again returns.
 
   A link's target is never inspected. Two review rounds found new holes in
   classifying what a hidden entry or a link could hold; this rule does not
