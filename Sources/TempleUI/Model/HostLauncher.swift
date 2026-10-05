@@ -154,9 +154,10 @@ public final class LocalHostLauncher: HostLauncher {
     private let folderEvidence: (String) -> DirectoryEvidence
     private let markerDirectory: URL
 
-    /// `folderEvidence` is this Mac's `stat(2)`: only `ENOENT`/`ENOTDIR` (or
-    /// a file where the folder should be) prove a folder gone; anything else
-    /// is unknown, and the spawn proceeds behind the wrapper's own `cd`.
+    /// `folderEvidence` is this Mac's (`statEvidence`, the same answer the
+    /// local session source gives): only a folder provably gone, on a volume
+    /// that is mounted, refuses the launch; anything else is unknown, and the
+    /// spawn proceeds behind the wrapper's own `cd`.
     public init(binaryPath: @escaping (Agent) -> String = { $0.binaryName },
                 extraArgs: @escaping (Agent) -> [String] = { _ in [] },
                 availability: @escaping (Agent) -> LaunchAvailability = { _ in .available },
@@ -170,12 +171,6 @@ public final class LocalHostLauncher: HostLauncher {
     }
 
     public func availability(_ agent: Agent) -> LaunchAvailability { availabilityCheck(agent) }
-
-    public nonisolated static func statEvidence(_ path: String) -> DirectoryEvidence {
-        var info = stat()
-        if stat(path, &info) == 0 { return (info.st_mode & S_IFMT) == S_IFDIR ? .exists : .missing }
-        return errno == ENOENT || errno == ENOTDIR ? .missing : .unknown
-    }
 
     /// The agent's argv, run in the spec's folder through a wrapper that
     /// enters the folder itself and records the outcome in a per-launch

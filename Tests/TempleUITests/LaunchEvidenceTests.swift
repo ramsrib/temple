@@ -287,4 +287,23 @@ final class LocalFolderEvidenceTests: XCTestCase {
         XCTAssertEqual(LocalHostLauncher.statEvidence(gone), .missing)
         XCTAssertEqual(LocalHostLauncher.statEvidence(file.path + "/below"), .missing, "ENOTDIR proves it gone")
     }
+
+    /// The same answer as the session source: a folder on a drive that is
+    /// not plugged in, reached directly or through a symlink, is not gone.
+    /// The launch goes ahead behind the wrapper, whose own `cd` decides.
+    func testPrepareDoesNotCallAFolderOnAnUnpluggedVolumeGone() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/temple-prepare-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let launcher = LocalHostLauncher(binaryPath: { _ in "/bin/claude" }, markerDirectory: root.appendingPathComponent("markers"))
+        let volume = "/Volumes/temple-unmounted-\(UUID().uuidString)"
+        let link = root.appendingPathComponent("drive")
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: volume)
+        for folder in [volume + "/project", link.appendingPathComponent("project").path] {
+            XCTAssertEqual(LocalHostLauncher.statEvidence(folder), .unknown, folder)
+            let launch = try launcher.prepare(AgentLaunchSpec(agent: .claude, mode: .new(sessionID: "s"), directory: folder, host: .local))
+            XCTAssertEqual(launch.command.launchFolder, folder, "the wrapper still enters it, or reports")
+            launch.result?.cancel()
+        }
+    }
 }

@@ -14,3 +14,13 @@ extension HostRegistry {
         self.init(entries: [Entry(source: LocalSessionSource(), launcher: localLauncher ?? LocalHostLauncher())])
     }
 }
+
+extension LocalHostLauncher {
+    /// This Mac's folder evidence, the one implementation the local session
+    /// source also uses (`LocalFolderEvidence`): `.missing` only for a folder
+    /// provably gone on a mounted volume; an unplugged drive, a leftover
+    /// mount point or a dangling symlink on the way is `.unknown`.
+    public nonisolated static func statEvidence(_ path: String) -> DirectoryEvidence {
+        LocalFolderEvidence.evidence(path)
+    }
+}
