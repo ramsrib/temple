@@ -1306,14 +1306,29 @@ reacting to that, not initiating anything.
   could make a file named for an asked id appear or change what the
   listing covers (`AbsenceProof.decide` has the table; writes to other
   sessions' transcripts do not count, since FSEvents reports even an append
-  as a creation and live sessions would otherwise starve the sweep). The
-  window ends at a real delivery barrier, not a guess about latency: a
-  sentinel file made in a folder of Temple's own that the stream also
-  watches, and the wait for its event, which FSEvents delivers after every
-  earlier one (a flush alone is not a barrier: measured, an event made just
-  before `FSEventStreamFlushSync` arrives after it returns). No barrier, a
-  stream stopped or re-armed, a dropped transport, a cancelled proof, or an
-  agent with no store configured on the host: nothing is proven. A proof
+  as a creation and live sessions would otherwise starve the sweep).
+
+  What the proof can and cannot vouch for is bounded honestly. It is
+  taken only for a store whose root, and every volume mounted inside it,
+  is a local filesystem (`MNT_LOCAL`, and not NFS, SMB, AFP, WebDAV or
+  FUSE): a network volume changes behind this Mac's event stream, so there
+  it is unproven. The window ends at a delivery barrier: a sentinel file
+  made in a folder of Temple's own that the stream also watches, and the
+  wait for its event. Within this Mac's per-host stream, on local volumes,
+  event IDs increase in the order events enter the stream (Apple's FSEvents
+  guide), so the sentinel's arrival means every event the stream already
+  held has been delivered. That bounds delivery; it is not a completeness
+  proof: a mutation that had not yet entered the stream when the sentinel
+  did is not seen. (A flush alone is not even that barrier: measured, an
+  event made just before `FSEventStreamFlushSync` arrives after it
+  returns.) A notification that says the stream lost track (dropped
+  events, a root changed, subdirectories to rescan, wrapped event IDs) —
+  wherever it points, the sentinel included — invalidates every running
+  proof and pending barrier and is never a barrier's evidence; a sentinel
+  folder deleted or moved fails what relied on it and is replaced. No
+  barrier, a stream stopped or re-armed, a dropped transport, a cancelled
+  proof (up to its very last step), or an agent with no store configured
+  on the host: nothing is proven. A proof
   is for the memberships it was asked about: a leave and rejoin while it
   runs proves nothing about the rejoin. Every host's proofs run at once,
   and each host's archives are written, in one transaction, as soon as its
@@ -1321,9 +1336,12 @@ reacting to that, not initiating anything.
   another. A proof that was not quiescent is tried again a bounded number of times
   (15 s, 1 min, 5 min), then left to the hourly sweep; sweeps run at
   launch, on hints (coalesced) and hourly. An unproven hint leaves the
-  folder to decide. Accepted race: a file created in the gap after the
-  quiescence wait and before the write; there is no automatic un-archive
-  (decided against), and Undo or Restore brings the row back.
+  folder to decide. Accepted residue, two kinds: a file created in the gap
+  after the window and before the write, and a mutation not yet in the
+  stream when the sentinel landed. Both are bounded in practice by the
+  seven-day idle guard (a session nobody has touched in a week is rarely
+  being written to that second); there is no automatic un-archive (decided
+  against), and Undo or Restore brings the row back.
 - **Only on proof, only what nobody is using.** A row is archived by Temple
   when its transcript is proven gone at decision time, or its owning host
   says its folder is `.missing`, and it is not pinned, has no tab open or restored, has had no
