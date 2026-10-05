@@ -16,12 +16,19 @@ public struct EngineSnapshot: Equatable, Sendable {
     /// for a member whose row has no incarnation (or an engine without a
     /// database).
     public let memberships: [String: MembershipRef]
+    /// For each `.confirmedAbsent`: the host's coverage generation the
+    /// absence was proven at. An absence planned against one generation is
+    /// acted on only while the engine still publishes it at that same one
+    /// (ADR-030's sweep checks right before it writes).
+    public let absenceCoverage: [String: UInt64]
     public init(generation: UInt64, resolutions: [String: MemberResolution],
-                facts: [String: AuthorizedFacts] = [:], memberships: [String: MembershipRef] = [:]) {
+                facts: [String: AuthorizedFacts] = [:], memberships: [String: MembershipRef] = [:],
+                absenceCoverage: [String: UInt64] = [:]) {
         self.generation = generation
         self.resolutions = resolutions
         self.facts = facts
         self.memberships = memberships
+        self.absenceCoverage = absenceCoverage
     }
 }
 

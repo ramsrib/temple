@@ -161,6 +161,19 @@ class HostSessionSourceContract: XCTestCase {
 
     func locate(_ requests: [LocateRequest]) async throws -> LocateResult { try await source.locate(requests) }
 
+    /// What a host completes once it has caught up. A write's metadata or a
+    /// removal may change the tree's shape (ADR-032): a host may withdraw
+    /// completeness until it has listed again, never longer.
+    func eventuallyComplete(_ requests: [LocateRequest]) async throws -> Set<Agent> {
+        var complete = try await locate(requests).complete
+        let deadline = Date().addingTimeInterval(3)
+        while complete != Set(Agent.allCases), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+            complete = try await locate(requests).complete
+        }
+        return complete
+    }
+
     // MARK: 1–4 locate
 
     func test01NoTranscriptMeansNoCandidateAndACompleteListing() async throws {
@@ -391,7 +404,8 @@ class HostSessionSourceContract: XCTestCase {
             }
         }
         let found = try await locate([LocateRequest(id: claudeID), LocateRequest(id: codexID)])
-        XCTAssertEqual(found.complete, [.claude, .codex])
+        let completeAfterWrites = try await eventuallyComplete([LocateRequest(id: claudeID)])
+        XCTAssertEqual(completeAfterWrites, [.claude, .codex])
         XCTAssertEqual(found.candidates[claudeID]?.map(\.locator), [claude])
         XCTAssertEqual(found.candidates[codexID]?.map(\.locator), [codex])
         XCTAssertEqual(found.candidates[codexID]?.first?.role, .selected)
@@ -404,7 +418,8 @@ class HostSessionSourceContract: XCTestCase {
         } }
         let gone = try await locate([LocateRequest(id: claudeID)])
         XCTAssertEqual(gone.candidates[claudeID]?.count, 0, "a removed file leaves the listing")
-        XCTAssertEqual(gone.complete, [.claude, .codex])
+        let completeAfterRemoval = try await eventuallyComplete([LocateRequest(id: claudeID)])
+        XCTAssertEqual(completeAfterRemoval, [.claude, .codex])
     }
 
     func test10ADroppedStreamResetsCoverageForward() async throws {
@@ -693,6 +708,28 @@ class HostSessionSourceContract: XCTestCase {
         XCTAssertEqual(completion.provesNoTranscript(id: thread, agent: .claude), false, "Claude was not listed: nothing proven")
     }
 
+    /// Completeness changes only with coverage: an agent whose listing
+    /// stops working is incomplete under a newer coverage than the one it
+    /// was complete under, and the change is announced, so nothing proven
+    /// under the old one stands.
+    func test13lACompletenessChangeMovesCoverageOn() async throws {
+        try plantCodex(uuid())
+        try await observe()
+        let before = try await locate([])
+        XCTAssertTrue(before.complete.contains(.codex))
+        try fixture.breakListing(.codex)
+        var after = try await locate([])
+        let deadline = Date().addingTimeInterval(3)
+        while after.complete.contains(.codex), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+            after = try await locate([])
+        }
+        XCTAssertFalse(after.complete.contains(.codex))
+        XCTAssertGreaterThan(after.coverage, before.coverage)
+        let reset = try await waitForEvent { if case .coverageReset(let c) = $0 { return c > before.coverage }; return false }
+        XCTAssertNotNil(reset)
+    }
+
     // MARK: 14 adoption
 
     func test14AdoptionNeedsExactlyOneEligibleHeader() async throws {
@@ -871,7 +908,7 @@ private final class LocalFixture: SourceFixture {
         try FileManager.default.createDirectory(at: root.appendingPathComponent("codex/sessions/2026/10/01"), withIntermediateDirectories: true)
         local = LocalSessionSource(stores: [ClaudeSessionStore(root: root.appendingPathComponent("claude")),
                                             CodexSessionStore(root: root.appendingPathComponent("codex"))],
-                                   debounceInterval: 0.01)
+                                   debounceInterval: 0.01, coverageScanInterval: 0.05)
     }
 
     func path(agent: Agent, name: String) -> String {
@@ -936,6 +973,8 @@ private final class LocalFixture: SourceFixture {
         let directory = agent == .claude ? claudeRoot : codexRoot.appendingPathComponent("sessions")
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: directory.path)
         locked.append(directory)
+        // What FSEvents reports for a chmod of the store root.
+        local.reconcileEvent(path: directory.path, flags: UInt32(kFSEventStreamEventFlagItemInodeMetaMod | kFSEventStreamEventFlagItemIsDir))
     }
     func replaceDuringNextRead(_ locator: TranscriptLocator, with data: Data) throws {
         let once = Flag()

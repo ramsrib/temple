@@ -37,12 +37,30 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     private let sharedFactPaths: Set<String>
     private var enumerationCount: UInt64 = 0
     private var snapshotMetrics = EngineMetrics()
+    private var snapshotCoverageScans: UInt64 = 0
 
     private let snapshotLock = NSLock()
     private var snapshotMonitoring = false
     private var adoptionTimers: [UUID: DispatchWorkItem] = [:]
     private var unresolvedCandidates: Set<String> = []
-    private var enumerationByAgent: [Agent: Bool] = [:]
+    /// Per agent, whether its store is exhaustively listed now (ADR-032):
+    /// one state machine, `CoverageState`, changed only by
+    /// `setCompleteLocked`.
+    private var coverageByAgent: [Agent: CoverageState] = [:]
+    /// The least time between two coverage scans of one agent.
+    private let coverageScanInterval: TimeInterval
+    /// The longest a failed coverage scan waits before it is tried again.
+    static let coverageRetryLimit: TimeInterval = 60
+    /// Coverage scans run here, off the source's queue: invalidation on
+    /// the queue is never held up by a listing.
+    private let scanQueue = DispatchQueue(label: "com.sriramb.temple.local-source.coverage", qos: .utility)
+    private var coverageScanCount: UInt64 = 0
+    /// False only while a run starts: its first listing sets completeness
+    /// under the generation the start just took, with nothing to withdraw.
+    private var announcingCoverage = true
+    /// Test seam: runs on the scan queue at the start of every coverage
+    /// scan, before the listing.
+    var coverageScanHook: (@Sendable (Agent) -> Void)?
     private var streamID: UUID?
     /// Every transcript path observed since the last flush.
     private var rawPaths: Set<String> = []
@@ -90,7 +108,9 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
          debounceInterval: TimeInterval = 0.3,
          monitorChanges: Bool = true,
          catalogDisk: CatalogDiskCache? = nil,
-         catalogLoadDeadline: TimeInterval = 2) {
+         catalogLoadDeadline: TimeInterval = 2,
+         coverageScanInterval: TimeInterval = 2) {
+        self.coverageScanInterval = coverageScanInterval
         self.stores = stores
         self.debounceInterval = debounceInterval
         self.monitorChanges = monitorChanges
@@ -149,6 +169,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         snapshotLock.lock()
         snapshotMonitoring = monitoring
         snapshotMetrics = EngineMetrics(enumerations: enumerationCount, locates: locateCount)
+        snapshotCoverageScans = coverageScanCount
         snapshotLock.unlock()
     }
 
@@ -159,7 +180,9 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         generation &+= 1
         // Arm before enumeration. Callbacks buffer behind the scan on this queue.
         armLocked()
+        announcingCoverage = false
         enumerateLocked()
+        announcingCoverage = true
         for store in stores {
             if let revision = store.sharedRevision() { announcedShared[store.agent] = revision }
         }
@@ -189,6 +212,10 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         streamID = nil
         rawPaths.removeAll()
         files.removeAll(); pathsByID.removeAll()
+        for agent in coverageByAgent.keys {
+            coverageByAgent[agent]?.scheduled = false
+            coverageByAgent[agent]?.followUp = false
+        }
         snapshotLocked()
     }
 
@@ -267,22 +294,11 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             sharedFactsChangedLocked()
             return
         }
-        // Something that decides whether a listing is exhaustive (a link, a
-        // hidden entry) appeared, changed or went where transcripts are
-        // listed: list again, so completeness follows the one rule now and
-        // not as of the last full listing. Then handle the event as usual.
-        if stores.contains(where: { $0.inAuditScope(path) }),
-           ListingAudit.mayDecide(path, isLink: has(kFSEventStreamEventFlagItemIsSymlink)) {
-            let wasComplete = enumerationByAgent
-            enumerateLocked()
-            // An agent no longer exhaustively listed can no longer vouch for
-            // an absence it reported, and one listed exhaustively again can
-            // vouch for one it could not: either way coverage moves on, and
-            // consumers locate again rather than keep an old verdict.
-            if wasComplete != enumerationByAgent {
-                generation &+= 1
-                for continuation in changeContinuations.values { continuation.yield(.coverageReset(coverage: generation)) }
-            }
+        // Coverage first, and on its own: an event that could change the
+        // shape of an agent's tree makes it dirty at once (ADR-032). What
+        // the event means for the filename map is decided below, apart.
+        if Self.changesShape(path: path, flags: flags) {
+            for store in stores where store.inAuditScope(path) { markDirtyLocked(store.agent) }
         }
         // Codex sqlite/WAL/log traffic is rejected before stat or resolution.
         let isTranscript = stores.contains { $0.acceptsTranscript(url) }
@@ -372,7 +388,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         // The map keeps it, and the agent is no longer completely listed
         // until a full listing succeeds again.
         guard store.rootAvailable() else {
-            enumerationByAgent[store.agent] = false
+            markDirtyLocked(store.agent)
             return
         }
         guard files.removeValue(forKey: path) != nil, let id = store.filenameID(at: url) else { return }
@@ -390,30 +406,28 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
                 let root = SessionPaths.normalized($0.path)
                 return root == subtree || root.hasPrefix(subtree + "/") || subtree.hasPrefix(root + "/")
             }) { continue }
+            // A subtree listing proves nothing about the store's coverage, and
+            // means its shape may have changed: the agent is dirty, and a
+            // coverage scan decides it again.
+            if subtree != nil { markDirtyLocked(store.agent) }
             do {
                 let listed: [URL]
                 if let subtree {
                     listed = try store.enumerateSessionFiles(in: URL(fileURLWithPath: subtree))
                 } else {
-                    // Complete only when exhaustive by ADR-032's rule, the
-                    // same rule the catalog's absence evidence uses: a
-                    // listing that met a link or a hidden entry where
-                    // transcripts are looked for proves no member absent.
+                    // A full audited listing, on this queue: no event can
+                    // come between it and its verdict, so it is a coverage
+                    // scan at the current revision (ADR-032).
                     let audited = try store.enumerateSessionFilesAudited()
                     listed = audited.files
-                    enumerationByAgent[store.agent] = audited.exhaustive
-                    if !audited.exhaustive {
-                        LocalHostLog.watcher.notice("enumeration not exhaustive for \(store.agent.rawValue, privacy: .public): a link or hidden entry where transcripts are listed")
-                    }
+                    coverageScannedLocked(store.agent, exhaustive: audited.exhaustive)
                 }
-                // A subtree proves only its own coverage, never recovery of
-                // an earlier failed full-store filename lookup.
                 for file in listed {
                     let url = URL(fileURLWithPath: logicalPath(file.path) ?? RootMapping.alias(file.path))
                     next[url.path] = (url, store.agent)
                 }
             } catch {
-                enumerationByAgent[store.agent] = false
+                if subtree == nil { coverageFailedLocked(store.agent) }
                 // Preserve the last map for this agent; failed listing proves no absence.
                 for (path, entry) in files where entry.1 == store.agent { next[path] = entry }
                 // A store root that isn't there is a normal state (an agent never
@@ -446,6 +460,8 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     /// map held or holds now is reported.
     private func recoverLocked(resetCoverage: Bool) {
         let before = Set(files.keys)
+        // Whatever a scan in flight saw is older than this.
+        for store in stores { coverageByAgent[store.agent, default: CoverageState()].revision &+= 1 }
         if resetCoverage {
             generation &+= 1
             for continuation in changeContinuations.values { continuation.yield(.coverageReset(coverage: generation)) }
@@ -464,6 +480,127 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         let after = files.keys.filter { $0.hasPrefix(subtree + "/") }
         if !requests.isEmpty { sweepCandidatesLocked(subtree: subtree) }
         emitTranscriptsLocked(Set(before).union(after))
+    }
+
+    /// Coverage scans finished so far (tests).
+    var coverageScans: UInt64 { snapshotLock.lock(); defer { snapshotLock.unlock() }; return snapshotCoverageScans }
+
+    // MARK: Coverage (ADR-032)
+    //
+    // Per agent, one state machine: an event that could change the tree's
+    // shape advances the agent's revision and makes it incomplete at once;
+    // completeness comes back only from a full audited listing whose
+    // revision, taken when it started, is still the agent's when it
+    // finishes. One scan in flight and at most one follow-up per agent, at
+    // least `coverageScanInterval` apart; a failed one is retried on a
+    // bounded backoff without waiting for an event. `setCompleteLocked`
+    // is the only place completeness changes, and every change moves the
+    // coverage generation on and tells every consumer.
+
+    /// Whether an event at `path` could change what an audited listing of
+    /// its agent sees: anything but a plain create or content write to a
+    /// file with a plain name. Decided from the event alone — nothing is
+    /// read from the disk — so a flag cleared or a file gone is as much a
+    /// change as one set or made.
+    static func changesShape(path: String, flags: FSEventStreamEventFlags) -> Bool {
+        func has(_ flag: Int) -> Bool { flags & UInt32(flag) != 0 }
+        let structural = [kFSEventStreamEventFlagItemIsSymlink, kFSEventStreamEventFlagItemIsDir,
+                          kFSEventStreamEventFlagMustScanSubDirs, kFSEventStreamEventFlagItemRemoved,
+                          kFSEventStreamEventFlagItemRenamed, kFSEventStreamEventFlagItemInodeMetaMod,
+                          kFSEventStreamEventFlagItemXattrMod, kFSEventStreamEventFlagItemChangeOwner,
+                          kFSEventStreamEventFlagItemFinderInfoMod, kFSEventStreamEventFlagItemIsHardlink,
+                          kFSEventStreamEventFlagItemIsLastHardlink]
+        if structural.contains(where: has) { return true }
+        let name = (path as NSString).lastPathComponent
+        return name.hasPrefix(".") && !ListingAudit.allowedHidden.contains(name)
+    }
+
+    /// The tree may have changed shape: a new revision, incomplete now, and
+    /// a scan asked for.
+    private func markDirtyLocked(_ agent: Agent) {
+        coverageByAgent[agent, default: CoverageState()].revision &+= 1
+        setCompleteLocked(agent, false)
+        requestCoverageScanLocked(agent)
+    }
+
+    /// The one place an agent's completeness changes. Every change, either
+    /// way, moves the coverage generation on: a consumer withdraws what it
+    /// proved under the old one and locates again.
+    private func setCompleteLocked(_ agent: Agent, _ complete: Bool) {
+        guard coverageByAgent[agent, default: CoverageState()].complete != complete else { return }
+        coverageByAgent[agent]?.complete = complete
+        guard announcingCoverage else { return }
+        generation &+= 1
+        LocalHostLog.watcher.notice("\(agent.rawValue, privacy: .public) listing \(complete ? "exhaustive" : "not exhaustive", privacy: .public); coverage \(self.generation, privacy: .public)")
+        for continuation in changeContinuations.values { continuation.yield(.coverageReset(coverage: generation)) }
+        snapshotLocked()
+    }
+
+    /// A full audited listing at the current revision finished.
+    private func coverageScannedLocked(_ agent: Agent, exhaustive: Bool) {
+        coverageByAgent[agent, default: CoverageState()].retryDelay = 0
+        setCompleteLocked(agent, exhaustive)
+    }
+
+    /// A full listing failed (a missing root, an error): incomplete, and
+    /// tried again on a bounded backoff, event or no event.
+    private func coverageFailedLocked(_ agent: Agent) {
+        var state = coverageByAgent[agent, default: CoverageState()]
+        state.retryDelay = state.retryDelay == 0 ? coverageScanInterval : min(Self.coverageRetryLimit, state.retryDelay * 2)
+        coverageByAgent[agent] = state
+        setCompleteLocked(agent, false)
+        requestCoverageScanLocked(agent, after: state.retryDelay)
+    }
+
+    private func requestCoverageScanLocked(_ agent: Agent, after delay: TimeInterval = 0) {
+        guard running else { return }
+        var state = coverageByAgent[agent, default: CoverageState()]
+        if state.scanning { state.followUp = true; coverageByAgent[agent] = state; return }
+        guard !state.scheduled else { return }
+        state.scheduled = true
+        coverageByAgent[agent] = state
+        let wait = max(0, delay, state.lastScanStart.addingTimeInterval(coverageScanInterval).timeIntervalSinceNow)
+        let stream = streamID
+        queue.asyncAfter(deadline: .now() + wait) { [weak self = self] in self?.startCoverageScanLocked(agent, stream: stream) }
+    }
+
+    private func startCoverageScanLocked(_ agent: Agent, stream: UUID?) {
+        coverageByAgent[agent]?.scheduled = false
+        guard running, streamID == stream, var state = coverageByAgent[agent],
+              let store = stores.first(where: { $0.agent == agent }) else { return }
+        // Complete already (a full listing on the queue got there first).
+        guard !state.complete || state.followUp else { return }
+        state.scanning = true
+        state.followUp = false
+        state.lastScanStart = Date()
+        coverageByAgent[agent] = state
+        let revision = state.revision
+        let hook = coverageScanHook
+        scanQueue.async { [weak self = self] in
+            hook?(agent)
+            let result = Result { try store.enumerateSessionFilesAudited().exhaustive }
+            self?.queue.async { [weak self = self] in self?.finishCoverageScanLocked(agent, revision: revision, result: result, stream: stream) }
+        }
+    }
+
+    private func finishCoverageScanLocked(_ agent: Agent, revision: UInt64, result: Result<Bool, Error>, stream: UUID?) {
+        coverageByAgent[agent]?.scanning = false
+        coverageScanCount &+= 1
+        snapshotLocked()
+        guard running, streamID == stream, let state = coverageByAgent[agent] else { return }
+        switch result {
+        case .success(let exhaustive):
+            // An event during the scan wins: its result is about a tree that
+            // no longer is, and the follow-up decides.
+            if revision == state.revision { coverageScannedLocked(agent, exhaustive: exhaustive) }
+            else { coverageByAgent[agent]?.followUp = true }
+        case .failure:
+            coverageFailedLocked(agent)
+        }
+        if coverageByAgent[agent]?.followUp == true {
+            coverageByAgent[agent]?.followUp = false
+            requestCoverageScanLocked(agent)
+        }
     }
 
     public var metrics: EngineMetrics {
@@ -526,7 +663,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
                 // its last full enumeration succeeded.
                 let served = Set(self.stores.map(\.agent))
                 let complete = Set(Agent.allCases.filter { !served.contains($0) })
-                    .union(self.stores.filter { self.enumerationByAgent[$0.agent] == true }.map(\.agent))
+                    .union(self.stores.filter { self.coverageByAgent[$0.agent]?.complete == true }.map(\.agent))
                 var shared: [Agent: UInt64] = [:]
                 for store in self.stores {
                     if let revision = store.sharedRevision() { shared[store.agent] = revision }
@@ -882,4 +1019,18 @@ private final class AdoptionTicket: @unchecked Sendable {
         }
     }
     func cancel() { lock.lock(); cancelled = true; let run = action; lock.unlock(); run?() }
+}
+
+/// One agent's coverage (ADR-032): the revision events advance, whether a
+/// scan at the current revision found the store exhaustive, and the
+/// scheduler's state.
+private struct CoverageState {
+    var revision: UInt64 = 0
+    var complete = false
+    var scanning = false
+    var followUp = false
+    var scheduled = false
+    var lastScanStart = Date.distantPast
+    /// The current backoff after failed scans; 0 when none failed.
+    var retryDelay: TimeInterval = 0
 }

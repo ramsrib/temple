@@ -58,6 +58,7 @@ public final class AppModel: ObservableObject {
         if let latestEngineSnapshot, snapshot.generation < latestEngineSnapshot.generation { return }
         let resolutionsChanged = latestEngineSnapshot?.resolutions != snapshot.resolutions
         let previousMemberships = latestEngineSnapshot?.memberships
+        let previousAbsences = latestEngineSnapshot?.absenceCoverage
         latestEngineSnapshot = snapshot
         applyingEngineSnapshot = true
         overlay.applyFacts(snapshot.facts)
@@ -69,8 +70,12 @@ public final class AppModel: ObservableObject {
             engineSet.ownershipChanged()
         }
         if rowPresentationDirty || resolutionsChanged { rebuildSessions() }
-        // A verdict, or the membership a verdict is about, changed.
-        if resolutionsChanged || previousMemberships != snapshot.memberships { armArchiveSweep() }
+        // A verdict, the membership a verdict is about, or the coverage an
+        // absence was proven at changed (a sweep that found its absence
+        // re-proven under a newer coverage plans again against it).
+        if resolutionsChanged || previousMemberships != snapshot.memberships || previousAbsences != snapshot.absenceCoverage {
+            armArchiveSweep()
+        }
         // An archived row is not resolved (the engine does not watch it),
         // so it is not waited for.
         if !sidebarRanksFrozen && builtSessions.allSatisfy({ row in
@@ -292,9 +297,13 @@ public final class AppModel: ObservableObject {
         // restore or a leave during the folder checks is seen here (and the
         // write's own guards catch what another connection did).
         let at = now()
+        let planned = latestEngineSnapshot
         let entries = AutoArchivePolicy.plan(
-            rows: overlay.rows.values, snapshot: latestEngineSnapshot,
+            rows: overlay.rows.values, snapshot: planned,
             folders: evidence, openSessionIDs: Set(openSessions.openSessionIDsInTabOrder), now: at)
+            // Right before the write, against what each owning engine
+            // publishes now, not what reached the merged snapshot.
+            .filter { AutoArchivePolicy.stillProven($0, planned: planned, current: engineSet.engine(for: $0.ref.host)?.latestSnapshot) }
         guard !entries.isEmpty else { return }
         let archived = Set(overlay.autoArchive(entries, idleBefore: at.addingTimeInterval(-AutoArchivePolicy.idleAfter)))
         guard !archived.isEmpty else { return }

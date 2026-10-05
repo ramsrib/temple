@@ -41,7 +41,7 @@ final class MemberStateMachineTests: XCTestCase {
         }
         try db.join(sessionID: "member", via: .imported, agent: agent, locator: TranscriptLocator(localURL: file), core: core)
         let store: any IncrementalSessionStore = agent == .claude ? ClaudeSessionStore(root: root) : CodexSessionStore(root: root)
-        let source = LocalSessionSource(stores: [store], debounceInterval: 0.01, monitorChanges: false)
+        let source = LocalSessionSource(stores: [store], debounceInterval: 0.01, monitorChanges: false, coverageScanInterval: 0.05)
         let clock = P5Clock()
         let watcher = SessionEngine(source: source, database: db, now: { clock.date },
                                     sleep: { _ in try await Task.sleep(for: .seconds(3600)) })
@@ -346,7 +346,9 @@ final class MemberStateMachineTests: XCTestCase {
         }
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(watcher.metrics.enumerations, before.enumerations)
-        XCTAssertEqual(watcher.resolution(for: "pruned"), .confirmedAbsent)
+        // A removal event makes coverage dirty until a scan lists the store
+        // again (ADR-032); the absence then stands again.
+        try await wait { watcher.resolution(for: "pruned") == .confirmedAbsent }
     }
 
     /// The rollout does not change when history.jsonl records the member's

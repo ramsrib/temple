@@ -2,6 +2,7 @@ import XCTest
 import AppKit
 import GRDB
 import TempleCore
+import TempleTestSupport
 @testable import TempleUI
 @testable import TempleLocalHost
 
@@ -67,6 +68,9 @@ final class AutoArchiveTests: XCTestCase {
         let database: TempleDB
         let scheduler: ManualSweepScheduler
         let folders: Folders
+        /// The engine the model's sweep rechecks against right before it
+        /// writes: what the test publishes is what it publishes.
+        let engine: FakeEngine
         var generation: UInt64 = 0
 
         /// A snapshot as the engine publishes it: each verdict names the
@@ -75,7 +79,9 @@ final class AutoArchiveTests: XCTestCase {
             generation += 1
             var refs = memberships
             for id in resolutions.keys where refs[id] == nil { refs[id] = ref(id) }
-            model.receiveEngineSnapshot(EngineSnapshot(generation: generation, resolutions: resolutions, memberships: refs))
+            let snapshot = EngineSnapshot(generation: generation, resolutions: resolutions, memberships: refs)
+            engine.publish(snapshot)
+            model.receiveEngineSnapshot(snapshot)
         }
 
         func ref(_ id: String) -> MembershipRef? {
@@ -104,8 +110,9 @@ final class AutoArchiveTests: XCTestCase {
         let overlay = SessionOverlayStore(db: database)
         let persistence = UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults())
         persistence.save(saved)
+        let engine = FakeEngine(CatalogFixtureIndex(projects: []))
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
-                             engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
+                             engines: [engine],
                              persistence: persistence, database: database,
                              settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
                              overlay: overlay, hostRegistry: Fixture.hostsWithoutFolderEvidence())
@@ -116,7 +123,7 @@ final class AutoArchiveTests: XCTestCase {
         let clock = clock
         model.now = { clock }
         model.history.catalog = { AsyncStream { $0.finish() } }
-        return Harness(model: model, overlay: overlay, database: database, scheduler: scheduler, folders: folders)
+        return Harness(model: model, overlay: overlay, database: database, scheduler: scheduler, folders: folders, engine: engine)
     }
 
     private func row(_ id: String, project: String? = "/p", updated: TimeInterval = 0) -> Session {
@@ -247,6 +254,62 @@ final class AutoArchiveTests: XCTestCase {
         XCTAssertEqual(h.archived(ids), ["control"])
         XCTAssertNil(h.state("left"))
         XCTAssertEqual(h.model.autoArchiveNotice?.memberships.map(\.id), ["control"])
+    }
+
+    /// The sweep's last check, against the engine itself: an absence the
+    /// engine withdrew (its coverage changed) while the merged snapshot the
+    /// plan read still showed it archives nothing — not while the re-lookup
+    /// is held, and not once it proves the absence again under a newer
+    /// coverage the plan never saw. Only a plan against the current
+    /// publication writes.
+    func testASweepAgainstAWithdrawnAbsenceArchivesNothing() async throws {
+        let database = try TempleDB.inMemory()
+        Fixture.join([row("gone")], to: database)
+        let source = FakeHostSource(host: .local)
+        let engine = SessionEngine(source: source, database: database)
+        let overlay = SessionOverlayStore(db: database)
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [engine],
+                             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()), database: database,
+                             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+                             overlay: overlay, hostRegistry: Fixture.hostsWithoutFolderEvidence())
+        let scheduler = ManualSweepScheduler()
+        model.archiveSweepScheduler = scheduler.schedule
+        model.folderEvidence = { _ in .unknown }
+        let clock = clock
+        model.now = { clock }
+        model.history.catalog = { AsyncStream { $0.finish() } }
+        await engine.start()
+        defer { Task { await engine.stop() } }
+        try await waitFor { engine.latestSnapshot?.resolutions["gone"] == .confirmedAbsent }
+        let stale = try XCTUnwrap(engine.latestSnapshot)
+
+        // Coverage moves; the re-lookup is held. The model still holds the
+        // snapshot that proved the absence.
+        let gate = FakeGate()
+        source.locateGate = gate
+        source.dropEvents()
+        try await waitFor { engine.latestSnapshot?.resolutions["gone"] == .incomplete }
+        model.receiveEngineSnapshot(stale)
+        scheduler.fire()
+        await model.archiveSweep?.value
+        XCTAssertEqual(try database.sessionState("gone")?.archived, false, "withdrawn: nothing archived")
+
+        // Proven again, under a newer coverage the plan's snapshot predates.
+        gate.open()
+        try await waitFor { engine.latestSnapshot?.resolutions["gone"] == .confirmedAbsent }
+        model.armArchiveSweep()
+        scheduler.fire()
+        await model.archiveSweep?.value
+        XCTAssertEqual(try database.sessionState("gone")?.archived, false, "planned against an older coverage")
+
+        // Planned against what the engine publishes now: archived.
+        model.receiveEngineSnapshot(try XCTUnwrap(engine.latestSnapshot))
+        for _ in 0..<3 where scheduler.isArmed {
+            scheduler.fire()
+            await model.archiveSweep?.value
+        }
+        XCTAssertEqual(try database.sessionState("gone")?.archived, true)
+        XCTAssertEqual(try database.sessionState("gone")?.archiveReason, .transcriptMissing)
     }
 
     /// A model nobody turned the sweep on for (every test fixture, every

@@ -64,7 +64,7 @@ public final class EngineSet {
         guard !perHost.isEmpty else { return }
         let merged = EngineSnapshot.merged(perHost: perHost, owner: owner, generation: generation &+ 1)
         if let latest, latest.resolutions == merged.resolutions, latest.facts == merged.facts,
-           latest.memberships == merged.memberships { return }
+           latest.memberships == merged.memberships, latest.absenceCoverage == merged.absenceCoverage { return }
         generation &+= 1
         latest = merged
         onUpdate?(merged)
@@ -79,11 +79,14 @@ public extension EngineSnapshot {
         var resolutions: [String: MemberResolution] = [:]
         var facts: [String: AuthorizedFacts] = [:]
         var memberships: [String: MembershipRef] = [:]
+        var absences: [String: UInt64] = [:]
         for (host, snapshot) in perHost {
+            for (id, coverage) in snapshot.absenceCoverage where owner(id) == host { absences[id] = coverage }
             for (id, resolution) in snapshot.resolutions where owner(id) == host { resolutions[id] = resolution }
             for (id, entry) in snapshot.facts where owner(id) == host { facts[id] = entry }
             for (id, ref) in snapshot.memberships where owner(id) == host && ref.host == host { memberships[id] = ref }
         }
-        return EngineSnapshot(generation: generation, resolutions: resolutions, facts: facts, memberships: memberships)
+        return EngineSnapshot(generation: generation, resolutions: resolutions, facts: facts, memberships: memberships,
+                              absenceCoverage: absences)
     }
 }

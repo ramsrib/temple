@@ -201,8 +201,17 @@ public final class FakeHostSource: HostSessionSource, HostSourceDiagnostics, @un
     public func removeDirectory(_ path: String) { locked { _ = directories.remove(path) } }
     /// Directories under this path cannot be checked: evidence is unknown.
     public func makeUnsearchable(_ path: String) { locked { _ = unsearchable.insert(path) } }
+    /// An agent's listing fails (or works again). Its completeness changes,
+    /// and like every completeness change (ADR-032) that moves coverage on
+    /// and is announced.
     public func breakListing(_ agent: Agent, _ broken: Bool = true) {
-        locked { if broken { brokenListings.insert(agent) } else { brokenListings.remove(agent) } }
+        let next: UInt64? = locked {
+            let changed = broken ? brokenListings.insert(agent).inserted : brokenListings.remove(agent) != nil
+            guard changed else { return nil }
+            coverage += 1
+            return coverage
+        }
+        if let next { emit(.coverageReset(coverage: next)) }
     }
     public func breakTransport(_ broken: Bool = true) { locked { transportBroken = broken } }
 

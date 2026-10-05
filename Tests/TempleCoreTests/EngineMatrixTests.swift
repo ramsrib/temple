@@ -788,6 +788,80 @@ final class EngineMatrixTests: XCTestCase {
         XCTAssertTrue(absent, "the older listing's failure answered the newer check")
     }
 
+    // MARK: Absence withdrawn with its coverage (ADR-032)
+
+    /// A coverage change withdraws a published absence at once — published
+    /// `.incomplete` while the re-lookup is still held — and only a lookup
+    /// completed under the new coverage proves it again, carrying that
+    /// coverage in the snapshot.
+    func testACoverageChangeWithdrawsAnAbsenceBeforeAnyReLookup() async throws {
+        let h = try harness()
+        let id = uuid()
+        try join(h, id)
+        await h.engine.start()
+        try await waitUntil("absent") { self.resolution(h, id) == .confirmedAbsent }
+        let proven = try XCTUnwrap(h.engine.latestSnapshot?.absenceCoverage[id])
+        let gate = holdListings(h)
+        h.source.dropEvents()
+        try await waitUntil("withdrawn") { self.resolution(h, id) == .incomplete }
+        XCTAssertNil(h.engine.latestSnapshot?.absenceCoverage[id])
+        try await waitUntil("re-lookup held") { gate.arrivals >= 1 }
+        XCTAssertEqual(resolution(h, id), .incomplete, "nothing proven while the lookup is held")
+        gate.open()
+        try await waitUntil("absent again") { self.resolution(h, id) == .confirmedAbsent }
+        let again = try XCTUnwrap(h.engine.latestSnapshot?.absenceCoverage[id])
+        XCTAssertGreaterThan(again, proven)
+    }
+
+    /// A listing that stops working for the member's agent is a coverage
+    /// change too, announced by the host: the absence goes at once.
+    func testLosingAnAgentsListingWithdrawsItsMembersAbsence() async throws {
+        let h = try harness()
+        let id = uuid()
+        try join(h, id, agent: .codex)
+        await h.engine.start()
+        try await waitUntil("absent") { self.resolution(h, id) == .confirmedAbsent }
+        let gate = holdListings(h)
+        h.source.breakListing(.codex)
+        try await waitUntil("withdrawn") { self.resolution(h, id) == .incomplete }
+        gate.open()
+        try await briefly { self.resolution(h, id) == .confirmedAbsent }
+        XCTAssertEqual(resolution(h, id), .incomplete, "Codex no longer completely listed: nothing proven")
+    }
+
+    /// A member with no agent recorded needs every agent's listing: losing
+    /// any one withdraws its absence.
+    func testAnAgentlessMembersAbsenceGoesWithAnyAgentsCoverage() async throws {
+        let h = try harness()
+        let id = uuid()
+        try join(h, id, agent: nil)
+        await h.engine.start()
+        try await waitUntil("absent") { self.resolution(h, id) == .confirmedAbsent }
+        let gate = holdListings(h)
+        h.source.breakListing(.claude)
+        try await waitUntil("withdrawn") { self.resolution(h, id) == .incomplete }
+        gate.open()
+        try await briefly { self.resolution(h, id) == .confirmedAbsent }
+        XCTAssertEqual(resolution(h, id), .incomplete)
+    }
+
+    /// A file appearing for a member withdraws its absence at once, before
+    /// the lookup that will find it runs.
+    func testANewCandidateFileWithdrawsTheMembersAbsenceAtOnce() async throws {
+        let h = try harness()
+        let id = uuid()
+        try join(h, id)
+        await h.engine.start()
+        try await waitUntil("absent") { self.resolution(h, id) == .confirmedAbsent }
+        let gate = holdListings(h)
+        h.source.write(claudePath(id), agent: .claude, data: claudeData(id))
+        try await waitUntil("withdrawn") { self.resolution(h, id) == .incomplete }
+        try await waitUntil("lookup held") { gate.arrivals >= 1 }
+        XCTAssertEqual(resolution(h, id), .incomplete)
+        gate.open()
+        try await waitUntil("loaded") { self.isLoaded(h, id) }
+    }
+
     // MARK: Complete members: an append is a stat
 
     /// A complete member has no facts a stale read could persist: appends to

@@ -56,7 +56,7 @@ struct EntryInspector: Sendable {
 /// Anything deeper (Claude's `<project>/<session>/subagents/…`, which
 /// Claude Code fills with links of its own) is never walked, holds no
 /// candidate, and decides nothing. `inAuditScope` says the same for one
-/// path, for the engine's events.
+/// path: which events can make an agent's coverage dirty.
 ///
 /// A link's target is never inspected, and nothing about an entry is
 /// guessed: metadata that cannot be read, or does not say, is not
@@ -74,19 +74,6 @@ struct ListingAudit {
     /// One entry the listing met. Its metadata, for the listing's own use,
     /// or nil when it could not be read (which already made the listing
     /// not exhaustive).
-    /// Whether an event at `path` (in scope) could change a listing's
-    /// verdict: a link (the event says so, even for one that is gone), a
-    /// hidden name other than `.DS_Store`, or an entry now flagged hidden or
-    /// a link. Nothing about it is guessed past that.
-    static func mayDecide(_ path: String, isLink: Bool) -> Bool {
-        if isLink { return true }
-        let name = (path as NSString).lastPathComponent
-        if name.hasPrefix(".") { return !allowedHidden.contains(name) }
-        var info = stat()
-        guard lstat(path, &info) == 0 else { return false }
-        return (info.st_mode & S_IFMT) == S_IFLNK || (info.st_flags & UInt32(UF_HIDDEN)) != 0
-    }
-
     mutating func meet(_ url: URL) -> URLResourceValues? {
         let values: URLResourceValues
         do { values = try inspector.values(url, Self.keys) } catch { exhaustive = false; return nil }

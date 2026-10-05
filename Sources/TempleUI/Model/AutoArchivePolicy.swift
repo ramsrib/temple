@@ -45,6 +45,19 @@ struct AutoArchivePolicy {
         return snapshot.resolutions[ref.id] == .confirmedAbsent && snapshot.memberships[ref.id] == ref
     }
 
+    /// The last check before a write: an entry archived for its transcript
+    /// still stands only if the owning engine publishes, now, the same
+    /// absence for the same membership at the same coverage generation the
+    /// plan saw. An engine that withdrew it (coverage moved, a candidate
+    /// appeared) while the plan was made, or whose publication has not
+    /// reached the merged snapshot yet, archives nothing. Folder entries
+    /// were checked against fresh evidence already.
+    static func stillProven(_ entry: AutoArchiveEntry, planned: EngineSnapshot?, current: EngineSnapshot?) -> Bool {
+        guard entry.reason == .transcriptMissing else { return true }
+        guard let current, transcriptGone(entry.ref, in: current) else { return false }
+        return planned?.absenceCoverage[entry.ref.id] == current.absenceCoverage[entry.ref.id]
+    }
+
     static func foldersToCheck(rows: Dictionary<String, SessionState>.Values, snapshot: EngineSnapshot?,
                                openSessionIDs: Set<String>, now: Date) -> Set<ProjectKey> {
         Set(candidates(rows: rows, openSessionIDs: openSessionIDs, now: now).compactMap { candidate in
