@@ -2125,6 +2125,27 @@ final class HistoryArchiveTests: XCTestCase {
         XCTAssertEqual(editor.string, "deploy", "and not the search text")
     }
 
+    /// History's search matches the displayed and the original titles: a
+    /// renamed session is found by either, and clearing the name changes
+    /// nothing for search.
+    func testARenamedSessionIsFoundInHistoryByItsOriginalTitle() async {
+        let (model, overlay, _) = makeModel([
+            Fixture.row("orders", project: "/p/a", title: "the /orders endpoint returns 500 when the cart is empty", updated: 20),
+            Fixture.row("other", project: "/p/b", title: "unrelated", updated: 10)])
+        overlay.rename("orders", to: "UI regression orders")
+        let renamed = await page(model, .all, query: "endpoint")
+        XCTAssertEqual(renamed, ["orders"])
+        XCTAssertEqual(model.history.visibleRows.first?.title, "UI regression orders", "shown by its new name")
+        let byName = await page(model, .all, query: "ui regression")
+        XCTAssertEqual(byName, ["orders"])
+        let phrase = await page(model, .all, query: "cart is empty")
+        XCTAssertEqual(phrase, ["orders"])
+
+        overlay.rename("orders", to: "")
+        let cleared = await page(model, .all, query: "endpoint")
+        XCTAssertEqual(cleared, ["orders"])
+    }
+
     /// Every bridge into History clears the "Archived just now" chip, and
     /// ⌘K's "Search history for…" asks in All with no leftover filters.
     func testBridgesIntoHistoryClearTheChipAndTheSearchBridgeAsksAll() {

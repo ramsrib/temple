@@ -6,11 +6,13 @@ public enum SessionRowSearch {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !q.isEmpty else { return [] }
         return rows.compactMap { row -> (Session, Int)? in
-            let title = row.displayTitle.lowercased()
+            // The displayed title or an original one, whichever scores better.
+            let titleScore = row.searchTitles.map { title -> Int in
+                let title = title.lowercased()
+                return title == q ? 500 : title.hasPrefix(q) ? 400 : title.contains(q) ? 300 : 0
+            }.max() ?? 0
             let score: Int
-            if title == q { score = 500 }
-            else if title.hasPrefix(q) { score = 400 }
-            else if title.contains(q) { score = 300 }
+            if titleScore > 0 { score = titleScore }
             else if row.project?.displayName.lowercased().contains(q) == true { score = 200 }
             else if row.agent?.displayName.lowercased().contains(q) == true || row.agent?.rawValue.lowercased().contains(q) == true { score = 100 }
             else { return nil }

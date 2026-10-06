@@ -19,6 +19,17 @@ public struct Session: Identifiable, Hashable, Sendable {
     public var displayTitle: String {
         state.customName ?? state.title ?? agent.map(\.newSessionTitle) ?? "Untitled session"
     }
+    /// Every title the row knows the session by, the displayed one first:
+    /// a rename (or the agent retitling itself) hides the original title
+    /// from view, not from search. All of them come from the row; nothing
+    /// is read from a transcript to search.
+    public var searchTitles: [String] {
+        var titles = [displayTitle]
+        for title in [state.title, state.generatedTitle] {
+            if let title, !title.isEmpty, !titles.contains(title) { titles.append(title) }
+        }
+        return titles
+    }
     public var sortDate: Date { state.lastActiveAt ?? state.lastOpenedAt ?? state.joinedAt ?? .distantPast }
     /// The engine finished looking and no transcript carries this id: the
     /// row stays, but nothing on disk can resume it (pruned, or deleted).

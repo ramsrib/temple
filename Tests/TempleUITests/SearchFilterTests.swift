@@ -317,6 +317,27 @@ final class SearchFilterTests: XCTestCase {
 
 
 
+    /// A rename changes what the row shows, not what finds it: the original
+    /// title still matches, scored as well as it matches (FEATURES: "the
+    /// displayed title ... as well as the original first-prompt title,
+    /// whichever scores better").
+    func testARenamedSessionIsStillFoundByItsOriginalTitle() {
+        let orders = Fixture.row("orders", project: "/p/a", title: "the /orders endpoint returns 500 when the cart is empty")
+        let other = Fixture.row("other", project: "/p/b", title: "cart is empty banner copy", updated: 10)
+        let (model, overlay) = makeRowModel([orders, other])
+        overlay.rename("orders", to: "UI regression orders")
+
+        XCTAssertEqual(model.paletteResults("UI regression").map(\.id), ["orders"], "the new name matches")
+        XCTAssertEqual(model.paletteResults("endpoint").map(\.id), ["orders"], "and so does the original title")
+        XCTAssertEqual(Set(model.paletteResults("cart is empty").map(\.id)), ["orders", "other"])
+        XCTAssertEqual(model.paletteResults("the /orders endpoint returns 500 when the cart is empty").first?.id, "orders",
+                       "an exact original title scores as an exact match")
+
+        overlay.rename("orders", to: "")
+        XCTAssertEqual(model.paletteResults("endpoint").map(\.id), ["orders"], "clearing the name changes nothing for search")
+        XCTAssertTrue(model.paletteResults("UI regression").isEmpty)
+    }
+
     func testPaletteSearchMatchesRenamedAndGeneratedTitles() {
         let a = Fixture.row("a1", project: "/p/a", title: "first prompt about databases")
         let b = Fixture.row("b1", project: "/p/b", title: "unrelated prompt")

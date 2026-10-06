@@ -312,7 +312,13 @@ final class HistoryRowBuilder {
         let rowTooltip = [conflict?.message, catalog?.lastMessagePreview, details.joined(separator: " · ")]
             .compactMap { $0 }
             .joined(separator: "\n")
-        let searchable = [title, project?.path ?? "", catalog?.gitBranch ?? "", catalog?.lastMessagePreview ?? ""]
+        // The displayed title and every original one the row or its listing
+        // has: a renamed session is still found by what it was first called.
+        var titles = member?.searchTitles ?? [title]
+        for listed in [catalog?.titleFact, catalog?.firstPrompt] {
+            if let listed, !listed.isEmpty, !titles.contains(listed) { titles.append(listed) }
+        }
+        let searchable = (titles + [project?.path ?? "", catalog?.gitBranch ?? "", catalog?.lastMessagePreview ?? ""])
             .joined(separator: "\n").lowercased()
 
         return HistoryRow(
