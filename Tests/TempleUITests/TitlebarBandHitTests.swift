@@ -46,8 +46,12 @@ final class TitlebarBandHitTests: XCTestCase {
         strip.detailMinX = 280
 
         // The claim and SwiftUI's chip layout both land on layout passes.
+        // The chips row is the hosting view inside the scrolling clip; the
+        // pinned project switcher and the `+` sit directly in the strip.
         let chip: () -> NSView? = {
-            self.descendants(of: strip).first { $0 is NSHostingView<AnyView> && $0.frame.width > 20 }
+            self.descendants(of: strip).first {
+                $0 is NSHostingView<AnyView> && $0.superview !== strip && $0.frame.width > 20
+            }
         }
         pump {
             window.layoutIfNeeded()
@@ -55,6 +59,7 @@ final class TitlebarBandHitTests: XCTestCase {
         }
         XCTAssertTrue(strip.hasClaimedBand, "the strip spans the band")
         let host = try XCTUnwrap(chip(), "SwiftUI laid out no chip")
+        XCTAssertTrue(host.superview?.superview === strip, "the chips row, inside the scrolling clip")
         let clip = try XCTUnwrap(strip.superview)
 
         // Empty band: right of every chip, left of the trailing cluster.
@@ -63,8 +68,9 @@ final class TitlebarBandHitTests: XCTestCase {
         let emptyHit = strip.hitTest(empty)
         XCTAssertTrue(emptyHit === content, "the empty band hands the click to the content beneath, got \(String(describing: emptyHit))")
 
-        // On the chip: the strip's own view takes it.
-        let onChip = clip.convert(NSPoint(x: host.bounds.minX + 10, y: host.bounds.midY), from: host)
+        // On the History chip (the row's only one, at its leading edge):
+        // the chip takes it.
+        let onChip = clip.convert(NSPoint(x: host.bounds.minX + 20, y: host.bounds.midY), from: host)
         let chipHit = try XCTUnwrap(strip.hitTest(onChip), "a chip click must not fall through")
         XCTAssertTrue(chipHit === host || chipHit.isDescendant(of: host), "got \(chipHit)")
     }
