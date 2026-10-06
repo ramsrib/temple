@@ -51,15 +51,23 @@ final class OverlayFocusTests: XCTestCase {
         window.close()
     }
 
-    /// A panel's view as it mounts: a hosting view with its search field.
+    /// A panel's view as it mounts: a hosting view with its search field,
+    /// handed over the way PanelHost does.
     @discardableResult
     private func mountPanel() -> NSTextField {
         let host = NSView(frame: NSRect(x: 320, y: 200, width: 260, height: 60))
         let field = NSTextField(frame: NSRect(x: 10, y: 20, width: 200, height: 22))
         host.addSubview(field)
         window.contentView?.addSubview(host)
-        model.overlayFocus.panelMounted(host)
+        PanelHandOver().update(host, token: model.overlayFocus.token, focus: model.overlayFocus)
         return field
+    }
+
+    private func stubTerminal() -> StubTerminalSurface {
+        let surface = StubTerminalSurface()
+        surface.view.frame = NSRect(x: 10, y: 120, width: 200, height: 100)
+        window.contentView?.addSubview(surface.view)
+        return surface
     }
 
     private func turn() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
@@ -110,9 +118,7 @@ final class OverlayFocusTests: XCTestCase {
     /// Tab activation, a find bar closing, a deferred claim: none takes the
     /// keyboard while a panel is up, and a claim made before it opened is void.
     func testATerminalCannotTakeTheKeyboardWhileAPanelIsUp() {
-        let surface = StubTerminalSurface()
-        surface.view.frame = NSRect(x: 10, y: 120, width: 200, height: 100)
-        window.contentView?.addSubview(surface.view)
+        let surface = stubTerminal()
         let earlier = OverlayKeyboard.ticket()
         model.toggleCommandPalette()
         let field = mountPanel()
@@ -155,9 +161,7 @@ final class OverlayFocusTests: XCTestCase {
     /// The panel's action focused something (a session it opened): that
     /// wins over giving the keyboard back.
     func testAFocusThePanelsActionAskedForWinsOverTheRestore() {
-        let surface = StubTerminalSurface()
-        surface.view.frame = NSRect(x: 10, y: 120, width: 200, height: 100)
-        window.contentView?.addSubview(surface.view)
+        let surface = stubTerminal()
         XCTAssertTrue(window.makeFirstResponder(historyField))
         model.toggleCommandPalette()
         mountPanel()
@@ -175,5 +179,82 @@ final class OverlayFocusTests: XCTestCase {
         model.presentFolderChooser = { _ in heldWhenShown = OverlayKeyboard.isHeld }
         model.openProjectFolder()
         XCTAssertEqual(heldWhenShown, false)
+    }
+
+    /// AppKit itself cannot hand a terminal the keyboard while a panel holds
+    /// it: not a direct makeFirstResponder (a click queued before the
+    /// backdrop), not the window becoming key again.
+    func testATerminalRefusesTheKeyboardAtTheResponderWhileHeld() {
+        let surface = stubTerminal()
+        model.toggleShortcuts()
+        XCTAssertFalse(surface.view.acceptsFirstResponder)
+        XCTAssertFalse(window.makeFirstResponder(surface.view))
+        XCTAssertTrue(window.firstResponder === inert)
+        window.resignKey()
+        window.becomeKey()
+        XCTAssertTrue(window.firstResponder === inert, "reactivation keeps the panel's hold")
+
+        model.shortcutsPresented = false
+        model.toggleCommandPalette()
+        let field = mountPanel()
+        window.makeFirstResponder(surface.view)   // the field lets go; the terminal refuses
+        XCTAssertFalse(window.firstResponder === surface.view)
+        turn()
+        XCTAssertTrue(window.firstResponder === field.currentEditor(), "the panel's field is seated again")
+        window.resignKey()
+        window.becomeKey()
+        XCTAssertTrue(window.firstResponder === field.currentEditor(), "and reactivation keeps it")
+    }
+
+    /// Closed and reopened inside one update, SwiftUI keeps the panel's
+    /// host: the new presentation is handed over to it too, and its field
+    /// takes the keyboard again instead of leaving it with the inert one.
+    func testAClosedAndReopenedPanelWithAReusedHostTakesTheKeyboardAgain() {
+        XCTAssertTrue(window.makeFirstResponder(terminal))
+        let before = terminal.becameResponder
+        model.toggleCommandPalette()
+        let host = NSView(frame: NSRect(x: 320, y: 200, width: 260, height: 60))
+        let field = NSTextField(frame: NSRect(x: 10, y: 20, width: 200, height: 22))
+        host.addSubview(field)
+        window.contentView?.addSubview(host)
+        let handOver = PanelHandOver()
+        handOver.update(host, token: model.overlayFocus.token, focus: model.overlayFocus)
+        XCTAssertTrue(window.firstResponder === field.currentEditor())
+
+        model.commandPalettePresented = false
+        model.commandPalettePresented = true      // same turn: SwiftUI keeps the host
+        XCTAssertTrue(window.firstResponder === inert)
+        handOver.update(host, token: model.overlayFocus.token, focus: model.overlayFocus)
+        XCTAssertTrue(window.firstResponder === field.currentEditor(), "the reused host's field has it again")
+        turn()
+        XCTAssertTrue(window.firstResponder === field.currentEditor(), "the close's restore stood down")
+        XCTAssertEqual(terminal.becameResponder, before)
+    }
+
+    /// Something took the keyboard directly between the panel going and the
+    /// restore (a click on a field): the restore does not take it back.
+    func testTheRestoreLeavesAFocusTakenDirectlyAfterDismissal() {
+        XCTAssertTrue(window.makeFirstResponder(terminal))
+        model.toggleCommandPalette()
+        mountPanel()
+        model.toggleCommandPalette()
+        XCTAssertTrue(window.makeFirstResponder(historyField))
+        turn()
+        XCTAssertTrue(window.firstResponder === historyField.currentEditor())
+    }
+
+    /// ⌘N starts its session before the picker goes: the new terminal's
+    /// focus request, refused while the picker held the keyboard, is made
+    /// again when it goes, and wins over giving the keyboard back.
+    func testThePickersNewSessionGetsTheKeyboardAfterThePickerGoes() {
+        let surface = stubTerminal()
+        XCTAssertTrue(window.makeFirstResponder(historyField))
+        model.toggleNewSessionPicker()
+        mountPanel()
+        surface.focus()                           // newSession → activate, while held
+        XCTAssertFalse(window.firstResponder === surface.view)
+        model.newSessionPickerPresented = false   // then the picker goes
+        turn()
+        XCTAssertTrue(window.firstResponder === surface.view, "the new session, not the sidebar's field")
     }
 }

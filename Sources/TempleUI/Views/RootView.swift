@@ -208,7 +208,7 @@ public struct RootView: View {
             ZStack {
                 OverlayBackdrop { model.shortcutsPresented = false }
                     .ignoresSafeArea()
-                PanelHost(onMount: model.overlayFocus.panelMounted) {
+                PanelHost(focus: model.overlayFocus, token: model.overlayFocus.token) {
                     ShortcutsView(maxHeight: max(200, geo.size.height - 2 * ShortcutsView.windowMargin))
                 }
                 .fixedSize()
@@ -226,7 +226,7 @@ public struct RootView: View {
             ZStack(alignment: .top) {
                 OverlayBackdrop { model.commandPalettePresented = false }
                     .ignoresSafeArea()
-                PanelHost(onMount: model.overlayFocus.panelMounted) {
+                PanelHost(focus: model.overlayFocus, token: model.overlayFocus.token) {
                     CommandPaletteView()
                         .environmentObject(model)
                         .tint(Palette.accent)
@@ -245,7 +245,7 @@ public struct RootView: View {
             ZStack(alignment: .top) {
                 OverlayBackdrop { model.newSessionPickerPresented = false }
                     .ignoresSafeArea()
-                PanelHost(onMount: model.overlayFocus.panelMounted) {
+                PanelHost(focus: model.overlayFocus, token: model.overlayFocus.token) {
                     NewSessionPickerView()
                         .environmentObject(model)
                         .tint(Palette.accent)
@@ -304,14 +304,19 @@ private struct OverlayBackdrop: NSViewRepresentable {
 /// shadow, which extends past the hosting view's intrinsic bounds.
 private struct PanelHost<Content: View>: NSViewRepresentable {
     /// A panel that takes typing (⌘K, ⌘N, ⌘/) hands its view to
-    /// OverlayFocus, whose field then takes the keyboard. The switchers own
-    /// the keyboard through the key router.
-    var onMount: ((NSView) -> Void)?
+    /// OverlayFocus with its presentation token, whose field then takes the
+    /// keyboard: on mount, and again whenever the token changes for this
+    /// same host (a close and reopen SwiftUI coalesced keeps the view). The
+    /// switchers own the keyboard through the key router.
+    var focus: OverlayFocus?
+    var token = 0
     @ViewBuilder let content: () -> Content
+
+    func makeCoordinator() -> PanelHandOver { PanelHandOver() }
 
     func makeNSView(context: Context) -> NSHostingView<Content> {
         let view = NSHostingView(rootView: content())
-        onMount?(view)
+        handOver(view, context.coordinator)
         view.sizingOptions = .intrinsicContentSize
         view.clipsToBounds = false
         // A floating panel wants no safe-area participation — and on macOS 26
@@ -327,6 +332,12 @@ private struct PanelHost<Content: View>: NSViewRepresentable {
 
     func updateNSView(_ view: NSHostingView<Content>, context: Context) {
         view.rootView = content()
+        handOver(view, context.coordinator)
+    }
+
+    private func handOver(_ view: NSView, _ handOver: PanelHandOver) {
+        guard let focus else { return }
+        handOver.update(view, token: token, focus: focus)
     }
 }
 

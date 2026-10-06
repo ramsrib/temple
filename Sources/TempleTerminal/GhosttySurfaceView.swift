@@ -275,7 +275,10 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
 
     // MARK: Focus
 
-    public override var acceptsFirstResponder: Bool { true }
+    /// Never while a floating panel holds the keyboard (OverlayKeyboard):
+    /// a click queued before the panel's backdrop mounted, or the window
+    /// becoming key again, must not hand the terminal the keys meant for it.
+    public override var acceptsFirstResponder: Bool { !OverlayKeyboard.isHeld }
     public override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     /// A focus request that has not been honoured yet, as the ticket it was
@@ -298,7 +301,7 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
     /// a request made before a panel opened or closed is void after it: the
     /// panel's dismissal decides where focus goes (OverlayKeyboard).
     func requestFocus() {
-        guard let ticket = OverlayKeyboard.ticket() else { return }
+        guard let ticket = OverlayKeyboard.ticket(retry: { [weak self] in self?.requestFocus() }) else { return }
         focusTicket = ticket
         DispatchQueue.main.async { [weak self] in self?.claimFocusIfWanted() }
     }
@@ -335,6 +338,10 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
     }
 
     public override func becomeFirstResponder() -> Bool {
+        guard !OverlayKeyboard.isHeld else {
+            OverlayKeyboard.admissionRefused()
+            return false
+        }
         let ok = super.becomeFirstResponder()
         isResponder = true
         syncRendererState()

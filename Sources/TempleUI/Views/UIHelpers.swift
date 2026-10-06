@@ -46,12 +46,13 @@ func chooseProjectFolder(_ then: (ProjectKey) -> Void) {
 /// Resign the terminal first, then set the focus binding on the next runloop
 /// turn, once SwiftUI can install its field editor.
 ///
-/// While a floating panel holds the keyboard the claim is refused, and one
-/// made before a panel opened or closed is void after it (OverlayKeyboard).
+/// While a floating panel holds the keyboard the claim waits and is made
+/// again when the panel goes; one made before a panel opened or closed is
+/// void after it (OverlayKeyboard).
 enum FieldFocus {
     @MainActor
     static func claim(_ focus: @escaping @MainActor () -> Void) {
-        guard let ticket = OverlayKeyboard.ticket() else { return }
+        guard let ticket = OverlayKeyboard.ticket(retry: { claim(focus) }) else { return }
         let window = NSApp.keyWindow ?? NSApp.mainWindow
         if !(window?.firstResponder is NSTextView) {  // field editor == already a text field
             window?.makeFirstResponder(nil)

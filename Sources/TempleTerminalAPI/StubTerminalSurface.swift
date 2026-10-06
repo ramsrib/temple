@@ -26,8 +26,9 @@ public final class StubTerminalSurface: TerminalSurface {
     }
 
     public func focus() {
-        // A panel holds the keyboard: the terminal waits (OverlayKeyboard).
-        guard OverlayKeyboard.ticket() != nil else { return }
+        // A panel holds the keyboard: the terminal waits, and asks again when
+        // it goes (OverlayKeyboard).
+        guard OverlayKeyboard.ticket(retry: { [weak self] in self?.focus() }) != nil else { return }
         stubView.window?.makeFirstResponder(stubView)
     }
 
@@ -74,6 +75,17 @@ public struct StubTerminalSurfaceFactory: TerminalSurfaceFactory {
 // MARK: - View
 
 final class StubTerminalView: NSView {
+    // As the real surface: never the first responder while a floating panel
+    // holds the keyboard (OverlayKeyboard).
+    override var acceptsFirstResponder: Bool { !OverlayKeyboard.isHeld }
+    override func becomeFirstResponder() -> Bool {
+        guard !OverlayKeyboard.isHeld else {
+            OverlayKeyboard.admissionRefused()
+            return false
+        }
+        return super.becomeFirstResponder()
+    }
+
     private let label = NSTextField(wrappingLabelWithString: "")
     private var terminalAppearance: TerminalAppearance
     private var command: TerminalCommand?
