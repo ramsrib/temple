@@ -40,19 +40,40 @@ struct ShortcutsView: View {
         .init(keys: "⌘Q", action: "Quit — closing the window does the same; asks if an agent is working"),
     ]
 
+    /// The tallest the card may be: the window's height less a margin. The
+    /// card is about 900 pt tall, and unbounded in a 653 pt window it lost
+    /// both ends off the window and grew the window-level stack it floats
+    /// in, which pushed the split view (sidebar, History) up under the
+    /// traffic lights. Bounded, it keeps its natural height when that fits
+    /// and scrolls its sections when it does not.
+    var maxHeight: CGFloat = .infinity
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
+        VStack(alignment: .leading, spacing: 16) {
             Text("Keyboard Shortcuts")
                 .font(.system(size: 16, weight: .semibold))
-
-            section("Sessions & tabs", Self.sessions)
-            section("Navigation", Self.navigation)
-            section("App", Self.app)
+                .padding([.horizontal, .top], 28)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    section("Sessions & tabs", Self.sessions)
+                    section("Navigation", Self.navigation)
+                    section("App", Self.app)
+                }
+                .padding(.horizontal, 28)
+                .padding(.bottom, 28)
+            }
+            .thinScrollers()
         }
-        .padding(28)
         .frame(width: 540)
+        // A flexible frame clamps the card's ideal height, which is what the
+        // panel's hosting view sizes itself by: min(natural, maxHeight), with
+        // nothing measured.
+        .frame(maxHeight: maxHeight)
         .panelChrome()
     }
+
+    /// The margin kept between the card and the window's top and bottom.
+    static let windowMargin: CGFloat = 24
 
     private func section(_ title: String, _ shortcuts: [Shortcut]) -> some View {
         VStack(alignment: .leading, spacing: 0) {

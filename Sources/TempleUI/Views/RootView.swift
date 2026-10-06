@@ -199,13 +199,21 @@ public struct RootView: View {
         .transition(.opacity)
     }
 
-    /// ⌘/ reference card, same overlay pattern as the palette.
+    /// ⌘/ reference card, same overlay pattern as the palette. Bounded by
+    /// the window's height (`ShortcutsView.maxHeight`): an overlay taller
+    /// than the window grows this window-level stack, and the split view
+    /// under it moves up into the title bar.
     private var shortcutsOverlay: some View {
-        ZStack {
-            OverlayBackdrop { model.shortcutsPresented = false }
-                .ignoresSafeArea()
-            PanelHost { ShortcutsView() }
+        GeometryReader { geo in
+            ZStack {
+                OverlayBackdrop { model.shortcutsPresented = false }
+                    .ignoresSafeArea()
+                PanelHost {
+                    ShortcutsView(maxHeight: max(200, geo.size.height - 2 * ShortcutsView.windowMargin))
+                }
                 .fixedSize()
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
         }
         .transition(.opacity)
     }
