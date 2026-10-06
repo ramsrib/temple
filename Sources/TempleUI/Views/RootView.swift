@@ -208,7 +208,7 @@ public struct RootView: View {
             ZStack {
                 OverlayBackdrop { model.shortcutsPresented = false }
                     .ignoresSafeArea()
-                PanelHost(guardsKeyboard: true) {
+                PanelHost(onMount: model.overlayFocus.panelMounted) {
                     ShortcutsView(maxHeight: max(200, geo.size.height - 2 * ShortcutsView.windowMargin))
                 }
                 .fixedSize()
@@ -226,7 +226,7 @@ public struct RootView: View {
             ZStack(alignment: .top) {
                 OverlayBackdrop { model.commandPalettePresented = false }
                     .ignoresSafeArea()
-                PanelHost(guardsKeyboard: true) {
+                PanelHost(onMount: model.overlayFocus.panelMounted) {
                     CommandPaletteView()
                         .environmentObject(model)
                         .tint(Palette.accent)
@@ -245,7 +245,7 @@ public struct RootView: View {
             ZStack(alignment: .top) {
                 OverlayBackdrop { model.newSessionPickerPresented = false }
                     .ignoresSafeArea()
-                PanelHost(guardsKeyboard: true) {
+                PanelHost(onMount: model.overlayFocus.panelMounted) {
                     NewSessionPickerView()
                         .environmentObject(model)
                         .tint(Palette.accent)
@@ -303,15 +303,15 @@ private struct OverlayBackdrop: NSViewRepresentable {
 /// See OverlayBackdrop. `clipsToBounds = false` keeps the panel's soft
 /// shadow, which extends past the hosting view's intrinsic bounds.
 private struct PanelHost<Content: View>: NSViewRepresentable {
-    /// A panel that takes typing (⌘K, ⌘N, ⌘/): the key router keeps keys
-    /// from what is under it until the keyboard is in it (PanelKeyboard).
-    /// The switchers own the keyboard through the router already.
-    var guardsKeyboard = false
+    /// A panel that takes typing (⌘K, ⌘N, ⌘/) hands its view to
+    /// OverlayFocus, whose field then takes the keyboard. The switchers own
+    /// the keyboard through the key router.
+    var onMount: ((NSView) -> Void)?
     @ViewBuilder let content: () -> Content
 
     func makeNSView(context: Context) -> NSHostingView<Content> {
         let view = NSHostingView(rootView: content())
-        if guardsKeyboard { PanelKeyboard.host = view }
+        onMount?(view)
         view.sizingOptions = .intrinsicContentSize
         view.clipsToBounds = false
         // A floating panel wants no safe-area participation — and on macOS 26
@@ -339,7 +339,11 @@ private struct KeyCatcher: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         context.coordinator.model = model
         context.coordinator.install()
-        return InitialFocusDenier()
+        let view = InitialFocusDenier()
+        // The same view holds the keyboard for a panel until its field
+        // takes it (OverlayFocus).
+        model.overlayFocus.attach(inert: view)
+        return view
     }
 
     /// AppKit seats initial keyboard focus on the first text field in the
@@ -348,7 +352,7 @@ private struct KeyCatcher: NSViewRepresentable {
     /// dropdown the instant a field is focused, so the transient seat now
     /// flashes UI. Refuse the initial seat outright — the sweep stays as the
     /// backstop for AppKit re-seating focus while the window settles.
-    final class InitialFocusDenier: NSView {
+    final class InitialFocusDenier: OverlayInertResponder {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             guard let window else { return }
@@ -535,16 +539,6 @@ private struct KeyCatcher: NSViewRepresentable {
                 model.commandPalettePresented = false
                 model.newSessionPickerPresented = false
                 model.shortcutsPresented = false
-                return true
-            }
-
-            // A panel is up but its field does not have the keyboard yet (or
-            // has lost it): keys stop here rather than reach History's
-            // search or a terminal beneath. Esc (above) and Temple's and the
-            // system's ⌘ shortcuts still act; keys for another window (a
-            // modal chooser) are never touched. See PanelKeyboard.
-            if PanelKeyboard.swallows(panelUp: model.panelPresented, window: event.window,
-                                      keyCode: event.keyCode, modifiers: event.modifierFlags, characters: chars) {
                 return true
             }
 

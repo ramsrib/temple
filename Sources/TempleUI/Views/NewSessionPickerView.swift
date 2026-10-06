@@ -75,8 +75,8 @@ struct NewSessionPickerView: View {
         }
         .frame(width: 560)   // matches CommandPaletteView — visual siblings
         .panelChrome()
-        .onAppear { FieldFocus.claim { fieldFocused = true } }
-        .onDisappear { model.openSessions.focusActiveTerminal() }
+        // The field takes the keyboard on mount and gives it back when the
+        // picker goes (OverlayFocus).
         .onKeyPress(.downArrow) { move(1, rowCount: rowCount); return .handled }
         .onKeyPress(.upArrow) { move(-1, rowCount: rowCount); return .handled }
         .onKeyPress(.escape) { model.newSessionPickerPresented = false; return .handled }

@@ -434,8 +434,17 @@ public final class AppModel: ObservableObject {
     /// Runs the folder chooser (modal); a test stands in for it.
     var presentFolderChooser: (@escaping (ProjectKey) -> Void) -> Void = { then in chooseProjectFolder(then) }
 
-    @Published public var commandPalettePresented = false
-    @Published public var newSessionPickerPresented = false
+    @Published public var commandPalettePresented = false { didSet { panelsChanged() } }
+    @Published public var newSessionPickerPresented = false { didSet { panelsChanged() } }
+
+    /// Owns the keyboard while a panel is up, from the call that presents it
+    /// (`OverlayFocus`).
+    public let overlayFocus = OverlayFocus()
+
+    private func panelsChanged() {
+        overlayFocus.panelChanged(to: newSessionPickerPresented ? "picker"
+            : commandPalettePresented ? "palette" : shortcutsPresented ? "shortcuts" : nil)
+    }
 
     // ⌘P project switcher (ProjectSwitcherHUD) — modelled on ⌘⇥, not on ⌘K:
     // switching projects is picking from a handful you are holding in your head,
@@ -460,7 +469,7 @@ public final class AppModel: ObservableObject {
     @Published public var tabSwitcherSelection: SessionTab.ID?
     /// Same arming rule as the ⌘P switcher, for ⌃.
     private var tabSwitcherArmedByControl = false
-    @Published public var shortcutsPresented = false
+    @Published public var shortcutsPresented = false { didSet { panelsChanged() } }
 
     /// The find bar of the terminal on screen, if a terminal is showing
     /// (⌘F / ⌘G). Sidebar search has no shortcut — it is a click away.
@@ -613,6 +622,7 @@ public final class AppModel: ObservableObject {
             .store(in: &cancellables)
         wire()
         wireHistory(database: database)
+        overlayFocus.focusActiveTerminal = { [weak self] in self?.openSessions.focusActiveTerminal() }
         // NB: detection is NOT started here. It runs real binaries (`claude --version`),
         // and `AppModel` is constructed by tests — which must not shell out to whatever
         // CLIs happen to be on the machine. `RootView` starts it when the UI appears.

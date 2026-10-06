@@ -126,20 +126,17 @@ struct CommandPaletteView: View {
         }
         .frame(width: 560)
         .panelChrome()
-        // The terminal (a raw AppKit view) holds the window's first responder and
-        // SwiftUI focus can't take it — so ⌘K used to open a field that never
-        // received a keystroke, while everything typed went to the agent.
+        // The field takes the keyboard when it mounts, and gives it back when
+        // the palette goes: OverlayFocus owns both (a terminal holding the
+        // responder is a raw AppKit view SwiftUI focus cannot take it from).
         .onAppear {
             // The highlight is a session from the first draw on, never "row 0".
             cursor.anchor(in: results)
             watchRecency()
-            FieldFocus.claim { fieldFocused = true }
         }
         // A redraw can drop the highlighted session (its tab closed): the
         // highlight moves to a row that is listed, and Return follows it.
         .onChange(of: results.map(\.id)) { cursor.anchor(in: results) }
-        // Closing hands the keyboard back to the agent we took it from.
-        .onDisappear { model.openSessions.focusActiveTerminal() }
         .onKeyPress(.downArrow) { move(1); return .handled }
         .onKeyPress(.upArrow) { move(-1); return .handled }
         .onKeyPress(.escape) { model.commandPalettePresented = false; return .handled }

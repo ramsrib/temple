@@ -1,0 +1,179 @@
+import AppKit
+import XCTest
+@testable import TempleUI
+import TempleCore
+import TempleTerminalAPI
+
+/// One owner for the keyboard while ⌘K, the ⌘N picker or the ⌘/ card is
+/// up: the presenting call hands it to an inert responder, the panel's field
+/// takes it on mount, nothing else may take it meanwhile, and putting the
+/// panel away gives it back by intent. A real window, real key events, the
+/// app model's own presentation calls.
+@MainActor
+final class OverlayFocusTests: XCTestCase {
+    /// Stands in for a live terminal: takes the keyboard, records keys.
+    private final class Terminal: NSView {
+        var keys: [UInt16] = []
+        var becameResponder = 0
+        override var acceptsFirstResponder: Bool { true }
+        override func keyDown(with event: NSEvent) { keys.append(event.keyCode) }
+        override func becomeFirstResponder() -> Bool { becameResponder += 1; return true }
+    }
+
+    private var model: AppModel!
+    private var window: NSWindow!
+    private var inert: OverlayInertResponder!
+    private var terminal: Terminal!
+    private var historyField: NSTextField!
+
+    override func setUp() async throws {
+        model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+                         engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
+                         database: try TempleDB.inMemory(),
+                         settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+                          styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let content = try XCTUnwrap(window.contentView)
+        inert = OverlayInertResponder(frame: content.bounds)
+        terminal = Terminal(frame: NSRect(x: 10, y: 10, width: 300, height: 100))
+        historyField = NSTextField(frame: NSRect(x: 10, y: 360, width: 300, height: 22))
+        [inert, terminal, historyField].forEach { content.addSubview($0!) }
+        model.overlayFocus.attach(inert: inert)
+    }
+
+    override func tearDown() async throws {
+        model.commandPalettePresented = false
+        model.newSessionPickerPresented = false
+        model.shortcutsPresented = false
+        if OverlayKeyboard.isHeld { OverlayKeyboard.release() }
+        window.makeFirstResponder(nil)
+        window.close()
+    }
+
+    /// A panel's view as it mounts: a hosting view with its search field.
+    @discardableResult
+    private func mountPanel() -> NSTextField {
+        let host = NSView(frame: NSRect(x: 320, y: 200, width: 260, height: 60))
+        let field = NSTextField(frame: NSRect(x: 10, y: 20, width: 200, height: 22))
+        host.addSubview(field)
+        window.contentView?.addSubview(host)
+        model.overlayFocus.panelMounted(host)
+        return field
+    }
+
+    private func turn() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+
+    private func key(_ code: UInt16, _ chars: String, _ flags: NSEvent.ModifierFlags = []) -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                         windowNumber: window.windowNumber, context: nil, characters: chars,
+                         charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code)!
+    }
+
+    /// Plain keys, Return and the chords a terminal turns into input.
+    private var gapKeys: [NSEvent] {
+        [key(0, "a"), key(36, "\r"), key(51, "\u{7F}", .command),
+         key(123, "\u{F702}", [.command, .numericPad, .function]),
+         key(3, "F", [.command, .shift]), key(8, "\u{3}", .control)]
+    }
+
+    private func text(_ field: NSTextField) -> String {
+        (field.currentEditor() as? NSTextView)?.string ?? field.stringValue
+    }
+
+    func testKeysBeforeThePanelFieldMountsNeverReachATerminal() {
+        XCTAssertTrue(window.makeFirstResponder(terminal))
+        model.toggleCommandPalette()
+        XCTAssertTrue(window.firstResponder === inert, "the presenting call took the keyboard")
+        gapKeys.forEach(window.sendEvent)
+        XCTAssertEqual(terminal.keys, [])
+    }
+
+    func testKeysBeforeThePanelFieldMountsNeverReachHistorysField() {
+        XCTAssertTrue(window.makeFirstResponder(historyField))
+        model.toggleShortcuts()               // the ⌘/ card never mounts a field
+        gapKeys.forEach(window.sendEvent)
+        XCTAssertEqual(text(historyField), "")
+        XCTAssertTrue(window.firstResponder === inert)
+    }
+
+    func testThePanelFieldTakesTheKeyboardOnMountAndTypesNormally() {
+        XCTAssertTrue(window.makeFirstResponder(terminal))
+        model.toggleCommandPalette()
+        let field = mountPanel()
+        XCTAssertTrue(field.currentEditor() != nil && window.firstResponder === field.currentEditor())
+        [key(0, "a"), key(11, "b"), key(51, "\u{7F}"), key(8, "c")].forEach(window.sendEvent)
+        XCTAssertEqual(text(field), "ac")
+        XCTAssertEqual(terminal.keys, [])
+    }
+
+    /// Tab activation, a find bar closing, a deferred claim: none takes the
+    /// keyboard while a panel is up, and a claim made before it opened is void.
+    func testATerminalCannotTakeTheKeyboardWhileAPanelIsUp() {
+        let surface = StubTerminalSurface()
+        surface.view.frame = NSRect(x: 10, y: 120, width: 200, height: 100)
+        window.contentView?.addSubview(surface.view)
+        let earlier = OverlayKeyboard.ticket()
+        model.toggleCommandPalette()
+        let field = mountPanel()
+        surface.focus()
+        XCTAssertTrue(window.firstResponder === field.currentEditor(), "the panel keeps the keyboard")
+        XCTAssertNil(OverlayKeyboard.ticket(), "every request is refused while it is up")
+        model.toggleCommandPalette()
+        XCTAssertFalse(OverlayKeyboard.mayClaim(try! XCTUnwrap(earlier)), "a claim from before the panel is void after it")
+    }
+
+    func testGoingFromThePaletteToThePickerNeverFocusesTheTerminal() {
+        XCTAssertTrue(window.makeFirstResponder(terminal))
+        let before = terminal.becameResponder
+        model.toggleCommandPalette()
+        mountPanel()
+        model.toggleNewSessionPicker()        // the palette goes, the picker comes
+        XCTAssertTrue(window.firstResponder === inert)
+        turn()
+        let picker = mountPanel()
+        XCTAssertTrue(window.firstResponder === picker.currentEditor())
+        turn()
+        XCTAssertEqual(terminal.becameResponder, before, "not even for a moment")
+        model.newSessionPickerPresented = false
+        turn()
+        XCTAssertTrue(window.firstResponder === terminal, "the last panel gone, the terminal has it back")
+    }
+
+    func testPuttingThePanelAwayGivesTheKeyboardBackToTheFieldThatHadIt() {
+        XCTAssertTrue(window.makeFirstResponder(historyField))
+        (window.firstResponder as? NSTextView)?.insertText("deploy", replacementRange: NSRange(location: NSNotFound, length: 0))
+        model.toggleCommandPalette()
+        mountPanel()
+        model.toggleCommandPalette()
+        turn()
+        let editor = window.firstResponder as? NSTextView
+        XCTAssertTrue(editor != nil && editor === historyField.currentEditor(), "History's field has it again")
+        XCTAssertEqual(editor?.selectedRange(), NSRange(location: 6, length: 0), "caret at the end, not all selected")
+    }
+
+    /// The panel's action focused something (a session it opened): that
+    /// wins over giving the keyboard back.
+    func testAFocusThePanelsActionAskedForWinsOverTheRestore() {
+        let surface = StubTerminalSurface()
+        surface.view.frame = NSRect(x: 10, y: 120, width: 200, height: 100)
+        window.contentView?.addSubview(surface.view)
+        XCTAssertTrue(window.makeFirstResponder(historyField))
+        model.toggleCommandPalette()
+        mountPanel()
+        model.commandPalettePresented = false   // as openPaletteResult does, then…
+        surface.focus()                         // …it focuses the session it opened
+        turn()
+        XCTAssertTrue(window.firstResponder === surface.view)
+    }
+
+    /// ⌘O's modal chooser opens with no panel holding the keyboard.
+    func testTheFolderChooserOpensWithTheKeyboardReleased() {
+        model.toggleCommandPalette()
+        XCTAssertTrue(OverlayKeyboard.isHeld)
+        var heldWhenShown: Bool?
+        model.presentFolderChooser = { _ in heldWhenShown = OverlayKeyboard.isHeld }
+        model.openProjectFolder()
+        XCTAssertEqual(heldWhenShown, false)
+    }
+}
