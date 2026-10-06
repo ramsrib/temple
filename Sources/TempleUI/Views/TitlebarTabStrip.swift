@@ -100,13 +100,15 @@ struct TitlebarTabStripInstaller: NSViewRepresentable {
 }
 
 /// The accessory view: [pinned project switcher][ clipped, manually scrolled
-/// chips ][pinned `+`]. Points not over strip content hit-test to nil, so the
-/// native band keeps window-drag and double-click-zoom there.
+/// chips ][pinned `+`]. Points not over strip content hit-test to the window
+/// content under the band, so the band keeps window-drag and double-click-zoom
+/// there (see `hitTest`).
 /// In the title bar, AppKit asks the hit-tested view `mouseDownCanMoveWindow`
 /// before delivering a drag — and NSHostingView (non-opaque) answers yes, so
 /// a chip drag moves the WINDOW and SwiftUI's `.onDrag` session never starts.
 /// Ghostty ships the same override (NonDraggableHostingView) for its titlebar
-/// accessories. The empty band stays draggable: hitTest there returns nil.
+/// accessories. The empty band stays draggable: hitTest there passes the point
+/// to the content under the band.
 private final class StripHostingView: NSHostingView<AnyView> {
     override var mouseDownCanMoveWindow: Bool { false }
 }
@@ -701,11 +703,31 @@ final class TabStripContainerView: NSView {
 
     // MARK: Native band behavior
 
-    /// Points not over actual strip content fall through to the titlebar, so
-    /// the empty band keeps native window-drag and double-click-to-zoom.
+    /// Points not over actual strip content go to whatever the window shows
+    /// under the band, as if the strip were not there, so the empty band
+    /// keeps native window-drag and double-click-to-zoom.
+    ///
+    /// Returning nil is not enough: the claim stretches AppKit's accessory
+    /// clip view over the whole band, and a nil here makes that clip view the
+    /// target. AppKit zooms for a double-click there only most of the time:
+    /// once the window had been tiled to a half or quarter of the screen it
+    /// cannot fit (its 900 pt minimum is wider than half of a 1470 pt
+    /// display), double-clicks on the band did nothing at all, either way,
+    /// until Window ▸ Move & Resize ▸ Return to Previous Size. Measured on
+    /// macOS 27 in a bare SwiftUI window: the same claim reproduced it, and
+    /// handing the point to the content view under the band (the target in
+    /// a window without the strip) cured it.
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let result = super.hitTest(point) else { return nil }
-        if result === self || result === scrollClip { return nil }
+        if result === self || result === scrollClip { return contentBeneath(point) }
         return result
+    }
+
+    /// The window content's hit at a point given in this view's superview's
+    /// coordinates. The titlebar is not inside the content view, so this
+    /// never comes back here.
+    private func contentBeneath(_ point: NSPoint) -> NSView? {
+        guard let superview, let content = window?.contentView, let frame = content.superview else { return nil }
+        return content.hitTest(frame.convert(superview.convert(point, to: nil), from: nil))
     }
 }
