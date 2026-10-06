@@ -98,6 +98,14 @@ struct HistoryTabView: View {
         .onChange(of: history.focusSearchRequest) {
             FieldFocus.claim { searchFocused = true }
         }
+        // A Restore, Archive or Import just went on the window's undo stack
+        // and the notice says ⌘Z. The search field keeps its own text undo,
+        // which ⌘Z asks first while the field has the keyboard (a row click
+        // or the bar's buttons leave it there): forget it, or a search typed
+        // and cleared earlier comes back instead of the undo the page offers.
+        .onChange(of: history.undoStepCount) {
+            if searchFocused { FieldEditorUndo.forget(in: NSApp.keyWindow ?? NSApp.mainWindow) }
+        }
         .alert(history.pendingImport?.title ?? "",
                isPresented: Binding(get: { history.pendingImport != nil },
                                     set: { if !$0 { history.cancelImport() } }),

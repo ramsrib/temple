@@ -214,6 +214,11 @@ public final class HistoryModel: ObservableObject {
     @Published public var pendingImport: ImportRequest?
     @Published public var importFailure: ImportFailure?
     @Published public private(set) var notice: Notice?
+    /// Counts the steps History has put on the window's undo stack: each
+    /// notice that offers Undo ⌘Z bumps it. The page drops its search field's
+    /// own text undo then, so that ⌘Z reaches the step the notice names
+    /// (`FieldEditorUndo`).
+    @Published public private(set) var undoStepCount = 0
     /// Rows whose status column reads "Imported" for a moment.
     @Published public private(set) var justImported: Set<HistoryKey> = []
 
@@ -1366,6 +1371,7 @@ public final class HistoryModel: ObservableObject {
 
     private func showNotice(_ notice: Notice) {
         self.notice = notice
+        if notice.offersUndo { undoStepCount += 1 }
         noticeTask?.cancel()
         let delay = noticeDuration
         noticeTask = Task { [weak self] in

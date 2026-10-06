@@ -55,6 +55,28 @@ enum FieldFocus {
     }
 }
 
+/// ⌘Z asks the focused field's own undo stack before the window's.
+///
+/// SwiftUI's text field editor keeps an undo manager of its own, not the
+/// window's, and while it can undo, Edit ▸ Undo goes to it. So with History's
+/// search field holding the keyboard, ⌘Z after a Restore brought back a query
+/// typed and cleared earlier instead of undoing the Restore the page had just
+/// offered to undo (measured on macOS 27: with the field editor's stack empty,
+/// the same ⌘Z reaches the window's). A field that ends editing drops its
+/// stack anyway, so a field without the keyboard has nothing to forget.
+enum FieldEditorUndo {
+    /// Empties the focused field editor's own undo stack, never the window's.
+    /// Returns whether there was one to empty.
+    @MainActor
+    @discardableResult
+    static func forget(in window: NSWindow?) -> Bool {
+        guard let window, let editor = window.firstResponder as? NSTextView,
+              let own = editor.undoManager, own !== window.undoManager else { return false }
+        own.removeAllActions()
+        return true
+    }
+}
+
 /// A small colored activity dot: running / idle / needs-attention / exited.
 /// The dot that pulses is the one asking for you: an agent waiting on input
 /// in a tab you are not looking at. Running needs nothing from you, so it

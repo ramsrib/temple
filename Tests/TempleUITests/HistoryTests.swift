@@ -2029,10 +2029,12 @@ final class HistoryArchiveTests: XCTestCase {
         XCTAssertEqual(overlay.leave([SessionKey(id: "a1", host: .local)]), ["a1"])
         _ = overlay.join("a1", via: .imported, agent: .claude, core: SessionCore(directory: "/p/y"))
         // As in the app: the event's group is only opened by a registration.
+        let steps = model.history.undoStepCount
         model.history.restore([shown], undoManager: undo)
 
         XCTAssertEqual(model.history.notice,
                        HistoryModel.Notice(text: "Nothing to restore; it changed since the list loaded.", offersUndo: false))
+        XCTAssertEqual(model.history.undoStepCount, steps, "nothing went on the stack: the field's own undo stays")
         XCTAssertEqual(undo.undoActionName, "Archive Session", "nothing of the restore's on the stack")
         undo.undo()
         XCTAssertFalse(overlay.isArchived("z"), "⌘Z undoes the action before it")
@@ -2050,6 +2052,7 @@ final class HistoryArchiveTests: XCTestCase {
         _ = overlay.join("a2", via: .imported, agent: .claude, core: SessionCore(directory: "/p/y"))
         let undo = undoManager()
 
+        let steps = model.history.undoStepCount
         undo.beginUndoGrouping()
         model.history.restore(shown, undoManager: undo)
         undo.endUndoGrouping()
@@ -2057,10 +2060,15 @@ final class HistoryArchiveTests: XCTestCase {
         XCTAssertEqual(model.history.notice, HistoryModel.Notice(text: "1 session restored", offersUndo: true))
         XCTAssertFalse(overlay.isArchived("a1"))
         XCTAssertEqual(undo.undoActionName, "Restore Session")
+        // The page forgets its search field's text undo on each step, so
+        // ⌘Z reaches this one (FieldEditorUndo).
+        XCTAssertEqual(model.history.undoStepCount, steps + 1, "a step went on the stack")
         undo.undo()
         XCTAssertEqual(model.history.notice?.text, "Restore undone")
+        XCTAssertEqual(model.history.undoStepCount, steps + 1, "an undo offers no Undo")
         undo.redo()
         XCTAssertEqual(model.history.notice, HistoryModel.Notice(text: "1 session restored", offersUndo: true))
+        XCTAssertEqual(model.history.undoStepCount, steps + 2, "a redo is a step again")
     }
 
     /// Every bridge into History clears the "Archived just now" chip, and
