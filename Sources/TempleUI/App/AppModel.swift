@@ -425,41 +425,21 @@ public final class AppModel: ObservableObject {
     }
 
     @Published public var commandPalettePresented = false {
-        didSet { if commandPalettePresented != oldValue { panelTypeahead = PanelTypeahead() } }
+        didSet { if commandPalettePresented != oldValue { panelKeys.reset() } }
     }
     @Published public var newSessionPickerPresented = false {
-        didSet { if newSessionPickerPresented != oldValue { panelTypeahead = PanelTypeahead() } }
+        didSet { if newSessionPickerPresented != oldValue { panelKeys.reset() } }
     }
 
-    /// Typing that arrives between ⌘K (or ⌘N) and the moment the panel's
-    /// field holds the keyboard. Keys queued behind the chord are dispatched
-    /// before SwiftUI has drawn the panel, so they used to land in whatever
-    /// had the keyboard: History's search field took "depl" and the palette
-    /// "oy", and over a terminal the agent got them. The key router keeps
-    /// them here (`bufferPanelTyping`) and the panel types them into its field
-    /// when the field first takes focus (`panelFieldFocused`). Reset whenever
-    /// a panel opens or closes. Not published: nothing draws from it.
-    public private(set) var panelTypeahead = PanelTypeahead()
+    /// Keys typed after ⌘K or ⌘N before the panel's field has the keyboard,
+    /// held and sent again once it does (`PanelKeyHold`). Opening or closing
+    /// either panel drops what it holds.
+    public let panelKeys = PanelKeyHold()
 
-    /// A key that reached the router while a panel with a field is up and
-    /// that field has not held the keyboard yet: typed text is kept for it,
-    /// and every other plain key (Return, arrows, Tab, ⌫) is dropped, so
-    /// none of it acts on what is under the panel. Returns whether the key
-    /// was taken. ⌘ and ⌃ chords are never taken.
-    public func bufferPanelTyping(characters: String, modifiers: NSEvent.ModifierFlags) -> Bool {
-        guard commandPalettePresented || newSessionPickerPresented, !panelTypeahead.fieldReady else { return false }
-        let flags = modifiers.intersection(.deviceIndependentFlagsMask)
-        guard !flags.contains(.command), !flags.contains(.control) else { return false }
-        if let text = PanelTypeahead.typedText(characters) { panelTypeahead.pending += text }
-        return true
-    }
-
-    /// The panel's field has the keyboard: from here on keys go to it
-    /// directly. Returns what was typed before, for the field to insert.
-    public func panelFieldFocused() -> String {
-        let pending = panelTypeahead.pending
-        panelTypeahead = PanelTypeahead(fieldReady: true)
-        return pending
+    /// The key router's question for each key-down while ⌘K or ⌘N is up:
+    /// is it held for the panel's field? (See `PanelKeyHold.hold`.)
+    public func holdPanelKey(_ event: NSEvent) -> Bool {
+        panelKeys.hold(event, panelUp: commandPalettePresented || newSessionPickerPresented)
     }
 
     // ⌘P project switcher (ProjectSwitcherHUD) — modelled on ⌘⇥, not on ⌘K:

@@ -138,11 +138,10 @@ struct CommandPaletteView: View {
         // A redraw can drop the highlighted session (its tab closed): the
         // highlight moves to a row that is listed, and Return follows it.
         .onChange(of: results.map(\.id)) { cursor.anchor(in: results) }
-        // What was typed before the field had the keyboard comes first
-        // (AppModel.panelTypeahead). By now the field is the first
-        // responder, and the caret lands after the text.
+        // Keys typed before the field had the keyboard are sent again now
+        // that it has, in order and before any newer key (PanelKeyHold).
         .onChange(of: fieldFocused) { _, focused in
-            if focused { query += model.panelFieldFocused() }
+            if focused { model.panelKeys.fieldFocused() }
         }
         // Closing hands the keyboard back to the agent we took it from.
         .onDisappear { model.openSessions.focusActiveTerminal() }

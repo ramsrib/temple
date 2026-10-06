@@ -526,9 +526,10 @@ private struct KeyCatcher: NSViewRepresentable {
             }
 
             // Keys typed straight after ⌘K / ⌘N reach us before the panel's
-            // field holds the keyboard: kept for that field, never handed to
-            // History's search or a terminal beneath (AppModel.panelTypeahead).
-            if model.bufferPanelTyping(characters: event.characters ?? "", modifiers: event.modifierFlags) {
+            // field holds the keyboard: held, and sent again once it does,
+            // never to History's search or a terminal beneath (PanelKeyHold).
+            // Esc (above) and ⌘ / ⌃ chords are not held.
+            if model.holdPanelKey(event) {
                 return true
             }
             // The shortcuts card has no field: a text field under it gets no

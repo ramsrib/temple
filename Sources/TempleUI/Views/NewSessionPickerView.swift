@@ -76,9 +76,9 @@ struct NewSessionPickerView: View {
         .frame(width: 560)   // matches CommandPaletteView — visual siblings
         .panelChrome()
         .onAppear { FieldFocus.claim { fieldFocused = true } }
-        // Typing that beat the field to the keyboard (AppModel.panelTypeahead).
+        // Keys that beat the field to the keyboard, sent again (PanelKeyHold).
         .onChange(of: fieldFocused) { _, focused in
-            if focused { query += model.panelFieldFocused() }
+            if focused { model.panelKeys.fieldFocused() }
         }
         .onDisappear { model.openSessions.focusActiveTerminal() }
         .onKeyPress(.downArrow) { move(1, rowCount: rowCount); return .handled }
