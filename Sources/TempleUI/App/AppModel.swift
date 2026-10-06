@@ -419,10 +419,20 @@ public final class AppModel: ObservableObject {
     /// default agent. The menu item, the key handler and the project
     /// switcher's "Open project…" all come through here.
     public func openProjectFolder() {
-        chooseProjectFolder { project in
-            openSessions.newSessionDefaultAgent(project: project)
+        // The chooser is modal: a panel left up beneath it would still claim
+        // the keyboard, and Esc would go to the panel before the chooser.
+        commandPalettePresented = false
+        newSessionPickerPresented = false
+        shortcutsPresented = false
+        cancelProjectSwitcher()
+        cancelTabSwitcher()
+        presentFolderChooser { [weak self] project in
+            self?.openSessions.newSessionDefaultAgent(project: project)
         }
     }
+
+    /// Runs the folder chooser (modal); a test stands in for it.
+    var presentFolderChooser: (@escaping (ProjectKey) -> Void) -> Void = { then in chooseProjectFolder(then) }
 
     @Published public var commandPalettePresented = false
     @Published public var newSessionPickerPresented = false

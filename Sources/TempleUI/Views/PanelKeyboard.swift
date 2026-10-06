@@ -25,16 +25,36 @@ enum PanelKeyboard {
         return responder.isDescendant(of: host)
     }
 
-    /// Whether the router keeps a key from what is under the panel. Plain
-    /// keys and ⌃ chords are kept back, and so are the ⌘ chords that edit
-    /// text (undo, redo, cut, copy, paste, select all), which would act on
-    /// the field or terminal under the panel. Every other ⌘ chord is the
-    /// app's, and goes on.
-    static func swallows(panelUp: Bool, panelOwnsKeyboard: Bool,
+    /// Whether the router keeps a key from what is under the panel: every
+    /// key and chord except Esc and the ⌘ shortcuts Temple's key router and
+    /// menus answer, or the system's own (⌘Q, ⌘H, ⌘M, ⌘`). An allowlist,
+    /// because a terminal turns chords nobody listed into input of its own
+    /// (⌘⌫, ⌘← and ⌘→ are ⌃U, ⌃A and ⌃E in Ghostty). Only keys aimed at the
+    /// window the panel is in are ever kept: a sheet or modal window of its
+    /// own (the folder chooser) is never touched.
+    static func swallows(panelUp: Bool, window: NSWindow?, keyCode: UInt16,
                          modifiers: NSEvent.ModifierFlags, characters: String) -> Bool {
-        guard panelUp, !panelOwnsKeyboard else { return false }
-        let flags = modifiers.intersection(.deviceIndependentFlagsMask)
-        guard flags.contains(.command) else { return true }
-        return ["z", "x", "c", "v", "a"].contains(characters.lowercased())
+        guard panelUp, let host, let window, window === host.window,
+              !panelOwnsKeyboard(in: window) else { return false }
+        return !passesUnderPanel(keyCode: keyCode, modifiers: modifiers, characters: characters)
     }
+
+    /// The keys that act while a panel lacks the keyboard.
+    static func passesUnderPanel(keyCode: UInt16, modifiers: NSEvent.ModifierFlags, characters: String) -> Bool {
+        let flags = modifiers.intersection(.deviceIndependentFlagsMask)
+        if keyCode == 53 { return true }                                  // Esc dismisses
+        guard flags.contains(.command), !flags.contains(.control) else { return false }
+        if [33, 30].contains(keyCode) { return true }                     // ⌘⇧[ / ⌘⇧]
+        return shortcutCharacters.contains(characters.lowercased())
+    }
+
+    /// `charactersIgnoringModifiers` of the ⌘ chords that are commands, not
+    /// editing: Temple's (TempleCommands and RootView's router) and the
+    /// system's. Not ⌘Z/X/C/V/A, which would edit the field or terminal
+    /// under the panel.
+    static let shortcutCharacters: Set<String> = [
+        "t", "w", "n", "o", "h", "f", "g", "k", "y", "p", "b", "r", "/", ",",
+        "1", "2", "3", "4", "5", "6", "7", "8", "9",
+        "q", "m", "`",
+    ]
 }

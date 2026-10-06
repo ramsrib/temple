@@ -540,11 +540,11 @@ private struct KeyCatcher: NSViewRepresentable {
 
             // A panel is up but its field does not have the keyboard yet (or
             // has lost it): keys stop here rather than reach History's
-            // search or a terminal beneath. Esc (above) and the app's ⌘
-            // shortcuts (below) still act. See PanelKeyboard.
-            if PanelKeyboard.swallows(panelUp: model.panelPresented,
-                                      panelOwnsKeyboard: PanelKeyboard.panelOwnsKeyboard(in: event.window),
-                                      modifiers: event.modifierFlags, characters: chars) {
+            // search or a terminal beneath. Esc (above) and Temple's and the
+            // system's ⌘ shortcuts still act; keys for another window (a
+            // modal chooser) are never touched. See PanelKeyboard.
+            if PanelKeyboard.swallows(panelUp: model.panelPresented, window: event.window,
+                                      keyCode: event.keyCode, modifiers: event.modifierFlags, characters: chars) {
                 return true
             }
 
