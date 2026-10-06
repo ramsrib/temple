@@ -1098,6 +1098,9 @@ as a search box over Temple's own sessions, not as history.
   never kept.
 - **⌘K stays the quick switcher over Temple's sessions.** When it finds
   nothing it offers "Search history for …", which opens the tab searching.
+  (Since 2026-10-05 that row ends every typed query, not only one that finds
+  nothing: archived sessions are not in ⌘K, and a query that matched a live
+  one had no way on to the archived one in History.)
 
 ---
 

@@ -422,4 +422,93 @@ final class SearchFilterTests: XCTestCase {
         }
         XCTAssertEqual(model.paletteResults("").map(\.id), ["a", "b"])
     }
+    // MARK: ⌘K's way on to History
+
+    /// Archived sessions are never in ⌘K, so a query that finds live
+    /// sessions still ends with "Search history for …": ↓ past the last
+    /// result reaches it, Return there opens History searching, ↑ goes back.
+    func testATypedQueryEndsWithSearchHistoryEvenWithResults() async {
+        let (model, _) = makeRowModel([
+            Fixture.row("a", project: "/p/a", title: "deploy staging", updated: 20),
+            Fixture.row("b", project: "/p/b", title: "deploy prod", updated: 10)])
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        let results = CommandPaletteView.results("deploy", model: model)
+        XCTAssertEqual(results.count, 2)
+        var cursor = PaletteCursor()
+        cursor.anchor(in: results)
+        cursor.move(1, in: results, historyRow: true)
+        XCTAssertFalse(cursor.onHistoryRow)
+        XCTAssertEqual(cursor.index(in: results), 1)
+        cursor.move(1, in: results, historyRow: true)
+        XCTAssertTrue(cursor.onHistoryRow, "↓ past the last result is the history row")
+        XCTAssertNil(cursor.index(in: results), "no result is lit with it")
+        cursor.anchor(in: results)
+        XCTAssertTrue(cursor.onHistoryRow, "a redraw keeps the highlight where it is")
+        cursor.move(1, in: results, historyRow: true)
+        XCTAssertTrue(cursor.onHistoryRow, "it is the last row")
+        cursor.move(-1, in: results, historyRow: true)
+        XCTAssertEqual(cursor.selected(in: results)?.id, results.last?.id, "↑ goes back to the last result")
+        cursor.move(1, in: results, historyRow: true)
+
+        CommandPaletteView.submit(cursor, query: " deploy ", model: model)
+        XCTAssertFalse(model.commandPalettePresented)
+        XCTAssertEqual(model.history.query, "deploy")
+        XCTAssertEqual(model.openSessions.activeTab?.kind, .history)
+    }
+
+    /// With no query there is no history row: ↓ stops at the last session.
+    func testAnEmptyQueryHasNoHistoryRow() {
+        let rows = [Fixture.row("a", project: "/p/a"), Fixture.row("b", project: "/p/b")]
+        var cursor = PaletteCursor()
+        cursor.select(rows[1])
+        cursor.move(1, in: rows, historyRow: false)
+        XCTAssertFalse(cursor.onHistoryRow)
+        XCTAssertEqual(cursor.selected(in: rows)?.id, "b")
+        var empty = PaletteCursor()
+        empty.move(1, in: [], historyRow: true)
+        XCTAssertTrue(empty.onHistoryRow, "with nothing found it is the only row")
+    }
+
+    // MARK: Typing straight after ⌘K
+
+    /// Keys queued behind ⌘K arrive before the palette's field has the
+    /// keyboard. They are kept for it, in order; other plain keys are
+    /// dropped rather than reaching what is under the panel; chords pass.
+    func testTypingBeforeThePaletteFieldHasTheKeyboardIsKeptForIt() {
+        let (model, _) = makeRowModel([])
+        XCTAssertFalse(model.bufferPanelTyping(characters: "d", modifiers: []), "no panel, nothing taken")
+        model.toggleCommandPalette()
+        for key in ["d", "e", "P", "l"] {
+            XCTAssertTrue(model.bufferPanelTyping(characters: key, modifiers: key == "P" ? .shift : []))
+        }
+        XCTAssertTrue(model.bufferPanelTyping(characters: "\r", modifiers: []), "Return is held back from the page")
+        XCTAssertTrue(model.bufferPanelTyping(characters: "\u{F701}", modifiers: [.numericPad, .function]), "so is ↓")
+        XCTAssertFalse(model.bufferPanelTyping(characters: "k", modifiers: .command), "⌘K still toggles")
+        XCTAssertFalse(model.bufferPanelTyping(characters: "\u{1B}", modifiers: .control), "⌃ chords pass")
+
+        XCTAssertEqual(model.panelFieldFocused(), "dePl")
+        XCTAssertFalse(model.bufferPanelTyping(characters: "o", modifiers: []), "the field has the keyboard now")
+        XCTAssertEqual(model.panelFieldFocused(), "", "handed over once")
+
+        model.toggleCommandPalette()
+        model.toggleCommandPalette()
+        XCTAssertTrue(model.bufferPanelTyping(characters: "x", modifiers: []), "a new panel waits for its field again")
+        model.commandPalettePresented = false
+        XCTAssertEqual(model.panelTypeahead, PanelTypeahead(), "closing drops what it kept")
+
+        model.toggleNewSessionPicker()
+        XCTAssertTrue(model.bufferPanelTyping(characters: "a", modifiers: []), "⌘N's field too")
+        XCTAssertEqual(model.panelFieldFocused(), "a")
+    }
+
+    func testOnlyKeysThatTypeAreKept() {
+        XCTAssertEqual(PanelTypeahead.typedText("a"), "a")
+        XCTAssertEqual(PanelTypeahead.typedText(" "), " ")
+        XCTAssertEqual(PanelTypeahead.typedText("é"), "é")
+        for key in ["", "\r", "\t", "\u{1B}", "\u{7F}", "\u{F700}", "\u{F728}"] {
+            XCTAssertNil(PanelTypeahead.typedText(key), "\(key.unicodeScalars.map(\.value))")
+        }
+    }
 }

@@ -23,11 +23,12 @@ struct CommandPaletteView: View {
     /// activity pushing it past the 40-row cap can swap it for another. A
     /// highlighted session that is no longer listed at all opens nothing:
     /// the redraw moves the highlight, and the next Return follows it.
-    /// With no results, the query goes to History.
+    /// With no results, or with the trailing "Search history for …" row
+    /// highlighted, the query goes to History.
     static func submit(_ cursor: PaletteCursor, query: String, model: AppModel) {
         let all = model.paletteResults(query)
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if all.isEmpty, !trimmed.isEmpty {
+        if !trimmed.isEmpty, all.isEmpty || cursor.onHistoryRow {
             model.searchHistory(trimmed)
             return
         }
@@ -46,6 +47,7 @@ struct CommandPaletteView: View {
         // tick while it's open, and a typed query ranks the whole index.
         let results = self.results
         let selection = cursor.index(in: results)
+        let historyRow = !trimmedQuery.isEmpty
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -75,10 +77,10 @@ struct CommandPaletteView: View {
 
             Divider()
 
-            if results.isEmpty, !trimmedQuery.isEmpty {
+            if results.isEmpty, historyRow {
                 // ⌘K only knows Temple's sessions. Its dead end points at the
                 // door: the one row opens History already searching for it.
-                SearchHistoryRow(query: trimmedQuery) { searchHistory() }
+                SearchHistoryRow(query: trimmedQuery, selected: true) { searchHistory() }
                     .frame(height: Self.rowHeight)
             } else if results.isEmpty {
                 Text("No open sessions — type to search all")
@@ -109,8 +111,16 @@ struct CommandPaletteView: View {
                     .frame(height: min(CGFloat(results.count) * Self.rowHeight, 340))
                     .thinScrollers()
                     .onChange(of: cursor) {
-                        if let id = cursor.selectedID { proxy.scrollTo(id, anchor: .center) }
+                        if !cursor.onHistoryRow, let id = cursor.selectedID { proxy.scrollTo(id, anchor: .center) }
                     }
+                }
+                if historyRow {
+                    // Archived and outside sessions are never in ⌘K, so a
+                    // query always has a way on to History: the last row,
+                    // under the list rather than in it, so it never scrolls
+                    // away. ↓ past the last result reaches it.
+                    SearchHistoryRow(query: trimmedQuery, selected: cursor.onHistoryRow) { searchHistory() }
+                        .frame(height: Self.rowHeight)
                 }
             }
         }
@@ -128,6 +138,12 @@ struct CommandPaletteView: View {
         // A redraw can drop the highlighted session (its tab closed): the
         // highlight moves to a row that is listed, and Return follows it.
         .onChange(of: results.map(\.id)) { cursor.anchor(in: results) }
+        // What was typed before the field had the keyboard comes first
+        // (AppModel.panelTypeahead). By now the field is the first
+        // responder, and the caret lands after the text.
+        .onChange(of: fieldFocused) { _, focused in
+            if focused { query += model.panelFieldFocused() }
+        }
         // Closing hands the keyboard back to the agent we took it from.
         .onDisappear { model.openSessions.focusActiveTerminal() }
         .onKeyPress(.downArrow) { move(1); return .handled }
@@ -139,7 +155,7 @@ struct CommandPaletteView: View {
     private static let rowHeight: CGFloat = 46
 
     private func move(_ delta: Int) {
-        cursor.move(delta, in: results)
+        cursor.move(delta, in: results, historyRow: !trimmedQuery.isEmpty)
     }
 
     private var trimmedQuery: String {
@@ -169,34 +185,65 @@ struct CommandPaletteView: View {
 /// freeze redraws nothing), and an index would then open whichever session
 /// slid into that row. The highlight drawn and the session Return opens are
 /// both `selected(in:)` of the same id.
+///
+/// Below the results, a typed query has one more row, "Search history for
+/// …" (`onHistoryRow`); it is reached with ↓ from the last result and left
+/// with ↑.
 struct PaletteCursor: Equatable {
     private(set) var selectedID: String?
+    /// The trailing "Search history for …" row is highlighted, not a session.
+    private(set) var onHistoryRow = false
 
-    /// The highlighted row: the selected session where it is listed, else the first.
+    /// The highlighted result row: the selected session where it is listed,
+    /// else the first; nil while the history row has the highlight.
     func index(in results: [Session]) -> Int? {
-        guard !results.isEmpty else { return nil }
+        guard !results.isEmpty, !onHistoryRow else { return nil }
         return selectedID.flatMap { id in results.firstIndex { $0.id == id } } ?? 0
     }
 
     func selected(in results: [Session]) -> Session? { index(in: results).map { results[$0] } }
 
     /// Pin the highlight to the session it is drawn on (the first row when
-    /// nothing listed is selected).
-    mutating func anchor(in results: [Session]) { selectedID = selected(in: results)?.id }
+    /// nothing listed is selected). The history row keeps it.
+    mutating func anchor(in results: [Session]) {
+        guard !onHistoryRow else { return }
+        selectedID = selected(in: results)?.id
+    }
 
-    mutating func select(_ session: Session) { selectedID = session.id }
+    mutating func select(_ session: Session) {
+        selectedID = session.id
+        onHistoryRow = false
+    }
 
-    mutating func move(_ delta: Int, in results: [Session]) {
-        guard let current = index(in: results) else { return }
+    /// - Parameter historyRow: the trailing history row is showing.
+    mutating func move(_ delta: Int, in results: [Session], historyRow: Bool = false) {
+        if onHistoryRow {
+            guard delta < 0 else { return }
+            onHistoryRow = false
+            selectedID = results.last?.id
+            return
+        }
+        guard let current = index(in: results) else {
+            if historyRow, delta > 0 { onHistoryRow = true }
+            return
+        }
+        if historyRow, current + delta > results.count - 1 {
+            onHistoryRow = true
+            return
+        }
         selectedID = results[max(0, min(results.count - 1, current + delta))].id
     }
 }
 
-/// ⌘K's only row when nothing matches: "Search history for “x”". Lit like a
-/// selected result, so Return reads as what it does.
+/// ⌘K's last row for a typed query: "Search history for “x”". Lit like a
+/// selected result when it is what Return does: always when nothing matches
+/// (it is the only row), else when the cursor is on it.
 private struct SearchHistoryRow: View {
     let query: String
+    let selected: Bool
     let action: () -> Void
+
+    @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -211,8 +258,9 @@ private struct SearchHistoryRow: View {
         }
         .padding(.horizontal, 14)
         .frame(maxHeight: .infinity)
-        .background(Palette.selectionFill)
+        .background(selected ? Palette.selectionFill : hovering ? Palette.hoverFill : Color.clear)
         .contentShape(Rectangle())
+        .onHover { hovering = $0 }
         .onTapGesture(perform: action)
     }
 }

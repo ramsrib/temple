@@ -525,6 +525,18 @@ private struct KeyCatcher: NSViewRepresentable {
                 return true
             }
 
+            // Keys typed straight after ⌘K / ⌘N reach us before the panel's
+            // field holds the keyboard: kept for that field, never handed to
+            // History's search or a terminal beneath (AppModel.panelTypeahead).
+            if model.bufferPanelTyping(characters: event.characters ?? "", modifiers: event.modifierFlags) {
+                return true
+            }
+            // The shortcuts card has no field: a text field under it gets no
+            // typing either.
+            if model.shortcutsPresented, !cmd, !ctrl, event.window?.firstResponder is NSTextView {
+                return true
+            }
+
             // The History tab: its list owns arrows, Return and Esc, and a few
             // ⌘ keys mean "this page" while it is the active tab — unless
             // another text field has the keyboard (HistoryKeys).

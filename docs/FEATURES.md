@@ -300,8 +300,10 @@ prompt composer.
   ones. Search matches the *displayed* title — a rename or the agent's own
   title — as well as the original first-prompt title, whichever scores better.
   Choosing a result opens or focuses it and switches project context as needed.
-  A query that matches nothing offers one row, **Search history for "…"**,
-  which opens the History tab already searching for it.
+  Any typed query ends with one more row, **Search history for "…"** (the only
+  row when nothing matches; `↓` past the last result reaches it), which opens
+  the History tab already searching for it: archived sessions and ones from
+  other terminals are never in `⌘K`, but they are in History.
 
 ### History tab (`⌘Y`)
 
