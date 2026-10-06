@@ -283,7 +283,7 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
 
     /// A focus request that has not been honoured yet, as the ticket it was
     /// made with (`OverlayKeyboard`): nil when there is none.
-    private var focusTicket: Int?
+    private var focusTicket: OverlayKeyboard.Ticket?
     private var wantsFocus: Bool { focusTicket != nil }
 
     /// Take the keyboard, once it is actually possible to.
@@ -309,7 +309,7 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
     private func claimFocusIfWanted() {
         guard let ticket = focusTicket, let window else { return }
         focusTicket = nil
-        guard OverlayKeyboard.mayClaim(ticket) else { return }
+        guard OverlayKeyboard.mayClaim(ticket, in: window, by: self) else { return }
         window.makeFirstResponder(self)
     }
 

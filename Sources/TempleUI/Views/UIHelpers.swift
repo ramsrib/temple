@@ -59,7 +59,7 @@ enum FieldFocus {
         }
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
-                guard OverlayKeyboard.mayClaim(ticket) else { return }
+                guard OverlayKeyboard.mayClaim(ticket, in: window) else { return }
                 focus()
             }
         }

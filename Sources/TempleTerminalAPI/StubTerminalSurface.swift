@@ -25,11 +25,21 @@ public final class StubTerminalSurface: TerminalSurface {
         processState = .running(pid: 0)
     }
 
+    /// Claim the keyboard a turn after `focus()`, as the real surface does,
+    /// instead of at once.
+    public var claimsAsynchronously = false
+
     public func focus() {
         // A panel holds the keyboard: the terminal waits, and asks again when
         // it goes (OverlayKeyboard).
-        guard OverlayKeyboard.ticket(retry: { [weak self] in self?.focus() }) != nil else { return }
-        stubView.window?.makeFirstResponder(stubView)
+        guard let ticket = OverlayKeyboard.ticket(retry: { [weak self] in self?.focus() }) else { return }
+        guard claimsAsynchronously else { return claim(ticket) }
+        DispatchQueue.main.async { [weak self] in self?.claim(ticket) }
+    }
+
+    private func claim(_ ticket: OverlayKeyboard.Ticket) {
+        guard let window = stubView.window, OverlayKeyboard.mayClaim(ticket, in: window, by: stubView) else { return }
+        window.makeFirstResponder(stubView)
     }
 
     public func apply(_ appearance: TerminalAppearance) {

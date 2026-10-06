@@ -35,6 +35,8 @@ public final class OverlayFocus {
 
     /// The panel field that took the keyboard for this presentation.
     private weak var claimedField: NSTextField?
+    /// The hosting view of the panel up now.
+    private weak var currentHost: NSView?
     /// OverlayFocus itself is moving the keyboard: the inert responder lets
     /// it go only then while a panel is up.
     static private(set) var handingOver = false
@@ -42,6 +44,7 @@ public final class OverlayFocus {
     /// The inert responder, in the app's window.
     func attach(inert: NSView) {
         self.inert = inert
+        (inert as? OverlayInertResponder)?.owner = self
         OverlayKeyboard.onAdmissionRefused = { [weak self] in
             // After AppKit has finished seating the window itself.
             DispatchQueue.main.async { self?.reseat() }
@@ -78,7 +81,9 @@ public final class OverlayFocus {
         if panel != nil {
             if previous == nil { restoreTarget = Self.owner(of: window.firstResponder, inert: inert) }
             claimedField = nil
+            currentHost = nil
             OverlayKeyboard.hold()
+            OverlayKeyboard.placeholder = inert
             hand(window, to: inert)
         } else {
             // The panel's field gives the keyboard back to the inert
@@ -86,6 +91,7 @@ public final class OverlayFocus {
             // handed on, keys go nowhere rather than into a dying field.
             hand(window, to: inert)
             claimedField = nil
+            currentHost = nil
             let target = restoreTarget
             restoreTarget = nil
             // Releasing makes again the request the panel's action made while
@@ -119,28 +125,44 @@ public final class OverlayFocus {
         }
     }
 
-    /// A panel's hosting view is in the tree for presentation `token`: its
-    /// first text field takes the keyboard, once for that presentation.
-    /// SwiftUI builds the field a layout pass or two later, so it is looked
-    /// for over a few turns. Called again whenever the token changes for a
-    /// host SwiftUI kept (a close and reopen inside one update reuses it).
+    /// A panel's hosting view is ready for presentation `token` (in a
+    /// window, laid out, or updated): its first text field takes the
+    /// keyboard, once for that presentation. Called on every such moment
+    /// until it has (SwiftUI builds the field a pass or more after the
+    /// host appears), and again for a host SwiftUI kept across a close and
+    /// reopen. The presentation counts as claimed only once the field's
+    /// editor really is the first responder.
     func panelMounted(_ host: NSView, token: Int) {
-        claim(in: host, token: token, attempts: 30)
-    }
-
-    private func claim(in host: NSView, token: Int, attempts: Int) {
         guard token == self.token, panel != nil, claimedToken != token else { return }
-        if let window = host.window, let field = Self.firstTextField(in: host) {
-            claimedToken = token
-            claimedField = field
-            hand(window, to: field)
+        currentHost = host
+        guard let inert, let window = host.window, window === inert.window,
+              let field = Self.firstTextField(in: host) else { return }
+        // Already in the panel (a click into its field): that is the claim.
+        if let holder = window.firstResponder as? NSView, holder.isDescendant(of: host) {
+            claimed(field, token: token)
             return
         }
-        guard attempts > 0 else { return }
-        DispatchQueue.main.async { [weak self, weak host] in
-            guard let self, let host else { return }
-            self.claim(in: host, token: token, attempts: attempts - 1)
+        hand(window, to: field)
+        if let editor = field.currentEditor(), window.firstResponder === editor {
+            claimed(field, token: token)
+        } else if window.firstResponder !== inert {
+            // Refused: the inert responder keeps the keyboard until the next try.
+            hand(window, to: inert)
         }
+    }
+
+    private func claimed(_ field: NSTextField, token: Int) {
+        claimedToken = token
+        claimedField = field
+    }
+
+    /// A mouse-down inside the panel up now: the inert responder lets the
+    /// keyboard go to it, so a click into the panel's field always works.
+    func isClickInCurrentPanel(_ event: NSEvent?) -> Bool {
+        guard OverlayKeyboard.isHeld, let event,
+              [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type),
+              let host = currentHost, let window = host.window, event.window === window else { return false }
+        return host.bounds.contains(host.convert(event.locationInWindow, from: nil))
     }
 
     static func firstTextField(in view: NSView) -> NSTextField? {
@@ -160,16 +182,24 @@ public final class OverlayFocus {
     }
 }
 
-/// A panel host's memory of the presentation it last handed to
-/// OverlayFocus: a host SwiftUI keeps across a close and reopen hands the
-/// new presentation over too, or its field would never take the keyboard.
+/// A panel host's link to OverlayFocus: the presentation it is drawn for,
+/// handed over on every update and readiness moment, so a host SwiftUI keeps
+/// across a close and reopen hands the new presentation over too.
 @MainActor
 final class PanelHandOver {
     private var token: Int?
+    private weak var focus: OverlayFocus?
 
+    /// SwiftUI updated the panel: the presentation it is drawn for now.
     func update(_ host: NSView, token: Int, focus: OverlayFocus) {
-        guard token != self.token else { return }
         self.token = token
+        self.focus = focus
+        ready(host)
+    }
+
+    /// The host moved into a window or laid out (`PanelHostingView`).
+    func ready(_ host: NSView) {
+        guard let token, let focus else { return }
         focus.panelMounted(host, token: token)
     }
 }
@@ -179,11 +209,14 @@ final class PanelHandOver {
 /// equivalents (the menus) and Temple's key router act before a key gets
 /// here, so Esc and the shortcuts still work; nothing else is classified.
 class OverlayInertResponder: NSView {
+    weak var owner: OverlayFocus?
     override var acceptsFirstResponder: Bool { OverlayKeyboard.isHeld }
-    /// While a panel is up only OverlayFocus moves the keyboard on (to the
-    /// panel's field); AppKit handing it to anything else is refused here.
+    /// While a panel is up the keyboard goes on only to the panel: handed by
+    /// OverlayFocus, or by a click inside the panel. AppKit handing it to
+    /// anything else is refused here.
     override func resignFirstResponder() -> Bool {
-        guard !OverlayKeyboard.isHeld || OverlayFocus.handingOver else { return false }
+        guard !OverlayKeyboard.isHeld || OverlayFocus.handingOver
+                || owner?.isClickInCurrentPanel(NSApp.currentEvent) == true else { return false }
         return super.resignFirstResponder()
     }
     override func keyDown(with event: NSEvent) {}

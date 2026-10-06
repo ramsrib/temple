@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import TempleUI
 import TempleCore
@@ -126,7 +127,7 @@ final class OverlayFocusTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === field.currentEditor(), "the panel keeps the keyboard")
         XCTAssertNil(OverlayKeyboard.ticket(), "every request is refused while it is up")
         model.toggleCommandPalette()
-        XCTAssertFalse(OverlayKeyboard.mayClaim(try! XCTUnwrap(earlier)), "a claim from before the panel is void after it")
+        XCTAssertFalse(OverlayKeyboard.mayClaim(try! XCTUnwrap(earlier), in: window), "a claim from before the panel is void after it")
     }
 
     func testGoingFromThePaletteToThePickerNeverFocusesTheTerminal() {
@@ -256,5 +257,114 @@ final class OverlayFocusTests: XCTestCase {
         model.newSessionPickerPresented = false   // then the picker goes
         turn()
         XCTAssertTrue(window.firstResponder === surface.view, "the new session, not the sidebar's field")
+    }
+
+    /// A text field that refuses the keyboard the first `refusals` times.
+    private final class ShyField: NSTextField {
+        var refusals = 1
+        override func becomeFirstResponder() -> Bool {
+            if refusals > 0 { refusals -= 1; return false }
+            return super.becomeFirstResponder()
+        }
+    }
+
+    /// A real panel host whose field SwiftUI builds late: long after the
+    /// panel appeared, a layout of the host is what lets the field claim.
+    func testAFieldThatMountsLateStillTakesTheKeyboard() {
+        XCTAssertTrue(window.makeFirstResponder(terminal))
+        model.toggleCommandPalette()
+        let host = PanelHostingView(rootView: AnyView(Color.clear))
+        host.frame = NSRect(x: 320, y: 200, width: 260, height: 60)
+        let handOver = PanelHandOver()
+        host.whenReady = { [weak host] in if let host { handOver.ready(host) } }
+        window.contentView?.addSubview(host)
+        handOver.update(host, token: model.overlayFocus.token, focus: model.overlayFocus)
+        for _ in 0..<40 { RunLoop.main.run(until: Date().addingTimeInterval(0.005)) }
+        XCTAssertTrue(window.firstResponder === inert, "no field yet")
+        let field = NSTextField(frame: NSRect(x: 10, y: 20, width: 200, height: 22))
+        host.addSubview(field)
+        host.needsLayout = true
+        window.layoutIfNeeded()
+        turn()
+        XCTAssertTrue(window.firstResponder === field.currentEditor(), "the late field took it on layout")
+    }
+
+    /// The field refuses the first hand-off: the presentation is not marked
+    /// claimed, the inert responder keeps the keyboard, and the next
+    /// readiness moment succeeds.
+    func testARefusedHandOffIsTriedAgain() {
+        XCTAssertTrue(window.makeFirstResponder(terminal))
+        model.toggleCommandPalette()
+        let host = NSView(frame: NSRect(x: 320, y: 200, width: 260, height: 60))
+        let field = ShyField(frame: NSRect(x: 10, y: 20, width: 200, height: 22))
+        host.addSubview(field)
+        window.contentView?.addSubview(host)
+        let handOver = PanelHandOver()
+        handOver.update(host, token: model.overlayFocus.token, focus: model.overlayFocus)
+        XCTAssertTrue(window.firstResponder === inert, "refused: the inert responder still has it")
+        handOver.ready(host)
+        XCTAssertTrue(window.firstResponder === field.currentEditor())
+        XCTAssertEqual(terminal.keys, [])
+    }
+
+    /// A click into the panel's field takes the keyboard from the inert
+    /// responder even when no hand-off has worked yet.
+    func testAClickIntoThePanelFieldAlwaysWorks() throws {
+        model.toggleCommandPalette()
+        let host = NSView(frame: NSRect(x: 320, y: 200, width: 260, height: 60))
+        let field = ShyField(frame: NSRect(x: 10, y: 20, width: 200, height: 22))
+        host.addSubview(field)
+        window.contentView?.addSubview(host)
+        PanelHandOver().update(host, token: model.overlayFocus.token, focus: model.overlayFocus)
+        XCTAssertTrue(window.firstResponder === inert)
+        XCTAssertFalse(window.makeFirstResponder(field), "not handed by anyone: refused")
+
+        func mouseDown(at point: NSPoint) throws -> NSEvent {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(
+                with: .leftMouseDown, location: point, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+            // Taken off the queue as the run loop does, so it is the app's
+            // current event while the click is handled.
+            NSApp.postEvent(event, atStart: true)
+            return try XCTUnwrap(NSApp.nextEvent(matching: .leftMouseDown, until: .distantPast,
+                                                 inMode: .default, dequeue: true))
+        }
+        // A click outside the panel (on what is under it) does not get it.
+        _ = try mouseDown(at: terminal.convert(NSPoint(x: 5, y: 5), to: nil))
+        XCTAssertFalse(window.makeFirstResponder(field))
+        // A click on the field: what NSTextField's mouseDown does next.
+        _ = try mouseDown(at: field.convert(NSPoint(x: field.bounds.midX, y: field.bounds.midY), to: nil))
+        XCTAssertTrue(window.makeFirstResponder(field))
+        XCTAssertTrue(window.firstResponder === field.currentEditor(), "the click put the keyboard in the field")
+    }
+
+    /// A focus request kept through the picker is made again when it goes,
+    /// and its claim runs a turn later, as Ghostty's does. If the user put
+    /// the keyboard in a field themselves in between, the claim stands down.
+    func testAReplayedTerminalClaimDoesNotTakeAFieldFocusedSinceDismissal() {
+        let surface = stubTerminal()
+        surface.claimsAsynchronously = true
+        XCTAssertTrue(window.makeFirstResponder(terminal))
+        model.toggleNewSessionPicker()
+        mountPanel()
+        surface.focus()                           // kept while the picker holds the keyboard
+        model.newSessionPickerPresented = false   // made again: its claim is now queued
+        XCTAssertTrue(window.makeFirstResponder(historyField))
+        turn()
+        XCTAssertTrue(window.firstResponder === historyField.currentEditor(), "the field keeps it")
+    }
+
+    /// With nobody else in between, the replayed claim lands.
+    func testAReplayedTerminalClaimLandsWhenNothingElseTookTheKeyboard() {
+        let surface = stubTerminal()
+        surface.claimsAsynchronously = true
+        XCTAssertTrue(window.makeFirstResponder(terminal))
+        model.toggleNewSessionPicker()
+        mountPanel()
+        surface.focus()
+        model.newSessionPickerPresented = false
+        turn()
+        XCTAssertTrue(window.firstResponder === surface.view)
     }
 }

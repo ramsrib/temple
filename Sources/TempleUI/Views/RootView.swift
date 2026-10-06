@@ -315,8 +315,10 @@ private struct PanelHost<Content: View>: NSViewRepresentable {
     func makeCoordinator() -> PanelHandOver { PanelHandOver() }
 
     func makeNSView(context: Context) -> NSHostingView<Content> {
-        let view = NSHostingView(rootView: content())
-        handOver(view, context.coordinator)
+        let view = PanelHostingView(rootView: content())
+        let handOver = context.coordinator
+        view.whenReady = { [weak view] in if let view { handOver.ready(view) } }
+        self.handOver(view, handOver)
         view.sizingOptions = .intrinsicContentSize
         view.clipsToBounds = false
         // A floating panel wants no safe-area participation — and on macOS 26
@@ -338,6 +340,28 @@ private struct PanelHost<Content: View>: NSViewRepresentable {
     private func handOver(_ view: NSView, _ handOver: PanelHandOver) {
         guard let focus else { return }
         handOver.update(view, token: token, focus: focus)
+    }
+}
+
+/// A panel's hosting view that says when it is ready for its field to take
+/// the keyboard: in a window, or laid out (SwiftUI has built more of it).
+/// Told a turn later, outside the layout pass.
+final class PanelHostingView<Content: View>: NSHostingView<Content> {
+    var whenReady: (@MainActor () -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        announceReady()
+    }
+
+    override func layout() {
+        super.layout()
+        announceReady()
+    }
+
+    private func announceReady() {
+        guard window != nil, let whenReady else { return }
+        DispatchQueue.main.async { MainActor.assumeIsolated(whenReady) }
     }
 }
 
