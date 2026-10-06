@@ -1758,3 +1758,42 @@ previous commit, whose every read is a full parse):
 | refresh, nothing changed | 0.07 s, 0 parses | 0.34 s, 0 parses |
 | relaunch, first read from disk (first batch / whole) | 0.10 s / 0.11 s, 0 parses | 0.43–0.44 s / 0.49–0.50 s, 0 parses |
 | disk cache size | 1.3 MB | 6.5 MB |
+
+## ADR-033 — An overlay panel owns the keyboard from the call that presents it
+**Date:** 2026-10-05 · **Status:** Accepted
+
+A hands-on UI test found that typing straight after `⌘K` split the keys
+between History's search field and the palette. SwiftUI builds a panel's
+field a turn or more after the chord, so for that interval the keyboard
+belongs to whatever was focused underneath: History's search, a sidebar
+field, or a terminal. The same gap let a key meant for the `⌘N` picker, or a
+`⌘⌫` under the shortcuts card, reach a terminal.
+
+**Decision: one invariant, focus ownership.** In the same call that presents
+a panel (`⌘K`, the `⌘N` picker, the `⌘/` card), `OverlayFocus` records who
+had the keyboard and makes an inert responder the first responder. The
+panel's field takes the keyboard when it is ready (`PanelHostingView`
+readiness, once per presentation token, counted only when it really holds
+it); a click inside the current panel always may. While a panel holds the
+keyboard, nothing else may take it: terminal surfaces refuse first
+responder, and every terminal and field focus request goes through the
+`OverlayKeyboard` gate in `TempleTerminalAPI` (the one UI concept the
+terminal module knows). A request refused while held is kept, latest wins,
+and made again on release only if nobody else has taken the keyboard since.
+Dismissal restores by intent: where the panel's action sent focus, else the
+recorded control. Modal windows (the `⌘O` chooser) get the keyboard because
+panels are put away before they open.
+
+**Rejected, each after two or three review rounds that kept finding new
+cases:** holding keys typed before the field had focus and replaying them
+(IME and dead keys, ordering, reentrancy, replay racing SwiftUI's state,
+keys landing in a terminal if focus moved mid-replay); and classifying keys
+with a deny list, then an allow list (each leaked chords such as `⌘⌫`,
+`⌘←`, `⌘⇧F` to a terminal, and neither covered the interval before the panel
+existed). Do not reintroduce either: a key never needs judging when the
+terminal is simply not first responder.
+
+**Consequence, accepted:** a key typed before the panel's field is ready is
+dropped, never delivered elsewhere. Esc and Temple's own shortcuts still work
+throughout, because menus and the key router act before a key reaches the
+inert responder.
