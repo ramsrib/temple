@@ -424,23 +424,8 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    @Published public var commandPalettePresented = false {
-        didSet { if commandPalettePresented != oldValue { panelKeys.reset() } }
-    }
-    @Published public var newSessionPickerPresented = false {
-        didSet { if newSessionPickerPresented != oldValue { panelKeys.reset() } }
-    }
-
-    /// Keys typed after ⌘K or ⌘N before the panel's field has the keyboard,
-    /// held and sent again once it does (`PanelKeyHold`). Opening or closing
-    /// either panel drops what it holds.
-    public let panelKeys = PanelKeyHold()
-
-    /// The key router's question for each key-down while ⌘K or ⌘N is up:
-    /// is it held for the panel's field? (See `PanelKeyHold.hold`.)
-    public func holdPanelKey(_ event: NSEvent) -> Bool {
-        panelKeys.hold(event, panelUp: commandPalettePresented || newSessionPickerPresented)
-    }
+    @Published public var commandPalettePresented = false
+    @Published public var newSessionPickerPresented = false
 
     // ⌘P project switcher (ProjectSwitcherHUD) — modelled on ⌘⇥, not on ⌘K:
     // switching projects is picking from a handful you are holding in your head,

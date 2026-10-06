@@ -208,7 +208,7 @@ public struct RootView: View {
             ZStack {
                 OverlayBackdrop { model.shortcutsPresented = false }
                     .ignoresSafeArea()
-                PanelHost {
+                PanelHost(guardsKeyboard: true) {
                     ShortcutsView(maxHeight: max(200, geo.size.height - 2 * ShortcutsView.windowMargin))
                 }
                 .fixedSize()
@@ -226,7 +226,7 @@ public struct RootView: View {
             ZStack(alignment: .top) {
                 OverlayBackdrop { model.commandPalettePresented = false }
                     .ignoresSafeArea()
-                PanelHost {
+                PanelHost(guardsKeyboard: true) {
                     CommandPaletteView()
                         .environmentObject(model)
                         .tint(Palette.accent)
@@ -245,7 +245,7 @@ public struct RootView: View {
             ZStack(alignment: .top) {
                 OverlayBackdrop { model.newSessionPickerPresented = false }
                     .ignoresSafeArea()
-                PanelHost {
+                PanelHost(guardsKeyboard: true) {
                     NewSessionPickerView()
                         .environmentObject(model)
                         .tint(Palette.accent)
@@ -303,10 +303,15 @@ private struct OverlayBackdrop: NSViewRepresentable {
 /// See OverlayBackdrop. `clipsToBounds = false` keeps the panel's soft
 /// shadow, which extends past the hosting view's intrinsic bounds.
 private struct PanelHost<Content: View>: NSViewRepresentable {
+    /// A panel that takes typing (⌘K, ⌘N, ⌘/): the key router keeps keys
+    /// from what is under it until the keyboard is in it (PanelKeyboard).
+    /// The switchers own the keyboard through the router already.
+    var guardsKeyboard = false
     @ViewBuilder let content: () -> Content
 
     func makeNSView(context: Context) -> NSHostingView<Content> {
         let view = NSHostingView(rootView: content())
+        if guardsKeyboard { PanelKeyboard.host = view }
         view.sizingOptions = .intrinsicContentSize
         view.clipsToBounds = false
         // A floating panel wants no safe-area participation — and on macOS 26
@@ -533,16 +538,13 @@ private struct KeyCatcher: NSViewRepresentable {
                 return true
             }
 
-            // Keys typed straight after ⌘K / ⌘N reach us before the panel's
-            // field holds the keyboard: held, and sent again once it does,
-            // never to History's search or a terminal beneath (PanelKeyHold).
-            // Esc (above) and ⌘ / ⌃ chords are not held.
-            if model.holdPanelKey(event) {
-                return true
-            }
-            // The shortcuts card has no field: a text field under it gets no
-            // typing either.
-            if model.shortcutsPresented, !cmd, !ctrl, event.window?.firstResponder is NSTextView {
+            // A panel is up but its field does not have the keyboard yet (or
+            // has lost it): keys stop here rather than reach History's
+            // search or a terminal beneath. Esc (above) and the app's ⌘
+            // shortcuts (below) still act. See PanelKeyboard.
+            if PanelKeyboard.swallows(panelUp: model.panelPresented,
+                                      panelOwnsKeyboard: PanelKeyboard.panelOwnsKeyboard(in: event.window),
+                                      modifiers: event.modifierFlags, characters: chars) {
                 return true
             }
 
