@@ -94,6 +94,13 @@ struct HistoryTabView: View {
         // The key router tells this field from any other by this flag.
         .onChange(of: searchFocused) { _, focused in
             history.searchFieldFocused = focused
+            // By now the field's editor is the first responder: its delegate
+            // is History's search control, which Restore's ⌘Z needs to tell
+            // from every other field (HistoryModel.searchControl).
+            let window = NSApp.keyWindow ?? NSApp.mainWindow
+            if focused, let control = (window?.firstResponder as? NSTextView)?.delegate as? NSControl {
+                history.searchControl = control
+            }
         }
         .onChange(of: history.focusSearchRequest) {
             FieldFocus.claim { searchFocused = true }

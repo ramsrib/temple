@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Combine
 import TempleCore
 
@@ -214,15 +215,19 @@ public final class HistoryModel: ObservableObject {
     @Published public var pendingImport: ImportRequest?
     @Published public var importFailure: ImportFailure?
     @Published public private(set) var notice: Notice?
-    /// Empties the focused text field's own undo stack, never the window's
-    /// (`FieldEditorUndo`), in the window whose undo manager History was
-    /// handed. Called in the same call that puts a History step on that
-    /// stack (every notice that offers Undo ⌘Z): while
-    /// History's search field has the keyboard, ⌘Z asks the field's stack
-    /// first, and a query typed and cleared earlier came back instead of the
-    /// undo the notice names. Doing it then, not on a later view update,
-    /// leaves no moment in which a queued ⌘Z can still reach the text.
-    var forgetFieldUndo: @MainActor (UndoManager) -> Void = { FieldEditorUndo.forget(inWindowsUsing: $0) }
+    /// History's own search field, recorded by the page when the field takes
+    /// the keyboard. Held weakly; whether it is editing is asked live.
+    weak var searchControl: NSControl?
+    /// Empties History's search field's own undo stack, and only that one
+    /// (`FieldEditorUndo.forget(editing:)`), if that field is the window's
+    /// first responder right now. Called in the same call that puts a
+    /// History step on the window's undo stack (every notice that offers
+    /// Undo ⌘Z): while the field has the keyboard, ⌘Z asks the field's
+    /// stack first, and a query typed and cleared earlier came back instead
+    /// of the undo the notice names. Doing it in that call leaves no moment
+    /// in which a queued ⌘Z can still reach the text; asking for History's
+    /// own field leaves every other field's history (Settings, ⌘K) alone.
+    var forgetSearchUndo: @MainActor (NSControl?) -> Void = { FieldEditorUndo.forget(editing: $0) }
     /// Rows whose status column reads "Imported" for a moment.
     @Published public private(set) var justImported: Set<HistoryKey> = []
 
@@ -1068,9 +1073,9 @@ public final class HistoryModel: ObservableObject {
         clearSelection()
         archiveMembers(ids, undoManager) { [weak self] archived in
             self?.showNotice(Notice(text: archived ? Self.archivedNotice(ids.count) : Self.archiveUndoneNotice(ids.count),
-                                    offersUndo: archived && undoManager != nil), undoManager: undoManager)
+                                    offersUndo: archived && undoManager != nil))
         }
-        showNotice(Notice(text: Self.archivedNotice(ids.count), offersUndo: undoManager != nil), undoManager: undoManager)
+        showNotice(Notice(text: Self.archivedNotice(ids.count), offersUndo: undoManager != nil))
     }
 
     static func archivedNotice(_ count: Int) -> String {
@@ -1095,20 +1100,20 @@ public final class HistoryModel: ObservableObject {
         let report = restoreMembers(refs, undoManager) { [weak self] change in
             switch change {
             case .undone: self?.showNotice(Notice(text: "Restore undone", offersUndo: false))
-            case .redone(let report): self?.announce(report, undoManager: undoManager)
+            case .redone(let report): self?.announce(report)
             }
         }
-        announce(report, undoManager: undoManager)
+        announce(report)
     }
 
     /// What a Restore did, in its own numbers. Undo only for a step this
     /// operation put on the stack: otherwise ⌘Z would undo something else.
-    private func announce(_ report: AppModel.RestoreReport, undoManager: UndoManager?) {
+    private func announce(_ report: AppModel.RestoreReport) {
         guard report.restored > 0 else {
             showNotice(Notice(text: Self.nothingRestoredNotice, offersUndo: false))
             return
         }
-        showNotice(Notice(text: Self.restoredNotice(report.restored), offersUndo: report.undoable), undoManager: undoManager)
+        showNotice(Notice(text: Self.restoredNotice(report.restored), offersUndo: report.undoable))
     }
 
     static let nothingRestoredNotice = "Nothing to restore; it changed since the list loaded."
@@ -1127,7 +1132,7 @@ public final class HistoryModel: ObservableObject {
     /// not archived itself comes back with it.
     public func restoreProject(_ key: ProjectKey, undoManager: UndoManager?) {
         restoreProjectAction(key, undoManager)
-        showNotice(Notice(text: "\(key.displayName) restored", offersUndo: undoManager != nil), undoManager: undoManager)
+        showNotice(Notice(text: "\(key.displayName) restored", offersUndo: undoManager != nil))
     }
 
     static func restoredNotice(_ count: Int) -> String {
@@ -1270,7 +1275,7 @@ public final class HistoryModel: ObservableObject {
             let importedKeys = Set(imported)
             markJustImported(imported)
             showNotice(Notice(text: imported.count == 1 ? "1 session imported" : "\(imported.count) sessions imported",
-                              offersUndo: undoManager != nil), undoManager: undoManager)
+                              offersUndo: undoManager != nil))
             registerUndo(undoManager, imported: imported, incarnations: incarnations,
                          sessions: attempted.filter { importedKeys.contains(HistoryKey($0)) })
         }
@@ -1373,11 +1378,9 @@ public final class HistoryModel: ObservableObject {
         }
     }
 
-    /// - Parameter undoManager: the stack the step that this notice offers
-    ///   to undo went on.
-    private func showNotice(_ notice: Notice, undoManager: UndoManager? = nil) {
+    private func showNotice(_ notice: Notice) {
         self.notice = notice
-        if notice.offersUndo, let undoManager { forgetFieldUndo(undoManager) }
+        if notice.offersUndo { forgetSearchUndo(searchControl) }
         noticeTask?.cancel()
         let delay = noticeDuration
         noticeTask = Task { [weak self] in

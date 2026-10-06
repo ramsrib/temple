@@ -2031,7 +2031,7 @@ final class HistoryArchiveTests: XCTestCase {
         _ = overlay.join("a1", via: .imported, agent: .claude, core: SessionCore(directory: "/p/y"))
         // As in the app: the event's group is only opened by a registration.
         var forgets = 0
-        model.history.forgetFieldUndo = { _ in forgets += 1 }
+        model.history.forgetSearchUndo = { _ in forgets += 1 }
         model.history.restore([shown], undoManager: undo)
 
         XCTAssertEqual(model.history.notice,
@@ -2055,10 +2055,7 @@ final class HistoryArchiveTests: XCTestCase {
         let undo = undoManager()
 
         var forgets = 0
-        model.history.forgetFieldUndo = { manager in
-            forgets += 1
-            XCTAssertTrue(manager === undo, "the stack the step went on")
-        }
+        model.history.forgetSearchUndo = { _ in forgets += 1 }
         undo.beginUndoGrouping()
         model.history.restore(shown, undoManager: undo)
         undo.endUndoGrouping()
@@ -2077,52 +2074,104 @@ final class HistoryArchiveTests: XCTestCase {
         XCTAssertEqual(forgets, 2, "a redo is a step again")
     }
 
-    /// The ⌘Z the notice offers, pressed at once after Restore while a real
-    /// SwiftUI search field holds the keyboard with text undo of its own:
-    /// it undoes the Restore and leaves the text alone. Nothing runs between
-    /// the two (no view update), which is the order a queued ⌘Z arrives in.
-    func testCommandZRightAfterRestoreReachesTheWindowFromAFocusedSearchField() async throws {
+    /// Two real SwiftUI text fields in one window, as History's search and
+    /// some other field (Settings, ⌘K): each keeps an undo stack of its own.
+    private func twoSearchFields() throws -> (NSWindow, history: NSTextField, other: NSTextField) {
+        final class Box: ObservableObject { @Published var a = ""; @Published var b = "" }
+        struct Fields: View {
+            @ObservedObject var box: Box
+            var body: some View {
+                VStack { TextField("Search history", text: $box.a); TextField("Other", text: $box.b) }.frame(width: 300)
+            }
+        }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 120),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: Fields(box: Box()))
+        func fields(in view: NSView) -> [NSTextField] {
+            ((view as? NSTextField).map { $0.isEditable ? [$0] : [] } ?? []) + view.subviews.flatMap(fields(in:))
+        }
+        var found: [NSTextField] = []
+        let deadline = Date().addingTimeInterval(5)
+        while found.count < 2, Date() < deadline {
+            window.layoutIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            found = window.contentView.map(fields(in:)) ?? []
+        }
+        XCTAssertEqual(found.count, 2, "SwiftUI built both fields")
+        let sorted = found.sorted { $0.frame.minY > $1.frame.minY || $0.convert($0.bounds, to: nil).minY > $1.convert($1.bounds, to: nil).minY }
+        return (window, sorted[0], sorted[1])
+    }
+
+    /// Ends editing and empties the window's stack before it goes: undo
+    /// steps History registered there hold the model as their target.
+    private func retire(_ window: NSWindow) {
+        window.makeFirstResponder(nil)
+        window.undoManager?.removeAllActions()
+        window.close()
+    }
+
+    /// Types into a field through its editor; returns that editor.
+    private func typeInto(_ field: NSTextField, _ text: String, in window: NSWindow) throws -> NSTextView {
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let editor = try XCTUnwrap(window.firstResponder as? NSTextView)
+        editor.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+        let own = try XCTUnwrap(editor.undoManager)
+        XCTAssertFalse(own === window.undoManager, "SwiftUI's field editor keeps its own undo stack")
+        XCTAssertTrue(own.canUndo, "the typing is undoable in the field")
+        return editor
+    }
+
+    private func archivedRow() async throws -> (AppModel, SessionOverlayStore, HistoryRow) {
         let (model, overlay, database) = makeModel([Fixture.row("gone", project: "/p/a")])
         let ref = MembershipRef(id: "gone", host: .local, incarnation: try XCTUnwrap(database.sessionState("gone")?.incarnation))
         XCTAssertEqual(try database.autoArchive([AutoArchiveEntry(ref: ref, reason: .transcriptMissing)],
                                                 idleBefore: .distantFuture, at: Date()), ["gone"])
         _ = await page(model)
+        return (model, overlay, try XCTUnwrap(row(model, "gone")))
+    }
 
-        final class Box: ObservableObject { @Published var text = "" }
-        struct Search: View {
-            @ObservedObject var box: Box
-            var body: some View { TextField("Search history", text: $box.text).frame(width: 300) }
-        }
-        let box = Box()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 80),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        defer { window.close() }
-        window.contentView = NSHostingView(rootView: Search(box: box))
-        window.layoutIfNeeded()
-        func textField(in view: NSView) -> NSTextField? {
-            if let field = view as? NSTextField, field.isEditable { return field }
-            return view.subviews.lazy.compactMap(textField(in:)).first
-        }
-        var field: NSTextField?
-        let deadline = Date().addingTimeInterval(5)
-        while field == nil, Date() < deadline {
-            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-            field = window.contentView.flatMap(textField(in:))
-        }
-        XCTAssertTrue(window.makeFirstResponder(try XCTUnwrap(field, "SwiftUI built no text field")))
-        let editor = try XCTUnwrap(window.firstResponder as? NSTextView)
-        editor.insertText("deploy", replacementRange: NSRange(location: NSNotFound, length: 0))
-        let fieldUndo = try XCTUnwrap(editor.undoManager)
-        XCTAssertFalse(fieldUndo === window.undoManager, "SwiftUI's field editor keeps its own undo stack")
-        XCTAssertTrue(fieldUndo.canUndo, "the typing is undoable in the field")
+    /// The ⌘Z the notice offers, pressed at once after Restore while
+    /// History's real search field holds the keyboard with text undo of its
+    /// own: it undoes the Restore and leaves the text alone. Nothing runs
+    /// between the two (no view update), the order a queued ⌘Z arrives in.
+    func testCommandZRightAfterRestoreReachesTheWindowFromHistorysSearchField() async throws {
+        let (model, overlay, row) = try await archivedRow()
+        let (window, search, _) = try twoSearchFields()
+        defer { retire(window) }
+        let editor = try typeInto(search, "deploy", in: window)
+        model.history.searchControl = search
 
-        model.history.restore([try XCTUnwrap(row(model, "gone"))], undoManager: window.undoManager)
+        model.history.restore([row], undoManager: window.undoManager)
         XCTAssertFalse(overlay.isArchived("gone"))
         XCTAssertTrue(NSApplication.shared.sendAction(Selector(("undo:")), to: window, from: nil))
 
         XCTAssertTrue(overlay.isArchived("gone"), "⌘Z undid the Restore")
         XCTAssertEqual(editor.string, "deploy", "and not the search text")
+    }
+
+    /// Another field with the keyboard (Settings, ⌘K) keeps its own undo
+    /// history through a History Restore and its redo: only History's search
+    /// field is History's to clear. So ⌘Z there still undoes the typing
+    /// first. (`canUndo` cannot tell: SwiftUI's field editor answers it for
+    /// the window's stack too, so the probe is what ⌘Z actually undoes.)
+    func testAnotherFieldKeepsItsUndoThroughAHistoryRestoreAndRedo() async throws {
+        let (model, overlay, row) = try await archivedRow()
+        let (window, search, other) = try twoSearchFields()
+        defer { retire(window) }
+        model.history.searchControl = search
+        let editor = try typeInto(other, "13", in: window)
+
+        let undo = try XCTUnwrap(window.undoManager)
+        model.history.restore([row], undoManager: undo)
+        undo.undo()
+        undo.redo()
+        XCTAssertEqual(model.history.notice?.offersUndo, true, "the redo offered Undo again")
+        XCTAssertFalse(overlay.isArchived("gone"))
+
+        XCTAssertTrue(NSApplication.shared.sendAction(Selector(("undo:")), to: window, from: nil))
+        XCTAssertEqual(editor.string, "", "⌘Z in the other field undid its typing")
+        XCTAssertFalse(overlay.isArchived("gone"), "not the Restore")
     }
 
     /// History's search matches the displayed and the original titles: a

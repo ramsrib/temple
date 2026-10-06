@@ -76,13 +76,14 @@ enum FieldEditorUndo {
         return true
     }
 
-    /// `forget` in each window whose undo stack is `undoManager`: the one a
-    /// History action just put its step on.
+    /// Empties `control`'s own undo stack, and nothing else: only when the
+    /// control is editing and its editor is its window's first responder.
     @MainActor
-    static func forget(inWindowsUsing undoManager: UndoManager) {
-        for window in NSApplication.shared.windows where window.undoManager === undoManager {
-            forget(in: window)
-        }
+    @discardableResult
+    static func forget(editing control: NSControl?) -> Bool {
+        guard let control, let window = control.window, let editor = control.currentEditor(),
+              window.firstResponder === editor else { return false }
+        return forget(in: window)
     }
 }
 
