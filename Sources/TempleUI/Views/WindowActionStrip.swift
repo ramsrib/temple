@@ -22,6 +22,13 @@ struct WindowActionStrip: NSViewRepresentable {
         private var mouseDownEvent: NSEvent?
 
         override func mouseDown(with event: NSEvent) {
+            // Inside the title bar the window already zooms and drags on its
+            // own: acting here too zoomed twice, so a double-click maximized
+            // the window and put it straight back (seen on macOS 27).
+            if let window, event.locationInWindow.y >= window.contentLayoutRect.maxY {
+                mouseDownEvent = nil
+                return
+            }
             if event.clickCount == 2, let window {
                 mouseDownEvent = nil
                 Self.performSystemDoubleClickAction(on: window)
