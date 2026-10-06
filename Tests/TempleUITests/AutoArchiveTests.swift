@@ -638,6 +638,7 @@ final class AutoArchiveTests: XCTestCase {
         XCTAssertEqual(history.query, "", "filters left from an earlier visit give way")
         XCTAssertEqual(history.justArchivedChip?.memberships, Set(notice.memberships))
         XCTAssertEqual(history.justArchivedChip?.count, 2)
+        XCTAssertNil(h.model.autoArchiveNotice, "View closes the notice; the chip carries the set")
         history.activate()
         await history.settle()
         XCTAssertEqual(Set(history.visibleRows.map(\.sessionID)), ["gone", "also-gone"])

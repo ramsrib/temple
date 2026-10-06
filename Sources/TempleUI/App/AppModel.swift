@@ -1438,9 +1438,12 @@ public final class AppModel: ObservableObject {
 
     /// The auto-archive notice's View: History in the Archived scope,
     /// narrowed by the "Archived just now" chip to exactly the notice's
-    /// memberships. Filters left from an earlier visit give way.
+    /// memberships. Filters left from an earlier visit give way. The notice
+    /// has done its job and goes: History's chip carries the set from here,
+    /// and Restore there is the way back.
     public func viewAutoArchived() {
         guard let notice = autoArchiveNotice else { return }
+        autoArchiveNotice = nil
         history.cancelPendingCommands()
         history.query = ""
         history.agentFilter = nil
