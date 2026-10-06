@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import TempleTerminalAPI
 import TempleCore
 
 enum RelativeTime {
@@ -44,14 +45,23 @@ func chooseProjectFolder(_ then: (ProjectKey) -> Void) {
 /// so ⌘K / ⌘F would open the field but leave every keystroke going to the agent.
 /// Resign the terminal first, then set the focus binding on the next runloop
 /// turn, once SwiftUI can install its field editor.
+///
+/// While a floating panel holds the keyboard the claim is refused, and one
+/// made before a panel opened or closed is void after it (OverlayKeyboard).
 enum FieldFocus {
     @MainActor
     static func claim(_ focus: @escaping @MainActor () -> Void) {
+        guard let ticket = OverlayKeyboard.ticket() else { return }
         let window = NSApp.keyWindow ?? NSApp.mainWindow
         if !(window?.firstResponder is NSTextView) {  // field editor == already a text field
             window?.makeFirstResponder(nil)
         }
-        DispatchQueue.main.async { MainActor.assumeIsolated(focus) }
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                guard OverlayKeyboard.mayClaim(ticket) else { return }
+                focus()
+            }
+        }
     }
 }
 

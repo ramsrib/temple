@@ -26,6 +26,8 @@ public final class StubTerminalSurface: TerminalSurface {
     }
 
     public func focus() {
+        // A panel holds the keyboard: the terminal waits (OverlayKeyboard).
+        guard OverlayKeyboard.ticket() != nil else { return }
         stubView.window?.makeFirstResponder(stubView)
     }
 

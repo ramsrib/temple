@@ -278,8 +278,10 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
     public override var acceptsFirstResponder: Bool { true }
     public override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    /// A focus request that has not been honoured yet.
-    private var wantsFocus = false
+    /// A focus request that has not been honoured yet, as the ticket it was
+    /// made with (`OverlayKeyboard`): nil when there is none.
+    private var focusTicket: Int?
+    private var wantsFocus: Bool { focusTicket != nil }
 
     /// Take the keyboard, once it is actually possible to.
     ///
@@ -291,14 +293,20 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
     ///      popover that was clicked takes the responder straight back.
     /// So the claim is deferred a runloop turn, and re-tried when the view lands
     /// in a window.
+    ///
+    /// While a floating panel holds the keyboard the request is refused, and
+    /// a request made before a panel opened or closed is void after it: the
+    /// panel's dismissal decides where focus goes (OverlayKeyboard).
     func requestFocus() {
-        wantsFocus = true
+        guard let ticket = OverlayKeyboard.ticket() else { return }
+        focusTicket = ticket
         DispatchQueue.main.async { [weak self] in self?.claimFocusIfWanted() }
     }
 
     private func claimFocusIfWanted() {
-        guard wantsFocus, let window else { return }
-        wantsFocus = false
+        guard let ticket = focusTicket, let window else { return }
+        focusTicket = nil
+        guard OverlayKeyboard.mayClaim(ticket) else { return }
         window.makeFirstResponder(self)
     }
 
