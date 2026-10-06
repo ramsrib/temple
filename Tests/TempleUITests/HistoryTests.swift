@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import SwiftUI
 import Combine
 @testable import TempleUI
 import TempleCore
@@ -2029,12 +2030,13 @@ final class HistoryArchiveTests: XCTestCase {
         XCTAssertEqual(overlay.leave([SessionKey(id: "a1", host: .local)]), ["a1"])
         _ = overlay.join("a1", via: .imported, agent: .claude, core: SessionCore(directory: "/p/y"))
         // As in the app: the event's group is only opened by a registration.
-        let steps = model.history.undoStepCount
+        var forgets = 0
+        model.history.forgetFieldUndo = { _ in forgets += 1 }
         model.history.restore([shown], undoManager: undo)
 
         XCTAssertEqual(model.history.notice,
                        HistoryModel.Notice(text: "Nothing to restore; it changed since the list loaded.", offersUndo: false))
-        XCTAssertEqual(model.history.undoStepCount, steps, "nothing went on the stack: the field's own undo stays")
+        XCTAssertEqual(forgets, 0, "nothing went on the stack: the field's own undo stays")
         XCTAssertEqual(undo.undoActionName, "Archive Session", "nothing of the restore's on the stack")
         undo.undo()
         XCTAssertFalse(overlay.isArchived("z"), "⌘Z undoes the action before it")
@@ -2052,7 +2054,11 @@ final class HistoryArchiveTests: XCTestCase {
         _ = overlay.join("a2", via: .imported, agent: .claude, core: SessionCore(directory: "/p/y"))
         let undo = undoManager()
 
-        let steps = model.history.undoStepCount
+        var forgets = 0
+        model.history.forgetFieldUndo = { manager in
+            forgets += 1
+            XCTAssertTrue(manager === undo, "the stack the step went on")
+        }
         undo.beginUndoGrouping()
         model.history.restore(shown, undoManager: undo)
         undo.endUndoGrouping()
@@ -2060,15 +2066,63 @@ final class HistoryArchiveTests: XCTestCase {
         XCTAssertEqual(model.history.notice, HistoryModel.Notice(text: "1 session restored", offersUndo: true))
         XCTAssertFalse(overlay.isArchived("a1"))
         XCTAssertEqual(undo.undoActionName, "Restore Session")
-        // The page forgets its search field's text undo on each step, so
+        // The focused field's own text undo is forgotten on each step, so
         // ⌘Z reaches this one (FieldEditorUndo).
-        XCTAssertEqual(model.history.undoStepCount, steps + 1, "a step went on the stack")
+        XCTAssertEqual(forgets, 1, "a step went on the stack")
         undo.undo()
         XCTAssertEqual(model.history.notice?.text, "Restore undone")
-        XCTAssertEqual(model.history.undoStepCount, steps + 1, "an undo offers no Undo")
+        XCTAssertEqual(forgets, 1, "an undo offers no Undo")
         undo.redo()
         XCTAssertEqual(model.history.notice, HistoryModel.Notice(text: "1 session restored", offersUndo: true))
-        XCTAssertEqual(model.history.undoStepCount, steps + 2, "a redo is a step again")
+        XCTAssertEqual(forgets, 2, "a redo is a step again")
+    }
+
+    /// The ⌘Z the notice offers, pressed at once after Restore while a real
+    /// SwiftUI search field holds the keyboard with text undo of its own:
+    /// it undoes the Restore and leaves the text alone. Nothing runs between
+    /// the two (no view update), which is the order a queued ⌘Z arrives in.
+    func testCommandZRightAfterRestoreReachesTheWindowFromAFocusedSearchField() async throws {
+        let (model, overlay, database) = makeModel([Fixture.row("gone", project: "/p/a")])
+        let ref = MembershipRef(id: "gone", host: .local, incarnation: try XCTUnwrap(database.sessionState("gone")?.incarnation))
+        XCTAssertEqual(try database.autoArchive([AutoArchiveEntry(ref: ref, reason: .transcriptMissing)],
+                                                idleBefore: .distantFuture, at: Date()), ["gone"])
+        _ = await page(model)
+
+        final class Box: ObservableObject { @Published var text = "" }
+        struct Search: View {
+            @ObservedObject var box: Box
+            var body: some View { TextField("Search history", text: $box.text).frame(width: 300) }
+        }
+        let box = Box()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 80),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = NSHostingView(rootView: Search(box: box))
+        window.layoutIfNeeded()
+        func textField(in view: NSView) -> NSTextField? {
+            if let field = view as? NSTextField, field.isEditable { return field }
+            return view.subviews.lazy.compactMap(textField(in:)).first
+        }
+        var field: NSTextField?
+        let deadline = Date().addingTimeInterval(5)
+        while field == nil, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            field = window.contentView.flatMap(textField(in:))
+        }
+        XCTAssertTrue(window.makeFirstResponder(try XCTUnwrap(field, "SwiftUI built no text field")))
+        let editor = try XCTUnwrap(window.firstResponder as? NSTextView)
+        editor.insertText("deploy", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let fieldUndo = try XCTUnwrap(editor.undoManager)
+        XCTAssertFalse(fieldUndo === window.undoManager, "SwiftUI's field editor keeps its own undo stack")
+        XCTAssertTrue(fieldUndo.canUndo, "the typing is undoable in the field")
+
+        model.history.restore([try XCTUnwrap(row(model, "gone"))], undoManager: window.undoManager)
+        XCTAssertFalse(overlay.isArchived("gone"))
+        XCTAssertTrue(NSApplication.shared.sendAction(Selector(("undo:")), to: window, from: nil))
+
+        XCTAssertTrue(overlay.isArchived("gone"), "⌘Z undid the Restore")
+        XCTAssertEqual(editor.string, "deploy", "and not the search text")
     }
 
     /// Every bridge into History clears the "Archived just now" chip, and

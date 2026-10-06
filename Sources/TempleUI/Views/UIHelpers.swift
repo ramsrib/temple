@@ -75,6 +75,15 @@ enum FieldEditorUndo {
         own.removeAllActions()
         return true
     }
+
+    /// `forget` in each window whose undo stack is `undoManager`: the one a
+    /// History action just put its step on.
+    @MainActor
+    static func forget(inWindowsUsing undoManager: UndoManager) {
+        for window in NSApplication.shared.windows where window.undoManager === undoManager {
+            forget(in: window)
+        }
+    }
 }
 
 /// A small colored activity dot: running / idle / needs-attention / exited.
