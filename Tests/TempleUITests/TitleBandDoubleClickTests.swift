@@ -8,7 +8,9 @@ import TempleCore
 /// title-bar action exactly once, over the sidebar and over the detail
 /// pane, with no tab open, with History, with Settings, at several sidebar
 /// widths and window sizes, and after the window was zoomed and then
-/// resized by hand. Controls in the band keep their clicks.
+/// resized by hand. Controls in the band keep their clicks, and a gesture
+/// begun anywhere but empty band (a backdrop its first click dismissed,
+/// another window) never becomes a title-bar action.
 ///
 /// A real titled window with the app's split view (RootView's, minus its
 /// launch side effects), the real tab strip and toolbar, and events through
@@ -21,6 +23,14 @@ final class TitleBandDoubleClickTests: XCTestCase {
     final class RecordingWindow: NSWindow {
         var zooms = 0
         var miniaturizes = 0
+        /// Reports full screen without entering it: a real full-screen
+        /// window takes a Space of its own on the screen of whoever is at
+        /// the machine.
+        var reportsFullScreen = false
+        override var styleMask: NSWindow.StyleMask {
+            get { reportsFullScreen ? super.styleMask.union(.fullScreen) : super.styleMask }
+            set { super.styleMask = newValue }
+        }
         override func zoom(_ sender: Any?) { zooms += 1; super.zoom(sender) }
         // Recorded, never performed: a minimized test window is gone for
         // the rest of the run.
@@ -29,9 +39,47 @@ final class TitleBandDoubleClickTests: XCTestCase {
         override func animationResizeTime(_ newFrame: NSRect) -> TimeInterval { 0.01 }
     }
 
+    /// A band control of ours that records the clicks it gets; `onMouseDown`
+    /// lets it stand in for a panel's backdrop, which goes on its first.
+    /// An NSControl, because AppKit hands band clicks to a plain NSView
+    /// only where its lazily rebuilt drag region says so (measured: the
+    /// same view got them in one test and not in the next), and the test
+    /// is of the owner, not of that cache. It takes a click that would
+    /// otherwise only activate the (never key) test window.
+    final class RecordingBandControl: NSControl, TitleBandControl {
+        var clickCounts: [Int] = []
+        var onMouseDown: () -> Void = {}
+        override var mouseDownCanMoveWindow: Bool { false }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func mouseDown(with event: NSEvent) {
+            clickCounts.append(event.clickCount)
+            onMouseDown()
+        }
+    }
+
+    final class ActionCounter: NSObject {
+        var count = 0
+        @objc func fire(_ sender: Any?) { count += 1 }
+    }
+
+    /// Records the system actions instead of performing them, with the
+    /// private Fill selector present or absent at will.
+    final class ActionRecordingWindow: NSWindow {
+        var fillAvailable = true
+        var actions: [String] = []
+        override func performZoom(_ sender: Any?) { actions.append("zoom") }
+        override func performMiniaturize(_ sender: Any?) { actions.append("minimize") }
+        @objc(_zoomFill:) func recordFill(_ sender: Any?) { actions.append("fill") }
+        override func responds(to selector: Selector!) -> Bool {
+            if selector == Selector(("_zoomFill:")) { return fillAvailable }
+            return super.responds(to: selector)
+        }
+    }
+
     private var model: AppModel!
     private var window: RecordingWindow!
     private var savedArguments: [String: Any]?
+    private var extraWindows: [NSWindow] = []
 
     override func setUp() async throws {
         // The action follows the system setting; pin it to zoom for this
@@ -75,6 +123,11 @@ final class TitleBandDoubleClickTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        for extra in extraWindows {
+            if let sheet = extra.sheetParent { sheet.endSheet(extra) }
+            extra.close()
+        }
+        extraWindows = []
         window.close()
         if let savedArguments {
             UserDefaults.standard.setVolatileDomain(savedArguments, forName: UserDefaults.argumentDomain)
@@ -125,6 +178,41 @@ final class TitleBandDoubleClickTests: XCTestCase {
                 NSApp.sendEvent(queued)
             }
         }
+        pump()
+    }
+
+    /// A mouse-down built for handing straight to the owner, bypassing
+    /// AppKit's dispatch.
+    private func mouseDown(at point: NSPoint, clickCount: Int, time: TimeInterval,
+                           in target: NSWindow? = nil) -> NSEvent {
+        NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [],
+                           timestamp: time, windowNumber: (target ?? window).windowNumber, context: nil,
+                           eventNumber: clickCount, clickCount: clickCount, pressure: 1)!
+    }
+
+    /// What the owner says to each click of a double-click at `point`, the
+    /// first in `firstIn` (default: the test window), the second in the
+    /// test window.
+    private func ownerVerdicts(at point: NSPoint, firstIn: NSWindow? = nil) throws -> [Bool] {
+        let owner = try XCTUnwrap(TitleBandDoubleClick.owner(of: window))
+        let start = ProcessInfo.processInfo.systemUptime
+        return [owner.swallows(mouseDown(at: point, clickCount: 1, time: start, in: firstIn)),
+                owner.swallows(mouseDown(at: point, clickCount: 2, time: start + 0.1))]
+    }
+
+    /// A small window of the test's own, invisible like the main one.
+    private func extraWindow() -> NSWindow {
+        let extra = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 400, height: 300),
+                             styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        extra.isReleasedWhenClosed = false
+        extra.alphaValue = 0
+        extraWindows.append(extra)
+        return extra
+    }
+
+    /// Puts `view` over everything in the window's frame, band included.
+    private func addOnTop(_ view: NSView) {
+        frameView.addSubview(view, positioned: .above, relativeTo: nil)
         pump()
     }
 
@@ -238,10 +326,24 @@ final class TitleBandDoubleClickTests: XCTestCase {
     func testControlsInTheBandKeepTheirClicks() throws {
         model.openSessions.openHistory()
         pump(0.5)
-        // The minimize light (close and zoom would end or move the test).
+        // The minimize light (close and zoom would end or move the test):
+        // both clicks reach it, so it minimizes (recorded) twice.
         let minimize = try XCTUnwrap(window.standardWindowButton(.miniaturizeButton))
         let light = minimize.convert(NSPoint(x: minimize.bounds.midX, y: minimize.bounds.midY), to: nil)
+        let minimizesBefore = window.miniaturizes
         XCTAssertEqual(zooms(at: light), 0, "minimize light")
+        XCTAssertEqual(window.miniaturizes - minimizesBefore, 2, "minimize light got both clicks")
+
+        // An AppKit button in the band: its action fires on each click.
+        let counter = ActionCounter()
+        let button = NSButton(title: "B", target: counter, action: #selector(ActionCounter.fire(_:)))
+        button.frame = NSRect(x: divider + 300, y: bandMidY - 10, width: 40, height: 20)
+        addOnTop(button)
+        let buttonPoint = NSPoint(x: button.frame.midX, y: button.frame.midY)
+        XCTAssertTrue(TitleBand.hit(at: buttonPoint, in: window) === button)
+        XCTAssertEqual(zooms(at: buttonPoint), 0, "button")
+        XCTAssertEqual(counter.count, 2, "the button's action fired for both clicks")
+        button.removeFromSuperview()
 
         // The rail's buttons, just left of the divider: a toolbar item.
         let rail = NSPoint(x: divider - 20, y: bandMidY)
@@ -264,6 +366,116 @@ final class TitleBandDoubleClickTests: XCTestCase {
             guard let hit = TitleBand.hit(at: center, in: window) else { continue }
             XCTAssertFalse(TitleBand.isEmpty(hit), "strip control at \(chip): \(TitleBandDiagnostics.chain(from: hit))")
         }
+    }
+
+    /// A first click on a panel's backdrop in the band dismisses the panel
+    /// and exposes empty band under the second: that double-click is the
+    /// backdrop's, and must not zoom (nor let AppKit zoom).
+    func testAGestureBegunOnABackdropNeverBecomesATitleBarAction() throws {
+        let point = NSPoint(x: divider + 200, y: bandMidY)
+        XCTAssertTrue(TitleBand.isEmpty(TitleBand.hit(at: point, in: window)))
+        let backdrop = RecordingBandControl(frame: frameView.bounds)
+        backdrop.autoresizingMask = [.width, .height]
+        backdrop.onMouseDown = { [weak backdrop] in backdrop?.removeFromSuperview() }
+        addOnTop(backdrop)
+        XCTAssertTrue(TitleBand.hit(at: point, in: window) === backdrop)
+
+        XCTAssertEqual(zooms(at: point), 0, "the backdrop's double-click zoomed")
+        XCTAssertEqual(window.miniaturizes, 0)
+        XCTAssertEqual(backdrop.clickCounts, [1], "dismissed on the first click")
+        XCTAssertNil(backdrop.superview)
+
+        // The band, now uncovered, answers a gesture of its own.
+        XCTAssertEqual(zooms(at: NSPoint(x: point.x, y: bandMidY)), 1)
+    }
+
+    func testAGestureBegunInAnotherWindowIsNotTheOwners() throws {
+        let other = extraWindow()
+        other.orderFront(nil)
+        pump()
+        let point = NSPoint(x: divider + 200, y: bandMidY)
+        let before = window.zooms
+        // Clicks in the other window pass through, at any count.
+        let owner = try XCTUnwrap(TitleBandDoubleClick.owner(of: window))
+        let start = ProcessInfo.processInfo.systemUptime
+        XCTAssertFalse(owner.swallows(mouseDown(at: point, clickCount: 1, time: start, in: other)))
+        XCTAssertFalse(owner.swallows(mouseDown(at: point, clickCount: 2, time: start + 0.1, in: other)))
+        // A count of 2 here after a first click there: swallowed, not acted on.
+        XCTAssertEqual(try ownerVerdicts(at: point, firstIn: other), [false, true])
+        XCTAssertEqual(window.zooms, before)
+        // The same double-click wholly in this window acts.
+        XCTAssertEqual(try ownerVerdicts(at: NSPoint(x: point.x, y: bandMidY)), [false, true])
+        XCTAssertEqual(window.zooms, before + 1)
+    }
+
+    func testTheOwnerStandsAsideWhileASheetIsAttached() throws {
+        let sheet = extraWindow()
+        window.beginSheet(sheet) { _ in }
+        pump(0.5)
+        XCTAssertNotNil(window.attachedSheet)
+        let point = NSPoint(x: divider + 200, y: bandMidY)
+        let before = window.zooms
+        XCTAssertEqual(try ownerVerdicts(at: point), [false, false], "the parent's band, sheet up")
+        // Nor are the sheet's own clicks the owner's.
+        let owner = try XCTUnwrap(TitleBandDoubleClick.owner(of: window))
+        let start = ProcessInfo.processInfo.systemUptime
+        let sheetPoint = NSPoint(x: 100, y: sheet.frame.height - 10)
+        XCTAssertFalse(owner.swallows(mouseDown(at: sheetPoint, clickCount: 1, time: start, in: sheet)))
+        XCTAssertFalse(owner.swallows(mouseDown(at: sheetPoint, clickCount: 2, time: start + 0.1, in: sheet)))
+        XCTAssertEqual(window.zooms, before)
+        window.endSheet(sheet)
+        pump(0.5)
+        XCTAssertEqual(try ownerVerdicts(at: point), [false, true], "the sheet gone, the band answers")
+        XCTAssertEqual(window.zooms, before + 1)
+    }
+
+    func testTheOwnerStandsAsideInFullScreen() throws {
+        let point = NSPoint(x: divider + 200, y: bandMidY)
+        let before = window.zooms
+        window.reportsFullScreen = true
+        defer { window.reportsFullScreen = false }
+        XCTAssertTrue(TitleBand.contains(point, in: window), "still the band, so full screen is what decides")
+        XCTAssertTrue(TitleBand.isEmpty(TitleBand.hit(at: point, in: window)))
+        XCTAssertEqual(try ownerVerdicts(at: point), [false, false])
+        XCTAssertEqual(window.zooms, before)
+    }
+
+    func testClosingTheWindowRemovesItsMonitor() {
+        final class Ledger { var added: [AnyObject] = []; var removed: [AnyObject] = [] }
+        let ledger = Ledger()
+        let counting = TitleBandDoubleClick.Monitoring(
+            add: { handler in
+                let monitor = TitleBandDoubleClick.Monitoring.appKit.add(handler)
+                if let monitor { ledger.added.append(monitor as AnyObject) }
+                return monitor
+            },
+            remove: { monitor in
+                ledger.removed.append(monitor as AnyObject)
+                TitleBandDoubleClick.Monitoring.appKit.remove(monitor)
+            })
+        let bare = extraWindow()
+        TitleBandDoubleClick.install(on: bare, diagnostics: false, monitoring: counting)
+        TitleBandDoubleClick.install(on: bare, diagnostics: false, monitoring: counting)
+        XCTAssertTrue(TitleBandDoubleClick.isInstalled(on: bare))
+        XCTAssertEqual(ledger.added.count, 1, "idempotent per window")
+        XCTAssertTrue(ledger.removed.isEmpty)
+
+        bare.close()
+        pump()
+        XCTAssertFalse(TitleBandDoubleClick.isInstalled(on: bare))
+        XCTAssertEqual(ledger.removed.count, 1)
+        XCTAssertTrue(ledger.removed.first === ledger.added.first, "the monitor it added is the one removed")
+        XCTAssertTrue(TitleBandDoubleClick.isInstalled(on: window), "the other window keeps its owner")
+    }
+
+    func testABandControlGetsBothClicks() throws {
+        // One of our band controls: it gets the first click and the second.
+        let control = RecordingBandControl(frame: NSRect(x: divider + 300, y: bandMidY - 10, width: 40, height: 20))
+        addOnTop(control)
+        let controlPoint = NSPoint(x: control.frame.midX, y: control.frame.midY)
+        XCTAssertTrue(TitleBand.hit(at: controlPoint, in: window) === control)
+        XCTAssertEqual(zooms(at: controlPoint), 0, "band control")
+        XCTAssertEqual(control.clickCounts, [1, 2])
     }
 
     func testATripleClickZoomsOnce() {
@@ -291,6 +503,27 @@ final class TitleBandDoubleClickTests: XCTestCase {
         suite.set(false, forKey: "AppleMiniaturizeOnDoubleClick")
         XCTAssertEqual(TitleBand.performSystemDoubleClickAction(on: window, defaults: suite), "zoom")
         XCTAssertEqual(window.zooms, before.0 + 1)
+    }
+
+    /// "Fill" performs the Window menu's Fill where the window answers its
+    /// private selector, and zooms where it doesn't. Recorded on a window
+    /// of the test's own; the setting comes from an in-memory suite.
+    func testFillIsPerformedWhereAvailableAndOtherwiseZooms() {
+        let suite = Fixture.uniqueDefaults()
+        suite.set("Fill", forKey: "AppleActionOnDoubleClick")
+        let fillable = ActionRecordingWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                                             styleMask: [.titled, .resizable], backing: .buffered, defer: true)
+        fillable.isReleasedWhenClosed = false
+        XCTAssertEqual(TitleBand.performSystemDoubleClickAction(on: fillable, defaults: suite), "fill")
+        XCTAssertEqual(fillable.actions, ["fill"])
+
+        let unfillable = ActionRecordingWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                                               styleMask: [.titled, .resizable], backing: .buffered, defer: true)
+        unfillable.isReleasedWhenClosed = false
+        unfillable.fillAvailable = false
+        XCTAssertEqual(TitleBand.performSystemDoubleClickAction(on: unfillable, defaults: suite),
+                       "zoom (fill unavailable)")
+        XCTAssertEqual(unfillable.actions, ["zoom"])
     }
 
     /// TEMPLE_DEBUG_TITLEBAR's report reads the window without acting on it

@@ -143,6 +143,8 @@ out the whole sidebar with no tab open, and the detail side right after
 History opened; which half worked depended on what had last been laid out.
 `TitleBandDoubleClick` (a per-window mouse-down monitor) performs the system
 action on empty band and swallows that click so AppKit cannot act twice.
+It acts only when the gesture's first click was on empty band too: a first
+click can dismiss a panel's backdrop and leave empty band under the second.
 Don't add a per-page zoom shim, and don't "fix" a dead spot by changing what
 the band hit-tests to: mark a new band control `TitleBandControl` instead.
 `TEMPLE_DEBUG_TITLEBAR=1` logs every band double-click (category

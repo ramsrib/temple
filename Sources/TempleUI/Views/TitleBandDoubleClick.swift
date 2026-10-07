@@ -30,34 +30,68 @@ protocol TitleBandControl: NSView {}
 /// through, so window drag is AppKit's as before; chips, buttons, the
 /// traffic lights, toolbar items, the search field and the split divider
 /// get both clicks untouched.
+///
+/// The action needs the whole gesture on empty band, not just its second
+/// click. A first click can change what is under the pointer: one on a
+/// panel's backdrop dismisses the panel, and the band it covered is empty
+/// by the second click. So the first click's verdict is kept, and a
+/// gesture begun anywhere else (a control, a backdrop, a panel, another
+/// window) never becomes a title-bar action. Its later clicks on empty
+/// band are still swallowed, or AppKit would make it one.
 @MainActor
 final class TitleBandDoubleClick {
+    /// How the owner reaches AppKit's local event monitors; tests count
+    /// them.
+    struct Monitoring {
+        var add: (@escaping (NSEvent) -> NSEvent?) -> Any?
+        var remove: (Any) -> Void
+
+        static let appKit = Monitoring(
+            add: { NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown, handler: $0) },
+            remove: { NSEvent.removeMonitor($0) })
+    }
+
+    /// The first click of the gesture in progress, as this window saw it.
+    private struct GestureStart {
+        let timestamp: TimeInterval
+        let onEmptyBand: Bool
+    }
+
     private static var installed: [ObjectIdentifier: TitleBandDoubleClick] = [:]
 
     private weak var window: NSWindow?
     private var monitor: Any?
     private var closeObserver: NSObjectProtocol?
     private let diagnostics: Bool
+    private let monitoring: Monitoring
+    private var gestureStart: GestureStart?
 
     /// Idempotent per window.
     static func install(on window: NSWindow,
-                        diagnostics: Bool = TitleBandDiagnostics.isEnabled) {
+                        diagnostics: Bool = TitleBandDiagnostics.isEnabled,
+                        monitoring: Monitoring = .appKit) {
         let key = ObjectIdentifier(window)
         guard installed[key] == nil else { return }
-        installed[key] = TitleBandDoubleClick(window: window, diagnostics: diagnostics)
+        installed[key] = TitleBandDoubleClick(window: window, diagnostics: diagnostics, monitoring: monitoring)
     }
 
     static func isInstalled(on window: NSWindow) -> Bool {
         installed[ObjectIdentifier(window)] != nil
     }
 
-    private init(window: NSWindow, diagnostics: Bool) {
+    /// The window's owner, for tests that hand it events directly.
+    static func owner(of window: NSWindow) -> TitleBandDoubleClick? {
+        installed[ObjectIdentifier(window)]
+    }
+
+    private init(window: NSWindow, diagnostics: Bool, monitoring: Monitoring) {
         self.window = window
         self.diagnostics = diagnostics
+        self.monitoring = monitoring
         if diagnostics {
             TempleUILog.titlebar.notice("title band: double-click owner installed (TEMPLE_DEBUG_TITLEBAR)")
         }
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+        monitor = monitoring.add { [weak self] event in
             // Monitors run on the main thread, in the event's dispatch.
             nonisolated(unsafe) let incoming = event
             let swallow = MainActor.assumeIsolated { self?.swallows(incoming) ?? false }
@@ -73,23 +107,42 @@ final class TitleBandDoubleClick {
 
     private static func uninstall(_ key: ObjectIdentifier) {
         guard let owner = installed.removeValue(forKey: key) else { return }
-        if let monitor = owner.monitor { NSEvent.removeMonitor(monitor) }
+        if let monitor = owner.monitor { owner.monitoring.remove(monitor) }
         if let closeObserver = owner.closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
     }
 
     /// Whether this mouse-down is ours (acted on, and kept from AppKit).
-    private func swallows(_ event: NSEvent) -> Bool {
-        guard event.clickCount >= 2, let window, event.window === window else { return false }
+    /// Every mouse-down in the app comes through here, so each one also
+    /// starts or ends this window's record of the gesture.
+    func swallows(_ event: NSEvent) -> Bool {
+        guard let window, event.window === window else {
+            gestureStart = nil
+            return false
+        }
         let point = event.locationInWindow
-        guard TitleBand.contains(point, in: window) else { return false }
-        let hit = TitleBand.hit(at: point, in: window)
-        let report = diagnostics ? TitleBandDiagnostics.Report(window: window, point: point, hit: hit) : nil
-
-        let owned = TitleBand.isEmpty(hit) && window.attachedSheet == nil
+        let inBand = TitleBand.contains(point, in: window)
+        let hit = inBand ? TitleBand.hit(at: point, in: window) : nil
+        let emptyBand = inBand && TitleBand.isEmpty(hit) && window.attachedSheet == nil
             && !window.styleMask.contains(.fullScreen)
+
+        guard event.clickCount >= 2 else {
+            gestureStart = GestureStart(timestamp: event.timestamp, onEmptyBand: emptyBand)
+            return false
+        }
+        guard inBand else { return false }
+        let report = diagnostics ? TitleBandDiagnostics.Report(window: window, point: point, hit: hit) : nil
+        // The click count already says this click continues a gesture; the
+        // time bound only keeps a first click this monitor never saw (one
+        // an earlier monitor swallowed) from inheriting an old verdict.
+        let elapsed = gestureStart.map { event.timestamp - $0.timestamp } ?? .infinity
+        let begunOnEmptyBand = (gestureStart?.onEmptyBand ?? false)
+            && elapsed <= NSEvent.doubleClickInterval * Double(event.clickCount - 1) + 0.05
+
         let outcome: String
-        if !owned {
+        if !emptyBand {
             outcome = "passed through (not empty band)"
+        } else if !begunOnEmptyBand {
+            outcome = "swallowed (gesture began off empty band)"
         } else if event.clickCount == 2 {
             outcome = TitleBand.performSystemDoubleClickAction(on: window)
         } else {
@@ -98,7 +151,7 @@ final class TitleBandDoubleClick {
             outcome = "swallowed (click \(event.clickCount))"
         }
         report?.log(outcome: outcome)
-        return owned
+        return emptyBand
     }
 }
 
