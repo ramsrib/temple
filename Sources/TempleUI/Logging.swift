@@ -8,4 +8,6 @@ enum TempleUILog {
     static let notifications = Logger(subsystem: "com.sriramb.temple.app", category: "notifications")
     static let drag = Logger(subsystem: "com.sriramb.temple.app", category: "drag")
     static let usage = Logger(subsystem: "com.sriramb.temple.app", category: "usage")
+    /// Dev-only title-band diagnostics (`TEMPLE_DEBUG_TITLEBAR=1`).
+    static let titlebar = Logger(subsystem: "com.sriramb.temple.app", category: "titlebar")
 }

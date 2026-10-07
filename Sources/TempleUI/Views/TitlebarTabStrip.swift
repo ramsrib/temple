@@ -43,6 +43,9 @@ struct TitlebarTabStripInstaller: NSViewRepresentable {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            // Double-clicks on the band are owned in one place, per window
+            // (see TitleBandDoubleClick); idempotent like the accessory.
+            if let window { TitleBandDoubleClick.install(on: window) }
             guard container == nil, let window, let model else { return }
             // SwiftUI recreates this NSView when the detail pane's content
             // identity flips (launcher → terminal), so installation must be
@@ -101,15 +104,15 @@ struct TitlebarTabStripInstaller: NSViewRepresentable {
 
 /// The accessory view: [pinned project switcher][ clipped, manually scrolled
 /// chips ][pinned `+`]. Points not over strip content hit-test to the window
-/// content under the band, so the band keeps window-drag and double-click-zoom
-/// there (see `hitTest`).
+/// content under the band, so the band keeps window-drag there (see
+/// `hitTest`); its double-clicks belong to TitleBandDoubleClick.
 /// In the title bar, AppKit asks the hit-tested view `mouseDownCanMoveWindow`
 /// before delivering a drag — and NSHostingView (non-opaque) answers yes, so
 /// a chip drag moves the WINDOW and SwiftUI's `.onDrag` session never starts.
 /// Ghostty ships the same override (NonDraggableHostingView) for its titlebar
 /// accessories. The empty band stays draggable: hitTest there passes the point
 /// to the content under the band.
-private final class StripHostingView: NSHostingView<AnyView> {
+private final class StripHostingView: NSHostingView<AnyView>, TitleBandControl {
     override var mouseDownCanMoveWindow: Bool { false }
 }
 
@@ -705,7 +708,9 @@ final class TabStripContainerView: NSView {
 
     /// Points not over actual strip content go to whatever the window shows
     /// under the band, as if the strip were not there, so the empty band
-    /// keeps native window-drag and double-click-to-zoom.
+    /// keeps native window-drag. (Double-click-to-zoom no longer depends on
+    /// this: TitleBandDoubleClick owns it, because AppKit's own zoom was
+    /// gated on a stale private drag region however the hit landed.)
     ///
     /// Returning nil is not enough: the claim stretches AppKit's accessory
     /// clip view over the whole band, and a nil here makes that clip view the

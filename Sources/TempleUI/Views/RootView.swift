@@ -284,7 +284,8 @@ private final class LaunchFocusSweep {
 private struct OverlayBackdrop: NSViewRepresentable {
     let dismiss: () -> Void
 
-    final class BackdropView: NSView {
+    /// A click on the backdrop is "put the panel away", in the band too.
+    final class BackdropView: NSView, TitleBandControl {
         var dismiss: () -> Void = {}
         override func mouseDown(with event: NSEvent) { dismiss() }
     }
@@ -346,7 +347,7 @@ private struct PanelHost<Content: View>: NSViewRepresentable {
 /// A panel's hosting view that says when it is ready for its field to take
 /// the keyboard: in a window, or laid out (SwiftUI has built more of it).
 /// Told a turn later, outside the layout pass.
-final class PanelHostingView<Content: View>: NSHostingView<Content> {
+final class PanelHostingView<Content: View>: NSHostingView<Content>, TitleBandControl {
     var whenReady: (@MainActor () -> Void)?
 
     override func viewDidMoveToWindow() {
