@@ -134,6 +134,20 @@ you have found another one. Before adding a layout modifier that forces measurem
 `MainContentView`, scroll the sidebar and check the traffic lights. The real fix is to
 stop depending on the implicit inset — until someone does that, this list will grow.
 
+## Title-bar double-click has one owner, and it is not AppKit
+
+AppKit zooms on a title-bar double-click only where the window's private
+*drag region* allows (`-[NSWindow _shouldZoomInDragRegionAtLocation:]`), and
+that region is a cache rebuilt lazily from the view tree. In Temple it left
+out the whole sidebar with no tab open, and the detail side right after
+History opened; which half worked depended on what had last been laid out.
+`TitleBandDoubleClick` (a per-window mouse-down monitor) performs the system
+action on empty band and swallows that click so AppKit cannot act twice.
+Don't add a per-page zoom shim, and don't "fix" a dead spot by changing what
+the band hit-tests to: mark a new band control `TitleBandControl` instead.
+`TEMPLE_DEBUG_TITLEBAR=1` logs every band double-click (category
+`titlebar`): what it hit, AppKit's own verdict, and what was done.
+
 ## Quitting: ask before the window goes, and never reply early
 
 Temple is single-window, so **closing the window quits** — the red button routes
