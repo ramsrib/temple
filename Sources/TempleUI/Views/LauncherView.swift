@@ -61,6 +61,7 @@ struct LauncherView: View {
                     .background(WindowActionStrip())
             }
             .scrollBounceBehavior(.basedOnSize)
+            .thinScrollers()
             // SwiftUI runs the scroll view up under the transparent title
             // band (full-size content view), insetting only its content, so
             // a scrolled page drew over the chips. Clipped to the pane, as
