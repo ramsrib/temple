@@ -11,7 +11,13 @@ struct MainContentView: View {
 
     var body: some View {
         content
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Exactly the detail area, never the content's size. Without the
+            // zero minimums a flexible frame grows to a child taller than the
+            // pane and is centred on it, so its top edge, and the divider
+            // drawn there, rode up into the band: Home with the launcher's
+            // Recent list at 900 x 652 put the line through the chip labels.
+            // The band itself never moved (TitleBandHeightTests).
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
             .background(TitlebarTabStripInstaller())
             // Separates the tab band from the content below it. As this pane's
             // overlay it spans exactly the detail area — the sidebar keeps its

@@ -52,7 +52,12 @@ struct LauncherView: View {
             .padding(.horizontal, 44)
             Spacer(minLength: 40)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The pane's size, whatever the content's: with five recent projects
+        // the launcher is taller than a short window's pane, and a frame that
+        // grew to it was centred, so its top half-excess sat under the title
+        // band. Pinned to the top, the overflow runs off the bottom instead,
+        // and the masthead keeps its gap below the band.
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
         // A drag on the launcher's empty area moves the window (Item B).
         // Title-band double-clicks are TitleBandDoubleClick's, in every state.
         .background(WindowActionStrip())
