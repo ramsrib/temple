@@ -196,9 +196,9 @@ Fixture variants must be described in the run log with titles, IDs, membership, 
 #### WIN-001: Launcher double-click and drag
 - **Priority:** P0. **Safety:** Needs care, geometry is shared through preferences.
 - **Preconditions:** Launcher, normal approximately 1000 by 700 point window, existing system double-click behavior known without changing it.
-- **Steps:** Record frame. Double-click blank right-pane title strip; capture immediately and after about two seconds. Double-click again. Drag that blank strip to move the demo.
-- **Expected:** With Maximize/default behavior, zoom persists and the second double-click restores prior geometry. No bounce. Minimize or None follows the existing system preference instead. Drag moves the window; controls do not become drag handles.
-- **Notes:** First pass passed launcher zoom. Blank sidebar header was inert; do not treat it as the same target.
+- **Steps:** Record frame. Double-click blank right-pane title strip; capture immediately and after about two seconds. Double-click again. Repeat on the blank title strip over the sidebar (between the traffic lights and the search/toggle buttons). Drag that blank strip to move the demo.
+- **Expected:** With Maximize/default behavior, zoom persists and the second double-click restores prior geometry, over the sidebar as over the right pane. Exactly one zoom per double-click: no bounce. Minimize or None follows the existing system preference instead. Drag moves the window; controls do not become drag handles.
+- **Notes:** First pass passed launcher zoom. The blank sidebar header was inert until 2026-10-06 (AppKit's drag region left it out with no tab open); it is now the same target. WIN-006 covers the resized case.
 
 #### WIN-002: History and session-state zoom reversal
 - **Priority:** P0. **Safety:** Needs care for History; Manual only for live session state.
@@ -227,6 +227,13 @@ Fixture variants must be described in the run log with titles, IDs, membership, 
 - **Steps:** Obtain detail-pane widths at/above 1000, between 692 and 999, below 692, and below 600 points where possible. Type and clear `deploy`; inspect rightmost actions and scroll to the bottom in each tier.
 - **Expected:** Wide: one toolbar row. Compact: search above scopes plus separate agent/project menus. Narrow: one Filter menu. Below 600: project/branch column hides. Restore/Import stays visible; titles truncate; nothing widens the pane or pushes the sidebar left.
 - **Notes:** Full window width is not pane width. The approximately 900-point whole-window overflow regression must be checked even when the exact breakpoint cannot be reached.
+
+#### WIN-006: Title-band double-click after a resize and a sidebar drag
+- **Priority:** P0. **Safety:** Needs care, geometry is shared through preferences.
+- **Preconditions:** Demo launched with `TEMPLE_DEBUG_TITLEBAR=1` in its environment (dev diagnostic, inert otherwise). In another terminal: `log stream --level info --predicate 'subsystem == "com.sriramb.temple.app" && category == "titlebar"'`.
+- **Steps:** With no tab open, double-click blank title strip to zoom, double-click again to restore. Resize the window to an arbitrary size (not by tiling) and drag the sidebar divider to a new width. Double-click blank strip over the sidebar, just right of the divider, mid right pane and far right. Open History and repeat. Then double-click a chip, the search and sidebar-toggle buttons, and the divider itself.
+- **Expected:** Every blank-strip double-click zooms or restores exactly once, at every position and state. The log shows one line per double-click, ending `-> zoom` for blank strip. Chip double-click renames, buttons act as buttons, divider double-click resets the sidebar width; their log lines end `passed through (not empty band)`.
+- **Notes:** Owner report, 2026-10-06: after a zoom, a manual resize and a sidebar drag, a title-bar double-click did nothing. If any blank-strip double-click fails, keep its log line (hit chain, point, window frame, sidebar width, AppKit's own drag-region verdict). No log line at all means the click never reached the app.
 
 ### 4.3 Sidebar and index
 
@@ -485,12 +492,12 @@ Fixture variants must be described in the run log with titles, IDs, membership, 
 
 ### 4.8 History
 
-#### HIS-001: Singleton and toggle semantics
+#### HIS-001: Singleton and stay-put semantics
 - **Priority:** P0. **Safety:** Safe in demo, utility navigation only.
 - **Preconditions:** Launcher, optionally Settings as previous tab.
-- **Steps:** Press `⌘Y`, repeat, then return. Press `⌘⇧Y` to select Archived, repeat while already there. Open palette over History and press `⌘Y`.
-- **Expected:** One History chip. Repeated shortcut on its active destination returns to previous tab/home and leaves chip open. Archived shortcut retains search/filters. Palette-over-History case only dismisses palette.
-- **Notes:** First pass called Archived's toggle-away a low-severity bug; current FEATURES and ADR-031 explicitly specify it. Treat as an expectation correction, not an open defect.
+- **Steps:** Press `⌘Y`, repeat, then choose View ▸ Session History while History is active. Return with `⌃⇥`. Press `⌘⇧Y` to select Archived, repeat while already there; switch to All and press `⌘⇧Y` again. Open palette over History and press `⌘Y`. Repeat `⌘,` on Settings and `⌘⇧H` on home.
+- **Expected:** One History chip. A repeated `⌘Y` or `⌘⇧Y` (key or menu) on its active destination stays on History and changes nothing; it never returns to the previous tab or home. `⌘⇧Y` from another scope switches to Archived and stays. Archived shortcut retains search/filters. Palette-over-History case only dismisses palette and stays. `⌃⇥` returns to the previous tab and leaves the chip open. Repeated `⌘,` and `⌘⇧H` stay put.
+- **Notes:** Until 2026-10-06 a repeat on the active destination went back to the previous tab or home (the old overlay's toggle). The owner reported that as a bug and ADR-028 was amended: a command that names a place goes there. A run that sees the old toggle is testing a build from before that change.
 
 #### HIS-002: Scope partition and header counts
 - **Priority:** P0. **Safety:** Safe in demo, browsing only.
@@ -655,7 +662,7 @@ Fixture variants must be described in the run log with titles, IDs, membership, 
 - **Preconditions:** Fresh orders row; pin it first to test pin restoration.
 - **Steps:** Context menu > Archive session. Inspect sidebar, palette and Archived. Use Edit > Undo Archive Session, then redo with `⌘⇧Z` after verifying focus.
 - **Expected:** Session disappears from browse surfaces and Pinned, appears in Archived with Restore and no missing tag while its file exists. Archive clears its pin; Undo returns both visibility and pin. Files are neither deleted nor moved.
-- **Notes:** Use `⌘⇧Y` with HIS-001's toggle semantics, not an assumption it always stays on History.
+- **Notes:** `⌘⇧Y` always lands on History's Archived scope (HIS-001); repeating it stays there.
 
 #### ARC-002: Project archive and full restore
 - **Priority:** P0. **Safety:** Safe in demo, no open project tabs.
@@ -779,8 +786,8 @@ Retired 2026-10-05. Outside the owner-defined Temple app UI scope. No executable
 | ⌘⇧[ / ⌘⇧] | Previous/next project | TAB-008, activation may resume |
 | ⌘F | Focus History search when History is active | HIS-004; terminal behavior excluded |
 | ⌘K | Palette | PAL-001 through PAL-005 |
-| ⌘Y | History; active History returns to previous tab | HIS-001 |
-| ⌘⇧Y | History Archived, retaining filters; repeat goes back | HIS-001 |
+| ⌘Y | Open or focus History; repeat on History stays | HIS-001 |
+| ⌘⇧Y | History Archived, retaining filters; repeat stays | HIS-001 |
 | ⌘R | Refresh History; Check again on Settings | HIS-016; SET-002 inspect only |
 | ⌘I | Request History import | IMP-001/002, explicit fake import only |
 | ⌘A | Select History view rows unless foreign field owns key | HIS-007/013 |
