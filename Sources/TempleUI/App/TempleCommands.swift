@@ -108,7 +108,7 @@ public struct TempleCommands: Commands {
                 Label("Command Palette", systemImage: "command")
             }
             .keyboardShortcut("k")
-            Button { model.toggleHistory() } label: {
+            Button { model.showHistory() } label: {
                 Label("Session History", systemImage: "clock.arrow.circlepath")
             }
             .keyboardShortcut("y")

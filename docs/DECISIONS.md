@@ -1066,7 +1066,7 @@ scan of recent Codex logs, and continuation following (`←` / `/bg`, ADR-023),
 which is still to be built; the event classifier is where it lands.
 
 ## ADR-028 — History is a tab over the whole disk, and the one way in
-**Date:** 2026-10-02 · **Status:** Accepted; Temple's rows no longer take a live-index copy (ADR-029); scopes All / In Temple / Archived / Not in Temple, In Temple excluding archived rows (ADR-031)
+**Date:** 2026-10-02 · **Status:** Accepted; Temple's rows no longer take a live-index copy (ADR-029); scopes All / In Temple / Archived / Not in Temple, In Temple excluding archived rows (ADR-031); ⌘Y no longer goes back when pressed on History (amended 2026-10-06, below)
 
 With *All on disk* gone (ADR-027), sessions run elsewhere are on no surface,
 and ADR-023's "imported" join had no way to happen. The ⌘Y overlay also read
@@ -1075,7 +1075,8 @@ as a search box over Temple's own sessions, not as history.
 **Decisions.**
 
 - **History is a tab**, a singleton beside Settings: ⌘Y opens or focuses it,
-  ⌘Y on it goes back to the previous tab and leaves it open. The overlay is
+  ⌘Y on it goes back to the previous tab and leaves it open (*superseded
+  2026-10-06: ⌘Y on History stays; see the amendment below*). The overlay is
   gone. It lists **every session on disk**, newest first in day groups, one
   line each; Temple's own rows at full strength with the gate mark, the rest a
   step quieter with **Import**, archived ones tagged. Search and the All / In
@@ -1101,6 +1102,19 @@ as a search box over Temple's own sessions, not as history.
   (Since 2026-10-05 that row ends every typed query, not only one that finds
   nothing: archived sessions are not in ⌘K, and a query that matched a live
   one had no way on to the archived one in History.)
+
+**Amended 2026-10-06: a command that names a place goes there.** ⌘Y going
+back when pressed on History was the overlay's toggle carried over into a
+tab, and it read as a bug: View ▸ Session History, chosen while History was
+on screen, took you somewhere else, or to the launcher with no other tab
+open. ⌘Y (View ▸ Session History, the launcher's Session history) and ⌘⇧Y
+(View ▸ Archived Sessions) now only ever open or focus History; repeating
+one changes nothing, except that ⌘⇧Y switches History to the Archived scope
+when another scope is showing. Over a floating panel, either one puts the
+panel away and stays. ⌃⇥, or Esc once History's search and selection are
+clear, is the way back. Panels keep their toggles (⌘K, ⌘/ and the ⌘N
+picker close on their own key); tab destinations (⌘, Settings, ⌘⇧H Home,
+History) never navigate away on a repeat.
 
 ---
 
@@ -1441,7 +1455,8 @@ disk knows about, one status per row. If a session is not in the sidebar,
   ADR-017 refused one in the sidebar; a sibling tab is the popup relocated.
   The popup is gone. ⌘⇧Y (View ▸ Archived Sessions, the launcher's Archived
   sessions) opens History in the Archived scope, leaving search and filters
-  as they are; pressed there, it goes back like ⌘Y. It is no longer one of the
+  as they are; pressed there, it stays, like ⌘Y (until 2026-10-06 both went
+  back; see ADR-028's amendment). It is no longer one of the
   mutually exclusive panels.
 - **One status per row.** The fixed status column holds the relationship or
   the verb, never a condition: the gate mark (in Temple), **Restore**

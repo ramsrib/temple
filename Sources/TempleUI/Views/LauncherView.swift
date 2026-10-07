@@ -139,7 +139,7 @@ struct LauncherView: View {
                 model.toggleCommandPalette()
             }
             LauncherRow(icon: .symbol("clock.arrow.circlepath"), title: "Session history", shortcut: "⌘Y") {
-                model.toggleHistory()
+                model.showHistory()
             }
             // History's Archived scope (ADR-031). Always here, so the list is
             // the same list every launch (a row that comes and goes is a row

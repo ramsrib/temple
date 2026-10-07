@@ -1421,39 +1421,38 @@ public final class AppModel: ObservableObject {
         undoManager.setActionName(name)
     }
 
-    /// ⌘Y and View ▸ Session History: open or focus the History tab; pressed
-    /// while it is the active tab, back to the tab before it (History stays
-    /// open). A floating panel is put away first, as every presenter does —
-    /// and when one was up over History, putting it away is all ⌘Y does:
-    /// the user is already where ⌘Y goes, and leaving too would be a second
-    /// act they did not ask for.
-    public func toggleHistory() {
-        let panelWasUp = panelPresented || projectSwitcherPresented || tabSwitcherPresented
-        commandPalettePresented = false
-        newSessionPickerPresented = false
-        shortcutsPresented = false
-        cancelProjectSwitcher()
-        cancelTabSwitcher()
-        if panelWasUp, historyActive { return }
-        openSessions.openOrLeaveHistory()
+    /// ⌘Y and View ▸ Session History: open the History tab, or focus it if
+    /// it is open. A command that names a place goes there, so pressed on
+    /// History it changes nothing; ⌃Tab or Esc is the way back. A floating
+    /// panel is put away first, as every presenter does: over History, that
+    /// is all ⌘Y does. (It used to go back to the previous tab when pressed
+    /// on History, a leftover from the overlay it replaced; ADR-028.)
+    public func showHistory() {
+        putFloatingPanelsAway()
+        openSessions.openHistory()
     }
 
-    /// ⌘⇧Y and View ▸ Archived Sessions: History in the Archived scope, with
-    /// search, agent and project filters left as they are (ADR-031). Pressed
-    /// on History already showing Archived, it is ⌘Y: back to the tab before.
+    /// ⌘⇧Y and View ▸ Session History's Archived sibling: History in the
+    /// Archived scope, with search, agent and project filters left as they
+    /// are (ADR-031). Like ⌘Y it only ever goes there: on History already
+    /// showing Archived it changes nothing but a floating panel.
     public func showArchived() {
-        if historyActive, history.scope == .archived, !panelPresented {
-            toggleHistory()
-            return
+        putFloatingPanelsAway()
+        if history.scope != .archived {
+            history.cancelPendingCommands()
+            history.scope = .archived
         }
+        openSessions.openHistory()
+    }
+
+    /// Every floating panel and switcher, put away. A tab command does this
+    /// before it navigates, so nothing is left floating over its page.
+    private func putFloatingPanelsAway() {
         commandPalettePresented = false
         newSessionPickerPresented = false
         shortcutsPresented = false
         cancelProjectSwitcher()
         cancelTabSwitcher()
-        history.cancelPendingCommands()
-        history.scope = .archived
-        openSessions.openHistory()
     }
 
     /// The auto-archive notice's View: History in the Archived scope,

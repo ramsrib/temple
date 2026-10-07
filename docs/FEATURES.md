@@ -308,9 +308,10 @@ prompt composer.
 ### History tab (`⌘Y`)
 
 A tab, not a panel: a singleton utility tab beside Settings, opened or focused
-by `⌘Y` or View ▸ Session History. Pressed while History is the active tab,
-`⌘Y` goes back to the tab you came from and leaves History open; pressed while
-⌘K is open over History, it only puts the panel away. It lists **every session
+by `⌘Y` or View ▸ Session History. A command that names a place goes there:
+pressed while History is the active tab, `⌘Y` stays on it (pressed while ⌘K
+is open over History, it only puts the panel away). `⌃⇥`, or Esc once the
+search and selection are clear, goes back to the tab you came from. It lists **every session
 Temple or the disk knows about**, one status per row — Temple's (archived ones
 included) and everyone else's — and is the one door through which the others
 join and archived ones come back
@@ -416,7 +417,7 @@ join and archived ones come back
   goes to it.
 - `⌘⇧Y` (View ▸ Archived Sessions, the launcher's Archived sessions) opens
   History in its Archived scope, leaving search and filters as they are;
-  pressed on History already showing Archived, it goes back like `⌘Y`. Opening
+  pressed on History already showing Archived, it stays, like `⌘Y`. Opening
   an archived session anywhere else unarchives it too; a session resumed
   outside Temple stays archived, because activity on disk is not a decision.
 - A session Temple archived itself is tagged **No transcript** or **No folder**
@@ -547,10 +548,10 @@ of truth.
 | **⌘F** | Find in the active terminal (bar over the top-right corner); on the History tab, its search. |
 | **⌘G / ⌘⇧G** | Next / previous match while the find bar is open. |
 | **⌘K** | Command palette: open sessions by recency when empty; ranked search over everything when typed. |
-| **⌘Y** | History tab: every session on disk, by day; pressed on it, back to the previous tab. |
+| **⌘Y** | History tab: every session on disk, by day. Opens or focuses it; pressed on it, stays. |
 | **⌘R / ⌘I / ⌘A** | On the History tab: refresh the snapshot / import the selection / select every row in view. |
 | **⌘⌫** | On the History tab: archive the selection, when every selected row can be. |
-| **⌘⇧Y** | Archived sessions, in History: the History tab in its Archived scope; pressed there, back to the previous tab. |
+| **⌘⇧Y** | Archived sessions, in History: the History tab in its Archived scope; pressed there, stays. |
 | **⌘/** | Open the Keyboard Shortcuts reference overlay. |
 | **⌘B** | Toggle the sidebar. |
 | **⌘,** | Open Settings as a tab. |

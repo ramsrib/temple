@@ -610,21 +610,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         if settingsFocus == request { settingsFocus = nil }
     }
 
-    /// View ▸ Session History, the ⌘K bridge: open the History tab, or focus
-    /// it if it is already open.
+    /// ⌘Y, View ▸ Session History, the ⌘K bridge: open the History tab, or
+    /// focus it if it is already open. Never away from it.
     public func openHistory() {
         openUtility(.history)
-    }
-
-    /// ⌘Y. Opens or focuses History; pressed while History is already the
-    /// active tab, goes back to the tab you came from and leaves History open
-    /// (the old overlay was a toggle, and ⌘Y-look-⌘Y is muscle memory).
-    public func openOrLeaveHistory() {
-        if let history = historyTab, activeTabID == history.id {
-            returnToPreviousTab()
-        } else {
-            openHistory()
-        }
     }
 
     /// Back to the tab that was active before the current one, closing
@@ -643,7 +632,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     private func openUtility(_ kind: TabKind) {
         if let existing = tabs.first(where: { $0.kind == kind }) {
-            activeTabID = existing.id
+            if activeTabID != existing.id { activeTabID = existing.id }
             return
         }
         let tab = SessionTab(kind: kind, sessionID: nil, agent: .claude,

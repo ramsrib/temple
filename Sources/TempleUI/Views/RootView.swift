@@ -639,7 +639,7 @@ private struct KeyCatcher: NSViewRepresentable {
             case "k":
                 model.toggleCommandPalette(); return true
             case "y", "Y":   // ⌘⇧Y — History's Archived scope; ⌘Y (caps lock too) the History tab
-                if shift { model.showArchived() } else { model.toggleHistory() }
+                if shift { model.showArchived() } else { model.showHistory() }
                 return true
             case "p":
                 model.advanceProjectSwitcher(by: shift ? -1 : 1); return true

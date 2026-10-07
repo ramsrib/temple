@@ -1255,38 +1255,60 @@ final class HistoryTabTests: XCTestCase {
         return model
     }
 
-    func testCommandYOpensFocusesAndThenGoesBackLeavingHistoryOpen() {
+    /// ⌘Y names a place: it opens or focuses History, and pressed there it
+    /// stays. ⌃Tab is the way back (ADR-028, amended 2026-10-06).
+    func testCommandYOpensOrFocusesHistoryAndRepeatingItStays() {
         let model = makeModel()
         model.openSessions.openSession(Fixture.session("a", project: "/p/a"))
         let sessionTab = model.openSessions.activeTabID
 
-        model.toggleHistory()
+        model.showHistory()
         XCTAssertTrue(model.historyActive)
         XCTAssertEqual(model.openSessions.tabs.filter { $0.kind == .history }.count, 1)
         XCTAssertEqual(model.openSessions.activeProjectKey?.path, "/p/a", "History is project-agnostic")
         XCTAssertTrue(model.openSessions.visibleTabs.contains { $0.kind == .history })
 
-        model.toggleHistory()
-        XCTAssertEqual(model.openSessions.activeTabID, sessionTab, "⌘Y on History goes back")
-        XCTAssertNotNil(model.openSessions.historyTab, "…and leaves it open")
-
-        model.toggleHistory()
-        XCTAssertTrue(model.historyActive)
+        model.showHistory()
+        XCTAssertTrue(model.historyActive, "⌘Y on History stays on History")
         XCTAssertEqual(model.openSessions.tabs.filter { $0.kind == .history }.count, 1, "a singleton")
+
+        model.openSessions.returnToPreviousTab()
+        XCTAssertEqual(model.openSessions.activeTabID, sessionTab, "⌃Tab goes back")
+        XCTAssertNotNil(model.openSessions.historyTab, "…and leaves History open")
+
+        model.showHistory()
+        XCTAssertTrue(model.historyActive, "and ⌘Y focuses it again")
     }
 
-    func testCommandYOnHistoryWithNothingBehindItGoesHome() {
+    func testCommandYOnHistoryWithNothingBehindItStays() {
         let model = makeModel()
-        model.toggleHistory()
-        model.toggleHistory()
-        XCTAssertNil(model.openSessions.activeTabID)
-        XCTAssertNotNil(model.openSessions.historyTab)
+        model.showHistory()
+        let history = model.openSessions.activeTabID
+        model.showHistory()
+        XCTAssertNotNil(history)
+        XCTAssertEqual(model.openSessions.activeTabID, history, "not the launcher")
+    }
+
+    /// The other commands that name a tab (⌘, Settings, ⌘⇧H Home) are not
+    /// toggles either: repeating one stays where it went.
+    func testSettingsAndHomeRepeatedStayPut() {
+        let model = makeModel()
+        model.openSessions.openSession(Fixture.session("a", project: "/p/a"))
+        model.openSessions.openSettings()
+        let settings = model.openSessions.activeTabID
+        model.openSessions.openSettings()
+        XCTAssertEqual(model.openSessions.activeTabID, settings)
+        XCTAssertEqual(model.openSessions.activeTab?.kind, .settings)
+
+        model.openSessions.showHome()
+        model.openSessions.showHome()
+        XCTAssertNil(model.openSessions.activeTabID, "home, twice, is home")
     }
 
     func testCommandYPutsAFloatingPanelAway() {
         let model = makeModel()
         model.commandPalettePresented = true
-        model.toggleHistory()
+        model.showHistory()
         XCTAssertFalse(model.commandPalettePresented)
         XCTAssertTrue(model.historyActive)
     }
@@ -1304,7 +1326,7 @@ final class HistoryTabTests: XCTestCase {
 
     func testFindOnHistoryFocusesItsSearch() {
         let model = makeModel()
-        model.toggleHistory()
+        model.showHistory()
         let before = model.history.focusSearchRequest
         model.findInActiveTerminal()
         XCTAssertEqual(model.history.focusSearchRequest, before + 1)
@@ -1312,7 +1334,7 @@ final class HistoryTabTests: XCTestCase {
 
     func testClosingTheTabResetsTheModel() async {
         let model = makeModel()
-        model.toggleHistory()
+        model.showHistory()
         model.history.scope = .inTemple
         model.openSessions.closeActiveTab()
         try? await Task.sleep(nanoseconds: 20_000_000)
@@ -1320,20 +1342,19 @@ final class HistoryTabTests: XCTestCase {
         XCTAssertEqual(model.history.scope, .all)
     }
 
-    /// ⌘Y over ⌘K, with History under it: the panel goes and History stays
-    /// — it does not also jump back to the previous tab.
+    /// ⌘Y over ⌘K, with History under it: the panel goes and History stays.
     func testCommandYOverAPanelOnHistoryClosesThePanelAndStays() {
         let model = makeModel()
         model.openSessions.openSession(Fixture.session("a", project: "/p/a"))
-        model.toggleHistory()
+        model.showHistory()
 
         model.toggleCommandPalette()
-        model.toggleHistory()
+        model.showHistory()
         XCTAssertFalse(model.commandPalettePresented)
         XCTAssertTrue(model.historyActive, "the palette went; History stayed")
 
-        model.toggleHistory()
-        XCTAssertFalse(model.historyActive, "with nothing over it, ⌘Y still goes back")
+        model.showHistory()
+        XCTAssertTrue(model.historyActive, "with nothing over it, ⌘Y still stays")
     }
 
     func testShowInSidebarHighlightsTheRowAndAsksTheRailToScroll() {
@@ -1395,7 +1416,7 @@ final class HistoryTabTests: XCTestCase {
         model.openSessions.openSession(Fixture.session("a", project: "/p/a"))
         model.openSessions.openSession(Fixture.session("b", project: "/p/a"))
         model.openSessions.openSettings()
-        model.toggleHistory()
+        model.showHistory()
         XCTAssertEqual(model.openSessions.visibleTabs.map(\.kind), [.session, .session, .settings, .history])
 
         // Drag History to the front.
@@ -1961,7 +1982,7 @@ final class HistoryArchiveTests: XCTestCase {
 
     /// ⌘⇧Y is History in the Archived scope; it puts a floating panel away
     /// like ⌘Y, keeps search and filters, and pressed on History already
-    /// showing Archived it goes back like ⌘Y.
+    /// showing Archived it stays, like ⌘Y.
     func testCommandShiftYOpensHistoryInTheArchivedScope() {
         let (model, _, _) = makeModel(twoProjects())
         model.openSessions.openSession(twoProjects()[2])
@@ -1977,11 +1998,15 @@ final class HistoryArchiveTests: XCTestCase {
         XCTAssertEqual(model.history.query, "alpha", "search is left as it is")
         XCTAssertEqual(model.history.agentFilter, .claude)
 
+        let history = model.openSessions.activeTabID
         model.showArchived()
-        XCTAssertEqual(model.openSessions.activeTabID, sessionTab, "again on Archived: back, like ⌘Y")
-        XCTAssertNotNil(model.openSessions.historyTab)
+        XCTAssertEqual(model.openSessions.activeTabID, history, "again on Archived: stays, like ⌘Y")
+        XCTAssertNotEqual(history, sessionTab)
+        XCTAssertEqual(model.history.scope, .archived)
+        XCTAssertEqual(model.history.query, "alpha")
 
-        model.toggleHistory()
+        model.showHistory()
+        XCTAssertEqual(model.history.scope, .archived, "⌘Y keeps the scope it finds")
         model.history.scope = .all
         model.showArchived()
         XCTAssertTrue(model.historyActive, "on History in another scope it switches scope and stays")
