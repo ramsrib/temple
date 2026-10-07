@@ -63,6 +63,12 @@ struct SettingsView: View {
                 .pageColumn(pageWidth: width)
             }
             .thinScrollers()
+            // SwiftUI runs a pane-top scroll view up under the transparent
+            // title band and insets only its content, so a scrolled page drew
+            // over the chips. Clipped to the pane, as History and the
+            // launcher are (TitleBandHeightTests). After the scrollers'
+            // background, so their finder still meets the scroll view inside.
+            .clipped()
             .onAppear { land(proxy) }
             .onChange(of: model.openSessions.settingsFocus) { land(proxy) }
         }

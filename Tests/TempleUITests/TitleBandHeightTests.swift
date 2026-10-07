@@ -321,6 +321,46 @@ final class TitleBandHeightTests: XCTestCase {
         }
     }
 
+    /// The detail pane's page scroll view: the one whose page is on the
+    /// detail side of the divider.
+    private func detailScrollView() throws -> NSScrollView {
+        let split = try XCTUnwrap(descendants(of: frameView).compactMap { $0 as? NSSplitView }
+            .first { $0.arrangedSubviews.count >= 2 })
+        let divider = split.convert(NSPoint(x: split.arrangedSubviews[0].frame.maxX, y: 0), to: nil).x
+        // The pane's scroll view runs under the sidebar too (SwiftUI insets
+        // its content there), so it is told from the sidebar's by reaching
+        // past the divider, not by starting after it.
+        let pages = descendants(of: frameView).compactMap { $0 as? NSScrollView }.filter { scroll in
+            !scroll.isHidden && scroll.documentView != nil
+                && scroll.convert(scroll.bounds, to: nil).maxX > divider + 100
+        }
+        XCTAssertEqual(pages.count, 1, "one page scroll view on the detail side: \(pages)")
+        return try XCTUnwrap(pages.first)
+    }
+
+    /// A tab page that scrolls, scrolled to its end: its page has moved up
+    /// past the band's bottom edge (so the check is not vacuous), and none
+    /// of it shows above that edge. Its scrollers are still the thin ones.
+    private func assertAScrolledPageStaysOutOfTheBand(_ page: String, _ tag: String,
+                                                      file: StaticString = #filePath, line: UInt = #line) throws {
+        let bandBottom = window.contentLayoutRect.maxY
+        let scroll = try detailScrollView()
+        let document = try XCTUnwrap(scroll.documentView, file: file, line: line)
+        XCTAssertTrue(scroll.verticalScroller is ThinScroller, "\(page) keeps its thin scrollers at \(tag)",
+                      file: file, line: line)
+        let point = NSPoint(x: window.frame.width - 30, y: bandBottom / 2)
+        try scrollWheel(at: point, lines: -80)
+        let frame = document.convert(document.bounds, to: nil)
+        XCTAssertGreaterThan(frame.maxY, bandBottom + 20,
+                             "\(page) scrolled to its end has moved up past the band's edge at \(tag): \(frame)",
+                             file: file, line: line)
+        let shown = shownRect(of: document)
+        XCTAssertLessThanOrEqual(shown.maxY, bandBottom + 0.5,
+                                 "nothing of \(page) shows in the band at \(tag): page \(frame) shows as \(shown)",
+                                 file: file, line: line)
+        try scrollWheel(at: point, lines: 80)
+    }
+
     func testTheBandIsOneHeightAndTheDividerBelowTheChipsInEveryState() throws {
         model.openSessions.openHistory()
         model.openSessions.openSettings()
@@ -345,6 +385,7 @@ final class TitleBandHeightTests: XCTestCase {
             model.openSessions.openSettings()
             settle()
             heights["settings \(tag)"] = try assertBand("Settings active")
+            if size.height < 700 { try assertAScrolledPageStaysOutOfTheBand("Settings", tag) }
         }
 
         let distinct = Set(heights.values.map { ($0 * 2).rounded() / 2 })
