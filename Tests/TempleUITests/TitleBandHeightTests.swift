@@ -21,8 +21,14 @@ import TempleCore
 /// in TitleBandDoubleClickTests.
 @MainActor
 final class TitleBandHeightTests: XCTestCase {
+    /// Records window drags instead of running AppKit's drag loop.
+    final class DragRecordingWindow: NSWindow {
+        var drags = 0
+        override func performDrag(with event: NSEvent) { drags += 1 }
+    }
+
     private var model: AppModel!
-    private var window: NSWindow!
+    private var window: DragRecordingWindow!
 
     override func setUp() async throws {
         let database = try TempleDB.inMemory()
@@ -52,7 +58,7 @@ final class TitleBandHeightTests: XCTestCase {
         .frame(minWidth: 900, minHeight: 600)
         let controller = NSHostingController(rootView: AnyView(root))
         controller.sceneBridgingOptions = [.toolbars]
-        window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: 900, height: 652),
+        window = DragRecordingWindow(contentRect: NSRect(x: 80, y: 80, width: 900, height: 652),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -136,15 +142,113 @@ final class TitleBandHeightTests: XCTestCase {
         return band.height
     }
 
-    /// The launcher itself stays in the pane: its frame (the window-drag
-    /// view behind it has the same one) starts at the band's bottom rather
-    /// than overhanging into the band when its content is taller than the pane.
-    private func assertLauncherBelowTheBand(_ tag: String, file: StaticString = #filePath, line: UInt = #line) throws {
+    // MARK: The launcher's own content
+
+    /// The frame, in window coordinates, of the launcher view marked `id`.
+    private func marked(_ id: NSUserInterfaceItemIdentifier) throws -> NSRect {
+        let view = try XCTUnwrap(descendants(of: frameView).first { $0.identifier == id },
+                                 "\(id.rawValue) is in the window")
+        return view.convert(view.bounds, to: nil)
+    }
+
+    /// The launcher's scroll view: the one whose page carries the drag view.
+    private func launcherScrollView() throws -> NSScrollView {
         let drag = try XCTUnwrap(descendants(of: frameView).first { $0.className.contains("DraggableStripView") },
-                                 "the launcher's drag view is in the window", file: file, line: line)
-        let frame = drag.convert(drag.bounds, to: nil)
-        XCTAssertEqual(frame.maxY, window.contentLayoutRect.maxY, accuracy: 0.5,
-                       "the launcher starts at the band's bottom at \(tag): \(frame)", file: file, line: line)
+                                 "the launcher's drag view is in the window")
+        var view: NSView? = drag
+        while let current = view, !(current is NSScrollView) { view = current.superview }
+        return try XCTUnwrap(view as? NSScrollView, "the launcher's page is in a scroll view")
+    }
+
+    /// The visible part of the launcher, in window coordinates.
+    private func launcherViewport() throws -> NSRect {
+        let scroll = try launcherScrollView()
+        var rect = scroll.convert(scroll.bounds, to: nil)
+        rect.size.height -= scroll.contentInsets.top + scroll.contentInsets.bottom
+        rect.origin.y += scroll.contentInsets.bottom
+        return rect
+    }
+
+    /// A mouse-wheel scroll of `lines` (negative: towards the end) at a
+    /// window point, delivered as AppKit delivers one: to the view under it.
+    private func scrollWheel(at point: NSPoint, lines: Int32) throws {
+        let screen = window.convertPoint(toScreen: point)
+        let primary = NSScreen.screens.first?.frame.height ?? 0
+        let event = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .line,
+                                          wheelCount: 1, wheel1: lines, wheel2: 0, wheel3: 0))
+        event.location = CGPoint(x: screen.x, y: primary - screen.y)
+        let nsEvent = try XCTUnwrap(NSEvent(cgEvent: event))
+        let target = try XCTUnwrap(frameView.hitTest(frameView.convert(point, from: nil)),
+                                   "something is under the scroll point")
+        target.scrollWheel(with: nsEvent)
+        pump(0.3)
+    }
+
+    /// The launcher in Home: its viewport starts at the band's bottom; the
+    /// masthead sits the band gap below it (exactly, when the page overflows
+    /// and is at the top); the last Recent project row is on screen or
+    /// scrolls into view with the wheel; and a drag on empty page still
+    /// moves the window.
+    private func assertTheLauncher(_ tag: String, overflows: Bool,
+                                   file: StaticString = #filePath, line: UInt = #line) throws {
+        let bandBottom = window.contentLayoutRect.maxY
+        let viewport = try launcherViewport()
+        XCTAssertEqual(viewport.maxY, bandBottom, accuracy: 0.5,
+                       "the launcher's viewport starts at the band's bottom at \(tag): \(viewport)",
+                       file: file, line: line)
+        XCTAssertGreaterThanOrEqual(viewport.minY, -0.5, "and ends inside the window at \(tag)", file: file, line: line)
+
+        let mastheadTop = try marked(LauncherView.mastheadMarker).maxY
+        if overflows {
+            XCTAssertEqual(mastheadTop, bandBottom - LauncherView.topGap, accuracy: 1,
+                           "the overflowing page starts the band gap below the band at \(tag)", file: file, line: line)
+        } else {
+            XCTAssertLessThanOrEqual(mastheadTop, bandBottom - LauncherView.topGap + 1,
+                                     "the masthead is at least the gap below the band at \(tag)", file: file, line: line)
+        }
+
+        let scroll = try launcherScrollView()
+        let clipBefore = scroll.contentView.bounds.origin.y
+        if overflows {
+            XCTAssertLessThan(try marked(LauncherView.recentMarker).minY, viewport.minY,
+                              "the last Recent row starts out below the viewport at \(tag)", file: file, line: line)
+            // An empty point on the page, right of the rows' column.
+            try scrollWheel(at: NSPoint(x: viewport.maxX - 20, y: viewport.midY), lines: -40)
+            XCTAssertNotEqual(scroll.contentView.bounds.origin.y, clipBefore,
+                              "the wheel scrolls the launcher at \(tag)", file: file, line: line)
+        }
+        // The Recent list's bottom is its last row's.
+        let recent = try marked(LauncherView.recentMarker)
+        XCTAssertGreaterThanOrEqual(recent.minY, viewport.minY - 0.5,
+                      "the last Recent row is reachable at \(tag): list \(recent), viewport \(viewport)",
+                      file: file, line: line)
+
+        // Empty page, right of the rows' column: a press and a drag move the
+        // window. Delivered as AppKit delivers them, to the hit view (the
+        // test app is never active, so the window itself would spend the
+        // click on activation): the point is that the scroll view leaves
+        // the drag view as the hit, and that view still drags the window.
+        let drags = window.drags
+        let point = NSPoint(x: viewport.maxX - 20, y: viewport.midY)
+        let hit = try XCTUnwrap(frameView.hitTest(frameView.convert(point, from: nil)), file: file, line: line)
+        XCTAssertTrue(hit.className.contains("DraggableStripView"),
+                      "empty launcher page is the drag view at \(tag), got \(hit)", file: file, line: line)
+        for (type, offset) in [(NSEvent.EventType.leftMouseDown, 0.0), (.leftMouseDragged, 8.0), (.leftMouseUp, 8.0)] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(
+                with: type, location: NSPoint(x: point.x + offset, y: point.y), modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
+            switch type {
+            case .leftMouseDown: hit.mouseDown(with: event)
+            case .leftMouseDragged: hit.mouseDragged(with: event)
+            default: hit.mouseUp(with: event)
+            }
+        }
+        XCTAssertEqual(window.drags, drags + 1, "a drag on empty launcher page moves the window at \(tag)",
+                       file: file, line: line)
+
+        // Back to the top for the next state.
+        if overflows { try scrollWheel(at: point, lines: 40) }
     }
 
     /// TitleBandDoubleClick's classification with the launcher pinned to
@@ -194,7 +298,7 @@ final class TitleBandHeightTests: XCTestCase {
             model.openSessions.showHome()
             settle()
             heights["home+tabs \(tag)"] = try assertBand("Home, History and Settings inactive")
-            try assertLauncherBelowTheBand(tag)
+            try assertTheLauncher(tag, overflows: size.height < 700)
             assertTheOwnerClassifiesTheBand(tag)
 
             model.openSessions.openHistory()
@@ -210,14 +314,11 @@ final class TitleBandHeightTests: XCTestCase {
         XCTAssertEqual(distinct.count, 1, "one band height in every state and size: \(heights)")
     }
 
-    /// The launcher must actually be the overflowing case for the test above
-    /// to mean anything: its content is taller than the pane of a 900 x 652
-    /// window (600 pt under the 52 pt band).
-    func testTheFixtureLauncherIsTallerThanTheSmallestPane() {
+    /// The fixture fills the Recent list; that is what makes the launcher
+    /// taller than a 900 x 652 window's pane, which the test above checks
+    /// directly (the last row starts below the viewport, and the wheel
+    /// scrolls).
+    func testTheFixtureFillsTheRecentList() {
         XCTAssertEqual(LauncherView.recentProjects(model).count, 5, "five recent projects")
-        let launcher = NSHostingView(rootView: LauncherView().environmentObject(model))
-        launcher.frame = NSRect(x: 0, y: 0, width: 620, height: 600)
-        let needed = launcher.fittingSize.height
-        XCTAssertGreaterThan(needed, 600, "the launcher's content overflows a 600 pt pane")
     }
 }

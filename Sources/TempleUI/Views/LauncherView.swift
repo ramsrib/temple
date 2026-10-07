@@ -34,33 +34,54 @@ struct LauncherView: View {
         recentProjects(model).map { RecentLine(key: $0.key, time: RelativeTime.string(from: $0.lastActivity)) }
     }
 
+    /// The gap between the title band and the masthead when the launcher
+    /// is taller than its pane (scrolled to the top), and the least gap
+    /// when it is centred.
+    static let topGap: CGFloat = 32
+    private static let bottomGap: CGFloat = 40
+
     var body: some View {
-        VStack {
-            Spacer(minLength: 32)
-            VStack(alignment: .leading, spacing: 30) {
-                masthead
-                toolchainWarnings
-                getStarted
-                if !recentProjects.isEmpty { recent }
+        // Scrolls when the content is taller than the pane: with five recent
+        // projects, toolchain warnings or "Switch project", a short window's
+        // pane cannot hold it, and the rows past the bottom must still be
+        // reachable. The pane is measured from outside the scroll view, by
+        // what it offers (as History does), so the page is at least the
+        // pane's height: centred when it fits, top-aligned with the band
+        // gap when it does not. The scroll view is bounded by the pane, so
+        // nothing here can grow the pane, or the divider drawn at its top,
+        // into the title band (TitleBandHeightTests).
+        GeometryReader { pane in
+            ScrollView(.vertical) {
+                page
+                    .frame(maxWidth: .infinity, minHeight: pane.size.height)
+                    // A drag on the launcher's empty area moves the window
+                    // (Item B); a mouse drag never scrolls a scroll view, so
+                    // the page's own background can take it. Title-band
+                    // double-clicks are TitleBandDoubleClick's, in every state.
+                    .background(WindowActionStrip())
             }
-            .onAppear {
-                recency.watch(model.overlay) { [weak model] in
-                    AnyHashable(model.map(Self.recentPresentation) ?? [])
-                }
-            }
-            .frame(maxWidth: 560, alignment: .leading)
-            .padding(.horizontal, 44)
-            Spacer(minLength: 40)
+            .scrollBounceBehavior(.basedOnSize)
         }
-        // The pane's size, whatever the content's: with five recent projects
-        // the launcher is taller than a short window's pane, and a frame that
-        // grew to it was centred, so its top half-excess sat under the title
-        // band. Pinned to the top, the overflow runs off the bottom instead,
-        // and the masthead keeps its gap below the band.
-        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
-        // A drag on the launcher's empty area moves the window (Item B).
-        // Title-band double-clicks are TitleBandDoubleClick's, in every state.
-        .background(WindowActionStrip())
+    }
+
+    private var page: some View {
+        VStack(alignment: .leading, spacing: 30) {
+            masthead
+            toolchainWarnings
+            getStarted
+            if !recentProjects.isEmpty {
+                recent.background(LayoutMarker(id: Self.recentMarker))
+            }
+        }
+        .onAppear {
+            recency.watch(model.overlay) { [weak model] in
+                AnyHashable(model.map(Self.recentPresentation) ?? [])
+            }
+        }
+        .frame(maxWidth: 560, alignment: .leading)
+        .padding(.horizontal, 44)
+        .padding(.top, Self.topGap)
+        .padding(.bottom, Self.bottomGap)
     }
 
     // MARK: Toolchain
@@ -123,7 +144,13 @@ struct LauncherView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .background(LayoutMarker(id: Self.mastheadMarker))
     }
+
+    /// Where the masthead and the Recent list are, for tests that check
+    /// them against the title band in a real window (TitleBandHeightTests).
+    static let mastheadMarker = NSUserInterfaceItemIdentifier("launcher.masthead")
+    static let recentMarker = NSUserInterfaceItemIdentifier("launcher.recent")
 
     // MARK: Get started
 
@@ -274,5 +301,24 @@ private struct LauncherRow: View {
         case .agent(let agent):
             AgentBadge(agent: agent, size: 15)
         }
+    }
+}
+
+/// An empty AppKit view with an identifier, laid out as the background of
+/// the view it marks, so a test can read that view's frame in the window.
+/// Invisible to clicks: the page's drag view and the rows keep them.
+private struct LayoutMarker: NSViewRepresentable {
+    let id: NSUserInterfaceItemIdentifier
+
+    func makeNSView(context: Context) -> NSView {
+        let view = MarkerView()
+        view.identifier = id
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {}
+
+    private final class MarkerView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }
