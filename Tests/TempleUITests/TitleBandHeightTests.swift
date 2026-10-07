@@ -151,6 +151,22 @@ final class TitleBandHeightTests: XCTestCase {
         return view.convert(view.bounds, to: nil)
     }
 
+    private func markedView(_ id: NSUserInterfaceItemIdentifier) throws -> NSView {
+        try XCTUnwrap(descendants(of: frameView).first { $0.identifier == id }, "\(id.rawValue) is in the window")
+    }
+
+    /// The part of `view` that can show on screen, in window coordinates:
+    /// its frame cut by every ancestor that clips to its bounds.
+    private func shownRect(of view: NSView) -> NSRect {
+        var rect = view.convert(view.bounds, to: nil)
+        var ancestor = view.superview
+        while let current = ancestor {
+            if current.clipsToBounds { rect = rect.intersection(current.convert(current.bounds, to: nil)) }
+            ancestor = current.superview
+        }
+        return rect
+    }
+
     /// The launcher's scroll view: the one whose page carries the drag view.
     private func launcherScrollView() throws -> NSScrollView {
         let drag = try XCTUnwrap(descendants(of: frameView).first { $0.className.contains("DraggableStripView") },
@@ -217,6 +233,27 @@ final class TitleBandHeightTests: XCTestCase {
             XCTAssertNotEqual(scroll.contentView.bounds.origin.y, clipBefore,
                               "the wheel scrolls the launcher at \(tag)", file: file, line: line)
         }
+        // Scrolled or not, nothing of the launcher shows in the band. The
+        // scroll view itself runs under the band (SwiftUI extends it into
+        // the safe area, insetting its content), so this is a question of
+        // what clips it, not of where it is: scrolled to the end, the
+        // masthead is above the band's bottom edge, and must be cut off there.
+        let masthead = try markedView(LauncherView.mastheadMarker)
+        let mastheadFrame = masthead.convert(masthead.bounds, to: nil)
+        if overflows {
+            XCTAssertGreaterThan(mastheadFrame.maxY, bandBottom,
+                                 "scrolled to the end, the masthead has moved up past the band's edge at \(tag)",
+                                 file: file, line: line)
+        }
+        let shown = shownRect(of: masthead)
+        XCTAssertTrue(shown.isEmpty || shown.maxY <= bandBottom + 0.5,
+                      "no launcher content in the band at \(tag): masthead \(mastheadFrame) shows as \(shown)",
+                      file: file, line: line)
+        let page = shownRect(of: try XCTUnwrap(scroll.documentView, file: file, line: line))
+        XCTAssertLessThanOrEqual(page.maxY, bandBottom + 0.5,
+                                 "the launcher's page is cut off at the band's bottom at \(tag): shows as \(page)",
+                                 file: file, line: line)
+
         // The Recent list's bottom is its last row's.
         let recent = try marked(LauncherView.recentMarker)
         XCTAssertGreaterThanOrEqual(recent.minY, viewport.minY - 0.5,

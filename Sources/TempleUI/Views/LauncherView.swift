@@ -47,9 +47,9 @@ struct LauncherView: View {
         // reachable. The pane is measured from outside the scroll view, by
         // what it offers (as History does), so the page is at least the
         // pane's height: centred when it fits, top-aligned with the band
-        // gap when it does not. The scroll view is bounded by the pane, so
-        // nothing here can grow the pane, or the divider drawn at its top,
-        // into the title band (TitleBandHeightTests).
+        // gap when it does not. Nothing here can grow the pane, or the
+        // divider drawn at its top, into the title band, and nothing on the
+        // page draws there when scrolled (TitleBandHeightTests).
         GeometryReader { pane in
             ScrollView(.vertical) {
                 page
@@ -61,6 +61,11 @@ struct LauncherView: View {
                     .background(WindowActionStrip())
             }
             .scrollBounceBehavior(.basedOnSize)
+            // SwiftUI runs the scroll view up under the transparent title
+            // band (full-size content view), insetting only its content, so
+            // a scrolled page drew over the chips. Clipped to the pane, as
+            // History is: the band never shows the launcher.
+            .clipped()
         }
     }
 
