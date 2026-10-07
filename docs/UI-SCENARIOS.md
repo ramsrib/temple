@@ -232,7 +232,7 @@ Fixture variants must be described in the run log with titles, IDs, membership, 
 - **Priority:** P0. **Safety:** Needs care, geometry is shared through preferences.
 - **Preconditions:** Demo launched with `TEMPLE_DEBUG_TITLEBAR=1` in its environment (dev diagnostic, inert otherwise). In another terminal: `log stream --level info --predicate 'subsystem == "com.sriramb.temple.app" && category == "titlebar"'`.
 - **Steps:** With no tab open, double-click blank title strip to zoom, double-click again to restore. Resize the window to an arbitrary size (not by tiling) and drag the sidebar divider to a new width. Double-click blank strip over the sidebar, just right of the divider, mid right pane and far right. Open History and repeat. Then double-click a chip, the search and sidebar-toggle buttons, and the divider itself.
-- **Expected:** Every blank-strip double-click zooms or restores exactly once, at every position and state. The log shows one line per double-click, ending `-> zoom` for blank strip. Chip double-click renames, buttons act as buttons, divider double-click resets the sidebar width; their log lines end `passed through (not empty band)`.
+- **Expected:** Every blank-strip double-click zooms or restores exactly once, at every position and state. The log shows one line per double-click, ending `-> zoom` for blank strip. Session-chip double-click renames; the History utility chip passed through without opening rename in Pass 4. Buttons act as buttons. Divider double-click adjusts the sidebar width (300 to 360 points in Pass 4); their log lines end `passed through (not empty band)`. The requested History-chip rename remains an expectation mismatch, recorded as FAIL in Pass 4.
 - **Notes:** Owner report, 2026-10-06: after a zoom, a manual resize and a sidebar drag, a title-bar double-click did nothing. If any blank-strip double-click fails, keep its log line (hit chain, point, window frame, sidebar width, AppKit's own drag-region verdict). No log line at all means the click never reached the app.
 
 ### 4.3 Sidebar and index
@@ -496,7 +496,7 @@ Fixture variants must be described in the run log with titles, IDs, membership, 
 - **Priority:** P0. **Safety:** Safe in demo, utility navigation only.
 - **Preconditions:** Launcher, optionally Settings as previous tab.
 - **Steps:** Press `⌘Y`, repeat, then choose View ▸ Session History while History is active. Return with `⌃⇥`. Press `⌘⇧Y` to select Archived, repeat while already there; switch to All and press `⌘⇧Y` again. Open palette over History and press `⌘Y`. Repeat `⌘,` on Settings and `⌘⇧H` on home.
-- **Expected:** One History chip. A repeated `⌘Y` or `⌘⇧Y` (key or menu) on its active destination stays on History and changes nothing; it never returns to the previous tab or home. `⌘⇧Y` from another scope switches to Archived and stays. Archived shortcut retains search/filters. Palette-over-History case only dismisses palette and stays. `⌃⇥` returns to the previous tab and leaves the chip open. Repeated `⌘,` and `⌘⇧H` stay put.
+- **Expected:** One History chip. A repeated `⌘Y` or `⌘⇧Y` (key or menu) on its active destination stays on History and changes nothing; it never returns to the previous tab or home. `⌘⇧Y` from another scope switches to Archived and stays. Archived shortcut retains search/filters. Palette-over-History case only dismisses palette and stays. `⌃⇥` returns to another open tab and leaves the chip open. Pass 4 returned to Settings when that chip existed, but stayed on History when the only previous destination was the launcher; it does not provide a History-to-home back action in that state. Repeated `⌘,` and `⌘⇧H` stay put.
 - **Notes:** Until 2026-10-06 a repeat on the active destination went back to the previous tab or home (the old overlay's toggle). The owner reported that as a bug and ADR-028 was amended: a command that names a place goes there. A run that sees the old toggle is testing a build from before that change.
 
 #### HIS-002: Scope partition and header counts
@@ -662,7 +662,7 @@ Fixture variants must be described in the run log with titles, IDs, membership, 
 - **Preconditions:** Fresh orders row; pin it first to test pin restoration.
 - **Steps:** Context menu > Archive session. Inspect sidebar, palette and Archived. Use Edit > Undo Archive Session, then redo with `⌘⇧Z` after verifying focus.
 - **Expected:** Session disappears from browse surfaces and Pinned, appears in Archived with Restore and no missing tag while its file exists. Archive clears its pin; Undo returns both visibility and pin. Files are neither deleted nor moved.
-- **Notes:** `⌘⇧Y` always lands on History's Archived scope (HIS-001); repeating it stays there.
+- **Notes:** `⌘⇧Y` always lands on History's Archived scope (HIS-001); repeating it stays there. Verified in Pass 4, including switching from All. This does not cover the manual archive/undo steps of ARC-001.
 
 #### ARC-002: Project archive and full restore
 - **Priority:** P0. **Safety:** Safe in demo, no open project tabs.
@@ -945,6 +945,8 @@ Retired IDs: TER-001, TER-002, TER-003, TER-005. Their reserved headings remain 
 
 - **2026-10-05, Pass 3:** Replaced the blocked entry with the partial hands-on run against demo PID 50265, HEAD `e2bda2e`. Verified original-title search, palette isolation/focus return, focused Restore undo and scrollable Shortcuts at 1000 by 700. Added PAL-006, HOM-004 and HIS-018. Recorded one immediate-History-input observation and the second screen lock that stopped testing and cleanup.
 
+- **2026-10-06, Pass 4:** Verified title-band zoom ownership and destination-command stay-put behavior on owner-prepared demo PID 21538. Recorded History-chip rename and launcher-only Control-Tab expectation mismatches, plus tool-limited resizing and movement. Updated WIN-006, HIS-001 and ARC-001 observations; preserved prior run results.
+
 ## 7. Result log
 
 ### 2026-10-05, Pass 2
@@ -1221,3 +1223,46 @@ Both apps were left running. Demo geometry was approximately **1000×700** throu
 The orders row remains custom-named **UI regression orders**. It was pinned in the last confirmed AX state. An attempted **Unpin** returned `cgWindowNotFound` as the screen locked, so whether that action completed is unknown. The context menu may remain open. After unlocking, verify the current demo PID and fake names, dismiss any menu, inspect pin state and remove the temporary pin if present, then clear the custom Name through Rename session and Save. Clear History search if restoring the browsing baseline. Do not use Open or resume the row. No cleanup input was sent to the locked screen.
 
 This run replaces the earlier blocked Pass 3 entry rather than adding a second Pass 3 heading. The outstanding smaller-window, full-watch-list and remaining safe-scenario checks require a further unlocked run; their SKIP results are preserved explicitly.
+
+
+### 2026-10-06, Pass 4
+
+- **Build:** `3546807`, obtained with `git rev-parse --short HEAD`. Owner reports the bundled demo was rebuilt from main immediately before this run. Checkout had existing changes in `Sources/TempleUI/Views/TitleBandDoubleClick.swift` and `Tests/TempleUITests/TitleBandDoubleClickTests.swift`; this runner did not alter them. HEAD alone is not a binary hash.
+- **Runner:** gpt-6-astra computer use. Native Computer Use gestures, AX observations and screenshots only for UI interaction. Shell used only for process identity, git metadata, requested log reads and this document edit.
+- **Time:** 22:18 to 22:23 PDT. **Target:** PID 21538, verified executable `/Users/sriram/Projects/active/temple/dist/Temple.app/Contents/MacOS/Temple`, exact bundle-path binding, fake projects verified. Dark appearance, 2x screenshots.
+- **Safety:** Owner's `/Applications` app never targeted. Neither app quit. No session started, resumed or imported. Settings opened read-only, no settings/system preferences changed. No commits; only this document edited by this runner.
+- **Evidence:** AX trees and screenshots in the conversation; title-band log at `/private/tmp/temple-demo-tools/titlebar.log`. Times below identify individual lines in that file. One line per delivered double-click was observed. No blank-band zoom bounce was observed. SKIP means incomplete coverage, not a product failure.
+
+| Requested check | Result | Actual result and evidence |
+|---|---|---|
+| 1. Launcher, four positions | PASS | No tab initially. Sidebar x=120, just beyond divider x=255, middle x=550, far right x=860 points all zoomed once and restored. Logs 22:18:21.763906 through 22:18:39.995625 alternate 900×652 / zoomed=false and 1470×923 / zoomed=true, each ending `-> zoom`. Sidebar AppKit verdict was no; detail verdict was yes. |
+| 2. Owner sequence after arbitrary resize and sidebar change | SKIP | Initial zoom/restore passed. Launcher divider drag changed AX width 240 to 300. All four launcher positions passed again at width 300, logs 22:19:02 through 22:19:26. History sidebar, middle and far right passed at width 300, logs 22:19:41 through 22:19:54. History's immediate-right-of-divider point hit its chip and passed through, so it was not an empty-band test. History divider drag did not establish another width. Edge/corner drags did not resize; one exact-edge attempt returned `windowNotFoundAtPosition((900.0, 433.0))`. The Computer Use API exposes no window-size setter. Native menu geometry is covered separately below, not credited as arbitrary manual resizing. |
+| 3. Collapsed sidebar | PASS | Used Command-B to collapse. Empty x=89 beside traffic lights and x=600 middle each zoomed/restored once. Four lines at 22:20:19.508427 through 22:20:22.998150 show sidebar=collapsed and `-> zoom`. Command-B restored sidebar. |
+| 4. Controls | FAIL | History-chip double-click did not open rename, including label-center repetition at x=352. Esc sent; no rename field or sheet appeared. Log below confirms chip hit and pass-through. Search double-click passed through with no final search field (single-click subsequently opened search; Esc closed it). Toggle double-click collapsed sidebar and passed through. Divider double-click passed through at 22:20:24.635937 and changed AX width 300 to 360, not 280. Green traffic light's exposed AX zoom action zoomed and restored. Yellow minimize/full-screen transitions were not exercised; red untouched. |
+| 5. Empty-band window movement | SKIP | Sidebar-side and detail-side drags attempted, but subsequent logs retained frame origin {0,271}; movement was not demonstrated. No synthetic-event fallback used. |
+| 6. Palette open, band double-click | PASS | Command-K opened palette over History. Double-click on empty detail band dismissed palette and zoomed once; 22:20:47.143805 ends `-> zoom`, AppKit=yes. Subsequent Esc went home because the palette was already closed. This is an observed behavior report, not a claim that palette must remain open. |
+| 7. Top Left then double-click | PASS | Native Window > Move & Resize > Top Left yielded 901×653. Empty detail band zoomed to 1470×923 and the next double-click restored. Logs 22:20:59.767290 / 22:21:00.859314, repeated 22:22:41.574548 / 22:22:42.677133, each `-> zoom`. This test was on launcher with an inactive History chip, not active History. |
+| 8a. History repeat and menu | PASS | Command-Y twice and View > Session History stayed on History All with one History chip. No session row activated. |
+| 8b. Control-Tab previous destination | FAIL | With History the only chip and launcher the previous destination, Control-Tab stayed on History. With Settings opened, Command-Y then Control-Tab returned to Settings. No title-band log applies to this keyboard-only mismatch; AX retained History/All in first trial and changed History to Settings in second. |
+| 8c. Archived repeat / from All | PASS | Command-Shift-Y twice stayed Archived; clicking All then Command-Shift-Y selected Archived. Header remained 25 total / 22 in Temple / 3 archived. |
+| 8d. Palette over History then Command-Y | PASS | Palette's Jump to a session field disappeared; History stayed on Archived with its one chip. |
+| 8e. Settings and Home repeats | PASS | Command-comma twice stayed Settings. Command-Shift-H twice stayed launcher. Settings fields never edited. |
+
+#### Failure evidence and interpretation
+
+History chip, label-center double-click, no rename UI:
+
+```text
+2026-10-06 22:20:01.878080-0700 0xf7c9cc   Default     0x0                  21538  0    Temple: [com.sriramb.temple.app:titlebar] title band double-click at {352, 627} window {{0, 271}, {900, 652}} zoomed=false sidebar=300 appKitDragRegionZoom=no hit=_TtC8TempleUIP33_3358DCA4CE18699180D3AB5FAC8CB0C916StripHost… < NSView < TempleUI.TabStripContainerView < NSTitlebarAccessoryContainerView < NSTitlebarView < NSTitlebarContainerView < NSThemeFrame -> passed through (not empty band)
+```
+
+The handler correctly excluded the chip from zoom. The failure is against this run's requested rename behavior, not evidence that zoom ownership failed. The earlier x=332 trials at 22:19:48.480051 and 22:19:49.293257 also passed through without rename. WIN-006 now distinguishes the observed utility-chip behavior from session-chip rename, which this run could not exercise.
+
+Control-Tab's launcher-only trial has no title-band log because it is not a double-click. It did not return home, but the Settings-to-History-to-Settings trial proved the chord reached the app and switched between actual chips. HIS-001 now states that boundary. The primary History/Archived stay-put fix passed all requested command variants.
+
+#### Oddities, limits and final state
+
+- Native Return to Previous Size later produced 1328×785 at origin {138,75}; its zoom/restore pair also passed (22:22:23.813562 / 22:22:24.767544). This was not credited as the owner's arbitrary resize sequence.
+- A screenshot after divider reset was cropped at the screen's right edge; full geometry was checked with the app's log, not inferred from crop width. The final compact screenshot shows a horizontal title-strip line crossing the inactive utility-chip labels. No further layout diagnosis performed.
+- Final demo remains running on the **launcher at 901×653 points**, sidebar 360, History and Settings utility chips inactive, no session chips. This is the closest verified compact geometry achieved; the requested approximately 1000×700 was not set exactly because tool drags did not resize and no supported AX-size API was available. No frame-preference restoration attempted while either app remains running.
+- No claims about untested WIN minimum/scroll/appearance matrices or ARC-001 manual archive/undo. Check 2 and check 5 remain explicit coverage gaps; checks 4 and 8b are expectation mismatches. Blank-band zoom and repeated destination commands themselves showed no failures in the exercised states.
