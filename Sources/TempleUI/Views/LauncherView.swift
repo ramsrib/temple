@@ -53,10 +53,8 @@ struct LauncherView: View {
             Spacer(minLength: 40)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // In the no-tab launcher state the detail-side toolbar carries no items,
-        // so its band can collapse; this shim keeps window drag / double-click in
-        // the launcher's empty top area (Item B). With tabs open the native
-        // unified toolbar (chips) provides this for free.
+        // A drag on the launcher's empty area moves the window (Item B).
+        // Title-band double-clicks are TitleBandDoubleClick's, in every state.
         .background(WindowActionStrip())
     }
 

@@ -1,15 +1,16 @@
 import SwiftUI
 import AppKit
 
-/// Restores the native title-bar mouse gestures that a `.hiddenTitleBar` window
-/// otherwise loses on our custom header strip: a **double-click** performs the
-/// system "double-click a window's title bar to…" action (Maximize/Minimize/
-/// None, read live from `AppleActionOnDoubleClick`), and a **single-click drag**
-/// moves the window.
+/// Lets a single-click drag on the launcher's empty area move the window,
+/// as the title bar does.
 ///
-/// Used as a `.background(…)` behind the strip's controls, so a click on a chip,
-/// the `+`, or the search field is handled by that control and never reaches
-/// this layer — only clicks in the empty drag area do.
+/// Used as a `.background(…)` behind the launcher, so a click on a row or a
+/// link is handled by that control and never reaches this layer. Double-clicks
+/// are not handled here: the title band's belong to TitleBandDoubleClick, the
+/// one owner of that gesture, and below the band a double-click on empty page
+/// is not a title-bar gesture. (This shim used to zoom on one too, from when
+/// the launcher's band could collapse; inside the band that zoomed a second
+/// time after AppKit did.)
 struct WindowActionStrip: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView { DraggableStripView() }
     func updateNSView(_ nsView: NSView, context: Context) {}
@@ -17,24 +18,16 @@ struct WindowActionStrip: NSViewRepresentable {
     private final class DraggableStripView: NSView {
         /// The pending mouse-down; a drag consumes it (via `performDrag`), a
         /// plain click discards it. Deferring the drag to `mouseDragged` keeps a
-        /// single click — and the first click of a double-click — from being
-        /// swallowed by a drag loop.
+        /// single click from being swallowed by a drag loop.
         private var mouseDownEvent: NSEvent?
 
         override func mouseDown(with event: NSEvent) {
-            // Inside the title bar the window already zooms and drags on its
-            // own: acting here too zoomed twice, so a double-click maximized
-            // the window and put it straight back (seen on macOS 27).
+            // Inside the title bar the window drags on its own.
             if let window, event.locationInWindow.y >= window.contentLayoutRect.maxY {
                 mouseDownEvent = nil
                 return
             }
-            if event.clickCount == 2, let window {
-                mouseDownEvent = nil
-                Self.performSystemDoubleClickAction(on: window)
-            } else {
-                mouseDownEvent = event
-            }
+            mouseDownEvent = event.clickCount == 1 ? event : nil
         }
 
         override func mouseDragged(with event: NSEvent) {
@@ -45,16 +38,6 @@ struct WindowActionStrip: NSViewRepresentable {
 
         override func mouseUp(with event: NSEvent) {
             mouseDownEvent = nil
-        }
-
-        /// Mirror System Settings → Desktop & Dock → "Double-click a window's
-        /// title bar to…". Unset defaults to zoom (the macOS default).
-        private static func performSystemDoubleClickAction(on window: NSWindow) {
-            switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
-            case "Minimize": window.miniaturize(nil)
-            case "None": break
-            default: window.zoom(nil)   // "Maximize" or unset
-            }
         }
     }
 }
