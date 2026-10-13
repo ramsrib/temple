@@ -7,7 +7,7 @@
 # (see the comment above `linkAgainstBuildSDK` in Package.swift). `make build`
 # runs this, so `make demo` never launches such a binary.
 #
-#   Scripts/check-sdk-linkage.sh [binary ...]   default: .build/debug/{temple,templectl,terminal-demo}
+#   Scripts/check-sdk-linkage.sh [binary ...]   default: .build/debug/{temple-app,temple,templectl,terminal-demo}
 set -euo pipefail
 
 ROOT="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,7 +15,7 @@ ROOT="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # it for the build), else the default macOS SDK.
 want="$(xcrun --sdk "${SDKROOT:-macosx}" --show-sdk-version)"
 if (($# == 0)); then
-  set -- "$ROOT"/.build/debug/{temple,templectl,terminal-demo}
+  set -- "$ROOT"/.build/debug/{temple-app,temple,templectl,terminal-demo}
 fi
 
 status=0

@@ -48,6 +48,15 @@ targets:
         product: TempleUI
       - package: Temple
         product: TempleTerminal
+      # The `temple` command line (ADR-034), at Contents/Helpers/temple:
+      # beside Contents/MacOS/Temple it would collide on a case-insensitive
+      # volume. The Homebrew cask links it onto the PATH.
+      - target: temple-cli
+        embed: true
+        codeSign: true
+        copy:
+          destination: wrapper
+          subpath: Contents/Helpers
     settings:
       base:
         PRODUCT_NAME: Temple
@@ -63,3 +72,23 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         # `Temple.app` is a UI app, not a background agent.
         LSUIElement: NO
+
+  # The `temple` command line (ADR-034). The same main.swift SwiftPM builds;
+  # everything else comes from the package's TempleCLIKit.
+  temple-cli:
+    type: tool
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Sources/TempleCLI
+    dependencies:
+      - package: Temple
+        product: TempleCLIKit
+    settings:
+      base:
+        PRODUCT_NAME: temple
+        PRODUCT_BUNDLE_IDENTIFIER: com.sriramb.temple.cli
+        SWIFT_VERSION: "5.10"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        ENABLE_HARDENED_RUNTIME: YES
+        SKIP_INSTALL: YES

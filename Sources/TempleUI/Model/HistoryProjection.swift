@@ -362,26 +362,47 @@ actor HistoryProjector {
     }
 
     private func rows(for id: String, context: HistoryRowBuilder.Context) -> [HistoryRow] {
-        let member = members[id]
-        let keys = keysByID[id] ?? []
+        let rows = Self.rows(member: members[id], disk: facts(for: id).disk, builder: builder, context: context)
+        stats.rowsBuilt += rows.count
+        return rows
+    }
+
+    /// What the catalog says about one id: its summaries, which are noise,
+    /// and the evidence a row's standing needs. A value, so a caller can
+    /// judge the id later against membership as it is then (ADR-034).
+    struct IDFacts: Sendable {
+        /// Each summary filed under the id, and whether it is noise.
+        var disk: [(key: HistoryKey, summary: TranscriptSummary, noise: Bool)] = []
+        var folders: [ProjectKey: DirectoryEvidence] = [:]
+        var coverage: [HostID: CatalogCoverage] = [:]
+    }
+
+    func facts(for id: String) -> IDFacts {
+        IDFacts(disk: (keysByID[id] ?? []).compactMap { key in catalog[key].map { (key, $0, noise.contains(key)) } },
+                folders: folders, coverage: coverage)
+    }
+
+    /// History's rule for one id, the one the page uses: a member attaches
+    /// to its own agent's summary on its host; a summary another member owns
+    /// is a conflict; any other is outside; noise shows only attached.
+    static func rows(member: Session?, disk: [(key: HistoryKey, summary: TranscriptSummary, noise: Bool)],
+                     builder: HistoryRowBuilder, context: HistoryRowBuilder.Context) -> [HistoryRow] {
         var rows: [HistoryRow] = []
         var attached = false
-        for key in keys {
-            guard let disk = catalog[key] else { continue }
-            let otherAgentListed = keys.contains { $0.host == key.host && $0.agent != key.agent }
+        for (key, summary, isNoise) in disk {
+            let otherAgentListed = disk.contains { $0.key.host == key.host && $0.key.agent != key.agent }
             switch HistoryModel.standing(of: key, member: member?.state, otherAgentListed: otherAgentListed) {
             case .member:
-                rows.append(builder.row(member: member, catalog: disk, conflict: nil, context: context))
+                rows.append(builder.row(member: member, catalog: summary, conflict: nil, context: context))
                 attached = true
             case .conflict(let conflict):
-                if !noise.contains(key) { rows.append(builder.row(member: nil, catalog: disk, conflict: conflict, context: context)) }
+                if !isNoise { rows.append(builder.row(member: nil, catalog: summary, conflict: conflict, context: context)) }
             case .outside:
-                if !noise.contains(key) { rows.append(builder.row(member: nil, catalog: disk, conflict: nil, context: context)) }
+                if !isNoise { rows.append(builder.row(member: nil, catalog: summary, conflict: nil, context: context)) }
             }
         }
         if let member, !attached { rows.append(builder.row(member: member, catalog: nil, conflict: nil, context: context)) }
-        stats.rowsBuilt += rows.count
-        return rows.sorted(by: Self.newerFirst)
+        return rows.sorted(by: newerFirst)
     }
 
     static func newerFirst(_ lhs: HistoryRow, _ rhs: HistoryRow) -> Bool {

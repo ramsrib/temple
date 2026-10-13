@@ -161,6 +161,9 @@ public struct StartupRootView: View {
                         // models built by tests and tools never run it.
                         model.enableArchiveSweep()
                         model.start()
+                        // The command line's socket (ADR-034), likewise the
+                        // app's alone.
+                        model.startControlServer()
                         // Snapshot runs must not take focus from the user's work.
                         if activateOnStart,
                            ProcessInfo.processInfo.environment["TEMPLE_SNAPSHOT_DIR"] == nil {

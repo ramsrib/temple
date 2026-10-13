@@ -1816,7 +1816,7 @@ inert responder.
 ---
 
 ## ADR-034 — A `temple` command line for the sessions you have open
-**Date:** 2026-10-13 · **Status:** Proposed
+**Date:** 2026-10-13 · **Status:** Accepted
 
 Temple's job is managing many Claude and Codex sessions at once: projects
 scope them, each project holds its tabs, History keeps the rest, and nothing
@@ -1864,8 +1864,9 @@ temple history get <id>
 
 - **History is read-only.** Every action is on `sessions`.
 - **Only `sessions new` starts a fresh session.** Every other command acts on
-  a session that already exists, and an unknown id is an error that names
-  `sessions new`.
+  a session that already exists, and an unknown id is an error ("no open
+  session has the id …" for the live verbs, which points to `history get`;
+  "no session has the id …" for `open` and `history`).
 - **`sessions open` is the app's Open: resume, or focus the tab.** It takes
   any id `history` shows. One that is not yet Temple's joins as opened; an
   archived one is restored on the way (ADR-017); one that cannot resume (no
@@ -1916,19 +1917,33 @@ above. `sessions` and `projects` ask the running app, and say "Temple isn't
 running" rather than print an empty list. The database does keep a copy of
 the open tabs (`open_tabs`, for restoring them at launch), but it is not the
 source: it never holds a provisional Codex tab (`TabPersistence`) or any
-activity state, so a list built from it would disagree with the window. Actions (`new`, `open`, `close`) go to the app, launching it first;
-the app stays the only writer. The channel is a Unix socket under the state
-directory, mode 0600. The server starts in `AppModel`, not in either
-`TempleApp.swift`, so the `.app` and `make demo` cannot disagree (AGENTS.md,
-"Two entry points").
+activity state, so a list built from it would disagree with the window.
+Actions (`new`, `open`, `close`) go to the app, and the app stays the only
+writer. `new` and `open` start Temple first when it is not running; `close`
+does not, since a Temple that is not running has nothing open. The channel is a Unix socket under the state
+directory, mode 0600, answered only for a peer running as this user, and
+close-on-exec, so no agent Temple launches inherits it. The
+server is `AppModel.startControlServer()`, called from `StartupRootView`
+beside the archive sweep: that view is shared by both `TempleApp.swift`
+files, so the `.app` and `make demo` cannot disagree (AGENTS.md, "Two entry
+points"), and a model built by a test or a tool never opens a socket. Only
+one process serves a state directory, decided by a lock (`control.sock.lock`,
+held for as long as it listens), never by whether a connect succeeds: a busy
+Temple's full accept queue refuses connections too. Only the holder creates
+or removes the socket file, so a stale one is replaced exactly when its owner
+is gone. The server stops when the quit drain begins, and from
+`prepareForQuit` on the app refuses `new`, `open` and `close`.
 
 **A new binary, not `templectl`.** `templectl` stays the developer harness it
 is: `--import-all`, `--init-db`, `--watch --metrics` and the benchmark
 control are refused outside a redirected state dir or exist for scripts in
 `Scripts/`, and none of them belongs in a shipped command. The new `temple`
-target shares `TempleCore`/`TempleLocalHost` with it. SwiftPM's `temple`
-product is today the app executable (`make run`, `make demo`), so that
-product is renamed when this lands. In the `.app` the binary cannot sit
+is a thin `main.swift` over `TempleCLIKit`, which links `TempleCore` and
+`TempleUI`: History's catalog read and projection live in `TempleUI`, and
+`HistoryReader` runs them without a page, so a session reads on the command
+line exactly as the History tab shows it. Moving them to `TempleCore` would
+be the cleaner boundary; it was not worth the churn for one caller. SwiftPM's
+app product is renamed `temple-app` (`make run`, `make demo`). In the `.app` the binary cannot sit
 beside `Contents/MacOS/Temple`, because the volume is case-insensitive; it
 gets a directory of its own (`Contents/Helpers/temple`) and reaches the PATH
 through the Homebrew cask's `binary` stanza.
@@ -1950,3 +1965,54 @@ which depend on that state being accurate first. Sending input into a
 session's terminal, which is the one verb here that reaches inside a session
 rather than managing it; Chrome gates the equivalent (`execute javascript`,
 CDP attach) separately from tab management, and so should this.
+
+**As built.**
+
+- `new` and `open` start Temple only when no Temple is running at all, and
+  only the app the binary ships in (`…/Temple.app/Contents/Helpers/temple`,
+  through any symlink), as a new instance of that bundle: LaunchServices
+  asked to open a bundle id that is running activates the running copy. A
+  Temple that runs but does not answer (an older version, most likely) is
+  reported after a few seconds' grace, never joined by a second instance.
+  Never for a redirected state directory; a dev build starts nothing. Both
+  commands bring the window forward; a snapshot run (`TEMPLE_SNAPSHOT_DIR`)
+  does not.
+- `open` focuses a session that has a tab, as clicking its chip does.
+  Everything else is judged by History's rule for its id
+  (`HistoryProjector.rows(member:disk:…)`, the function the History page
+  itself uses), so the command line has no resume rule of its own. The slow
+  part comes first: `HistoryReader.lookup` reads the catalog and returns what
+  it says about the id, without a verdict. Then, in one synchronous
+  main-actor turn, the id's rows are built against membership, archived
+  projects and tabs as they are at that moment, and the open acts on that
+  verdict or refuses with its reason. Nothing that changes during the read
+  can be missed, because nothing is judged until it ends. More than one row
+  is ambiguous; a store that failed to read makes "not found" a refusal with
+  the store's error, since it proves nothing. The read can take seconds
+  cold; the command waits up to two minutes.
+- Every action (`new`, `open`, `close`) claims the request's
+  `ControlCommit` in the same turn as its change; the server's deadline (150
+  seconds) claims it before answering "did not answer in time, and changed
+  nothing". One wins, so that answer is always true. A request that
+  committed and still has not answered ten seconds after its deadline is
+  told "Temple acted but did not finish answering", never "changed nothing".
+- The server keeps every connection on one serial queue, each descriptor
+  owned by a `DispatchIO`, which closes it exactly once after its last
+  operation: no path closes a number another may still use. Requests and
+  answers each have a five-second transfer deadline, and more than 32
+  connections at once are closed unanswered. Network.framework was the other
+  candidate; it would have dropped the peer-uid check and any say over
+  close-on-exec. Close-on-exec is set right after `socket`/`accept` (Darwin
+  has no atomic form for sockets), so an agent forked in that instant can
+  inherit one descriptor; ownership is the lock, not the socket, so even
+  then a restarted Temple serves.
+- `sessions search` is ⌘K's ranking (`SessionRowSearch`) over the open
+  sessions with rows, then any tab without one whose title has the term.
+  `history search` is History's own match: title, folder, branch, last
+  message, or an id prefix.
+- Text output is a table, `*` marking the tab or project on screen; `--json`
+  is camelCase, dates ISO 8601, and a pending session's `id` is `null`. Exit
+  status: 0 done, 1 failed or refused (the message on stderr), 2 usage.
+- Requests and responses both carry the protocol version, read before
+  anything else; any other version is refused in either direction, not
+  guessed at. Old versions, when there are any, get adapters on purpose.

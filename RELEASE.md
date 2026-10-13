@@ -101,6 +101,13 @@ cd ../homebrew-tap && brew style --fix Casks/temple.rb && git commit -am "temple
 Users then get it with `brew install --cask ramsrib/tap/temple` (or
 `brew upgrade --cask temple`).
 
+The first release that ships the `temple` command line (ADR-034) also adds
+this to the cask, once, so Homebrew links it onto the PATH:
+
+```ruby
+binary "#{appdir}/Temple.app/Contents/Helpers/temple"
+```
+
 ## Version numbers
 
 Every version in this file is written `v0.x.y`, and it is always a placeholder:

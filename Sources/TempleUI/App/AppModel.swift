@@ -36,7 +36,7 @@ public final class AppModel: ObservableObject {
     /// Diagnostic work count, including builds whose values compare equal.
     private(set) var sessionPresentationBuildCount = 0
     private var rowPresentationScheduled = false
-    private var presentedByID: [String: Session] = [:]
+    private(set) var presentedByID: [String: Session] = [:]
     private(set) var rowPresentationSortCount = 0
     private(set) var rowProjectBuildCount = 0
 
@@ -525,7 +525,7 @@ public final class AppModel: ObservableObject {
     // Seams (Track C)
     /// Where the database lives; nil for an in-memory one. Startup
     /// housekeeping happens beside it and nowhere else.
-    private let databaseDirectory: URL?
+    let databaseDirectory: URL?
     /// One engine per registry host, merged by current row ownership.
     let engineSet: EngineSet
     public let hostRegistry: HostRegistry
@@ -533,6 +533,9 @@ public final class AppModel: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var themeObserver: NSObjectProtocol?
     private var activationObserver: NSObjectProtocol?
+    /// The command line's socket (ADR-034); the app's alone, never a test's.
+    var controlServer: ControlServer?
+    var controlTerminationObserver: NSObjectProtocol?
     public init(surfaceFactory: TerminalSurfaceFactory = StubTerminalSurfaceFactory(),
                 engines: [any HostEngine]? = nil,
                 registry: ProcessRegistry? = nil,
@@ -873,7 +876,7 @@ public final class AppModel: ObservableObject {
     /// row recorded, then the tab's own title — which for a restored chip is
     /// the title it was saved with, and for a new tab says what it is. The
     /// row's placeholder ("New Claude session") never beats a real title.
-    private func sessionTabTitle(_ tab: SessionTab) -> String {
+    func sessionTabTitle(_ tab: SessionTab) -> String {
         if let sid = tab.sessionID, let row = presentedByID[sid],
            let title = row.state.customName ?? row.state.title { return title }
         return tab.title
@@ -923,6 +926,9 @@ public final class AppModel: ObservableObject {
 
     /// App-quit drain (ADR-010) → returns true once all surfaces are down.
     public func drainForQuit(completion: @escaping () -> Void) {
+        // The command line is answered no more: what it could change is
+        // being frozen for the next launch.
+        controlServer?.stop()
         // A sweep still coalescing is dropped; the next launch redoes it.
         pendingArchiveSweep?()
         pendingArchiveSweep = nil

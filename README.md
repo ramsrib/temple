@@ -37,6 +37,21 @@ brew upgrade --cask temple
 [Codex](https://github.com/openai/codex) installed. Temple auto-detects both
 (paths configurable in Settings).
 
+## Command line
+
+Temple ships a `temple` command for your open sessions and History:
+
+```sh
+temple sessions ls                 # what has a tab, and what each is doing
+temple sessions new ~/repo --cli codex
+temple history search keychain     # every session on disk, open or not
+temple sessions open <id>          # resume it in a tab, or focus its tab
+```
+
+The cask puts it on your PATH. From the DMG, link it yourself:
+`ln -s /Applications/Temple.app/Contents/Helpers/temple /usr/local/bin/temple`.
+`temple --help` lists the rest.
+
 ## Build from source
 
 ```sh

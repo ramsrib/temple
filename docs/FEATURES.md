@@ -557,6 +557,43 @@ of truth.
 | **⌘,** | Open Settings as a tab. |
 | **Esc** | Dismiss the palette or shortcuts overlay from anywhere; close the find bar from its field; cancel busy-close confirmation. On the History tab: clear the search, then the "Archived just now" chip, then the selection, then go back. |
 
+## Command line
+
+`temple` works with the open projects and sessions from any terminal, and
+reads History for everything else ([ADR-034](./DECISIONS.md#adr-034--a-temple-command-line-for-the-sessions-you-have-open)).
+It ships inside the app at `Temple.app/Contents/Helpers/temple`.
+
+```
+temple projects ls | get <dir>
+temple sessions ls [--project DIR] [--cli NAME] | search <term> | get <id>
+temple sessions new [dir] [--cli NAME] | open <id> | close <id> [--force]
+temple history ls [--project DIR] [--cli NAME] | search <term> | get <id>
+```
+
+- **`projects` and `sessions` are what has a tab**, as the running app shows
+  it: state (running, idle, attention, exited, or restored for a chip whose
+  agent has not started), and `*` for the one on screen. They ask the app over
+  a socket in the state directory, and say "Temple isn't running" when it is
+  not.
+- **`history` is the History tab's All scope**, read by the same code: every
+  session on disk, Temple's or not, with its status (in-temple, archived,
+  outside). It reads the stores and the database itself, so it works with
+  Temple closed.
+- **`sessions new` is the only command that starts a session**, in the given
+  folder (default: the current one) with `--cli` or the default from Settings.
+  A new Codex session is `pending`, with no id, until Codex writes its rollout.
+- **`sessions open` is the app's Open**: it focuses the tab, or resumes the
+  session in one. Any id History lists works; a session outside Temple joins as
+  opened, an archived one is restored. One that cannot resume is refused with
+  the reason.
+- **`sessions close` is `⌘W`**: it refuses while the agent is working unless
+  given `--force`.
+- `new` and `open` start Temple when no Temple is running (only the app the
+  command ships in) and bring it forward. A Temple that runs but does not
+  answer, such as an older version, is reported rather than started twice.
+- Every read verb takes `--json`. Exit status is 0 on success, 1 when the
+  command failed or Temple refused, 2 for a usage error.
+
 ## Platform & packaging
 
 Temple is a native Swift/AppKit/SwiftUI macOS app with a Metal-backed embedded
@@ -583,5 +620,4 @@ and System / Light / Dark appearance.
 | Windowing | Multi-window support. |
 | Agents | Third-agent adapters such as Gemini CLI and aider; surface agent-specific capabilities such as models and permission modes. |
 | Proxied backends | Opt-in launch through a local [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) endpoint, so a session can run on a pooled or non-Anthropic backend (`claude --model gpt-5.6-sol`) without touching the direct-login path. Per-session and per-project, never a global default: Claude takes `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` in `TerminalCommand.env`, Codex ignores `OPENAI_BASE_URL` and needs `-c model_providers.…` flags instead. Endpoint URL is a settings key; the token is not, and belongs in the Keychain or an env lookup rather than `UserDefaults`. Model list comes from the endpoint's `/v1/models`, and a proxied session wants a visible mark in the tab and sidebar, because API-key auth makes Claude Code ignore the claude.ai login and disable its connectors. |
-| Command line | A `temple` CLI over open projects and sessions plus History: `projects`, `sessions`, `history`, each with `ls` / `search` / `get`; `sessions new` / `open` / `close` ([ADR-034](./DECISIONS.md#adr-034--a-temple-command-line-for-the-sessions-you-have-open)). |
 | Platforms | Linux build with a GTK libghostty host. |

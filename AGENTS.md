@@ -67,7 +67,8 @@ Three traps, each hit for real:
 
 ## Two entry points: the shipped app is not the binary `make demo` runs
 
-`make demo` and `swift run` build the SwiftPM executable, whose `@main` is
+`make demo` and `swift run temple-app` build the SwiftPM executable (the
+product named `temple` is the command line, ADR-034), whose `@main` is
 `Sources/Temple/TempleApp.swift`. The `.app` — `make app`, `make install`, the
 Homebrew release — is built by xcodebuild from `project.yml`, whose `@main` is
 **`App/TempleApp.swift`**. They are two files with the same `init()` shape and

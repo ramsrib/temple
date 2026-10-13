@@ -23,7 +23,7 @@ test: ## Run the full test suite
 
 run: ## Run the app straight from SwiftPM (dev loop; stub-free ghostty build required)
 	@./Scripts/ghostty-stamp.sh check
-	swift run temple
+	swift run temple-app
 
 demo: build ## Run against a fake session store (screenshots, demos — no real projects)
 	@./Scripts/demo-data.py
@@ -35,7 +35,7 @@ demo: build ## Run against a fake session store (screenshots, demos — no real 
 	@TEMPLE_CLAUDE_ROOT=/private/tmp/temple-demo/claude-store \
 	 TEMPLE_CODEX_ROOT=/private/tmp/temple-demo/codex-store \
 	 TEMPLE_STATE_DIR=/private/tmp/temple-demo/state \
-	 .build/debug/temple
+	 .build/debug/temple-app
 
 demo-clean: ## Remove the demo store, demo state, and any sessions it created
 	@rm -rf /private/tmp/temple-demo

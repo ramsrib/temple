@@ -24,7 +24,13 @@ let package = Package(
         .library(name: "TempleUI", targets: ["TempleUI"]),
         // Exposed so the U6 Xcode app target can link the ghostty engine.
         .library(name: "TempleTerminal", targets: ["TempleTerminal"]),
-        .executable(name: "temple", targets: ["Temple"]),
+        // The app, run straight from SwiftPM (`make run`, `make demo`). Not
+        // `temple`: that is the command line, and the volume is case-insensitive.
+        .executable(name: "temple-app", targets: ["Temple"]),
+        // The `temple` command line (ADR-034).
+        .executable(name: "temple", targets: ["TempleCLI"]),
+        // Exposed so the Xcode tool target that ships it can link it.
+        .library(name: "TempleCLIKit", targets: ["TempleCLIKit"]),
         .executable(name: "templectl", targets: ["templectl"]),
         // Track T dev harness: one window, one libghostty surface.
         .executable(name: "terminal-demo", targets: ["terminal-demo"]),
@@ -61,7 +67,14 @@ let package = Package(
         .executableTarget(name: "Temple", dependencies: ["TempleUI", "TempleTerminal"],
                           linkerSettings: linkAgainstBuildSDK),
 
-        // CLI that prints the real project → session index.
+        // The `temple` command line (ADR-034): parsing, output and the
+        // commands, as a library so tests can drive it; History through
+        // TempleUI's reader, so a session reads as the History tab shows it.
+        .target(name: "TempleCLIKit", dependencies: ["TempleCore", "TempleUI"]),
+        .executableTarget(name: "TempleCLI", dependencies: ["TempleCLIKit"],
+                          linkerSettings: linkAgainstBuildSDK),
+
+        // Developer harness that prints the real project → session index.
         .executableTarget(name: "templectl", dependencies: ["TempleCore", "TempleLocalHost"],
                           linkerSettings: linkAgainstBuildSDK),
 
@@ -102,5 +115,6 @@ let package = Package(
         .testTarget(name: "TempleCoreTests", dependencies: ["TempleCore", "TempleLocalHost", "TempleTestSupport"], exclude: ["Fixtures/session-state-v8.json", "Fixtures/session-state-v9.json", "Fixtures/session-state-v11.json", "Fixtures/format-golden.json"]),
         .testTarget(name: "TempleUITests", dependencies: ["TempleUI", "TempleLocalHost", "TempleTestSupport"]),
         .testTarget(name: "TempleTerminalTests", dependencies: ["TempleTerminal", "TempleUI"]),
+        .testTarget(name: "TempleCLITests", dependencies: ["TempleCLIKit", "TempleUI", "TempleCore"]),
     ]
 )
