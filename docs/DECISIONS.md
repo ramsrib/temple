@@ -1812,3 +1812,141 @@ terminal is simply not first responder.
 dropped, never delivered elsewhere. Esc and Temple's own shortcuts still work
 throughout, because menus and the key router act before a key reaches the
 inert responder.
+
+---
+
+## ADR-034 — A `temple` command line for the sessions you have open
+**Date:** 2026-10-13 · **Status:** Proposed
+
+Temple's job is managing many Claude and Codex sessions at once: projects
+scope them, each project holds its tabs, History keeps the rest, and nothing
+is lost. The app is the only way in. This adds a command line over the
+same model, so the sessions can be listed, found, opened and closed from any
+terminal or script, and later by an agent. It adds no new concepts: project,
+session, tab and History mean what they mean in the app.
+
+**Shape: noun, then verb.**
+
+```
+temple projects ls                          # projects with an open tab
+temple projects get <dir>
+
+temple sessions ls [--project DIR] [--cli NAME]
+temple sessions search <term> [--cli NAME]
+temple sessions get <id>
+temple sessions new [DIR] [--cli NAME]      # default: Settings' default
+temple sessions open <id>                   # resume, or focus its tab
+temple sessions close <id> [--force]
+
+temple history ls [--project DIR] [--cli NAME]
+temple history search <term> [--cli NAME]
+temple history get <id>
+```
+
+**Two scopes.**
+
+- **`sessions` and `projects` are what has a tab.** A session is listed when
+  a tab holds it, a restored chip included (state `restored`), and a project
+  when it has one. This is the tab strip, not the sidebar: a sidebar row
+  without a tab (pinned, recent) is found through `history`. Chosen on
+  purpose: the command line is for the work in hand, the way a browser's
+  tab API lists tabs and leaves history to history. (Review proposed the
+  sidebar's population instead; rejected for that reason, and noted here so
+  the choice is not mistaken for an oversight.)
+- **`history` is the app's History: every session**, open ones included,
+  exactly what its All scope shows. It is the catalog of the agents' stores
+  on disk joined with Temple's membership, not the database alone, so it
+  finds sessions Temple never imported. The catalog's disk cache is shared
+  between processes by design (ADR-032), so the command line reads it with
+  Temple closed; a cold read is a full scan and can take seconds.
+
+**Rules.**
+
+- **History is read-only.** Every action is on `sessions`.
+- **Only `sessions new` starts a fresh session.** Every other command acts on
+  a session that already exists, and an unknown id is an error that names
+  `sessions new`.
+- **`sessions open` is the app's Open: resume, or focus the tab.** It takes
+  any id `history` shows. One that is not yet Temple's joins as opened; an
+  archived one is restored on the way (ADR-017); one that cannot resume (no
+  transcript, folder or CLI) is refused with the reason, and nothing changes.
+  It is not "what Return does": Return on an archived row that cannot resume
+  restores it without opening a tab, and `open` must never succeed without a
+  tab to show for it.
+- **Every command is an action the app already has, with the app's guards.**
+  `close` on a running agent asks in the app; the command line cannot ask,
+  so it refuses and names `--force`. A verb with no app equivalent does not
+  belong here.
+- **`ls`, `search` and `get` mean the same on every noun**, and all three
+  take `--json`. `search` matches what the app's search matches (title,
+  project, CLI), not transcript content.
+
+**Identity.** `<id>` is the CLI's own session id (Claude's UUID, Codex's
+thread id), the one its resume command takes. It is never a tab's UUID,
+which lives only as long as the tab. Ids are host-local; every key in the
+code already carries a host (`SessionKey`, `ProjectKey`, `HistoryKey`), so a
+host qualifier can be added later without changing what a bare id means.
+Until then an id that matches more than one session is refused, not guessed.
+`<dir>` is resolved the way Temple stores project paths, so `/tmp/x` and
+`/private/tmp/x` name one project.
+
+**A session can exist before its id does.** Claude's id is minted at launch;
+a Codex tab is provisional, with no id, until its rollout appears
+(`SessionTab`, U4), which may be after its first turn. So `sessions new`
+does not wait for one: it prints the id when it has one, and otherwise
+reports the session as `pending` with no id (`"id": null` in JSON).
+`sessions ls` lists a pending session the same way, and it is addressable by
+id once Codex has written it. Nothing invents a placeholder id: an id the
+CLI did not issue would be a promise the agent never made.
+
+**`--cli`, not `--agent`.** The flag names the CLI Temple launches for the
+session, and nothing else. Each alternative collided with something:
+`--agent` with the agents that will call this command line (`--agent codex`,
+run by Claude, reads as the caller); `--type` with every other way a session
+will differ (background, subagent, proxied), which would all want it;
+`--provider` and `--model` with proxied backends, where `claude` runs on a
+non-Anthropic model (FEATURES roadmap), so the CLI, the provider and the
+model are three different answers. A future harness is one more value
+(`--cli gemini`), not a new flag. The values are `Agent`'s raw values
+(`claude`, `codex`). Whether the app's own "Default agent" setting and
+History's "Agent" filter are renamed to match is open.
+
+**Transport.** `history` reads the catalog and the database itself, as
+above. `sessions` and `projects` ask the running app, and say "Temple isn't
+running" rather than print an empty list. The database does keep a copy of
+the open tabs (`open_tabs`, for restoring them at launch), but it is not the
+source: it never holds a provisional Codex tab (`TabPersistence`) or any
+activity state, so a list built from it would disagree with the window. Actions (`new`, `open`, `close`) go to the app, launching it first;
+the app stays the only writer. The channel is a Unix socket under the state
+directory, mode 0600. The server starts in `AppModel`, not in either
+`TempleApp.swift`, so the `.app` and `make demo` cannot disagree (AGENTS.md,
+"Two entry points").
+
+**A new binary, not `templectl`.** `templectl` stays the developer harness it
+is: `--import-all`, `--init-db`, `--watch --metrics` and the benchmark
+control are refused outside a redirected state dir or exist for scripts in
+`Scripts/`, and none of them belongs in a shipped command. The new `temple`
+target shares `TempleCore`/`TempleLocalHost` with it. SwiftPM's `temple`
+product is today the app executable (`make run`, `make demo`), so that
+product is renamed when this lands. In the `.app` the binary cannot sit
+beside `Contents/MacOS/Temple`, because the volume is case-insensitive; it
+gets a directory of its own (`Contents/Helpers/temple`) and reaches the PATH
+through the Homebrew cask's `binary` stanza.
+
+**Rejected.**
+
+- **`temple [dir]`, like `code .`.** For a folder Temple has never seen it
+  could only do what `⌘O` does, start a session, so one command would focus
+  a tab or launch an agent (with the default
+  `--dangerously-skip-permissions`) depending on state the terminal cannot
+  see. `⌘O` gets away with it because a person chose the folder in a
+  chooser.
+- **Flat verbs (`temple ls`, `temple open`).** `ls` had to mean projects and
+  sessions at once, and listing only projects had no spelling.
+
+**Deferred.** Agent-facing verbs (`whoami` from an injected session id,
+`wait` on a session's activity state, notifying for the caller's own tab),
+which depend on that state being accurate first. Sending input into a
+session's terminal, which is the one verb here that reaches inside a session
+rather than managing it; Chrome gates the equivalent (`execute javascript`,
+CDP attach) separately from tab management, and so should this.
