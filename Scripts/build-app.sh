@@ -136,6 +136,19 @@ else
   echo "         the app will fall back to a dev checkout at runtime (degraded outside this machine)" >&2
 fi
 
+# Notarization rejects a debug entitlement on any Mach-O in the bundle, and
+# xcodebuild's incremental embed can keep a stale signed copy of a helper.
+# Catch both here rather than after an upload.
+if [[ "$CODE_SIGN_IDENTITY" != "-" ]]; then
+  while IFS= read -r macho; do
+    if codesign -d --entitlements - "$macho" 2>/dev/null | grep -q get-task-allow; then
+      echo "error: $macho carries com.apple.security.get-task-allow; notarization will reject it" >&2
+      echo "       (a stale embed? rm -rf $DERIVED/Build/Products/$CONFIGURATION/$SCHEME.app and rebuild)" >&2
+      exit 1
+    fi
+  done < <(find "$DIST/$SCHEME.app/Contents/MacOS" "$DIST/$SCHEME.app/Contents/Helpers" -type f -perm -u+x 2>/dev/null)
+fi
+
 echo ""
 echo "==> built: $DIST/$SCHEME.app"
 echo "==> signature:"

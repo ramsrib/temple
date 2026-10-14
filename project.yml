@@ -92,3 +92,7 @@ targets:
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         ENABLE_HARDENED_RUNTIME: YES
         SKIP_INSTALL: YES
+        # Xcode otherwise injects get-task-allow, which notarization rejects;
+        # nothing re-signs the helper with clean entitlements the way
+        # build-app.sh re-signs the outer app.
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
