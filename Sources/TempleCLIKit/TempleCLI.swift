@@ -121,6 +121,7 @@ private struct Runner {
         let request: ControlRequest
         var timeout: TimeInterval = 15
         var launches = false
+        var acts = false
         switch (invocation.noun, invocation.verb) {
         case (.projects, .ls):
             request = ControlRequest(.projectsList)
@@ -142,14 +143,21 @@ private struct Runner {
             launches = true
         case (.sessions, .open):
             request = ControlRequest(.sessionsOpen, id: invocation.argument)
-            // A session Temple has never seen is found by reading the stores.
-            timeout = 120
             launches = true
         case (.sessions, .close):
             request = ControlRequest(.sessionsClose, id: invocation.argument, force: invocation.force)
+            acts = true
         default:
             throw CLIError("\(invocation.noun.rawValue) has no verb \(invocation.verb.rawValue)")
         }
+        // A request that acts waits as long as Temple may take to answer it
+        // (ControlServer.answerWindow): giving up sooner would report a failure
+        // for a session Temple goes on to start, and invite a duplicate. Opening
+        // one Temple has never seen also reads the stores, which can be slow cold.
+        // A Temple stalled past even that may still act, so its silence is
+        // reported as unknown, never as nothing done.
+        acts = acts || launches
+        if acts { timeout = ControlServer.answerWindow }
         if launches { try transport.ensureRunning() }
         let response: ControlResponse
         do {
@@ -157,7 +165,7 @@ private struct Runner {
         } catch ControlClientError.notRunning {
             throw CLIError("Temple isn't running")
         } catch ControlClientError.transport(let message) {
-            throw CLIError(message)
+            throw CLIError(acts ? "\(message); it may still have acted, check `temple sessions ls`" : message)
         }
         if let error = response.error { throw CLIError(error.message) }
         print(response)

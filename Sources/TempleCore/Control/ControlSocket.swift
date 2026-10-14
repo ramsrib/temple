@@ -203,6 +203,14 @@ public final class ControlServer: @unchecked Sendable {
     /// A request that committed to a change and has still not answered this
     /// long after its deadline is answered "acted, outcome unknown".
     static let committedGrace: TimeInterval = 10
+    /// How long a request that acts should wait for its answer: the handler's
+    /// deadline, the grace a committed request gets, and the write, plus slack.
+    /// A client that gives up sooner can report a failure for a change Temple
+    /// then makes. It is a budget, not a bound: the timers run on the server's
+    /// queue and start after the request is read, so a stalled Temple can
+    /// still answer later, and a client that times out must say it does not
+    /// know whether Temple acted.
+    public static let answerWindow: TimeInterval = handlerDeadline + committedGrace + transferDeadline + 5
 
     private let url: URL
     private let lockFD: Int32

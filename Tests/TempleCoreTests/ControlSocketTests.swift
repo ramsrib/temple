@@ -227,4 +227,11 @@ final class ControlSocketTests: XCTestCase {
         XCTAssertEqual(ControlPaths.canonical("x/../y", relativeTo: "/a"), "/a/y")
         XCTAssertEqual(ControlPaths.canonical(".", relativeTo: directory.path), directory.path)
     }
+
+    /// A client waiting `answerWindow` outlasts every answer a server running
+    /// on time gives: the deadline's, the committed grace's, and the write.
+    func testTheAnswerWindowCoversEveryTimerTheServerRuns() {
+        XCTAssertGreaterThan(ControlServer.answerWindow,
+                             ControlServer.handlerDeadline + ControlServer.committedGrace + ControlServer.transferDeadline)
+    }
 }

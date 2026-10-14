@@ -30,7 +30,7 @@ struct TempleApp: App {
             return AppModel(surfaceFactory: GhosttyTerminalSurfaceFactory(), database: database)
         })
 
-        // `swift run temple` / `make demo` launch an un-bundled binary, which
+        // `swift run temple-app` / `make demo` launch an un-bundled binary, which
         // AppKit treats as an accessory: no Dock icon, window opens behind
         // everything. Promote it so the dev/demo path behaves like the .app.
         NSApplication.shared.setActivationPolicy(.regular)

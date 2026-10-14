@@ -48,11 +48,12 @@ final class TempleCLITests: XCTestCase {
     private var out: [String] = []
     private var err: [String] = []
     private var sent: [ControlRequest] = []
+    private var waits: [TimeInterval] = []
     private var launches = 0
     private var directory: URL!
 
     override func setUpWithError() throws {
-        out = []; err = []; sent = []; launches = 0
+        out = []; err = []; sent = []; waits = []; launches = 0
         directory = URL(fileURLWithPath: "/private/tmp/temple-cli-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
@@ -63,8 +64,9 @@ final class TempleCLITests: XCTestCase {
                      failure: ControlClientError? = nil, history: [HistoryRow] = []) async -> TempleCLI.Exit {
         let console = TempleCLI.Console(out: { self.out.append($0) }, err: { self.err.append($0) })
         let transport = TempleCLI.Transport(
-            send: { request, _ in
+            send: { request, wait in
                 self.sent.append(request)
+                self.waits.append(wait)
                 if let failure { throw failure }
                 return answer
             },
@@ -72,6 +74,27 @@ final class TempleCLITests: XCTestCase {
         return await TempleCLI.main(["temple"] + arguments, console: console, transport: transport,
                                     history: { HistoryReader.Result(rows: history, failures: []) },
                                     workingDirectory: directory.path)
+    }
+
+    /// The server may act anywhere in its answer window: a client that stopped
+    /// waiting sooner would report a failure for a session Temple then opens,
+    /// closes or starts.
+    func testARequestThatActsWaitsForTemplesAnswer() async {
+        let id = "019d0000-0000-7000-8000-000000000000"
+        for arguments in [["sessions", "new", directory.path], ["sessions", "open", id], ["sessions", "close", id]] {
+            waits = []
+            _ = await run(arguments)
+            XCTAssertEqual(waits, [ControlServer.answerWindow], "\(arguments)")
+        }
+    }
+
+    func testSilenceOnARequestThatActsIsNotReportedAsNothingDone() async {
+        let id = "019d0000-0000-7000-8000-000000000000"
+        _ = await run(["sessions", "open", id], failure: .transport("Temple did not answer"))
+        XCTAssertTrue(err.joined().contains("may still have acted"), err.joined())
+        err = []
+        _ = await run(["sessions", "ls"], failure: .transport("Temple did not answer"))
+        XCTAssertFalse(err.joined().contains("may still have acted"), err.joined())
     }
 
     func testReadsNeverStartTemple() async {

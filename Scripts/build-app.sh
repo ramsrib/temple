@@ -96,6 +96,10 @@ if [[ "$CODE_SIGN_IDENTITY" == "-" ]]; then
   # ad-hoc: no team, and hardened runtime can't apply without a real identity
   XCB_ARGS+=("DEVELOPMENT_TEAM=" "ENABLE_HARDENED_RUNTIME=NO")
 else
+  # Notarization rejects any Mach-O without a secure timestamp, and the
+  # re-sign below covers only the outer bundle: nested code (the `temple`
+  # helper in Contents/Helpers) keeps the signature xcodebuild gave it.
+  XCB_ARGS+=("OTHER_CODE_SIGN_FLAGS=--timestamp")
   [[ -n "${DEVELOPMENT_TEAM+x}" ]] && XCB_ARGS+=("DEVELOPMENT_TEAM=${DEVELOPMENT_TEAM}")
 fi
 
