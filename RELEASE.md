@@ -19,7 +19,8 @@ publishes. Everything below is the setup it depends on — done once.
 Every release publishes `docs/releases/<version>.md` as its notes, and
 `make release` refuses to start without that file (`NOTES=` points elsewhere).
 GitHub's generated notes list merged PRs; Temple lands on `main` without
-them, so until v0.4.1 almost every release said only "Full Changelog".
+them, so until v0.5.0 almost every release said only "Full Changelog" (they were
+backfilled since).
 
 `make release-notes VERSION=v0.x.y` (or a release with no notes yet) has a
 headless Claude agent draft them by these rules, via `claude-run` from Sri's
@@ -28,7 +29,8 @@ nothing ships until you have read and committed it. By hand or by agent,
 write them from `git log <last-tag>..HEAD`, for the person deciding whether
 to upgrade. First, list what is in this release **for the first time**: a
 version number chosen from "the CLI is new" when the log also held an
-unreleased engine rewrite shipped v0.4.1 as a patch.
+unreleased engine rewrite shipped as patch v0.4.1, withdrawn and reissued as
+v0.5.0.
 
 - `## What's new`: bullets of what a user sees, a bold one-line claim and a
   plain sentence or two. Fold many commits into one bullet; leave out tests,

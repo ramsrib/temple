@@ -7,8 +7,8 @@
 #
 # A draft, never a release: it writes the file and stops. Read it, edit it,
 # commit it; `make release` publishes what is committed. The agent also says
-# whether VERSION fits what is in the release: v0.4.1 went out as a patch
-# because "the CLI is new" hid an unreleased engine rewrite in the same log.
+# whether VERSION fits what is in the release: v0.5.0 first went out as patch
+# v0.4.1 because "the CLI is new" hid an unreleased engine rewrite in the log.
 #
 # Env knobs: VERSION (required) · NOTES (default docs/releases/<version>.md)
 # · SINCE (the previous tag; default the latest)
