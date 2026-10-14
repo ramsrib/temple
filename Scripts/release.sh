@@ -13,9 +13,10 @@
 #      zip still works, but downloaders must right-click → Open the first time.
 #   3. Package: Temple-<version>.zip (ditto) + Temple-<version>.dmg (hdiutil).
 #   4. Tag <version> (if missing) and create the GitHub release with both
-#      artifacts via `gh release create`.
+#      artifacts via `gh release create`, its notes from docs/releases/<version>.md.
 #
-# Env knobs: VERSION (required, e.g. v0.1.0) · DRAFT=1 · notarization creds
+# Env knobs: VERSION (required, e.g. v0.1.0) · NOTES (default
+# docs/releases/<version>.md) · DRAFT=1 · notarization creds
 # from .env (NOTARY_KEY_PATH + NOTARY_KEY_ID + NOTARY_ISSUER, or NOTARY_PROFILE)
 set -euo pipefail
 
@@ -63,6 +64,28 @@ if [[ -n "$LAST_TAG" ]]; then
     exit 1
   fi
 fi
+
+# A release says what is in it. GitHub's generated notes list merged PRs, and
+# Temple lands on main without them, so 24 releases went out saying only
+# "Full Changelog". The notes are committed with the code (the dirty-tree
+# check below holds them to that), and are published as written.
+NOTES="${NOTES:-docs/releases/$VERSION.md}"
+if [[ ! -e "$NOTES" ]]; then
+  # Draft them, then stop: what is published is what was read and committed.
+  echo "==> no release notes at $NOTES; drafting them"
+  NOTES="$NOTES" ./Scripts/release-notes.sh
+  echo "    (release stopped for the review; nothing was built, tagged or published)"
+  exit 1
+fi
+[[ -s "$NOTES" ]] || { echo "error: $NOTES is empty" >&2; exit 1; }
+DASHES="$(grep -nE '—| -- ' -- "$NOTES")" && rc=0 || rc=$?
+case $rc in
+  0) echo "error: $NOTES has an em-dash; release notes go out as Sri, who writes without them:" >&2
+     echo "$DASHES" >&2
+     exit 1 ;;
+  1) ;;  # none
+  *) echo "error: could not read $NOTES" >&2; exit 1 ;;
+esac
 
 # The tag must name code that others can actually get.
 [[ -z "$(git status --porcelain)" ]] \
@@ -169,7 +192,8 @@ fi
 echo "==> creating GitHub release $VERSION"
 GH_ARGS=(release create "$VERSION" "$ZIP" "$DMG"
   --title "Temple $VERSION"
-  --generate-notes)
+  --notes-file "$NOTES"
+  --generate-notes)  # appended after the notes: the Full Changelog link
 [[ -n "${DRAFT:-}" ]] && GH_ARGS+=(--draft)
 gh "${GH_ARGS[@]}"
 

@@ -8,8 +8,37 @@ Releases are Developer ID–signed, notarized by Apple, and published to
 make release VERSION=v0.x.y   # `make version` prints the last tag
 ```
 
+The first run drafts `docs/releases/v0.x.y.md` and stops. Read it, edit it,
+commit it, and run the same command again.
+
 That single command builds, signs, notarizes, staples, packages, tags, and
 publishes. Everything below is the setup it depends on — done once.
+
+## Release notes
+
+Every release publishes `docs/releases/<version>.md` as its notes, and
+`make release` refuses to start without that file (`NOTES=` points elsewhere).
+GitHub's generated notes list merged PRs; Temple lands on `main` without
+them, so until v0.4.1 almost every release said only "Full Changelog".
+
+`make release-notes VERSION=v0.x.y` (or a release with no notes yet) has a
+headless Claude agent draft them by these rules, via `claude-run` from Sri's
+dotfiles, and report whether the version fits what is new. It is a draft:
+nothing ships until you have read and committed it. By hand or by agent,
+write them from `git log <last-tag>..HEAD`, for the person deciding whether
+to upgrade. First, list what is in this release **for the first time**: a
+version number chosen from "the CLI is new" when the log also held an
+unreleased engine rewrite shipped v0.4.1 as a patch.
+
+- `## What's new`: bullets of what a user sees, a bold one-line claim and a
+  plain sentence or two. Fold many commits into one bullet; leave out tests,
+  docs and refactors unless they change what a user gets.
+- `## Upgrading`, only when the release migrates data, changes a default, or
+  asks the user to do something.
+- `## Known issue`, only for one you know of.
+- No em-dashes (the release refuses them): the notes go out as Sri.
+
+The "Full Changelog" link is appended by GitHub; don't write it.
 
 ## One-time setup
 
@@ -71,7 +100,7 @@ notarization, and downloaders have to approve the app in System Settings.
 4. **Notarize the dmg** — submits and staples it too, so the disk image itself
    opens clean.
 5. **Publish** — tags `<version>`, pushes the tag, and creates the GitHub
-   release with both artifacts and generated notes.
+   release with both artifacts and `docs/releases/<version>.md` as its notes.
 
 > `notarytool` accepts only `.zip`/`.dmg`/`.pkg` uploads, while `stapler` can
 > only write a ticket to the `.app`/`.dmg` — which is why submit and staple are

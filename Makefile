@@ -3,7 +3,7 @@ APP := dist/$(APP_NAME).app
 DEST := /Applications/$(APP_NAME).app
 BUNDLE_ID := com.sriramb.temple
 
-.PHONY: build test run demo demo-clean ghostty app open install stage release version clean
+.PHONY: build test run demo demo-clean ghostty app open install stage release release-notes version clean
 
 # The SDK the SwiftPM targets build and link against, resolved once and shared
 # with Scripts/check-sdk-linkage.sh: Package.swift hands SDKROOT to the link
@@ -93,6 +93,10 @@ stage: app ## Install to /Applications WITHOUT killing the running app (relaunch
 release: ## Build, sign, notarize, package, and publish a GitHub release (VERSION=v0.x.y; see RELEASE.md)
 	@test -n "$(VERSION)" || (echo "usage: make release VERSION=v0.x.y  (run 'make version' for the last tag)" && exit 1)
 	VERSION=$(VERSION) ./Scripts/release.sh
+
+release-notes: ## Draft docs/releases/VERSION.md from the log with Claude, for review (make release does this when it is missing)
+	@test -n "$(VERSION)" || (echo "usage: make release-notes VERSION=v0.x.y" && exit 1)
+	VERSION=$(VERSION) ./Scripts/release-notes.sh
 
 version: ## What is released, what users get, and what is waiting to ship
 	@echo "released:   $$(git tag -l 'v*' --sort=-v:refname | head -3 | tr '\n' ' ')"
