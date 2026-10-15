@@ -1261,7 +1261,8 @@ private extension TranscriptSummary {
     /// all, including the first-prompt fallback.
     func withoutTitles() -> TranscriptSummary {
         TranscriptSummary(id: id, agent: agent, locator: locator, modifiedAt: modifiedAt, cwd: cwd,
-                          firstPrompt: nil, historyPrompt: nil, createdAt: createdAt, gitBranch: gitBranch,
+                          firstPrompt: nil, historyPrompt: nil, createdAt: createdAt,
+                          lastEntryAt: lastEntryAt, gitBranch: gitBranch,
                           model: model, messageCount: messageCount, lastMessagePreview: lastMessagePreview,
                           originator: originator, recordedTitle: nil, sharedTitle: nil,
                           directoryHint: directoryHint, laterPromptHint: laterPromptHint,

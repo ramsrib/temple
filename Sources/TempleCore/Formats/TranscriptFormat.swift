@@ -169,7 +169,7 @@ public enum TranscriptFormats {
     /// so **bump it with any change to a format's facts** — a field read
     /// differently, a new field, a different title rule. `FormatGoldenTests`
     /// fails on such a change; this is the number that must move with it.
-    public static let factsVersion = 1
+    public static let factsVersion = 2
 }
 
 public enum TranscriptVerification: Equatable, Sendable {
@@ -222,6 +222,13 @@ enum TranscriptText {
     static func parseDate(_ s: String?) -> Date? {
         guard let s else { return nil }
         return (try? isoWithFraction.parse(s)) ?? (try? isoPlain.parse(s))
+    }
+
+    /// A transcript's last entry time from its last stamp, never later than
+    /// the file's own modification time: a stamp from a skewed clock must
+    /// not rank a session above everything that really happened since.
+    static func lastEntryDate(_ stamp: String?, modifiedAt: Date) -> Date? {
+        parseDate(stamp).map { min($0, modifiedAt) }
     }
 
     /// Collapse whitespace and cap length for a one-line title: every run of

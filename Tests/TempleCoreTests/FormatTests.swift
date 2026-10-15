@@ -242,18 +242,83 @@ final class FormatTests: XCTestCase {
     func testSessionCoreFillingTakesOnlyRecordedFacts() {
         let path = "/s/rollout-2026-10-01T10-00-00-\(thread).jsonl"
         let full = TranscriptSummary(id: thread, agent: .codex, locator: locator(path), modifiedAt: Date(timeIntervalSince1970: 9),
-                                     cwd: "/w", firstPrompt: "prompt", recordedTitle: nil, sharedTitle: "shared",
+                                     cwd: "/w", firstPrompt: "prompt", lastEntryAt: Date(timeIntervalSince1970: 8),
+                                     recordedTitle: nil, sharedTitle: "shared",
                                      laterPromptHint: "hint", legacyTitleHint: "legacy")
         let core = SessionCore(filling: full)
         XCTAssertEqual(core.host, HostID(rawValue: "box"))
         XCTAssertEqual(core.directory, "/w")
         XCTAssertEqual(core.directorySource, .transcript)
         XCTAssertEqual(core.title, "shared")
-        XCTAssertEqual(core.lastActiveAt, Date(timeIntervalSince1970: 9))
+        XCTAssertEqual(core.lastActiveAt, Date(timeIntervalSince1970: 8), "the last entry, not the file's time")
         let bare = SessionCore(filling: TranscriptSummary(id: "c", agent: .claude, locator: locator("/p/-w/c.jsonl"), modifiedAt: .distantPast,
                                                           directoryHint: "/w", laterPromptHint: "hint", legacyTitleHint: "legacy"))
         XCTAssertNil(bare.directory)
         XCTAssertNil(bare.directorySource)
         XCTAssertNil(bare.title, "hints and placeholders are never stored")
+        XCTAssertNil(bare.lastActiveAt, "a file with no stamped entry states no activity")
+    }
+
+    // MARK: Last entry
+
+    /// Claude appends untimestamped bookkeeping as it exits (seen on every
+    /// tab when Temple quits). The session last did something at the last
+    /// stamped entry, not when those lines landed.
+    func testClaudesLastEntryIgnoresTheBookkeepingItWritesOnExit() throws {
+        let lines = [
+            #"{"type":"user","sessionId":"c1","cwd":"/w","timestamp":"2026-10-09T17:40:00.000Z","message":{"role":"user","content":"hello"}}"#,
+            #"{"type":"system","subtype":"away_summary","sessionId":"c1","timestamp":"2026-10-09T17:47:27.772Z"}"#,
+            #"{"type":"last-prompt","lastPrompt":"hello","sessionId":"c1"}"#,
+            #"{"type":"cost-state","sessionId":"c1","totalCostUSD":1}"#,
+        ]
+        let quit = try XCTUnwrap(TranscriptText.parseDate("2026-10-15T16:10:07.503Z"))
+        let summary = try XCTUnwrap(claudeSummary(lines, modifiedAt: quit))
+        XCTAssertEqual(summary.lastEntryAt, TranscriptText.parseDate("2026-10-09T17:47:27.772Z"))
+        XCTAssertEqual(summary.modifiedAt, quit)
+    }
+
+    /// The tail is where the last entry is when the file outgrows the head.
+    func testClaudesLastEntryComesFromTheTail() throws {
+        let head = Data((#"{"type":"user","sessionId":"c1","timestamp":"2026-10-01T00:00:00Z","message":{"content":"first"}}"# + "\n").utf8)
+        let tail = Data((#"{"type":"assistant","sessionId":"c1","timestamp":"2026-10-02T00:00:00Z","message":{"content":"later"}}"# + "\n"
+                         + #"{"type":"cost-state","sessionId":"c1"}"# + "\n").utf8)
+        let bytes = TranscriptBytes(head: head, tail: tail, fileSize: head.count + tail.count + 1_000_000, window: head.count)
+        guard case .summary(let summary) = ClaudeFormat().facts(bytes, name: nil, locator: locator("/p/-w/c1.jsonl"),
+                                                                 modifiedAt: .distantFuture, shared: .empty)
+        else { return XCTFail("expected a summary") }
+        XCTAssertEqual(summary.lastEntryAt, TranscriptText.parseDate("2026-10-02T00:00:00Z"))
+        XCTAssertEqual(summary.createdAt, TranscriptText.parseDate("2026-10-01T00:00:00Z"))
+    }
+
+    /// A stamp from a clock ahead of the file's own is held to the file's time.
+    func testALastEntryIsNeverLaterThanTheFile() throws {
+        let line = #"{"type":"user","sessionId":"c1","timestamp":"2030-01-01T00:00:00Z","message":{"content":"x"}}"#
+        let written = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(try XCTUnwrap(claudeSummary([line], modifiedAt: written)).lastEntryAt, written)
+    }
+
+    func testCodexsLastEntryIsItsLastStampedLine() throws {
+        let path = "/s/rollout-2026-10-01T10-00-00-\(thread).jsonl"
+        let text = [
+            #"{"timestamp":"2026-10-01T10:00:00.000Z","type":"session_meta","payload":{"id":"\#(thread)","cwd":"/w","timestamp":"2026-10-01T10:00:00.000Z"}}"#,
+            #"{"timestamp":"2026-10-01T10:00:05.000Z","type":"event_msg","payload":{"type":"user_message","message":"go"}}"#,
+            #"{"timestamp":"2026-10-03T08:30:00.250Z","type":"event_msg","payload":{"type":"agent_message","message":"done"}}"#,
+            #"{"type":"something_unstamped","payload":{}}"#,
+        ].joined(separator: "\n") + "\n"
+        let data = Data(text.utf8)
+        guard case .summary(let summary) = CodexFormat().facts(TranscriptBytes(head: data, tail: nil, fileSize: data.count),
+                                                                name: nil, locator: locator(path),
+                                                                modifiedAt: .distantFuture, shared: .empty)
+        else { return XCTFail("expected a summary") }
+        XCTAssertEqual(summary.lastEntryAt, TranscriptText.parseDate("2026-10-03T08:30:00.250Z"))
+    }
+
+    private func claudeSummary(_ lines: [String], modifiedAt: Date) -> TranscriptSummary? {
+        let data = Data((lines.joined(separator: "\n") + "\n").utf8)
+        guard case .summary(let summary) = ClaudeFormat().facts(TranscriptBytes(head: data, tail: nil, fileSize: data.count),
+                                                                 name: nil, locator: locator("/p/-w/c1.jsonl"),
+                                                                 modifiedAt: modifiedAt, shared: .empty)
+        else { return nil }
+        return summary
     }
 }

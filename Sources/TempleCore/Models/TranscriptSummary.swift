@@ -12,6 +12,11 @@ public struct TranscriptSummary: Hashable, Sendable {
     /// rollout facts and display-only thread names. Refreshed by enrichment reads.
     public internal(set) var historyPrompt: String?
     public let createdAt: Date?
+    /// The timestamp of the transcript's last timestamped entry the read
+    /// saw, never later than `modifiedAt`. Agents append untimestamped
+    /// records too (Claude's `last-prompt` and `cost-state`, on exit), so
+    /// this, not `modifiedAt`, is when the session last did something.
+    public let lastEntryAt: Date?
     public let gitBranch: String?
     public let model: String?
     public let messageCount: Int?
@@ -44,6 +49,7 @@ public struct TranscriptSummary: Hashable, Sendable {
         firstPrompt: String? = nil,
         historyPrompt: String? = nil,
         createdAt: Date? = nil,
+        lastEntryAt: Date? = nil,
         gitBranch: String? = nil,
         model: String? = nil,
         messageCount: Int? = nil,
@@ -64,6 +70,7 @@ public struct TranscriptSummary: Hashable, Sendable {
         self.firstPrompt = firstPrompt
         self.historyPrompt = historyPrompt
         self.createdAt = createdAt
+        self.lastEntryAt = lastEntryAt
         self.gitBranch = gitBranch
         self.model = model
         self.messageCount = messageCount
@@ -85,7 +92,7 @@ extension TranscriptSummary {
     func sharing(title: String?, prompt: String?) -> TranscriptSummary {
         TranscriptSummary(id: id, agent: agent, locator: locator, modifiedAt: modifiedAt, cwd: cwd,
                           firstPrompt: firstPrompt, historyPrompt: prompt, createdAt: createdAt,
-                          gitBranch: gitBranch, model: model, messageCount: messageCount,
+                          lastEntryAt: lastEntryAt, gitBranch: gitBranch, model: model, messageCount: messageCount,
                           lastMessagePreview: lastMessagePreview, originator: originator,
                           recordedTitle: recordedTitle, sharedTitle: title, directoryHint: directoryHint,
                           laterPromptHint: laterPromptHint, legacyTitleHint: legacyTitleHint,

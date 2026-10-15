@@ -10,7 +10,7 @@ func catalogFixture(id: String, agent: Agent, projectPath: String, title: String
                     originator: String? = nil) -> TranscriptSummary {
     TranscriptSummary(id: id, agent: agent, locator: TranscriptLocator(localURL: filePath),
         modifiedAt: updatedAt, cwd: projectPath, firstPrompt: title, createdAt: createdAt,
-        gitBranch: gitBranch, model: model, messageCount: messageCount,
+        lastEntryAt: updatedAt, gitBranch: gitBranch, model: model, messageCount: messageCount,
         lastMessagePreview: lastMessagePreview, originator: originator)
 }
 

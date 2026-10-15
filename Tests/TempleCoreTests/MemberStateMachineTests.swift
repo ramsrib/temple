@@ -52,8 +52,8 @@ final class MemberStateMachineTests: XCTestCase {
     private func write(_ file: URL, agent: Agent = .claude, id: String = "member", prompt: String? = nil,
                        atomic: Bool = false) throws {
         let header = agent == .claude
-            ? "{\"type\":\"system\",\"sessionId\":\"\(id)\",\"cwd\":\"/work\"}"
-            : "{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(id)\",\"cwd\":\"/work\"}}"
+            ? "{\"type\":\"system\",\"sessionId\":\"\(id)\",\"cwd\":\"/work\",\"timestamp\":\"2026-01-01T00:00:00Z\"}"
+            : "{\"type\":\"session_meta\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"payload\":{\"id\":\"\(id)\",\"cwd\":\"/work\"}}"
         let line = prompt.map { text in agent == .claude
             ? "\n{\"type\":\"user\",\"sessionId\":\"\(id)\",\"message\":{\"content\":\"\(text)\"}}"
             : "\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"\(text)\"}}" } ?? ""

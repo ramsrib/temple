@@ -119,6 +119,9 @@ public struct CodexFormat: TranscriptFormat {
         var tailFallbackTitle: String?
         let git = payload["git"] as? [String: Any]
         let branch = git?["branch"] as? String
+        // Every rollout line carries its own `timestamp`; the last in file
+        // order is the latest, parsed once after the loop.
+        var lastStamp: String?
 
         for (segmentIndex, segment) in segments.enumerated() {
             for (lineIndex, line) in segment.enumerated() {
@@ -128,7 +131,9 @@ public struct CodexFormat: TranscriptFormat {
                 } else {
                     obj = TranscriptText.jsonObject(line)
                 }
-                guard let obj, let item = obj["payload"] as? [String: Any] else { continue }
+                guard let obj else { continue }
+                if let value = obj["timestamp"] as? String { lastStamp = value }
+                guard let item = obj["payload"] as? [String: Any] else { continue }
                 if let value = item["model"] as? String { model = value }
                 let type = obj["type"] as? String
                 let role = item["role"] as? String
@@ -178,6 +183,7 @@ public struct CodexFormat: TranscriptFormat {
             cwd: cwd,
             firstPrompt: fallbackTitle,
             createdAt: createdAt,
+            lastEntryAt: TranscriptText.lastEntryDate(lastStamp, modifiedAt: modifiedAt),
             gitBranch: branch,
             model: model,
             messageCount: count > 0 ? count : nil,

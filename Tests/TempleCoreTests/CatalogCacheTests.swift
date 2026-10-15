@@ -135,10 +135,11 @@ final class CatalogCacheTests: XCTestCase {
         let summary = TranscriptSummary(
             id: "id", agent: .claude, locator: TranscriptLocator(localURL: URL(fileURLWithPath: "/p/id.jsonl")),
             modifiedAt: Date(timeIntervalSinceReferenceDate: 812_345_678.123_456_7), cwd: "/cwd", firstPrompt: "first",
-            historyPrompt: nil, createdAt: Date(timeIntervalSinceReferenceDate: 812_000_000.987_654_3), gitBranch: "b",
+            historyPrompt: nil, createdAt: Date(timeIntervalSinceReferenceDate: 812_000_000.987_654_3),
+            lastEntryAt: Date(timeIntervalSinceReferenceDate: 812_345_600.765_432_1), gitBranch: "b",
             model: "m", messageCount: 7, lastMessagePreview: "preview", originator: "o", recordedTitle: "recorded",
             sharedTitle: nil, directoryHint: "/hint", laterPromptHint: "later", legacyTitleHint: "legacy", selectionKey: "key")
-        XCTAssertEqual(Mirror(reflecting: summary).children.count, 19,
+        XCTAssertEqual(Mirror(reflecting: summary).children.count, 20,
                        "TranscriptSummary changed: keep the new field in CatalogDiskCache and bump its schemaVersion")
         let disk = CatalogDiskCache(directory: stateDir)
         let stamp = CatalogStamp(size: 10, modifiedNanos: 1, changedNanos: 2, inode: UInt64.max)
@@ -155,6 +156,7 @@ final class CatalogCacheTests: XCTestCase {
         guard case .summary(let back)? = snapshot[.claude]?.files["/p/id.jsonl"]?.outcome else { return XCTFail() }
         XCTAssertEqual(back.modifiedAt.timeIntervalSinceReferenceDate, summary.modifiedAt.timeIntervalSinceReferenceDate)
         XCTAssertEqual(back.createdAt?.timeIntervalSinceReferenceDate, summary.createdAt?.timeIntervalSinceReferenceDate)
+        XCTAssertEqual(back.lastEntryAt?.timeIntervalSinceReferenceDate, summary.lastEntryAt?.timeIntervalSinceReferenceDate)
         XCTAssertEqual(back.messageCount, 7); XCTAssertEqual(back.directoryHint, "/hint")
         XCTAssertEqual(back.laterPromptHint, "later"); XCTAssertEqual(back.legacyTitleHint, "legacy")
         XCTAssertEqual(snapshot[.claude]?.files["/p/sub.jsonl"]?.outcome, .noSession)

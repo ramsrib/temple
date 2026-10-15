@@ -149,6 +149,30 @@ final class DBTests: XCTestCase {
         XCTAssertEqual(try reopened.uiState("sidebarVisibility"), "detailOnly")
     }
 
+    /// A v0.5.0 file has activity dates filled from file modification times,
+    /// which Temple quitting moves for every open tab. The first open by a
+    /// later build clears them once, so fills from the last stamped entry
+    /// write them again; after that a date is kept like any other.
+    func testFileTimeActivityIsForgottenOnceOnOpen() throws {
+        let (db, path) = try database()
+        try db.join(sessionID: "s", via: .imported, core: SessionCore(lastActiveAt: Date(timeIntervalSince1970: 100)))
+        // What v0.5.0 left: a filled date, and no repair recorded.
+        let v050 = try DatabaseQueue(path: path.path)
+        try v050.write { try $0.execute(sql: "PRAGMA user_version = 0") }
+        try v050.close()
+
+        let upgraded = try TempleDB(path: path)
+        XCTAssertNil(try upgraded.sessionState("s")?.lastActiveAt, "the file-time date is cleared")
+        XCTAssertEqual(try upgraded.fillCoreFields(sessionID: "s", host: .local, lastActiveAt: Date(timeIntervalSince1970: 50)),
+                       .changed([.lastActiveAt]))
+
+        let again = try TempleDB(path: path)
+        XCTAssertEqual(try again.sessionState("s")?.lastActiveAt, Date(timeIntervalSince1970: 50), "once, not on every open")
+        let level = try DatabaseQueue(path: path.path)
+        XCTAssertEqual(try level.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 1)
+        try level.close()
+    }
+
     /// Clearing must DELETE the key, not store a stand-in: absence is how a
     /// value goes back to deferring to the shipped default.
     func testUIStateClearRemovesTheKey() throws {

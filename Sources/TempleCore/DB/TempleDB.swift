@@ -79,12 +79,14 @@ public struct SessionCore: Sendable {
     }
 
     /// What a transcript can tell a row: its host, its recorded folder
-    /// (transcript-sourced), its title fact and its modification time. The
-    /// one mapping every fill and import uses; nil stays nil.
+    /// (transcript-sourced), its title fact and when its last entry was
+    /// written. The one mapping every fill and import uses; nil stays nil.
+    /// Not the file's modification time: an agent exiting writes to its
+    /// transcript, and Temple quitting exits them all at once.
     public init(filling summary: TranscriptSummary) {
         self.init(host: summary.locator.host, directory: summary.cwd,
                   directorySource: summary.cwd == nil ? nil : .transcript,
-                  title: summary.titleFact, lastActiveAt: summary.modifiedAt)
+                  title: summary.titleFact, lastActiveAt: summary.lastEntryAt)
     }
 }
 
@@ -348,9 +350,36 @@ public final class TempleDB: @unchecked Sendable {
         let differs = try queue.read { database in
             try Bool.fetchOne(database, sql: "SELECT EXISTS (SELECT 1 FROM session_state WHERE generated_title IS NOT NULL AND title IS NOT generated_title)") ?? false
         }
-        guard differs else { return }
+        if differs {
+            try queue.write { database in
+                try database.execute(sql: "UPDATE session_state SET title = generated_title WHERE generated_title IS NOT NULL AND title IS NOT generated_title")
+            }
+        }
+        try forgetFileTimeActivity(queue)
+    }
+
+    /// v0.5.0 filled `last_active_at` from a transcript's modification time.
+    /// Quitting Temple makes every open Claude session append untimestamped
+    /// bookkeeping (`last-prompt`, `cost-state`) as it exits, so the upgrade's
+    /// first launch stamped every open tab's row with the same second, and
+    /// the palette and recent projects ranked a week-old session beside
+    /// yesterday's. Fills now take the last timestamped entry instead
+    /// (`TranscriptSummary.lastEntryAt`); this clears the dates the old fill
+    /// wrote, once, so that fill writes them again. Fills are NULL-only, so
+    /// nothing else would. Touches since the upgrade go with them, and the
+    /// row sorts by its last open or join until its transcript is read.
+    ///
+    /// Done once, recorded as `PRAGMA user_version` 1: GRDB's migrator keeps
+    /// its own table and never reads it, and a migration would lock v0.5.0
+    /// out of the file (`checkSchema`) for a change that is not one to the
+    /// schema. Older builds ignore it. Read first, like the title reconcile
+    /// above.
+    private static func forgetFileTimeActivity(_ queue: DatabaseQueue) throws {
+        let level = try queue.read { try Int.fetchOne($0, sql: "PRAGMA user_version") ?? 0 }
+        guard level < 1 else { return }
         try queue.write { database in
-            try database.execute(sql: "UPDATE session_state SET title = generated_title WHERE generated_title IS NOT NULL AND title IS NOT generated_title")
+            try database.execute(sql: "UPDATE session_state SET last_active_at = NULL")
+            try database.execute(sql: "PRAGMA user_version = 1")
         }
     }
 

@@ -32,7 +32,7 @@ import TempleCore
 final class CatalogDiskCache: @unchecked Sendable {
     /// The table layout. Bump with any change to the tables, or to the
     /// fields of `TranscriptSummary` (`CatalogCacheTests` counts them).
-    static let schemaVersion = 2
+    static let schemaVersion = 3
 
     static func fileName(schema: Int = schemaVersion, facts: Int = TranscriptFormats.factsVersion) -> String {
         "history-catalog-cache.s\(schema)-f\(facts).sqlite"
@@ -262,7 +262,7 @@ final class CatalogDiskCache: @unchecked Sendable {
                     size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL, ctime_ns INTEGER NOT NULL, inode INTEGER NOT NULL,
                     outcome INTEGER NOT NULL,
                     id TEXT, locator_path TEXT, modified_at REAL, cwd TEXT, first_prompt TEXT, created_at REAL,
-                    git_branch TEXT, model TEXT, message_count INTEGER, last_message_preview TEXT, originator TEXT,
+                    last_entry_at REAL, git_branch TEXT, model TEXT, message_count INTEGER, last_message_preview TEXT, originator TEXT,
                     recorded_title TEXT, directory_hint TEXT, later_prompt_hint TEXT, legacy_title_hint TEXT,
                     selection_key TEXT,
                     PRIMARY KEY (agent, key)
@@ -292,19 +292,20 @@ final class CatalogDiskCache: @unchecked Sendable {
                                              entry.stamp.changedNanos, Int64(bitPattern: entry.stamp.inode)]
         switch entry.outcome {
         case .noSession:
-            arguments += [1, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil] as StatementArguments
+            arguments += [1, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil] as StatementArguments
         case .summary(let s):
             arguments += [0, s.id, s.locator.path, s.modifiedAt.timeIntervalSinceReferenceDate, s.cwd, s.firstPrompt,
-                          s.createdAt?.timeIntervalSinceReferenceDate, s.gitBranch, s.model, s.messageCount,
+                          s.createdAt?.timeIntervalSinceReferenceDate, s.lastEntryAt?.timeIntervalSinceReferenceDate,
+                          s.gitBranch, s.model, s.messageCount,
                           s.lastMessagePreview, s.originator, s.recordedTitle, s.directoryHint, s.laterPromptHint,
                           s.legacyTitleHint, s.selectionKey] as StatementArguments
         }
         try db.execute(sql: """
             INSERT OR REPLACE INTO entries (agent, key, size, mtime_ns, ctime_ns, inode, outcome,
-                id, locator_path, modified_at, cwd, first_prompt, created_at, git_branch, model, message_count,
-                last_message_preview, originator, recorded_title, directory_hint, later_prompt_hint,
+                id, locator_path, modified_at, cwd, first_prompt, created_at, last_entry_at, git_branch, model,
+                message_count, last_message_preview, originator, recorded_title, directory_hint, later_prompt_hint,
                 legacy_title_hint, selection_key)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, arguments: arguments)
     }
 
@@ -317,10 +318,12 @@ final class CatalogDiskCache: @unchecked Sendable {
         guard outcome == 0, let id: String = row["id"], let path: String = row["locator_path"],
               let modified: Double = row["modified_at"] else { return nil }
         let created: Double? = row["created_at"]
+        let lastEntry: Double? = row["last_entry_at"]
         let summary = TranscriptSummary(
             id: id, agent: agent, locator: TranscriptLocator(localURL: URL(fileURLWithPath: path)),
             modifiedAt: Date(timeIntervalSinceReferenceDate: modified), cwd: row["cwd"], firstPrompt: row["first_prompt"],
-            createdAt: created.map(Date.init(timeIntervalSinceReferenceDate:)), gitBranch: row["git_branch"],
+            createdAt: created.map(Date.init(timeIntervalSinceReferenceDate:)),
+            lastEntryAt: lastEntry.map(Date.init(timeIntervalSinceReferenceDate:)), gitBranch: row["git_branch"],
             model: row["model"], messageCount: row["message_count"], lastMessagePreview: row["last_message_preview"],
             originator: row["originator"], recordedTitle: row["recorded_title"], directoryHint: row["directory_hint"],
             laterPromptHint: row["later_prompt_hint"], legacyTitleHint: row["legacy_title_hint"],

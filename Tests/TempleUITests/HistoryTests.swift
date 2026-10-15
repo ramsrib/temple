@@ -151,7 +151,7 @@ final class HistoryTests: XCTestCase {
         let date = Date(timeIntervalSince1970: 100)
         let summary = TranscriptSummary(id: "a", agent: .claude,
             locator: TranscriptLocator(host: .local, path: "/tmp/a.jsonl"),
-            modifiedAt: date, cwd: "/cwd", firstPrompt: "First prompt", recordedTitle: "Different title")
+            modifiedAt: date, cwd: "/cwd", firstPrompt: "First prompt", lastEntryAt: date, recordedTitle: "Different title")
         XCTAssertEqual(overlay.import([summary]).map(\.label), ["joined"])
         let row = try XCTUnwrap(db.sessionState("a"))
         XCTAssertEqual(row.title, "Different title", "Claude's recorded summary is a title fact")
@@ -163,7 +163,7 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(row.transcriptPath, "/tmp/a.jsonl")
         let changed = TranscriptSummary(id: "a", agent: .claude,
             locator: summary.locator, modifiedAt: date.addingTimeInterval(100),
-            cwd: "/changed", firstPrompt: "Changed")
+            cwd: "/changed", firstPrompt: "Changed", lastEntryAt: date.addingTimeInterval(100))
         XCTAssertEqual(overlay.import([changed]).map(\.label), ["skipped"], "already Temple's: left as it is")
         XCTAssertEqual(try db.sessionState("a"), row)
         XCTAssertEqual(overlay.leave([SessionKey(id: "a", host: .local)]), ["a"], "fact fills remain undoable")
@@ -193,7 +193,7 @@ final class HistoryTests: XCTestCase {
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         let file = project.appendingPathComponent("history-facts.jsonl")
         try """
-        {"type":"user","sessionId":"history-facts","cwd":"/fact-cwd","message":{"content":"First fact"}}
+        {"type":"user","sessionId":"history-facts","cwd":"/fact-cwd","timestamp":"2026-10-01T09:00:00Z","message":{"content":"First fact"}}
         {"type":"summary","summary":"Display summary"}
         """.write(to: file, atomically: true, encoding: .utf8)
         let store = ClaudeSessionStore(root: root)
@@ -208,8 +208,8 @@ final class HistoryTests: XCTestCase {
         let row = try XCTUnwrap(h.database.sessionState(summary.id))
         XCTAssertEqual(row.title, "Display summary", "the row takes the title History showed")
         XCTAssertEqual(row.directory, summary.cwd)
-        XCTAssertEqual(try XCTUnwrap(row.lastActiveAt).timeIntervalSince1970,
-                       summary.modifiedAt.timeIntervalSince1970, accuracy: 0.001)
+        XCTAssertEqual(row.lastActiveAt, ISO8601DateFormatter().date(from: "2026-10-01T09:00:00Z"),
+                       "the row's activity is the last entry, not the file's time")
     }
 
     // MARK: Grouping

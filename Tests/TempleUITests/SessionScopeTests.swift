@@ -34,7 +34,7 @@ final class SessionScopeTests: XCTestCase {
         TranscriptSummary(id: id, agent: .claude,
             locator: TranscriptLocator(host: .local, path: "/private/tmp/\(id).jsonl"),
             modifiedAt: Date(timeIntervalSince1970: time), cwd: cwd, firstPrompt: prompt,
-            directoryHint: "/lossy-hint",
+            lastEntryAt: Date(timeIntervalSince1970: time - 1), directoryHint: "/lossy-hint",
             laterPromptHint: "Later hint", legacyTitleHint: "Legacy hint")
     }
 
@@ -63,7 +63,7 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertEqual(row.directorySource, .transcript)
         XCTAssertEqual(row.title, "First prompt")
         XCTAssertNil(row.generatedTitle)
-        XCTAssertEqual(row.lastActiveAt, facts.modifiedAt)
+        XCTAssertEqual(row.lastActiveAt, facts.lastEntryAt)
         XCTAssertEqual(overlay.rows["legacy"], row)
         model.receiveEngineSnapshot(.authorized(generation: 2, resolutions: [:],
             summaries: ["legacy": summary(cwd: "/changed", prompt: "Changed", time: 200)], in: db, opRevision: 2))
@@ -264,7 +264,7 @@ final class SessionScopeTests: XCTestCase {
         let project = root.appendingPathComponent("project")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         let file = project.appendingPathComponent("legacy.jsonl")
-        try "{\"type\":\"user\",\"sessionId\":\"legacy\",\"cwd\":\"/facts\",\"message\":{\"content\":\"Real prompt\"}}".write(to: file, atomically: true, encoding: .utf8)
+        try "{\"type\":\"user\",\"sessionId\":\"legacy\",\"cwd\":\"/facts\",\"timestamp\":\"2026-10-01T09:00:00Z\",\"message\":{\"content\":\"Real prompt\"}}".write(to: file, atomically: true, encoding: .utf8)
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "legacy", via: .imported)
         try db.join(sessionID: "missing", via: .imported,

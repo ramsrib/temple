@@ -71,7 +71,8 @@ public struct AuthorizedFacts: Equatable, Sendable {
     /// The core fields these facts can fill (`SessionCore(filling:)`).
     public var suppliedFields: Set<SessionCoreField> {
         guard let summary else { return [] }
-        var fields: Set<SessionCoreField> = [.agent, .lastActiveAt]
+        var fields: Set<SessionCoreField> = [.agent]
+        if summary.lastEntryAt != nil { fields.insert(.lastActiveAt) }
         if summary.cwd != nil { fields.insert(.directory) }
         if summary.titleFact != nil { fields.insert(.title) }
         return fields
