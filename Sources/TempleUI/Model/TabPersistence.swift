@@ -147,13 +147,23 @@ enum ProjectRecencyCodec {
         let key: ProjectKey?
 
         init(from decoder: Decoder) throws {
-            let container = try? decoder.container(keyedBy: CodingKeys.self)
-            guard let path = try? container?.decode(String.self, forKey: .path), !path.isEmpty else {
+            guard let container = try? decoder.container(keyedBy: CodingKeys.self),
+                  let path = try? container.decode(String.self, forKey: .path), !path.isEmpty else {
                 key = nil
                 return
             }
-            let host = (try? container?.decodeIfPresent(String.self, forKey: .host)) ?? nil
-            key = ProjectKey(host: HostID(rawValue: host ?? HostID.local.rawValue), path: path)
+            // Absent or null is this Mac; a host that is there but not a
+            // string is not a host, and the entry is dropped rather than
+            // read as a local project of the same path.
+            var host = HostID.local.rawValue
+            if container.contains(.host), (try? container.decodeNil(forKey: .host)) == false {
+                guard let value = try? container.decode(String.self, forKey: .host) else {
+                    key = nil
+                    return
+                }
+                host = value
+            }
+            key = ProjectKey(host: HostID(rawValue: host), path: path)
         }
     }
 

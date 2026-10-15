@@ -297,6 +297,23 @@ final class FormatTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(claudeSummary([line], modifiedAt: written)).lastEntryAt, written)
     }
 
+    /// A stamp this build cannot read is skipped, not taken as "no date".
+    func testAnUnreadableLastStampFallsBackToTheOneBefore() throws {
+        let lines = [
+            #"{"type":"user","sessionId":"c1","timestamp":"2026-10-09T17:40:00.000Z","message":{"content":"hello"}}"#,
+            #"{"type":"system","sessionId":"c1","timestamp":"2026-10-09T17:41:00Z"}"#,
+            #"{"type":"system","sessionId":"c1","timestamp":""}"#,
+            #"{"type":"system","sessionId":"c1","timestamp":"yesterday"}"#,
+            #"{"type":"system","sessionId":"c1","timestamp":1760000000}"#,
+            #"{"type":"system","sessionId":"c1","timestamp":null}"#,
+        ]
+        let summary = try XCTUnwrap(claudeSummary(lines, modifiedAt: .distantFuture))
+        XCTAssertEqual(summary.lastEntryAt, TranscriptText.parseDate("2026-10-09T17:41:00Z"))
+        let none = try XCTUnwrap(claudeSummary([#"{"type":"user","sessionId":"c1","message":{"content":"x"}}"#],
+                                               modifiedAt: .distantFuture))
+        XCTAssertNil(none.lastEntryAt, "no stamp, no date: never the file's time")
+    }
+
     func testCodexsLastEntryIsItsLastStampedLine() throws {
         let path = "/s/rollout-2026-10-01T10-00-00-\(thread).jsonl"
         let text = [

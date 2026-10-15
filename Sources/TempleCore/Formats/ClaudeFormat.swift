@@ -55,9 +55,9 @@ public struct ClaudeFormat: TranscriptFormat {
         var previewText: String?
         var branch: String?
         var summary: String?
-        // The last stamp in file order; appends are chronological, so one
-        // parse at the end instead of one per line.
-        var lastStamp: String?
+        // Stamps in file order; appends are chronological, so the last one
+        // that parses is the latest, found after the loop.
+        var stamps: [String] = []
 
         for (segmentIndex, segment) in segments.enumerated() {
             let inHead = segmentIndex == 0
@@ -68,7 +68,7 @@ public struct ClaudeFormat: TranscriptFormat {
                 if cwd == nil, let value = obj["cwd"] as? String { cwd = value }
                 if let value = obj["timestamp"] as? String {
                     if createdAt == nil { createdAt = TranscriptText.parseDate(value) }
-                    lastStamp = value
+                    stamps.append(value)
                 }
                 if let value = obj["content"] as? String, !value.isEmpty {
                     if topLevelTitle == nil { topLevelTitle = value }
@@ -116,7 +116,7 @@ public struct ClaudeFormat: TranscriptFormat {
             cwd: cwd,
             firstPrompt: firstPrompt.map { TranscriptText.cleanTitle($0) },
             createdAt: createdAt,
-            lastEntryAt: TranscriptText.lastEntryDate(lastStamp, modifiedAt: modifiedAt),
+            lastEntryAt: TranscriptText.lastEntryDate(stamps, modifiedAt: modifiedAt),
             gitBranch: branch,
             model: model,
             messageCount: count > 0 ? count : nil,

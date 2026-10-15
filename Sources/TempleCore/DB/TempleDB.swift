@@ -364,21 +364,42 @@ public final class TempleDB: @unchecked Sendable {
     /// first launch stamped every open tab's row with the same second, and
     /// the palette and recent projects ranked a week-old session beside
     /// yesterday's. Fills now take the last timestamped entry instead
-    /// (`TranscriptSummary.lastEntryAt`); this clears the dates the old fill
-    /// wrote, once, so that fill writes them again. Fills are NULL-only, so
-    /// nothing else would. Touches since the upgrade go with them, and the
-    /// row sorts by its last open or join until its transcript is read.
+    /// (`TranscriptSummary.lastEntryAt`); this clears the dates on rows that
+    /// are not archived, once, so that fill writes them again. Fills are
+    /// NULL-only, so nothing else would. Which dates were fills and which
+    /// were touches is not recorded, so touches since the upgrade go too,
+    /// and are not recoverable. Archived rows keep theirs: nothing refills
+    /// an archived row.
     ///
-    /// Done once, recorded as `PRAGMA user_version` 1: GRDB's migrator keeps
-    /// its own table and never reads it, and a migration would lock v0.5.0
-    /// out of the file (`checkSchema`) for a change that is not one to the
-    /// schema. Older builds ignore it. Read first, like the title reconcile
-    /// above.
+    /// A cleared date still counts for Temple's archive (ADR-030): it is
+    /// kept in `activity_before_repair`, which the idle check in
+    /// `autoArchive` falls back to while the row has no date of its own. A
+    /// row whose transcript never refills it (gone, unreadable) is then
+    /// protected exactly as long as before the repair, not a week less.
+    ///
+    /// `PRAGMA user_version` is the file's data-repair level, separate from
+    /// the schema: GRDB's migrator keeps its own table and never reads it,
+    /// and a migration would lock v0.5.0 out of the file (`checkSchema`) for
+    /// a change that is not one to the schema. Each repair runs once, in
+    /// order, and moves the level up by one. Older builds ignore it, so it
+    /// is no barrier to them: v0.5.0 opened afterwards still fills NULL
+    /// dates from file times, and those are not repaired again. Read first,
+    /// like the title reconcile above.
     private static func forgetFileTimeActivity(_ queue: DatabaseQueue) throws {
         let level = try queue.read { try Int.fetchOne($0, sql: "PRAGMA user_version") ?? 0 }
         guard level < 1 else { return }
         try queue.write { database in
-            try database.execute(sql: "UPDATE session_state SET last_active_at = NULL")
+            try database.execute(sql: """
+                CREATE TABLE IF NOT EXISTS activity_before_repair (
+                    id TEXT NOT NULL, host TEXT NOT NULL, last_active_at DATETIME NOT NULL,
+                    PRIMARY KEY (id, host))
+                """)
+            try database.execute(sql: """
+                INSERT OR REPLACE INTO activity_before_repair (id, host, last_active_at)
+                SELECT id, host, last_active_at FROM session_state
+                WHERE archived = 0 AND last_active_at IS NOT NULL
+                """)
+            try database.execute(sql: "UPDATE session_state SET last_active_at = NULL WHERE archived = 0")
             try database.execute(sql: "PRAGMA user_version = 1")
         }
     }
@@ -696,6 +717,13 @@ public final class TempleDB: @unchecked Sendable {
     /// last open, else join; none at all is idle), and for a missing folder,
     /// still that folder. Returns the ids actually archived; each is
     /// announced after commit.
+    /// The date `forgetFileTimeActivity` cleared from a row, for the idle
+    /// check alone. The repair creates the table at this build's first open.
+    private static let activityBeforeRepair = """
+        (SELECT r.last_active_at FROM activity_before_repair r
+         WHERE r.id = session_state.id AND r.host = session_state.host)
+        """
+
     @discardableResult
     public func autoArchive(_ entries: [AutoArchiveEntry], idleBefore: Date, at: Date = Date()) throws -> [String] {
         guard !entries.isEmpty else { return [] }
@@ -710,8 +738,8 @@ public final class TempleDB: @unchecked Sendable {
                         WHERE id = ? AND host = ? AND incarnation = ?
                           AND archived = 0 AND pinned = 0
                           AND kept_at IS NULL AND archive_reason IS NULL
-                          AND (COALESCE(last_active_at, last_opened_at, joined_at) IS NULL
-                               OR COALESCE(last_active_at, last_opened_at, joined_at) <= ?)
+                          AND (COALESCE(last_active_at, \(Self.activityBeforeRepair), last_opened_at, joined_at) IS NULL
+                               OR COALESCE(last_active_at, \(Self.activityBeforeRepair), last_opened_at, joined_at) <= ?)
                           AND (? IS NULL OR directory = ?)
                           AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
                         """,

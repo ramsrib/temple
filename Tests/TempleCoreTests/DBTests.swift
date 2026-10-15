@@ -152,17 +152,18 @@ final class DBTests: XCTestCase {
     /// A v0.5.0 file has activity dates filled from file modification times,
     /// which Temple quitting moves for every open tab. The first open by a
     /// later build clears them once, so fills from the last stamped entry
-    /// write them again; after that a date is kept like any other.
+    /// write them again; after that a date is kept like any other. Archived
+    /// rows, which nothing refills, keep theirs.
     func testFileTimeActivityIsForgottenOnceOnOpen() throws {
         let (db, path) = try database()
         try db.join(sessionID: "s", via: .imported, core: SessionCore(lastActiveAt: Date(timeIntervalSince1970: 100)))
-        // What v0.5.0 left: a filled date, and no repair recorded.
-        let v050 = try DatabaseQueue(path: path.path)
-        try v050.write { try $0.execute(sql: "PRAGMA user_version = 0") }
-        try v050.close()
+        try db.join(sessionID: "archived", via: .imported, core: SessionCore(lastActiveAt: Date(timeIntervalSince1970: 100)))
+        try db.setArchived(true, sessionID: "archived")
+        try v050(path)
 
         let upgraded = try TempleDB(path: path)
         XCTAssertNil(try upgraded.sessionState("s")?.lastActiveAt, "the file-time date is cleared")
+        XCTAssertEqual(try upgraded.sessionState("archived")?.lastActiveAt, Date(timeIntervalSince1970: 100))
         XCTAssertEqual(try upgraded.fillCoreFields(sessionID: "s", host: .local, lastActiveAt: Date(timeIntervalSince1970: 50)),
                        .changed([.lastActiveAt]))
 
@@ -171,6 +172,39 @@ final class DBTests: XCTestCase {
         let level = try DatabaseQueue(path: path.path)
         XCTAssertEqual(try level.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 1)
         try level.close()
+    }
+
+    /// Clearing a date must not shorten Temple's idle week (ADR-030): a row
+    /// whose transcript never refills it is judged by the date it had.
+    func testARepairedRowKeepsItsIdleWeekUntilItsDateRefills() throws {
+        let (db, path) = try database()
+        let recent = Date().addingTimeInterval(-86_400)
+        let joinedLongAgo = Date().addingTimeInterval(-30 * 86_400)
+        for id in ["gone", "refilled"] {
+            try db.join(sessionID: id, via: .imported, core: SessionCore(directory: "/p", lastActiveAt: recent))
+        }
+        try v050(path, joinedAt: joinedLongAgo)
+
+        let upgraded = try TempleDB(path: path)
+        XCTAssertNil(try upgraded.sessionState("gone")?.lastActiveAt)
+        let idleBefore = Date().addingTimeInterval(-7 * 86_400)
+        // The engine filled one from a transcript last written long ago.
+        try upgraded.fillCoreFields(sessionID: "refilled", host: .local, lastActiveAt: joinedLongAgo)
+        let entries = try ["gone", "refilled"].map { AutoArchiveEntry(ref: try ref(upgraded, $0), reason: .folderMissing, directory: "/p") }
+        XCTAssertEqual(try upgraded.autoArchive(entries, idleBefore: idleBefore), ["refilled"],
+                       "the cleared date still protects; a refilled one is the row's own")
+    }
+
+    /// What v0.5.0 leaves on disk: no repair recorded, and optionally rows
+    /// joined at a given time.
+    private func v050(_ path: URL, joinedAt: Date? = nil) throws {
+        let queue = try DatabaseQueue(path: path.path)
+        try queue.write { database in
+            try database.execute(sql: "PRAGMA user_version = 0")
+            try database.execute(sql: "DROP TABLE IF EXISTS activity_before_repair")
+            if let joinedAt { try database.execute(sql: "UPDATE session_state SET joined_at = ?", arguments: [joinedAt]) }
+        }
+        try queue.close()
     }
 
     /// Clearing must DELETE the key, not store a stand-in: absence is how a

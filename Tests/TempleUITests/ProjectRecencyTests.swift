@@ -35,6 +35,10 @@ final class ProjectRecencyTests: XCTestCase {
         let first = launch(db)
         try useThreeProjects(first)
         first.openSessions.prepareForQuit()
+        // Quitting drains every agent; tabs closing on the way out must not
+        // forget their projects.
+        first.openSessions.tabs.map(\.id).forEach(first.openSessions.closeTab)
+        XCTAssertEqual(DBTabPersistence(db: db).loadProjectRecency(), [a, c, b])
 
         let relaunched = launch(db)
         XCTAssertEqual(relaunched.openSessions.activeProjectKey, a)
@@ -107,9 +111,10 @@ final class ProjectRecencyTests: XCTestCase {
     func testMalformedElementsAreDropped() {
         let stored = """
         [{"host":"","path":"/work/b"}, 42, {"host":""}, {"path":""}, {"path":"/work/c"},
-         {"host":"","path":"/work/b"}]
+         {"host":"","path":"/work/b"}, {"host":42,"path":"/work/a"}, {"host":null,"path":"/work/d"}]
         """
-        XCTAssertEqual(ProjectRecencyCodec.decode(stored), [b, c], "a missing host is this Mac; duplicates collapse")
+        XCTAssertEqual(ProjectRecencyCodec.decode(stored), [b, c, ProjectKey(host: .local, path: "/work/d")],
+                       "a missing or null host is this Mac, one that is not a string is no project; duplicates collapse")
         XCTAssertEqual(ProjectRecencyCodec.decode("\"/work/a\""), [])
         XCTAssertEqual(ProjectRecencyCodec.decode(nil), [])
     }

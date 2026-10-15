@@ -224,11 +224,17 @@ enum TranscriptText {
         return (try? isoWithFraction.parse(s)) ?? (try? isoPlain.parse(s))
     }
 
-    /// A transcript's last entry time from its last stamp, never later than
-    /// the file's own modification time: a stamp from a skewed clock must
-    /// not rank a session above everything that really happened since.
-    static func lastEntryDate(_ stamp: String?, modifiedAt: Date) -> Date? {
-        parseDate(stamp).map { min($0, modifiedAt) }
+    /// A transcript's last entry time: its last stamp that parses (one this
+    /// build cannot read must not hide the ones before it), never later
+    /// than the file's own modification time, so a stamp from a skewed
+    /// clock cannot rank a session above everything that really happened
+    /// since. Only what the read saw: a tail that starts inside one long
+    /// line can miss that line's stamp and answer with an earlier one.
+    static func lastEntryDate(_ stamps: [String], modifiedAt: Date) -> Date? {
+        for stamp in stamps.reversed() {
+            if let date = parseDate(stamp) { return min(date, modifiedAt) }
+        }
+        return nil
     }
 
     /// Collapse whitespace and cap length for a one-line title: every run of
