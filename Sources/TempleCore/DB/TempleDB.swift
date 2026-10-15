@@ -386,14 +386,18 @@ public final class TempleDB: @unchecked Sendable {
     /// dates from file times, and those are not repaired again. Read first,
     /// like the title reconcile above.
     private static func forgetFileTimeActivity(_ queue: DatabaseQueue) throws {
-        let level = try queue.read { try Int.fetchOne($0, sql: "PRAGMA user_version") ?? 0 }
-        guard level < 1 else { return }
+        let (level, hasTable) = try queue.read { database in
+            (try Int.fetchOne(database, sql: "PRAGMA user_version") ?? 0,
+             try database.tableExists("activity_before_repair"))
+        }
+        // `autoArchive` reads the table whatever the level, so it exists in
+        // every file this build has opened for writing.
+        guard level < 1 else {
+            if !hasTable { try queue.write(createActivityBeforeRepair) }
+            return
+        }
         try queue.write { database in
-            try database.execute(sql: """
-                CREATE TABLE IF NOT EXISTS activity_before_repair (
-                    id TEXT NOT NULL, host TEXT NOT NULL, last_active_at DATETIME NOT NULL,
-                    PRIMARY KEY (id, host))
-                """)
+            try createActivityBeforeRepair(database)
             try database.execute(sql: """
                 INSERT OR REPLACE INTO activity_before_repair (id, host, last_active_at)
                 SELECT id, host, last_active_at FROM session_state
@@ -402,6 +406,14 @@ public final class TempleDB: @unchecked Sendable {
             try database.execute(sql: "UPDATE session_state SET last_active_at = NULL WHERE archived = 0")
             try database.execute(sql: "PRAGMA user_version = 1")
         }
+    }
+
+    private static func createActivityBeforeRepair(_ database: Database) throws {
+        try database.execute(sql: """
+            CREATE TABLE IF NOT EXISTS activity_before_repair (
+                id TEXT NOT NULL, host TEXT NOT NULL, last_active_at DATETIME NOT NULL,
+                PRIMARY KEY (id, host))
+            """)
     }
 
     /// How long a writer waits on another connection's lock before failing.

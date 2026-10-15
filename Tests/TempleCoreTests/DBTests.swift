@@ -195,6 +195,20 @@ final class DBTests: XCTestCase {
                        "the cleared date still protects; a refilled one is the row's own")
     }
 
+    /// A file whose repair level is already up but has no table (an
+    /// earlier build of this change) still gets one: archiving reads it.
+    func testTheRepairTableExistsWhateverTheLevel() throws {
+        let (db, path) = try database()
+        try db.join(sessionID: "s", via: .imported, core: SessionCore(directory: "/p"))
+        let queue = try DatabaseQueue(path: path.path)
+        try queue.write { try $0.execute(sql: "DROP TABLE activity_before_repair") }
+        try queue.close()
+
+        let reopened = try TempleDB(path: path)
+        let entry = AutoArchiveEntry(ref: try ref(reopened, "s"), reason: .folderMissing, directory: "/p")
+        XCTAssertEqual(try reopened.autoArchive([entry], idleBefore: Self.farFuture), ["s"])
+    }
+
     /// What v0.5.0 leaves on disk: no repair recorded, and optionally rows
     /// joined at a given time.
     private func v050(_ path: URL, joinedAt: Date? = nil) throws {

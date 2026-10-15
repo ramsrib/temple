@@ -39,7 +39,9 @@ struct TitlebarTabStripInstaller: NSViewRepresentable {
         var model: AppModel?
         private weak var container: TabStripContainerView?
         /// This view and its ancestors, whose frame changes are observed.
-        private var observedChain: [NSView] = []
+        /// Weak: the chain's ancestors own this view, so holding them would
+        /// keep a closed window's whole hierarchy alive.
+        private var observedChain: [WeakView] = []
 
         private static let accessoryID =
             NSUserInterfaceItemIdentifier("temple.titlebarTabStrip")
@@ -131,14 +133,14 @@ struct TitlebarTabStripInstaller: NSViewRepresentable {
         /// on for SwiftUI's views.
         private func observeChain() {
             let center = NotificationCenter.default
-            for view in observedChain {
+            for view in observedChain.compactMap(\.view) {
                 center.removeObserver(self, name: NSView.frameDidChangeNotification, object: view)
             }
             observedChain = []
             guard window != nil else { return }
             var view: NSView? = self
             while let current = view {
-                observedChain.append(current)
+                observedChain.append(WeakView(view: current))
                 center.addObserver(self, selector: #selector(chainFrameChanged),
                                    name: NSView.frameDidChangeNotification, object: current)
                 view = current.superview
@@ -149,7 +151,7 @@ struct TitlebarTabStripInstaller: NSViewRepresentable {
             guard window != nil else { return observedChain.isEmpty }
             var view: NSView? = self
             for observed in observedChain {
-                guard view === observed else { return false }
+                guard let observed = observed.view, view === observed else { return false }
                 view = view?.superview
             }
             return view == nil
@@ -374,16 +376,17 @@ final class TabStripContainerView: NSView {
     /// moves its items after the split view has resized (collapse, expand),
     /// and an item can lay out oversized before it settles; neither lays
     /// this view out, so a measurement taken in between would stand.
-    private var observedToolbarItems: [NSView] = []
+    /// Weak, like the pane's chain: the toolbar is torn down with its window.
+    private var observedToolbarItems: [WeakView] = []
 
     private func observeToolbarItems(_ viewers: [NSView]) {
         guard viewers.count != observedToolbarItems.count
-            || !zip(viewers, observedToolbarItems).allSatisfy({ $0 === $1 }) else { return }
+            || !zip(viewers, observedToolbarItems).allSatisfy({ $0 === $1.view }) else { return }
         let center = NotificationCenter.default
-        for viewer in observedToolbarItems {
+        for viewer in observedToolbarItems.compactMap(\.view) {
             center.removeObserver(self, name: NSView.frameDidChangeNotification, object: viewer)
         }
-        observedToolbarItems = viewers
+        observedToolbarItems = viewers.map(WeakView.init(view:))
         for viewer in viewers {
             center.addObserver(self, selector: #selector(leadingGeometryChanged),
                                name: NSView.frameDidChangeNotification, object: viewer)
@@ -875,4 +878,9 @@ final class TabStripContainerView: NSView {
         guard let superview, let content = window?.contentView, let frame = content.superview else { return nil }
         return content.hitTest(frame.convert(superview.convert(point, to: nil), from: nil))
     }
+}
+
+/// A view held without keeping it alive, for observation lists.
+private struct WeakView {
+    weak var view: NSView?
 }
