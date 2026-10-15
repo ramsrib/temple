@@ -17,6 +17,10 @@ import TempleCore
 public final class UIStateStore {
     public enum Key {
         public static let sidebarVisibility = "sidebarVisibility"
+        /// Written and read by `DBTabPersistence`, not through this store:
+        /// it moves with the tabs, not with the window. Named here so every
+        /// `ui_state` key lives in one list.
+        public static let projectRecency = "projectRecency"
     }
 
     private let db: TempleDB

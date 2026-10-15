@@ -46,6 +46,18 @@ public struct PersistedTab: Codable, Equatable {
 public protocol TabPersistence: AnyObject {
     func load() -> [PersistedTab]
     func save(_ tabs: [PersistedTab])
+    /// The ⌘P switcher's order: projects most recently used first. Kept beside
+    /// the tabs because a relaunch restores both, and the tab set alone cannot
+    /// say which project you were in before the one you quit in.
+    func loadProjectRecency() -> [ProjectKey]
+    func saveProjectRecency(_ keys: [ProjectKey])
+}
+
+public extension TabPersistence {
+    /// Stores without a place for it start every launch with no recency, which
+    /// is what every build before this one did.
+    func loadProjectRecency() -> [ProjectKey] { [] }
+    func saveProjectRecency(_ keys: [ProjectKey]) {}
 }
 
 @MainActor
@@ -83,6 +95,85 @@ public final class DBTabPersistence: TabPersistence {
             )
         }
         try? db.replaceOpenTabs(records)
+    }
+
+    /// In `ui_state`, not a new table: a migration would lock every older
+    /// build out of the file (`hasBeenSuperseded`), and this is window state
+    /// like the sidebar's, isolated by `TEMPLE_STATE_DIR` the same way.
+    public func loadProjectRecency() -> [ProjectKey] {
+        do {
+            return ProjectRecencyCodec.decode(try db.uiState(UIStateStore.Key.projectRecency))
+        } catch {
+            TempleUILog.db.error(
+                "failed to read project recency, starting from tab order: \(String(describing: error), privacy: .public)")
+            return []
+        }
+    }
+
+    public func saveProjectRecency(_ keys: [ProjectKey]) {
+        do {
+            try db.setUIState(ProjectRecencyCodec.encode(keys), for: UIStateStore.Key.projectRecency)
+        } catch {
+            TempleUILog.db.error(
+                "failed to persist project recency — it will not survive relaunch: \(String(describing: error), privacy: .public)")
+        }
+    }
+}
+
+/// The stored form of the project recency list: a JSON array of
+/// `{"host", "path"}`, most recent first. Spelled out rather than leaning on
+/// `ProjectKey`'s synthesized `Codable`, so the bytes on disk don't change
+/// shape when that type does.
+///
+/// Reading never throws. Whatever cannot be read is dropped — an element, or
+/// the whole value — and an empty list only means "follow tab order", which
+/// is where every launch started before this was kept.
+enum ProjectRecencyCodec {
+    /// The list only ever holds projects with a tab open (closing a project's
+    /// last tab forgets it), so this bounds a hand-edited or runaway value,
+    /// not normal use.
+    static let limit = 64
+
+    private struct Entry: Encodable {
+        var host: String
+        var path: String
+    }
+
+    /// One element, or nothing: a malformed entry must not take the rest of
+    /// the list down with it. A missing host is this Mac's, as it is
+    /// everywhere else a host is absent.
+    private struct LossyEntry: Decodable {
+        private enum CodingKeys: String, CodingKey { case host, path }
+        let key: ProjectKey?
+
+        init(from decoder: Decoder) throws {
+            let container = try? decoder.container(keyedBy: CodingKeys.self)
+            guard let path = try? container?.decode(String.self, forKey: .path), !path.isEmpty else {
+                key = nil
+                return
+            }
+            let host = (try? container?.decodeIfPresent(String.self, forKey: .host)) ?? nil
+            key = ProjectKey(host: HostID(rawValue: host ?? HostID.local.rawValue), path: path)
+        }
+    }
+
+    /// `nil` for an empty list, so it clears the key instead of storing a
+    /// stand-in for "nothing".
+    static func encode(_ keys: [ProjectKey]) -> String? {
+        let entries = deduplicated(keys).map { Entry(host: $0.host.rawValue, path: $0.path) }
+        guard !entries.isEmpty, let data = try? JSONEncoder().encode(entries) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func decode(_ value: String?) -> [ProjectKey] {
+        guard let data = value?.data(using: .utf8),
+              let entries = try? JSONDecoder().decode([LossyEntry].self, from: data) else { return [] }
+        return deduplicated(entries.compactMap(\.key))
+    }
+
+    private static func deduplicated(_ keys: [ProjectKey]) -> [ProjectKey] {
+        var seen = Set<ProjectKey>()
+        return Array(keys.filter { seen.insert($0).inserted }.prefix(limit))
     }
 }
 

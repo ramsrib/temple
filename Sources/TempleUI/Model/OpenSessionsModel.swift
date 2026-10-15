@@ -791,7 +791,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         // A project with no tabs left is not switchable — forget it, or the MRU
         // list grows for the life of the run as folders come and go.
         if !tabs.contains(where: { $0.kind == .session && $0.projectKey == tab.projectKey }) {
-            projectMRU.removeAll { $0 == tab.projectKey }
+            forgetProject(tab.projectKey)
             lastActiveTabByProject.removeValue(forKey: tab.projectKey)
         }
         if wasActive { selectNeighbor(removedIndex: index, removedProject: tab.projectKey, wasUtility: tab.isUtility) }
@@ -892,10 +892,22 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         let recent = projectMRU.filter(open.contains)
         return recent + openProjectKeys.filter { !recent.contains($0) }
     }
+    /// Most recently used first, and only projects with a tab open. Saved on
+    /// every change rather than at quit: a change is a project switch or a
+    /// project's last tab closing, both paced by the user, and a crash or a
+    /// force-quit then loses nothing. `restore()` reads it back, or a relaunch
+    /// would order ⌘P by tab order behind whichever project you quit in.
     private var projectMRU: [ProjectKey] = []
     private func touchProject(_ key: ProjectKey) {
+        guard projectMRU.first != key else { return }
         projectMRU.removeAll { $0 == key }
         projectMRU.insert(key, at: 0)
+        persistence.saveProjectRecency(projectMRU)
+    }
+    private func forgetProject(_ key: ProjectKey) {
+        guard projectMRU.contains(key) else { return }
+        projectMRU.removeAll { $0 == key }
+        persistence.saveProjectRecency(projectMRU)
     }
     public func activateProject(_ key: ProjectKey) {
         let inProject = tabs.filter { $0.kind == .session && $0.projectKey == key }
@@ -995,6 +1007,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                               title: row.flatMap { $0.state.customName ?? $0.state.title } ?? p.title,
                               isResume: true, host: row?.host ?? .local)
         }
+        // The order ⌘P walked at quit, for the projects that came back. One
+        // whose tabs did not is dropped, as closing its last tab would have.
+        let restored = Set(openProjectKeys)
+        projectMRU = persistence.loadProjectRecency().filter(restored.contains)
         // Restore active project context without spawning anything.
         activeProjectKey = tabs.first?.projectKey
         // Every other chip stays inert until clicked (lazy restore). The one the
