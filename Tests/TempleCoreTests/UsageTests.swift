@@ -145,7 +145,12 @@ final class UsageTests: XCTestCase {
                          body: (FakeKeychain) -> Void) {
         let saved = ClaudeUsageReader.keychain
         defer { ClaudeUsageReader.keychain = saved }
-        ClaudeUsageReader.keychain = .init(
+        ClaudeUsageReader.keychain = access(fake, credentialsFile: credentialsFile)
+        body(fake)
+    }
+
+    private func access(_ fake: FakeKeychain, credentialsFile: URL) -> ClaudeUsageReader.KeychainAccess {
+        .init(
             setInteractionAllowed: { allowed in fake.sets.append(allowed); return fake.setStatus },
             interactionAllowed: { fake.previous },
             copyMatching: { query in
@@ -169,7 +174,6 @@ final class UsageTests: XCTestCase {
                 return (errSecSuccess, data as CFTypeRef)
             },
             credentialsFile: credentialsFile)
-        body(fake)
     }
 
     private func token(expiresAt: Double) -> Data {
@@ -293,6 +297,148 @@ final class UsageTests: XCTestCase {
         install(fake) { fake in
             guard case .needsPermission = lookup(interactive: true) else { return XCTFail("expected needsPermission") }
             XCTAssertEqual(fake.sets, [true, true])
+        }
+    }
+
+    // MARK: Token reuse across polls
+
+    private final class Endpoint: @unchecked Sendable {
+        var tokens: [String] = []
+        var refused: Set<String> = []
+    }
+
+    private func withReader(_ fake: FakeKeychain, _ body: (FakeKeychain, Endpoint) async -> Void) async {
+        let endpoint = Endpoint()
+        let savedKeychain = ClaudeUsageReader.keychain
+        let savedFetch = ClaudeUsageReader.fetchUsage
+        ClaudeUsageReader.forgetReusableCredentials()
+        defer {
+            ClaudeUsageReader.keychain = savedKeychain
+            ClaudeUsageReader.fetchUsage = savedFetch
+            ClaudeUsageReader.forgetReusableCredentials()
+        }
+        ClaudeUsageReader.keychain = access(fake, credentialsFile: URL(fileURLWithPath: "/nonexistent/credentials.json"))
+        ClaudeUsageReader.fetchUsage = { creds in
+            endpoint.tokens.append(creds.token)
+            if endpoint.refused.contains(creds.token) { return .unauthorized }
+            return .usage(ClaudeUsage(plan: creds.plan, fiveHour: UsageWindow(pct: 10), weekly: nil, scoped: [], creditsPct: nil))
+        }
+        await body(fake, endpoint)
+    }
+
+    private func inHours(_ hours: Double) -> Double { ((Date().timeIntervalSince1970 + hours * 3600) * 1000).rounded() }
+
+    // 2026-10-15 09:11:43 → 09:11:45: the click's read was allowed, the poll
+    // two seconds later read the Keychain again and was refused — two
+    // prompts. The poll now sends the token the click already read.
+    func testAPollAfterTheClickReadsNoKeychain() async {
+        let expiry = inHours(6)
+        await withReader(FakeKeychain(items: [("Claude Code-credentials", "me", token(expiresAt: expiry))])) { fake, endpoint in
+            guard case .usage = await ClaudeUsageReader.read(interactive: true) else { return XCTFail("expected usage") }
+            let afterClick = fake.queries
+            // Access is lost again, as it was after the one-time Allow.
+            fake.items = [("Claude Code-credentials", "me", nil)]
+            for _ in 0..<3 {
+                guard case .usage = await ClaudeUsageReader.read(interactive: false) else { return XCTFail("expected usage") }
+            }
+            XCTAssertEqual(fake.queries, afterClick, "no Keychain query after the click's")
+            XCTAssertEqual(endpoint.tokens, Array(repeating: "tok-\(Int(expiry))", count: 4))
+        }
+    }
+
+    func testTheClickItselfAlwaysReadsTheKeychain() async {
+        await withReader(FakeKeychain(items: [("Claude Code-credentials", "me", token(expiresAt: inHours(6)))])) { fake, _ in
+            _ = await ClaudeUsageReader.read(interactive: false)
+            let before = fake.queries
+            _ = await ClaudeUsageReader.read(interactive: true)
+            XCTAssertEqual(fake.queries, before + 2, "a new sign-in must not wait out the old token")
+        }
+    }
+
+    // Signed in as someone else, and the click cannot read the new item:
+    // the old account's token must not carry on in the polls behind it.
+    func testAClickThatReadsNothingLeavesNothingKept() async {
+        let old = inHours(6)
+        await withReader(FakeKeychain(items: [("Claude Code-credentials", "me", token(expiresAt: old))])) { fake, endpoint in
+            _ = await ClaudeUsageReader.read(interactive: false)
+            fake.items = [("Claude Code-credentials", "someone-else", nil)]
+            fake.denied = true
+            guard case .needsPermission = await ClaudeUsageReader.read(interactive: true) else { return XCTFail("expected needsPermission") }
+            fake.denied = false
+            guard case .needsPermission = await ClaudeUsageReader.read(interactive: false) else {
+                return XCTFail("the poll must not fall back on the old account's token")
+            }
+            XCTAssertEqual(endpoint.tokens, ["tok-\(Int(old))"])
+        }
+    }
+
+    func testWhatTheClickReadsReplacesWhatWasKept() async {
+        let old = inHours(6), new = inHours(7)
+        await withReader(FakeKeychain(items: [("Claude Code-credentials", "me", token(expiresAt: old))])) { fake, endpoint in
+            _ = await ClaudeUsageReader.read(interactive: false)
+            fake.items = [("Claude Code-credentials", "me", token(expiresAt: new))]
+            _ = await ClaudeUsageReader.read(interactive: true)
+            _ = await ClaudeUsageReader.read(interactive: false)
+            XCTAssertEqual(endpoint.tokens, ["tok-\(Int(old))", "tok-\(Int(new))", "tok-\(Int(new))"])
+        }
+    }
+
+    func testARefusedTokenForcesARead() async {
+        let old = inHours(1), new = inHours(8)
+        await withReader(FakeKeychain(items: [("Claude Code-credentials", "me", token(expiresAt: old))])) { fake, endpoint in
+            _ = await ClaudeUsageReader.read(interactive: false)
+            // Claude Code refreshed: the item holds a new token, the old one is refused.
+            fake.items = [("Claude Code-credentials", "me", token(expiresAt: new))]
+            endpoint.refused = ["tok-\(Int(old))"]
+            guard case .usage = await ClaudeUsageReader.read(interactive: false) else { return XCTFail("expected the new token's usage") }
+            XCTAssertEqual(endpoint.tokens, ["tok-\(Int(old))", "tok-\(Int(old))", "tok-\(Int(new))"])
+            // And the new one is reused from then on.
+            let queries = fake.queries
+            _ = await ClaudeUsageReader.read(interactive: false)
+            XCTAssertEqual(fake.queries, queries)
+        }
+    }
+
+    func testATokenTheStoreStillHoldsIsNotSentTwiceAfterA401() async {
+        let expiry = inHours(3)
+        await withReader(FakeKeychain(items: [("Claude Code-credentials", "me", token(expiresAt: expiry))])) { fake, endpoint in
+            _ = await ClaudeUsageReader.read(interactive: false)
+            endpoint.refused = ["tok-\(Int(expiry))"]
+            guard case .unauthorized = await ClaudeUsageReader.read(interactive: false) else { return XCTFail("expected 401") }
+            XCTAssertEqual(endpoint.tokens.count, 2, "the re-read found the same token; it is not sent again")
+            // Not kept: every later poll reads the store, so a sign-in is seen.
+            let queries = fake.queries
+            guard case .unauthorized = await ClaudeUsageReader.read(interactive: false) else { return XCTFail("expected 401") }
+            XCTAssertEqual(fake.queries, queries + 2)
+        }
+    }
+
+    func testATokenNearItsExpiryForcesARead() async {
+        let soon = ((Date().timeIntervalSince1970 + ClaudeUsageReader.reuseMargin - 60) * 1000).rounded()
+        await withReader(FakeKeychain(items: [("Claude Code-credentials", "me", token(expiresAt: soon))])) { fake, _ in
+            _ = await ClaudeUsageReader.read(interactive: false)
+            let queries = fake.queries
+            _ = await ClaudeUsageReader.read(interactive: false)
+            XCTAssertEqual(fake.queries, queries + 2, "within the margin of its expiry: read again")
+        }
+    }
+
+    func testATokenWithoutAnExpiryIsKeptForAnHourAtMost() {
+        defer { ClaudeUsageReader.forgetReusableCredentials() }
+        let creds = ClaudeUsageReader.Credentials(token: "tok-undated", expiresAt: nil, plan: nil)
+        let readAt = Date(timeIntervalSince1970: 1_780_000_000)
+        ClaudeUsageReader.rememberForTesting(creds, readAt: readAt)
+        XCTAssertEqual(ClaudeUsageReader.reusableCredentials(now: readAt.addingTimeInterval(59 * 60))?.token, "tok-undated")
+        XCTAssertNil(ClaudeUsageReader.reusableCredentials(now: readAt.addingTimeInterval(ClaudeUsageReader.reuseWithoutExpiry)))
+        XCTAssertNil(ClaudeUsageReader.reusableCredentials(now: readAt), "and once dropped, it stays dropped")
+    }
+
+    func testANeedsPermissionReadKeepsNothing() async {
+        await withReader(FakeKeychain(items: [("Claude Code-credentials", "me", nil)])) { fake, endpoint in
+            guard case .needsPermission = await ClaudeUsageReader.read(interactive: false) else { return XCTFail("expected needsPermission") }
+            guard case .needsPermission = await ClaudeUsageReader.read(interactive: false) else { return XCTFail("expected needsPermission") }
+            XCTAssertEqual(endpoint.tokens, [])
+            XCTAssertEqual(fake.queries, 4)
         }
     }
 }

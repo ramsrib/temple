@@ -2016,3 +2016,63 @@ CDP attach) separately from tab management, and so should this.
 - Requests and responses both carry the protocol version, read before
   anything else; any other version is refused in either direction, not
   guessed at. Old versions, when there are any, get adapters on purpose.
+
+## ADR-035 — The usage meter keeps the token it read
+**Date:** 2026-10-15 · **Status:** Accepted (amends ADR-022)
+
+ADR-022 assumed one "Always Allow" on the refresh control would make every
+later poll silent. usage.log says it does not last. Every mid-run loss of
+access (2026-10-02 09:38 and 17:35, 10-05 17:02) came within minutes of the
+token's own expiry, which is when Claude Code refreshes it and rewrites the
+item through `/usr/bin/security`; after the rewrite Temple is off the
+item's access list and `security`, the writer, is still on it. Every launch
+after a rewrite starts the same way. And each click cost two dialogs: the
+click's read was allowed (a one-time "Allow" is spent by that read), the
+next poll seconds later read the Keychain again and was refused, and the
+user clicked again.
+
+**Decisions.**
+
+- **Unattended polls reuse the token the last lookup found** until it is
+  within five minutes of its own expiry or the endpoint says 401. A 401 on a
+  reused token reads the store at once (the CLI has usually refreshed it);
+  a token the store still holds after a 401 is not sent again, and a refused
+  token is never kept, so a new sign-in is still seen by the next poll. The
+  token lives in memory only, and is never logged.
+- **A token with no recorded expiry is kept for an hour at most.** Claude
+  Code always writes one; without it nothing else says the token went
+  stale, and an hour bounds how long an account change can go unseen by the
+  polls, at the cost of one Keychain read an hour.
+- **The click never reuses, and replaces what was kept.** It is the user
+  asking for now, and a new sign-in must not wait out the old token's
+  lifetime. What it reads is kept; a click that reads nothing (denied, no
+  credentials) leaves nothing kept, so a token from before an account change
+  does not carry on in the polls behind a click that could not find the new
+  one.
+
+What this does not fix: Claude Code's rewrite still drops Temple from the
+item, so after a token refresh the next read can still need a prompt. It
+now needs one at most once per refresh, not twice per click, and not on
+every poll after a one-time "Allow". Why the rewrite drops Temple is not
+established: Apple's `security` source calls `SecKeychainItemSetAccess` on
+`add-generic-password -U` only when `-T` or `-A` is given, and Claude Code
+passes neither. The timing in the log is the evidence.
+
+**Considered and rejected: reading through `/usr/bin/security` where the
+item already trusts it.** The item always trusts the tool that writes it,
+so running `security find-generic-password -w` when the access list let it
+decrypt and the keychain was unlocked would have read without Temple
+needing a grant. Two reasons against, from review:
+
+- It cannot be made prompt-free. The access-list and lock checks and the
+  child's read are separate operations; the keychain can lock or the item
+  be rewritten between them, and the process-wide interaction switch that
+  keeps Temple's own reads silent does not reach into the child — so an
+  unattended poll could still raise a dialog, attributed to `security`,
+  and a deadline only bounds how long Temple waits once it is up. (Also
+  found: matching trusted applications by path drops the code requirement
+  the entry actually stores.)
+- It sidesteps the user's choice. A Keychain approval is consent given to
+  the app that asks; reading through the tool Claude Code trusted for
+  itself takes the secret without that consent. Temple reads with its own
+  identity, silently where it has been allowed, and asks only on the click.

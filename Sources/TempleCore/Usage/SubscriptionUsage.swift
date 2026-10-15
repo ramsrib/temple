@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Security
 
 // Subscription usage for Claude and Codex, read the way ccmeter reads it
@@ -108,13 +109,96 @@ public enum ClaudeUsageReader {
     /// `interactive` allows the Keychain prompt. Unattended polls pass false:
     /// an item Temple may not read then fails instead of prompting, and the
     /// prompt is raised only by the explicit refresh control, where the
-    /// user is looking and "Always Allow" makes every later poll silent.
+    /// user is looking.
+    ///
+    /// Unattended polls reuse the token the last lookup found until it
+    /// nears its own expiry or the endpoint refuses it, rather than reading
+    /// the Keychain every five minutes. Every read is a chance to need a
+    /// prompt, and a grant does not last: a one-time "Allow" is spent by the
+    /// read it answers, and "Always Allow" is gone the next time Claude Code
+    /// rewrites the item on a token refresh (2026-10-02/05 in usage.log,
+    /// each loss within minutes of the old token's expiry). Seen 2026-10-02
+    /// and 10-15: the click's read was allowed, the poll two seconds later
+    /// read again and was refused, and the user was asked twice.
+    ///
+    /// The click never reuses: it is the user asking for now, and a new
+    /// sign-in must not wait out the old token's lifetime. What it reads
+    /// replaces what was kept, and a click that reads nothing leaves nothing
+    /// kept — a token from before an account change must not outlive the
+    /// click that failed to find the new one.
     public static func read(interactive: Bool) async -> Outcome {
+        var refused: String?
+        if interactive {
+            forgetReusableCredentials()
+        } else if let cached = reusableCredentials() {
+            UsageLog.info("claude credentials: reusing the token read earlier; \(expiryDescription(cached.expiresAt))")
+            let outcome = await fetchUsage(cached)
+            guard case .unauthorized = outcome else { return outcome }
+            // Refused: the CLI may already have refreshed it, so the store
+            // is read now rather than reporting a dead sign-in for a poll.
+            forget(cached)
+            refused = cached.token
+            UsageLog.info("claude credentials: the reused token was refused (401); reading the keychain again")
+        }
         switch await loadCredentials(interactive: interactive) {
-        case .found(let creds): return await fetch(with: creds)
+        case .found(let creds):
+            // The store still holds the token the endpoint just refused:
+            // that is the answer, and asking again would only repeat it.
+            if creds.token == refused { return .unauthorized }
+            let outcome = await fetchUsage(creds)
+            // A refused token is never kept: a later poll must read the
+            // store again, or a new sign-in would go unseen.
+            if case .unauthorized = outcome { forget(creds) } else { remember(creds) }
+            return outcome
         case .needsPermission: return .needsPermission
         case .none: return .noCredentials
         }
+    }
+
+    /// The endpoint, replaceable so tests can answer without the network.
+    nonisolated(unsafe) static var fetchUsage: (Credentials) async -> Outcome = { await fetch(with: $0) }
+
+    // MARK: Token reuse
+
+    /// A token this close to its expiry is read again: Claude Code refreshes
+    /// the item shortly before the old one lapses (usage.log, 2026-10-02:
+    /// the last good read at "expires in 6m", the rewrite a few minutes on).
+    static let reuseMargin: TimeInterval = 5 * 60
+    /// How long a token with no recorded expiry is kept. Claude Code always
+    /// writes one; a store without it gives no other sign of going stale, so
+    /// this bounds how long an account change can go unseen by the polls —
+    /// an hour, at the cost of one Keychain read an hour.
+    static let reuseWithoutExpiry: TimeInterval = 60 * 60
+    private static let reusable = OSAllocatedUnfairLock<(creds: Credentials, readAt: Date)?>(initialState: nil)
+
+    static func reusableCredentials(now: Date = Date()) -> Credentials? {
+        reusable.withLock { kept in
+            guard let entry = kept else { return nil }
+            let fresh = expiryDate(entry.creds.expiresAt).map { $0.timeIntervalSince(now) > reuseMargin }
+                ?? (now.timeIntervalSince(entry.readAt) < reuseWithoutExpiry)
+            if fresh { return entry.creds }
+            kept = nil
+            return nil
+        }
+    }
+
+    private static func remember(_ creds: Credentials, now: Date = Date()) {
+        reusable.withLock { $0 = (creds, now) }
+    }
+
+    /// Only the token that was refused: a read that finished in between may
+    /// have put a newer one there.
+    private static func forget(_ creds: Credentials) {
+        reusable.withLock { if $0?.creds.token == creds.token { $0 = nil } }
+    }
+
+    static func forgetReusableCredentials() {
+        reusable.withLock { $0 = nil }
+    }
+
+    /// Tests: keep a token as if it had been read at `readAt`.
+    static func rememberForTesting(_ creds: Credentials, readAt: Date) {
+        remember(creds, now: readAt)
     }
 
     private static func fetch(with creds: Credentials) async -> Outcome {
@@ -174,7 +258,7 @@ public enum ClaudeUsageReader {
 
     // MARK: Credentials
 
-    struct Credentials {
+    struct Credentials: Sendable {
         let token: String
         let expiresAt: Double?
         let plan: String?
@@ -350,9 +434,8 @@ public enum ClaudeUsageReader {
     /// Claude Code writes `expiresAt` in epoch milliseconds; a value small
     /// enough to be seconds is read as seconds.
     static func expiryDescription(_ expiresAt: Double?, now: Date = Date()) -> String {
-        guard let expiresAt else { return "no expiry recorded" }
-        let seconds = expiresAt > 1e11 ? expiresAt / 1000 : expiresAt
-        let delta = seconds - now.timeIntervalSince1970
+        guard let expiry = expiryDate(expiresAt) else { return "no expiry recorded" }
+        let delta = expiry.timeIntervalSince(now)
         let magnitude = abs(delta)
         let text: String
         switch magnitude {
@@ -361,6 +444,11 @@ public enum ClaudeUsageReader {
         default: text = "\(Int(magnitude / 86_400))d \(Int(magnitude.truncatingRemainder(dividingBy: 86_400) / 3600))h"
         }
         return delta >= 0 ? "expires in \(text)" : "expired \(text) ago"
+    }
+
+    static func expiryDate(_ expiresAt: Double?) -> Date? {
+        guard let expiresAt else { return nil }
+        return Date(timeIntervalSince1970: expiresAt > 1e11 ? expiresAt / 1000 : expiresAt)
     }
 
     /// Pure: the `claudeAiOauth` payload both credential stores carry.
