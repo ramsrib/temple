@@ -18,7 +18,8 @@ import TempleCore
 /// detail pane's frame: the strip's leading edge tracks the sidebar divider
 /// live, and the toolbar items parked beside the traffic lights are measured
 /// (`leadingObstruction`); the only estimate left is that measurement's
-/// logged fallback.
+/// logged fallback. Both are re-read whenever either can have moved (see
+/// `setNeedsLeadingEdgeRefresh`), not only when this view is laid out.
 struct TitlebarTabStripInstaller: NSViewRepresentable {
     @EnvironmentObject var model: AppModel
 
@@ -33,20 +34,29 @@ struct TitlebarTabStripInstaller: NSViewRepresentable {
     }
 
     /// Invisible view that reaches the NSWindow, installs the accessory, and
-    /// reports the detail pane's leading edge on every layout pass.
+    /// hands itself to the strip as the detail pane to measure.
     final class InstallerView: NSView {
         var model: AppModel?
         private weak var container: TabStripContainerView?
+        /// This view and its ancestors, whose frame changes are observed.
+        private var observedChain: [NSView] = []
 
         private static let accessoryID =
             NSUserInterfaceItemIdentifier("temple.titlebarTabStrip")
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            observeChain()
+            if window == nil, let container, container.detailPane === self {
+                container.detailPane = nil
+            }
             // Double-clicks on the band are owned in one place, per window
             // (see TitleBandDoubleClick); idempotent like the accessory.
             if let window { TitleBandDoubleClick.install(on: window) }
-            guard container == nil, let window, let model else { return }
+            guard container == nil, let window, let model else {
+                reportLeadingEdge()
+                return
+            }
             // SwiftUI recreates this NSView when the detail pane's content
             // identity flips (launcher → terminal), so installation must be
             // idempotent PER WINDOW: adopt an accessory some earlier instance
@@ -86,6 +96,9 @@ struct TitlebarTabStripInstaller: NSViewRepresentable {
             // a cold first launch on a slower Mac was enough.
             claimBandIfNeeded()
             reportLeadingEdge()
+            // An ancestor reparented in place moves no window, so the chain
+            // is checked here too rather than only rebuilt on a move.
+            if !isObservedChainCurrent { observeChain() }
         }
 
         private func claimBandIfNeeded() {
@@ -93,11 +106,57 @@ struct TitlebarTabStripInstaller: NSViewRepresentable {
             container.claimTitlebarBand()
         }
 
+        override func viewDidMoveToSuperview() {
+            super.viewDidMoveToSuperview()
+            observeChain()
+        }
+
         private func reportLeadingEdge() {
             guard window != nil, let container else { return }
             // This view fills the detail pane, so its window-space origin is
             // the divider's live position (sidebar drag, collapse, expand).
-            container.detailMinX = convert(NSPoint.zero, to: nil).x
+            // The strip reads it from here, now and at every refresh.
+            container.detailPane = self
+            container.refreshLeadingEdge()
+        }
+
+        /// The pane's window-space origin moves when ANY ancestor moves, and
+        /// a move that leaves this view's own frame alone never lays it out.
+        /// The likely shape of v0.5.0's first launch with no saved frame:
+        /// the split view settled to a collapsed sidebar after this view had
+        /// reported, and the strip kept a sidebar-wide origin, the switcher
+        /// adrift mid-band, until the window was resized.
+        /// So a frame change anywhere along the chain asks the strip to
+        /// re-read. NSView posts these by default; nothing here turns them
+        /// on for SwiftUI's views.
+        private func observeChain() {
+            let center = NotificationCenter.default
+            for view in observedChain {
+                center.removeObserver(self, name: NSView.frameDidChangeNotification, object: view)
+            }
+            observedChain = []
+            guard window != nil else { return }
+            var view: NSView? = self
+            while let current = view {
+                observedChain.append(current)
+                center.addObserver(self, selector: #selector(chainFrameChanged),
+                                   name: NSView.frameDidChangeNotification, object: current)
+                view = current.superview
+            }
+        }
+
+        private var isObservedChainCurrent: Bool {
+            guard window != nil else { return observedChain.isEmpty }
+            var view: NSView? = self
+            for observed in observedChain {
+                guard view === observed else { return false }
+                view = view?.superview
+            }
+            return view == nil
+        }
+
+        @objc private func chainFrameChanged() {
+            container?.setNeedsLeadingEdgeRefresh()
         }
     }
 }
@@ -216,11 +275,46 @@ final class TabStripContainerView: NSView {
     private var pendingRestore: (project: ProjectKey?, offset: CGFloat)?
     private var projectSwitch: AnyCancellable?
 
-    /// Detail pane's leading edge in window coordinates (set by the installer).
+    /// Detail pane's leading edge in window coordinates: read from
+    /// `detailPane` at every refresh, or set directly where there is none.
     var detailMinX: CGFloat = 0 {
         didSet {
             guard detailMinX != oldValue else { return }
             bandLeft?.constant = leadingConstant()
+        }
+    }
+
+    /// The view that fills the detail pane (the installer). Kept, rather
+    /// than told its origin once, so the origin is re-read at each refresh
+    /// and a stale report cannot outlive the next one.
+    weak var detailPane: NSView?
+
+    /// Re-read both inputs to the leading edge and apply the result. The
+    /// constant is written only when it changes, so the relayout a write
+    /// causes measures the same values and asks for nothing more.
+    func refreshLeadingEdge() {
+        if let detailPane, let window, detailPane.window === window {
+            detailMinX = detailPane.convert(NSPoint.zero, to: nil).x
+        }
+        let leading = leadingConstant()
+        if let bandLeft, bandLeft.constant != leading { bandLeft.constant = leading }
+    }
+
+    private var leadingEdgeRefreshPending = false
+
+    /// One refresh per run-loop turn however many geometry changes ask for
+    /// it, and after them: a sidebar collapse moves the split view's columns
+    /// and then the toolbar items, in separate frame changes, and the
+    /// measurement wants the settled pair. Neither input is measured from
+    /// the strip's frame or the clip's, so the write a refresh makes cannot
+    /// ask for another.
+    func setNeedsLeadingEdgeRefresh() {
+        guard !leadingEdgeRefreshPending else { return }
+        leadingEdgeRefreshPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.leadingEdgeRefreshPending = false
+            self.refreshLeadingEdge()
         }
     }
 
@@ -240,10 +334,14 @@ final class TabStripContainerView: NSView {
     private func leadingObstruction() -> CGFloat {
         guard let band = anchoredBand else { return Self.windowButtonsInset }
         var maxX: CGFloat = 0
+        var viewers: [NSView] = []
         func walk(_ view: NSView) {
             for sub in view.subviews {
                 if sub === anchoredClipView || sub === self || sub.isHidden { continue }
                 if sub.className.contains("ToolbarItemViewer") {
+                    // Watched whether it counts now or not: an item that
+                    // grows or slides can start counting.
+                    viewers.append(sub)
                     // A space item's viewer has no content; the flexible
                     // space ahead of the rail's buttons can span to the
                     // midpoint in a wide window and must not count.
@@ -258,6 +356,7 @@ final class TabStripContainerView: NSView {
             }
         }
         walk(band)
+        observeToolbarItems(viewers)
         if maxX == 0 {
             // Once, not per layout pass: the failure is a wrong inset that
             // someone will see, and the log should say why.
@@ -270,6 +369,33 @@ final class TabStripContainerView: NSView {
         return maxX
     }
     private static var warnedNoToolbarItems = false
+
+    /// The toolbar item viewers whose frames are observed. The toolbar
+    /// moves its items after the split view has resized (collapse, expand),
+    /// and an item can lay out oversized before it settles; neither lays
+    /// this view out, so a measurement taken in between would stand.
+    private var observedToolbarItems: [NSView] = []
+
+    private func observeToolbarItems(_ viewers: [NSView]) {
+        guard viewers.count != observedToolbarItems.count
+            || !zip(viewers, observedToolbarItems).allSatisfy({ $0 === $1 }) else { return }
+        let center = NotificationCenter.default
+        for viewer in observedToolbarItems {
+            center.removeObserver(self, name: NSView.frameDidChangeNotification, object: viewer)
+        }
+        observedToolbarItems = viewers
+        for viewer in viewers {
+            center.addObserver(self, selector: #selector(leadingGeometryChanged),
+                               name: NSView.frameDidChangeNotification, object: viewer)
+        }
+    }
+
+    @objc private func leadingGeometryChanged() { setNeedsLeadingEdgeRefresh() }
+
+    @objc private func splitViewResized(_ note: Notification) {
+        guard let split = note.object as? NSView, split.window === window else { return }
+        setNeedsLeadingEdgeRefresh()
+    }
 
     init(model: AppModel) {
         pinnedHost = StripHostingView(rootView: AnyView(
@@ -386,12 +512,27 @@ final class TabStripContainerView: NSView {
         for name in [NSWindow.didChangeScreenNotification,
                      NSWindow.didEnterFullScreenNotification,
                      NSWindow.didExitFullScreenNotification,
-                     NSWindow.didBecomeKeyNotification] {
+                     NSWindow.didBecomeKeyNotification,
+                     NSWindow.didResizeNotification,
+                     NSWindow.didEndLiveResizeNotification,
+                     NSSplitView.didResizeSubviewsNotification] {
             center.removeObserver(self, name: name, object: nil)
         }
         NSWorkspace.shared.notificationCenter.removeObserver(
             self, name: NSWorkspace.didWakeNotification, object: nil)
+        observeToolbarItems([])
         guard let window else { return }
+        // The leading edge's inputs move on these without this view or the
+        // installer necessarily being laid out: the window's size, and the
+        // sidebar's width (divider drag, collapse, expand). The installer's
+        // frame-change chain already covers the pane; these back it up for
+        // an ancestor that does not post, and they are cheap.
+        for name in [NSWindow.didResizeNotification, NSWindow.didEndLiveResizeNotification] {
+            center.addObserver(self, selector: #selector(leadingGeometryChanged),
+                               name: name, object: window)
+        }
+        center.addObserver(self, selector: #selector(splitViewResized(_:)),
+                           name: NSSplitView.didResizeSubviewsNotification, object: nil)
         // `layout()` self-heals a dropped claim, but only when a layout pass
         // runs. After the display sleeps, changes, or a full-screen toggle,
         // nothing necessarily invalidates this view — so nudge it on those
@@ -584,8 +725,7 @@ final class TabStripContainerView: NSView {
         // The toolbar items shift when the sidebar collapses or expands, and
         // they land after the divider has already been reported — so the
         // leading edge is re-measured here, on the band's own layout pass.
-        let leading = leadingConstant()
-        if let bandLeft, bandLeft.constant != leading { bandLeft.constant = leading }
+        refreshLeadingEdge()
         clampOffsetAndRefreshCues()
     }
 
