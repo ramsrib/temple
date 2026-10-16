@@ -371,6 +371,31 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertFalse(remote.closedPending.contains("p2"), "the run stays what restores the tab")
     }
 
+    /// A hand-over the failed save left outstanding is finished when the tab
+    /// closes, so the closed tab never comes back from its run (round 3):
+    /// failed save, the store recovers, close, relaunch.
+    func testAnOutstandingHandOverIsFinishedWhenTheTabCloses() async throws {
+        let store = FailingTabPersistence()
+        makeModel(persistence: store)
+        remote.identityResult = .adopted("c9", directory: "/home/u/project")
+        let tab = await newCodex()
+        await settle(tab.sessionID == "c9")
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(remote.closedPending.isEmpty, "not handed over: the save failed")
+        store.failing = false
+        tab.activity = .idle
+        model.closeTab(tab.id)
+        await settle(!self.model.tabs.contains { $0 === tab })
+        await settle(self.remote.closedPending == ["p1"], "finished at the close")
+        XCTAssertFalse(store.saved.contains { $0.sessionID == "c9" })
+        // Relaunch: nothing comes back.
+        makeModel(persistence: store)
+        model.restore()
+        model.remoteTabs.restorePending(hosts: [hostID])
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertFalse(model.tabs.contains { $0.sessionID == "c9" || $0.remote?.handle == "p1" })
+    }
+
     /// At launch, reconciliation decides each claimed run's chip (round 2):
     /// joined, that session's chip, then handed over; refused, released and
     /// restored by its handle as pending; failed, claimed but unjoined,
@@ -452,6 +477,36 @@ final class RemoteCodexIdentityTests: XCTestCase {
         joinAnswer = .joined
         model.remoteTabs.retryIdentity(tab)
         await settle(tab.sessionID == "c9", "Try again claims it anew")
+    }
+
+    /// A remembered refusal is said again, with Try again, whenever its run
+    /// reopens: a reconnect, and a detach then Open (round 3).
+    func testARememberedRefusalIsShownWhenTheRunReopens() async throws {
+        joinAnswer = .refused(.host(HostID(rawValue: "jet")))
+        remote.identityResult = .adopted("c9", directory: "/home/u/project")
+        let tab = await newCodex()
+        await settle(tab.remote?.identityRefused == true)
+        let note = tab.remote?.identityNote
+        XCTAssertNotNil(note)
+        // Reconnect.
+        remote.liveness = .present
+        try await Task.sleep(for: .milliseconds(400))
+        factory.created.last?.simulateExit(status: 0)
+        await settle(tab.remote?.phase == .disconnected)
+        model.remoteTabs.reconnect(tab)
+        await settle(tab.hasLiveProcess)
+        XCTAssertEqual(tab.remote?.identityNote, note)
+        XCTAssertEqual(tab.remote?.identityRefused, true)
+        // Detach, then Open from Sessions on the host.
+        tab.activity = .running
+        model.requestClose(tabID: tab.id)
+        model.remoteTabs.confirmDetach()
+        await settle(!self.model.tabs.contains { $0 === tab })
+        model.remoteTabs.openPendingRun(handle: "p1", host: hostID, directory: "/home/u/project")
+        let reopened = try XCTUnwrap(model.activeTab)
+        await settle(reopened.hasLiveProcess)
+        XCTAssertEqual(reopened.remote?.identityNote, note)
+        XCTAssertEqual(reopened.remote?.identityRefused, true)
     }
 
     func testAConflictingRowGoingAwayLiftsTheRefusal() async throws {
@@ -573,9 +628,15 @@ final class RemoteCodexIdentityTests: XCTestCase {
     }
 }
 
-/// A tab store whose writes fail (and say so).
+/// A tab store whose writes fail (and say so) until it recovers.
 final class FailingTabPersistence: TabPersistence {
-    func load() -> [PersistedTab] { [] }
-    func save(_ tabs: [PersistedTab]) {}
-    func saveAcknowledged(_ tabs: [PersistedTab]) -> Bool { false }
+    var failing = true
+    private(set) var saved: [PersistedTab] = []
+    func load() -> [PersistedTab] { saved }
+    func save(_ tabs: [PersistedTab]) { _ = saveAcknowledged(tabs) }
+    func saveAcknowledged(_ tabs: [PersistedTab]) -> Bool {
+        guard !failing else { return false }
+        saved = tabs
+        return true
+    }
 }

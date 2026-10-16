@@ -786,7 +786,11 @@ public final class RemoteTabController {
     /// Ids core refused for a run (another host's or another agent's): not
     /// claimed again on schedule (round 2), only on the user's Try again or
     /// once the conflicting row has gone.
-    private var refusedClaims: [String: String] = [:]
+    private var refusedClaims: [String: (id: String, reason: String)] = [:]
+    /// Tabs that became their session while the tab set couldn't be written:
+    /// their run is still what restores them. When such a tab closes, that
+    /// fallback is retired, so a closed tab never comes back (round 3).
+    private var outstandingHandovers: [SessionTab.ID: (handle: String, host: HostID)] = [:]
 
     /// The identity schedule, in seconds after the run's `ok` (then each
     /// minute while attached).
@@ -805,6 +809,12 @@ public final class RemoteTabController {
         var state = RemoteTabState(phase: .opening)
         state.handle = handle
         state.suggestions = startNew ? [] : (tab.remote?.suggestions ?? [])
+        // A refusal this launch remembers for the run is said again whenever
+        // it reopens, with Try again (round 3).
+        if let handle, let refusal = refusedClaims[handle] {
+            state.identityNote = refusal.reason
+            state.identityRefused = true
+        }
         tab.remote = state
         let ticket = gate.ticket(for: tab)
         let directory = tab.projectPath
@@ -950,7 +960,7 @@ public final class RemoteTabController {
                 }
             case .refused(let conflict):
                 TempleUILog.launch.notice("remote Codex id refused by core: \(conflict.message, privacy: .public)")
-                refusedClaims[handle] = id
+                refusedClaims[handle] = (id, conflict.message)
                 pendingWrite(host, hostID) { try await host.releaseClaim(handle, sessionID: id) }
                 guard gate.admit(.identityResult, ticket), let tab = ticket.tab else { return }
                 tab.remote?.identityNote = conflict.message
@@ -999,9 +1009,26 @@ public final class RemoteTabController {
         if let handle = tab.remote?.handle { refusedClaims[handle] = nil }
         // Handed over only once the tab set is written: until then the run
         // is what restores this tab (round 2).
-        if model.persistAcknowledged(), let handle = tab.remote?.handle {
+        if let handle = tab.remote?.handle { handOver(tab, handle: handle, host: host) }
+    }
+
+    /// Hands a run over to `open_tabs` once the tab set is written; until
+    /// then the hand-over is outstanding, and closing the tab finishes it.
+    private func handOver(_ tab: SessionTab, handle: String, host: RemoteSessionHost) {
+        if model.persistAcknowledged() {
+            outstandingHandovers[tab.id] = nil
             pendingWrite(host, tab.host) { try await host.closePendingTab(handle) }
+        } else {
+            outstandingHandovers[tab.id] = (handle, tab.host)
         }
+    }
+
+    /// A tab went (closed, detached, discarded): a hand-over it still owed is
+    /// finished now, so its run no longer restores it.
+    func tabRemoved(_ tab: SessionTab) {
+        guard let owed = outstandingHandovers.removeValue(forKey: tab.id),
+              let host = model.launcherForHost(owed.host) as? RemoteSessionHost else { return }
+        pendingWrite(host, owed.host) { try await host.closePendingTab(owed.handle) }
     }
 
     /// A pending run's durable write, owned through close and quit; one
@@ -1076,7 +1103,7 @@ public final class RemoteTabController {
     /// Core's rows changed: a refused id whose conflicting row is gone may
     /// be claimed again (the next check tries it).
     func rowsChanged() {
-        for (handle, id) in refusedClaims where model.sessionRow(id) == nil {
+        for (handle, refusal) in refusedClaims where model.sessionRow(refusal.id) == nil {
             refusedClaims[handle] = nil
             for tab in model.tabs where tab.remote?.handle == handle {
                 tab.remote?.identityRefused = false
@@ -1094,7 +1121,7 @@ public final class RemoteTabController {
     private func loadSuggestions(_ ticket: RemoteTicket, host: RemoteSessionHost, handle: String) async {
         let answer = await host.suggestions(handle)
         guard gate.admit(.suggestionsLoaded, ticket), let tab = ticket.tab, isPending(tab) else { return }
-        let refused = refusedClaims[handle]
+        let refused = refusedClaims[handle]?.id
         if case .candidates(let found) = answer { tab.remote?.suggestions = found.filter { $0.sessionID != refused } }
     }
 
@@ -1280,13 +1307,9 @@ public final class RemoteTabController {
                 guard !runs.isEmpty, self.gate.admit(.pendingRestore, ticket) else { return }
                 for run in runs where !self.model.tabs.contains(where: { $0.host == hostID && $0.remote?.handle == run.handle }) {
                     if let id = run.sessionID, run.joined || joined.contains(run.handle) {
-                        if !self.model.tabs.contains(where: { $0.sessionID == id }) {
-                            self.model.appendClaimedChip(host: hostID, sessionID: id, directory: run.directory)
-                        }
-                        if self.model.persistAcknowledged() {
-                            let handle = run.handle
-                            self.pendingWrite(host, hostID) { try await host.closePendingTab(handle) }
-                        }
+                        let chip = self.model.tabs.first(where: { $0.sessionID == id })
+                            ?? self.model.appendClaimedChip(host: hostID, sessionID: id, directory: run.directory)
+                        self.handOver(chip, handle: run.handle, host: host)
                         continue
                     }
                     self.model.appendPendingChip(host: hostID, handle: run.handle, directory: run.directory,

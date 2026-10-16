@@ -2031,3 +2031,26 @@ the dark-mode tmux contrast check is for the hands-on pass (Fable 7).
    the tab) or the conflicting row leaving lets it be claimed once more. A
    failed core write keeps retrying.
 
+## Phase 1b round 3
+
+1. **Outstanding hand-overs.** A tab that becomes its session while the
+   tab set can't be written keeps its run as the fallback that restores
+   it; when that tab is closed or detached, the fallback is retired then
+   (`tab_closed_at`), so a closed tab never comes back from its run.
+2. **Remembered refusals keep their reason.** Core's refusal is kept by the
+   run's handle with core's words, and said again, with Try again, whenever
+   the run reopens this launch (a reconnect, a detach then Open). After a
+   relaunch the first check finds the id again and core's refusal brings
+   the note back.
+3. **Heads keep their bytes.** A suggestion's head is captured with a
+   sentinel, so a head ending in a newline at the 256 KiB cap reads as cut
+   short (prompt unknown), not as a whole file with no prompt.
+4. **`r5-input` was rewritten before landing** (round 2 made runs from
+   before it unknown). It never left this machine: unpushed, and behind
+   the flag that is off everywhere remote shipped, so no store that applied
+   the first version exists outside dev and acceptance stores (none remain;
+   the acceptance and test stores are temp trees removed with their runs).
+   No repair migration (the coordinator's ruling).
+5. The ProxyCommand test, which runs the local ssh, moved into
+   `SSHConnectionTests` with the other ssh-invoking tests.
+
