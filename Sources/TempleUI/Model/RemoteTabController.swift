@@ -709,7 +709,11 @@ public final class RemoteTabController {
 
     /// The quit began: what only looks (opens, polls, checks, queries) is
     /// cancelled; stops already running carry on inside the window.
-    func quitBegan() { operations.cancelForQuit() }
+    func quitBegan() {
+        operations.cancelForQuit()
+        // The frozen tab set is written now: what it holds is handed over.
+        settleHandOvers()
+    }
 
     /// The quit's plan for one tab on a host: a working agent is detached
     /// at once (no exit input, which would reach it through tmux), so its
@@ -787,10 +791,24 @@ public final class RemoteTabController {
     /// claimed again on schedule (round 2), only on the user's Try again or
     /// once the conflicting row has gone.
     private var refusedClaims: [String: (id: String, reason: String)] = [:]
-    /// Tabs that became their session while the tab set couldn't be written:
-    /// their run is still what restores them. When such a tab closes, that
-    /// fallback is retired, so a closed tab never comes back (round 3).
-    private var outstandingHandovers: [SessionTab.ID: (handle: String, host: HostID)] = [:]
+    /// Runs handed over to `open_tabs` whose mark (`tab_closed_at`) is not
+    /// written yet, by handle (round 4). Each holds the run store itself, so
+    /// it is finished whatever becomes of its host; it is kept until the
+    /// write commits, and finished when its tab set is written or its tab
+    /// is gone: at the hand-over, at any tab's close, at the quit, and at
+    /// the next launch's restore (where the run comes back and owes it
+    /// again).
+    private struct HandOver {
+        let ledger: RemoteRunLedger
+        let hostID: HostID
+        let hostName: String
+        let tabID: SessionTab.ID
+        var inFlight = false
+        var said = false
+    }
+    private var handOvers: [String: HandOver] = [:]
+    /// How many times, and how far apart, a hand-over's write is tried.
+    var handOverRetries: [TimeInterval] = [0.5, 1]
 
     /// The identity schedule, in seconds after the run's `ok` (then each
     /// minute while attached).
@@ -1012,24 +1030,69 @@ public final class RemoteTabController {
         if let handle = tab.remote?.handle { handOver(tab, handle: handle, host: host) }
     }
 
-    /// Hands a run over to `open_tabs` once the tab set is written; until
-    /// then the hand-over is outstanding, and closing the tab finishes it.
+    /// The run now restores through `open_tabs`: its own restoration is
+    /// retired (`tab_closed_at`) once the tab set is written, or once the
+    /// tab is gone, whichever comes first, and not before.
     private func handOver(_ tab: SessionTab, handle: String, host: RemoteSessionHost) {
-        if model.persistAcknowledged() {
-            outstandingHandovers[tab.id] = nil
-            pendingWrite(host, tab.host) { try await host.closePendingTab(handle) }
-        } else {
-            outstandingHandovers[tab.id] = (handle, tab.host)
+        guard let ledger = host.runLedger() else {
+            TempleUILog.db.error("no run store to hand a run over with; it stays restorable by its run")
+            return
+        }
+        handOvers[handle] = HandOver(ledger: ledger, hostID: tab.host, hostName: host.hostName, tabID: tab.id)
+        settleHandOvers()
+    }
+
+    /// A tab went (closed, detached, discarded, on any host): every hand-over
+    /// whose tab is gone is finished, and every one that failed is tried
+    /// again.
+    func tabRemoved(_ tab: SessionTab) { settleHandOvers() }
+
+    /// Finishes each hand-over whose tab is gone, or whose tab set is
+    /// written now; one already being written is left to finish.
+    func settleHandOvers() {
+        guard handOvers.values.contains(where: { !$0.inFlight }) else { return }
+        let open = Set(model.tabs.map(\.id))
+        let waitingOnSave = handOvers.values.contains { !$0.inFlight && open.contains($0.tabID) }
+        let saved = waitingOnSave && model.persistAcknowledged()
+        for (handle, obligation) in handOvers where !obligation.inFlight && (saved || !open.contains(obligation.tabID)) {
+            finishHandOver(handle)
         }
     }
 
-    /// A tab went (closed, detached, discarded): a hand-over it still owed is
-    /// finished now, so its run no longer restores it.
-    func tabRemoved(_ tab: SessionTab) {
-        guard let owed = outstandingHandovers.removeValue(forKey: tab.id),
-              let host = model.launcherForHost(owed.host) as? RemoteSessionHost else { return }
-        pendingWrite(host, owed.host) { try await host.closePendingTab(owed.handle) }
+    private func finishHandOver(_ handle: String) {
+        guard var obligation = handOvers[handle] else { return }
+        obligation.inFlight = true
+        handOvers[handle] = obligation
+        let retries = handOverRetries
+        operations.run(host: obligation.hostID, .write) { [weak self] in
+            var failure: Error?
+            for delay in [0] + retries {
+                if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+                do {
+                    try await obligation.ledger.markTabClosed(handle)
+                    failure = nil
+                    break
+                } catch {
+                    failure = error
+                }
+            }
+            guard let self else { return }
+            guard let failure else {
+                self.handOvers[handle] = nil
+                return
+            }
+            // Kept for the next close, quit or launch; said once.
+            self.handOvers[handle]?.inFlight = false
+            guard self.handOvers[handle]?.said == false else { return }
+            self.handOvers[handle]?.said = true
+            if self.gate.admit(.pendingWriteNotice, self.gate.ticket(host: obligation.hostID)) {
+                self.noticeHandler?(obligation.hostID, RemoteCopy.unrecorded(obligation.hostName, detail: failure.localizedDescription))
+            }
+        }
     }
+
+    /// Whether a run still owes its hand-over (tests).
+    func owesHandOver(_ handle: String) -> Bool { handOvers[handle] != nil }
 
     /// A pending run's durable write, owned through close and quit; one
     /// that fails is said once (never swallowed).

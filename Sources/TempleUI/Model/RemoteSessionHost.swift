@@ -199,6 +199,15 @@ public enum RemoteFolderCheck: Equatable {
     case transport(String)
 }
 
+/// `remote-state.sqlite` itself, for the writes that must not depend on a
+/// host's registry entry or launcher (round 4): a run handed over to
+/// `open_tabs` is marked so by its handle, whatever has become of its host
+/// since. One store on this Mac, held by the obligation that needs it.
+@MainActor
+public protocol RemoteRunLedger: AnyObject {
+    func markTabClosed(_ handle: String) async throws
+}
+
 @MainActor
 public protocol RemoteSessionHost: HostLauncher {
     var hostName: String { get }
@@ -269,6 +278,9 @@ public protocol RemoteSessionHost: HostLauncher {
     func dismissRun(_ handle: String) async throws
     /// Something was typed into the run's tab.
     func recordInput(_ handle: String) async throws
+    /// The run store itself, for an obligation to hold (nil when it can't
+    /// be opened).
+    func runLedger() -> RemoteRunLedger?
 }
 
 /// A remote tab's side of its run (memory only; the run row is durable).

@@ -2054,3 +2054,29 @@ the dark-mode tmux contrast check is for the hands-on pass (Fable 7).
 5. The ProxyCommand test, which runs the local ssh, moved into
    `SSHConnectionTests` with the other ssh-invoking tests.
 
+## Phase 1b round 4: the hand-over, lifted
+
+Round 3's hand-over (retire the run's own restoration when its tab closes)
+looked its host's launcher up at the close, so a host removed meanwhile
+lost the write; and it forgot the obligation before the write committed.
+Two rounds in the same place, so the mechanism moved up a level:
+
+- **The obligation holds the store.** When a tab becomes its session (or
+  the launch restores a claimed run as that session's chip), the
+  controller records a hand-over by the run's handle, holding a
+  `RemoteRunLedger`: `remote-state.sqlite` itself, written directly by
+  run (`tab_closed_at`). Nothing of the host's registry entry or launcher
+  is used after that.
+- **It ends in one way:** the write commits. It is attempted when the tab
+  set is acknowledged as written, or when the tab is gone, whichever comes
+  first; tried three times; kept on failure and tried again at every later
+  tab close, at the quit (whose frozen tab set is written then), and at
+  the next launch (where the run, still restorable, comes back and owes it
+  again); a failure is said once (`pendingWriteNotice`, suppressed only for
+  a host no longer set up).
+- **Every path that ends a tab's hand-over obligation** goes through it:
+  close, detach, discard (the tab is removed), a host disabled, edited or
+  removed (the obligation does not need the host), quit, relaunch restore.
+- The retargeted-alias test, which resolves with the real `ssh -G`, moved
+  into `SSHConnectionTests` with the other ssh-invoking tests.
+

@@ -28,12 +28,16 @@ final class RemoteCodexIdentityTests: XCTestCase {
         makeModel()
     }
 
+    /// Whether the host is in the registry (removed: no launcher for it).
+    var hostEnabled = true
+
     func makeModel(persistence override: TabPersistence? = nil) {
         let remote = self.remote!
         let host = hostID
         model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
             runtime: SessionRuntimeController(gracefulTimeout: 0.3), registry: InMemoryProcessRegistry(),
-            persistence: override ?? persistence, launcherForHost: { $0 == host ? remote : nil })
+            persistence: override ?? persistence,
+            launcherForHost: { [weak self] in $0 == host && self?.hostEnabled != false ? remote : nil })
         model.earlyExitGraceSeconds = 0.3
         model.remoteTabs.recordPollDelays = [0.01]
         model.remoteTabs.identitySchedule = [0.02, 0.04]
@@ -394,6 +398,69 @@ final class RemoteCodexIdentityTests: XCTestCase {
         model.remoteTabs.restorePending(hosts: [hostID])
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertFalse(model.tabs.contains { $0.sessionID == "c9" || $0.remote?.handle == "p1" })
+    }
+
+    /// A hand-over holds the run store itself (round 4): failed save, the
+    /// host removed, the tab closed: the fallback is retired all the same;
+    /// re-enable the host and relaunch: nothing comes back.
+    func testAHandOverIsFinishedEvenAfterItsHostIsRemoved() async throws {
+        let store = FailingTabPersistence()
+        makeModel(persistence: store)
+        remote.identityResult = .adopted("c9", directory: "/home/u/project")
+        let tab = await newCodex()
+        await settle(tab.sessionID == "c9")
+        XCTAssertTrue(model.remoteTabs.owesHandOver("p1"), "the save failed: still owed")
+        // The host is disabled (as AppModel retires it before its entry goes).
+        model.remoteTabs.retireHost(hostID)
+        hostEnabled = false
+        store.failing = false
+        model.closeTab(tab.id)
+        await settle(!self.model.tabs.contains { $0 === tab })
+        await settle(self.remote.closedPending == ["p1"], "written by run, with no launcher for its host")
+        XCTAssertFalse(model.remoteTabs.owesHandOver("p1"))
+        // Re-enabled, relaunched: nothing comes back.
+        hostEnabled = true
+        makeModel(persistence: store)
+        model.restore()
+        model.remoteTabs.restorePending(hosts: [hostID])
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertFalse(model.tabs.contains { $0.sessionID == "c9" || $0.remote?.handle == "p1" })
+    }
+
+    /// A hand-over whose write fails is kept, tried a few times, said once,
+    /// and finished at a later close (round 4).
+    func testAFailedHandOverWriteIsKeptAndFinishedAtALaterClose() async throws {
+        model.remoteTabs.handOverRetries = [0.01, 0.01]
+        remote.ledgerFailures = 3
+        remote.identityResult = .adopted("c9", directory: "/home/u/project")
+        let tab = await newCodex()
+        await settle(tab.sessionID == "c9")
+        await settle(self.notices.count == 1, "three tries, then said once")
+        XCTAssertEqual(remote.ledgerWrites.count, 3)
+        XCTAssertTrue(model.remoteTabs.owesHandOver("p1"), "kept until it commits")
+        // Another tab's close tries again, and this time it commits.
+        let other = await newCodex()
+        other.activity = .idle
+        model.closeTab(other.id)
+        await settle(self.remote.closedPending.contains("p1"))
+        await settle(!self.model.remoteTabs.owesHandOver("p1"))
+        XCTAssertEqual(notices.count, 1, "said once")
+    }
+
+    /// The quit finishes what the frozen tab set hands over.
+    func testTheQuitFinishesAnOwedHandOver() async throws {
+        let store = FailingTabPersistence()
+        makeModel(persistence: store)
+        remote.identityResult = .adopted("c9", directory: "/home/u/project")
+        let tab = await newCodex()
+        await settle(tab.sessionID == "c9")
+        XCTAssertTrue(model.remoteTabs.owesHandOver("p1"))
+        store.failing = false
+        tab.activity = .running
+        model.prepareForQuit()
+        _ = model.quitDrainPlan()
+        await settle(self.remote.closedPending == ["p1"])
+        XCTAssertTrue(store.saved.contains { $0.sessionID == "c9" })
     }
 
     /// At launch, reconciliation decides each claimed run's chip (round 2):

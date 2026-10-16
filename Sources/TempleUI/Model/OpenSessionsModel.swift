@@ -849,7 +849,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         persist()
         // After persist: the row must no longer be in a restorable tab.
         if tab.startedNothing, let sid = tab.sessionID { unstartedHandler?(sid, tab.host) }
-        if !tab.host.isLocal { remoteTabs.tabRemoved(tab) }
+        remoteTabs.tabRemoved(tab)
     }
 
     private func selectNeighbor(removedIndex: Int, removedProject: ProjectKey, wasUtility: Bool) {

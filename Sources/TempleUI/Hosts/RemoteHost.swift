@@ -305,6 +305,22 @@ final class RemoteHostLauncher: RemoteSessionHost {
     }
 
     func recordInput(_ handle: String) async throws { try await sessions.recordInput(handle) }
+
+    func runLedger() -> RemoteRunLedger? { (try? sessions.store()).map(RemoteStoreLedger.init) }
+}
+
+/// `remote-state.sqlite`, written directly by run: what a hand-over
+/// obligation holds, so retiring a run's fallback never needs the host's
+/// registry entry or launcher (round 4).
+@MainActor
+final class RemoteStoreLedger: RemoteRunLedger {
+    private let store: RemoteStateStore
+    init(store: RemoteStateStore) { self.store = store }
+
+    func markTabClosed(_ handle: String) async throws {
+        let now = Date()
+        _ = try await store.perform { try $0.update(handle) { $0.tabClosedAt = now } }
+    }
 }
 
 /// Remote project masks and order in `remote-state.sqlite`.

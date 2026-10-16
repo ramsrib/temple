@@ -243,6 +243,27 @@ final class FakeRemoteHost: RemoteSessionHost {
         }
     }
 
+    /// The run store, as a hand-over obligation holds it: kept (and
+    /// written) whatever becomes of this host's registry entry. Fails as
+    /// many times as `ledgerFailures` says.
+    var ledgerFailures = 0
+    private(set) var ledgerWrites: [String] = []
+    final class Ledger: RemoteRunLedger {
+        weak var host: FakeRemoteHost?
+        init(_ host: FakeRemoteHost) { self.host = host }
+        func markTabClosed(_ handle: String) async throws {
+            guard let host else { return }
+            host.ledgerWrites.append(handle)
+            if host.ledgerFailures > 0 {
+                host.ledgerFailures -= 1
+                throw CocoaError(.fileWriteUnknown)
+            }
+            host.closedPending.append(handle)
+            if let index = host.pending.firstIndex(where: { $0.handle == handle }) { host.pending[index].tabClosed = true }
+        }
+    }
+    func runLedger() -> RemoteRunLedger? { Ledger(self) }
+
     private(set) var inputs: [String] = []
     /// How many input writes fail before one is written.
     var inputFailures = 0
@@ -311,7 +332,7 @@ final class FakeRemoteHost: RemoteSessionHost {
                                     sessionID: $0.claimed ? $0.sessionID : nil, typed: $0.typed, joined: $0.joined) }
     }
 
-    private(set) var closedPending: [String] = []
+    fileprivate(set) var closedPending: [String] = []
     var closePendingError: Error?
     func closePendingTab(_ handle: String) async throws {
         closedPending.append(handle)
