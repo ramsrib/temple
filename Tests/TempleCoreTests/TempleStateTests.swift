@@ -17,27 +17,31 @@ final class TempleStateTests: XCTestCase {
         }
     }
 
-    /// `TEMPLE_DEFAULTS_SUITE` (what `make demo` sets): settings written
-    /// through `settingsDefaults` land in that suite, never in the process's
-    /// own domain; unset or empty, it is `.standard`.
+    /// `TEMPLE_DEFAULTS_SUITE` (what `make demo` sets): unset or empty, the
+    /// settings are `.standard`; set, they are that suite's, and a suite that
+    /// names the real domain or the global one is refused. No real suite is
+    /// opened here: one leaves a plist in ~/Library/Preferences for good.
     func testSettingsDefaultsFollowTheSuiteVariable() throws {
         let key = "TEMPLE_DEFAULTS_SUITE"
         let saved = ProcessInfo.processInfo.environment[key]
         defer { if let saved { setenv(key, saved, 1) } else { unsetenv(key) } }
-        let suite = "com.sriramb.temple.test-\(UUID().uuidString)"
-        defer { UserDefaults().removePersistentDomain(forName: suite) }
 
         unsetenv(key)
+        XCTAssertNil(TempleState.defaultsSuiteOverride)
         XCTAssertIdentical(TempleState.settingsDefaults, UserDefaults.standard)
         setenv(key, "", 1)
+        XCTAssertNil(TempleState.defaultsSuiteOverride)
         XCTAssertIdentical(TempleState.settingsDefaults, UserDefaults.standard)
+        setenv(key, "com.sriramb.temple.demo.settings", 1)
+        XCTAssertEqual(TempleState.defaultsSuiteOverride, "com.sriramb.temple.demo.settings")
 
-        setenv(key, suite, 1)
-        let probe = "templeSuiteProbe-\(UUID().uuidString)"
-        TempleState.settingsDefaults.set("written", forKey: probe)
-        XCTAssertEqual(UserDefaults(suiteName: suite)?.string(forKey: probe), "written")
-        XCTAssertNil(UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? ProcessInfo.processInfo.processName)?[probe])
-        XCTAssertEqual(UserDefaults().persistentDomain(forName: suite)?[probe] as? String, "written")
+        let stand = try XCTUnwrap(UserDefaults(suiteName: nil))   // a handle on .standard's domain, no new plist
+        var opened: [String] = []
+        let open: (String) -> UserDefaults? = { opened.append($0); return stand }
+        XCTAssertIdentical(TempleState.settingsDefaults(suite: "com.sriramb.temple.demo.settings", open: open), stand)
+        XCTAssertNil(TempleState.settingsDefaults(suite: "com.sriramb.temple", open: open))
+        XCTAssertNil(TempleState.settingsDefaults(suite: UserDefaults.globalDomain, open: open))
+        XCTAssertEqual(opened, ["com.sriramb.temple.demo.settings"], "a refused suite is never opened")
     }
 
     /// What `templectl --import-all` gates on. Set, empty and the real

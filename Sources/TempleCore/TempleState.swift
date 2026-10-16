@@ -33,12 +33,20 @@ public enum TempleState {
     /// variable exists to prevent.
     public static var settingsDefaults: UserDefaults {
         guard let suite = defaultsSuiteOverride else { return .standard }
-        let refused: Set<String> = ["com.sriramb.temple", UserDefaults.globalDomain,
-                                    Bundle.main.bundleIdentifier ?? "com.sriramb.temple"]
-        guard !refused.contains(suite), let defaults = UserDefaults(suiteName: suite) else {
+        guard let defaults = settingsDefaults(suite: suite, open: UserDefaults.init(suiteName:)) else {
             fatalError("TEMPLE_DEFAULTS_SUITE=\(suite) is not a defaults suite Temple can keep apart from the real one")
         }
         return defaults
+    }
+
+    /// The suite's defaults, or nil for a suite that names the app's own
+    /// domain or the global one, or that `open` cannot open. `open` is a
+    /// seam: tests must not create real suites, which leave a plist behind.
+    static func settingsDefaults(suite: String, open: (String) -> UserDefaults?) -> UserDefaults? {
+        let refused: Set<String> = ["com.sriramb.temple", UserDefaults.globalDomain,
+                                    Bundle.main.bundleIdentifier ?? "com.sriramb.temple"]
+        guard !refused.contains(suite) else { return nil }
+        return open(suite)
     }
 
     /// `TEMPLE_DEFAULTS_SUITE`; unset or empty is no override.
