@@ -70,10 +70,11 @@ public enum LaunchRecords {
     """
 
     /// Argument: the marker. Deletes both records, after their evidence has
-    /// been written on this side.
+    /// been written on this side, and the creating client's stderr file,
+    /// which a client hung up while attached never got to remove.
     static let acknowledgeScript = """
     m=$1; \(directoryLine)
-    rm -f "$mdir/$m" "$mdir/$m.client" "$mdir/$m.tmp" "$mdir/$m.client.tmp"
+    rm -f "$mdir/$m" "$mdir/$m.client" "$mdir/$m.tmp" "$mdir/$m.client.tmp" "$mdir/$m.err"
     """
 
     public static let deadline: TimeInterval = 5

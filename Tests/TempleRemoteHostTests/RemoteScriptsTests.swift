@@ -341,12 +341,15 @@ final class RemoteScriptsTests: XCTestCase {
         let dir = "/srv/a folder\twith a tab"
         let ok = "ok\nepoch\t1700000000\npane\t4321\t998877\nserver\t4000\t12\nsocket\t/tmp/tmux-1000/temple\ndir\t\(dir)\n"
         try ok.write(toFile: host.recordDirectory + "/mk", atomically: true, encoding: .utf8)
+        // The creating client's stderr, left by a client hung up while attached.
+        try "".write(toFile: host.recordDirectory + "/mk.err", atomically: true, encoding: .utf8)
         let fetched = try await LaunchRecords.fetch(marker: "mk", using: host.exec)
         XCTAssertEqual(fetched.pane, .ok(LaunchEvidence(epoch: 1_700_000_000, directory: dir, panePID: 4321, paneStart: "998877",
                                                         socketPath: "/tmp/tmux-1000/temple", serverPID: 4000, serverStart: "12")))
         XCTAssertNil(fetched.client)
         await LaunchRecords.acknowledge(marker: "mk", using: host.exec)
         XCTAssertFalse(FileManager.default.fileExists(atPath: host.recordDirectory + "/mk"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: host.recordDirectory + "/mk.err"))
         let none = try await LaunchRecords.fetch(marker: "mk", using: host.exec)
         XCTAssertTrue(none.isEmpty)
     }
