@@ -193,22 +193,60 @@ final class RemoteSourceTests: XCTestCase {
         let source = RemoteSessionSource(host: Self.host, provider: Provider(box.exec))
         let first = try await source.locate([LocateRequest(id: id, agent: .claude)])
         XCTAssertEqual(first.candidates[id], [])
-        // The row's recorded path, somewhere the listing doesn't reach (a
-        // deeper folder), is a candidate while its file is there.
+        // The row's recorded path, a file the listing doesn't name for the
+        // id (another name, in the store's shape), is a candidate while its
+        // file is there.
         let canonicalHome = box.home   // /private/tmp/…: already canonical
-        let deep = box.tree.write("home/.claude/projects/-a/deeper/\(id).jsonl", claudeLines(id).joined(separator: "\n"))
-        let hint = TranscriptLocator(host: Self.host, path: canonicalHome + "/.claude/projects/-a/deeper/\(id).jsonl")
+        let renamed = box.tree.write("home/.claude/projects/-a/renamed.jsonl", claudeLines(id).joined(separator: "\n"))
+        let hint = TranscriptLocator(host: Self.host, path: canonicalHome + "/.claude/projects/-a/renamed.jsonl")
         let hinted = try await source.locate([LocateRequest(id: id, agent: .claude, hint: hint)])
         XCTAssertEqual(hinted.candidates[id]?.map(\.locator), [hint])
         XCTAssertEqual(hinted.candidates[id]?.map(\.role), [.hinted])
-        try FileManager.default.removeItem(at: deep)
+        try FileManager.default.removeItem(at: renamed)
         let gone = try await source.locate([LocateRequest(id: id, agent: .claude, hint: hint)])
         XCTAssertEqual(gone.candidates[id], [], "a hint whose file is gone is no candidate")
-        // A hint outside the session's store is not looked at.
-        let outside = TranscriptLocator(host: Self.host, path: canonicalHome + "/elsewhere/\(id).jsonl")
+        // Hints outside the store, escaping it by `..`, or not in the
+        // agent's shape (a deeper folder) are never looked at.
         box.tree.write("home/elsewhere/\(id).jsonl", claudeLines(id).joined(separator: "\n"))
-        let ignored = try await source.locate([LocateRequest(id: id, agent: .claude, hint: outside)])
-        XCTAssertEqual(ignored.candidates[id], [])
+        box.tree.write("home/.claude/projects/-a/deeper/\(id).jsonl", claudeLines(id).joined(separator: "\n"))
+        let watching = Watching(box.exec)
+        let strict = RemoteSessionSource(host: Self.host, provider: Provider(watching))
+        for path in ["/elsewhere/\(id).jsonl", "/.claude/projects/-a/../../elsewhere/\(id).jsonl",
+                     "/.claude/projects/-a/./x/../\(id).jsonl", "/.claude/projects/-a/deeper/\(id).jsonl",
+                     "/.claude/projects//-a/\(id).jsonl"] {
+            let outside = TranscriptLocator(host: Self.host, path: canonicalHome + path)
+            let ignored = try await strict.locate([LocateRequest(id: id, agent: .claude, hint: outside)])
+            XCTAssertEqual(ignored.candidates[id], [], path)
+        }
+        XCTAssertFalse(watching.outputs.contains { String(decoding: $0, as: UTF8.self).contains("hint\t") && String(decoding: $0, as: UTF8.self).contains(Self.hex("/..")) },
+                       "a path with `..` is not even stat'ed")
+        XCTAssertTrue(RemoteTranscriptAccess.accepts(canonicalHome + "/.codex/sessions/2026/10/01/rollout-x.jsonl",
+                                                     store: canonicalHome + "/.codex/sessions/", agent: .codex))
+        XCTAssertFalse(RemoteTranscriptAccess.accepts(canonicalHome + "/.codex/sessions/2026/10/01/other.jsonl",
+                                                      store: canonicalHome + "/.codex/sessions/", agent: .codex))
+        XCTAssertFalse(RemoteTranscriptAccess.isNormal("/a/b/"))
+        XCTAssertEqual(RemoteTranscriptAccess.store("/", agent: .claude), "/projects/")
+    }
+
+    static func hex(_ text: String) -> String { Data(text.utf8).map { String(format: "%02x", $0) }.joined() }
+
+    /// A transcript that is a link is unreadable, in the listing, as a hint
+    /// and in a read: its own stat says nothing about the file a read takes.
+    func testATranscriptThatIsALinkIsUnreadableEverywhere() async throws {
+        let box = Box()
+        let id = uuid()
+        let target = box.tree.write("home/real.jsonl", claudeLines(id).joined(separator: "\n"))
+        let link = box.home + "/.claude/projects/-work-project/\(id).jsonl"
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: target.path)
+        let source = RemoteSessionSource(host: Self.host, provider: Provider(box.exec))
+        let hint = TranscriptLocator(host: Self.host, path: link)
+        let listed = try await source.locate([LocateRequest(id: id, agent: .claude)])
+        XCTAssertEqual(listed.candidates[id]?.map(\.stat), [.unreadable])
+        let hinted = try await source.locate([LocateRequest(id: id, agent: .claude, hint: hint)])
+        XCTAssertEqual(hinted.candidates[id]?.map(\.stat), [.unreadable])
+        do { _ = try await source.read(hint, agent: .claude, expecting: id, facts: true); XCTFail() } catch {
+            guard case .unreadable? = error as? TranscriptReadError else { return XCTFail("\(error)") }
+        }
     }
 
     /// A store folder that is a link is followed, as the local store
@@ -467,6 +505,167 @@ final class RemoteSourceTests: XCTestCase {
         _ = try? await locate.value
     }
 
+    /// Answers scripts from a closure, or runs them on the stand-in.
+    final class Scripted: RemoteExec, @unchecked Sendable {
+        private let lock = NSLock()
+        let inner: RemoteExec
+        var answer: (@Sendable (String) -> RemoteOutput?)
+        private var _calls: [String] = []
+        var calls: [String] { lock.withLock { _calls } }
+        init(_ inner: RemoteExec, answer: @escaping @Sendable (String) -> RemoteOutput?) { self.inner = inner; self.answer = answer }
+        func run(script: String, args: [String], input: Data?, deadline: TimeInterval) async throws -> RemoteOutput {
+            lock.withLock { _calls.append(script) }
+            if let canned = answer(script) { return canned }
+            return try await inner.run(script: script, args: args, input: input, deadline: deadline)
+        }
+    }
+
+    /// The environment query failing in transit is a transport failure of
+    /// the lookup (ssh's words, one breaker charge), never roots that look
+    /// unknown; once it reaches the host, a row relying on the login root
+    /// is found.
+    @MainActor
+    func testAnEnvironmentThatCouldNotBeReadIsATransportFailureThenRecovers() async throws {
+        let box = Box()
+        let id = uuid()
+        box.claude(id, lines: claudeLines(id))
+        final class Down: @unchecked Sendable { var value = true }
+        let down = Down()
+        let environmentScript = RemoteEnvironment.script
+        let store = try RemoteStateStore()
+        let sessions = RemoteSessions(record: .config("box"), stateDirectory: box.tree.url, sshPath: "/usr/bin/ssh",
+                                      store: { store }, resolve: { _ in .resolved(["hostname": "box", "user": "u", "port": "22"]) },
+                                      makeExec: { _, path, _ in
+                                          Scripted(LocalShellExec(path: path, environment: box.environment)) { script in
+                                              guard down.value, script == environmentScript else { return nil }
+                                              return RemoteOutput(status: 255, stdout: "",
+                                                                  stderr: "ssh: connect to host box port 22: Network is unreachable\n",
+                                                                  reachedCommand: false)
+                                          }
+                                      },
+                                      masterCheck: { _ in false })
+        let source = RemoteSessionSource(sessions: sessions)
+        do { _ = try await source.locate([LocateRequest(id: id, agent: .claude)]); XCTFail("a transport failure") } catch {
+            XCTAssertEqual(error as? LocateError, .transport("ssh: connect to host box port 22: Network is unreachable"))
+        }
+        XCTAssertEqual(source.counters.listings, 0, "nothing was looked up under roots nobody read")
+        down.value = false
+        let found = try await source.locate([LocateRequest(id: id, agent: .claude)])
+        XCTAssertEqual(found.candidates[id]?.count, 1)
+        XCTAssertEqual(found.coverage, 2, "the first listing after the failure moves coverage")
+        // Reached: the login root is known (unset here) and the context is given.
+        let context = try await sessions.transcriptContext(sessionIDs: [id], refresh: false)
+        XCTAssertEqual(context.roots[id]?[.claude], RemoteTranscriptRoot(.unset, base: nil))
+    }
+
+    /// Admission is checked again after waiting for a permit: queued work
+    /// spawns nothing once the breaker has tripped meanwhile.
+    func testQueuedWorkRechecksTheBreakerAfterItsPermit() async throws {
+        let box = Box()
+        let watching = Watching(box.exec)
+        watching.broken = true
+        watching.delay = .milliseconds(300)
+        let source = RemoteSessionSource(host: Self.host, provider: Provider(watching))
+        let locator = TranscriptLocator(host: Self.host, path: box.home + "/.claude/projects/-work-project/x.jsonl")
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<5 {
+                group.addTask { _ = try? await source.read(locator, agent: .claude, expecting: "x", facts: false) }
+            }
+        }
+        XCTAssertEqual(watching.calls, 4, "two, two more, then the fifth found the breaker open")
+        XCTAssertEqual(source.counters.refused, 1)
+    }
+
+    /// A listing that isn't framed is the host's transport failure; a valid
+    /// one whose `find` failed lists nothing and clears nothing.
+    func testAMalformedListingIsATransportFailureAndAFailedFindIsNot() async throws {
+        let box = Box()
+        let id = uuid()
+        box.claude(id, lines: claudeLines(id))
+        final class Reply: @unchecked Sendable { var text = "" }
+        let reply = Reply()
+        let exec = Scripted(box.exec) { script in
+            script == RemoteTranscripts.locateScript ? RemoteOutput(status: 0, stdout: reply.text, stderr: "") : nil
+        }
+        let provider = Provider(exec)
+        let source = RemoteSessionSource(host: Self.host, provider: provider)
+        let hex = Self.hex
+        let record = "f\t3\t1.0\t7\t/r/projects/-p/\(id).jsonl"
+        reply.text = "root\t0\tok\t\(hex("/r"))\nlist\t0\t\(hex(record))00\(hex("Sx"))\ndone\n"
+        do { _ = try await source.locate([LocateRequest(id: id, agent: .claude)]); XCTFail() } catch {
+            guard case .transport? = error as? LocateError else { return XCTFail("\(error)") }
+        }
+        XCTAssertEqual(provider.failures, 1)
+        reply.text = "root\t0\tok\t\(hex("/r"))\nlist\t0\t\(hex("garbage"))00\(hex("S0"))\ndone\n"
+        do { _ = try await source.locate([LocateRequest(id: id, agent: .claude)]); XCTFail() } catch {}
+        XCTAssertEqual(provider.failures, 2)
+        reply.text = "root\t0\tok\t\(hex("/r"))\nlist\t0\t\(hex(record))00\(hex("S1"))\ndone\n"
+        let failed = try await source.locate([LocateRequest(id: id, agent: .claude)])
+        XCTAssertEqual(failed.candidates[id], [], "a find that failed lists nothing")
+        XCTAssertEqual(provider.failures, 2)
+        XCTAssertEqual(RemoteTranscripts.listing(Data((record + "\0S1").utf8)), .failed)
+        XCTAssertNil(RemoteTranscripts.listing(Data((record + "\0S").utf8)))
+        XCTAssertNil(RemoteTranscripts.listing(Data(("\t3\t1.0\t7\t/r\0S0").utf8)))
+    }
+
+    /// Shared lines past the response budget are that session's
+    /// `.unreadable`, decided on the host before anything is printed, and
+    /// never the host's transport failure.
+    func testASessionPastTheResponseBudgetIsUnreadableAndNeverTheHosts() async throws {
+        let box = Box()
+        let big = uuid(), small = uuid()
+        box.codex(big, lines: codexLines(big))
+        box.codex(small, stamp: "2026-10-01T11-00-00", lines: codexLines(small))
+        let line = #"{"session_id":"\#(big)","ts":1,"text":"\#(String(repeating: "h", count: 1000))"}"#
+        box.shared("history.jsonl", Array(repeating: line, count: 300).joined(separator: "\n") + "\n")
+        let watching = Watching(box.exec)
+        let provider = Provider(watching)
+        let source = RemoteSessionSource(host: Self.host, provider: provider, now: { Date() }, responseBudget: 128 * 1024)
+        let found = try await source.locate([LocateRequest(id: big, agent: .codex), LocateRequest(id: small, agent: .codex)])
+        let bigFile = try XCTUnwrap(found.candidates[big]?.first?.locator)
+        do { _ = try await source.read(bigFile, agent: .codex, expecting: big, facts: true); XCTFail() } catch {
+            guard case .unreadable(let why)? = error as? TranscriptReadError else { return XCTFail("\(error)") }
+            XCTAssertTrue(why.contains("lines in history.jsonl come to more than Temple reads"), why)
+        }
+        XCTAssertLessThan(watching.outputs.last?.count ?? .max, 128 * 1024, "nothing past the budget crossed the wire")
+        XCTAssertEqual(provider.failures, 0)
+        let fine = try await source.read(try XCTUnwrap(found.candidates[small]?.first?.locator), agent: .codex,
+                                         expecting: small, facts: true)
+        XCTAssertEqual(fine.summary?.firstPrompt, "Codex prompt")
+    }
+
+    /// Coalesced callers asking about one id with different agents and
+    /// hints each get the answer to their own request.
+    func testCoalescedCallersGetTheirOwnAnswers() async throws {
+        let box = Box()
+        let id = uuid()
+        box.claude(id, lines: claudeLines(id))
+        let renamed = box.tree.write("home/.claude/projects/-b/renamed.jsonl", claudeLines(id).joined(separator: "\n"))
+        let watching = Watching(box.exec)
+        let source = RemoteSessionSource(host: Self.host, provider: Provider(watching))
+        let hint = TranscriptLocator(host: Self.host, path: renamed.path)
+        async let plain = source.locate([LocateRequest(id: id, agent: .claude)])
+        async let hinted = source.locate([LocateRequest(id: id, agent: .claude, hint: hint)])
+        async let codex = source.locate([LocateRequest(id: id, agent: .codex)])
+        let (a, b, c) = try await (plain, hinted, codex)
+        XCTAssertEqual(watching.calls, 1)
+        XCTAssertEqual(a.candidates[id]?.count, 1)
+        XCTAssertEqual(b.candidates[id]?.map(\.role), [.hinted, .alternate])
+        XCTAssertTrue(b.candidates[id]?.contains { $0.locator == hint && $0.role == .hinted } == true)
+        XCTAssertEqual(c.candidates[id], [], "the Codex caller asked about Codex only")
+    }
+
+    func testTheBreakersTimesCarryADateWhenOnAnotherDay() {
+        let today = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertFalse(RemoteTranscriptAccess.clock(today, today: today).contains("/"))
+        let yesterday = today.addingTimeInterval(-86_400)
+        XCTAssertNotEqual(RemoteTranscriptAccess.clock(yesterday, today: today), RemoteTranscriptAccess.clock(today, today: today))
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .none
+        XCTAssertTrue(RemoteTranscriptAccess.clock(yesterday, today: today).contains(formatter.string(from: yesterday)))
+    }
+
     // MARK: Framing
 
     func testFramingIsStrict() throws {
@@ -487,14 +686,16 @@ final class RemoteSourceTests: XCTestCase {
         XCTAssertEqual(raw.head, Data([0x00, 0xff, 0x0a]))
 
         let hex = { (s: String) in Data(s.utf8).map { String(format: "%02x", $0) }.joined() }
-        let list = hex("3\t1.0\t7\t/r/projects/-p/a.jsonl") + "00" + hex("S0")
+        let list = hex("f\t3\t1.0\t7\t/r/projects/-p/a.jsonl") + "00" + hex("S0")
         let locate = "root\t0\tok\t\(hex("/r"))\nlist\t0\t\(list)\ndone\n"
-        XCTAssertEqual(RemoteTranscripts.parseLocate(Data(locate.utf8), groups: 1)?.lists[0]??.map(\.path), ["/r/projects/-p/a.jsonl"])
+        let signature = TranscriptSignature(modifiedAt: Date(timeIntervalSince1970: 1), size: 3, identity: 7)
+        XCTAssertEqual(RemoteTranscripts.parseLocate(Data(locate.utf8), groups: 1)?.lists[0],
+                       .files([.init(path: "/r/projects/-p/a.jsonl", stat: .present(signature))]))
         XCTAssertNil(RemoteTranscripts.parseLocate(Data(locate.utf8), groups: 2), "every group answered")
         XCTAssertNil(RemoteTranscripts.parseLocate(Data((locate + "x").utf8), groups: 1))
         XCTAssertNil(RemoteTranscripts.parseLocate(Data(locate.dropLast(5).utf8), groups: 1))
         let failed = "root\t0\tok\t\(hex("/r"))\nlist\t0\t\(hex("S1"))\ndone\n"
-        XCTAssertEqual(RemoteTranscripts.parseLocate(Data(failed.utf8), groups: 1)?.lists[0], .some(nil),
+        XCTAssertEqual(RemoteTranscripts.parseLocate(Data(failed.utf8), groups: 1)?.lists[0], .failed,
                        "a listing that failed lists nothing, not part of something")
     }
 

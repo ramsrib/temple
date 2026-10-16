@@ -58,9 +58,13 @@ public struct RemoteSessionSource: HostSessionSource {
     }
 
     public init(host: HostID, provider: RemoteTranscriptProvider, now: @escaping @Sendable () -> Date = { Date() }) {
+        self.init(host: host, provider: provider, now: now, responseBudget: RemoteTranscripts.responseBudget)
+    }
+
+    init(host: HostID, provider: RemoteTranscriptProvider, now: @escaping @Sendable () -> Date, responseBudget: Int) {
         precondition(!host.isLocal)
         self.host = host
-        access = RemoteTranscriptAccess(host: host, provider: provider, now: now)
+        access = RemoteTranscriptAccess(host: host, provider: provider, now: now, responseBudget: responseBudget)
     }
 
     public func catalog(_ query: CatalogQuery) -> AsyncThrowingStream<CatalogBatch, Error> {
@@ -146,8 +150,14 @@ actor RemoteTranscriptAccess {
     let now: @Sendable () -> Date
     nonisolated let counters = CounterBox()
 
-    init(host: HostID, provider: RemoteTranscriptProvider, now: @escaping @Sendable () -> Date) {
-        self.host = host; self.provider = provider; self.now = now
+    /// The most one read may print (head, tail and shared lines), enforced
+    /// on the host before anything is printed: a session past it is that
+    /// session's `.unreadable`, never the host's transport failure.
+    let responseBudget: Int
+
+    init(host: HostID, provider: RemoteTranscriptProvider, now: @escaping @Sendable () -> Date,
+         responseBudget: Int = RemoteTranscripts.responseBudget) {
+        self.host = host; self.provider = provider; self.now = now; self.responseBudget = responseBudget
     }
 
     // MARK: Breaker
@@ -171,12 +181,14 @@ actor RemoteTranscriptAccess {
 
     private func message(until next: Date) -> String {
         let since = failingSince ?? next
-        return "\(host.rawValue) unreachable since \(Self.clock(since)); next try at \(Self.clock(next))"
+        let today = now()
+        return "\(host.rawValue) unreachable since \(Self.clock(since, today: today)); next try at \(Self.clock(next, today: today))"
     }
 
-    static func clock(_ date: Date) -> String {
+    /// A time, with the date when it falls on another day than `today`.
+    static func clock(_ date: Date, today: Date) -> String {
         let formatter = DateFormatter()
-        formatter.dateStyle = .none
+        formatter.dateStyle = Calendar.current.isDate(date, inSameDayAs: today) ? .none : .short
         formatter.timeStyle = .short
         return formatter.string(from: date)
     }
@@ -220,13 +232,15 @@ actor RemoteTranscriptAccess {
     typealias Waiter = CheckedContinuation<Result<LocateResult, Error>, Never>
 
     /// Locates answered by one exec: collecting for 250 ms from the first,
-    /// then listing. Unanswered waiters are resumed exactly once, with the
-    /// listing's result, a cancellation, or the quit.
+    /// then listing. Each waiter keeps its own requests, and its answer is
+    /// built from them (its agents, its hints) out of the shared listing.
+    /// Unanswered waiters are resumed exactly once, with that answer, a
+    /// cancellation, or the quit.
     private final class Batch {
         let id = UUID()
-        var requests: [LocateRequest] = []
-        var waiters: [UUID: Waiter] = [:]
+        var waiters: [UUID: (requests: [LocateRequest], continuation: Waiter)] = [:]
         var task: Task<Void, Never>?
+        var requests: [LocateRequest] { waiters.values.flatMap(\.requests) }
     }
     /// The batch still collecting, if any.
     private var collecting: Batch?
@@ -239,7 +253,6 @@ actor RemoteTranscriptAccess {
 
     func locate(_ requests: [LocateRequest]) async throws -> LocateResult {
         guard !shut else { throw LocateError.transport("Temple is quitting") }
-        let wanted = Set(requests.map(\.id))
         let waiter = UUID()
         let result = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
@@ -248,9 +261,7 @@ actor RemoteTranscriptAccess {
         } onCancel: {
             Task { await self.abandon(waiter) }
         }
-        let located = try result.get()
-        return LocateResult(coverage: located.coverage, candidates: located.candidates.filter { wanted.contains($0.key) },
-                            complete: [], sharedRevision: [:])
+        return try result.get()
     }
 
     private func enlist(_ requests: [LocateRequest], waiter: UUID, _ continuation: Waiter) {
@@ -268,8 +279,7 @@ actor RemoteTranscriptAccess {
                 await self?.flush(batch)
             }
         }
-        batch.requests += requests
-        batch.waiters[waiter] = continuation
+        batch.waiters[waiter] = (requests, continuation)
     }
 
     static let cancelled = LocateError.transport("the lookup was cancelled")
@@ -278,8 +288,8 @@ actor RemoteTranscriptAccess {
     /// any more is cancelled (its exec killed if one runs).
     private func abandon(_ waiter: UUID) {
         guard let batch = batches.values.first(where: { $0.waiters[waiter] != nil }),
-              let continuation = batch.waiters.removeValue(forKey: waiter) else { return }
-        continuation.resume(returning: .failure(Self.cancelled))
+              let entry = batch.waiters.removeValue(forKey: waiter) else { return }
+        entry.continuation.resume(returning: .failure(Self.cancelled))
         if batch.waiters.isEmpty {
             if collecting === batch { collecting = nil }
             batch.task?.cancel()
@@ -291,18 +301,20 @@ actor RemoteTranscriptAccess {
     /// is killed rather than left to run on.
     private func flush(_ batch: Batch) async {
         if collecting === batch { collecting = nil }
-        let result: Result<LocateResult, Error>
+        let listed: Result<Listing, Error>
         if shut {
-            result = .failure(LocateError.transport("Temple is quitting"))
+            listed = .failure(LocateError.transport("Temple is quitting"))
         } else if Task.isCancelled || batch.waiters.isEmpty {
-            result = .failure(Self.cancelled)
+            listed = .failure(Self.cancelled)
         } else {
-            do { result = .success(try await listing(batch.requests)) } catch { result = .failure(error) }
+            do { listed = .success(try await listing(batch.requests)) } catch { listed = .failure(error) }
         }
         batches[batch.id] = nil
         let waiters = batch.waiters.values
         batch.waiters.removeAll()
-        for waiter in waiters { waiter.resume(returning: result) }
+        for waiter in waiters {
+            waiter.continuation.resume(returning: listed.map { answer(waiter.requests, from: $0) })
+        }
     }
 
     /// The quit: every batch cancelled and its callers answered, then this
@@ -317,7 +329,7 @@ actor RemoteTranscriptAccess {
             if let task = batch.task { tasks.append(task) }
             let waiters = batch.waiters.values
             batch.waiters.removeAll()
-            for waiter in waiters { waiter.resume(returning: .failure(LocateError.transport("Temple is quitting"))) }
+            for waiter in waiters { waiter.continuation.resume(returning: .failure(LocateError.transport("Temple is quitting"))) }
         }
         batches.removeAll()
         for task in tasks { await task.value }
@@ -328,19 +340,41 @@ actor RemoteTranscriptAccess {
         let root: RemoteTranscriptRoot
     }
 
-    private func listing(_ requests: [LocateRequest]) async throws -> LocateResult {
-        do { try admit(bypass: requests.contains(where: \.refresh)) } catch Breaker.tripped(let words) {
-            throw LocateError.transport(words)
+    /// One exec's listing, for every request of a batch.
+    private struct Listing {
+        let context: RemoteTranscriptContext
+        let groups: [Group]
+        let answer: RemoteTranscripts.LocateAnswer
+        let coverage: UInt64
+    }
+
+    /// Admission, then the permit, then admission and cancellation again
+    /// (the breaker may have tripped, or the callers gone, while it waited).
+    private func admitted<E: Error>(bypass: Bool, cancelled: E, _ wrap: (String) -> E) async throws -> Void {
+        do { try admit(bypass: bypass) } catch Breaker.tripped(let words) { throw wrap(words) }
+        await acquire()
+        do {
+            try admit(bypass: bypass)
+            if Task.isCancelled { throw cancelled }
+        } catch Breaker.tripped(let words) {
+            release()
+            throw wrap(words)
+        } catch {
+            release()
+            throw error
         }
-        // Only ids that can be named on a host; a hint only on this host,
-        // and only an absolute path.
+    }
+
+    private func listing(_ requests: [LocateRequest]) async throws -> Listing {
+        let refresh = requests.contains(where: \.refresh)
+        // Only ids that can be named on a host.
         let named = requests.filter { RemoteQuoting.isSafeToken($0.id) }
         let ids = Array(Set(named.map(\.id))).sorted()
-        await acquire()
+        try await admitted(bypass: refresh, cancelled: Self.cancelled) { LocateError.transport($0) }
         defer { release() }
         let context: RemoteTranscriptContext
         do {
-            context = try await provider.transcriptContext(sessionIDs: ids, refresh: requests.contains(where: \.refresh))
+            context = try await provider.transcriptContext(sessionIDs: ids, refresh: refresh)
         } catch {
             await transportFailed()
             throw LocateError.transport(error.localizedDescription)
@@ -355,8 +389,10 @@ actor RemoteTranscriptAccess {
                 if members[group]?.contains(request.id) != true { members[group, default: []].append(request.id) }
             }
         }
+        // A hint is stat'ed only when it is a normal absolute path on this
+        // host; whether it lies in a store is decided once the roots are known.
         let hints = Array(Set(named.compactMap { request -> String? in
-            guard let hint = request.hint, hint.host == host, hint.path.hasPrefix("/") else { return nil }
+            guard let hint = request.hint, hint.host == host, Self.isNormal(hint.path) else { return nil }
             return hint.path
         })).sorted()
         var args: [String] = []
@@ -371,7 +407,6 @@ actor RemoteTranscriptAccess {
             output = try await context.exec.run(script: RemoteTranscripts.locateScript, args: args,
                                                 deadline: RemoteTranscripts.locateDeadline)
         } catch {
-            // A cancellation (a quit) says nothing about the host.
             await transportFailed()
             throw LocateError.transport(error.localizedDescription)
         }
@@ -382,41 +417,83 @@ actor RemoteTranscriptAccess {
         }
         succeeded()
         if lostTransport { lostTransport = false; coverage &+= 1 }
+        return Listing(context: context, groups: groups, answer: answer, coverage: coverage)
+    }
 
+    /// One caller's answer from the shared listing: its own ids, agents and
+    /// hints.
+    private func answer(_ requests: [LocateRequest], from listing: Listing) -> LocateResult {
         var candidates: [String: [TranscriptCandidate]] = [:]
-        for request in named {
+        for request in requests {
             var list: [TranscriptCandidate] = []
-            for agent in request.agent.map({ [$0] }) ?? Agent.allCases {
-                guard let root = context.roots[request.id]?[agent],
-                      let index = groups.firstIndex(of: Group(agent: agent, root: root)),
-                      case .ok(let canonical)? = answer.roots[index],
-                      let files = answer.lists[index] ?? nil else { continue }
-                let format = TranscriptFormats.format(for: agent)
-                let store = canonical == "/" ? "/" + (agent == .claude ? "projects/" : "sessions/")
-                    : canonical + (agent == .claude ? "/projects/" : "/sessions/")
-                var stats: [String: CandidateStat] = [:]
-                for file in files where file.path.hasPrefix(store) { stats[file.path] = .present(file.signature) }
-                // The row's recorded path, when it lies in this root's store.
-                var hintPath: String?
-                if let hint = request.hint?.path, hint.hasPrefix(store), let stat = answer.hints[hint] {
-                    hintPath = hint
-                    if stats[hint] == nil { stats[hint] = stat }
-                }
-                let hintPresent = hintPath.map { stats[$0] != .missing } ?? false
-                for assignment in TranscriptCandidates.assign(id: request.id, format: format, listed: files.map(\.path).sorted(),
-                                                             hint: hintPath, hintPresent: hintPresent) {
-                    let stat = stats[assignment.path] ?? .missing
-                    // A hint whose file is gone is no candidate.
-                    if assignment.role == .hinted, stat == .missing { continue }
-                    if agent == .codex { remember(codexHome: canonical, for: assignment.path) }
-                    list.append(TranscriptCandidate(locator: TranscriptLocator(host: host, path: assignment.path),
-                                                    agent: agent, role: assignment.role, stat: stat))
+            if RemoteQuoting.isSafeToken(request.id) {
+                for agent in request.agent.map({ [$0] }) ?? Agent.allCases {
+                    list += self.candidates(request, agent: agent, listing)
                 }
             }
             candidates[request.id] = list
         }
-        for request in requests where candidates[request.id] == nil { candidates[request.id] = [] }
-        return LocateResult(coverage: coverage, candidates: candidates, complete: [], sharedRevision: [:])
+        return LocateResult(coverage: listing.coverage, candidates: candidates, complete: [], sharedRevision: [:])
+    }
+
+    private func candidates(_ request: LocateRequest, agent: Agent, _ listing: Listing) -> [TranscriptCandidate] {
+        guard let root = listing.context.roots[request.id]?[agent],
+              let index = listing.groups.firstIndex(of: Group(agent: agent, root: root)),
+              case .ok(let canonical)? = listing.answer.roots[index],
+              case .files(let files)? = listing.answer.lists[index] else { return [] }
+        let format = TranscriptFormats.format(for: agent)
+        let store = Self.store(canonical, agent: agent)
+        var stats: [String: CandidateStat] = [:]
+        for file in files where Self.accepts(file.path, store: store, agent: agent) { stats[file.path] = file.stat }
+        // The row's recorded path, when it is one this agent's store would
+        // hold (as the local store's `acceptsTranscript` decides).
+        var hintPath: String?
+        if let hint = request.hint, hint.host == host, Self.isNormal(hint.path),
+           Self.accepts(hint.path, store: store, agent: agent), let stat = listing.answer.hints[hint.path] {
+            hintPath = hint.path
+            if stats[hint.path] == nil { stats[hint.path] = stat }
+        }
+        let hintPresent = hintPath.map { stats[$0] != .missing } ?? false
+        var list: [TranscriptCandidate] = []
+        let listed = files.map(\.path).filter { Self.accepts($0, store: store, agent: agent) }.sorted()
+        for assignment in TranscriptCandidates.assign(id: request.id, format: format, listed: listed,
+                                                     hint: hintPath, hintPresent: hintPresent) {
+            let stat = stats[assignment.path] ?? .missing
+            // A hint whose file is gone is no candidate.
+            if assignment.role == .hinted, stat == .missing { continue }
+            if agent == .codex { remember(codexHome: canonical, for: assignment.path) }
+            list.append(TranscriptCandidate(locator: TranscriptLocator(host: host, path: assignment.path),
+                                            agent: agent, role: assignment.role, stat: stat))
+        }
+        return list
+    }
+
+    /// The agent's store under a canonical root: `<root>/projects/` or
+    /// `<root>/sessions/` (`/projects/` for a root of `/`).
+    static func store(_ root: String, agent: Agent) -> String {
+        (root == "/" ? "" : root) + (agent == .claude ? "/projects/" : "/sessions/")
+    }
+
+    /// A normal absolute path: no empty, `.` or `..` component, so its
+    /// place is what its spelling says. Every path this source lists is
+    /// one; a hint that is not is never looked at.
+    static func isNormal(_ path: String) -> Bool {
+        guard path.hasPrefix("/"), path.count > 1, !path.hasSuffix("/") else { return false }
+        return !path.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
+            .contains { $0.isEmpty || $0 == "." || $0 == ".." }
+    }
+
+    /// Whether a transcript path is one the agent's store holds, as the
+    /// local stores' `acceptsTranscript` decides: inside the store, normal,
+    /// and the agent's shape (Claude: `<store>/<folder>/<id>.jsonl`; Codex:
+    /// a `rollout-*.jsonl` anywhere below `sessions`).
+    static func accepts(_ path: String, store: String, agent: Agent) -> Bool {
+        guard isNormal(path), path.hasPrefix(store), path.hasSuffix(".jsonl") else { return false }
+        let inside = path.dropFirst(store.count).split(separator: "/", omittingEmptySubsequences: false)
+        switch agent {
+        case .claude: return inside.count == 2
+        case .codex: return inside.last?.hasPrefix("rollout-") == true
+        }
     }
 
     private func remember(codexHome: String, for path: String) {
@@ -500,8 +577,9 @@ actor RemoteTranscriptAccess {
 
     private func readOnce(_ path: String, headBytes: Int, window: Int, facts: Bool, home: String,
                           id: String) async throws -> RemoteTranscripts.ReadAnswer {
-        do { try admit(bypass: false) } catch Breaker.tripped(let words) { throw TranscriptReadError.transport(words) }
-        await acquire()
+        try await admitted(bypass: false, cancelled: TranscriptReadError.transport("the read was cancelled")) {
+            TranscriptReadError.transport($0)
+        }
         defer { release() }
         let context: RemoteTranscriptContext
         do { context = try await provider.transcriptContext(sessionIDs: [], refresh: false) } catch {
@@ -512,7 +590,8 @@ actor RemoteTranscriptAccess {
         let output: RemoteOutput
         do {
             output = try await context.exec.run(script: RemoteTranscripts.readScript,
-                                                args: [path, String(headBytes), String(window), facts ? "1" : "0", home, id],
+                                                args: [path, String(headBytes), String(window), facts ? "1" : "0", home, id,
+                                                       String(responseBudget)],
                                                 deadline: RemoteTranscripts.readDeadline)
         } catch {
             await transportFailed()

@@ -44,6 +44,11 @@ enum RemoteTranscripts {
     /// newlines removed) and `temple_stat <path>` (size, modification time
     /// with its fraction, and inode, tab-separated, no newline; the same
     /// spelling in the listing and in a read, so the two agree exactly).
+    /// A transcript that is a link, or not a regular file, is refused
+    /// (status 2) here and marked so in a listing: a link's own stat says
+    /// nothing about the file a read would take (its size, its growth), and
+    /// no agent writes its transcript as one, so it is unreadable rather
+    /// than followed.
     /// GNU `find` on Linux; BSD `stat -f` elsewhere (tested here, not an
     /// acceptance target).
     static let common = #"""
@@ -54,6 +59,8 @@ enum RemoteTranscripts {
     if find / -maxdepth 0 -printf '' >/dev/null 2>&1; then gnu=1; else gnu=; fi
     temple_hex() { od -An -v -tx1 | tr -d ' \n'; }
     temple_stat() {
+      [ -L "$1" ] && return 2
+      [ -e "$1" ] && [ ! -f "$1" ] && return 2
       if [ -n "$gnu" ]; then find "$1" -maxdepth 0 -printf '%s\t%T@\t%i' 2>/dev/null
       else _s=$(stat -f '%z%t%Fm%t%i' -- "$1" 2>/dev/null) || return 1; printf '%s' "$_s"; fi
     }
@@ -72,7 +79,7 @@ enum RemoteTranscripts {
     /// `CodexFormat.name` reads them.
     /// Per group, in order: `root<TAB><i><TAB>ok<TAB><hex canonical root>`
     /// and `list<TAB><i><TAB><hex>` (the matching files as NUL-terminated
-    /// `size<TAB>mtime<TAB>inode<TAB>path` records, then `S<find's
+    /// `type<TAB>size<TAB>mtime<TAB>inode<TAB>path` records, then `S<find's
     /// status>`), or `root<TAB><i><TAB>none` (nothing there) or `failed`
     /// or `unknown`. Per hint: `hint<TAB><hex path><TAB>ok<TAB><stat>`,
     /// `missing` or `unreadable`. Then `done`.
@@ -87,8 +94,8 @@ enum RemoteTranscripts {
       shift
       if [ "$_ag" = claude ]; then set -- "$_p" -mindepth 2 -maxdepth 2 \( "$@" \)
       else set -- "$_p" \( "$@" \); fi
-      if [ -n "$gnu" ]; then find -H "$@" -printf '%s\t%T@\t%i\t%p\0' 2>/dev/null
-      else find -H "$@" -exec sh -c 'for f; do s=$(stat -f "%z%t%Fm%t%i" -- "$f") || exit 1; printf "%s\t%s\0" "$s" "$f"; done' temple-stat {} + 2>/dev/null
+      if [ -n "$gnu" ]; then find -H "$@" -printf '%y\t%s\t%T@\t%i\t%p\0' 2>/dev/null
+      else find -H "$@" -exec sh -c 'for f; do if [ -L "$f" ]; then y=l; elif [ -f "$f" ]; then y=f; else y=o; fi; s=$(stat -f "%z%t%Fm%t%i" -- "$f") || exit 1; printf "%s\t%s\t%s\0" "$y" "$s" "$f"; done' temple-stat {} + 2>/dev/null
       fi
     }
     i=0
@@ -135,13 +142,20 @@ enum RemoteTranscripts {
     /// there), the closing stat, then `done`. Or `missing`, or
     /// `unreadable<TAB><why>`, at any point instead (then nothing more).
     /// Bytes go through a private temp file, so each frame's length is the
-    /// length of exactly what follows it.
+    /// length of exactly what follows it, and nothing is printed past
+    /// `budget` bytes of bodies: a session whose bytes would pass it ends
+    /// with `unreadable` (that session's, never the host's).
     static let readScript = common + "\n" + #"""
-    f=$1; hb=$2; w=$3; facts=$4; home=$5; id=$6
+    f=$1; hb=$2; w=$3; facts=$4; home=$5; id=$6; budget=$7; used=0
+    over() { printf 'unreadable\tthis session'"'"'s %s come to more than Temple reads (%s bytes, over %s)\n' "$1" "$2" "$budget"; exit 0; }
     t=$(umask 077; mktemp "${TMPDIR:-/tmp}/temple-read.XXXXXX" 2>/dev/null) || { printf 'unreadable\tno temporary file on the host\n'; exit 0; }
     trap 'rm -f "$t"' EXIT
     trap 'exit 1' HUP INT TERM
-    frame() { _n=$(wc -c < "$t" | tr -d ' '); printf '%s\t%s\n' "$1" "$_n"; cat "$t"; printf '\nend\n'; }
+    frame() {
+      _n=$(wc -c < "$t" | tr -d ' ')
+      used=$((used + _n)); [ "$used" -le "$budget" ] || over "$2" "$used"
+      printf '%s\t%s\n' "$1" "$_n"; cat "$t"; printf '\nend\n'
+    }
     stamp() {
       if s=$(temple_stat "$f"); then printf 'stat\t%s\n' "$s"; size=${s%%"$TAB"*}
       elif temple_gone "$f"; then printf 'missing\n'; exit 0
@@ -149,11 +163,11 @@ enum RemoteTranscripts {
     }
     stamp
     head -c "$hb" -- "$f" > "$t" 2>/dev/null || { printf 'unreadable\tthe file cannot be read\n'; exit 0; }
-    frame head
+    frame head "transcript bytes"
     if [ "$facts" = 1 ] && [ "$size" -gt "$w" ]; then
       tb=$((size - w)); [ "$tb" -gt "$w" ] && tb=$w
       tail -c "$tb" -- "$f" > "$t" 2>/dev/null || { printf 'unreadable\tthe file cannot be read\n'; exit 0; }
-      frame tail
+      frame tail "transcript bytes"
     fi
     if [ "$facts" = 1 ] && [ -n "$home" ]; then
       for n in history.jsonl session_index.jsonl; do
@@ -161,12 +175,16 @@ enum RemoteTranscripts {
         if [ ! -e "$g" ] && [ ! -L "$g" ]; then printf 'shared\t%s\tabsent\n' "$n"; continue; fi
         grep -F -e "$id" -- "$g" > "$t" 2>/dev/null
         [ $? -le 1 ] || { printf 'unreadable\t%s cannot be read\n' "$n"; exit 0; }
-        frame "shared$TAB$n"
+        frame "shared$TAB$n" "lines in $n"
       done
     fi
     stamp
     printf 'done\n'
     """#
+
+    /// What one read may print in bodies: well inside the per-stream cap
+    /// (`ProcessRunner.limit`), past a 1 MiB head and a 64 KiB tail.
+    static let responseBudget = 6 << 20
 
     static let locateDeadline: TimeInterval = 20
     static let readDeadline: TimeInterval = 20
@@ -180,13 +198,20 @@ enum RemoteTranscripts {
 
     struct Listed: Equatable {
         let path: String
-        let signature: TranscriptSignature
+        /// Present for a regular file; unreadable for a link or anything else.
+        let stat: CandidateStat
+    }
+
+    enum ListOutcome: Equatable {
+        case files([Listed])
+        /// `find` reported a failure: nothing of its listing is used.
+        case failed
     }
 
     struct LocateAnswer: Equatable {
         var roots: [Int: RootOutcome] = [:]
-        /// Per group with a root: its files, or nil when the listing failed.
-        var lists: [Int: [Listed]?] = [:]
+        /// Per group with a root: its files, or a listing that failed.
+        var lists: [Int: ListOutcome] = [:]
         var hints: [String: CandidateStat] = [:]
     }
 
@@ -215,8 +240,9 @@ enum RemoteTranscripts {
                 }
             case "list":
                 guard fields.count == 3, let index = Int(fields[1]), case .ok? = answer.roots[index],
-                      answer.lists[index] == nil, let bytes = hexBytes(fields[2]) else { return nil }
-                answer.lists[index] = .some(listing(bytes))
+                      answer.lists[index] == nil, let bytes = hexBytes(fields[2]),
+                      let listed = listing(bytes) else { return nil }
+                answer.lists[index] = listed
             case "hint":
                 guard fields.count >= 3, let path = LaunchRecords.hex(fields[1]) else { return nil }
                 switch (fields[2], fields.count) {
@@ -240,20 +266,26 @@ enum RemoteTranscripts {
     }
 
     /// The NUL-terminated records and the trailing `S<status>`: the files,
-    /// or nil when `find` failed (a partial listing is not used) or the
-    /// bytes are not that shape.
-    static func listing(_ bytes: Data) -> [Listed]? {
+    /// or `.failed` for a valid listing whose `find` reported a failure (a
+    /// partial listing is not used). Nil when the bytes are not that shape
+    /// at all: malformed, which the caller treats as a transport failure.
+    /// A record whose path is not UTF-8 is well formed but can't name a
+    /// locator: it is passed over.
+    static func listing(_ bytes: Data) -> ListOutcome? {
         let parts = bytes.split(separator: 0, omittingEmptySubsequences: false)
-        guard let status = parts.last.map({ String(decoding: $0, as: UTF8.self) }), status == "S0" else { return nil }
+        guard let last = parts.last, last.first == UInt8(ascii: "S"), last.count > 1,
+              last.dropFirst().allSatisfy({ (0x30...0x39).contains($0) }),
+              let status = Int(String(decoding: last.dropFirst(), as: UTF8.self)) else { return nil }
         var files: [Listed] = []
         for record in parts.dropLast() {
-            let fields = record.split(separator: 0x09, maxSplits: 3, omittingEmptySubsequences: false)
-            guard fields.count == 4, let path = String(data: Data(fields[3]), encoding: .utf8), path.hasPrefix("/"),
-                  let stat = signature(String(decoding: Data(fields[0..<3].joined(separator: [0x09])), as: UTF8.self))
+            let fields = record.split(separator: 0x09, maxSplits: 4, omittingEmptySubsequences: false)
+            guard fields.count == 5, fields[0].count == 1, fields[4].first == UInt8(ascii: "/"),
+                  let signature = signature(String(decoding: Data(fields[1..<4].joined(separator: [0x09])), as: UTF8.self))
             else { return nil }
-            files.append(Listed(path: path, signature: stat))
+            guard let path = String(data: Data(fields[4]), encoding: .utf8) else { continue }
+            files.append(Listed(path: path, stat: fields[0].first == UInt8(ascii: "f") ? .present(signature) : .unreadable))
         }
-        return files
+        return status == 0 ? .files(files) : .failed
     }
 
     /// `size<TAB>mtime<TAB>inode`, as `temple_stat` prints it.
