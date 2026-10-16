@@ -1055,6 +1055,8 @@ private struct ProjectDisclosure: View {
                 .padding(.trailing, headerHovering ? 22 : 0)
         }
         .frame(height: 28)
+        // A project on a host says where it is: `host:/absolute/path`.
+        .help(project.key.host.isLocal ? "" : "\(project.key.host.rawValue):\(project.path)")
         .accessibilityElement(children: .combine)
         .accessibilityLabel(project.name)
         .accessibilityAddTraits(.isHeader)

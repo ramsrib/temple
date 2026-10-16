@@ -63,8 +63,10 @@ private struct SessionTerminalView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let remote = tab.remote, let header = RemoteHeader.make(remote.phase) {
-                remoteHeader(header)
+            if let remote = tab.remote {
+                // A tab on a host shows its own headers only: its ssh ending
+                // is not its agent ending (checking, stopping: nothing yet).
+                if let header = RemoteHeader.make(remote.phase) { remoteHeader(header) }
             } else if case .exited(let status) = tab.activity {
                 launchFailure(status: status)
             }
