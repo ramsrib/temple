@@ -2208,7 +2208,9 @@ dimmed or auto-archived for a missing transcript.
    closes it. Every transport failure also drops the cached PATH and roots
    (`RemoteSessions.transportFailed`), so the next query resolves them
    again. A quit (`shutDown`) cancels the exec in flight, whose ssh process
-   is killed, and a cancellation is not a transport failure.
+   is killed, and returns only once each batch's own task has finished. A
+   cancelled lookup or read is never charged to the breaker, whatever error
+   the cancellation surfaced as (a killed `ssh -G` reads as a refusal).
 7. **Late completions.** Enrichment touches no tab, sheet or tab set: its
    facts reach rows only through `EngineSet` and `FactPersister`. A host
    removed or edited takes its engine with it, and a read answered after

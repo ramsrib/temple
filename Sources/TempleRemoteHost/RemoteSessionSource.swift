@@ -187,7 +187,11 @@ actor RemoteTranscriptAccess {
         failures = 0; failingSince = nil; nextTry = nil
     }
 
+    /// Charged only when the work was not cancelled: a cancellation (a
+    /// quit, the last caller leaving) can surface as any error on the way
+    /// (a refused `ssh -G`, a killed exec) and says nothing about the host.
     private func transportFailed() async {
+        guard !Task.isCancelled else { return }
         failures += 1
         if failingSince == nil { failingSince = now() }
         lostTransport = true
@@ -301,16 +305,22 @@ actor RemoteTranscriptAccess {
         for waiter in waiters { waiter.resume(returning: result) }
     }
 
-    func shutDown() {
+    /// The quit: every batch cancelled and its callers answered, then this
+    /// returns only once each batch's own task has finished, so nothing of
+    /// the source's runs on past the engine's shutdown.
+    func shutDown() async {
         shut = true
         collecting = nil
+        var tasks: [Task<Void, Never>] = []
         for batch in batches.values {
             batch.task?.cancel()
+            if let task = batch.task { tasks.append(task) }
             let waiters = batch.waiters.values
             batch.waiters.removeAll()
             for waiter in waiters { waiter.resume(returning: .failure(LocateError.transport("Temple is quitting"))) }
         }
         batches.removeAll()
+        for task in tasks { await task.value }
     }
 
     private struct Group: Hashable {
@@ -362,7 +372,7 @@ actor RemoteTranscriptAccess {
                                                 deadline: RemoteTranscripts.locateDeadline)
         } catch {
             // A cancellation (a quit) says nothing about the host.
-            if !(error is CancellationError) { await transportFailed() }
+            await transportFailed()
             throw LocateError.transport(error.localizedDescription)
         }
         guard output.reachedCommand, output.status == 0,
@@ -505,7 +515,7 @@ actor RemoteTranscriptAccess {
                                                 args: [path, String(headBytes), String(window), facts ? "1" : "0", home, id],
                                                 deadline: RemoteTranscripts.readDeadline)
         } catch {
-            if !(error is CancellationError) { await transportFailed() }
+            await transportFailed()
             throw TranscriptReadError.transport(error.localizedDescription)
         }
         guard output.reachedCommand, output.status == 0, let answer = RemoteTranscripts.parseRead(output.data) else {

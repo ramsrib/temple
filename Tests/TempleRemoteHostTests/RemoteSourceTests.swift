@@ -417,6 +417,56 @@ final class RemoteSourceTests: XCTestCase {
         XCTAssertEqual(watching.calls, 1, "nothing listed for nobody")
     }
 
+    /// Hands over its context only after a while, honouring cancellation
+    /// only as an error of its own (as `ssh -G` killed mid-resolution
+    /// reads): a cancelled lookup is never charged to the host. Or not
+    /// honouring it at all: the quit still waits for it.
+    final class SlowProvider: RemoteTranscriptProvider, @unchecked Sendable {
+        private let lock = NSLock()
+        let exec: RemoteExec
+        let honoursCancellation: Bool
+        private var _failures = 0, _finished = 0
+        var failures: Int { lock.withLock { _failures } }
+        var finished: Int { lock.withLock { _finished } }
+        init(_ exec: RemoteExec, honoursCancellation: Bool) { self.exec = exec; self.honoursCancellation = honoursCancellation }
+        struct Refused: Error {}
+        func transcriptContext(sessionIDs: [String], refresh: Bool) async throws -> RemoteTranscriptContext {
+            if honoursCancellation {
+                do { try await Task.sleep(for: .seconds(10)) } catch { throw Refused() }
+            } else {
+                let until = Date().addingTimeInterval(0.6)
+                while Date() < until { try? await Task.sleep(for: .milliseconds(20)) }
+            }
+            lock.withLock { _finished += 1 }
+            return RemoteTranscriptContext(exec: exec, roots: [:])
+        }
+        func transportFailed() async { lock.withLock { _failures += 1 } }
+    }
+
+    func testACancelledLookupIsNeverChargedToTheHostAndTheQuitWaitsForItsWork() async throws {
+        let box = Box()
+        let watching = Watching(box.exec)
+        let provider = SlowProvider(watching, honoursCancellation: true)
+        let source = RemoteSessionSource(host: Self.host, provider: provider)
+        for _ in 0..<4 {
+            let locate = Task { try await source.locate([LocateRequest(id: uuid())]) }
+            try await Task.sleep(for: .milliseconds(350))
+            locate.cancel()
+            _ = try? await locate.value
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(provider.failures, 0)
+        XCTAssertEqual(source.counters.refused, 0, "the breaker never tripped")
+
+        let stubborn = SlowProvider(watching, honoursCancellation: false)
+        let quitting = RemoteSessionSource(host: Self.host, provider: stubborn)
+        let locate = Task { try await quitting.locate([LocateRequest(id: uuid())]) }
+        try await Task.sleep(for: .milliseconds(350))
+        await quitting.shutDown()
+        XCTAssertEqual(stubborn.finished, 1, "the quit returned only after the batch's own work ended")
+        _ = try? await locate.value
+    }
+
     // MARK: Framing
 
     func testFramingIsStrict() throws {
