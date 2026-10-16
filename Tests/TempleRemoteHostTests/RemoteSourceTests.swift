@@ -801,7 +801,7 @@ final class RemoteSourceTests: XCTestCase {
         let bigFile = try XCTUnwrap(found.candidates[big]?.first?.locator)
         do { _ = try await source.read(bigFile, agent: .codex, expecting: big, facts: true); XCTFail() } catch {
             guard case .unreadable(let why)? = error as? TranscriptReadError else { return XCTFail("\(error)") }
-            XCTAssertTrue(why.contains("lines in history.jsonl come to more than Temple reads"), why)
+            XCTAssertTrue(why.contains("lines in history.jsonl are larger than Temple reads: "), why)
         }
         XCTAssertLessThan(watching.outputs.last?.count ?? .max, 128 * 1024, "nothing past the budget crossed the wire")
         XCTAssertEqual(provider.failures, 0)

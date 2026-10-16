@@ -174,7 +174,7 @@ enum RemoteTranscripts {
     /// with `unreadable` (that session's, never the host's).
     static let readScript = common + "\n" + #"""
     f=$1; hb=$2; w=$3; facts=$4; home=$5; id=$6; budget=$7; used=0
-    over() { printf 'unreadable\tthis session'"'"'s %s come to more than Temple reads (%s bytes, over %s)\n' "$1" "$2" "$budget"; exit 0; }
+    over() { printf 'unreadable\tthis session'"'"'s %s are larger than Temple reads: %s bytes, limit %s\n' "$1" "$2" "$budget"; exit 0; }
     t=$(umask 077; mktemp "${TMPDIR:-/tmp}/temple-read.XXXXXX" 2>/dev/null) || { printf 'unreadable\tno temporary file on the host\n'; exit 0; }
     trap 'rm -f "$t"' EXIT
     trap 'exit 1' HUP INT TERM

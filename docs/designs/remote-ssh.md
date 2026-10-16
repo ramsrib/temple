@@ -2361,3 +2361,22 @@ same id) would be offered as one candidate; identity verification still
 decides which file is the session's, and nothing of another session can
 reach the row. A byte-exact locator is a core change, for a decision of
 its own.
+
+### Phase 2 round 4, and Fable's final read
+
+- **Suggestions are identified by their path's bytes** (8ae23d3).
+  `CodexSuggestion.id` is a `RemotePath`, and `RemoteSuggestion.id` the
+  rollout path's UTF-8; both types' `==` compare path, session id and
+  folder by bytes. The tab's `confirming` marker is that byte id, and
+  confirm's recheck in `RemoteSessions` matches by it. Two rollouts whose
+  folders differ only in normalization are two suggestions: declining one
+  leaves the other and declines only its bytes.
+- **Approved for push** (Fable, final read) with one wording change: a
+  read over the budget says "this session's <part> are larger than Temple
+  reads: <n> bytes, limit <budget>".
+- **To decide in phase 3, not leave to a later round:** core's
+  `TranscriptLocator` equality and `TranscriptCandidates.assign` still
+  compare `String`s. Rounds 2 to 4 all landed on path comparison; the
+  remote module is byte-exact at the type, and core is the cluster's last
+  member. Either make the locator byte-exact, or record that core stays
+  `String` because local stores are on APFS, which folds the spellings.
