@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import TempleCore
+import TempleTerminalAPI
 
 /// The History tab: every session Temple or the disk knows about, by day,
 /// one status per row (ADR-031) — and the one door through which outside
@@ -108,9 +109,11 @@ struct HistoryTabView: View {
         .onChange(of: history.focusSearchRequest) {
             FieldFocus.claim { searchFocused = true }
         }
-        // A click on a row, or Tab from the field: the list has the keyboard.
+        // A click on a row, or Tab from the field: the list has the keyboard,
+        // taken from whichever field held it (HistoryListFocus).
         .onChange(of: history.focusListRequest) {
             searchFocused = false
+            HistoryListFocus.take(in: NSApp.keyWindow)
         }
         .alert(history.pendingImport?.title ?? "",
                isPresented: Binding(get: { history.pendingImport != nil },
@@ -909,5 +912,20 @@ private struct FlatToolbarMenu: ViewModifier {
             .padding(.horizontal, 9)
             .frame(width: width, height: 28)
             .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+}
+
+/// Gives History's list the keyboard: whatever text field holds it lets go,
+/// History's own search or any other (the sidebar search, a rename), so the
+/// list's ⌘A, ⌘C, ⌘⌫ and ⇧-arrows act on rows (HistoryKeys). Clearing
+/// History's focus binding alone left another field's editor in charge.
+/// Never while a floating panel holds the keyboard (ADR-033): the panel
+/// decides where it goes.
+@MainActor
+enum HistoryListFocus {
+    @discardableResult
+    static func take(in window: NSWindow?) -> Bool {
+        guard !OverlayKeyboard.isHeld, let window, window.firstResponder is NSTextView else { return false }
+        return window.makeFirstResponder(nil)
     }
 }

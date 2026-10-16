@@ -5,6 +5,7 @@ import Combine
 @testable import TempleUI
 import TempleCore
 @testable import TempleLocalHost
+import TempleTerminalAPI
 
 /// The History tab's model: a snapshot of the whole disk joined with Temple's
 /// membership, the page's search and filters over it, native-style
@@ -2647,6 +2648,27 @@ final class HistoryKeyRoutingTests: XCTestCase {
         window.makeFirstResponder(nil)
         model.history.searchFieldFocused = false
         XCTAssertTrue(catcher.handle(key(0, "a", .command), model))
+        await model.history.settle()
+        XCTAssertEqual(model.history.selectedIDs.count, 3)
+    }
+
+    /// A click on a row takes the keyboard from whichever field holds it,
+    /// not only History's own: with the sidebar search's editor in charge,
+    /// ⌘A would otherwise still select that field's text. While a panel
+    /// holds the keyboard (ADR-033) nothing is moved.
+    func testTakingListFocusResignsWhicheverFieldHasTheKeyboard() async throws {
+        XCTAssertTrue(window.makeFirstResponder(field))   // the sidebar search, say
+        model.history.searchFieldFocused = false
+        XCTAssertTrue(window.firstResponder is NSTextView)
+
+        OverlayKeyboard.hold()
+        XCTAssertFalse(HistoryListFocus.take(in: window), "a panel holds the keyboard")
+        XCTAssertTrue(window.firstResponder is NSTextView)
+        OverlayKeyboard.release()
+
+        XCTAssertTrue(HistoryListFocus.take(in: window))
+        XCTAssertFalse(window.firstResponder is NSTextView, "no field editor holds the keyboard")
+        XCTAssertTrue(catcher.handle(key(0, "a", .command), model), "⌘A is the list's now")
         await model.history.settle()
         XCTAssertEqual(model.history.selectedIDs.count, 3)
     }
