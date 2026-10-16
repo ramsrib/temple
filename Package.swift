@@ -56,8 +56,10 @@ let package = Package(
         // connection test's checks and an inert `RemoteSessionSource`.
         // Everything remote-only lives here, so the experiment can be
         // deleted whole. TempleUI names it in one composition file
-        // (`Hosts/RemoteHost.swift`), like TempleLocalHost.
-        .target(name: "TempleRemoteHost", dependencies: ["TempleCore"]),
+        // (`Hosts/RemoteHost.swift`), like TempleLocalHost. GRDB backs its
+        // own `remote-state.sqlite` (the runs, remote project state), the
+        // ADR-032 precedent of a feature-owned file beside the core one.
+        .target(name: "TempleRemoteHost", dependencies: ["TempleCore", .product(name: "GRDB", package: "GRDB.swift")]),
 
         // Terminal seam (PLAN.md "Decoupling interfaces"): TerminalSurface
         // protocol + stub. Imports AppKit; free of ghostty and TempleCore.
