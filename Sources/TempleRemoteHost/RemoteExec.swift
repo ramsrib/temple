@@ -139,6 +139,11 @@ public enum ProcessRunner {
     /// How long the streams may stay open after the process has exited.
     static let drainGrace: TimeInterval = 0.5
 
+    /// Points in a run's setup, for tests that cancel at exactly one.
+    enum SetupStage: Sendable { case pipesCreated, readersAttached }
+    /// Called at each setup stage; tests only.
+    nonisolated(unsafe) static var setupHook: (@Sendable (SetupStage) -> Void)?
+
     public static func run(_ executable: String, _ arguments: [String], environment: [String: String]? = nil,
                            deadline: TimeInterval) async throws -> Output {
         let process = Process()
@@ -165,7 +170,9 @@ public enum ProcessRunner {
                 process.standardOutput = outWrite
                 process.standardError = errWrite
                 process.terminationHandler = { finished in run.terminated(status: finished.terminationStatus) }
+                setupHook?(.pipesCreated)
                 run.attach(stdout: out.read, stderr: err.read)
+                setupHook?(.readersAttached)
                 do {
                     // Cancelled before the process existed: start nothing.
                     guard !run.isCancelled else { throw CancellationError() }
@@ -246,9 +253,12 @@ public enum ProcessRunner {
         }
 
         /// Starts reading both descriptors; each is closed by its source's
-        /// cancel handler, which runs after any read in flight.
+        /// cancel handler, which runs after any read in flight. Registering
+        /// and the answer are decided under one lock: readers that arrive
+        /// after the run was answered (a cancellation during setup) are
+        /// disposed of at once, descriptors closed, never left behind.
         func attach(stdout: Int32, stderr: Int32) {
-            lock.withLock { openStreams = 2 }
+            var created: [DispatchSourceRead] = []
             for (index, fd) in [stdout, stderr].enumerated() {
                 let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
                 source.setEventHandler { [weak self, weak source] in
@@ -263,8 +273,17 @@ public enum ProcessRunner {
                     }
                 }
                 source.setCancelHandler { close(fd) }
-                lock.withLock { sources.append(source) }
+                created.append(source)
+            }
+            let late = lock.withLock { () -> Bool in
+                guard !answered else { return true }
+                openStreams = 2
+                sources = created
+                return false
+            }
+            for source in created {
                 source.resume()
+                if late { source.cancel() }
             }
         }
 
@@ -329,7 +348,5 @@ public enum ProcessRunner {
             for source in stopping where !source.isCancelled { source.cancel() }
         }
 
-        /// Open read descriptors this run still holds (for tests).
-        var openReaders: Int { lock.withLock { sources.filter { !$0.isCancelled }.count } }
     }
 }

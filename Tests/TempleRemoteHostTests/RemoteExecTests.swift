@@ -70,6 +70,28 @@ final class RemoteExecTests: XCTestCase {
         XCTAssertNotEqual(kill(pid, 0), 0, "the cancelled query's process is gone")
     }
 
+    /// Cancelled at each point of setup, deterministically: the run answers
+    /// CancellationError, starts no process, and leaves no descriptor open,
+    /// readers registered after the answer included.
+    func testCancellationDuringSetupLeavesNothingBehind() async throws {
+        defer { ProcessRunner.setupHook = nil }
+        for stage in [ProcessRunner.SetupStage.pipesCreated, .readersAttached] {
+            let before = openDescriptors()
+            let launches = RemoteProcessCounter.launches
+            // The hook runs inside the run's own task, so cancelling the
+            // current task lands exactly at this stage.
+            ProcessRunner.setupHook = { reached in
+                guard reached == stage else { return }
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+            let task = Task { try await ProcessRunner.run("/bin/sleep", ["30"], deadline: 60) }
+            do { _ = try await task.value; XCTFail("cancelled at \(stage)") } catch is CancellationError {}
+            XCTAssertEqual(RemoteProcessCounter.launches, launches, "\(stage): nothing started")
+            try await Task.sleep(for: .milliseconds(200))
+            XCTAssertEqual(openDescriptors(), before, "\(stage): every descriptor closed")
+        }
+    }
+
     /// Cancelled before it starts: nothing is started at all.
     func testACancelledRunStartsNothing() async throws {
         let launches = RemoteProcessCounter.launches
