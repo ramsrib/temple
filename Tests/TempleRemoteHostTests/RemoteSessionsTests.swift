@@ -25,7 +25,7 @@ final class RemoteSessionsTests: XCTestCase {
         return RemoteSessions(record: record, stateDirectory: host.tree.url, sshPath: "/usr/bin/ssh",
                               store: store,
                               resolve: { _ in .resolved(resolved()) },
-                              makeExec: { _, path in
+                              makeExec: { _, path, _ in
                                   failing ? FailingExec() as RemoteExec : LocalShellExec(path: path, environment: environment)
                               },
                               masterCheck: { _ in masterFlag?.value ?? master })
@@ -254,7 +254,7 @@ final class RemoteSessionsTests: XCTestCase {
         let counting = CountingExec()
         let sessions = RemoteSessions(record: record, stateDirectory: host.tree.url, sshPath: "/usr/bin/ssh",
                                       store: { store }, resolve: { _ in .resolved([:]) },
-                                      makeExec: { _, _ in counting })
+                                      makeExec: { _, _, _ in counting })
         let stop = try await sessions.stop("h1", fromAttachedTab: false)
         guard case .unconfirmed(_, false) = stop.outcome else { return XCTFail("\(stop)") }
         XCTAssertNil(stop.storageError)
@@ -294,7 +294,7 @@ final class RemoteSessionsTests: XCTestCase {
         try insertRun(store, handle: "silent") { $0.sessionID = "sess-2" }
         let gate = SlowExec()
         let sessions = RemoteSessions(record: record, stateDirectory: host.tree.url, sshPath: "/usr/bin/ssh",
-                                      store: { store }, resolve: { _ in .resolved([:]) }, makeExec: { _, _ in gate })
+                                      store: { store }, resolve: { _ in .resolved([:]) }, makeExec: { _, _, _ in gate })
         let answered = Task { try await sessions.stop("answered", fromAttachedTab: false) }
         try await Task.sleep(for: .milliseconds(100))
         answered.cancel()   // after the exec answered (SlowExec ignores cancellation)
@@ -360,9 +360,12 @@ final class RemoteSessionsTests: XCTestCase {
         let two = try RemoteStateStore(directory: directory)
         let a = controller(host, store: one)
         let b = controller(host, store: two)
-        async let first = a.open(request())
-        async let second = b.open(request())
-        let plans = [try plan(await first), try plan(await second)]
+        // Both answers are awaited whole: with `async let`, the first
+        // failure would cancel the other open and hide what went wrong.
+        let first = Task { try await a.open(request()) }
+        let second = Task { try await b.open(request()) }
+        let results = [await first.result, await second.result]
+        let plans = try results.map { try plan($0.get()) }
         XCTAssertEqual(plans.filter(\.creating).count, 1)
         XCTAssertEqual(Set(plans.map(\.handle)).count, 1)
         XCTAssertEqual(try one.runs(host: record.host, sessionID: "sess-1").count, 1)
@@ -492,6 +495,96 @@ final class RemoteSessionsTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: host.recordDirectory + "/" + first.stage), "read, then gone")
     }
 
+    /// A pending launch keeps the connection planned for its tab: it is
+    /// staged over that connection's master only (`.overMaster`), even
+    /// after another open re-resolved the alias to another target.
+    func testAPendingStageUsesItsTabsOwnConnectionOverTheMasterOnly() async throws {
+        final class Log { var execs: [(socket: String, purpose: SSHConnection.Purpose)] = []; var checks: [[String]] = [] }
+        final class Target { var hostname = "a.example" }
+        let host = StandIn()
+        let store = try RemoteStateStore()
+        let log = Log(), target = Target(), master = Flag(false)
+        let environment = host.environment
+        let sessions = RemoteSessions(record: record, stateDirectory: host.tree.url, sshPath: "/usr/bin/ssh", store: { store },
+                                      resolve: { _ in .resolved(["hostname": target.hostname, "user": "u", "port": "22"]) },
+                                      makeExec: { connection, path, purpose in
+                                          log.execs.append((connection.controlPath, purpose))
+                                          return LocalShellExec(path: path, environment: environment)
+                                      },
+                                      masterCheck: { argv in log.checks.append(argv); return master.value })
+        let first = try plan(await sessions.open(request()))
+        XCTAssertFalse(first.staged)
+        let socketA = try XCTUnwrap(first.argv.first { $0.hasPrefix("ControlPath=") })
+        // Another open re-resolves the alias to another target meanwhile.
+        target.hostname = "b.example"
+        let other = try plan(await sessions.open(RemoteSessions.OpenRequest(agent: .claude, sessionID: "sess-2", mode: .new,
+                                                                            directory: "~")))
+        let socketB = try XCTUnwrap(other.argv.first { $0.hasPrefix("ControlPath=") })
+        XCTAssertNotEqual(socketA, socketB)
+        log.execs.removeAll(); log.checks.removeAll()
+        master.value = true
+        let staged = await sessions.stage(first.stage)
+        XCTAssertEqual(staged, .staged)
+        XCTAssertFalse(log.checks.isEmpty)
+        XCTAssertTrue(log.checks.allSatisfy { $0.contains(socketA) }, "the master asked about is the tab's own")
+        XCTAssertEqual(log.execs.map(\.purpose), [.overMaster], "written over that master and nothing else")
+        XCTAssertEqual(log.execs.map { "ControlPath=" + $0.socket }, [socketA])
+    }
+
+    /// The failure of a creation that never reached the host is claimed
+    /// only once it is written: another attachment meanwhile leaves the
+    /// run as it is (and the stop asks the host), and a write that fails
+    /// is a storage error, the proof kept for the next try.
+    func testANeverSentCreationIsReportedOnlyOnceItsFailureIsWritten() async throws {
+        let host = StandIn()
+        host.installStub()
+        let store = try RemoteStateStore()
+        let sessions = controller(host, store: store, masterFlag: Flag(false))
+        // Another attachment meanwhile: nothing to claim.
+        let raced = try plan(await sessions.open(request()))
+        _ = try store.update(raced.handle) { $0.attachment = 2 }
+        let reason = try await sessions.markCreationUnproven(raced.handle)
+        XCTAssertNil(reason)
+        XCTAssertNotEqual(try store.run(raced.handle)?.creation, .failed)
+        let stopped = try await sessions.stop(raced.handle, fromAttachedTab: false)
+        XCTAssertNotEqual(stopped.outcome, .absent, "not claimed absent without the write")
+        XCTAssertFalse(host.calls.isEmpty, "the stop asked the host")
+
+        // Writes failing: a storage error, never a claim; then it is written.
+        let fresh = controller(host, store: store, masterFlag: Flag(false))
+        let planned = try plan(await fresh.open(RemoteSessions.OpenRequest(agent: .claude, sessionID: "sess-3", mode: .new,
+                                                                           directory: "~")))
+        try store.breakWritesForTests()
+        do {
+            _ = try await fresh.markCreationUnproven(planned.handle)
+            XCTFail("a write that fails is said")
+        } catch {}
+        let unrecorded = try await fresh.stop(planned.handle, fromAttachedTab: false)
+        XCTAssertNotNil(unrecorded.storageError)
+        XCTAssertNotEqual(unrecorded.outcome, .absent)
+        try store.mendWritesForTests()
+        let written = try await fresh.markCreationUnproven(planned.handle)
+        XCTAssertNotNil(written, "the proof was kept for the next try")
+        XCTAssertEqual(try store.run(planned.handle)?.creation, .failed)
+    }
+
+    /// A launch refused before the spawn whose failure can't be written is
+    /// a storage error, not a refusal that leaves the run unresolved.
+    func testARefusedStagingWhoseFailureCannotBeWrittenIsAStorageError() async throws {
+        let host = StandIn()
+        try host.makeRecordDirectory()
+        chmod(host.home + "/.temple", 0o777)
+        defer { chmod(host.home + "/.temple", 0o700) }
+        let store = try RemoteStateStore()
+        try store.breakWritesForTests()
+        do {
+            _ = try await controller(host, store: store).open(request())
+            XCTFail("refused")
+        } catch let error as RemoteSessions.OpenError {
+            guard case .store = error else { return XCTFail("\(error)") }
+        }
+    }
+
     /// A creation whose launch never left this Mac cannot have run: when
     /// its tab ends, or is closed, it is failed (the next Open creates),
     /// never unproven or left running.
@@ -608,7 +701,7 @@ final class RemoteSessionsTests: XCTestCase {
         let sessions = RemoteSessions(record: record, stateDirectory: host.tree.url, sshPath: "/usr/bin/ssh",
                                       store: { store },
                                       resolve: { _ in .resolved(["hostname": target, "user": "u", "port": "22"]) },
-                                      makeExec: { _, _ in gate })
+                                      makeExec: { _, _, _ in gate })
         let first = Task { try await sessions.queryExec() }
         try await Task.sleep(for: .milliseconds(50))
         target = "b.example"
@@ -648,7 +741,7 @@ final class RemoteSessionsTests: XCTestCase {
         let counting = CountingExec()
         let sessions = RemoteSessions(record: record, stateDirectory: host.tree.url, sshPath: "/usr/bin/ssh",
                                       store: { store }, resolve: { _ in .resolved([:]) },
-                                      makeExec: { _, _ in counting })
+                                      makeExec: { _, _, _ in counting })
         sessions.retire()
         do { _ = try await sessions.open(request()); XCTFail() } catch {}
         let stop = try await sessions.stop("h1", fromAttachedTab: false)

@@ -1388,9 +1388,17 @@ extension OpenSessionsModel {
         let ticket = remoteGate.ticket(for: tab)
         tab.remote?.stageOperation = remoteOperations.run(host: tab.host, .open) { [weak self] in
             let outcome = await host.stage(stage)
-            guard case .failed(let reason) = outcome else { return }
+            let notice: String?
+            switch outcome {
+            case .failed(let reason):
+                notice = creating ? nil : RemoteCopy.couldNotPrepare(host.hostName, reason: reason)
+            case .unrecorded(let detail):
+                notice = RemoteCopy.unrecorded(host.hostName, detail: detail)
+            case .staged, .unknown, .none:
+                return
+            }
             guard let self, self.remoteGate.admit(.stageFailure, ticket), let tab = ticket.tab else { return }
-            if !creating { self.remoteNoticeHandler?(ticket.host, RemoteCopy.couldNotPrepare(host.hostName, reason: reason)) }
+            if let notice { self.remoteNoticeHandler?(ticket.host, notice) }
             if tab.hasLiveProcess { tab.surface?.terminate() }
         }
     }

@@ -170,18 +170,22 @@ public enum RecordDirectory {
         return name
     }
 
-    /// `temple_record_dir` prints the checked directory or fails;
+    /// `temple_record_dir` prints the checked directory or fails. A mkdir
+    /// that loses a race with another Temple operation (EEXIST) is not a
+    /// failure: whatever exists, created by whom, passes the same checks
+    /// (a real directory, not a symlink, this account's; `~/.temple` not
+    /// group- or world-writable, `launch` exactly 0700) or the call fails.
     /// `temple_write <path> <text>` writes a record.
     static let functions = #"""
     temple_record_dir() {
       _d=$HOME/.temple; _r=$_d/launch; _u=$(id -u)
       [ -n "$HOME" ] || return 1
       umask 077
-      [ -L "$_d" ] && return 1
-      [ -d "$_d" ] || mkdir -m 700 "$_d" 2>/dev/null || return 1
+      { [ -L "$_d" ] || [ -d "$_d" ]; } || mkdir -m 700 "$_d" 2>/dev/null || :
+      [ ! -L "$_d" ] || return 1
       [ -n "$(find "$_d" -maxdepth 0 -type d -user "$_u" ! -perm -020 ! -perm -002 2>/dev/null)" ] || return 1
-      [ -L "$_r" ] && return 1
-      [ -d "$_r" ] || mkdir -m 700 "$_r" 2>/dev/null || return 1
+      { [ -L "$_r" ] || [ -d "$_r" ]; } || mkdir -m 700 "$_r" 2>/dev/null || :
+      [ ! -L "$_r" ] || return 1
       [ -n "$(find "$_r" -maxdepth 0 -type d -user "$_u" -perm 700 2>/dev/null)" ] || return 1
       printf '%s' "$_r"
     }

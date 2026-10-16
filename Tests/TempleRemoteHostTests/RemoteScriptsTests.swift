@@ -248,7 +248,98 @@ final class RemoteScriptsTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: host.recordDirectory + "/" + name), "read once, then gone")
         let missing = try host.runLaunch(LaunchStage.command(stage: "r-abc.s-cnever", wait: 1))
         XCTAssertEqual(missing.status, 125)
-        XCTAssertTrue(missing.stderr.contains("Temple couldn't find the launch it prepared"), missing.stderr)
+        XCTAssertTrue(missing.stderr.contains("Temple couldn't find a safely stored launch"), missing.stderr)
+    }
+
+    /// The executor checks the private chain and the file itself before it
+    /// reads anything, and takes the file by renaming it inside the
+    /// checked directory: each unsafe case is refused by the executor
+    /// itself (status 125, said in the tab), and nothing runs. (A file or
+    /// directory owned by another account needs a second account to set
+    /// up; the same `-user` check covers it.)
+    func testTheExecutorRefusesAnythingButAPrivateStagedFile() throws {
+        enum Case: CaseIterable {
+            case fine, fileWritableByOthers, fileNot0600, fileIsALink, fileIsADirectory
+            case templeWritableByGroup, templeIsALink, launchNot0700, launchIsALink
+        }
+        for setup in Case.allCases {
+            let host = StandIn()
+            let ran = host.tree.path + "/ran"
+            let script = "touch \(RemoteQuoting.quote(ran))\n"
+            let temple = host.home + "/.temple", launch = temple + "/launch", name = "st-case"
+            let elsewhere = host.tree.directory("elsewhere").path
+            chmod(elsewhere, 0o700)
+            switch setup {
+            case .templeIsALink:
+                try FileManager.default.createDirectory(atPath: elsewhere + "/launch", withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])
+                try FileManager.default.createSymbolicLink(atPath: temple, withDestinationPath: elsewhere)
+            case .launchIsALink:
+                try FileManager.default.createDirectory(atPath: temple, withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])
+                try FileManager.default.createSymbolicLink(atPath: launch, withDestinationPath: elsewhere)
+            default:
+                try host.makeRecordDirectory()
+            }
+            let file = launch + "/" + name
+            if setup == .fileIsALink {
+                FileManager.default.createFile(atPath: elsewhere + "/real", contents: Data(script.utf8),
+                                               attributes: [.posixPermissions: 0o600])
+                try FileManager.default.createSymbolicLink(atPath: file, withDestinationPath: elsewhere + "/real")
+            } else if setup == .fileIsADirectory {
+                try FileManager.default.createDirectory(atPath: file, withIntermediateDirectories: false,
+                                                        attributes: [.posixPermissions: 0o700])
+            } else {
+                FileManager.default.createFile(atPath: file, contents: Data(script.utf8), attributes: [.posixPermissions: 0o600])
+            }
+            switch setup {
+            case .fileWritableByOthers: chmod(file, 0o622)
+            case .fileNot0600: chmod(file, 0o644)
+            case .templeWritableByGroup: chmod(temple, 0o770)
+            case .launchNot0700: chmod(launch, 0o755)
+            default: break
+            }
+            let result = try host.runLaunch(LaunchStage.command(stage: name, wait: 1))
+            if setup == .fine {
+                XCTAssertEqual(result.status, 0, result.stderr)
+                XCTAssertTrue(FileManager.default.fileExists(atPath: ran))
+                XCTAssertFalse(FileManager.default.fileExists(atPath: file), "taken, then gone")
+            } else {
+                XCTAssertEqual(result.status, 125, "\(setup): \(result.stderr)")
+                XCTAssertTrue(result.stderr.contains("Temple couldn't find a safely stored launch"), "\(setup)")
+                XCTAssertFalse(FileManager.default.fileExists(atPath: ran), "\(setup): nothing ran")
+            }
+            chmod(temple, 0o700)
+        }
+    }
+
+    /// Two Temple operations creating the record directory at once: the one
+    /// whose mkdir loses (EEXIST) accepts what the other made, after the
+    /// same checks; what the other made wrongly is still refused.
+    func testAConcurrentColdMkdirIsAcceptedAfterTheSameChecks() async throws {
+        for winnerMode in ["700", "755"] {
+            let host = StandIn()
+            // A mkdir that loses the race: the directory appears (as the
+            // winner made it), and this one fails as EEXIST would.
+            host.tree.write("bin/mkdir", "#!/bin/sh\nfor a in \"$@\"; do d=$a; done\n/bin/mkdir -m \(winnerMode) \"$d\"\n"
+                            + "echo \"mkdir: $d: File exists\" >&2\nexit 1\n", executable: true)
+            let outcome = await LaunchStage.write(stage: "r-abc.s-ccold", script: "true\n", using: host.exec)
+            if winnerMode == "700" {
+                XCTAssertEqual(outcome, .staged)
+            } else {
+                guard case .refused = outcome else { return XCTFail("a directory made 0755 is still refused: \(outcome)") }
+            }
+        }
+        // And for real: several cold stagings at once, all in place.
+        let host = StandIn()
+        let names = (0..<8).map { "r-abc.s-cpar\($0)" }
+        let outcomes = await withTaskGroup(of: LaunchStage.WriteResult.self) { group in
+            for name in names { group.addTask { await LaunchStage.write(stage: name, script: "true\n", using: host.exec) } }
+            var all: [LaunchStage.WriteResult] = []
+            for await outcome in group { all.append(outcome) }
+            return all
+        }
+        XCTAssertEqual(outcomes, Array(repeating: .staged, count: names.count))
     }
 
     /// Every interactive command Temple builds stays far below the sizes
@@ -469,7 +560,9 @@ final class RemoteScriptsTests: XCTestCase {
                 try FileManager.default.createDirectory(atPath: host.recordDirectory, withIntermediateDirectories: true)
                 chmod(host.recordDirectory, 0o755)
             }
-            try host.runLaunch(host.staged(TmuxKeepAlive().createScript(plan(host))))
+            // The launch script's own check, run directly (the executor
+            // refuses such a directory before any script runs; tested apart).
+            try host.runLaunch(RemoteQuoting.command(["sh", "-c", TmuxKeepAlive().createScript(plan(host)), "temple-launch"]))
             let argv = try XCTUnwrap(host.calls.first)
             XCTAssertTrue(argv.contains("TEMPLE_RECORD="), "\(setup): no record path is handed to the pane")
             do {

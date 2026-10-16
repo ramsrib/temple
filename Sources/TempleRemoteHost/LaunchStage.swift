@@ -39,13 +39,25 @@ public enum LaunchStage {
     /// An attach's stage name for `marker`.
     public static func attachName(marker: String, nonce: String) -> String { "\(marker).s-a\(nonce)" }
 
-    /// The tab's command, arguments: the stage name, then how many seconds
-    /// to wait for it. One line, so any login shell (csh included) passes
-    /// it to `sh` whole.
-    static let runner = #"f=$HOME/.temple/launch/$1; e=$(( $(date +%s) + $2 )); "#
-        + #"while [ ! -f "$f" ] && [ "$(date +%s)" -lt "$e" ]; do sleep 0.2 2>/dev/null || sleep 1; done; "#
-        + #"if [ -f "$f" ] && [ ! -L "$f" ] && [ -O "$f" ] && s=$(cat "$f"); then rm -f "$f"; exec sh -c "$s" temple-launch; fi; "#
-        + #"echo "Temple couldn't find the launch it prepared for this session on this host." >&2; exit 125"#
+    /// The tab's command (the executor), arguments: the stage name, then
+    /// how many seconds to wait for it. One line, so any login shell (csh
+    /// included) passes it to `sh` whole. Before reading anything it checks
+    /// the private chain as the writer does (`~/.temple` a real directory of
+    /// this account's, not group- or world-writable; `launch` a real
+    /// directory of this account's, exactly 0700), then takes the file by
+    /// renaming it to a fresh name inside that directory (an atomic
+    /// rename; nobody but the account can put anything there) and checks
+    /// what it took: a regular file (not a symlink) of this account's,
+    /// exactly 0600. Only then is it read and run; anything else is
+    /// removed, said in the tab, and nothing runs.
+    static let runner = [
+        #"u=$(id -u); t=$HOME/.temple; d=$t/launch; f=$d/$1; r=$d/.run-$1; e=$(( $(date +%s) + $2 ))"#,
+        #"k() { p=$1; shift; [ -n "$(find "$p" -maxdepth 0 -user "$u" "$@" 2>/dev/null)" ]; }"#,
+        #"while [ ! -e "$f" ] && [ ! -L "$f" ] && [ "$(date +%s)" -lt "$e" ]; do sleep 0.2 2>/dev/null || sleep 1; done"#,
+        #"if k "$t" -type d ! -perm -020 ! -perm -002 && k "$d" -type d -perm 700 && mv -f "$f" "$r" 2>/dev/null; then"#
+            + #" if k "$r" -type f -perm 600 && s=$(cat "$r"); then rm -f "$r"; exec sh -c "$s" temple-launch; fi; rm -f "$r"; fi"#,
+        #"echo "Temple couldn't find a safely stored launch for this session on this host." >&2; exit 125"#,
+    ].joined(separator: "; ")
 
     /// The remote command for the tab's ssh: short and fixed but for the
     /// stage name.

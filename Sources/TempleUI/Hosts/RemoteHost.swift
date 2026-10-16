@@ -119,6 +119,7 @@ final class RemoteHostLauncher: RemoteSessionHost {
         case .staged: .staged
         case .failed(let reason): .failed(reason)
         case .unknown(let reason): .unknown(reason)
+        case .storage(let reason): .unrecorded(reason)
         case .none: .none
         }
     }

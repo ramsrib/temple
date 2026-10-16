@@ -238,6 +238,20 @@ public final class RemoteStateStore: @unchecked Sendable {
     /// Read-modify-write of one row in one transaction. Nil when the row
     /// is not there (nothing written).
     @discardableResult
+    /// A creation that never started, recorded failed in one statement,
+    /// only while it still is one (no creation evidence, its first
+    /// attachment): whether this call committed it. A run another open or
+    /// another Temple attached to meanwhile is left as it is.
+    public func failUnstartedCreation(_ handle: String, reason: String, at date: Date) throws -> Bool {
+        try queue.write { database in
+            try database.execute(sql: """
+                UPDATE runs SET creation = ?, failure = ?, ended_at = ?
+                WHERE handle = ? AND creation IS NULL AND attachment = 1
+                """, arguments: [RemoteRun.Creation.failed.rawValue, reason, date.timeIntervalSince1970, handle])
+            return database.changesCount > 0
+        }
+    }
+
     public func update(_ handle: String, _ change: (inout RemoteRun) -> Void) throws -> RemoteRun? {
         try queue.write { database in
             guard var run = try Row.fetchOne(database, sql: "SELECT * FROM runs WHERE handle = ?",

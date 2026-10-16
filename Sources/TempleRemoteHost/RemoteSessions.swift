@@ -82,6 +82,9 @@ public final class RemoteSessions {
         case failed(String)
         /// No answer: it may be in place; the tab's own exit decides.
         case unknown(String)
+        /// Refused, but recording the creation as failed did not work: why.
+        /// The run stays unresolved until its tab's end records it.
+        case storage(String)
         /// Nothing to stage (already sent, or the open was abandoned).
         case none
     }
@@ -158,7 +161,7 @@ public final class RemoteSessions {
     private let stateDirectory: URL
     private let sshPath: () -> String
     private let resolve: ([String]) async -> ConnectionTest.Resolution
-    private let makeExec: (SSHConnection, String?) -> RemoteExec
+    private let makeExec: (SSHConnection, String?, SSHConnection.Purpose) -> RemoteExec
     private let masterCheck: ([String]) async -> Bool
     private let now: () -> Date
     private let token: () -> String
@@ -174,14 +177,39 @@ public final class RemoteSessions {
     public private(set) var retired = false
     /// Launch scripts planned but not yet staged, by stage name. `sent`:
     /// a write was attempted (it may have landed).
-    private var pendingStages: [String: (handle: String, creating: Bool, script: String, sent: Bool)] = [:]
+    private var pendingStages: [String: PendingStage] = [:]
+
+    /// A launch planned for one tab and not yet in place on the host. It
+    /// keeps the exact connection its tab uses: it is written over that
+    /// connection's master and nothing else, never over a connection
+    /// another open re-resolved meanwhile, never directly.
+    private struct PendingStage {
+        enum State {
+            /// Not sent: nothing of it can be on the host.
+            case planned
+            /// Being written now.
+            case sending
+            /// Refused on the host before anything was put in place.
+            case refused
+        }
+        let handle: String
+        let creating: Bool
+        let script: String
+        let connection: SSHConnection
+        let path: String?
+        var state: State
+        /// Nothing of it can be in place, so nothing of it can have run.
+        var notInPlace: Bool { state == .planned || state == .refused }
+    }
 
     public init(record: RemoteHostRecord, stateDirectory: URL, sshPath: @autoclosure @escaping () -> String,
                 store: @escaping () throws -> RemoteStateStore,
                 storeExists: @escaping () -> Bool = { true },
                 keepAlive: KeepAlive = TmuxKeepAlive(),
                 resolve: @escaping ([String]) async -> ConnectionTest.Resolution = ConnectionTest.sshResolve,
-                makeExec: @escaping (SSHConnection, String?) -> RemoteExec = { SSHExec(connection: $0, path: $1) },
+                makeExec: @escaping (SSHConnection, String?, SSHConnection.Purpose) -> RemoteExec = {
+                    SSHExec(connection: $0, path: $1, purpose: $2)
+                },
                 masterCheck: @escaping ([String]) async -> Bool = RemoteSessions.runMasterCheck,
                 now: @escaping () -> Date = Date.init,
                 token: @escaping () -> String = RemoteQuoting.nonce) {
@@ -277,7 +305,7 @@ public final class RemoteSessions {
         let connection = try await resolvedConnection(refresh: refresh)
         if pathConnection != connection { pathState = .unresolved }
         if case .unresolved = pathState {
-            let resolved = await RemoteEnvironment.resolve(using: makeExec(connection, nil))
+            let resolved = await RemoteEnvironment.resolve(using: makeExec(connection, nil, .query))
             guard !retired else { throw Retired() }
             // Cached only for the connection it was resolved over.
             if resolved.reachedHost, self.connection == connection {
@@ -287,8 +315,8 @@ public final class RemoteSessions {
             }
         }
         guard !retired else { throw Retired() }
-        if pathConnection == connection, case .resolved(let path) = pathState { return makeExec(connection, path) }
-        return makeExec(connection, nil)
+        if pathConnection == connection, case .resolved(let path) = pathState { return makeExec(connection, path, .query) }
+        return makeExec(connection, nil, .query)
     }
 
     /// A transport failure: the next query resolves the PATH again.
@@ -436,70 +464,102 @@ public final class RemoteSessions {
 
     /// Stages the launch now when Temple's master is up, so the tab's
     /// command finds it at once. Anything but a clean write refuses the
-    /// open (a creation is recorded as failed first): nothing is spawned
-    /// on a launch Temple couldn't put in place. Without a master the
-    /// launch waits for `stage(_:)`, after the tab has connected.
+    /// open (a creation is recorded as failed first, and a write that fails
+    /// is a storage error, never swallowed): nothing is spawned on a launch
+    /// Temple couldn't put in place. A cancellation stays a cancellation.
+    /// Without a master the launch waits for `stage(_:)`, after the tab has
+    /// connected.
     private func stageBeforeSpawn(_ name: String, handle: String, creating: Bool, script: String,
                                   connection: SSHConnection) async throws -> Bool {
-        pendingStages[name] = (handle, creating, script, false)
-        guard await masterCheck(connection.masterCheckArgv), !retired else { return false }
-        switch await send(name, removeIfUnanswered: true) {
+        var path: String?
+        if case .resolved(let resolved) = launchPath { path = resolved }
+        pendingStages[name] = PendingStage(handle: handle, creating: creating, script: script, connection: connection,
+                                           path: path, state: .planned)
+        guard await masterCheck(connection.masterCheckArgv), !retired else {
+            if Task.isCancelled { try await failUnspawned(handle, creating: creating, reason: "the open was cancelled") }
+            return false
+        }
+        let outcome = await send(name, removeIfUnanswered: true)
+        switch outcome {
         case .staged:
             return true
+        case .storage(let reason):
+            throw OpenError.store(reason)
         case .failed(let reason), .unknown(let reason):
-            if creating { try? await abandon(handle, reason: "the launch couldn't be prepared: \(reason)") }
+            try await failUnspawned(handle, creating: creating, reason: "the launch couldn't be prepared: \(reason)")
+            if Task.isCancelled { throw CancellationError() }
             throw OpenError.refused(Self.stagingRefusal(host: record.name, reason: reason))
         case .none:
+            try await failUnspawned(handle, creating: creating, reason: "the open was abandoned")
+            if Task.isCancelled { throw CancellationError() }
             throw OpenError.refused(Self.stagingRefusal(host: record.name, reason: "the open was abandoned"))
         }
+    }
+
+    /// A planned creation that will not be spawned: recorded failed (if it
+    /// still is one), its pending launch dropped once that is written. A
+    /// write that fails is a storage error.
+    private func failUnspawned(_ handle: String, creating: Bool, reason: String) async throws {
+        guard creating else {
+            for (name, pending) in pendingStages where pending.handle == handle { pendingStages[name] = nil }
+            return
+        }
+        do { try await abandon(handle, reason: reason) } catch { throw OpenError.store(error.localizedDescription) }
     }
 
     static func stagingRefusal(host: String, reason: String) -> String {
         "Temple couldn't prepare the session on \(host): \(reason)"
     }
 
-    /// The staged write, once. A creation refused before anything was put
-    /// in place is recorded as failed (nothing can have run). An
-    /// unanswered write is removed when no tab will run it
-    /// (`removeIfUnanswered`, before the spawn); otherwise it is left for
-    /// the tab, whose exit decides.
+    /// The staged write, once, over the pending launch's own connection
+    /// and its master only (`.overMaster`). Refused on the host (nothing
+    /// put in place): a creation is recorded as failed, and the pending
+    /// launch is forgotten only once that is written (a write that fails
+    /// is `.storage`, the launch kept as refused so a later end of its tab
+    /// records it). Unanswered: it may be in place; it is removed when no
+    /// tab will run it (`removeIfUnanswered`, before the spawn), otherwise
+    /// left for the tab, whose exit decides.
     private func send(_ name: String, removeIfUnanswered: Bool = false) async -> StageOutcome {
-        guard var pending = pendingStages[name], !pending.sent else { return .none }
-        pending.sent = true
+        guard var pending = pendingStages[name], pending.state == .planned else { return .none }
+        pending.state = .sending
         pendingStages[name] = pending
-        let exec: RemoteExec
-        do { exec = try await queryExec() } catch {
-            // Nothing left this Mac.
-            pendingStages[name]?.sent = false
-            return .unknown(error.localizedDescription)
-        }
+        let exec = makeExec(pending.connection, pending.path, .overMaster)
         switch await LaunchStage.write(stage: name, script: pending.script, using: exec) {
         case .staged:
             pendingStages[name] = nil
             return .staged
         case .refused(let reason):
-            pendingStages[name] = nil
-            if pending.creating {
-                try? await abandon(pending.handle, reason: "the launch couldn't be prepared: \(reason)")
+            pendingStages[name]?.state = .refused
+            guard pending.creating else {
+                pendingStages[name] = nil
+                return .failed(reason)
             }
-            return .failed(reason)
+            do {
+                let committed = try await failUnstarted(pending.handle, reason: "the launch couldn't be prepared: \(reason)")
+                pendingStages[name] = nil
+                // Another open attached to the run meanwhile: nothing here
+                // to record, and nothing to claim about the run.
+                return committed ? .failed(reason) : .unknown(reason)
+            } catch {
+                return .storage(error.localizedDescription)
+            }
         case .unknown(let reason):
             pendingStages[name] = nil
-            if removeIfUnanswered { await LaunchStage.discard(stage: name, using: exec) }
+            if removeIfUnanswered, !retired { await LaunchStage.discard(stage: name, using: exec) }
             return .unknown(reason)
         }
     }
 
-    /// Stages a launch whose tab is connecting: waits for Temple's master
-    /// (at first contact the tab's own ssh authenticates and becomes it),
-    /// then writes the launch, once. The caller cancels it when the tab
-    /// goes; it gives up on its own after `stageWaitSeconds`.
+    /// Stages a launch whose tab is connecting: waits for the master of
+    /// the tab's own connection (at first contact the tab's ssh
+    /// authenticates and becomes it), then writes the launch, once, over
+    /// it. The caller cancels it when the tab goes; it gives up on its own
+    /// after `stageWaitSeconds`.
     public func stage(_ name: String) async -> StageOutcome {
-        guard pendingStages[name] != nil else { return .none }
+        guard let connection = pendingStages[name]?.connection else { return .none }
         let deadline = now().addingTimeInterval(Self.stageWaitSeconds)
-        while !Task.isCancelled, !retired, pendingStages[name]?.sent == false {
-            if let connection = try? await resolvedConnection(), await masterCheck(connection.masterCheckArgv),
-               !Task.isCancelled, !retired {
+        while !Task.isCancelled, !retired, pendingStages[name]?.state == .planned {
+            if await masterCheck(connection.masterCheckArgv), !Task.isCancelled, !retired {
                 return await send(name)
             }
             guard now() < deadline else { break }
@@ -539,18 +599,22 @@ public final class RemoteSessions {
     }
 
     /// An open that was planned but never spawned (the tab closed, the
-    /// spawn failed, the host changed): no session was created.
-    public func abandon(_ handle: String, reason: String) async throws {
-        for (name, pending) in pendingStages where pending.handle == handle && !pending.sent { pendingStages[name] = nil }
-        let now = now()
-        try await write {
-            try $0.update(handle) { run in
-                guard run.creation == nil, run.attachment == 1 else { return }
-                run.creation = .failed
-                run.failure = reason
-                run.endedAt = now
-            }
+    /// spawn failed, the host changed): no session was created. Whether
+    /// this call recorded the creation failed (a run another open attached
+    /// to meanwhile is left alone); its pending launches are forgotten
+    /// once the write has happened. A write that fails throws.
+    @discardableResult
+    public func abandon(_ handle: String, reason: String) async throws -> Bool {
+        let committed = try await failUnstarted(handle, reason: reason)
+        for (name, pending) in pendingStages where pending.handle == handle && pending.state != .sending {
+            pendingStages[name] = nil
         }
+        return committed
+    }
+
+    private func failUnstarted(_ handle: String, reason: String) async throws -> Bool {
+        let now = now()
+        return try await write { try $0.failUnstartedCreation(handle, reason: reason, at: now) }
     }
 
     // MARK: Records
@@ -727,12 +791,16 @@ public final class RemoteSessions {
 
     static let unsentReason = "the connection ended before Temple could prepare the launch"
 
-    /// A creation whose staged launch was never sent: recorded as failed.
+    /// A creation whose staged launch never reached the host (never sent,
+    /// or refused before anything was put in place): recorded as failed.
+    /// True only once that write has committed; the proof is forgotten only
+    /// then. A run another open attached to meanwhile stays as it is
+    /// (false), and a write that fails throws, the proof kept.
     private func abandonUnsent(_ handle: String) async throws -> Bool {
-        let unsent = pendingStages.filter { $0.value.handle == handle && $0.value.creating && !$0.value.sent }
+        let unsent = pendingStages.filter { $0.value.handle == handle && $0.value.creating && $0.value.notInPlace }
         guard !unsent.isEmpty else { return false }
+        guard try await failUnstarted(handle, reason: Self.unsentReason) else { return false }
         for name in unsent.keys { pendingStages[name] = nil }
-        try await abandon(handle, reason: Self.unsentReason)
         return true
     }
 
@@ -800,11 +868,13 @@ public final class RemoteSessions {
         guard let found = await run(handle) else {
             return StopRecord(outcome: .unconfirmed(reason: "Temple has no record of this session", reachedHost: false))
         }
-        // A creation whose launch never left this Mac: nothing runs there.
+        // A creation whose launch never reached the host: nothing runs there,
+        // once that is written; a write that fails proves nothing.
         do {
             if try await abandonUnsent(handle) { return StopRecord(outcome: .absent) }
         } catch {
-            return StopRecord(outcome: .absent, storageError: error.localizedDescription)
+            let reason = "Temple couldn't record that it never started: \(error.localizedDescription)"
+            return StopRecord(outcome: .unconfirmed(reason: reason, reachedHost: true), storageError: error.localizedDescription)
         }
         let run = await pinned(found)
         let outcome: StopOutcome

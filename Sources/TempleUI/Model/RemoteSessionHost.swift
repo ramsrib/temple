@@ -49,6 +49,9 @@ public enum RemoteStageResult: Equatable {
     case failed(String)
     /// No answer; the tab's own exit decides.
     case unknown(String)
+    /// Refused (nothing in place), but the creation's failure could not be
+    /// written; the tab's end records it. Why.
+    case unrecorded(String)
     /// Nothing to stage.
     case none
 }
