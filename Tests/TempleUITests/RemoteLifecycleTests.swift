@@ -203,11 +203,11 @@ final class RemoteLifecycleTests: XCTestCase {
             persistence: persistence,
             launcherForHost: launcher ?? { $0 == host ? remote : nil })
         model.earlyExitGraceSeconds = 0.5
-        model.recordPollDelays = [0.01]
+        model.remoteTabs.recordPollDelays = [0.01]
         model.settleDelaySeconds = 60
         model.sessionRow = { [weak self] in self?.rows[$0] }
         model.launchDirectoryHandler = { [weak self] id, host, directory in self?.recordedDirectories.append((id, host, directory)) }
-        model.remoteNoticeHandler = { [weak self] _, message in self?.notices.append(message) }
+        model.remoteTabs.noticeHandler = { [weak self] _, message in self?.notices.append(message) }
     }
 
     private func settle(_ condition: @autoclosure () -> Bool, timeout: TimeInterval = 3, _ message: String = "",
@@ -312,17 +312,17 @@ final class RemoteLifecycleTests: XCTestCase {
         remote.liveness = .unknown(reason: "no server running on /tmp/tmux-1000/temple")
         factory.created.last?.simulateExit(status: 0)
         await settle(tab.remote?.phase == .unknown(reason: "no server running on /tmp/tmux-1000/temple"))
-        XCTAssertEqual(model.resumeAnywayMessage(tab),
+        XCTAssertEqual(model.remoteTabs.resumeAnywayMessage(tab),
                        "Temple can't reach this session on box and can't tell whether it is still running. Resume anyway? "
                        + "If the original is still running, it keeps running; you can stop it from box with "
                        + "`tmux -L temple kill-session -t temple-h1`.")
         // Opening again is attach-only.
-        model.reconnect(tab)
+        model.remoteTabs.reconnect(tab)
         await settle(tab.hasLiveProcess)
         XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["ssh", "attach", "h1"])
         factory.created.last?.simulateExit(status: 1)
         await settle(tab.remote?.phase == .unknown(reason: "no server running on /tmp/tmux-1000/temple"))
-        model.resumeAnyway(tab)
+        model.remoteTabs.resumeAnyway(tab)
         await settle(tab.hasLiveProcess)
         XCTAssertEqual(remote.opens.last?.resumeAnyway, true)
         XCTAssertEqual(remote.opens.last?.resume, true)
@@ -421,11 +421,11 @@ final class RemoteLifecycleTests: XCTestCase {
         model.requestClose(tabID: tab.id)
         XCTAssertEqual(model.pendingRemoteCloseTabID, tab.id)
         XCTAssertNil(model.pendingCloseTabID)
-        model.cancelRemoteClose()
+        model.remoteTabs.cancelClose()
         XCTAssertTrue(model.tabs.contains { $0 === tab })
         // Detach: the client goes, the agent keeps working, nothing is stopped.
         model.requestClose(tabID: tab.id)
-        model.confirmRemoteDetach()
+        model.remoteTabs.confirmDetach()
         XCTAssertFalse(model.tabs.contains { $0 === tab })
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertTrue(remote.stops.isEmpty)
@@ -438,7 +438,7 @@ final class RemoteLifecycleTests: XCTestCase {
         let tab = await openRow()
         tab.activity = .running
         model.requestClose(tabID: tab.id)
-        model.confirmRemoteStop()
+        model.remoteTabs.confirmStop()
         XCTAssertEqual(tab.remote?.phase, .stopping)
         XCTAssertTrue(model.tabs.contains { $0 === tab })
         await gate.open()
@@ -449,7 +449,7 @@ final class RemoteLifecycleTests: XCTestCase {
         remote.stopGate = nil
         remote.stopResult = .leftRunning(.stopNotAcknowledged, detail: "Didn't answer within 10 seconds.")
         model.requestClose(tabID: second.id)
-        model.confirmRemoteStop()
+        model.remoteTabs.confirmStop()
         await settle({ if case .stopFailed = second.remote?.phase { return true }; return false }())
         XCTAssertEqual(second.remote?.phase, .stopFailed(
             "Temple couldn't stop Claude Code on box: Didn't answer within 10 seconds. It may still be running; see Sessions on box."))
@@ -469,11 +469,11 @@ final class RemoteLifecycleTests: XCTestCase {
     func testStopOnHostFromARowWithoutATab() async throws {
         remote.runs = [.init(handle: "h9", sessionID: "s9", resume: true)]
         rows["s9"] = Fixture.row("s9", project: "/p", host: hostID)
-        XCTAssertTrue(model.hasRemoteRun(sessionID: "s9", host: hostID))
-        model.stopRemoteSession(sessionID: "s9", host: hostID)
+        XCTAssertTrue(model.remoteTabs.hasRun(sessionID: "s9", host: hostID))
+        model.remoteTabs.stopSession(sessionID: "s9", host: hostID)
         await settle(self.remote.stops.count == 1)
         XCTAssertEqual(remote.stops.first?.fromAttachedTab, false)
-        await settle(!self.model.hasRemoteRun(sessionID: "s9", host: hostID))
+        await settle(!self.model.remoteTabs.hasRun(sessionID: "s9", host: hostID))
     }
 
     // MARK: Ownership
@@ -483,7 +483,7 @@ final class RemoteLifecycleTests: XCTestCase {
         let done = expectation(description: "drained")
         let started = Date()
         SessionRuntimeController(gracefulTimeout: timeout).drainAll(graceful: plan.graceful, detach: plan.detach,
-                                                                    remote: model.remoteOperations) { done.fulfill() }
+                                                                    remote: model.remoteTabs.operations) { done.fulfill() }
         await fulfillment(of: [done], timeout: 5)
         return Date().timeIntervalSince(started)
     }
@@ -498,16 +498,16 @@ final class RemoteLifecycleTests: XCTestCase {
         model.closeTab(tab.id)
         XCTAssertFalse(model.tabs.contains { $0 === tab })
         await settle(self.remote.stops.count == 1)
-        XCTAssertEqual(model.remoteOperations.stopsOutstanding, 1)
+        XCTAssertEqual(model.remoteTabs.operations.stopsOutstanding, 1)
         model.prepareForQuit()
         let elapsed = await drain()
         XCTAssertLessThan(elapsed, 1.5)
         await settle(self.remote.leftRunningCalls.count == 1)
         XCTAssertEqual(remote.leftRunningCalls.first?.reason, .quitDeadline)
-        let written = await model.remoteOperations.waitForAll(until: Date().addingTimeInterval(1))
+        let written = await model.remoteTabs.operations.waitForAll(until: Date().addingTimeInterval(1))
         XCTAssertFalse(written, "the hung stop is still owned (its answer, if it came, would be written)")
         await gate.open()
-        let finished = await model.remoteOperations.waitForAll(until: Date().addingTimeInterval(2))
+        let finished = await model.remoteTabs.operations.waitForAll(until: Date().addingTimeInterval(2))
         XCTAssertTrue(finished)
     }
 
@@ -589,9 +589,9 @@ final class RemoteLifecycleTests: XCTestCase {
         let opening = try XCTUnwrap(model.activeTab)
         let stopGate = Gate()
         remote.stopGate = { _ in await stopGate.wait() }
-        model.stopRemoteSession(sessionID: "c", host: hostID)
+        model.remoteTabs.stopSession(sessionID: "c", host: hostID)
         await settle(self.remote.stops.count == 1)
-        model.retireRemoteHost(hostID)
+        model.remoteTabs.retireHost(hostID)
         XCTAssertTrue(remote.retired)
         XCTAssertTrue(surface.didTerminate)
         await settle(self.remote.leftRunningCalls.count == 1)
@@ -658,15 +658,15 @@ final class RemoteLifecycleTests: XCTestCase {
     func testAnUnconfirmedConversationOffersStartANewSessionOrDiscard() async throws {
         remote.decision = true
         var discardedRows: [String] = []
-        model.rowIncarnation = { "inc-\($0)" }
-        model.discardHandler = { id, _, _ in discardedRows.append(id) }
+        model.remoteTabs.rowIncarnation = { "inc-\($0)" }
+        model.remoteTabs.discardHandler = { id, _, _ in discardedRows.append(id) }
         let row = Fixture.row("u", project: "/p", host: hostID)
         rows["u"] = row
         model.openSession(row)
         let tab = try XCTUnwrap(model.activeTab)
         await settle(tab.remote?.phase == .needsDecision(checked: true))
         XCTAssertTrue(factory.created.isEmpty, "never resumed blindly")
-        model.startNewRemoteSession(tab)
+        model.remoteTabs.startNewSession(tab)
         await settle(tab.hasLiveProcess)
         XCTAssertEqual(remote.opens.last?.startNew, true)
         XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["ssh", "create", "h1"])
@@ -676,7 +676,7 @@ final class RemoteLifecycleTests: XCTestCase {
         model.openSession(other)
         let second = try XCTUnwrap(model.activeTab)
         await settle(second.remote?.phase == .needsDecision(checked: true))
-        model.discardRemoteSession(second)
+        model.remoteTabs.discard(second)
         XCTAssertFalse(model.tabs.contains { $0 === second })
         await settle(discardedRows == ["v"])
         XCTAssertEqual(remote.discarded, ["v"])
@@ -686,16 +686,16 @@ final class RemoteLifecycleTests: XCTestCase {
     /// said, never swallowed.
     func testADispositionThatFailsIsSaid() async throws {
         remote.decision = true
-        model.rowIncarnation = { "inc-\($0)" }
-        model.discardHandler = { _, _, _ in throw CocoaError(.fileWriteUnknown) }
+        model.remoteTabs.rowIncarnation = { "inc-\($0)" }
+        model.remoteTabs.discardHandler = { _, _, _ in throw CocoaError(.fileWriteUnknown) }
         var notices: [String] = []
-        model.remoteNoticeHandler = { _, text in notices.append(text) }
+        model.remoteTabs.noticeHandler = { _, text in notices.append(text) }
         let row = Fixture.row("w", project: "/p", host: hostID)
         rows["w"] = row
         model.openSession(row)
         let tab = try XCTUnwrap(model.activeTab)
         await settle(tab.remote?.phase == .needsDecision(checked: true))
-        model.discardRemoteSession(tab)
+        model.remoteTabs.discard(tab)
         await settle(!notices.isEmpty)
         XCTAssertEqual(remote.discarded, ["w"])
         XCTAssertEqual(notices.count, 1)
@@ -717,7 +717,7 @@ final class RemoteLifecycleTests: XCTestCase {
         model.openSession(row)
         let tab = try XCTUnwrap(model.activeTab)
         await settle(tab.remote?.phase == .needsDecision(checked: false))
-        model.resumeUnconfirmedRemoteSession(tab)
+        model.remoteTabs.resumeUnconfirmed(tab)
         await settle(tab.hasLiveProcess)
         XCTAssertEqual(remote.opens.last?.resumeUnconfirmed, true)
         XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["ssh", "create", "h1"])

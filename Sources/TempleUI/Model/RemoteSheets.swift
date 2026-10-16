@@ -27,16 +27,16 @@ final class RemoteSessionsSheetModel: ObservableObject {
     var host: String { request.host.rawValue }
 
     func load() {
-        if let loading { openSessions.remoteOperations.cancel(id: loading) }
+        if let loading { openSessions.remoteTabs.operations.cancel(id: loading) }
         guard let launcher = launcher() else {
             listing = ([], false)
             return
         }
         listing = nil
-        let ticket = openSessions.remoteGate.ticket(host: request.host, sheet: request.id)
-        loading = openSessions.remoteOperations.run(host: request.host, .query) { [weak self] in
+        let ticket = openSessions.remoteTabs.gate.ticket(host: request.host, sheet: request.id)
+        loading = openSessions.remoteTabs.operations.run(host: request.host, .query) { [weak self] in
             let answer = await launcher.trackedSessions()
-            guard let self, self.openSessions.remoteGate.admit(.sheetLoad, ticket) else { return }
+            guard let self, self.openSessions.remoteTabs.gate.admit(.sheetLoad, ticket) else { return }
             self.listing = answer
         }
     }
@@ -44,18 +44,18 @@ final class RemoteSessionsSheetModel: ObservableObject {
     /// The sheet went: its query is cancelled; anything still answering is
     /// refused by the gate.
     func dismissed() {
-        if let loading { openSessions.remoteOperations.cancel(id: loading) }
+        if let loading { openSessions.remoteTabs.operations.cancel(id: loading) }
         loading = nil
     }
 
     func stop(_ session: RemoteTrackedSession) {
         stopping.insert(session.handle)
         results[session.handle] = nil
-        let ticket = openSessions.remoteGate.ticket(host: request.host, sheet: request.id)
+        let ticket = openSessions.remoteTabs.gate.ticket(host: request.host, sheet: request.id)
         // The stop survives the sheet: the app owns it until its outcome is
         // written. Only what the sheet shows is gated.
-        openSessions.stopTracked(handle: session.handle, host: request.host, agent: session.agent) { [weak self] result in
-            guard let self, self.openSessions.remoteGate.admit(.sheetStopOutcome, ticket) else { return }
+        openSessions.remoteTabs.stopTracked(handle: session.handle, host: request.host, agent: session.agent) { [weak self] result in
+            guard let self, self.openSessions.remoteTabs.gate.admit(.sheetStopOutcome, ticket) else { return }
             self.stopping.remove(session.handle)
             switch result {
             case .stopped:
@@ -72,7 +72,7 @@ final class RemoteSessionsSheetModel: ObservableObject {
 
     func keep(_ session: RemoteTrackedSession) {
         if let launcher = launcher() {
-            openSessions.remoteOperations.run(host: request.host, .write) { await launcher.keep(session.handle) }
+            openSessions.remoteTabs.operations.run(host: request.host, .write) { await launcher.keep(session.handle) }
         }
         kept.insert(session.handle)
     }
@@ -117,11 +117,11 @@ final class RemoteFolderSheetModel: ObservableObject {
         let typed = trimmedPath
         guard !typed.isEmpty, check != .checking, let launcher = launcher() else { return }
         check = .checking
-        if let checking { openSessions.remoteOperations.cancel(id: checking) }
-        let ticket = openSessions.remoteGate.ticket(host: request.host, sheet: request.id)
-        checking = openSessions.remoteOperations.run(host: request.host, .query) { [weak self] in
+        if let checking { openSessions.remoteTabs.operations.cancel(id: checking) }
+        let ticket = openSessions.remoteTabs.gate.ticket(host: request.host, sheet: request.id)
+        checking = openSessions.remoteTabs.operations.run(host: request.host, .query) { [weak self] in
             let result = await launcher.checkFolder(typed)
-            guard let self, self.openSessions.remoteGate.admit(.folderCheckResult, ticket) else { return }
+            guard let self, self.openSessions.remoteTabs.gate.admit(.folderCheckResult, ticket) else { return }
             guard typed == self.trimmedPath else { self.check = .idle; return }
             switch result {
             case .exists(let resolved):
@@ -144,7 +144,7 @@ final class RemoteFolderSheetModel: ObservableObject {
     }
 
     func dismissed() {
-        if let checking { openSessions.remoteOperations.cancel(id: checking) }
+        if let checking { openSessions.remoteTabs.operations.cancel(id: checking) }
         checking = nil
     }
 }

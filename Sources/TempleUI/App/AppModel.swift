@@ -698,14 +698,14 @@ public final class AppModel: ObservableObject {
             return result
         }
         openSessions.touchHandler = { [weak self] id, host, at in self?.overlay.touch(id, host: host, at: at) }
-        openSessions.remoteNoticeHandler = { [weak self] host, message in
+        openSessions.remoteTabs.noticeHandler = { [weak self] host, message in
             self?.remoteNotice = RemoteNotice(host: host, message: message, kind: .closed)
         }
-        openSessions.remoteGate.sheetIsActive = { [weak self] id in
+        openSessions.remoteTabs.gate.sheetIsActive = { [weak self] id in
             self?.remoteSessionsSheet?.id == id || self?.remoteFolderSheet?.id == id
         }
-        openSessions.rowIncarnation = { [weak self] id in self?.overlay.rows[id]?.incarnation }
-        openSessions.discardHandler = { [weak self] id, host, incarnation in
+        openSessions.remoteTabs.rowIncarnation = { [weak self] id in self?.overlay.rows[id]?.incarnation }
+        openSessions.remoteTabs.discardHandler = { [weak self] id, host, incarnation in
             // One transaction under (id, host, incarnation): the row goes,
             // or (the user made it theirs: named, pinned, colored) is
             // archived, reversibly. A membership replaced since, through
@@ -942,7 +942,7 @@ public final class AppModel: ObservableObject {
         for (host, record) in managedRemoteHosts where wantedByHost[host] != record {
             // Its connection context goes first: queries cancelled, opens and
             // results invalidated, clients detached.
-            openSessions.retireRemoteHost(host)
+            openSessions.remoteTabs.retireHost(host)
             hostBox.value = hostBox.value.removing(host)
             engineSet.remove(host: host)
             managedRemoteHosts.removeValue(forKey: host)
@@ -1033,7 +1033,7 @@ public final class AppModel: ObservableObject {
         // store's writes happen as each stop completes, so none waits on it.
         let plan = openSessions.quitDrainPlan()
         SessionRuntimeController().drainAll(graceful: plan.graceful, detach: plan.detach,
-                                            remote: openSessions.remoteOperations) { [self] in
+                                            remote: openSessions.remoteTabs.operations) { [self] in
             // Final barrier for writes queued while the processes drained.
             overlay.flushPendingTitles()
             overlay.flushPendingTouches()
@@ -1046,7 +1046,7 @@ public final class AppModel: ObservableObject {
                 // flags) share the engines' deadline and never extend it.
                 let deadline = Date().addingTimeInterval(timeout)
                 async let enginesStopped = self.engineSet.shutDown(timeout: timeout)
-                async let remoteWritten = self.openSessions.remoteOperations.waitForAll(until: deadline)
+                async let remoteWritten = self.openSessions.remoteTabs.operations.waitForAll(until: deadline)
                 if await !enginesStopped {
                     TempleUILog.lifecycle.error("quit: the engines did not stop within \(timeout, privacy: .public) s; quitting anyway")
                 }

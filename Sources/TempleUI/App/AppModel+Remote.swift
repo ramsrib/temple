@@ -50,7 +50,7 @@ extension AppModel {
     public func showRemoteSessions(_ host: HostID) {
         if case .count? = remoteNotice?.kind, remoteNotice?.host == host, let launcher = remoteHost(host) {
             remoteNotice = nil
-            openSessions.remoteOperations.run(host: host, .write) { await launcher.noticeLeftRunning() }
+            openSessions.remoteTabs.operations.run(host: host, .write) { await launcher.noticeLeftRunning() }
         }
         remoteSessionsSheet = RemoteSessionsRequest(host: host)
     }
@@ -59,7 +59,7 @@ extension AppModel {
         guard let notice = remoteNotice else { return }
         remoteNotice = nil
         if case .count = notice.kind, let launcher = remoteHost(notice.host) {
-            openSessions.remoteOperations.run(host: notice.host, .write) { await launcher.noticeLeftRunning() }
+            openSessions.remoteTabs.operations.run(host: notice.host, .write) { await launcher.noticeLeftRunning() }
         }
     }
 
@@ -71,10 +71,10 @@ extension AppModel {
         guard remoteHosts.isEnabled else { return }
         for host in remoteHosts.registeredHosts.map(\.host) {
             guard let launcher = remoteHost(host) else { continue }
-            let ticket = openSessions.remoteGate.ticket(host: host)
-            openSessions.remoteOperations.run(host: host, .query) { [weak self] in
+            let ticket = openSessions.remoteTabs.gate.ticket(host: host)
+            openSessions.remoteTabs.operations.run(host: host, .query) { [weak self] in
                 let count = await launcher.contactLeftRunning()
-                guard let self, self.openSessions.remoteGate.admit(.contactNotice, ticket),
+                guard let self, self.openSessions.remoteTabs.gate.admit(.contactNotice, ticket),
                       let count, count > 0, self.remoteNotice == nil else { return }
                 self.remoteNotice = RemoteNotice(host: host, message: RemoteCopy.leftRunningCount(count, host: host.rawValue),
                                                  kind: .count(count))

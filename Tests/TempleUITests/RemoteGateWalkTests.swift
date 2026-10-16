@@ -46,17 +46,17 @@ final class RemoteGateWalkTests: XCTestCase {
                            remoteHosts: RemoteHostsModel(defaults: defaults, readConfigAliases: { [] }))
             app.start()
             app.openSessions.earlyExitGraceSeconds = 0.5
-            app.openSessions.recordPollDelays = [0.01]
+            app.openSessions.remoteTabs.recordPollDelays = [0.01]
             app.openSessions.settleDelaySeconds = 60
             let original = app.openSessions.launchDirectoryHandler
             app.openSessions.launchDirectoryHandler = { [weak self] id, host, directory in
                 self?.directories.append(directory)
                 original?(id, host, directory)
             }
-            app.openSessions.discardHandler = { [weak self] id, _, _ in self?.discards.append(id) }
+            app.openSessions.remoteTabs.discardHandler = { [weak self] id, _, _ in self?.discards.append(id) }
         }
 
-        var gate: RemoteEffectGate { app.openSessions.remoteGate }
+        var gate: RemoteEffectGate { app.openSessions.remoteTabs.gate }
     }
 
     struct Scenario {
@@ -163,14 +163,14 @@ final class RemoteGateWalkTests: XCTestCase {
                 let tab = await self.connectedTab(h, creating: false)
                 tab.activity = .running
                 h.app.openSessions.requestClose(tabID: tab.id)
-                h.app.openSessions.confirmRemoteStop()
+                h.app.openSessions.remoteTabs.confirmStop()
                 await self.settle { !h.remote.stops.isEmpty }
             }, effect: { h in !h.app.openSessions.tabs.contains { $0 === h.tab } }),
 
             Scenario(completion: .trackedStopTabOutcome, disruptions: noClose, arm: { h in
                 h.remote.stopGate = { _ in await h.hold.wait() }
                 let tab = await self.connectedTab(h, creating: false)
-                h.app.openSessions.stopTracked(handle: tab.remote!.handle!, host: h.host, agent: .claude) { _ in }
+                h.app.openSessions.remoteTabs.stopTracked(handle: tab.remote!.handle!, host: h.host, agent: .claude) { _ in }
                 await self.settle { !h.remote.stops.isEmpty }
             }, effect: { h in !h.app.openSessions.tabs.contains { $0 === h.tab } }),
 
@@ -187,7 +187,7 @@ final class RemoteGateWalkTests: XCTestCase {
                 h.remote.stopResult = .leftRunning(.hostDidNotAnswer, detail: nil)
                 h.remote.stopGate = { _ in await h.hold.wait() }
                 h.remote.runs.append(.init(handle: "h9", sessionID: "s9", resume: true))
-                h.app.openSessions.stopRemoteSession(sessionID: "s9", host: h.host)
+                h.app.openSessions.remoteTabs.stopSession(sessionID: "s9", host: h.host)
                 await self.settle { !h.remote.stops.isEmpty }
             }, effect: { $0.app.remoteNotice != nil }),
 
@@ -200,7 +200,7 @@ final class RemoteGateWalkTests: XCTestCase {
                 h.app.openSessions.openSession(row)
                 let tab = h.app.openSessions.activeTab!
                 await self.settle { tab.remote?.phase == .needsDecision(checked: true) }
-                h.app.openSessions.discardRemoteSession(tab)
+                h.app.openSessions.remoteTabs.discard(tab)
                 await self.settle { !h.remote.discarded.isEmpty }
             }, effect: { $0.app.remoteNotice != nil }),
 
@@ -212,7 +212,7 @@ final class RemoteGateWalkTests: XCTestCase {
             }, effect: { $0.tab?.activity == .idle }),
 
             Scenario(completion: .startupDeadline, disruptions: tabDisruptions, arm: { h in
-                h.app.openSessions.startupEvidenceDeadline = 0.4
+                h.app.openSessions.remoteTabs.startupEvidenceDeadline = 0.4
                 _ = await self.connectedTab(h, creating: false)
             }, effect: { $0.tab?.remote?.stillConnecting == true }),
 
@@ -277,7 +277,7 @@ final class RemoteGateWalkTests: XCTestCase {
             _ = h.app.openSessions.quitDrainPlan()
         case .retire:
             // As AppModel retires a host before its entry goes.
-            h.app.openSessions.retireRemoteHost(h.host)
+            h.app.openSessions.remoteTabs.retireHost(h.host)
             h.app.hostBox.value = h.app.hostBox.value.removing(h.host)
         case .otherInstance:
             if let handle = h.tab?.remote?.handle, let index = h.remote.runs.firstIndex(where: { $0.handle == handle }) {
@@ -334,7 +334,7 @@ final class RemoteGateWalkTests: XCTestCase {
             h.app.openSessions.openSession(row)
             let tab = try XCTUnwrap(h.app.openSessions.activeTab)
             await settle { tab.remote?.phase == .needsDecision(checked: true) }
-            h.app.openSessions.discardRemoteSession(tab)
+            h.app.openSessions.remoteTabs.discard(tab)
             await settle { !h.remote.discarded.isEmpty }
             disrupt(h, disruption)
             await h.hold.open()
@@ -348,7 +348,7 @@ final class RemoteGateWalkTests: XCTestCase {
     func testDiscardLeavesAReplacedRowAlone() async throws {
         let h = try Harness(host: hostID)
         var handled: [String] = []
-        h.app.openSessions.discardHandler = { _, _, incarnation in handled.append(incarnation) }
+        h.app.openSessions.remoteTabs.discardHandler = { _, _, incarnation in handled.append(incarnation) }
         h.remote.decision = true
         let row = Fixture.row("s1", project: "/p", host: hostID)
         Fixture.join([row], to: h.db)
@@ -357,7 +357,7 @@ final class RemoteGateWalkTests: XCTestCase {
         h.app.openSessions.openSession(row)
         let tab = try XCTUnwrap(h.app.openSessions.activeTab)
         await settle { tab.remote?.phase == .needsDecision(checked: true) }
-        h.app.openSessions.discardRemoteSession(tab)
+        h.app.openSessions.remoteTabs.discard(tab)
         await settle { !handled.isEmpty }
         XCTAssertEqual(handled, [try XCTUnwrap(before)], "the incarnation captured when Discard was chosen travels with it")
     }

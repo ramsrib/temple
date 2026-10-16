@@ -68,7 +68,7 @@ private struct SessionTerminalView: View {
                 // is not its agent ending (checking, stopping: nothing yet).
                 if remote.phase == .connected, remote.stillConnecting {
                     notice(symbol: "hourglass", text: RemoteCopy.stillConnecting(tab.host.rawValue)) {
-                        Button("Cancel") { model.openSessions.cancelRemoteConnect(tab) }
+                        Button("Cancel") { model.openSessions.remoteTabs.cancelConnect(tab) }
                     }
                 } else if let header = RemoteHeader.make(remote.phase) { remoteHeader(header) }
             } else if case .exited(let status) = tab.activity {
@@ -92,10 +92,10 @@ private struct SessionTerminalView: View {
         }
         .alert("Resume anyway?", isPresented: $confirmingResumeAnyway) {
             Button("Cancel", role: .cancel) {}
-            Button("Resume anyway") { model.openSessions.resumeAnyway(tab) }
+            Button("Resume anyway") { model.openSessions.remoteTabs.resumeAnyway(tab) }
                 .keyboardShortcut(.defaultAction)
         } message: {
-            Text(model.openSessions.resumeAnywayMessage(tab) ?? "")
+            Text(model.openSessions.remoteTabs.resumeAnywayMessage(tab) ?? "")
         }
     }
 
@@ -134,21 +134,21 @@ private struct SessionTerminalView: View {
                    text: checked ? RemoteCopy.unconfirmedConversation : RemoteCopy.uncheckedConversation) {
                 HStack(spacing: 12) {
                     if !checked {
-                        Button("Resume") { model.openSessions.resumeUnconfirmedRemoteSession(tab) }
+                        Button("Resume") { model.openSessions.remoteTabs.resumeUnconfirmed(tab) }
                     }
-                    Button("Start a new session") { model.openSessions.startNewRemoteSession(tab) }
-                    Button("Discard") { model.openSessions.discardRemoteSession(tab) }
+                    Button("Start a new session") { model.openSessions.remoteTabs.startNewSession(tab) }
+                    Button("Discard") { model.openSessions.remoteTabs.discard(tab) }
                 }
             }
         case .disconnected:
             notice(symbol: "bolt.horizontal.circle", text: RemoteCopy.disconnected(host)) {
-                Button("Reconnect") { model.openSessions.reconnect(tab) }
+                Button("Reconnect") { model.openSessions.remoteTabs.reconnect(tab) }
             }
         case .unknown(let reason):
             VStack(spacing: 0) {
                 notice(symbol: "questionmark.circle", text: RemoteCopy.unknown(host, agent: tab.agent, reason: reason)) {
                     HStack(spacing: 12) {
-                        Button("Reconnect") { model.openSessions.reconnect(tab) }
+                        Button("Reconnect") { model.openSessions.remoteTabs.reconnect(tab) }
                         if tab.sessionID != nil {
                             Button("Resume anyway") { confirmingResumeAnyway = true }
                         }

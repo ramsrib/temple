@@ -83,7 +83,7 @@ extension AppModel {
                 }
                 let closed = controlSession(tab)
                 guard commit.commit() else { return Self.expired }
-                openSessions.detachRemote(tab.id)
+                openSessions.remoteTabs.detach(tab.id)
                 return ControlResponse(session: closed)
             }
             if tab.hasSurface, tab.activity == .running, request.force != true {

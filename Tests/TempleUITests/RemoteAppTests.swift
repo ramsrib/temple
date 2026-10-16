@@ -151,9 +151,9 @@ final class RemoteAppTests: XCTestCase {
         let app = try app(FakeRemoteHost("box"), db: db)
         await settle { app.overlay.rows["d1"] != nil }
         let incarnation = try XCTUnwrap(app.overlay.rows["d1"]?.incarnation)
-        try app.openSessions.discardHandler?("d1", hostID, "another-membership")
+        try app.openSessions.remoteTabs.discardHandler?("d1", hostID, "another-membership")
         XCTAssertEqual(app.overlay.rows["d1"]?.archived, false, "a replaced row is left alone")
-        try app.openSessions.discardHandler?("d1", hostID, incarnation)
+        try app.openSessions.remoteTabs.discardHandler?("d1", hostID, incarnation)
         await settle { app.overlay.rows["d1"]?.archived == true || app.overlay.rows["d1"] == nil }
         XCTAssertTrue(app.overlay.rows["d1"] == nil || app.overlay.rows["d1"]?.archived == true)
     }

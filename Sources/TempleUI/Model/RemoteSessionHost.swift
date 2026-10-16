@@ -5,7 +5,7 @@ import TempleTerminalAPI
 // The app's view of a host whose agents run under a keep-alive there
 // (docs/designs/remote-ssh.md sections 3 to 5). `TempleUI` names no type
 // of `TempleRemoteHost` outside `Hosts/RemoteHost.swift`; the launcher
-// there conforms to this protocol, so `OpenSessionsModel` drives a remote
+// there conforms to this protocol, so `RemoteTabController` drives a remote
 // tab's open, exit, close and quit through it and nothing else.
 
 /// Why a session on a host was left running (mirrors the run row).

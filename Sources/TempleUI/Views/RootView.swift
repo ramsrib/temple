@@ -140,10 +140,10 @@ public struct RootView: View {
         // A working agent on a host: Detach (the default; it keeps working
         // there) or Stop, decided in the tab's own prompt.
         .alert(pendingRemoteCloseTitle, isPresented: pendingRemoteCloseBinding) {
-            Button("Detach") { model.openSessions.confirmRemoteDetach() }
+            Button("Detach") { model.openSessions.remoteTabs.confirmDetach() }
                 .keyboardShortcut(.defaultAction)
-            Button("Stop") { model.openSessions.confirmRemoteStop() }
-            Button("Cancel", role: .cancel) { model.openSessions.cancelRemoteClose() }
+            Button("Stop") { model.openSessions.remoteTabs.confirmStop() }
+            Button("Cancel", role: .cancel) { model.openSessions.remoteTabs.cancelClose() }
         }
         .sheet(item: $model.remoteSessionsSheet) { request in
             RemoteSessionsSheet(sheet: model.sessionsSheetModel(request))
@@ -158,7 +158,7 @@ public struct RootView: View {
     private var pendingRemoteCloseBinding: Binding<Bool> {
         Binding(
             get: { model.openSessions.pendingRemoteCloseTabID != nil },
-            set: { if !$0 { model.openSessions.cancelRemoteClose() } })
+            set: { if !$0 { model.openSessions.remoteTabs.cancelClose() } })
     }
 
     private var pendingRemoteCloseTitle: String {
