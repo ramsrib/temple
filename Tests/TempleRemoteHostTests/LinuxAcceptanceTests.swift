@@ -35,7 +35,13 @@ final class LinuxAcceptanceTests: XCTestCase {
     }
 
     private func check(_ name: String, stateDirectory: URL) async throws {
-        let connection = SSHConnection(record: .config(name), stateDirectory: stateDirectory, sshPath: "/usr/bin/ssh")
+        // As the Test sheet builds it: keyed by where ssh -G resolves it.
+        let provisional = SSHConnection(record: .config(name), stateDirectory: stateDirectory, sshPath: "/usr/bin/ssh")
+        guard case .resolved(let resolved) = await ConnectionTest.sshResolve(provisional.resolutionArgv) else {
+            return XCTFail("\(name): ssh -G failed")
+        }
+        let connection = SSHConnection(record: .config(name), stateDirectory: stateDirectory, sshPath: "/usr/bin/ssh",
+                                       resolved: resolved)
         var lines: [String] = ["== \(name)"]
 
         // The Test connection's evidence: no master before the connect,
@@ -63,7 +69,9 @@ final class LinuxAcceptanceTests: XCTestCase {
             process.waitUntilExit()
         }
 
-        let environment = await RemoteEnvironment.resolve(using: SSHExec(connection: connection, path: nil))
+        // Every check rides the master and nothing else, as in the sheet.
+        let environment = await RemoteEnvironment.resolve(using: SSHExec(connection: connection, path: nil, purpose: .overMaster))
+        XCTAssertTrue(environment.reachedHost, "\(name): the first query over the master reached the host")
         XCTAssertNil(environment.problem, name)
         let path = try XCTUnwrap(environment.path, name)
         lines.append("Login shell: \(environment.shell), PATH read.")
@@ -73,7 +81,7 @@ final class LinuxAcceptanceTests: XCTestCase {
             .run(script: "printf '%s\\n' \"$PATH\"", args: [], deadline: 10).stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         lines.append("  ssh default PATH=\(defaultPath)")
 
-        let exec = SSHExec(connection: connection, path: path)
+        let exec = SSHExec(connection: connection, path: path, purpose: .overMaster)
         let claude = await ToolCheck.run("claude", using: exec)
         let codex = await ToolCheck.run("codex", using: exec)
         for (binary, check) in [("claude", claude), ("codex", codex)] {
@@ -89,9 +97,9 @@ final class LinuxAcceptanceTests: XCTestCase {
         let logind = await LogindCheck.run(using: exec)
         lines.append(ConnectionTest.row(logind).line)
 
-        let resolved = ConnectionTest.parseResolution(try await ProcessRunner.run(
-            connection.resolutionArgv[0], Array(connection.resolutionArgv.dropFirst()), deadline: 5).stdout)
-        let summary = HostTestSummary(connectedAs: resolved["user"].flatMap { user in resolved["hostname"].map { "\(user)@\($0)" } },
+        // The identity the socket was keyed by.
+        let identity = connection.resolved
+        let summary = HostTestSummary(connectedAs: identity["user"].flatMap { user in identity["hostname"].map { "\(user)@\($0)" } },
                                       environment: environment, claude: claude, codex: codex, tmux: tmux, logind: logind)
         lines.append("Status: \(summary.statusLine)")
 

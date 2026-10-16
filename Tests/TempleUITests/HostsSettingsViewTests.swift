@@ -15,11 +15,32 @@ final class HostsSettingsViewTests: XCTestCase {
         defaults.set(RemoteHostList(records: records).encode(), forKey: RemoteHostsModel.hostsKey)
         let state = URL(fileURLWithPath: "/private/tmp/temple-hosts-view-\(UUID().uuidString.prefix(8))")
         addTeardownBlock { try? FileManager.default.removeItem(at: state) }
-        let hosts = RemoteHostsModel(defaults: defaults, readConfigAliases: configReads, stateDirectory: { state })
+        let ssh = standInSSH()
+        let hosts = RemoteHostsModel(defaults: defaults, readConfigAliases: configReads, stateDirectory: { state },
+                                     makeTest: { RemoteHostComposition.connectionTest(for: $0, stateDirectory: $1, sshPath: ssh) })
         let factory = FakeTerminalSurfaceFactory()
         let app = AppModel(surfaceFactory: factory, database: try TempleDB.inMemory(), settings: SettingsStore(defaults: defaults),
                            hostRegistry: Fixture.hostsWithoutFolderEvidence(), remoteHosts: hosts)
         return (app, factory)
+    }
+
+    /// A stand-in ssh, so no test reads the user's real ~/.ssh/config:
+    /// `-G` answers a fixed resolution, `-O check` finds no master, anything
+    /// else exits 0 having done nothing.
+    func standInSSH() -> String {
+        let path = "/private/tmp/temple-hosts-ssh-\(UUID().uuidString.prefix(8))"
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: path) }
+        let script = """
+        #!/bin/sh
+        for a; do
+          [ "$a" = "-G" ] && { printf 'user mentes\\nhostname 10.0.0.2\\nport 22\\n'; exit 0; }
+          [ "$a" = "-O" ] && { echo "Control socket connect: No such file or directory" >&2; exit 255; }
+        done
+        exit 0
+        """
+        try? script.write(toFile: path, atomically: true, encoding: .utf8)
+        chmod(path, 0o755)
+        return path
     }
 
     private func render<V: View>(_ view: V, size: NSSize = NSSize(width: 900, height: 1400)) -> NSWindow {
@@ -63,12 +84,13 @@ final class HostsSettingsViewTests: XCTestCase {
         let sheet = ConnectionTestSheet(test: test, surfaceFactory: factory, appearance: .default,
                                         onTestAgain: {}, onClose: { closed = true })
         let window = render(sheet, size: NSSize(width: 680, height: 520))
-        spin()
+        let started = Date().addingTimeInterval(10)
+        while factory.created.last?.startedCommand == nil, Date() < started { spin(0.05) }
         let surface = try XCTUnwrap(factory.created.last)
         let argv = try XCTUnwrap(surface.startedCommand?.argv)
         XCTAssertEqual(argv, test.surfaceArgv)
         XCTAssertEqual(argv.first, "/usr/bin/env")
-        XCTAssertTrue(argv[1].hasSuffix("/ssh"), argv[1])
+        XCTAssertTrue(argv[1].hasPrefix("/private/tmp/temple-hosts-ssh-"), argv[1])
         XCTAssertFalse(argv.contains("/bin/sh"), "no wrapper")
         XCTAssertTrue(argv.contains("ControlMaster=auto"))
         XCTAssertEqual(argv.suffix(3), ["--", "box", "true"])
@@ -99,12 +121,15 @@ final class HostsSettingsViewTests: XCTestCase {
         try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: state) }
         try Data("not a directory".utf8).write(to: state.appendingPathComponent("ssh"))
-        let hosts = RemoteHostsModel(defaults: defaults, readConfigAliases: { [] }, stateDirectory: { state })
+        let ssh = standInSSH()
+        let hosts = RemoteHostsModel(defaults: defaults, readConfigAliases: { [] }, stateDirectory: { state },
+                                     makeTest: { RemoteHostComposition.connectionTest(for: $0, stateDirectory: $1, sshPath: ssh) })
         let test = try XCTUnwrap(hosts.startTest(for: "box"))
         let factory = FakeTerminalSurfaceFactory()
         let window = render(ConnectionTestSheet(test: test, surfaceFactory: factory, appearance: .default,
                                                 onTestAgain: {}, onClose: {}), size: NSSize(width: 680, height: 520))
-        spin()
+        let deadline = Date().addingTimeInterval(10)
+        while test.phase == .connecting, Date() < deadline { spin(0.05) }
         XCTAssertNil(factory.created.last?.startedCommand, "no ssh was started")
         XCTAssertEqual(test.phase, .failed)
         XCTAssertTrue(hosts.statusLine(for: "box").hasPrefix("Temple couldn't prepare the test: "))

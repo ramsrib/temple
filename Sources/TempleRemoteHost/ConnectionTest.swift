@@ -45,50 +45,90 @@ public final class ConnectionTest: ObservableObject, Identifiable {
 
     public nonisolated let id = UUID()
     public let record: RemoteHostRecord
-    public let connection: SSHConnection
+    /// The connection the test uses, built once `ssh -G` has said where the
+    /// host resolves to (nil before `start()` finishes).
+    public private(set) var connection: SSHConnection?
     @Published public private(set) var phase: Phase = .connecting
     @Published public private(set) var rows: [Row] = []
     @Published public private(set) var failure: SSHFailure?
     @Published public private(set) var summary: HostTestSummary?
-    /// `ssh -G`'s view of the host, for the details line.
+    /// `ssh -G`'s view of the host, for the details line: the same answer
+    /// the connection's socket was keyed by.
     @Published public private(set) var resolution: [String: String] = [:]
 
     /// Told once, when the test ends either way.
     public var onFinished: ((HostTestSummary) -> Void)?
 
-    private let makeExec: (String?) -> RemoteExec
-    private let resolve: () async -> [String: String]
+    /// What `ssh -G` said, or why it could not say.
+    public enum Resolution: Sendable {
+        case resolved([String: String])
+        case failed(String)
+    }
+
+    private let stateDirectory: URL
+    private let sshPath: String
+    private let makeExec: (SSHConnection, String?) -> RemoteExec
+    private let resolve: ([String]) async -> Resolution
     private var task: Task<Void, Never>?
     private var started = false
 
-    /// `makeExec(path)` builds a query exec with that PATH (nil: ssh's
-    /// default environment). `resolve` runs `ssh -G`.
-    public init(record: RemoteHostRecord, connection: SSHConnection,
-                makeExec: @escaping (String?) -> RemoteExec,
-                resolve: @escaping () async -> [String: String]) {
+    /// `makeExec(connection, path)` builds an exec over that connection's
+    /// master with that PATH (nil: ssh's default environment). `resolve`
+    /// runs `ssh -G` (the argv it is given).
+    public init(record: RemoteHostRecord, stateDirectory: URL, sshPath: String,
+                makeExec: @escaping (SSHConnection, String?) -> RemoteExec,
+                resolve: @escaping ([String]) async -> Resolution = ConnectionTest.sshResolve) {
         self.record = record
-        self.connection = connection
+        self.stateDirectory = stateDirectory
+        self.sshPath = sshPath
         self.makeExec = makeExec
         self.resolve = resolve
     }
 
+    /// `ssh -G`, run locally (no connection), as key/value pairs.
+    public nonisolated static func sshResolve(_ argv: [String]) async -> Resolution {
+        do {
+            let output = try await ProcessRunner.run(argv[0], Array(argv.dropFirst()), deadline: 5)
+            guard output.status == 0 else {
+                return .failed(RemoteOutput.firstLine(output.stderr) ?? "ssh -G exited with status \(output.status)")
+            }
+            return .resolved(parseResolution(output.stdout))
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+    }
+
     /// What the terminal runs: the user's ssh, connecting interactively and
     /// creating the master. `/usr/bin/env` heads it because the terminal
-    /// execs its command as a login process, which ssh need not be.
+    /// execs its command as a login process, which ssh need not be. Empty
+    /// until `start()` has built the connection.
     public var surfaceArgv: [String] {
-        ["/usr/bin/env"] + connection.argv(.interactive, remoteCommand: "true")
+        guard let connection else { return [] }
+        return ["/usr/bin/env"] + connection.argv(.interactive, remoteCommand: "true")
     }
 
     /// The terminal's working directory: the user's home, never a remote path.
     public var surfaceDirectory: String { NSHomeDirectory() }
 
-    /// Prepares the master's socket directory and clears a stale socket
-    /// (positive proof only). False, with the test failed and saying why,
-    /// when the directory can't be used: the terminal must then not start.
+    /// Asks `ssh -G` where the host goes, builds the connection keyed by
+    /// that answer, prepares the master's socket directory and clears a
+    /// stale socket (positive proof only). False, with the test failed and
+    /// saying why, when any of it fails: the terminal must then not start.
     @discardableResult
-    public func start() -> Bool {
+    public func start() async -> Bool {
         guard !started, phase == .connecting else { return false }
         started = true
+        let provisional = SSHConnection(record: record, stateDirectory: stateDirectory, sshPath: sshPath)
+        let answer = await resolve(provisional.resolutionArgv)
+        guard phase == .connecting else { return false }
+        guard case .resolved(let values) = answer else {
+            if case .failed(let line) = answer {
+                finish(failure: .localSetup("ssh couldn't read its configuration for \(record.name): \(line)"))
+            }
+            return false
+        }
+        resolution = values
+        let connection = SSHConnection(record: record, stateDirectory: stateDirectory, sshPath: sshPath, resolved: values)
         do {
             try connection.prepareSocketDirectory()
         } catch {
@@ -96,14 +136,16 @@ public final class ConnectionTest: ObservableObject, Identifiable {
             return false
         }
         SocketHygiene.removeIfNothingListens(connection.controlPath)
+        self.connection = connection
         return true
     }
 
     /// The terminal's process ended, by any status and in any way. Its
     /// status proves nothing; whether the connect left a master on
-    /// Temple's socket does. Called again, it does nothing.
+    /// Temple's socket does, and then the first query over it decides.
+    /// Called again, it does nothing.
     public func terminalExited() {
-        guard started, phase == .connecting, task == nil else { return }
+        guard let connection, phase == .connecting, task == nil else { return }
         let argv = connection.masterCheckArgv
         task = Task { [weak self] in
             let output = try? await ProcessRunner.run(argv[0], Array(argv.dropFirst()), deadline: Self.masterCheckDeadline)
@@ -113,7 +155,7 @@ public final class ConnectionTest: ObservableObject, Identifiable {
                 return
             }
             self.phase = .checking
-            await self.runChecks()
+            await self.runChecks(connection)
         }
     }
 
@@ -131,12 +173,17 @@ public final class ConnectionTest: ObservableObject, Identifiable {
 
     // MARK: The checks
 
-    private func runChecks() async {
-        async let resolution = resolve()
-
+    private func runChecks(_ connection: SSHConnection) async {
         set(Row(id: "shell", verdict: .running, line: "Login shell: reading its PATH…"))
-        let environment = await RemoteEnvironment.resolve(using: makeExec(nil))
+        let environment = await RemoteEnvironment.resolve(using: makeExec(connection, nil))
         if Task.isCancelled { return }
+        // A master answering proves a local process; this query running on
+        // the host is what proves the connection.
+        guard environment.reachedHost else {
+            rows.removeAll { $0.id == "shell" }
+            finish(failure: .unconfirmed(environment.problem ?? "no answer"))
+            return
+        }
         summaryDraft.environment = environment
         if let path = environment.path {
             set(Row(id: "shell", verdict: .ok, line: "Login shell: \(environment.shell.isEmpty ? "unknown" : environment.shell), PATH read.",
@@ -145,7 +192,7 @@ public final class ConnectionTest: ObservableObject, Identifiable {
             set(Row(id: "shell", verdict: .problem,
                     line: "Couldn't read the login shell's PATH: \(environment.problem ?? "no answer"); using ssh's default environment."))
         }
-        let exec = makeExec(environment.path)
+        let exec = makeExec(connection, environment.path)
 
         set(Row(id: "claude", verdict: .running, line: "claude: checking…"))
         let claude = await ToolCheck.run("claude", using: exec)
@@ -171,10 +218,11 @@ public final class ConnectionTest: ObservableObject, Identifiable {
         summaryDraft.logind = logind
         set(Self.row(logind))
 
-        let resolved = await resolution
-        if Task.isCancelled { return }
-        self.resolution = resolved
-        if let user = resolved["user"], let host = resolved["hostname"] { summaryDraft.connectedAs = "\(user)@\(host)" }
+        // The identity of the connection the checks ran over: the socket
+        // was keyed by this very resolution.
+        if let user = connection.resolved["user"], let host = connection.resolved["hostname"] {
+            summaryDraft.connectedAs = "\(user)@\(host)"
+        }
         finish()
     }
 

@@ -62,18 +62,13 @@ enum RemoteHostComposition {
     /// The user's ssh: the login shell's, else the system's.
     static var sshPath: String { LoginShellEnvironment.locate("ssh") ?? "/usr/bin/ssh" }
 
-    /// A Test connection for `record`, over the user's ssh, with its master
-    /// socket under `stateDirectory`.
+    /// A Test connection for `record`, over `sshPath` (the user's ssh), with
+    /// its master socket under `stateDirectory`. Every check rides that
+    /// master and nothing else (`.overMaster`).
     @MainActor
-    static func connectionTest(for record: RemoteHostRecord, stateDirectory: URL) -> ConnectionTest {
-        let connection = SSHConnection(record: record, stateDirectory: stateDirectory, sshPath: sshPath)
-        let argv = connection.resolutionArgv
-        return ConnectionTest(record: record, connection: connection,
-                              makeExec: { SSHExec(connection: connection, path: $0) },
-                              resolve: {
-                                  guard let output = try? await ProcessRunner.run(argv[0], Array(argv.dropFirst()), deadline: 5),
-                                        output.status == 0 else { return [:] }
-                                  return ConnectionTest.parseResolution(output.stdout)
-                              })
+    static func connectionTest(for record: RemoteHostRecord, stateDirectory: URL,
+                               sshPath: String = RemoteHostComposition.sshPath) -> ConnectionTest {
+        ConnectionTest(record: record, stateDirectory: stateDirectory, sshPath: sshPath,
+                       makeExec: { SSHExec(connection: $0, path: $1, purpose: .overMaster) })
     }
 }

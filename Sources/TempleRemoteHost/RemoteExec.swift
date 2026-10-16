@@ -6,8 +6,12 @@ public struct RemoteOutput: Sendable, Equatable {
     public var status: Int32
     public var stdout: String
     public var stderr: String
-    public init(status: Int32, stdout: String, stderr: String) {
-        self.status = status; self.stdout = stdout; self.stderr = stderr
+    /// Whether the command itself ran on the host (its marker arrived):
+    /// false means ssh, the master or the network failed first, and the
+    /// status and stderr are ssh's.
+    public var reachedCommand: Bool
+    public init(status: Int32, stdout: String, stderr: String, reachedCommand: Bool = true) {
+        self.status = status; self.stdout = stdout; self.stderr = stderr; self.reachedCommand = reachedCommand
     }
 
     /// The first line of stderr that says something, trimmed; nil when none.
@@ -53,15 +57,19 @@ public protocol RemoteExec: Sendable {
 public struct SSHExec: RemoteExec {
     public let connection: SSHConnection
     public let path: String?
+    /// `.query` (rides the master, or connects on its own) or `.overMaster`
+    /// (the master and nothing else).
+    public let purpose: SSHConnection.Purpose
 
-    public init(connection: SSHConnection, path: String?) {
-        self.connection = connection; self.path = path
+    public init(connection: SSHConnection, path: String?, purpose: SSHConnection.Purpose = .query) {
+        precondition(purpose != .interactive, "a query never asks")
+        self.connection = connection; self.path = path; self.purpose = purpose
     }
 
     public func run(script: String, args: [String], deadline: TimeInterval) async throws -> RemoteOutput {
         let marker = "__temple_\(RemoteQuoting.nonce())__"
         let remote = Self.remoteCommand(script: script, args: args, path: path, marker: marker)
-        let argv = connection.argv(.query, remoteCommand: remote)
+        let argv = connection.argv(purpose, remoteCommand: remote)
         let raw = try await ProcessRunner.run(argv[0], Array(argv.dropFirst()), deadline: deadline)
         return Self.unframe(raw, marker: marker)
     }
@@ -77,9 +85,9 @@ public struct SSHExec: RemoteExec {
     /// the marker never reached the command: stdout is then empty, and
     /// stderr is ssh's own (kept whole).
     static func unframe(_ raw: ProcessRunner.Output, marker: String) -> RemoteOutput {
-        RemoteOutput(status: raw.status,
-                     stdout: after(marker, in: raw.stdout) ?? "",
-                     stderr: after(marker, in: raw.stderr) ?? raw.stderr)
+        let stdout = after(marker, in: raw.stdout)
+        return RemoteOutput(status: raw.status, stdout: stdout ?? "",
+                            stderr: after(marker, in: raw.stderr) ?? raw.stderr, reachedCommand: stdout != nil)
     }
 
     static func after(_ marker: String, in text: String) -> String? {

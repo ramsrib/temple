@@ -6,10 +6,10 @@ import TempleCore
 @MainActor
 final class ConnectionTestTests: XCTestCase {
     private func makeTest(_ tree: TempTree, sshPath: String = "/usr/bin/ssh",
+                          resolved: [String: String] = ["user": "mentes", "hostname": "10.0.0.2"],
                           exec: @escaping (String?) -> RemoteExec) -> ConnectionTest {
-        let connection = SSHConnection(record: .config("box"), stateDirectory: tree.directory("state"), sshPath: sshPath)
-        return ConnectionTest(record: .config("box"), connection: connection, makeExec: exec,
-                              resolve: { ["user": "mentes", "hostname": "10.0.0.2"] })
+        ConnectionTest(record: .config("box"), stateDirectory: tree.directory("state"), sshPath: sshPath,
+                       makeExec: { _, path in exec(path) }, resolve: { _ in .resolved(resolved) })
     }
 
     private func waitUntil(_ condition: @escaping () -> Bool, timeout: TimeInterval = 10) async {
@@ -81,18 +81,23 @@ final class ConnectionTestTests: XCTestCase {
         let test = makeTest(tree, sshPath: ssh.path, exec: Self.host(paths))
         var finished: HostTestSummary?
         test.onFinished = { finished = $0 }
-        XCTAssertEqual(test.surfaceArgv, ["/usr/bin/env", ssh.path] + test.connection.arguments(for: .interactive)
+        test.terminalExited()
+        XCTAssertEqual(test.phase, .connecting, "nothing before start")
+        XCTAssertEqual(test.surfaceArgv, [], "no terminal before the connection exists")
+        let started = await test.start()
+        XCTAssertTrue(started)
+        let connection = try XCTUnwrap(test.connection)
+        XCTAssertEqual(test.surfaceArgv, ["/usr/bin/env", ssh.path] + connection.arguments(for: .interactive)
                        + ["--", "box", "true"])
         for option in ["ControlMaster=auto", "ControlPersist=600", "-t"] {
             XCTAssertTrue(test.surfaceArgv.contains(option), option)
         }
         XCTAssertFalse(test.surfaceArgv.contains("BatchMode=yes"), "the user answers ssh here")
-        XCTAssertEqual(test.connection.masterCheckArgv.suffix(5), ["BatchMode=yes", "-O", "check", "--", "box"])
-        XCTAssertFalse(test.connection.masterCheckArgv.contains("exit"))
-
-        test.terminalExited()
-        XCTAssertEqual(test.phase, .connecting, "nothing before start")
-        XCTAssertTrue(test.start())
+        XCTAssertEqual(connection.masterCheckArgv.suffix(4), ["-O", "check", "--", "box"])
+        for option in ["ControlMaster=no", "ControlPersist=no", "BatchMode=yes", "ProxyCommand=/usr/bin/false"] {
+            XCTAssertTrue(connection.masterCheckArgv.contains(option), option)
+        }
+        XCTAssertFalse(connection.masterCheckArgv.contains("exit"))
         try await runTerminal(test)
         XCTAssertTrue(paths.values.isEmpty, "no query before the terminal ends")
         test.terminalExited()
@@ -123,7 +128,8 @@ final class ConnectionTestTests: XCTestCase {
             try mode.write(toFile: tree.path + "/mode", atomically: true, encoding: .utf8)
             let paths = PathLog()
             let test = makeTest(tree, sshPath: ssh.path, exec: Self.host(paths))
-            XCTAssertTrue(test.start())
+            let started = await test.start()
+            XCTAssertTrue(started)
             try await runTerminal(test)
             test.terminalExited()
             await waitUntil { test.phase == .failed }
@@ -145,7 +151,8 @@ final class ConnectionTestTests: XCTestCase {
         let ssh = standInSSH(tree)
         try "none-0".write(toFile: tree.path + "/mode", atomically: true, encoding: .utf8)
         let test = makeTest(tree, sshPath: ssh.path, exec: Self.host(PathLog()))
-        XCTAssertTrue(test.start())
+        let started = await test.start()
+        XCTAssertTrue(started)
         test.terminalExited()
         test.terminalExited()
         await waitUntil { test.phase == .failed }
@@ -169,7 +176,8 @@ final class ConnectionTestTests: XCTestCase {
         }
         var published = false
         test.onFinished = { _ in published = true }
-        XCTAssertTrue(test.start())
+        let started = await test.start()
+        XCTAssertTrue(started)
         try await runTerminal(test)
         test.terminalExited()
         await waitUntil { test.phase == .checking }
@@ -182,25 +190,101 @@ final class ConnectionTestTests: XCTestCase {
     }
 
     /// A socket directory that can't be used fails the test before any
-    /// terminal starts, saying why.
-    func testAnUnusableSocketDirectoryFailsBeforeTheTerminal() throws {
+    /// terminal starts, saying why; so does a configuration ssh can't read.
+    func testAnUnusableSocketDirectoryFailsBeforeTheTerminal() async throws {
         let tree = TempTree("ct-socket")
         let state = tree.directory("state")
         tree.write("state/ssh", "a file, not a directory")
-        let test = ConnectionTest(record: .config("box"),
-                                  connection: SSHConnection(record: .config("box"), stateDirectory: state, sshPath: "/usr/bin/ssh"),
-                                  makeExec: { _ in RecordingExec { _, _ in RemoteOutput(status: 0, stdout: "", stderr: "") } },
-                                  resolve: { [:] })
+        let test = ConnectionTest(record: .config("box"), stateDirectory: state, sshPath: "/usr/bin/ssh",
+                                  makeExec: { _, _ in RecordingExec { _, _ in RemoteOutput(status: 0, stdout: "", stderr: "") } },
+                                  resolve: { _ in .resolved([:]) })
         var finished: HostTestSummary?
         test.onFinished = { finished = $0 }
-        XCTAssertFalse(test.start())
+        let started = await test.start()
+        XCTAssertFalse(started)
         XCTAssertEqual(test.phase, .failed)
         guard case .localSetup? = test.failure else { return XCTFail("\(String(describing: test.failure))") }
         XCTAssertEqual(test.failure?.message, "Temple couldn't prepare the test: Temple won't use \(state.path)/ssh for ssh's connection: it is not a directory.")
         XCTAssertNotNil(finished)
-        XCTAssertFalse(test.start(), "a failed test never starts again")
+        XCTAssertEqual(test.surfaceArgv, [])
+        let again = await test.start()
+        XCTAssertFalse(again, "a failed test never starts again")
         test.terminalExited()
         XCTAssertEqual(test.phase, .failed)
+
+        let unreadable = ConnectionTest(record: .config("box"), stateDirectory: tree.directory("state2"), sshPath: "/usr/bin/ssh",
+                                        makeExec: { _, _ in RecordingExec { _, _ in RemoteOutput(status: 0, stdout: "", stderr: "") } },
+                                        resolve: { _ in .failed("/Users/me/.ssh/config line 3: Bad configuration option: bogus") })
+        let resolvedNothing = await unreadable.start()
+        XCTAssertFalse(resolvedNothing)
+        XCTAssertEqual(unreadable.failure?.message,
+                       "Temple couldn't prepare the test: ssh couldn't read its configuration for box: /Users/me/.ssh/config line 3: Bad configuration option: bogus.")
+    }
+
+    /// A live master proves only a local process: when the first query
+    /// over it never reaches the host, the test says so and never reports
+    /// the host connected, and runs nothing more.
+    func testAMasterWhoseQueriesFailIsUnconfirmed() async throws {
+        let tree = TempTree("ct-unconfirmed")
+        let ssh = standInSSH(tree)
+        try "master".write(toFile: tree.path + "/mode", atomically: true, encoding: .utf8)
+        let line = "mux_client_request_session: session request failed: Session open refused by peer"
+        let failing = RecordingExec { _, _ in RemoteOutput(status: 255, stdout: "", stderr: line + "\n", reachedCommand: false) }
+        let test = makeTest(tree, sshPath: ssh.path) { _ in failing }
+        var finished: HostTestSummary?
+        test.onFinished = { finished = $0 }
+        let started = await test.start()
+        XCTAssertTrue(started)
+        try await runTerminal(test)
+        test.terminalExited()
+        await waitUntil { test.phase == .failed }
+        XCTAssertEqual(test.failure, .unconfirmed(line))
+        XCTAssertEqual(test.failure?.message, "Couldn't confirm the connection: \(line).")
+        XCTAssertEqual(finished?.statusLine, "Couldn't confirm the connection: \(line).")
+        XCTAssertFalse(finished?.statusLine.contains("Connected") ?? true)
+        XCTAssertEqual(failing.calls.count, 1, "only the first query; nothing after it")
+        XCTAssertTrue(test.rows.isEmpty)
+    }
+
+    /// Retargeting an alias in the config gives it a new socket at once:
+    /// the old destination's master is never asked, and the identity shown
+    /// is the one the socket was keyed by. Resolved by the real `ssh -G`
+    /// against a fixture config.
+    func testARetargetedAliasNeverReusesTheOldMaster() async throws {
+        let tree = TempTree("ct-retarget")
+        let config = tree.path + "/config"
+        let ssh = standInSSH(tree)
+        try "master".write(toFile: tree.path + "/mode", atomically: true, encoding: .utf8)
+        let state = tree.directory("state")
+        func test(target: String) async throws -> ConnectionTest {
+            try "Host box\n  HostName \(target)\n  User mentes\n".write(toFile: config, atomically: true, encoding: .utf8)
+            let test = ConnectionTest(record: .config("box"), stateDirectory: state, sshPath: ssh.path,
+                                      makeExec: { _, path in Self.host(PathLog())(path) },
+                                      resolve: { argv in await ConnectionTest.sshResolve(["/usr/bin/ssh", "-F", config] + argv.dropFirst()) })
+            let started = await test.start()
+            XCTAssertTrue(started)
+            return test
+        }
+        let first = try await test(target: "10.0.0.1")
+        let firstPath = try XCTUnwrap(first.connection?.controlPath)
+        try await runTerminal(first)
+        first.terminalExited()
+        await waitUntil { first.phase == .finished }
+        XCTAssertEqual(first.summary?.statusLine.hasPrefix("Connected as mentes@10.0.0.1."), true)
+
+        // The same alias, pointed elsewhere, while the first master lives on.
+        let second = try await test(target: "10.0.0.2")
+        let secondPath = try XCTUnwrap(second.connection?.controlPath)
+        XCTAssertNotEqual(secondPath, firstPath, "a new destination, a new socket")
+        try await runTerminal(second)
+        second.terminalExited()
+        await waitUntil { second.phase == .finished }
+        XCTAssertEqual(second.summary?.statusLine.hasPrefix("Connected as mentes@10.0.0.2."), true)
+        let checks = try String(contentsOfFile: tree.path + "/calls", encoding: .utf8).split(separator: "\n")
+            .filter { $0.contains("-O check") }
+        XCTAssertEqual(checks.count, 2)
+        XCTAssertTrue(checks[1].contains(secondPath), "the second test asked its own socket, not the old master's")
+        XCTAssertFalse(checks[1].contains(firstPath))
     }
 
     func testSSHGResolutionParsing() {

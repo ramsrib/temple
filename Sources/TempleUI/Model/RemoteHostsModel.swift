@@ -40,7 +40,9 @@ public final class RemoteHostsModel: ObservableObject {
     init(defaults: UserDefaults,
          readConfigAliases: @escaping () -> [String] = RemoteHostComposition.configAliases,
          stateDirectory: @escaping () -> URL = { TempleState.directory },
-         makeTest: @escaping @MainActor (RemoteHostRecord, URL) -> ConnectionTest = RemoteHostComposition.connectionTest) {
+         makeTest: @escaping @MainActor (RemoteHostRecord, URL) -> ConnectionTest = {
+             RemoteHostComposition.connectionTest(for: $0, stateDirectory: $1)
+         }) {
         self.defaults = defaults
         self.readConfigAliases = readConfigAliases
         self.stateDirectory = stateDirectory

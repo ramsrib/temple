@@ -264,6 +264,10 @@ public enum SSHFailure: Sendable, Equatable {
     /// The interactive connect left no master: ssh said why on the
     /// terminal, where its words stay.
     case connectFailed
+    /// A master answered, but the first query over it did not run on the
+    /// host (a dead connection behind a live master, a refused session):
+    /// ssh's line. Never reported as connected.
+    case unconfirmed(String)
     /// This Mac could not prepare the test (the socket directory).
     case localSetup(String)
 
@@ -292,6 +296,8 @@ public enum SSHFailure: Sendable, Equatable {
             "Couldn't connect: \(line.hasSuffix(".") ? String(line.dropLast()) : line)."
         case .connectFailed:
             "Couldn't connect. See ssh's message above."
+        case .unconfirmed(let line):
+            "Couldn't confirm the connection: \(line.hasSuffix(".") ? String(line.dropLast()) : line)."
         case .localSetup(let reason):
             "Temple couldn't prepare the test: \(reason.hasSuffix(".") ? String(reason.dropLast()) : reason)."
         }

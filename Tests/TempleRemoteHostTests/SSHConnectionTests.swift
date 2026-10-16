@@ -58,6 +58,25 @@ final class SSHConnectionTests: XCTestCase {
                           base, "two isolated instances never share a master")
     }
 
+    /// Where ssh resolves the host is part of the key: an alias retargeted
+    /// in the config gets a new socket; resolved settings that don't move
+    /// the destination don't.
+    func testTheSocketKeyFollowsWhereSSHResolvesTheHost() {
+        let base: [String: String] = ["hostname": "10.0.0.1", "user": "mentes", "port": "22"]
+        let key = SSHConnection.socketKey(stateDirectory: state, record: .config("box"), resolved: base)
+        for (field, value) in [("hostname", "10.0.0.2"), ("user", "other"), ("port", "2222"),
+                               ("proxyjump", "bastion"), ("proxycommand", "nc %h %p")] {
+            var moved = base
+            moved[field] = value
+            XCTAssertNotEqual(SSHConnection.socketKey(stateDirectory: state, record: .config("box"), resolved: moved), key, field)
+        }
+        var unrelated = base
+        unrelated["compression"] = "yes"
+        let connection = SSHConnection(record: .config("box"), stateDirectory: state, sshPath: "/usr/bin/ssh", resolved: unrelated)
+        XCTAssertEqual(connection.controlPath.hasSuffix(key), true, "only the destination's fields count")
+        XCTAssertEqual(connection.resolved, base)
+    }
+
     func testALongStateDirectoryFallsBackToTheTemporaryDirectory() {
         let long = URL(fileURLWithPath: "/private/tmp/" + String(repeating: "x", count: 70), isDirectory: true)
         let connection = SSHConnection(record: added, stateDirectory: long, sshPath: "/usr/bin/ssh",
@@ -115,6 +134,47 @@ final class SSHConnectionTests: XCTestCase {
             ["/usr/bin/ssh", "-F", config.path, "-G"] + alias.hostOptions + ["--", "box"], home: tree.path))
         XCTAssertEqual(resolved["user"], "fromconfig")
         XCTAssertEqual(resolved["port"], "9999")
+    }
+
+    /// The master probe and every master-only query stay on the socket:
+    /// with a config that says `ControlMaster yes` or `ask` (which makes ssh
+    /// skip the socket) and a socket that fails the mux handshake (which
+    /// lets ssh fall back), the real ssh never opens a connection. The host
+    /// is a local TCP listener that would see one. The control case shows
+    /// the trap works: the old probe, without the overrides, does connect.
+    func testTheProbeAndMasterOnlyQueriesNeverConnect() async throws {
+        let tree = TempTree("probe")
+        let trap = try TCPTrap()
+        defer { trap.close() }
+        let state = tree.directory("state")
+        for setting in ["yes", "ask", "auto"] {
+            let config = tree.write("config-\(setting)", """
+            Host box
+              HostName 127.0.0.1
+              Port \(trap.port)
+              ControlMaster \(setting)
+            """)
+            let connection = SSHConnection(record: .config("box"), stateDirectory: state, sshPath: "/usr/bin/ssh")
+            try connection.prepareSocketDirectory()
+            // Nothing at the socket, then a socket that fails the handshake.
+            for broken in [false, true] {
+                let listener = broken ? try HandshakeBreaker(path: connection.controlPath) : nil
+                defer { listener?.close() }
+                for argv in [connection.masterCheckArgv,
+                             connection.argv(.overMaster, remoteCommand: "true")] {
+                    let withConfig = [argv[0], "-F", config.path] + argv.dropFirst()
+                    let output = try await ProcessRunner.run(withConfig[0], Array(withConfig.dropFirst()), deadline: 10)
+                    XCTAssertNotEqual(output.status, 0, "\(setting) broken=\(broken) \(argv.contains("check") ? "probe" : "query")")
+                    XCTAssertFalse(trap.sawConnection(), "\(setting) broken=\(broken): ssh opened a connection\n\(output.stderr)")
+                }
+            }
+        }
+        // Control: the probe as it was (no overrides) under ControlMaster yes.
+        let config = tree.write("config-control", "Host box\n  HostName 127.0.0.1\n  Port \(trap.port)\n  ControlMaster yes\n")
+        let connection = SSHConnection(record: .config("box"), stateDirectory: state, sshPath: "/usr/bin/ssh")
+        _ = try? await ProcessRunner.run("/usr/bin/ssh", ["-F", config.path, "-o", "ControlPath=\(connection.controlPath)",
+                                                          "-o", "BatchMode=yes", "-O", "check", "--", "box"], deadline: 3)
+        XCTAssertTrue(trap.sawConnection(), "without the overrides ssh does connect: the trap works")
     }
 
     func testOptionValuesQuoteByScalar() {
@@ -209,5 +269,81 @@ final class SSHConnectionTests: XCTestCase {
         process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 0, String(decoding: error, as: UTF8.self))
         return String(decoding: data, as: UTF8.self)
+    }
+}
+
+/// A TCP listener on 127.0.0.1 that only notices connections.
+final class TCPTrap {
+    let port: UInt16
+    private let fd: Int32
+
+    init() throws {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        self.fd = fd
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        address.sin_port = 0
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        guard bound == 0, listen(fd, 8) == 0 else { throw POSIXError(.EADDRINUSE) }
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) }
+        }
+        port = UInt16(bigEndian: address.sin_port)
+    }
+
+
+    /// Whether anyone connected since the last call (each one is closed).
+    func sawConnection() -> Bool {
+        var saw = false
+        while true {
+            let client = accept(fd, nil, nil)
+            guard client >= 0 else { break }
+            Darwin.close(client)
+            saw = true
+        }
+        return saw
+    }
+
+    func close() { Darwin.close(fd) }
+}
+
+/// A Unix socket at a master's path that accepts and hangs up at once: the
+/// mux handshake fails.
+final class HandshakeBreaker: @unchecked Sendable {
+    private let fd: Int32
+    private let path: String
+
+    init(path: String) throws {
+        self.path = path
+        unlink(path)
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        self.fd = fd
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            for (index, byte) in path.utf8.enumerated() { buffer[index] = byte }
+        }
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+        }
+        guard bound == 0, listen(fd, 8) == 0 else { throw POSIXError(.EADDRINUSE) }
+        Thread.detachNewThread {
+            while true {
+                let client = accept(fd, nil, nil)
+                guard client >= 0 else { return }
+                Darwin.close(client)
+            }
+        }
+    }
+
+    func close() {
+        shutdown(fd, SHUT_RDWR)
+        Darwin.close(fd)
+        unlink(path)
     }
 }

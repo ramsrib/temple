@@ -401,6 +401,7 @@ final class TestTerminal: ObservableObject, TerminalSurfaceDelegate {
     let surface: TerminalSurface
     private weak var test: ConnectionTest?
     private var started = false
+    private var stopped = false
 
     init(surfaceFactory: TerminalSurfaceFactory, appearance: TerminalAppearance) {
         surface = surfaceFactory.makeSurface(appearance: appearance)
@@ -411,17 +412,20 @@ final class TestTerminal: ObservableObject, TerminalSurfaceDelegate {
         started = true
         self.test = test
         surface.delegate = self
-        // Nothing could be prepared: the test says why, and no terminal runs.
-        guard test.start() else { return }
-        do {
-            try surface.start(TerminalCommand(argv: test.surfaceArgv, cwd: test.surfaceDirectory))
-            surface.focus()
-        } catch {
-            test.terminalExited()
+        Task { @MainActor [weak self] in
+            // Nothing could be prepared: the test says why, and no terminal runs.
+            guard await test.start(), let self, !self.stopped else { return }
+            do {
+                try self.surface.start(TerminalCommand(argv: test.surfaceArgv, cwd: test.surfaceDirectory))
+                self.surface.focus()
+            } catch {
+                test.terminalExited()
+            }
         }
     }
 
     func stop() {
+        stopped = true
         surface.delegate = nil
         surface.terminate()
         surface.release()

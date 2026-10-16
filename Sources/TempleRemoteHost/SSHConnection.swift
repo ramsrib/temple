@@ -24,8 +24,14 @@ import Foundation
 /// through `ControlPersist`.
 public struct SSHConnection: Sendable, Equatable {
     public enum Purpose: Sendable, Equatable {
+        /// A tab or the Test sheet: may create the master, may ask.
         case interactive
+        /// A background query: rides the master when one is up, otherwise
+        /// connects on its own, never asking.
         case query
+        /// A query that must ride an existing master and nothing else: if
+        /// the master is gone or refuses, it fails rather than connecting.
+        case overMaster
     }
 
     public let record: RemoteHostRecord
@@ -38,12 +44,21 @@ public struct SSHConnection: Sendable, Equatable {
     /// directory's path was too long for a Unix socket).
     public let usesFallbackDirectory: Bool
 
-    public init(record: RemoteHostRecord, stateDirectory: URL, sshPath: String,
+    /// What `ssh -G` resolved for this host when the connection was made
+    /// (hostname, user, port, proxyjump, proxycommand): part of the socket
+    /// key, and what the test reports it connected as.
+    public let resolved: [String: String]
+
+    /// `resolved` is `ssh -G`'s answer for this host (`resolutionArgv`). A
+    /// config alias retargeted in `~/.ssh/config` resolves differently, so
+    /// it gets a new socket and never reuses the old destination's master.
+    public init(record: RemoteHostRecord, stateDirectory: URL, sshPath: String, resolved: [String: String] = [:],
                 temporaryDirectory: String = ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory(),
                 uid: uid_t = getuid()) {
         self.record = record
         self.sshPath = sshPath
-        let key = Self.socketKey(stateDirectory: stateDirectory, record: record)
+        self.resolved = resolved.filter { Self.resolvedKeys.contains($0.key) }
+        let key = Self.socketKey(stateDirectory: stateDirectory, record: record, resolved: self.resolved)
         let primary = stateDirectory.appendingPathComponent("ssh", isDirectory: true).path + "/" + key
         if primary.utf8.count <= Self.maximumControlPathLength {
             controlPath = primary
@@ -67,12 +82,18 @@ public struct SSHConnection: Sendable, Equatable {
     /// 104 - 1 - 17 leaves 86 for the path itself.
     public static let maximumControlPathLength = 86
 
-    /// `m-` and 16 hex digits of a SHA-256 over the state directory and every
-    /// connection parameter: an edit yields a new socket at once, and two
+    /// The `ssh -G` fields that decide where a connection goes.
+    public static let resolvedKeys = ["hostname", "user", "port", "proxyjump", "proxycommand"]
+
+    /// `m-` and 16 hex digits of a SHA-256 over the state directory, every
+    /// connection parameter of the record, and where ssh resolves it to: an
+    /// edit, here or in `~/.ssh/config`, yields a new socket at once, and two
     /// isolated Temple instances never share one, even in the fallback dir.
-    public static func socketKey(stateDirectory: URL, record: RemoteHostRecord) -> String {
+    public static func socketKey(stateDirectory: URL, record: RemoteHostRecord,
+                                 resolved: [String: String] = [:]) -> String {
         let fields = [stateDirectory.standardizedFileURL.path, record.name, record.address ?? "", record.user ?? "",
                       record.port.map(String.init) ?? "", record.identityFile ?? "", record.proxyJump ?? ""]
+            + resolvedKeys.map { "\($0)=\(resolved[$0] ?? "")" }
         let digest = SHA256.hash(data: Data(fields.joined(separator: "\u{0}").utf8))
         return "m-" + digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
@@ -109,8 +130,21 @@ public struct SSHConnection: Sendable, Equatable {
                 "-o", "ControlMaster=no", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
                 "-T",
             ]
+        case .overMaster:
+            return hostOptions + socket + Self.masterOnly + ["-o", "ClearAllForwardings=yes", "-T"]
         }
     }
+
+    /// Options that keep ssh on the master's socket and off the network.
+    /// Command-line options win over every config, so an inherited
+    /// `ControlMaster yes` or `ask` (which makes ssh skip the socket) is
+    /// overridden, and a fallback after a failed mux handshake has nowhere
+    /// to go: its transport is `/usr/bin/false`, which also displaces any
+    /// `ProxyJump` or `ProxyCommand` a config sets.
+    static let masterOnly = [
+        "-o", "ControlMaster=no", "-o", "ControlPersist=no", "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=1", "-o", "ProxyCommand=/usr/bin/false",
+    ]
 
     /// The whole argv: ssh, its arguments, `--`, the host's name, and the
     /// remote command when there is one.
@@ -119,11 +153,13 @@ public struct SSHConnection: Sendable, Equatable {
     }
 
     /// `ssh -O check` on Temple's own socket for this host: exit 0 when a
-    /// master is up there. Local, no remote command, never creates a master
-    /// (`-O` only talks to one), and never `-O exit`.
+    /// master process answers there. Local: no remote command, and with
+    /// `masterOnly` it can neither skip the socket nor fall back to a
+    /// connection. Never `-O exit`. It proves a local master only; the
+    /// first query over it proves the connection.
     public var masterCheckArgv: [String] {
-        [sshPath, "-o", "ControlPath=\(Self.optionValue(Self.escapePercent(controlPath)))", "-o", "BatchMode=yes",
-         "-O", "check", "--", record.name]
+        [sshPath, "-o", "ControlPath=\(Self.optionValue(Self.escapePercent(controlPath)))"] + Self.masterOnly
+            + ["-O", "check", "--", record.name]
     }
 
     /// `ssh -G`: what ssh will use for this host, without connecting.

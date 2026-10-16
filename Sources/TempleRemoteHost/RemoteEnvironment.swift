@@ -18,9 +18,12 @@ public struct RemoteEnvironment: Sendable, Equatable {
     public let path: String?
     /// Why there is no PATH, in words for the user.
     public let problem: String?
+    /// Whether the query ran on the host at all: false when ssh, the master
+    /// or the network failed first (then `problem` is ssh's line).
+    public let reachedHost: Bool
 
-    public init(shell: String, path: String?, problem: String?) {
-        self.shell = shell; self.path = path; self.problem = problem
+    public init(shell: String, path: String?, problem: String?, reachedHost: Bool = true) {
+        self.shell = shell; self.path = path; self.problem = problem; self.reachedHost = reachedHost
     }
 
     /// The resolution query's deadline.
@@ -53,21 +56,23 @@ public struct RemoteEnvironment: Sendable, Equatable {
             return parse(output, marker: marker)
         } catch let error as RemoteExecError {
             if case .deadline = error {
-                return RemoteEnvironment(shell: "", path: nil, problem: "the login shell didn't answer within 5 seconds")
+                return RemoteEnvironment(shell: "", path: nil, problem: "the login shell didn't answer within 5 seconds",
+                                         reachedHost: false)
             }
-            return RemoteEnvironment(shell: "", path: nil, problem: error.localizedDescription)
+            return RemoteEnvironment(shell: "", path: nil, problem: error.localizedDescription, reachedHost: false)
         } catch {
-            return RemoteEnvironment(shell: "", path: nil, problem: error.localizedDescription)
+            return RemoteEnvironment(shell: "", path: nil, problem: error.localizedDescription, reachedHost: false)
         }
     }
 
     static func parse(_ output: RemoteOutput, marker: String) -> RemoteEnvironment {
         let lines = output.stdout.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let shell = lines.first { $0.hasPrefix("shell ") }.map { String($0.dropFirst(6)) } ?? ""
-        guard output.status == 0 || output.status == 3 else {
+        guard output.reachedCommand, output.status == 0 || output.status == 3 else {
             // The command never ran (ssh's 255, a missing sh): ssh's words.
             return RemoteEnvironment(shell: shell, path: nil,
-                                     problem: output.firstErrorLine ?? "ssh exited with status \(output.status)")
+                                     problem: output.firstErrorLine ?? "ssh exited with status \(output.status)",
+                                     reachedHost: false)
         }
         if let start = lines.firstIndex(of: marker) {
             let rest = lines[(start + 1)...]

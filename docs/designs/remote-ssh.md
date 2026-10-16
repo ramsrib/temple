@@ -1456,9 +1456,26 @@ altitude decision in the second):
    Temple, so the unknown-key and changed-key copy apply to queries (phase
    1), and a changed key gets the generic copy in the sheet with Test
    again. A master left from an earlier test (it persists 10 minutes)
-   counts as connected, which it is. Linux acceptance proves the evidence
-   on both boxes: no master before the connect, one after, the checks
-   riding it.
+   counts as a master. Linux acceptance proves the evidence on both boxes:
+   no master before the connect, one after, the checks riding it.
+   - **The probe and the checks stay on the master.** `-O check` and every
+     Test query carry `ControlMaster=no`, `ControlPersist=no`,
+     `BatchMode=yes`, `ConnectTimeout=1` and `ProxyCommand=/usr/bin/false`
+     on the command line (which wins over any config): an inherited
+     `ControlMaster yes` or `ask` cannot make ssh skip the socket, and a
+     failed mux handshake has no transport to fall back to (the config's
+     `ProxyJump` is displaced too). Tested with the real ssh against a
+     local TCP listener standing in for the host: it never sees a
+     connection, and sees one with the old probe.
+   - **A master is not a connection.** `-O check` proves a local process.
+     The first query over the master (the environment) must run on the
+     host; if it doesn't, the test reads "Couldn't confirm the connection:
+     <ssh's first line>." and is never "Connected".
+   - **The socket follows where ssh resolves the host.** The test runs
+     `ssh -G` first; hostname, user, port, proxyjump and proxycommand join
+     the socket key, so an alias retargeted in `~/.ssh/config` gets a new
+     socket and never rides the old destination's master, and "Connected
+     as …" names the connection the checks ran over.
 2. **The attached-client check moves to phase 1a's acceptance**: a
    terminal opening a client under tmux, `TERM=xterm-256color` outside and
    `tmux-256color` in the pane (`tput colors`, `tput cup`), are validated
