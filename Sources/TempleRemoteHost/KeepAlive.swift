@@ -53,12 +53,17 @@ public struct RemoteLaunchPlan: Sendable, Equatable {
     /// agent's).
     public var agentArgv: [String]
     public var path: Path
+    /// Claude's config root from the same login environment as the PATH;
+    /// nil when Temple has none (the launch resolves it with the PATH, or
+    /// the agent keeps whatever its environment gives).
+    public var claudeConfig: RemoteEnvironment.ClaudeConfig?
     /// The pinned server's socket, for an attach (nil: `-L temple`).
     public var socket: String?
 
-    public init(handle: String, marker: String, directory: String, agentArgv: [String], path: Path, socket: String?) {
+    public init(handle: String, marker: String, directory: String, agentArgv: [String], path: Path,
+                claudeConfig: RemoteEnvironment.ClaudeConfig? = nil, socket: String?) {
         self.handle = handle; self.marker = marker; self.directory = directory
-        self.agentArgv = agentArgv; self.path = path; self.socket = socket
+        self.agentArgv = agentArgv; self.path = path; self.claudeConfig = claudeConfig; self.socket = socket
     }
 }
 
@@ -214,8 +219,14 @@ public struct TmuxKeepAlive: KeepAlive {
         unset TMUX TEMPLE_HANDLE
         if [ -n "$TEMPLE_RESOLVE_PATH" ]; then
           unset TEMPLE_RESOLVE_PATH
-          p=$(temple_login_path "__temple_path_$$__") && { PATH=$p; export PATH; }
+          mk="__temple_env_$$__"
+          if e=$(temple_bounded "$mk") && temple_parse_env "$e" "$mk"; then
+            [ -n "$TEMPLE_ENV_PATH" ] && { PATH=$TEMPLE_ENV_PATH; export PATH; }
+            TEMPLE_CFG=$TEMPLE_ENV_CFG; TEMPLE_CFG_VALUE=$TEMPLE_ENV_CFG_VALUE
+          fi
         fi
+        cs=$TEMPLE_CFG; cv=$TEMPLE_CFG_VALUE
+        unset TEMPLE_CFG TEMPLE_CFG_VALUE
         rd=
         if [ -n "$m" ]; then rd=$(temple_record_dir) || rd=; fi
         [ -n "$rd" ] && find "$rd" -type f -mmin +1440 -delete 2>/dev/null
@@ -225,7 +236,15 @@ public struct TmuxKeepAlive: KeepAlive {
           exec tmux -L temple attach-session -t "=$s" ;;
         create)
           r=; e=/dev/null
-          if [ -n "$rd" ]; then r=$rd/$m; e=$rd/$m.err; rm -f "$e"; fi
+          if [ -n "$rd" ]; then
+            r=$rd/$m; e=$rd/$m.err; rm -f "$e"
+            # Claude's config root for the pane, as the login environment
+            # sets it: a file here, never a tmux argument (formats), so an
+            # older server's environment cannot win.
+            if [ -n "$cs" ]; then
+              rm -f "$rd/$m.cfgin"; ( set -C; printf '%s\n%s' "$cs" "$cv" > "$rd/$m.cfgin" ) 2>/dev/null
+            fi
+          fi
           tmux -L temple -f /dev/null \(TmuxChain.head) new-session -s "$s" -c / -e PATH="$PATH" -e TEMPLE_RECORD="$r" "$pane" 2>"$e"
           st=$?
           if [ "$st" -ne 0 ] && [ -n "$rd" ]; then
@@ -248,7 +267,10 @@ public struct TmuxKeepAlive: KeepAlive {
     /// <session index>`), then `exec`s the agent: the pane pid is the
     /// agent's, and the diagnostics change nothing about liveness.
     /// `/proc/<pid>/stat` is read past the last `)` (note 2). The record
-    /// directory is checked before it is written.
+    /// directory is checked before it is written. Claude's config root is
+    /// applied from the launch's own file (set, or unset so an older tmux
+    /// server's value cannot win) and recorded as the agent will have it,
+    /// hex-encoded: the transcript check inspects exactly that root.
     public static var paneScript: String {
         RecordDirectory.functions + "\n" + #"""
         d=$1; shift
@@ -258,6 +280,16 @@ public struct TmuxKeepAlive: KeepAlive {
         '
         m=
         if [ -n "$r" ]; then rd=$(temple_record_dir) && [ "${r%/*}" = "$rd" ] && m=$r; fi
+        if [ -n "$m" ] && [ -f "$m.cfgin" ] && [ ! -L "$m.cfgin" ]; then
+          cs=$(head -n 1 "$m.cfgin"); cv=$(tail -n +2 "$m.cfgin"; printf x); cv=${cv%x}
+          rm -f "$m.cfgin"
+          case $cs in set) CLAUDE_CONFIG_DIR=$cv; export CLAUDE_CONFIG_DIR ;; unset) unset CLAUDE_CONFIG_DIR ;; esac
+        fi
+        if [ -n "${CLAUDE_CONFIG_DIR+x}" ]; then
+          cfg="set${T}$(printf '%s' "$CLAUDE_CONFIG_DIR" | od -An -tx1 | tr -d ' \n')"
+        else
+          cfg=unset
+        fi
         rec() { [ -n "$m" ] || return 0; temple_write "$m" "$1"; }
         pst() { [ -r "/proc/$1/stat" ] || return 0; x=$(cat "/proc/$1/stat" 2>/dev/null) || return 0; x=${x##*)}; set -- $x; [ $# -ge 20 ] || return 0; shift 19; printf '%s' "$1"; }
         case $d in "~") d=$HOME;; "~/"*) d=$HOME/${d#"~/"};; esac
@@ -268,7 +300,7 @@ public struct TmuxKeepAlive: KeepAlive {
         fi
         w=$(pwd -P; printf x); w=${w%x}; w=${w%"$NL"}
         t=${TMUX%,*}; sp=${t##*,}; so=${t%,*}
-        rec "ok${NL}epoch${T}$(date +%s)${NL}pane${T}$$${T}$(pst $$)${NL}server${T}${sp}${T}$(pst "$sp")${NL}socket${T}${so}${NL}dir${T}${w}"
+        rec "ok${NL}epoch${T}$(date +%s)${NL}pane${T}$$${T}$(pst $$)${NL}server${T}${sp}${T}$(pst "$sp")${NL}socket${T}${so}${NL}cfg${T}${cfg}${NL}dir${T}${w}"
         exec "$@"
         """#
     }
@@ -299,6 +331,11 @@ public struct TmuxKeepAlive: KeepAlive {
         case .resolved(let path): words.append("PATH=\(path)")
         case .fallback: break
         case .unresolved: words.append("TEMPLE_RESOLVE_PATH=1")
+        }
+        switch launch.claudeConfig {
+        case .set(let value)?: words += ["TEMPLE_CFG=set", "TEMPLE_CFG_VALUE=\(value)"]
+        case .unset?: words.append("TEMPLE_CFG=unset")
+        case nil: break
         }
         words += ["TEMPLE_HANDLE=\(launch.handle)", "sh", "-c", wrapperScript, "temple-launch", mode, launch.marker,
                   launch.socket ?? "", pane]

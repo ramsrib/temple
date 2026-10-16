@@ -144,6 +144,8 @@ public final class RemoteSessions {
     /// The connection `pathState` was resolved over: an answer for another
     /// is never cached.
     private var pathConnection: SSHConnection?
+    /// Claude's config root from the same login environment as the PATH.
+    private var claudeConfig: RemoteEnvironment.ClaudeConfig?
     /// The host was removed or edited: nothing here runs again.
     public private(set) var retired = false
 
@@ -253,6 +255,7 @@ public final class RemoteSessions {
             // Cached only for the connection it was resolved over.
             if resolved.reachedHost, self.connection == connection {
                 pathState = resolved.path.map(PathState.resolved) ?? .fallback(resolved.problem ?? "no PATH")
+                claudeConfig = resolved.claudeConfig
                 pathConnection = connection
             }
         }
@@ -262,7 +265,13 @@ public final class RemoteSessions {
     }
 
     /// A transport failure: the next query resolves the PATH again.
-    func transportFailed() { pathState = .unresolved; pathConnection = nil }
+    func transportFailed() { pathState = .unresolved; pathConnection = nil; claudeConfig = nil }
+
+    /// The config root to hand a launch: only one resolved over this
+    /// connection (otherwise the launch resolves it with the PATH).
+    var launchConfig: RemoteEnvironment.ClaudeConfig? {
+        pathConnection == connection ? claudeConfig : nil
+    }
 
     var launchPath: RemoteLaunchPlan.Path {
         guard pathConnection == connection else { return .unresolved }
@@ -342,7 +351,7 @@ public final class RemoteSessions {
                 }
             }
             let plan = RemoteLaunchPlan(handle: run.handle, marker: marker(run), directory: run.directoryIntent,
-                                        agentArgv: [], path: launchPath, socket: run.socketPath)
+                                        agentArgv: [], path: launchPath, claudeConfig: launchConfig, socket: run.socketPath)
             return .plan(OpenPlan(handle: run.handle, attachment: run.attachment, creating: false,
                                   argv: localArgv(connection, keepAlive.attachCommand(plan)),
                                   agentArgv: agentArgv(run.agent, sessionID: request.sessionID, resume: run.mode == .resume,
@@ -365,7 +374,7 @@ public final class RemoteSessions {
         let argv = agentArgv(run.agent, sessionID: request.sessionID, resume: run.mode == .resume,
                              extra: request.extraArguments)
         let plan = RemoteLaunchPlan(handle: run.handle, marker: marker(run), directory: run.directoryIntent,
-                                    agentArgv: argv, path: launchPath, socket: nil)
+                                    agentArgv: argv, path: launchPath, claudeConfig: launchConfig, socket: nil)
         return OpenPlan(handle: run.handle, attachment: run.attachment, creating: true,
                         argv: localArgv(connection, keepAlive.createCommand(plan)), agentArgv: argv,
                         directoryIntent: run.directoryIntent, evidenceDirectory: nil)
@@ -443,6 +452,7 @@ public final class RemoteSessions {
                         row.socketPath = evidence.socketPath
                         row.serverPID = evidence.serverPID
                         row.serverStart = evidence.serverStart
+                        row.claudeConfig = evidence.claudeConfig
                         row.creation = .proven
                     }
                 }
@@ -498,10 +508,16 @@ public final class RemoteSessions {
     /// Whether the session's transcript exists on the host. Present: the
     /// conversation is recorded as confirmed for its runs.
     public func conversation(sessionID: String) async -> ConversationCheck {
-        guard RemoteQuoting.isSafeToken(sessionID), let exec = try? await queryExec(), !retired else {
-            return .unknown("Temple couldn't reach the host")
+        guard RemoteQuoting.isSafeToken(sessionID) else { return .unknown("this session id can't be sent to a host") }
+        // The root its agent was started with, as its pane recorded it.
+        let host = host
+        let recorded = await read { try $0.runs(host: host, sessionID: sessionID) }?
+            .last { $0.claudeConfig != nil && $0.directory != nil }
+        guard let recorded, let base = recorded.directory else {
+            return .unknown("Temple doesn't know which config folder this session used")
         }
-        let answer = await ConversationCheck.run(sessionID: sessionID, using: exec)
+        guard let exec = try? await queryExec(), !retired else { return .unknown("Temple couldn't reach the host") }
+        let answer = await ConversationCheck.run(sessionID: sessionID, config: recorded.claudeConfig, base: base, using: exec)
         if answer == .present {
             let host = host
             _ = try? await write { store in

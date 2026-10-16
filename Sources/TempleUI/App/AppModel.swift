@@ -704,8 +704,11 @@ public final class AppModel: ObservableObject {
         openSessions.remoteGate.sheetIsActive = { [weak self] id in
             self?.remoteSessionsSheet?.id == id || self?.remoteFolderSheet?.id == id
         }
-        openSessions.discardHandler = { [weak self] id, host in
-            guard let self, self.overlay.rows[id]?.host == host else { return }
+        openSessions.rowIncarnation = { [weak self] id in self?.overlay.rows[id]?.incarnation }
+        openSessions.discardHandler = { [weak self] id, host, incarnation in
+            // Only the membership Discard was chosen for: a row that left
+            // and joined again since is another session's to keep.
+            guard let self, self.overlay.rows[id]?.host == host, self.overlay.rows[id]?.incarnation == incarnation else { return }
             // A row the user made theirs (named, pinned, colored) is archived,
             // reversibly, rather than let go.
             if !self.overlay.discardUnstartedCreation(id, host: host) {

@@ -182,6 +182,10 @@ public struct RemoteTabState: Equatable {
     /// What the pane showed, for an agent that ended at once: the last
     /// lines, plain text.
     public var diagnostics: [String] = []
+    /// A sign of life arrived for this open (the pane's record, a title).
+    public var evidenceSeen = false
+    /// No sign of life within the startup deadline: the header says so.
+    public var stillConnecting = false
     /// Identifies one open, so a late answer for an earlier one is dropped.
     var openToken = UUID()
 
@@ -282,6 +286,8 @@ public enum RemoteCopy {
 
     public static let uncheckedConversation =
         "Temple couldn't check whether this session has a conversation to resume on its host."
+
+    public static func stillConnecting(_ host: String) -> String { "Still connecting to \(host)…" }
 
     public static func exitedImmediately(_ host: String, agent: Agent) -> String {
         "\(agent.displayName) exited immediately on \(host)."

@@ -142,4 +142,19 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertNil(app.remoteFolderSheet)
         XCTAssertEqual(app.openSessions.activeTab?.projectKey, ProjectKey(host: hostID, path: "/home/u/new"))
     }
+
+    /// Discard's row disposition acts only on the membership it was chosen
+    /// for: a stale incarnation (the row left and joined again) changes nothing.
+    func testDiscardDisposesOnlyTheSameMembership() async throws {
+        let db = try TempleDB.inMemory()
+        Fixture.join([Fixture.row("d1", project: "/p", host: hostID)], to: db)
+        let app = try app(FakeRemoteHost("box"), db: db)
+        await settle { app.overlay.rows["d1"] != nil }
+        let incarnation = app.overlay.rows["d1"]?.incarnation
+        app.openSessions.discardHandler?("d1", hostID, "another-membership")
+        XCTAssertEqual(app.overlay.rows["d1"]?.archived, false, "a replaced row is left alone")
+        app.openSessions.discardHandler?("d1", hostID, incarnation)
+        await settle { app.overlay.rows["d1"]?.archived == true || app.overlay.rows["d1"] == nil }
+        XCTAssertTrue(app.overlay.rows["d1"] == nil || app.overlay.rows["d1"]?.archived == true)
+    }
 }

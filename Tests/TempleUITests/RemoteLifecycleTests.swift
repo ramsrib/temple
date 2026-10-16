@@ -94,9 +94,11 @@ final class FakeRemoteHost: RemoteSessionHost {
     func markCreationUnproven(_ handle: String) async { unproven.append(handle) }
 
     var discardGate: (() async -> Void)?
+    var discardError: Error?
     func discard(sessionID: String) async throws {
         discarded.append(sessionID)
         if let discardGate { await discardGate() }
+        if let discardError { throw discardError }
         for index in runs.indices where runs[index].sessionID == sessionID { runs[index].dismissed = true }
     }
 
@@ -600,7 +602,7 @@ final class RemoteLifecycleTests: XCTestCase {
     func testAnUnconfirmedConversationOffersStartANewSessionOrDiscard() async throws {
         remote.decision = true
         var discardedRows: [String] = []
-        model.discardHandler = { id, _ in discardedRows.append(id) }
+        model.discardHandler = { id, _, _ in discardedRows.append(id) }
         let row = Fixture.row("u", project: "/p", host: hostID)
         rows["u"] = row
         model.openSession(row)

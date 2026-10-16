@@ -12,7 +12,9 @@ import TempleTestSupport
 /// so the walk proves it reaches the gate at all.
 @MainActor
 final class RemoteGateWalkTests: XCTestCase {
-    enum Disruption: CaseIterable { case none, close, quit, retire }
+    /// `otherInstance`: another Temple process attached to the run while
+    /// the completion was held (its persisted attachment moved on).
+    enum Disruption: CaseIterable { case none, close, quit, retire, otherInstance }
 
     let hostID = HostID(rawValue: "box")
 
@@ -51,7 +53,7 @@ final class RemoteGateWalkTests: XCTestCase {
                 self?.directories.append(directory)
                 original?(id, host, directory)
             }
-            app.openSessions.discardHandler = { [weak self] id, _ in self?.discards.append(id) }
+            app.openSessions.discardHandler = { [weak self] id, _, _ in self?.discards.append(id) }
         }
 
         var gate: RemoteEffectGate { app.openSessions.remoteGate }
@@ -86,6 +88,7 @@ final class RemoteGateWalkTests: XCTestCase {
     private var scenarios: [Scenario] {
         let tabDisruptions: [Disruption] = [.none, .close, .quit, .retire]
         let noClose: [Disruption] = [.none, .quit, .retire]
+        let evidence: [Disruption] = [.none, .close, .quit, .retire, .otherInstance]
         return [
             Scenario(completion: .openResult, disruptions: tabDisruptions, arm: { h in
                 h.remote.openGate = { await h.hold.wait() }
@@ -96,13 +99,13 @@ final class RemoteGateWalkTests: XCTestCase {
                 await self.settle { !h.remote.opens.isEmpty }
             }, effect: { $0.factory.created.count > 0 }),
 
-            Scenario(completion: .pollDirectory, disruptions: tabDisruptions, arm: { h in
+            Scenario(completion: .pollDirectory, disruptions: evidence, arm: { h in
                 h.remote.collectGate = { await h.hold.wait() }
                 _ = await self.connectedTab(h)
                 await self.settle { !h.remote.collects.isEmpty }
             }, effect: { !$0.directories.isEmpty }),
 
-            Scenario(completion: .exitCollectDirectory, disruptions: tabDisruptions, arm: { h in
+            Scenario(completion: .exitCollectDirectory, disruptions: evidence, arm: { h in
                 h.remote.collectResult = .nothing
                 let tab = await self.connectedTab(h)
                 await self.settle { h.remote.collects.count >= 1 }
@@ -114,7 +117,7 @@ final class RemoteGateWalkTests: XCTestCase {
                 await self.settle { h.remote.collects.count > before }
             }, effect: { $0.directories.contains("/home/u/late") }),
 
-            Scenario(completion: .exitFailedToStart, disruptions: tabDisruptions, arm: { h in
+            Scenario(completion: .exitFailedToStart, disruptions: evidence, arm: { h in
                 h.remote.collectResult = .nothing
                 let tab = await self.connectedTab(h)
                 await self.settle { h.remote.collects.count >= 1 }
@@ -126,7 +129,7 @@ final class RemoteGateWalkTests: XCTestCase {
                 await self.settle { h.remote.collects.count > before }
             }, effect: { $0.tab?.remote?.phase == .failedToStart(directory: "/gone") }),
 
-            Scenario(completion: .exitVerdict, disruptions: tabDisruptions, arm: { h in
+            Scenario(completion: .exitVerdict, disruptions: evidence, arm: { h in
                 h.remote.liveness = .unknown(reason: "verdict")
                 h.remote.exitGate = { await h.hold.wait() }
                 let tab = await self.connectedTab(h, creating: false)
@@ -134,7 +137,7 @@ final class RemoteGateWalkTests: XCTestCase {
                 await self.settle { tab.remote?.phase == .checking }
             }, effect: { $0.tab?.remote?.phase == .unknown(reason: "verdict") }),
 
-            Scenario(completion: .exitDiagnostics, disruptions: tabDisruptions, arm: { h in
+            Scenario(completion: .exitDiagnostics, disruptions: evidence, arm: { h in
                 h.remote.liveness = .absent
                 h.remote.diagnosticsText = "boom"
                 h.remote.diagnosticsGate = { await h.hold.wait() }
@@ -188,8 +191,9 @@ final class RemoteGateWalkTests: XCTestCase {
                 await self.settle { !h.remote.stops.isEmpty }
             }, effect: { $0.app.remoteNotice != nil }),
 
-            Scenario(completion: .discardOutcome, disruptions: noClose, arm: { h in
+            Scenario(completion: .discardNotice, disruptions: noClose, arm: { h in
                 h.remote.decision = true
+                h.remote.discardError = CocoaError(.fileWriteUnknown)
                 h.remote.discardGate = { await h.hold.wait() }
                 let row = Fixture.row("s1", project: "/p", host: h.host)
                 Fixture.join([row], to: h.db)
@@ -198,7 +202,19 @@ final class RemoteGateWalkTests: XCTestCase {
                 await self.settle { tab.remote?.phase == .needsDecision(checked: true) }
                 h.app.openSessions.discardRemoteSession(tab)
                 await self.settle { !h.remote.discarded.isEmpty }
-            }, effect: { !$0.discards.isEmpty }),
+            }, effect: { $0.app.remoteNotice != nil }),
+
+            Scenario(completion: .settle, disruptions: noClose, arm: { h in
+                h.app.openSessions.settleDelaySeconds = 0.4
+                h.app.openSessions.titleQuietWindow = 0
+                let tab = await self.connectedTab(h, creating: false)
+                tab.activity = .running
+            }, effect: { $0.tab?.activity == .idle }),
+
+            Scenario(completion: .startupDeadline, disruptions: tabDisruptions, arm: { h in
+                h.app.openSessions.startupEvidenceDeadline = 0.4
+                _ = await self.connectedTab(h, creating: false)
+            }, effect: { $0.tab?.remote?.stillConnecting == true }),
 
             Scenario(completion: .contactNotice, disruptions: noClose, arm: { h in
                 h.remote.unnoticed = 2
@@ -255,9 +271,16 @@ final class RemoteGateWalkTests: XCTestCase {
             // As AppModel retires a host before its entry goes.
             h.app.openSessions.retireRemoteHost(h.host)
             h.app.hostBox.value = h.app.hostBox.value.removing(h.host)
+        case .otherInstance:
+            if let handle = h.tab?.remote?.handle, let index = h.remote.runs.firstIndex(where: { $0.handle == handle }) {
+                h.remote.runs[index].attachment += 1
+            }
         }
     }
 
+    /// Coverage of `RemoteCompletion`, not completeness against the source:
+    /// a new completion must be added to the enum (and here) by hand; the
+    /// enum's documentation lists the mechanisms deliberately outside it.
     func testEveryCompletionIsGatedAfterCloseQuitAndRetirement() async throws {
         XCTAssertEqual(Set(scenarios.map(\.completion)), Set(RemoteCompletion.allCases), "the walk covers the whole list")
         for scenario in scenarios {
@@ -275,7 +298,9 @@ final class RemoteGateWalkTests: XCTestCase {
                     XCTAssertGreaterThan(h.gate.admitted[scenario.completion, default: 0], 0, "\(name): reaches the gate")
                     XCTAssertTrue(scenario.effect(h), "\(name): has its effect")
                 } else {
-                    await settle { h.gate.suppressed[scenario.completion, default: 0] > suppressedBefore }
+                    // A timer completion (settle, the startup deadline)
+                    // fires on its own schedule.
+                    await settle({ h.gate.suppressed[scenario.completion, default: 0] > suppressedBefore }, timeout: 3)
                     try await Task.sleep(for: .milliseconds(50))
                     XCTAssertGreaterThan(h.gate.suppressed[scenario.completion, default: 0], suppressedBefore, "\(name): suppressed")
                     XCTAssertEqual(h.gate.admitted[scenario.completion, default: 0], 0, "\(name): never admitted")
@@ -286,5 +311,46 @@ final class RemoteGateWalkTests: XCTestCase {
                 }
             }
         }
+    }
+
+    /// Discard is durable work: once the remote dismissal is written, the
+    /// row's disposition happens even when the quit begins or the host is
+    /// retired meanwhile; only presentation is gated.
+    func testDiscardFinishesItsDurableWorkThroughQuitAndRetirement() async throws {
+        for disruption in [Disruption.quit, .retire] {
+            let h = try Harness(host: hostID)
+            h.remote.decision = true
+            h.remote.discardGate = { await h.hold.wait() }
+            let row = Fixture.row("s1", project: "/p", host: hostID)
+            Fixture.join([row], to: h.db)
+            h.app.openSessions.openSession(row)
+            let tab = try XCTUnwrap(h.app.openSessions.activeTab)
+            await settle { tab.remote?.phase == .needsDecision(checked: true) }
+            h.app.openSessions.discardRemoteSession(tab)
+            await settle { !h.remote.discarded.isEmpty }
+            disrupt(h, disruption)
+            await h.hold.open()
+            await settle { h.discards == ["s1"] }
+            XCTAssertEqual(h.discards, ["s1"], "\(disruption): the row's disposition still happened")
+        }
+    }
+
+    /// The row disposition is for the membership Discard was chosen for: a
+    /// row that left and joined again meanwhile is left alone.
+    func testDiscardLeavesAReplacedRowAlone() async throws {
+        let h = try Harness(host: hostID)
+        var handled: [String?] = []
+        h.app.openSessions.discardHandler = { _, _, incarnation in handled.append(incarnation) }
+        h.remote.decision = true
+        let row = Fixture.row("s1", project: "/p", host: hostID)
+        Fixture.join([row], to: h.db)
+        await settle { h.app.overlay.rows["s1"] != nil }
+        let before = h.app.overlay.rows["s1"]?.incarnation
+        h.app.openSessions.openSession(row)
+        let tab = try XCTUnwrap(h.app.openSessions.activeTab)
+        await settle { tab.remote?.phase == .needsDecision(checked: true) }
+        h.app.openSessions.discardRemoteSession(tab)
+        await settle { !handled.isEmpty }
+        XCTAssertEqual(handled, [before], "the incarnation captured when Discard was chosen travels with it")
     }
 }

@@ -66,7 +66,11 @@ private struct SessionTerminalView: View {
             if let remote = tab.remote {
                 // A tab on a host shows its own headers only: its ssh ending
                 // is not its agent ending (checking, stopping: nothing yet).
-                if let header = RemoteHeader.make(remote.phase) { remoteHeader(header) }
+                if remote.phase == .connected, remote.stillConnecting {
+                    notice(symbol: "hourglass", text: RemoteCopy.stillConnecting(tab.host.rawValue)) {
+                        Button("Cancel") { model.openSessions.cancelRemoteConnect(tab) }
+                    }
+                } else if let header = RemoteHeader.make(remote.phase) { remoteHeader(header) }
             } else if case .exited(let status) = tab.activity {
                 launchFailure(status: status)
             }

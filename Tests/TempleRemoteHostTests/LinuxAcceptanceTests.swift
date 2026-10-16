@@ -231,8 +231,7 @@ final class LinuxAcceptanceTests: XCTestCase {
             let state = try await sh("""
             ls -la "$HOME/.temple/launch" 2>&1; tmux -L temple ls 2>&1; ps -ef | grep -E 'tmux|temple-launch' | grep -v grep
             """)
-            return XCTFail("\(name): no ok record: \(collected); local client running=\(clients.last?.process.isRunning ?? false); "
-                           + "client showed: \(clients.last?.shown ?? "")\nhost:\n\(state)")
+            return XCTFail("\(name): no ok record: \(collected)\n\(clients.last?.diagnosis ?? "")\nhost:\n\(state)")
         }
         XCTAssertEqual(directory, canonicalFolder)
         let run = try XCTUnwrap(store.run(first.handle))
@@ -430,6 +429,22 @@ final class LinuxAcceptanceTests: XCTestCase {
             XCTAssertTrue(words?.contains("No conversation found") == true, "\(name): \(words ?? "nil")")
         }
 
+        // The resolver's containment, on this host's own sh: a login shell
+        // that ignores TERM and leaves a child is abandoned within the
+        // budget, and nothing of it is left running.
+        let containment = try await sh("""
+        f=$1/hangshell; n=$2
+        printf '#!/bin/sh\\ntrap "" TERM\\nsleep %s &\\nsleep %s\\n' "$n" "$n" > "$f"; chmod +x "$f"
+        SHELL=$f; export SHELL
+        """ + RemoteEnvironment.resolverFunction + """
+
+        t0=$(date +%s); temple_login_path __temple_m__ >/dev/null; r=$?; t1=$(date +%s)
+        sleep 0.5
+        echo "status=$r elapsed=$((t1 - t0))s left=$(pgrep -f "sleep $n" | wc -l | tr -d ' ') containment=$(command -v setsid >/dev/null 2>&1 && echo setsid || echo monitor)"
+        """, [folder, "61.\(Int.random(in: 1000...9999))"])
+        log.append("hanging login shell: \(containment)")
+        XCTAssertTrue(containment.contains("left=0"), "\(name): \(containment)")
+
         // The socket-missing case, as this tmux words it, on a throwaway server.
         let missing = try await sh("""
         s=temple-accept-$1
@@ -448,19 +463,28 @@ final class LinuxAcceptanceTests: XCTestCase {
 }
 
 /// The tab, for acceptance: the launch argv on a local pty (`script`), its
-/// stdin held open so the client stays.
+/// stdin held open so the client stays. For a launch that stalls, it keeps
+/// what makes it diagnosable: the ssh child's own pid and exit status (not
+/// `script`'s), ssh's `-v` startup trace (`-E`), and what the pty showed.
 final class AcceptanceClient {
     let process = Process()
     private let input = Pipe()
-    /// What the client's pty showed (ssh's own words, if any).
-    let transcript = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("temple-accept-\(UUID().uuidString).log")
-    var shown: String {
-        let text = (try? String(contentsOf: transcript, encoding: .utf8)) ?? ""
-        return String(text.suffix(600)).replacingOccurrences(of: "\u{1b}", with: "^[")
-    }
+    private let base = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("temple-accept-\(UUID().uuidString)")
+    var transcript: URL { base.appendingPathExtension("pty") }
+    var trace: URL { base.appendingPathExtension("sshlog") }
+    var pidFile: URL { base.appendingPathExtension("pid") }
+    var statusFile: URL { base.appendingPathExtension("status") }
+
     init(_ argv: [String]) throws {
+        // ssh's own trace, to a file: `-v -E <file>` right after ssh.
+        var traced = argv
+        if let ssh = traced.firstIndex(where: { $0.hasSuffix("/ssh") }) {
+            traced.insert(contentsOf: ["-v", "-E", trace.path], at: ssh + 1)
+        }
         process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
-        process.arguments = ["-q", transcript.path] + argv
+        process.arguments = ["-q", transcript.path, "/bin/sh", "-c",
+                             #"echo $$ > "$0"; s=$1; shift; "$@"; echo $? > "$s""#, pidFile.path, statusFile.path] + traced
         var environment = ProcessInfo.processInfo.environment
         environment["TERM"] = "xterm-256color"
         process.environment = environment
@@ -469,6 +493,32 @@ final class AcceptanceClient {
         process.standardError = FileHandle.nullDevice
         try process.run()
     }
+
+    private func read(_ url: URL, suffix: Int) -> String {
+        let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        return String(text.suffix(suffix)).replacingOccurrences(of: "\u{1b}", with: "^[")
+    }
+
+    /// The ssh child: its pid, whether it runs, its exit status if it ended.
+    var sshState: String {
+        let parent = (try? String(contentsOf: pidFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "?"
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        child.arguments = ["-P", parent]
+        let out = Pipe()
+        child.standardOutput = out
+        try? child.run()
+        child.waitUntilExit()
+        let pids = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .split(whereSeparator: \.isNewline).joined(separator: ",")
+        let status = (try? String(contentsOf: statusFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "ssh child pid=\(pids.isEmpty ? "(none)" : pids) running=\(!pids.isEmpty) exit=\(status ?? "(not ended)")"
+    }
+
+    var diagnosis: String {
+        "\(sshState)\nssh -v trace (tail):\n\(read(trace, suffix: 2500))\npty (tail):\n\(read(transcript, suffix: 600))"
+    }
+
     private var ended = false
     func end() {
         guard !ended else { return }
@@ -484,6 +534,6 @@ final class AcceptanceClient {
         deadline = Date().addingTimeInterval(2)
         while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
         try? input.fileHandleForWriting.close()
-        try? FileManager.default.removeItem(at: transcript)
+        for url in [transcript, trace, pidFile, statusFile] { try? FileManager.default.removeItem(at: url) }
     }
 }

@@ -102,14 +102,20 @@ final class RemoteSessionsTests: XCTestCase {
         XCTAssertEqual(row.recordPath, RecordDirectory.locator(marker: RecordDirectory.marker(from: row.recordPath)!))
 
         var client = try tab(host, first)
-        let collected = await until { if case .ok = await sessions.collect(first.handle) { return true }; return false }
+        // Generous under a loaded full suite: the pane starts a real tmux server.
+        let collected = await until(15) { if case .ok = await sessions.collect(first.handle) { return true }; return false }
         XCTAssertTrue(collected)
         let proven = try XCTUnwrap(store.run(first.handle))
         XCTAssertEqual(proven.creation, .proven)
         XCTAssertEqual(proven.socketPath, host.tmuxDir + "/tmux-\(getuid())/temple")
         XCTAssertEqual(proven.directory.map { URL(fileURLWithPath: $0).lastPathComponent }, "home")
         XCTAssertNil(host.record(RecordDirectory.marker(from: proven.recordPath)!), "acknowledged once written here")
-        XCTAssertEqual(try String(contentsOfFile: host.home + "/claude-argv", encoding: .utf8),
+        // The ok record is written before the pane execs the agent, so the
+        // stand-in's argv file can lag it.
+        let argvPath = host.home + "/claude-argv"
+        let argvWritten = await until { (try? String(contentsOfFile: argvPath, encoding: .utf8))?.hasSuffix("sess-1\n") == true }
+        XCTAssertTrue(argvWritten)
+        XCTAssertEqual(try String(contentsOfFile: argvPath, encoding: .utf8),
                        "--model\nx\n--session-id\nsess-1\n")
         try await sessions.confirmConversation(first.handle)
 
@@ -358,19 +364,23 @@ final class RemoteSessionsTests: XCTestCase {
     func testAnUnconfirmedConversationIsCheckedOnTheHost() async throws {
         let host = StandIn()
         let store = try RemoteStateStore()
-        try insertRun(store) { $0.conversation = .unconfirmed; $0.endedAt = Date(); $0.endEvidence = .killed }
+        try insertRun(store) {
+            $0.conversation = .unconfirmed; $0.endedAt = Date(); $0.endEvidence = .killed
+            $0.claudeConfig = .unset; $0.directory = host.home
+        }
         let sessions = controller(host, store: store)
         let outcome = try await sessions.open(request(.resume))
-        XCTAssertEqual(outcome, .needsDecision(checked: true))
+        XCTAssertEqual(outcome, .needsDecision(checked: true), "no ~/.claude at all: checked to the end, absent")
         XCTAssertEqual(try store.runs(host: record.host).count, 1, "nothing reserved")
         let fresh = try plan(await sessions.open(request(.resume, startNew: true)))
         XCTAssertTrue(fresh.creating)
         XCTAssertEqual(fresh.agentArgv.suffix(2), ["--session-id", "sess-1"])
         try await sessions.abandon(fresh.handle, reason: "test")
 
-        // The login shell names another config directory; the transcript is there.
-        host.tree.write("home/.profile", "CLAUDE_CONFIG_DIR=$HOME/cfg; export CLAUDE_CONFIG_DIR\n")
-        host.tree.write("home/cfg/projects/-p/sess-1.jsonl", "{}\n")
+        // The agent ran with a relative config root (as its pane recorded):
+        // the check inspects exactly that root, under the folder it ran in.
+        try store.update("h1") { $0.claudeConfig = .set("cfg dir\nx") }
+        host.tree.write("home/cfg dir\nx/projects/-p/sess-1.jsonl", "{}\n")
         let present = await sessions.conversation(sessionID: "sess-1")
         XCTAssertEqual(present, .present)
         let resumed = try plan(await sessions.open(request(.resume)))
@@ -384,10 +394,29 @@ final class RemoteSessionsTests: XCTestCase {
         XCTAssertNil(live)
     }
 
+    /// Absent only when the right root was checked to the end: a root Temple
+    /// doesn't know, or an ancestor it can't search, is unknown.
+    func testAConversationCheckThatCannotSeeTheRootIsUnknown() async throws {
+        let host = StandIn()
+        let exec = host.exec
+        let none = await ConversationCheck.run(sessionID: "s", config: nil, base: host.home, using: exec)
+        guard case .unknown = none else { return XCTFail("\(none)") }
+        let locked = host.tree.directory("locked")
+        chmod(locked.path, 0o000)
+        defer { chmod(locked.path, 0o700) }
+        let hidden = await ConversationCheck.run(sessionID: "s", config: .set(locked.path + "/cfg"), base: host.home, using: exec)
+        guard case .unknown = hidden else { return XCTFail("an unsearchable ancestor proves nothing: \(hidden)") }
+        let missing = await ConversationCheck.run(sessionID: "s", config: .set(host.home + "/nothing-here"), base: host.home, using: exec)
+        XCTAssertEqual(missing, .absent)
+    }
+
     func testAConversationTemplCantCheckIsUnknown() async throws {
         let host = StandIn()
         let store = try RemoteStateStore()
-        try insertRun(store) { $0.conversation = .unconfirmed; $0.endedAt = Date(); $0.endEvidence = .killed }
+        try insertRun(store) {
+            $0.conversation = .unconfirmed; $0.endedAt = Date(); $0.endEvidence = .killed
+            $0.claudeConfig = .unset; $0.directory = host.home
+        }
         let outcome = try await controller(host, store: store, failing: true).open(request(.resume))
         XCTAssertEqual(outcome, .needsDecision(checked: false))
         // Resume, chosen by the user knowing Temple couldn't check.
@@ -457,7 +486,7 @@ final class RemoteSessionsTests: XCTestCase {
         func release() { lock.withLock { released = true } }
         func run(script: String, args: [String], deadline: TimeInterval) async throws -> RemoteOutput {
             while !lock.withLock({ released }) { try await Task.sleep(nanoseconds: 10_000_000) }
-            return RemoteOutput(status: 0, stdout: "shell /bin/sh\n\(args[0])\n/A/bin:/usr/bin\n\(args[0])\n", stderr: "")
+            return RemoteOutput(status: 0, stdout: "shell /bin/sh\n\(args[0])\n/A/bin:/usr/bin\n\(args[0]).cfg\n\(args[0])\n", stderr: "")
         }
     }
 

@@ -81,8 +81,11 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// A session on a host was left running when it was closed: one notice.
     public var remoteNoticeHandler: ((_ host: HostID, _ message: String) -> Void)?
     /// Discard on a session whose conversation was never confirmed: the
-    /// app lets its row go (or archives it, if the row is the user's).
-    public var discardHandler: ((_ sessionID: String, _ host: HostID) -> Void)?
+    /// app lets its row go (or archives it, if the row is the user's), only
+    /// while the row is still the membership Discard was chosen for.
+    public var discardHandler: ((_ sessionID: String, _ host: HostID, _ incarnation: String?) -> Void)?
+    /// A row's membership identity, read when Discard is chosen.
+    public var rowIncarnation: (_ sessionID: String) -> String? = { _ in nil }
     /// Every asynchronous operation on a host, owned through close, host
     /// changes and quit.
     public let remoteOperations = RemoteOperations()
@@ -601,9 +604,13 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     private func scheduleSettle(for tab: SessionTab) {
         settleTasks[tab.id]?.cancel()
         let delay = settleDelaySeconds
+        // A tab on a host settles through the remote gate like every other
+        // late completion that touches it.
+        let ticket = tab.remote != nil ? remoteGate.ticket(for: tab) : nil
         settleTasks[tab.id] = Task { [weak self, weak tab] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled, let self, let tab else { return }
+            if let ticket, !self.remoteGate.admit(.settle, ticket) { return }
             self.settleIfQuiet(tab)
         }
     }
@@ -702,6 +709,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// When a creation's records are fetched while its tab is connected
     /// (seconds after the spawn); the exit path collects once more.
     var recordPollDelays: [TimeInterval] = [0.5, 1, 2, 4, 8, 15, 30]
+    /// How long a remote open may show no sign of life (no record, no
+    /// title from tmux) before its tab says it is still connecting.
+    var startupEvidenceDeadline: TimeInterval = 20
 
     /// User-initiated close gate (chip ✕ / ⌘W). A session tab whose agent is
     /// actively **working** (`.running`, with a live surface) asks first —
@@ -1150,6 +1160,8 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
 
     public func surface(_ surface: TerminalSurface, didUpdateTitle title: String) {
         guard !isQuitting, let tab = tab(for: surface), !title.isEmpty else { return }
+        // A title from a tab on a host is tmux drawing: the connection is up.
+        if tab.remote?.phase == .connected { tab.remote?.evidenceSeen = true; tab.remote?.stillConnecting = false }
         if tab.title != title, let sid = tab.sessionID { touchHandler?(sid, tab.host, nil) }
         tab.title = title
         // Agents retitle themselves as the work moves on, and record that title
@@ -1359,6 +1371,23 @@ extension OpenSessionsModel {
             pollRecords(tab, host: host, handle: plan.handle)
         } else if let directory = plan.evidenceDirectory {
             recordRemoteDirectory(tab, directory)
+            tab.remote?.evidenceSeen = false
+        }
+        watchStartup(tab)
+    }
+
+    /// A remote open that shows no sign of life (no record, no title from
+    /// tmux) within the startup deadline says so: "Still connecting to
+    /// <host>…" with Cancel. Nothing else happens: no second run, and the
+    /// run's state stays as unknown as it is.
+    private func watchStartup(_ tab: SessionTab) {
+        let ticket = remoteGate.ticket(for: tab)
+        let deadline = startupEvidenceDeadline
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(deadline * 1_000_000_000))
+            guard let self, self.remoteGate.admit(.startupDeadline, ticket), let tab = ticket.tab,
+                  tab.remote?.phase == .connected, tab.remote?.evidenceSeen == false else { return }
+            tab.remote?.stillConnecting = true
         }
     }
 
@@ -1374,7 +1403,9 @@ extension OpenSessionsModel {
                 let outcome = await host.collect(handle)
                 switch outcome {
                 case .ok(let directory):
-                    guard let self, self.remoteGate.admit(.pollDirectory, ticket), let tab = ticket.tab else { return }
+                    let runAttachment = await host.attachment(of: handle)
+                    guard let self, self.remoteGate.admit(.pollDirectory, ticket, runAttachment: runAttachment),
+                          let tab = ticket.tab else { return }
                     self.recordRemoteDirectory(tab, directory)
                     return
                 case .storage(let detail):
@@ -1393,6 +1424,7 @@ extension OpenSessionsModel {
     /// The pane's `ok`: the folder becomes tab-sourced, through the one
     /// operation that keeps the row, the tab and its project in step.
     private func recordRemoteDirectory(_ tab: SessionTab, _ directory: String) {
+        if tab.remote?.phase == .connected { tab.remote?.evidenceSeen = true; tab.remote?.stillConnecting = false }
         guard tab.launchObservation != nil, tab.launchObservation?.directory == nil else { return }
         tab.launchObservation?.directory = directory
         applyLaunchDirectory(tab, canonical: directory)
@@ -1471,7 +1503,9 @@ extension OpenSessionsModel {
                 outcome = await host.collect(handle)
                 switch outcome {
                 case .ok(let directory):
-                    if let self, self.remoteGate.admit(.exitCollectDirectory, ticket), let tab = ticket.tab {
+                    let runAttachment = await host.attachment(of: handle)
+                    if let self, self.remoteGate.admit(.exitCollectDirectory, ticket, runAttachment: runAttachment),
+                       let tab = ticket.tab {
                         self.recordRemoteDirectory(tab, directory)
                     }
                 case .nothing, .transport, .clientFailed:
@@ -1485,7 +1519,9 @@ extension OpenSessionsModel {
                 }
             }
             if case .failedCD(let directory) = outcome {
-                guard let self, self.remoteGate.admit(.exitFailedToStart, ticket), let tab = ticket.tab else { return }
+                let runAttachment = await host.attachment(of: handle)
+                guard let self, self.remoteGate.admit(.exitFailedToStart, ticket, runAttachment: runAttachment),
+                      let tab = ticket.tab else { return }
                 tab.remote?.phase = .failedToStart(directory: directory)
                 tab.launchFailure = LaunchFailure(category: .cdFailed,
                                                   message: RemoteCopy.cannotEnter(directory, host: host.hostName))
@@ -1525,7 +1561,9 @@ extension OpenSessionsModel {
             guard wantDiagnostics else { return }
             let diagnosticsTicket = self.remoteGate.ticket(for: tab)
             let raw = await host.diagnostics(handle)
-            guard let raw, self.remoteGate.admit(.exitDiagnostics, diagnosticsTicket), let tab = diagnosticsTicket.tab else { return }
+            let diagnosticsAttachment = await host.attachment(of: handle)
+            guard let raw, self.remoteGate.admit(.exitDiagnostics, diagnosticsTicket, runAttachment: diagnosticsAttachment),
+                  let tab = diagnosticsTicket.tab else { return }
             tab.remote?.diagnostics = RemoteCopy.diagnosticLines(raw)
         }
     }
@@ -1587,22 +1625,36 @@ extension OpenSessionsModel {
 
     /// Discard: its runs are dismissed and its row let go (or archived, if
     /// the user named or kept it). The tab closes.
+    /// Durable work, owned to its end: the runs are dismissed, then the
+    /// row is let go (or archived) if it is still the membership Discard
+    /// was chosen for. Quit, retirement or a closed window change nothing
+    /// of that; only the failure notice passes the gate.
     public func discardRemoteSession(_ tab: SessionTab) {
         guard let host = remoteHost(for: tab), let sid = tab.sessionID, decisionPending(tab) else { return }
         let hostID = tab.host
         let ticket = remoteGate.ticket(host: hostID)
+        let incarnation = rowIncarnation(sid)
         removeTab(tab.id)
         forgetClosedTabs(sessionID: sid)
         remoteOperations.run(host: hostID, .write) { [weak self] in
-            let failure: String?
-            do { try await host.discard(sessionID: sid); failure = nil } catch { failure = error.localizedDescription }
-            guard let self, self.remoteGate.admit(.discardOutcome, ticket) else { return }
-            if let failure {
-                self.remoteNoticeHandler?(hostID, RemoteCopy.unrecorded(host.hostName, detail: failure))
-            } else {
-                self.discardHandler?(sid, hostID)
+            do {
+                try await host.discard(sessionID: sid)
+                self?.discardHandler?(sid, hostID, incarnation)
+            } catch {
+                guard let self, self.remoteGate.admit(.discardNotice, ticket) else { return }
+                self.remoteNoticeHandler?(hostID, RemoteCopy.unrecorded(host.hostName, detail: error.localizedDescription))
             }
         }
+    }
+
+    /// Cancel, on a tab still connecting past the startup deadline: its
+    /// client goes; the exit check decides what is known; nothing is
+    /// created in its place.
+    public func cancelRemoteConnect(_ tab: SessionTab) {
+        guard tab.remote?.phase == .connected, tab.hasLiveProcess, let surface = tab.surface else { return }
+        tab.remote?.resumedAfterAbsence = true
+        tab.remote?.stillConnecting = false
+        surface.terminate()
     }
 
     // MARK: Close

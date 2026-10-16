@@ -95,6 +95,19 @@ final class RemoteScriptsTests: XCTestCase {
 
         func record(_ marker: String) -> String? { try? String(contentsOfFile: recordDirectory + "/" + marker, encoding: .utf8) }
 
+        func tmuxFreeRun(_ executable: String, _ args: [String]) throws -> RemoteOutput {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = args
+            let out = Pipe()
+            process.standardOutput = out
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            return RemoteOutput(status: process.terminationStatus,
+                                stdout: String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self), stderr: "")
+        }
+
         func tmux(_ args: [String]) throws -> RemoteOutput {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: bin + "/tmux")
@@ -248,16 +261,67 @@ final class RemoteScriptsTests: XCTestCase {
     /// One budget for the whole resolution, with or without `timeout`
     /// (this Mac has none): a login shell that hangs is abandoned in about
     /// five seconds, and the launch falls back.
-    func testAHangingLoginShellIsAbandonedWithinTheBudget() async throws {
+    func testAHangingLoginShellIsAbandonedWithinTheBudgetAndLeavesNothing() async throws {
         let host = StandIn()
-        host.tree.write("bin/hangshell", "#!/bin/sh\ntrap '' TERM\nsleep 60\n", executable: true)
+        let mark = "61.\(Int.random(in: 1000...9999))"
+        // A shell that ignores TERM and leaves a child of its own.
+        host.tree.write("bin/hangshell", "#!/bin/sh\ntrap '' TERM\nsleep \(mark) &\nsleep \(mark)\n", executable: true)
         host.extra = ["SHELL": host.bin + "/hangshell"]
         let started = Date()
         let resolved = await RemoteEnvironment.resolve(using: LocalShellExec(path: nil, environment: host.environment))
         let elapsed = Date().timeIntervalSince(started)
         XCTAssertNil(resolved.path)
-        XCTAssertLessThan(elapsed, 7.5, "bounded by the budget, not by the outer deadline alone")
-        XCTAssertGreaterThan(elapsed, 3)
+        XCTAssertLessThan(elapsed, 8.5, "bounded by the budget, not by the outer deadline alone")
+        try await Task.sleep(for: .milliseconds(300))
+        let left = try host.tmuxFreeRun("/usr/bin/pgrep", ["-f", "sleep \(mark)"])
+        XCTAssertEqual(left.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "", "no login shell or descendant left")
+    }
+
+    /// One login query gives PATH and Claude's config root, framed so a
+    /// newline or a relative value survives whole.
+    func testTheLoginEnvironmentKeepsTheConfigRootExactly() async throws {
+        let host = StandIn()
+        host.tree.write("bin/cfgshell", "#!/bin/sh\nwhile [ $# -gt 1 ]; do shift; done\nPATH=/login/bin:/usr/bin:/bin; export PATH\n"
+                        + "CLAUDE_CONFIG_DIR='rel dir\nwith newline'; export CLAUDE_CONFIG_DIR\neval \"$1\"\n", executable: true)
+        host.extra = ["SHELL": host.bin + "/cfgshell"]
+        let resolved = await RemoteEnvironment.resolve(using: LocalShellExec(path: nil, environment: host.environment))
+        XCTAssertEqual(resolved.path, "/login/bin:/usr/bin:/bin")
+        XCTAssertEqual(resolved.claudeConfig, .set("rel dir\nwith newline"))
+        host.tree.write("bin/plainshell", "#!/bin/sh\nwhile [ $# -gt 1 ]; do shift; done\nunset CLAUDE_CONFIG_DIR\neval \"$1\"\n",
+                        executable: true)
+        host.extra = ["SHELL": host.bin + "/plainshell"]
+        let plain = await RemoteEnvironment.resolve(using: LocalShellExec(path: nil, environment: host.environment))
+        XCTAssertEqual(plain.claudeConfig, .unset)
+    }
+
+    /// The pane applies the launch's config root (so an older tmux server's
+    /// value can't win) and records the root the agent has.
+    func testThePaneAppliesAndRecordsTheConfigRoot() throws {
+        let host = StandIn()
+        try host.makeRecordDirectory()
+        let record = host.recordDirectory + "/rec"
+        try "set\n/cfg/with\nnewline".write(toFile: record + ".cfgin", atomically: true, encoding: .utf8)
+        let seen = host.tree.path + "/seen"
+        var environment = host.environment
+        environment["CLAUDE_CONFIG_DIR"] = "/stale/server/value"
+        XCTAssertEqual(try runPane(host, directory: host.home,
+                                   argv: ["/bin/sh", "-c", "printf '%s' \"$CLAUDE_CONFIG_DIR\" > \"$0\"", seen],
+                                   record: record, environment: environment), 0)
+        XCTAssertEqual(try String(contentsOfFile: seen, encoding: .utf8), "/cfg/with\nnewline")
+        guard case .ok(let evidence) = LaunchRecords.parsePane(try String(contentsOfFile: record, encoding: .utf8)) else {
+            return XCTFail()
+        }
+        XCTAssertEqual(evidence.claudeConfig, .set("/cfg/with\nnewline"))
+        // Unset: the stale value is removed, and recorded as unset.
+        try "unset\n".write(toFile: record + ".cfgin", atomically: true, encoding: .utf8)
+        XCTAssertEqual(try runPane(host, directory: host.home,
+                                   argv: ["/bin/sh", "-c", "printf '%s' \"${CLAUDE_CONFIG_DIR-none}\" > \"$0\"", seen],
+                                   record: record, environment: environment), 0)
+        XCTAssertEqual(try String(contentsOfFile: seen, encoding: .utf8), "none")
+        guard case .ok(let unset) = LaunchRecords.parsePane(try String(contentsOfFile: record, encoding: .utf8)) else {
+            return XCTFail()
+        }
+        XCTAssertEqual(unset.claudeConfig, .unset)
     }
 
     func testStaleRecordsAreSweptByTheNextLaunch() throws {
@@ -309,12 +373,12 @@ final class RemoteScriptsTests: XCTestCase {
     // MARK: The pane
 
     private func runPane(_ host: StandIn, directory: String, argv: [String], record: String,
-                         tmux: String = "/tmp/tmux-1000/te,mp le,77,3") throws -> Int32 {
+                         tmux: String = "/tmp/tmux-1000/te,mp le,77,3", environment base: [String: String]? = nil) throws -> Int32 {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         // As tmux would run it: the server's /bin/sh -c '<pane command>'.
         process.arguments = ["-c", TmuxKeepAlive.paneCommand(directory: directory, agentArgv: argv)]
-        var environment = host.environment
+        var environment = base ?? host.environment
         environment["TEMPLE_RECORD"] = record
         environment["TMUX"] = tmux
         process.environment = environment

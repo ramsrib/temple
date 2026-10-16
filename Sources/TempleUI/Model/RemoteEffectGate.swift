@@ -4,8 +4,29 @@ import TempleCore
 /// Every asynchronous completion in the remote path that touches a tab, a
 /// row, a sheet or tab persistence (docs/designs/remote-ssh.md, phase 1a
 /// notes). Each goes through `RemoteEffectGate.admit` right before its
-/// effect, after its last await. Durable writes of outcomes (run rows,
-/// flags) are not completions here: they happen whatever the gate says.
+/// effect, after its last await. Durable work is not a completion here: run
+/// rows, flags, and Discard's dismissal and row disposition happen whatever
+/// the gate says (owned by `RemoteOperations`).
+///
+/// This list is maintained by hand; `RemoteGateWalkTests` proves that each
+/// case is gated, not that the list is complete against the source. Four
+/// asynchronous mechanisms are deliberately outside it, each a lifecycle of
+/// its own:
+///
+/// - **The title persistence task** (`schedulePersistForTitleChurn`) saves
+///   the whole tab set, local and remote alike, and is already cancelled by
+///   `prepareForQuit` and refuses while quitting; it applies no remote
+///   evidence.
+/// - **The launcher's live-run cache** (`RemoteHostLauncher.refreshLiveSessions`)
+///   updates only that launcher's own cache, read synchronously by a row's
+///   menu; a retired launcher's cache is unreachable once its entry goes.
+/// - **The Test connection's callbacks** (`ConnectionTest`) belong to the
+///   Test sheet: the sheet's close cancels the test, and its result is a
+///   memory-only summary (`RemoteHostsModel.recordSummary`, which drops a
+///   test that is no longer the host's current one).
+/// - **The local launch result channel** is this Mac's, not a host's.
+///
+/// The settle timer is not exempt: for a tab on a host it is `.settle`.
 public enum RemoteCompletion: String, CaseIterable, Sendable {
     /// An open's answer: spawn the tab's client, show the decision, or the refusal.
     case openResult
@@ -30,8 +51,13 @@ public enum RemoteCompletion: String, CaseIterable, Sendable {
     case closeStopNotice
     /// A row menu's Stop was not confirmed: one notice.
     case rowStopNotice
-    /// Discard was written: the row goes (or is archived).
-    case discardOutcome
+    /// Discard could not be written: one notice. (The dismissal and the
+    /// row's disposition are durable work, never gated.)
+    case discardNotice
+    /// The activity settle timer (working → idle) on a tab on a host.
+    case settle
+    /// The startup-evidence deadline: "Still connecting to <host>…".
+    case startupDeadline
     /// The launch-time contact: the sidebar's left-running line.
     case contactNotice
     /// "Sessions on <host>" received its list.
@@ -84,10 +110,20 @@ public final class RemoteEffectGate {
                      handle: nil, attachment: nil, sheet: sheet)
     }
 
+    /// Completions that apply run evidence to a tab: each must read the
+    /// run's persisted attachment after its last await and pass it, so
+    /// another Temple instance attaching to the run (or a newer open here)
+    /// suppresses it.
+    static let requiresRunEvidence: Set<RemoteCompletion> = [
+        .pollDirectory, .exitCollectDirectory, .exitFailedToStart, .exitDiagnostics, .exitVerdict,
+    ]
+
     /// Whether `completion`'s effect may happen now. `runAttachment`: the
-    /// run's attachment as just read, when the completion read it.
+    /// run's attachment as just read; mandatory (a missing one suppresses)
+    /// for the completions that apply run evidence.
     func admit(_ completion: RemoteCompletion, _ ticket: RemoteTicket, runAttachment: Int?? = nil) -> Bool {
-        let ok = valid(ticket, runAttachment: runAttachment)
+        let evidenceOK = !Self.requiresRunEvidence.contains(completion) || runAttachment != nil
+        let ok = evidenceOK && valid(ticket, runAttachment: runAttachment)
         if ok { admitted[completion, default: 0] += 1 } else { suppressed[completion, default: 0] += 1 }
         return ok
     }

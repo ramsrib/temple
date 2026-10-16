@@ -14,11 +14,15 @@ public struct LaunchEvidence: Sendable, Equatable {
     public var socketPath: String
     public var serverPID: Int?
     public var serverStart: String?
+    /// Claude's config root as the agent was started with it; nil when the
+    /// record did not say (an older pane).
+    public var claudeConfig: RemoteEnvironment.ClaudeConfig?
 
     public init(epoch: Int, directory: String, panePID: Int, paneStart: String?, socketPath: String,
-                serverPID: Int?, serverStart: String?) {
+                serverPID: Int?, serverStart: String?, claudeConfig: RemoteEnvironment.ClaudeConfig? = nil) {
         self.epoch = epoch; self.directory = directory; self.panePID = panePID; self.paneStart = paneStart
         self.socketPath = socketPath; self.serverPID = serverPID; self.serverStart = serverStart
+        self.claudeConfig = claudeConfig
     }
 }
 
@@ -200,10 +204,30 @@ public enum LaunchRecords {
         else { return .unreadable(String(body.prefix(80))) }
         let server = values["server"] ?? []
         func nonEmpty(_ value: String?) -> String? { value.flatMap { $0.isEmpty ? nil : $0 } }
+        var config: RemoteEnvironment.ClaudeConfig?
+        switch values["cfg"]?.first {
+        case "unset": config = .unset
+        case "set": config = (values["cfg"]?.dropFirst().first).flatMap(Self.hex).map { .set($0) } ?? .set("")
+        default: config = nil
+        }
         return .ok(LaunchEvidence(epoch: epoch, directory: directory, panePID: pid,
                                   paneStart: nonEmpty(pane.count > 1 ? pane[1] : nil),
                                   socketPath: socket, serverPID: server.first.flatMap { Int($0) },
-                                  serverStart: nonEmpty(server.count > 1 ? server[1] : nil)))
+                                  serverStart: nonEmpty(server.count > 1 ? server[1] : nil), claudeConfig: config))
+    }
+
+    /// Hex as `od -An -tx1` prints it, spaces and newlines removed.
+    static func hex(_ text: String) -> String? {
+        let digits = Array(text.utf8)
+        guard digits.count % 2 == 0 else { return nil }
+        var bytes: [UInt8] = []
+        var index = 0
+        while index < digits.count {
+            guard let byte = UInt8(String(decoding: digits[index..<index + 2], as: UTF8.self), radix: 16) else { return nil }
+            bytes.append(byte)
+            index += 2
+        }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     /// `failed<TAB>tmux<TAB><status><TAB><tmux's first line>`.
@@ -266,44 +290,66 @@ public enum FolderCheck: Sendable, Equatable {
 
 /// Whether a Claude session has a transcript on the host: the evidence
 /// that its conversation exists (typed input is not: Return at an ssh
-/// prompt or Claude's trust screen proves nothing). The config directory
-/// is found the way the CLI finds it: `CLAUDE_CONFIG_DIR` in the login
-/// environment, else `~/.claude`.
+/// prompt or Claude's trust screen proves nothing). It inspects exactly the
+/// config root the agent was started with (recorded by its pane): set
+/// (absolute, or relative to the folder it ran in, as the agent would read
+/// it), or unset (`~/.claude`). Absent only when that root was checked to
+/// the end and has no transcript for the id; a root Temple doesn't know, an
+/// ancestor that can't be searched, or a store that can't be read whole is
+/// unknown.
 public enum ConversationCheck: Sendable, Equatable {
     case present
     /// The check completed and found no transcript for the id.
     case absent
     case unknown(String)
 
-    static let script = RemoteEnvironment.resolverFunction + """
-
-    id=$1
-    d=$(temple_bounded "__temple_cfg_$$__" 'printenv CLAUDE_CONFIG_DIR') || { echo unknown; echo "the login shell didn't answer"; exit 0; }
-    d=$(printf '%s\\n' "$d" | grep / | head -n 1)
-    [ -n "$d" ] || d=$HOME/.claude
-    case $d in "~") d=$HOME;; "~/"*) d=$HOME/${d#"~/"};; esac
-    [ -d "$d/projects" ] || { echo absent; exit 0; }
-    if f=$(find "$d/projects" -mindepth 2 -maxdepth 2 -name "$id.jsonl" -print 2>/dev/null); then
+    /// Arguments `state value base id`: `state` is `set`, `unset` or
+    /// anything else (unknown).
+    static let script = #"""
+    st=$1; v=$2; base=$3; id=$4
+    case $st in
+      set) case $v in /*) d=$v ;; *) d=$base/$v ;; esac ;;
+      unset) d=$HOME/.claude ;;
+      *) echo unknown; echo "Temple doesn't know which config folder this session used"; exit 0 ;;
+    esac
+    p=$d/projects
+    if [ ! -e "$p" ] && [ ! -L "$p" ]; then
+      a=$p
+      while :; do
+        a=${a%/*}; [ -n "$a" ] || a=/
+        { [ -e "$a" ] || [ "$a" = / ]; } && break
+      done
+      if [ -d "$a" ] && [ -x "$a" ]; then echo absent; else echo unknown; echo "$a can't be searched"; fi
+      exit 0
+    fi
+    { [ -d "$p" ] && [ -r "$p" ] && [ -x "$p" ]; } || { echo unknown; echo "$p can't be read"; exit 0; }
+    if f=$(find "$p" -mindepth 2 -maxdepth 2 -name "$id.jsonl" -print 2>/dev/null); then
       if [ -n "$f" ]; then echo present; else echo absent; fi
     elif [ -n "$f" ]; then echo present
-    else echo unknown; echo "the projects folder couldn't be read whole"
-    fi
-    """
+    else echo unknown; echo "part of $p couldn't be read"; fi
+    """#
 
     public static let deadline: TimeInterval = 15
 
-    public static func run(sessionID: String, using exec: RemoteExec) async -> ConversationCheck {
+    public static func run(sessionID: String, config: RemoteEnvironment.ClaudeConfig?, base: String,
+                           using exec: RemoteExec) async -> ConversationCheck {
         precondition(RemoteQuoting.isSafeToken(sessionID))
+        let state: String, value: String
+        switch config {
+        case .set(let configured)?: (state, value) = ("set", configured)
+        case .unset?: (state, value) = ("unset", "")
+        case nil: (state, value) = ("unknown", "")
+        }
         do {
-            let output = try await exec.run(script: script, args: [sessionID], deadline: deadline)
+            let output = try await exec.run(script: script, args: [state, value, base, sessionID], deadline: deadline)
             guard output.reachedCommand, output.status == 0 else {
                 return .unknown(output.firstErrorLine ?? "ssh exited with status \(output.status)")
             }
-            let lines = output.stdout.split(whereSeparator: \.isNewline).map(String.init)
+            let lines = output.stdout.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
             switch lines.first {
             case "present": return .present
             case "absent": return .absent
-            default: return .unknown(lines.dropFirst().first ?? "the check printed nothing Temple expected")
+            default: return .unknown(lines.dropFirst().first.flatMap { $0.isEmpty ? nil : $0 } ?? "the check printed nothing Temple expected")
             }
         } catch {
             return .unknown(error.localizedDescription)

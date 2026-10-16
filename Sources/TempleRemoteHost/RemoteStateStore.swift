@@ -81,6 +81,9 @@ public struct RemoteRun: Equatable, Sendable {
     /// tab sends it something; a stopped session still unconfirmed is not
     /// resumed blindly (its row offers Start a new session or Discard).
     public var conversation: Conversation?
+    /// Claude's config root the agent was started with, from its pane's
+    /// record: where its transcript is looked for.
+    public var claudeConfig: RemoteEnvironment.ClaudeConfig?
     /// A launch failure's words (`failed cd`, `failed tmux`).
     public var failure: String?
 
@@ -172,6 +175,10 @@ public final class RemoteStateStore: @unchecked Sendable {
         migrator.registerMigration("r2-conversation") { database in
             try database.execute(sql: "ALTER TABLE runs ADD COLUMN conversation TEXT")
         }
+        migrator.registerMigration("r3-config") { database in
+            try database.execute(sql: "ALTER TABLE runs ADD COLUMN config_state TEXT")
+            try database.execute(sql: "ALTER TABLE runs ADD COLUMN config_dir TEXT")
+        }
         return migrator
     }
 
@@ -190,8 +197,8 @@ public final class RemoteStateStore: @unchecked Sendable {
                 INSERT INTO runs (handle, host, agent, mode, session_name, directory_intent, directory, session_id,
                     attachment, record_path, started_at, ok_at, pane_pid, pane_start, socket_path, server_pid,
                     server_start, creation, ended_at, end_evidence, left_running_at, left_running_reason,
-                    left_running_noticed_at, dismissed_at, failure, conversation)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    left_running_noticed_at, dismissed_at, failure, conversation, config_state, config_dir)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, arguments: StatementArguments(Self.values(run)))
     }
 
@@ -242,7 +249,7 @@ public final class RemoteStateStore: @unchecked Sendable {
                     session_id = ?, attachment = ?, record_path = ?, started_at = ?, ok_at = ?, pane_pid = ?,
                     pane_start = ?, socket_path = ?, server_pid = ?, server_start = ?, creation = ?, ended_at = ?,
                     end_evidence = ?, left_running_at = ?, left_running_reason = ?, left_running_noticed_at = ?,
-                    dismissed_at = ?, failure = ?, conversation = ?
+                    dismissed_at = ?, failure = ?, conversation = ?, config_state = ?, config_dir = ?
                 WHERE handle = ?
                 """, arguments: StatementArguments(Array(Self.values(run).dropFirst()) + [handle]))
             return run
@@ -261,7 +268,20 @@ public final class RemoteStateStore: @unchecked Sendable {
          run.creation?.rawValue, run.endedAt?.timeIntervalSince1970, run.endEvidence?.rawValue,
          run.leftRunningAt?.timeIntervalSince1970, run.leftRunningReason?.rawValue,
          run.leftRunningNoticedAt?.timeIntervalSince1970, run.dismissedAt?.timeIntervalSince1970, run.failure,
-         run.conversation?.rawValue]
+         run.conversation?.rawValue, Self.configState(run.claudeConfig), Self.configDir(run.claudeConfig)]
+    }
+
+    private static func configState(_ config: RemoteEnvironment.ClaudeConfig?) -> String? {
+        switch config {
+        case .set?: "set"
+        case .unset?: "unset"
+        case nil: nil
+        }
+    }
+
+    private static func configDir(_ config: RemoteEnvironment.ClaudeConfig?) -> String? {
+        if case .set(let value)? = config { return value }
+        return nil
     }
 
     private static func run(_ row: Row) -> RemoteRun {
@@ -289,6 +309,11 @@ public final class RemoteStateStore: @unchecked Sendable {
         run.dismissedAt = date("dismissed_at")
         run.failure = row["failure"]
         run.conversation = (row["conversation"] as String?).flatMap(RemoteRun.Conversation.init(rawValue:))
+        switch row["config_state"] as String? {
+        case "set": run.claudeConfig = .set(row["config_dir"] ?? "")
+        case "unset": run.claudeConfig = .unset
+        default: run.claudeConfig = nil
+        }
         return run
     }
 

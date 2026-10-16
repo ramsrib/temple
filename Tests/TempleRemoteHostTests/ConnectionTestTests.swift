@@ -24,7 +24,7 @@ final class ConnectionTestTests: XCTestCase {
             paths.append(path)
             return RecordingExec { script, args in
                 if script == RemoteEnvironment.script {
-                    return RemoteOutput(status: 0, stdout: "shell /bin/bash\nchatter\n\(args[0])\n/home/mentes/.local/bin:/usr/bin\n\(args[0])\n", stderr: "")
+                    return RemoteOutput(status: 0, stdout: "shell /bin/bash\nchatter\n\(args[0])\n/home/mentes/.local/bin:/usr/bin\n\(args[0]).cfg\n\(args[0])\n", stderr: "")
                 }
                 if script == ToolCheck.script {
                     return args[0] == "claude"

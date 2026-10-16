@@ -12,7 +12,7 @@ final class RemoteStateStoreTests: XCTestCase {
     }
 
     func testItsOwnMigratorAndFile() throws {
-        XCTAssertEqual(RemoteStateStore.migrationIdentifiers, ["r1-runs", "r2-conversation"])
+        XCTAssertEqual(RemoteStateStore.migrationIdentifiers, ["r1-runs", "r2-conversation", "r3-config"])
         let tree = TempTree("remote-store")
         _ = try RemoteStateStore(directory: tree.url)
         XCTAssertTrue(FileManager.default.fileExists(atPath: tree.path + "/remote-state.sqlite"))
@@ -41,6 +41,7 @@ final class RemoteStateStoreTests: XCTestCase {
         original.dismissedAt = Date(timeIntervalSince1970: 170)
         original.failure = "why"
         original.conversation = .confirmed
+        original.claudeConfig = .set("rel dir\nx")
         original.attachment = 3
         try store.insert(original)
         XCTAssertEqual(try store.run("h1"), original)
