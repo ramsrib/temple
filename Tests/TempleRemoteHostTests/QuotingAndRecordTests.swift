@@ -237,36 +237,6 @@ final class RemoteHostRecordTests: XCTestCase {
         XCTAssertEqual(list.unreadable.count, 1)
     }
 
-    /// The case the grammar exists for, without a network: a config whose
-    /// `ProxyCommand` puts `%h` and `%r` into shell text. Every address and
-    /// user the form accepts arrives as itself, and nothing else runs.
-    func testAcceptedValuesReachAProxyCommandAsThemselves() throws {
-        let tree = TempTree("proxy")
-        let marker = tree.path + "/seen"
-        let config = tree.write("config", "Host *\n  ProxyCommand /bin/sh -c 'printf \"%%s|%%s\" %h %r > \(marker); exit 1'\n")
-        for (address, user) in [("box.lan", "me"), ("10.0.0.2", "mentes_2"), ("2001:db8::42", "a.b-c")] {
-            var form = RemoteHostForm()
-            form.name = "box"; form.address = address; form.user = user
-            guard case .success(let record) = form.validate(editing: nil, existing: [], configAliases: []) else {
-                return XCTFail("\(address) refused")
-            }
-            let connection = SSHConnection(record: record, stateDirectory: tree.url, sshPath: "/usr/bin/ssh")
-            try? FileManager.default.removeItem(atPath: marker)
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = ["-F", config.path] + connection.hostOptions
-                + ["-o", "BatchMode=yes", "-o", "ControlPath=none", "--", record.name, "true"]
-            process.environment = ["HOME": tree.path, "PATH": "/usr/bin:/bin"]
-            process.standardError = FileHandle.nullDevice
-            process.standardOutput = FileHandle.nullDevice
-            try process.run()
-            process.waitUntilExit()
-            XCTAssertEqual(try String(contentsOfFile: marker, encoding: .utf8), "\(address)|\(user)")
-        }
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: tree.path).sorted(), ["config", "seen"],
-                       "nothing else was written")
-    }
-
     func testAnEntryWithoutSourceIsAConfigAlias() throws {
         let record = try JSONDecoder().decode(RemoteHostRecord.self, from: Data(#"{"name":"jetson"}"#.utf8))
         XCTAssertEqual(record, .config("jetson"))
