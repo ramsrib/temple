@@ -98,6 +98,9 @@ final class FakeTerminalSurface: TerminalSurface {
     /// Input other than a plain Return (keypad Enter, a key, a paste, IME
     /// text, a drop): what the real view reports for it.
     func simulateInput() { delegate?.surfaceDidReceiveInput(self) }
+    /// A click: input only when the program captures the mouse, as the
+    /// real view reports it.
+    func simulateClick(captured: Bool) { if captured { delegate?.surfaceDidReceiveInput(self) } }
     func simulateExit(status: Int32 = 0) { exitNow(status: status) }
     func simulateSearchStarted(needle: String?) { delegate?.surface(self, didStartSearch: needle) }
     func simulateSearchEnded() { delegate?.surfaceDidEndSearch(self) }

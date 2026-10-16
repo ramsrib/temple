@@ -104,7 +104,8 @@ public protocol TerminalSurfaceDelegate: AnyObject {
 
     /// Something was delivered toward the agent's terminal: any key press
     /// (keypad Enter, a single key, ⌘V's paste, Esc), committed IME text, a
-    /// drop's text. Coarser than `surfaceDidSubmitInput` and only evidence
+    /// drop's text, and mouse input the program captures (a click, release,
+    /// drag or scroll while it has mouse reporting on). Coarser than `surfaceDidSubmitInput` and only evidence
     /// that the agent may have been given something: it changes no
     /// activity. Default no-op.
     func surfaceDidReceiveInput(_ surface: TerminalSurface)

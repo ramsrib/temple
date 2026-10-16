@@ -43,4 +43,43 @@ final class GhosttyInputEvidenceTests: XCTestCase {
         view.keyDown(with: key(36, "\r"))                     // a plain Return is input too
         XCTAssertEqual(recorder.inputs, 6)
     }
+
+    private func mouse(_ type: NSEvent.EventType) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+                           context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+    }
+
+    /// Mouse input counts when the program has mouse reporting on (it
+    /// reaches the pty: a click can answer a prompt), and a focus click, a
+    /// selection drag or a move does not when it hasn't.
+    func testMouseInputCountsOnlyWhenTheProgramCapturesIt() {
+        let surface = GhosttyTerminalSurface(app: GhosttyApp.shared, appearance: .default)
+        let recorder = Recorder()
+        surface.delegate = recorder
+        let view = try! XCTUnwrap(surface.view as? GhosttySurfaceView)
+        var captured = false
+        view.mouseReachesProgram = { captured }
+        view.mouseDown(with: mouse(.leftMouseDown))       // a focus click
+        view.mouseUp(with: mouse(.leftMouseUp))
+        view.mouseDragged(with: mouse(.leftMouseDragged))  // a selection
+        view.mouseMoved(with: mouse(.mouseMoved))
+        XCTAssertEqual(recorder.inputs, 0, "Temple's own mouse handling is not input")
+        captured = true
+        view.mouseDown(with: mouse(.leftMouseDown))        // answering a prompt
+        view.mouseUp(with: mouse(.leftMouseUp))
+        view.rightMouseDown(with: mouse(.rightMouseDown))
+        view.otherMouseUp(with: mouse(.otherMouseUp))
+        view.mouseDragged(with: mouse(.leftMouseDragged))
+        XCTAssertEqual(recorder.inputs, 5)
+        view.mouseMoved(with: mouse(.mouseMoved))
+        XCTAssertEqual(recorder.inputs, 5, "a move is not a click, a release, a drag or a scroll")
+        let scroll = NSEvent(cgEvent: CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1,
+                                              wheel1: -3, wheel2: 0, wheel3: 0)!)!
+        view.scrollWheel(with: scroll)
+        XCTAssertEqual(recorder.inputs, 6, "a scroll the program captures")
+        captured = false
+        view.scrollWheel(with: scroll)
+        XCTAssertEqual(recorder.inputs, 6, "a scroll through Temple's own scrollback")
+        XCTAssertEqual(recorder.submits, 0)
+    }
 }

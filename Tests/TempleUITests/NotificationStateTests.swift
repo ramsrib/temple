@@ -154,6 +154,25 @@ final class NotificationStateTests: XCTestCase {
         XCTAssertEqual(model.pendingCloseTabID, tab.id, "keypad Enter, a key, a paste: no early rest")
     }
 
+    /// A mouse-only answer (a click the program captured) bars an early
+    /// rest; a focus click it didn't capture does not.
+    func testAMouseOnlyAnswerBarsAnEarlyRestAndAFocusClickDoesNot() async {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.titleQuietWindow = 0.1
+        model.openSession(Fixture.row("a", project: "/p/a"))
+        let focused = model.activeTab!
+        (focused.surface as? FakeTerminalSurface)?.simulateClick(captured: false)
+        model.openSession(Fixture.row("b", project: "/p/b"))
+        let answered = model.activeTab!
+        (answered.surface as? FakeTerminalSurface)?.simulateClick(captured: true)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        model.requestClose(tabID: answered.id)
+        XCTAssertEqual(model.pendingCloseTabID, answered.id, "a captured click may have answered a prompt")
+        model.cancelPendingClose()
+        model.requestClose(tabID: focused.id)
+        XCTAssertNil(model.pendingCloseTabID, "a focus click is not input")
+    }
+
     func testTitleMovementPromotesIdleBackToRunning() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.ringGraceSeconds = -1  // out of grace immediately

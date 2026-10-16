@@ -476,36 +476,59 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
 
     // MARK: Mouse
 
+    /// Whether the program in the terminal has mouse reporting on, so a
+    /// click, release, drag or scroll reaches its pty rather than Temple
+    /// (libghostty's capture state). A test can stand in for the surface.
+    lazy var mouseReachesProgram: () -> Bool = { [weak self] in
+        guard let surface = self?.surface else { return false }
+        return ghostty_surface_mouse_captured(surface)
+    }
+
+    /// Mouse input that reaches the pty is input (a click can answer a
+    /// TUI's prompt); a focus click, a selection or a scroll Temple handles
+    /// itself for scrollback is not. Under tmux (`mouse on`) every click
+    /// reaches the pty. Asked before the event is handed over.
+    private func reportMouseInput() {
+        if mouseReachesProgram() { onInput?() }
+    }
+
     public override func mouseDown(with event: NSEvent) {
+        reportMouseInput()
         guard let surface else { return }
         ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, mods(event))
     }
     public override func mouseUp(with event: NSEvent) {
+        reportMouseInput()
         guard let surface else { return }
         ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, mods(event))
     }
     public override func rightMouseDown(with event: NSEvent) {
+        reportMouseInput()
         guard let surface else { super.rightMouseDown(with: event); return }
         ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_RIGHT, mods(event))
     }
     public override func rightMouseUp(with event: NSEvent) {
+        reportMouseInput()
         guard let surface else { super.rightMouseUp(with: event); return }
         ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT, mods(event))
     }
     public override func otherMouseDown(with event: NSEvent) {
+        reportMouseInput()
         guard let surface else { return }
         ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_MIDDLE, mods(event))
     }
     public override func otherMouseUp(with event: NSEvent) {
+        reportMouseInput()
         guard let surface else { return }
         ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_MIDDLE, mods(event))
     }
     public override func mouseMoved(with event: NSEvent) { reportMousePos(event) }
-    public override func mouseDragged(with event: NSEvent) { reportMousePos(event) }
-    public override func rightMouseDragged(with event: NSEvent) { reportMousePos(event) }
-    public override func otherMouseDragged(with event: NSEvent) { reportMousePos(event) }
+    public override func mouseDragged(with event: NSEvent) { reportMouseInput(); reportMousePos(event) }
+    public override func rightMouseDragged(with event: NSEvent) { reportMouseInput(); reportMousePos(event) }
+    public override func otherMouseDragged(with event: NSEvent) { reportMouseInput(); reportMousePos(event) }
 
     public override func scrollWheel(with event: NSEvent) {
+        reportMouseInput()
         guard let surface else { return }
         var x = event.scrollingDeltaX
         var y = event.scrollingDeltaY

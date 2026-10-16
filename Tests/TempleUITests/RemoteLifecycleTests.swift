@@ -696,6 +696,22 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertTrue(model.isAtRestNow(tab))
     }
 
+    /// On a host, a mouse-only answer (a click tmux passes on, as it does
+    /// with `mouse on`) bars an early rest; an uncaptured click does not.
+    func testAMouseOnlyAnswerBarsAnEarlyRestOnAHost() async throws {
+        model.titleQuietWindow = 0.15
+        let answered = await openRow("s1")
+        try XCTUnwrap(factory.created.last).simulateClick(captured: true)
+        let focused = await openRow("s2")
+        try XCTUnwrap(factory.created.last).simulateClick(captured: false)
+        try await Task.sleep(for: .milliseconds(250))
+        model.requestClose(tabID: answered.id)
+        XCTAssertEqual(model.pendingRemoteCloseTabID, answered.id)
+        model.remoteTabs.cancelClose()
+        model.requestClose(tabID: focused.id)
+        XCTAssertNil(model.pendingRemoteCloseTabID)
+    }
+
     /// A reattach is no evidence of rest: detached while working, then
     /// reopened (an attach to the run, which still runs), a static title
     /// quiet past the window: ⌘W asks, as before the early rule.
