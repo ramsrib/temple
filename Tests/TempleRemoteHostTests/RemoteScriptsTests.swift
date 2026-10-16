@@ -118,14 +118,20 @@ final class RemoteScriptsTests: XCTestCase {
             try process.run()
         }
         /// Temple's Detach: the local client goes; the agent stays.
+        private var ended = false
         func end() {
+            guard !ended else { return }
+            ended = true
             // `script` can sit out a SIGTERM; a SIGKILL closes the pty all the
-            // same, and the client on it is hung up.
+            // same, and the client on it is hung up. `isRunning` is polled:
+            // `waitUntilExit` off the main thread can wait for a notification
+            // that never comes.
             if process.isRunning { process.terminate() }
-            let deadline = Date().addingTimeInterval(2)
+            var deadline = Date().addingTimeInterval(2)
             while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
             if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-            process.waitUntilExit()
+            deadline = Date().addingTimeInterval(2)
+            while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
             try? input.fileHandleForWriting.close()
         }
         deinit { end() }

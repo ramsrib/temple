@@ -1247,6 +1247,9 @@ extension OpenSessionsModel {
     /// before anything spawns. A late answer for an earlier open, a closed
     /// tab or a quit spawns nothing, and a creation it planned is abandoned.
     func ensureRemoteSurface(for tab: SessionTab, on host: RemoteSessionHost, resumeAnyway: Bool) {
+        // One open at a time: a second activation while the first decides
+        // would race it for the same run.
+        if tab.remote?.phase == .opening { return }
         guard let sid = tab.sessionID else {
             // A new Codex session on a host waits for its identity step (1b).
             tab.launchPreparationError = RemoteCopy.newCodexWaits(host.hostName)
