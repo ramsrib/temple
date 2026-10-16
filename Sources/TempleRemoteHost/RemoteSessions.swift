@@ -1323,7 +1323,14 @@ public final class RemoteSessions {
         return await read { try $0.unjoinedClaims(host: host) } ?? []
     }
 
-    /// Pending runs to restore as chips.
+    /// The run's tab was typed into: kept, so a relaunch knows.
+    public func recordInput(_ handle: String) async throws {
+        let now = now()
+        try await write { try $0.recordInput(handle, at: now) }
+    }
+
+    /// Pending runs (and claimed ones whose tab never reached `open_tabs`)
+    /// to restore as chips.
     public func pendingRuns() async -> [RemoteRun] {
         let host = host
         return await read { try $0.pendingRuns(host: host) } ?? []

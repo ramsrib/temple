@@ -548,6 +548,16 @@ final class CodexIdentityTests: XCTestCase {
         XCTAssertEqual(try store.reservePending("c"), .gone)
         _ = try store.claim("b", sessionID: "x", how: .verified)
         XCTAssertEqual(try store.reservePending("b"), .identified("x"))
+        // A claimed run whose tab never reached open_tabs is still restored
+        // (as that session); handed over, it is not.
+        XCTAssertEqual(try store.pendingRuns(host: HostID(rawValue: "box")).map(\.handle), ["a", "b"])
+        try store.update("b") { $0.tabClosedAt = Date() }
+        XCTAssertEqual(try store.pendingRuns(host: HostID(rawValue: "box")).map(\.handle), ["a"])
+        // Input evidence is kept, once.
+        let first = Date(timeIntervalSince1970: 100)
+        try store.recordInput("a", at: first)
+        try store.recordInput("a", at: Date(timeIntervalSince1970: 200))
+        XCTAssertEqual(try store.run("a")?.inputSeenAt, first)
     }
 }
 

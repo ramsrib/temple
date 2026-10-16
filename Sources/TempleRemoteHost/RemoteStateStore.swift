@@ -97,6 +97,9 @@ public struct RemoteRun: Equatable, Sendable {
     /// The tab of a pending Codex run was closed: it is not restored as a
     /// chip (it is still listed, and opened, from Sessions on <host>).
     public var tabClosedAt: Date?
+    /// Something was typed into the run's tab (Return): a pending run that
+    /// ends unidentified keeps its question, across relaunches.
+    public var inputSeenAt: Date?
     /// A launch failure's words (`failed cd`, `failed tmux`).
     public var failure: String?
 
@@ -221,6 +224,11 @@ public final class RemoteStateStore: @unchecked Sendable {
                 );
                 """)
         }
+        // Phase 1b round 1: whether a pending run's tab was typed into
+        // survives a relaunch.
+        migrator.registerMigration("r5-input") { database in
+            try database.execute(sql: "ALTER TABLE runs ADD COLUMN input_seen_at DOUBLE")
+        }
         return migrator
     }
 
@@ -240,8 +248,8 @@ public final class RemoteStateStore: @unchecked Sendable {
                     attachment, record_path, started_at, ok_at, pane_pid, pane_start, socket_path, server_pid,
                     server_start, creation, ended_at, end_evidence, left_running_at, left_running_reason,
                     left_running_noticed_at, dismissed_at, failure, conversation, config_state, config_dir,
-                    codex_home_state, codex_home_dir, claim, joined_at, tab_closed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    codex_home_state, codex_home_dir, claim, joined_at, tab_closed_at, input_seen_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, arguments: StatementArguments(Self.values(run)))
     }
 
@@ -307,7 +315,8 @@ public final class RemoteStateStore: @unchecked Sendable {
                     pane_start = ?, socket_path = ?, server_pid = ?, server_start = ?, creation = ?, ended_at = ?,
                     end_evidence = ?, left_running_at = ?, left_running_reason = ?, left_running_noticed_at = ?,
                     dismissed_at = ?, failure = ?, conversation = ?, config_state = ?, config_dir = ?,
-                    codex_home_state = ?, codex_home_dir = ?, claim = ?, joined_at = ?, tab_closed_at = ?
+                    codex_home_state = ?, codex_home_dir = ?, claim = ?, joined_at = ?, tab_closed_at = ?,
+                    input_seen_at = ?
                 WHERE handle = ?
                 """, arguments: StatementArguments(Array(Self.values(run).dropFirst()) + [handle]))
             return run
@@ -328,7 +337,7 @@ public final class RemoteStateStore: @unchecked Sendable {
          run.leftRunningNoticedAt?.timeIntervalSince1970, run.dismissedAt?.timeIntervalSince1970, run.failure,
          run.conversation?.rawValue, Self.configState(run.claudeConfig), Self.configDir(run.claudeConfig),
          Self.configState(run.codexHome), Self.configDir(run.codexHome), run.claim?.rawValue,
-         run.joinedAt?.timeIntervalSince1970, run.tabClosedAt?.timeIntervalSince1970]
+         run.joinedAt?.timeIntervalSince1970, run.tabClosedAt?.timeIntervalSince1970, run.inputSeenAt?.timeIntervalSince1970]
     }
 
     private static func configState(_ config: RemoteEnvironment.ClaudeConfig?) -> String? {
@@ -382,6 +391,7 @@ public final class RemoteStateStore: @unchecked Sendable {
         run.claim = (row["claim"] as String?).flatMap(RemoteRun.Claim.init(rawValue:))
         run.joinedAt = date("joined_at")
         run.tabClosedAt = date("tab_closed_at")
+        run.inputSeenAt = date("input_seen_at")
         return run
     }
 
@@ -538,11 +548,23 @@ public final class RemoteStateStore: @unchecked Sendable {
         }
     }
 
-    /// Pending Codex runs restored as chips at launch: not discarded, not a
-    /// creation that never ran, and their tab not closed.
+    /// Codex runs restored as chips at launch from the runs alone: pending
+    /// ones, and claimed ones whose tab never reached `open_tabs` (a claim
+    /// that landed after the quit froze the tab set). Not discarded, not a
+    /// creation that never ran, and their tab neither closed nor handed
+    /// over (`tab_closed_at`).
     public func pendingRuns(host: HostID) throws -> [RemoteRun] {
         try runs(host: host).filter {
-            $0.isPending && $0.dismissedAt == nil && $0.tabClosedAt == nil && $0.creation != .failed
+            $0.agent == .codex && ($0.isPending || $0.claim != nil)
+                && $0.dismissedAt == nil && $0.tabClosedAt == nil && $0.creation != .failed
+        }
+    }
+
+    /// The run's tab was typed into (first time only).
+    public func recordInput(_ handle: String, at date: Date) throws {
+        try queue.write { database in
+            try database.execute(sql: "UPDATE runs SET input_seen_at = ? WHERE handle = ? AND input_seen_at IS NULL",
+                                 arguments: [date.timeIntervalSince1970, handle])
         }
     }
 
