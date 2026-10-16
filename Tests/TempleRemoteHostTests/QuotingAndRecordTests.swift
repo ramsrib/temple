@@ -23,30 +23,81 @@ final class RemoteQuotingTests: XCTestCase {
         }
     }
 
-    /// The nested form every remote command takes: a fixed script, quoted
-    /// once, its arguments quoted beside it, read by the login shell and
-    /// then by `sh`.
-    func testTheShellCommandShapeCarriesArgumentsIntact() throws {
-        let script = #"for a in "$@"; do printf '%s\000' "$a"; done"#
-        for shell in ["/bin/sh", "/bin/zsh", "/bin/bash"] {
-            let command = RemoteQuoting.shellCommand(script: script, args: Self.hard, path: "/usr/bin:/bin")
-            XCTAssertTrue(command.hasPrefix("'env' 'PATH=/usr/bin:/bin' 'sh' '-c' "))
-            let output = try run(shell, ["-c", command])
-            let words = output.split(separator: 0, omittingEmptySubsequences: false).dropLast()
-                .map { String(decoding: $0, as: UTF8.self) }
-            XCTAssertEqual(words, Self.hard, shell)
+    /// Every query travels as a fixed bootstrap on the command line and
+    /// its program on stdin: the arguments come back byte for byte through
+    /// each login shell, PATH is the resolved one, the query's own input
+    /// follows the program, and the command line is the same size however
+    /// long the values (design note 21).
+    func testAQueryCarriesEverythingOnStdinBehindAFixedCommand() throws {
+        let script = #"for a in "$@"; do printf '%s\000' "$a"; done; printf 'PATH=%s\000' "$PATH"; cat"#
+        let longPath = "/usr/bin:/bin:" + String(repeating: "/very/long/path/entry:", count: 2_000)
+        let input = Data("after the program\n".utf8)
+        let short = RemoteQuoting.invocation(script: "true", args: [], path: nil, input: nil, end: "__temple_end_x__")
+        for shell in ["/bin/sh", "/bin/zsh", "/bin/bash", "/opt/homebrew/bin/fish", "/usr/local/bin/fish"]
+            where FileManager.default.isExecutableFile(atPath: shell) {
+            let query = RemoteQuoting.invocation(script: script, args: Self.hard + [String(repeating: "x", count: 50_000)],
+                                                 path: longPath, input: input, end: "__temple_end_x__")
+            XCTAssertEqual(query.command, short.command, "the command line never carries a value")
+            XCTAssertLessThan(query.command.utf8.count, 512)
+            let output = try run(shell, ["-c", query.command], stdin: query.stdin)
+            let fields = output.split(separator: 0, omittingEmptySubsequences: false).map { String(decoding: $0, as: UTF8.self) }
+            XCTAssertEqual(Array(fields.prefix(Self.hard.count + 1)), Self.hard + [String(repeating: "x", count: 50_000)], shell)
+            XCTAssertEqual(fields[Self.hard.count + 1], "PATH=" + longPath, shell)
+            XCTAssertEqual(fields.last, "after the program\n", shell)
         }
-        // Without a resolved PATH, no assignment at all.
-        XCTAssertTrue(RemoteQuoting.shellCommand(script: "true", args: [], path: nil).hasPrefix("'sh' '-c' 'true' 'temple'"))
     }
 
-    /// A pane command quoted inside a script quoted inside the remote
-    /// string: three levels, one function.
-    func testNestedQuotingThroughThreeShells() throws {
-        let inner = RemoteQuoting.command(["printf", "%s|", "it's", "a\\b", "x y"])
-        let middle = RemoteQuoting.command(["sh", "-c", inner])
-        let outer = RemoteQuoting.shellCommand(script: #"eval "$1""#, args: [middle], path: nil)
-        XCTAssertEqual(String(decoding: try run("/bin/zsh", ["-c", outer]), as: UTF8.self), "it's|a\\b|x y|")
+    /// One invariant for every ssh command line Temple builds: a short,
+    /// fixed bootstrap. Every real query script, over both query
+    /// transports, with long PATH, arguments and input, and every
+    /// interactive command (the tab's executor for the longest stage name,
+    /// the Test connection's), stays within `LaunchStage.maximumCommandBytes`.
+    func testEveryCommandLineTempleBuildsIsShort() {
+        let connection = SSHConnection(record: .config("box"), stateDirectory: URL(fileURLWithPath: "/private/tmp/temple-b-env/state"),
+                                       sshPath: "/usr/bin/ssh")
+        let longPath = String(repeating: "/a/very/long/path/entry:", count: 2_000) + "/usr/bin:/bin"
+        let long = String(repeating: "x'\n\\ ", count: 5_000)
+        let queries: [(String, [String])] = [
+            (RemoteEnvironment.script, ["__temple_path_x__"]),
+            (LaunchRecords.fetchScript, ["r-m"]), (LaunchRecords.acknowledgeScript, ["r-m", "all"]),
+            (LaunchRecords.outputScript, ["r-m"]), (FolderCheck.script, [long]),
+            (ConversationCheck.script, ["set", long, long, "id"]),
+            (LaunchStage.writeScript, ["r-m.s-cx", "123456"]), (LaunchStage.discardScript, ["r-m.s-cx"]),
+            (LaunchStage.discardRunScript, ["r-m"]),
+            (TmuxKeepAlive.hasSessionScript, [long, "temple-h"]), (TmuxKeepAlive.probeScript, [long, "temple-h"]),
+            (TmuxKeepAlive.stopScript, [long, "temple-h", "30"]),
+            (ToolCheck.script, ["claude"]), (TmuxCheck.script, ["temple-check"]), (LogindCheck.script, []),
+        ]
+        for (script, args) in queries {
+            for purpose in [SSHConnection.Purpose.query, .overMaster] {
+                let invocation = SSHExec.invocation(script: script, args: args, path: longPath,
+                                                    input: Data(repeating: 0x41, count: 100_000), marker: "__temple_marker__")
+                let command = connection.argv(purpose, remoteCommand: invocation.command).last ?? ""
+                XCTAssertLessThanOrEqual(command.utf8.count, LaunchStage.maximumCommandBytes, String(script.prefix(40)))
+            }
+        }
+        let stage = LaunchStage.attachName(marker: "r-" + String(repeating: "f", count: 16), nonce: String(repeating: "f", count: 16))
+        XCTAssertLessThanOrEqual(LaunchStage.command(stage: stage).utf8.count, LaunchStage.maximumCommandBytes)
+        XCTAssertLessThanOrEqual((connection.argv(.interactive, remoteCommand: "true").last ?? "").utf8.count,
+                                 LaunchStage.maximumCommandBytes)
+    }
+
+    /// A program cut short in transit (no end line) runs nothing.
+    func testATruncatedProgramRunsNothing() throws {
+        let marker = "/private/tmp/temple-truncated-\(UUID().uuidString)"
+        let query = RemoteQuoting.invocation(script: "touch \(marker)", args: [], path: nil, input: nil)
+        let cut = query.stdin.prefix(query.stdin.count - 20)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", query.command]
+        let input = Pipe()
+        process.standardInput = input
+        try process.run()
+        input.fileHandleForWriting.write(cut)
+        try input.fileHandleForWriting.close()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 97)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker))
     }
 
     /// A quote or backslash followed by a combining mark is one Character
@@ -64,14 +115,21 @@ final class RemoteQuotingTests: XCTestCase {
         for token in ["", "a b", "a'b", "a;b", "a/b", "é", "$x", "a\nb", "a'\u{0301}"] { XCTAssertFalse(RemoteQuoting.isSafeToken(token), token) }
     }
 
-    private func run(_ shell: String, _ arguments: [String]) throws -> Data {
+    private func run(_ shell: String, _ arguments: [String], stdin: Data? = nil) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shell)
         process.arguments = arguments
         process.environment = ["PATH": "/usr/bin:/bin", "HOME": "/private/tmp"]
         let pipe = Pipe()
         process.standardOutput = pipe
+        let input = Pipe()
+        if stdin != nil { process.standardInput = input }
         try process.run()
+        if let stdin {
+            // Written off this thread: the output must drain while it goes.
+            let writer = input.fileHandleForWriting
+            DispatchQueue.global().async { writer.write(stdin); try? writer.close() }
+        }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 0, shell)

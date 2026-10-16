@@ -36,16 +36,32 @@ public enum RemoteQuoting {
         words.map(quote).joined(separator: " ")
     }
 
-    /// `env PATH=<path> sh -c <script> temple <args…>`, or without the
-    /// assignment when no PATH was resolved (ssh's default environment).
-    /// Every remote command Temple runs has this shape (one environment
-    /// policy, docs/designs/remote-ssh.md section 2).
-    public static func shellCommand(script: String, args: [String], path: String?) -> String {
-        var words: [String] = []
-        if let path { words += ["env", "PATH=\(path)"] }
-        words += ["sh", "-c", script, "temple"] + args
-        // `env` and `sh` are plain words; quoting them too keeps one rule.
-        return command(words)
+    /// The fixed bootstrap every query runs, argument: its end line. It
+    /// reads the program from stdin a line at a time (`read` takes no more
+    /// than the line from a pipe), up to the end line, and runs it only if
+    /// the end line arrived: a program cut short in transit runs nothing.
+    /// What follows the end line stays on stdin, for the program.
+    static let bootstrap = #"NL=$(printf '\nx'); NL=${NL%x}; p=; g=; "#
+        + #"while IFS= read -r l; do if [ "$l" = "$1" ]; then g=1; break; fi; p=$p$l$NL; done; "#
+        + #"[ -n "$g" ] || exit 97; eval "$p""#
+
+    /// How every query travels (one environment policy, docs/designs/
+    /// remote-ssh.md section 2): on the command line only the fixed
+    /// bootstrap and a random end line, the same few hundred bytes for
+    /// every query; on stdin the program (the arguments as `set --`, the
+    /// resolved PATH when there is one, then the fixed script), the end
+    /// line, then the query's own input. Nothing variable is ever in a
+    /// command line, so no value can grow one (design note 21).
+    public static func invocation(script: String, args: [String], path: String?, input: Data?,
+                                  end: String = "__temple_end_\(nonce())__") -> (command: String, stdin: Data) {
+        var program = "set --"
+        for arg in args { program += " " + quote(arg) }
+        program += "\n"
+        if let path { program += "PATH=\(quote(path)); export PATH\n" }
+        program += script + "\n" + end + "\n"
+        var stdin = Data(program.utf8)
+        if let input { stdin.append(input) }
+        return (command(["sh", "-c", bootstrap, "temple", end]), stdin)
     }
 
     /// Ids, handles and nonces: what may name something on a host.

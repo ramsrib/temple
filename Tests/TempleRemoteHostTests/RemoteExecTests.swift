@@ -52,6 +52,40 @@ final class RemoteExecTests: XCTestCase {
         XCTAssertEqual(openDescriptors(), hung, "torn down at the deadline too")
     }
 
+    /// The stdin writer is the run's own: a pipe-sized upload to a process
+    /// whose descendant holds stdin open without reading is cut off when
+    /// the run is answered, its descriptor closed with the readers, and
+    /// nothing of Temple's is left waiting on the pipe.
+    func testAnUploadToAStdinNobodyReadsIsTornDownWithTheRun() async throws {
+        let tree = TempTree("stdin-holder")
+        let pidFile = tree.path + "/pid"
+        let before = openDescriptors()
+        let payload = Data(repeating: 0x78, count: 4 << 20)
+        let started = Date()
+        // The shell exits at once; its child keeps stdin (and the output
+        // streams) open and never reads.
+        let output = try await ProcessRunner.run("/bin/sh", ["-c", "sleep 30 & echo $! > \(pidFile); exit 0"],
+                                                 input: payload, deadline: 10)
+        XCTAssertEqual(output.status, 0)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3, "answered after the drain grace, not the deadline")
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(openDescriptors(), before, "the writer's descriptor closed with the readers")
+        if let pid = Int32(try String(contentsOfFile: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)) {
+            kill(pid, SIGKILL)
+        }
+        // And at a deadline, with the reader alive and not reading.
+        let hung = openDescriptors()
+        do {
+            _ = try await ProcessRunner.run("/bin/sh", ["-c", "exec sleep 30"], input: payload, deadline: 0.3)
+            XCTFail("hung")
+        } catch RemoteExecError.deadline {}
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(openDescriptors(), hung, "torn down at the deadline too")
+        // A reader that does read gets every byte.
+        let read = try await ProcessRunner.run("/bin/sh", ["-c", "wc -c | tr -d ' '"], input: payload, deadline: 10)
+        XCTAssertEqual(read.stdout.trimmingCharacters(in: .whitespacesAndNewlines), String(payload.count))
+    }
+
     private func openDescriptors() -> Int {
         (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count) ?? -1
     }

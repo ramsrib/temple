@@ -77,17 +77,19 @@ public struct SSHExec: RemoteExec {
 
     public func run(script: String, args: [String], input: Data?, deadline: TimeInterval) async throws -> RemoteOutput {
         let marker = "__temple_\(RemoteQuoting.nonce())__"
-        let remote = Self.remoteCommand(script: script, args: args, path: path, marker: marker)
-        let argv = connection.argv(purpose, remoteCommand: remote)
-        let raw = try await ProcessRunner.run(argv[0], Array(argv.dropFirst()), input: input, deadline: deadline)
+        let invocation = Self.invocation(script: script, args: args, path: path, input: input, marker: marker)
+        let argv = connection.argv(purpose, remoteCommand: invocation.command)
+        let raw = try await ProcessRunner.run(argv[0], Array(argv.dropFirst()), input: invocation.stdin, deadline: deadline)
         return Self.unframe(raw, marker: marker)
     }
 
-    /// The marker, on stdout and stderr, then the command. `echo` and `exec`
-    /// read the same in sh, bash, zsh and fish.
-    public static func remoteCommand(script: String, args: [String], path: String?, marker: String) -> String {
-        "echo \(marker); echo \(marker) >&2; exec "
-            + RemoteQuoting.shellCommand(script: script, args: args, path: path)
+    /// The marker, on stdout and stderr, then the fixed bootstrap
+    /// (`RemoteQuoting.invocation`); everything else on stdin. `echo` and
+    /// `exec` read the same in sh, bash, zsh and fish.
+    public static func invocation(script: String, args: [String], path: String?, input: Data?,
+                                  marker: String) -> (command: String, stdin: Data) {
+        let query = RemoteQuoting.invocation(script: script, args: args, path: path, input: input)
+        return ("echo \(marker); echo \(marker) >&2; exec " + query.command, query.stdin)
     }
 
     /// Drops what came before the marker on each stream. A stream without
@@ -120,9 +122,9 @@ public struct LocalShellExec: RemoteExec {
 
     public func run(script: String, args: [String], input: Data?, deadline: TimeInterval) async throws -> RemoteOutput {
         let marker = "__temple_\(RemoteQuoting.nonce())__"
-        let remote = SSHExec.remoteCommand(script: script, args: args, path: path, marker: marker)
-        let raw = try await ProcessRunner.run("/bin/sh", ["-c", remote], environment: environment, input: input,
-                                              deadline: deadline)
+        let invocation = SSHExec.invocation(script: script, args: args, path: path, input: input, marker: marker)
+        let raw = try await ProcessRunner.run("/bin/sh", ["-c", invocation.command], environment: environment,
+                                              input: invocation.stdin, deadline: deadline)
         return SSHExec.unframe(raw, marker: marker)
     }
 }
@@ -162,45 +164,39 @@ public enum ProcessRunner {
     /// Called at each setup stage; tests only.
     nonisolated(unsafe) static var setupHook: (@Sendable (SetupStage) -> Void)?
 
-    /// `input`: written to the process's stdin off the caller's thread,
-    /// then closed; a process that exits without reading it costs a
-    /// failed write, never a SIGPIPE.
+    /// `input`: written to the process's stdin by the run's own writer (a
+    /// nonblocking write source on the run's queue, owned like the
+    /// readers), then closed. It is cancelled, its descriptor closed, with
+    /// the readers when the run is answered (an exit, a deadline, a
+    /// cancellation), so a descendant that holds stdin without reading
+    /// keeps nothing of Temple's waiting. A process that exits without
+    /// reading costs a failed write, never a SIGPIPE.
     public static func run(_ executable: String, _ arguments: [String], environment: [String: String]? = nil,
                            input: Data? = nil, deadline: TimeInterval) async throws -> Output {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         if let environment { process.environment = environment }
-        var stdinWrite: Int32?
+        var stdin: (read: FileHandle, write: Int32)?
         if input != nil {
             var fds: [Int32] = [0, 0]
             guard pipe(&fds) == 0 else { throw RemoteExecError.launchFailed(String(cString: strerror(errno))) }
             for fd in fds { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
+            // Only this side's end is nonblocking: the child reads as usual.
+            _ = fcntl(fds[1], F_SETFL, fcntl(fds[1], F_GETFL) | O_NONBLOCK)
             _ = fcntl(fds[1], F_SETNOSIGPIPE, 1)
-            process.standardInput = FileHandle(fileDescriptor: fds[0], closeOnDealloc: true)
-            stdinWrite = fds[1]
+            let read = FileHandle(fileDescriptor: fds[0], closeOnDealloc: true)
+            process.standardInput = read
+            stdin = (read, fds[1])
         } else {
             process.standardInput = FileHandle.nullDevice
         }
+        let run = RunState()
+        if let stdin, let input { run.attach(input: input, to: stdin.write) }
         defer {
             // The child has its copy of the read end (or never started).
-            if input != nil { try? (process.standardInput as? FileHandle)?.close() }
+            try? stdin?.read.close()
         }
-        if let stdinWrite, let input {
-            // Written once the process exists; on any failure the pipe is
-            // closed and the child reads end of file.
-            DispatchQueue.global().async {
-                input.withUnsafeBytes { buffer in
-                    var offset = 0
-                    while offset < buffer.count {
-                        let written = Darwin.write(stdinWrite, buffer.baseAddress! + offset, buffer.count - offset)
-                        if written > 0 { offset += written } else if written < 0, errno == EINTR { continue } else { break }
-                    }
-                }
-                close(stdinWrite)
-            }
-        }
-        let run = RunState()
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Output, Error>) in
@@ -282,6 +278,7 @@ public enum ProcessRunner {
         private var cancelled = false
         private var answered = false
         private var sources: [DispatchSourceRead] = []
+        private var writer: DispatchSourceWrite?
         private var buffers: [Data] = [Data(), Data()]
         private var openStreams = 0
         private var status: Int32?
@@ -334,6 +331,37 @@ public enum ProcessRunner {
                 source.resume()
                 if late { source.cancel() }
             }
+        }
+
+        /// The stdin writer: writes what the pipe takes whenever it is
+        /// writable, and closes its descriptor (its cancel handler) when
+        /// the input is all written, the reader has gone, or the run is
+        /// answered. Registered under the same lock as the readers: one
+        /// that arrives after the answer is disposed of at once.
+        func attach(input: Data, to fd: Int32) {
+            let source = DispatchSource.makeWriteSource(fileDescriptor: fd, queue: queue)
+            var offset = 0
+            source.setEventHandler { [weak source] in
+                guard let source else { return }
+                while offset < input.count {
+                    let written = input.withUnsafeBytes { buffer in
+                        Darwin.write(fd, buffer.baseAddress! + offset, buffer.count - offset)
+                    }
+                    if written > 0 { offset += written; continue }
+                    if written < 0, errno == EINTR { continue }
+                    if written < 0, errno == EAGAIN { return }
+                    break
+                }
+                source.cancel()
+            }
+            source.setCancelHandler { close(fd) }
+            let late = lock.withLock { () -> Bool in
+                guard !answered else { return true }
+                writer = source
+                return false
+            }
+            source.resume()
+            if late { source.cancel() }
         }
 
         private func append(_ chunk: ArraySlice<UInt8>, to index: Int) {
@@ -390,11 +418,12 @@ public enum ProcessRunner {
         /// Every reader stopped (its descriptor closed by its cancel
         /// handler), the buffers and the continuation dropped.
         private func teardown() {
-            let stopping: [DispatchSourceRead] = lock.withLock {
-                defer { sources.removeAll(); buffers = [Data(), Data()]; _continuation = nil }
-                return sources
+            let (stopping, writing): ([DispatchSourceRead], DispatchSourceWrite?) = lock.withLock {
+                defer { sources.removeAll(); writer = nil; buffers = [Data(), Data()]; _continuation = nil }
+                return (sources, writer)
             }
             for source in stopping where !source.isCancelled { source.cancel() }
+            if let writing, !writing.isCancelled { writing.cancel() }
         }
 
     }
