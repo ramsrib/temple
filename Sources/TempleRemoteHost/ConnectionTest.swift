@@ -41,6 +41,13 @@ public final class ConnectionTest: ObservableObject, Identifiable {
         public var line: String
         /// The tool's own output, shown on request.
         public var output: String?
+
+        /// The row with what its check ran and printed, unless it has its own.
+        func showing(_ text: String) -> Row {
+            var row = self
+            if row.output?.isEmpty ?? true, !text.isEmpty { row.output = text }
+            return row
+        }
     }
 
     public nonisolated let id = UUID()
@@ -197,7 +204,8 @@ public final class ConnectionTest: ObservableObject, Identifiable {
                     output: path))
         } else {
             set(Row(id: "shell", verdict: .problem,
-                    line: "Couldn't read the login shell's PATH: \(environment.problem ?? "no answer"); using ssh's default environment."))
+                    line: "Couldn't read the login shell's PATH: \(environment.problem ?? "no answer"); using ssh's default environment.",
+                    output: environment.problem ?? "The login shell printed no PATH."))
         }
         let exec = makeExec(connection, environment.path)
 
@@ -205,25 +213,25 @@ public final class ConnectionTest: ObservableObject, Identifiable {
         let claude = await ToolCheck.run("claude", using: exec)
         if Task.isCancelled { return }
         summaryDraft.claude = claude
-        set(Self.row("claude", claude))
+        set(Self.row("claude", claude, path: environment.path))
 
         set(Row(id: "codex", verdict: .running, line: "codex: checking…"))
         let codex = await ToolCheck.run("codex", using: exec)
         if Task.isCancelled { return }
         summaryDraft.codex = codex
-        set(Self.row("codex", codex))
+        set(Self.row("codex", codex, path: environment.path))
 
         set(Row(id: "tmux", verdict: .running, line: "tmux: running the detached check…"))
-        let tmux = await TmuxCheck.run(nonce: RemoteQuoting.nonce(), using: exec)
+        let (tmux, tmuxShown) = await TmuxCheck.runShowing(nonce: RemoteQuoting.nonce(), using: exec)
         if Task.isCancelled { return }
         summaryDraft.tmux = tmux
-        set(Self.row(tmux))
+        set(Self.row(tmux).showing(tmuxShown))
 
         set(Row(id: "logind", verdict: .running, line: "logind: checking…"))
-        let logind = await LogindCheck.run(using: exec)
+        let (logind, logindShown) = await LogindCheck.runShowing(using: exec)
         if Task.isCancelled { return }
         summaryDraft.logind = logind
-        set(Self.row(logind))
+        set(Self.row(logind).showing(logindShown))
 
         // The identity of the connection the checks ran over: the socket
         // was keyed by this very resolution.
@@ -254,17 +262,21 @@ public final class ConnectionTest: ObservableObject, Identifiable {
 
     // MARK: Rows
 
-    nonisolated static func row(_ binary: String, _ check: ToolCheck) -> Row {
+    /// Every finished row carries its own words for "Show output": the
+    /// tool's output, the PATH a missing one was looked for on, or why the
+    /// check couldn't run.
+    nonisolated static func row(_ binary: String, _ check: ToolCheck, path: String? = nil) -> Row {
         switch check {
         case .runs(let path, let version, let output):
             Row(id: binary, verdict: .ok,
                 line: "\(binary): \(AgentInstall.versionNumber(in: version) ?? version) at \(path)", output: output)
         case .missing:
-            Row(id: binary, verdict: .problem, line: "\(binary): not on PATH")
+            Row(id: binary, verdict: .problem, line: "\(binary): not on PATH",
+                output: "command -v \(binary) found nothing on " + (path.map { "this PATH:\n\($0)" } ?? "ssh's default PATH."))
         case .fails(let path, _, let line, let output):
             Row(id: binary, verdict: .problem, line: "\(binary): at \(path), didn't run: \(line)", output: output)
         case .notChecked(let reason):
-            Row(id: binary, verdict: .info, line: "\(binary): not checked: \(reason)")
+            Row(id: binary, verdict: .info, line: "\(binary): not checked: \(reason)", output: reason)
         }
     }
 

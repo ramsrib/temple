@@ -91,12 +91,33 @@ final class HostChecksTests: XCTestCase {
         let exec = LocalShellExec(path: "\(tmuxDirectory):/usr/bin:/bin",
                                   environment: hostEnvironment(home: tree.path, path: "/usr/bin:/bin",
                                                                extra: ["TMUX_TMPDIR": tree.path]))
-        let check = await TmuxCheck.run(nonce: "n\(UInt32.random(in: 0...UInt32.max))", using: exec)
+        let (check, shown) = await TmuxCheck.runShowing(nonce: "n\(UInt32.random(in: 0...UInt32.max))", using: exec)
         guard case .accepted(let version, let passthrough) = check else { return XCTFail("\(check)") }
+        XCTAssertTrue(shown.hasPrefix("$ tmux -V\ntmux "), shown)
+        XCTAssertTrue(shown.hasSuffix("exit status 0"), shown)
+        XCTAssertEqual(ConnectionTest.row(check).showing(shown).output, shown, "the tmux row shows its output too")
         XCTAssertEqual(passthrough, TmuxVersion("tmux \(version)").map { $0 >= TmuxChain.passthroughSince } ?? true)
         XCTAssertEqual(ConnectionTest.row(check).line.hasPrefix("tmux: \(version), detached tmux check passed"), true)
         let leftovers = try FileManager.default.subpathsOfDirectory(atPath: tree.path).filter { $0.contains("temple-check") }
         XCTAssertEqual(leftovers, [], "the throwaway socket is removed")
+    }
+
+    /// Every finished row has its own words behind "Show output", as the
+    /// login shell, claude and codex rows always had.
+    func testEveryFinishedRowShowsOutput() {
+        XCTAssertEqual(ConnectionTest.row("codex", .missing, path: "/usr/bin:/bin").output,
+                       "command -v codex found nothing on this PATH:\n/usr/bin:/bin")
+        XCTAssertEqual(ConnectionTest.row("claude", .notChecked(reason: "Connection closed")).output, "Connection closed")
+        let busctl = RemoteOutput(status: 0, stdout: "busctl\t0\nb false\n", stderr: "")
+        XCTAssertEqual(LogindCheck.shown(busctl), "$ " + LogindCheck.command + "\nb false")
+        XCTAssertEqual(ConnectionTest.row(LogindCheck.parse(busctl)).showing(LogindCheck.shown(busctl)).output,
+                       "$ " + LogindCheck.command + "\nb false")
+        XCTAssertEqual(LogindCheck.shown(RemoteOutput(status: 0, stdout: "nobusctl\n", stderr: "")),
+                       "busctl is not on this host's PATH, so logind was not asked.")
+        XCTAssertEqual(TmuxCheck.shown(RemoteOutput(status: 0, stdout: "version\ttmux 3.1c\nchain\t1\nno such option\n", stderr: "")),
+                       "$ tmux -V\ntmux 3.1c\n$ tmux -L temple-check-… -f /dev/null <the launch chain> new-session -d …\n"
+                       + "exit status 1\nno such option")
+        XCTAssertEqual(ConnectionTest.Row(id: "x", verdict: .ok, line: "x", output: "own").showing("other").output, "own")
     }
 
     func testTmuxVerdictsFromItsOutput() {

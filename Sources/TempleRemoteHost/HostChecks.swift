@@ -164,12 +164,38 @@ public enum TmuxCheck: Sendable, Equatable {
     }
 
     public static func run(nonce: String, using exec: RemoteExec) async -> TmuxCheck {
+        await runShowing(nonce: nonce, using: exec).check
+    }
+
+    /// The check, and what it ran and the host printed, for the row's
+    /// "Show output".
+    public static func runShowing(nonce: String, using exec: RemoteExec) async -> (check: TmuxCheck, shown: String) {
         do {
             let output = try await exec.run(script: script, args: [nonce], deadline: deadline)
-            return parse(output)
+            return (parse(output), shown(output))
         } catch {
-            return .notChecked(reason: error.localizedDescription)
+            return (.notChecked(reason: error.localizedDescription), error.localizedDescription)
         }
+    }
+
+    /// The check's transcript, readable: `tmux -V`'s answer, then the launch
+    /// chain's exit status and tmux's own lines.
+    static func shown(_ output: RemoteOutput) -> String {
+        var lines: [String] = []
+        for line in output.stdout.split(separator: "\n", omittingEmptySubsequences: true).map(String.init) {
+            let fields = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            let value = fields.count > 1 ? fields[1] : ""
+            switch fields.first {
+            case "version": lines += ["$ tmux -V", value]
+            case "missing": lines += ["$ tmux -V", value.isEmpty ? "tmux is not on PATH" : value]
+            case "chain": lines += ["$ tmux -L temple-check-… -f /dev/null <the launch chain> new-session -d …",
+                                    "exit status \(value)"]
+            case "refused": lines.append("refused: \(value)")
+            default: lines.append(line)
+            }
+        }
+        if let error = output.firstErrorLine, !output.reachedCommand || output.status != 0 { lines.append(error) }
+        return lines.joined(separator: "\n")
     }
 
     static func parse(_ output: RemoteOutput) -> TmuxCheck {
@@ -231,11 +257,30 @@ public enum LogindCheck: Sendable, Equatable {
     """
 
     public static func run(using exec: RemoteExec) async -> LogindCheck {
+        await runShowing(using: exec).check
+    }
+
+    /// The check, and what busctl said, for the row's "Show output".
+    public static func runShowing(using exec: RemoteExec) async -> (check: LogindCheck, shown: String) {
         do {
-            return parse(try await exec.run(script: script, args: [], deadline: deadline))
+            let output = try await exec.run(script: script, args: [], deadline: deadline)
+            return (parse(output), shown(output))
         } catch {
-            return .notAvailable(reason: error.localizedDescription)
+            return (.notAvailable(reason: error.localizedDescription), error.localizedDescription)
         }
+    }
+
+    static let command = "busctl get-property org.freedesktop.login1 /org/freedesktop/login1 "
+        + "org.freedesktop.login1.Manager KillUserProcesses"
+
+    static func shown(_ output: RemoteOutput) -> String {
+        let lines = output.stdout.split(separator: "\n").map(String.init)
+        if lines.first == "nobusctl" { return "busctl is not on this host's PATH, so logind was not asked." }
+        guard output.status == 0, let head = lines.first, head.hasPrefix("busctl\t") else {
+            return output.firstErrorLine ?? "status \(output.status)"
+        }
+        let status = String(head.dropFirst("busctl\t".count))
+        return (["$ " + command] + lines.dropFirst() + (status == "0" ? [] : ["exit status \(status)"])).joined(separator: "\n")
     }
 
     static func parse(_ output: RemoteOutput) -> LogindCheck {
