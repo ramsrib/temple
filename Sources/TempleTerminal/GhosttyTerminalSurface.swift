@@ -160,7 +160,12 @@ public final class GhosttyTerminalSurface: TerminalSurface {
 
 /// Drop-in `TerminalSurfaceFactory` for the fuse. See `GhosttyTerminalSurface`.
 public struct GhosttyTerminalSurfaceFactory: TerminalSurfaceFactory {
-    public init() {}
+    /// `configDirectory`: where the runtime's generated `ghostty.conf` goes —
+    /// the app passes its state directory, so `TEMPLE_STATE_DIR` covers it.
+    /// Required, so neither entry point can forget it (AGENTS.md).
+    public init(configDirectory: URL) {
+        GhosttyApp.configDirectory = configDirectory
+    }
     public func makeSurface(appearance: TerminalAppearance) -> TerminalSurface {
         // Seed the runtime config before the first `GhosttyApp.shared` access
         // so the first surface is born matching the app theme.

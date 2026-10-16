@@ -35,10 +35,12 @@ demo: build ## Run against a fake session store (screenshots, demos — no real 
 	@TEMPLE_CLAUDE_ROOT=/private/tmp/temple-demo/claude-store \
 	 TEMPLE_CODEX_ROOT=/private/tmp/temple-demo/codex-store \
 	 TEMPLE_STATE_DIR=/private/tmp/temple-demo/state \
+	 TEMPLE_DEFAULTS_SUITE=com.sriramb.temple.demo.settings \
 	 .build/debug/temple-app
 
 demo-clean: ## Remove the demo store, demo state, and any sessions it created
 	@rm -rf /private/tmp/temple-demo
+	@defaults delete com.sriramb.temple.demo.settings >/dev/null 2>&1 || true
 	@rm -rf ~/.claude/projects/-private-tmp-temple-demo-projects-*
 	@echo "✓ demo data removed"
 

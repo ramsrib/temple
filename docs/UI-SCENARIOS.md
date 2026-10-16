@@ -23,7 +23,7 @@ Window size in points, detail-pane width, screenshot scale:
 ID | PASS/FAIL/SKIP | action and actual result | screenshot/log | bug link
 Bugs: severity, scenario ID, steps, expected, actual, reproducibility
 Known-bug retests and new findings:
-Final demo counts/state, processes left running, frame restoration status:
+Final demo counts/state, processes left running:
 ```
 
 For a fresh run, never reuse the historical PID in a result entry. Use exact current copy in reports. Counts, IDs, dates and paths are dynamic where specified. Text quoted here avoids em-dashes; where the UI contains one, the sentence is described rather than quoted verbatim.
@@ -59,31 +59,30 @@ Those temporary files may disappear. The watch list below preserves their action
 
 Coordinate with other runners first: `demo-data.py` uses one fixed directory and reseeds transcripts with new UUIDs. `make demo` does not clear old state; rerunning it over an old state directory can accumulate old memberships and change counts. Preserve an intentional run or stop its demo and reset the disposable fixture before reseeding. Never reset while another demo is using it.
 
-Use the Makefile's supported flow for SwiftPM: `make demo` builds, seeds 25 sessions, imports them using `templectl`, prunes three transcripts, and launches with all three isolation variables. Arm snapshots by supplying `TEMPLE_SNAPSHOT_DIR` and optionally `TEMPLE_SNAPSHOT_APPEARANCE` in its environment. Save frame preferences before invoking it. Record that this is the SwiftPM entry point, not the shipped bundle.
+Use the Makefile's supported flow for SwiftPM: `make demo` builds, seeds 25 sessions, imports them using `templectl`, prunes three transcripts, and launches with all four isolation variables (the three stores and state, plus `TEMPLE_DEFAULTS_SUITE` for settings). Arm snapshots by supplying `TEMPLE_SNAPSHOT_DIR` and optionally `TEMPLE_SNAPSHOT_APPEARANCE` in its environment. The SwiftPM binary's window frames land in its own `temple-app` defaults domain, not the owner's, so no frame save is needed. Record that this is the SwiftPM entry point, not the shipped bundle.
 
-For bundled UI automation, use the exact equivalent fixture flow below and execute the binary directly. This is the bundled equivalent of `make demo`, not permission for a bare launch. Build with `make build` and `make app` only when the run authorizes building; coordinate with concurrent code work and record the binary actually used. The example assumes a fresh, verified demo directory, existing binaries, a Bash shell, and an isolated account when strict store-access isolation is required:
+For bundled UI automation, use the exact equivalent fixture flow below and execute the demo copy's binary directly. This is the bundled equivalent of `make demo`, not permission for a bare launch. Never launch `dist/Temple.app` itself for a demo: AppKit saves its window frame, split view widths and window state under its bundle id, `com.sriramb.temple`, the owner's. `Scripts/demo-app.sh` copies it to `/private/tmp/temple-demo/Temple Demo.app` as `com.sriramb.temple.demo` with the executable `TempleDemo`, signed ad hoc, so all of that lands in the demo's own domain. Build with `make build` and `make app` only when the run authorizes building; coordinate with concurrent code work and record the binary actually used. The example assumes a fresh, verified demo directory, existing binaries, a Bash shell, and an isolated account when strict store-access isolation is required:
 
 ```bash
 set -euo pipefail
 cd /Users/sriram/Projects/active/temple
 run_dir=$(mktemp -d /private/tmp/temple-ui-run.XXXXXX)
-source Scripts/window-frame-prefs.sh
-frame_prefs_save com.sriramb.temple "$run_dir/frame-prefs.plist"
-# Stop here if saving failed. Do not launch without a usable snapshot.
 export TEMPLE_CLAUDE_ROOT=/private/tmp/temple-demo/claude-store
 export TEMPLE_CODEX_ROOT=/private/tmp/temple-demo/codex-store
 export TEMPLE_STATE_DIR=/private/tmp/temple-demo/state
+export TEMPLE_DEFAULTS_SUITE=com.sriramb.temple.demo.settings
 ./Scripts/demo-data.py
 .build/debug/templectl --import-all
 ./Scripts/demo-data.py --prune
+demo_app=$(./Scripts/demo-app.sh)   # copies dist/Temple.app; launches nothing
 export TEMPLE_SNAPSHOT_DIR="$run_dir/snapshots"
 export TEMPLE_SNAPSHOT_APPEARANCE=light
 # Optional: export TEMPLE_SNAPSHOT_PRESENT=palette (or history or archived)
 # Start this as a harness-managed background job and retain its exact PID:
-dist/Temple.app/Contents/MacOS/Temple
+"$demo_app"
 ```
 
-Execute setup sequentially and stop on any error. The final line runs in the foreground as written; a runner must use its supported background-job facility to retain control. Do not assume the PID of `make` is the app PID. Record app PID and executable path from the process list. Compare `ps -axo pid=,command=` with the launch record; the installed app normally runs from `/Applications`. Confirm the demo shows only `acme-api`, `storefront`, `notes-app`, `pipeline`, `dotfiles`, and, when visible, `legacy-tools`. Fake names alone are a second check, not proof of PID identity. Never reuse PID 17819 from the first pass.
+Execute setup sequentially and stop on any error. The final line runs in the foreground as written; a runner must use its supported background-job facility to retain control. Do not assume the PID of `make` is the app PID. Record app PID and executable path from the process list. Compare `ps -axo pid=,command=` with the launch record; the installed app normally runs from `/Applications` as `Temple`, the demo copy as `TempleDemo`. Confirm the demo shows only `acme-api`, `storefront`, `notes-app`, `pipeline`, `dotfiles`, and, when visible, `legacy-tools`. Fake names alone are a second check, not proof of PID identity. Never reuse PID 17819 from the first pass.
 
 For AppleScript target every operation inside:
 
@@ -101,9 +100,9 @@ Replace `DEMO_PID` with the verified current number. Keep queries and actions in
 
 ### Frame preferences, evidence and cleanup
 
-[window-frame-prefs.sh](../Scripts/window-frame-prefs.sh) saves only `NSWindow Frame ` and `NSSplitView Subview Frames ` keys. Use its `frame_prefs_save` before the first launch and `frame_prefs_restore com.sriramb.temple "$run_dir/frame-prefs.plist"` only after the last test PID exits. Do not restore the entire defaults domain. The helper preserves types and removes frame keys introduced by the test. It cannot distinguish geometry the owner's running Temple changed during the run; coordinate to avoid that race. Saving frames does not protect settings from migrations or edits.
+Neither demo writes the owner's preferences: settings go to the `TEMPLE_DEFAULTS_SUITE` suite, and AppKit's frames and window state to `temple-app` (SwiftPM) or `com.sriramb.temple.demo` (the copy). A scenario that needs a first launch with no saved frame deletes the demo copy's domain before launching (`defaults delete com.sriramb.temple.demo`), never the owner's. [window-frame-prefs.sh](../Scripts/window-frame-prefs.sh) remains for the check scripts that launch `dist/Temple.app` itself (`check-startup-windows.sh`, `check-bundled-engine.sh`): its `frame_prefs_save` before the first launch and `frame_prefs_restore com.sriramb.temple <file>` after the last test PID exits, never a restore of the entire domain.
 
-Default automation leaves the demo open unless lifecycle testing or cleanup was explicitly included. Report its PID, size and pending frame restoration. If cleanup is authorized, stop only the recorded demo PID, confirm it has exited, then restore frames. Never use `pkill Temple`, `killall Temple` or name-based quit. Preserve screenshots and the result log before deleting only verified disposable test data.
+Default automation leaves the demo open unless lifecycle testing or cleanup was explicitly included. Report its PID and size. If cleanup is authorized, stop only the recorded demo PID and confirm it has exited. Never use `pkill Temple`, `killall Temple` or name-based quit. Preserve screenshots and the result log before deleting only verified disposable test data.
 
 With `TEMPLE_SNAPSHOT_DIR` armed at launch:
 
@@ -171,7 +170,7 @@ Fixture variants must be described in the run log with titles, IDs, membership, 
 - **Notes:** ADR-029/030. A transient pre-sweep count is not a failure; persistent extra rows usually mean reused state and invalidate the baseline.
 
 #### STA-002: Bundled and SwiftPM startup parity
-- **Priority:** P0. **Safety:** Needs care, separate runs and frame restoration.
+- **Priority:** P0. **Safety:** Needs care, separate runs.
 - **Preconditions:** Both binaries built from the recorded revision; fresh fixture per run.
 - **Steps:** Run STA-001 with each entry point. Capture the same launcher and History state. Compare SDK linkage if positions or hit targets differ.
 - **Expected:** Same store isolation, startup behavior, counts, snapshot overrides and aligned controls. The bundle uses its Ghostty resources and opens a real native window.
@@ -807,7 +806,7 @@ Retired 2026-10-05. Outside the owner-defined Temple app UI scope. No executable
 ### 4.15 Appearance
 
 #### APP-001: Light/dark surface parity
-- **Priority:** P0. **Safety:** Needs care, separate environment-forced demo launches and frame restoration.
+- **Priority:** P0. **Safety:** Needs care, separate environment-forced demo launches.
 - **Preconditions:** Same known fixture state, `TEMPLE_SNAPSHOT_APPEARANCE=light` then `dark`.
 - **Steps:** Capture launcher, sidebar, notice, palette, History All/Archived, bulk-selection/feedback bar and read-only Settings in both modes. Include hover/selection and a colored row when available.
 - **Expected:** Text, dimmed rows, Restore, tags, highlights and dividers remain readable. Sticky day headers match page background. Selection/notice bars have discernible surfaces; no mismatched fill or clipping.
@@ -825,7 +824,7 @@ Retired 2026-10-05. Outside the owner-defined Temple app UI scope. No executable
 #### QUI-001: No-running-agent quit
 - **Priority:** P0. **Safety:** Manual only by default; may be automated only in an explicitly authorized PID-isolated cleanup run.
 - **Preconditions:** Verified disposable demo PID; no live agents; snapshots saved and frame backup available.
-- **Steps:** In separate launches, use red window close and `⌘Q`. Include a retained exited tab or a session whose process already ended. Observe process exit, then restore frames.
+- **Steps:** In separate launches, use red window close and `⌘Q`. Include a retained exited tab or a session whose process already ended. Observe process exit.
 - **Expected:** Window close quits the single-window app without a stuck window or windowless app. Close and quit remain responsive in the prepared exited-chip state. Observe app disappearance only, not agent drain internals.
 - **Notes:** Never run against owner's app. A tab close `⌘W` in the main window is not this scenario.
 

@@ -50,7 +50,7 @@ final class DemoAppDelegate: NSObject, NSApplicationDelegate, TerminalSurfaceDel
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let factory = GhosttyTerminalSurfaceFactory()
+        let factory = GhosttyTerminalSurfaceFactory(configDirectory: GhosttyApp.configDirectory)
         let scheme: TerminalAppearance.ColorScheme =
             (NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua) ? .dark : .light
         let appearance = TerminalAppearance(fontSize: 13, colorScheme: scheme)

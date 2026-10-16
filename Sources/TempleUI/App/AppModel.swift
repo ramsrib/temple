@@ -547,7 +547,7 @@ public final class AppModel: ObservableObject {
                 hostRegistry: HostRegistry? = nil) {
         // Defaults that touch @MainActor types are built here (not as default
         // arguments, which evaluate in a nonisolated context).
-        let settings = settings ?? SettingsStore(defaults: SettingsKeysProbe.scratchDefaults() ?? .standard)
+        let settings = settings ?? SettingsStore(defaults: SettingsKeysProbe.scratchDefaults() ?? TempleState.settingsDefaults)
         let overlay = overlay ?? SessionOverlayStore(db: database)
         let uiState = UIStateStore(db: database)
         let registry = registry ?? DBProcessRegistry(db: database)
@@ -969,8 +969,7 @@ public final class AppModel: ObservableObject {
 
     /// The theme in force: the user's setting, unless a dev-only snapshot run
     /// forces one. `TEMPLE_SNAPSHOT_APPEARANCE=dark|light` is read once and
-    /// never persisted — the setting would write the real UserDefaults domain
-    /// (AGENTS.md). Every appearance path resolves through here, so the
+    /// never persisted — the setting would write the settings domain. Every appearance path resolves through here, so the
     /// override cannot be undone by the next `applyAppearance()` or by
     /// RootView's `preferredColorScheme`, both of which read the setting.
     public var effectiveTheme: ThemePreference { Self.forcedTheme ?? settings.theme }

@@ -7,6 +7,10 @@
 # <name>` (an array of strings). Without this, every check run leaves the
 # geometry of its throwaway window behind in Sri's preferences.
 #
+# Demos do not need it: they run the copy Scripts/demo-app.sh makes, whose
+# frames land in its own domain (com.sriramb.temple.demo), or the SwiftPM
+# binary, whose domain is temple-app.
+#
 # Source this file, then:
 #   frame_prefs_save    <domain> <file>   before the first launch
 #   frame_prefs_restore <domain> <file>   after the last launched PID is dead

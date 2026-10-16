@@ -4,12 +4,13 @@
 
 Temple reads the **real** Claude/Codex session stores and writes to the **real** app
 preferences. A dev build launched casually is not a sandbox: it shows Sri's actual
-projects, and its settings writes land in the same `UserDefaults` domain his
-installed Temple uses.
+projects, and a bundled build's settings writes land in the same `UserDefaults`
+domain his installed Temple uses.
 
 ```
 make demo        # fake session store in /private/tmp/temple-demo — no real projects
 make demo-clean  # remove it
+Scripts/demo-app.sh  # the bundled equivalent's app: a renamed copy of dist/Temple.app
 ```
 
 Use `make demo` for anything visual: screenshots, UI verification, driving the app.
@@ -52,18 +53,27 @@ Three traps, each hit for real:
   without touching the persisted theme setting — **check both**: a fill that
   reads fine in light mode was a shade off the selection wash in dark.
   Drive the UI with AppleScript (`tell application "System Events" to tell
-  process "Temple" …` — the *bundled* `dist/Temple.app` binary, not the bare
-  SwiftPM one, which has no windows System Events can see). The shot is a real
+  process "TempleDemo" …` — the *bundled* demo copy below, not the bare
+  SwiftPM binary, which has no windows System Events can see). The shot is a real
   pixel capture of the window's screen rect: sidebar, terminal, panels and
   context menus all appear as on screen; other apps' windows do not. For clicks,
   right-clicks, drags and key chords that AppleScript can't post, compile
   `Scripts/uiclick.swift` (usage in its header).
 
-- **`make demo` isolates the stores and state dir, but NOT `UserDefaults`.**
-  `TEMPLE_CLAUDE_ROOT` / `TEMPLE_CODEX_ROOT` / `TEMPLE_STATE_DIR` are redirected;
-  the settings domain is not. Anything that writes a setting — including a
-  first-launch defaults migration — hits his real preferences. Say so before you
-  run it.
+- **A demo's settings follow `TEMPLE_DEFAULTS_SUITE`; AppKit's autosaves follow
+  the app's identity.** `TEMPLE_CLAUDE_ROOT` / `TEMPLE_CODEX_ROOT` /
+  `TEMPLE_STATE_DIR` redirect the stores and the state (database, catalog cache,
+  `ghostty.conf`), and `TEMPLE_DEFAULTS_SUITE` redirects Temple's settings:
+  `TempleState.settingsDefaults` is the one place Temple gets its `UserDefaults`,
+  and `make demo` sets `com.sriramb.temple.demo.settings`. AppKit's own writes
+  (the window frame, the split view's widths, the open panel's folder, saved
+  window state) can only use the app's own domain and bundle id. For the
+  SwiftPM binary that is the `temple-app` domain (an unbundled executable's
+  domain is its name; measured), never his. For `dist/Temple.app` it **is** his
+  (`com.sriramb.temple`), whatever variables you set. So a bundled demo runs the
+  copy `Scripts/demo-app.sh` makes (bundle id `com.sriramb.temple.demo`,
+  executable `TempleDemo`), never `dist/Temple.app` itself, and anything new
+  that reads or writes a setting goes through `TempleState.settingsDefaults`.
 
 ## Two entry points: the shipped app is not the binary `make demo` runs
 

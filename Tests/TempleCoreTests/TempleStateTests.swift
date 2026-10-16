@@ -17,6 +17,29 @@ final class TempleStateTests: XCTestCase {
         }
     }
 
+    /// `TEMPLE_DEFAULTS_SUITE` (what `make demo` sets): settings written
+    /// through `settingsDefaults` land in that suite, never in the process's
+    /// own domain; unset or empty, it is `.standard`.
+    func testSettingsDefaultsFollowTheSuiteVariable() throws {
+        let key = "TEMPLE_DEFAULTS_SUITE"
+        let saved = ProcessInfo.processInfo.environment[key]
+        defer { if let saved { setenv(key, saved, 1) } else { unsetenv(key) } }
+        let suite = "com.sriramb.temple.test-\(UUID().uuidString)"
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+
+        unsetenv(key)
+        XCTAssertIdentical(TempleState.settingsDefaults, UserDefaults.standard)
+        setenv(key, "", 1)
+        XCTAssertIdentical(TempleState.settingsDefaults, UserDefaults.standard)
+
+        setenv(key, suite, 1)
+        let probe = "templeSuiteProbe-\(UUID().uuidString)"
+        TempleState.settingsDefaults.set("written", forKey: probe)
+        XCTAssertEqual(UserDefaults(suiteName: suite)?.string(forKey: probe), "written")
+        XCTAssertNil(UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? ProcessInfo.processInfo.processName)?[probe])
+        XCTAssertEqual(UserDefaults().persistentDomain(forName: suite)?[probe] as? String, "written")
+    }
+
     /// What `templectl --import-all` gates on. Set, empty and the real
     /// directory spelled another way must all read as "not redirected".
     func testStateIsRedirectedOnlyToADirectoryOtherThanTheRealOne() {

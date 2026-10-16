@@ -28,6 +28,17 @@ public final class GhosttyApp {
     /// born matching the app theme (UX "Theme").
     public static var initialAppearance: TerminalAppearance = .default
 
+    /// Where the generated `ghostty.conf` is written. The app's factory sets
+    /// it to Temple's state directory (`TEMPLE_STATE_DIR`, or Application
+    /// Support/Temple) before the first access; anything that does not say
+    /// (tests, terminal-demo) gets a directory of its own under /tmp, so it
+    /// never rewrites the installed app's file.
+    public static var configDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("temple-ghostty-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+
+    /// The generated config file, in `configDirectory`.
+    static var configFileURL: URL { configDirectory.appendingPathComponent("ghostty.conf") }
+
     public enum Readiness {
         case loading, ready, error
     }
@@ -136,12 +147,8 @@ public final class GhosttyApp {
             lines.append("font-family = \(family)")
         }
         do {
-            let dir = try FileManager.default.url(
-                for: .applicationSupportDirectory, in: .userDomainMask,
-                appropriateFor: nil, create: true
-            ).appendingPathComponent("Temple", isDirectory: true)
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let url = dir.appendingPathComponent("ghostty.conf")
+            let url = configFileURL
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
             return url.path
         } catch {

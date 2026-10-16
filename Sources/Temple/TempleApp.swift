@@ -27,7 +27,8 @@ struct TempleApp: App {
             GhosttyResources.configure(devCheckoutRoot: repoRoot)
             LoginShellEnvironment.adoptLoginShellPATH()
             UsageLog.fileURL = UsageLog.defaultFileURL
-            return AppModel(surfaceFactory: GhosttyTerminalSurfaceFactory(), database: database)
+            return AppModel(surfaceFactory: GhosttyTerminalSurfaceFactory(configDirectory: TempleState.directory),
+                            database: database)
         })
 
         // `swift run temple-app` / `make demo` launch an un-bundled binary, which

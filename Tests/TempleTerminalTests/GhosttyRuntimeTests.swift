@@ -1,6 +1,7 @@
 import XCTest
 import GhosttyKit
 @testable import TempleTerminal
+import TempleTerminalAPI
 
 /// T2 (SwiftPM interop) + T3 (runtime wrapper) + T6 (adaptation) coverage.
 ///
@@ -47,6 +48,29 @@ final class GhosttyRuntimeTests: XCTestCase {
         // Ticking the runtime must not crash.
         GhosttyApp.shared.tick()
         GhosttyApp.shared.setFocus(true)
+    }
+
+    /// The generated config goes where the factory says (the app passes its
+    /// state directory, so `TEMPLE_STATE_DIR` covers it), and nothing that
+    /// does not say — this test process included — writes the installed
+    /// app's file in Application Support.
+    @MainActor
+    func testTheConfigFileGoesToTheDirectoryTheFactoryNames() throws {
+        let realDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Temple").standardizedFileURL.path
+        XCTAssertFalse(GhosttyApp.configDirectory.standardizedFileURL.path.hasPrefix(realDirectory))
+        XCTAssertEqual(GhosttyApp.shared.readiness, .ready)
+
+        let original = GhosttyApp.configDirectory
+        defer { GhosttyApp.configDirectory = original }
+        let state = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("temple-ghostty-conf-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: state) }
+        _ = GhosttyTerminalSurfaceFactory(configDirectory: state)
+        XCTAssertEqual(GhosttyApp.configDirectory, state)
+        GhosttyApp.shared.update(appearance: TerminalAppearance(fontSize: 17, colorScheme: .dark))
+        let written = try String(contentsOf: state.appendingPathComponent("ghostty.conf"), encoding: .utf8)
+        XCTAssertTrue(written.contains("font-size = 17"))
     }
 
     // T6: argv → shell command line quoting.

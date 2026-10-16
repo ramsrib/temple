@@ -20,6 +20,33 @@ public enum TempleState {
     private static let testDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         .appendingPathComponent("temple-test-state-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
 
+    /// The defaults domain Temple's own settings live in: the app's own
+    /// (`.standard`), or the suite `TEMPLE_DEFAULTS_SUITE` names, so a demo
+    /// never writes the owner's preferences (`make demo` sets it). The one
+    /// place Temple obtains its settings' `UserDefaults`. AppKit's own
+    /// autosaves (window frames, split view widths, open-panel folders) can
+    /// only use `.standard`; see AGENTS.md for how the demo keeps those apart.
+    ///
+    /// A suite that cannot be opened, or one that names the app's own domain
+    /// or the global one, stops the launch rather than falling back: a
+    /// redirect that silently reached the real domain is the failure this
+    /// variable exists to prevent.
+    public static var settingsDefaults: UserDefaults {
+        guard let suite = defaultsSuiteOverride else { return .standard }
+        let refused: Set<String> = ["com.sriramb.temple", UserDefaults.globalDomain,
+                                    Bundle.main.bundleIdentifier ?? "com.sriramb.temple"]
+        guard !refused.contains(suite), let defaults = UserDefaults(suiteName: suite) else {
+            fatalError("TEMPLE_DEFAULTS_SUITE=\(suite) is not a defaults suite Temple can keep apart from the real one")
+        }
+        return defaults
+    }
+
+    /// `TEMPLE_DEFAULTS_SUITE`; unset or empty is no override.
+    public static var defaultsSuiteOverride: String? {
+        guard let suite = ProcessInfo.processInfo.environment["TEMPLE_DEFAULTS_SUITE"], !suite.isEmpty else { return nil }
+        return suite
+    }
+
     /// The real state directory, the one an installed Temple uses.
     public static var defaultDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
