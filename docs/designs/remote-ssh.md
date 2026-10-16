@@ -984,9 +984,11 @@ Deleting the feature, should the experiment end:
 
 - **Code**: the `TempleRemoteHost` module and `Sources/TempleUI/Hosts/
   RemoteHost.swift`; the Hosts connection manager and the Test connection
-  sheet; the remote rows in ⌘N and the launcher; the remote branches in
-  `OpenSessionsModel` (exit table, Detach/Stop prompt, `drainAll`'s detach
-  list, `applyLaunchDirectory`'s launch-row write); the feature flag.
+  sheet; the remote rows in ⌘N and the launcher; `RemoteTabController`
+  (every remote tab's open, exit, close, quit plan, identity and
+  retirement; as built in phase 1b it holds what were the remote branches
+  of `OpenSessionsModel`, which keeps only thin seams into it); the
+  feature flag.
 - **Storage**: `remote-state.sqlite` (deleted), `UserDefaults`
   `temple.settings.remoteHosts` (removed), `<state dir>/ssh/` and the
   fallback `$TMPDIR/temple-ssh-<uid>/` (socket files removed; masters are
@@ -1215,15 +1217,23 @@ use per the memory rule; no synthetic input):
    quit, `tmux -L temple ls` shows only the working one; relaunch: both
    chips under the host project; activate each: the idle one resumes from
    its transcript, the working one attaches.
-8. Codex: new session; either adopted within a minute (process tree) or
-   the suggestion question appears after the first prompt; answer Yes; the
-   row appears. `tmux ls` shows the handle name unchanged. Quit before
-   adoption; relaunch: "New Codex session @host" chip; activate: attached,
-   then adopted or asked. Let a Codex session end before adoption with
-   Wi-Fi off: the chip offers the question (if candidates), Start a new
-   run, Discard. Start two Codex sessions in one folder at once: neither
-   is adopted by heuristic; each asks; answer one; the other keeps asking
-   with the remaining candidate.
+8. Codex (phase 1b as built): new session from ⌘N on the host; no row
+   yet, the chip reads "New Codex session". With Settings' Codex extra
+   arguments set to `--no-daemon`: after the first prompt the row appears
+   within seconds (process tree). Without it (Codex's shared app server
+   writes the transcript): after the first prompt the tab asks "Is this
+   the session? “<prompt>”, started at <time> in <folder>." with Yes,
+   that's it and Not this one; Yes: the row appears; Not this one: that
+   candidate never comes back for this tab. `tmux -L temple ls` shows the
+   handle name unchanged. Quit before adoption: nothing is stopped;
+   relaunch: the "New Codex session" chip under the host project;
+   activate: attached, then adopted or asked. Close an idle pending tab
+   after typing: it stays with "Codex ended before Temple learned its
+   session id…", the question, Start a new session and Discard (hover
+   Discard: its help tag). Detach a working pending tab: Sessions on
+   <host> lists it with Open. Start two Codex sessions in one folder at
+   once: neither is adopted by heuristic; each asks; answer one; the other
+   no longer offers that candidate.
 8b. Unknown liveness: with a Claude tab open, `rm` the tmux socket on the
    host; drop Wi-Fi; the tab says Temple can't tell; reconnect; Open:
    attach fails, the tab offers Resume anyway with the stop instruction;
@@ -1779,4 +1789,144 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
     ssh refuses that setting without a command before doing anything. The
     end line's collision check splits the program on the LF byte, as
     `read` does (a CRLF is one Swift Character).
+
+## Phase 1b as built (implementation notes)
+
+Codex identity, built after the on-screen check of phase 1a. Decisions 1
+to 5 are the owner's, binding.
+
+1. **The suggested lookup is not discovery** (decision 1). It runs only
+   for a pending run Temple started, asks the user and never adopts. It
+   reads only rollouts under that run's Codex home touched since its
+   `ok`, whose first line names the run's folder, and offers only those
+   whose header id is also their file name's id, whose `cwd` is the run's
+   canonical folder (`pwd -P`, as the pane recorded it) and whose header
+   timestamp lies in [`ok` epoch, end] on the host's clock (an Ended run's
+   end is its end as this Mac saw it, moved by the clocks' offset measured
+   in the same query, plus 30 s). A rollout declined for the run, or whose
+   id another run on the host holds, is never offered. Nothing is listed
+   for import and nothing unrelated to a pending Temple run is shown.
+2. **Hosts without `/proc` are suggest-only** (decision 2). The automatic
+   check answers inconclusive for good (`lasting`: no `/proc`, or a pane
+   that recorded no start time) and the suggestions take over at once.
+   There is no non-`/proc` walk. The check's proc root is a property of
+   `RemoteSessions` (`procRoot`), which the acceptance points at a
+   directory that does not exist to stand for such a host.
+3. **`declined_candidates` is remote-store only** (decision 3), in
+   migration `r4-codex-identity`, which also adds to `runs`: the Codex home
+   the pane recorded (`codex_home_state`, `codex_home_dir`), `claim`
+   (`verified` or `confirmed`), `joined_at` and `tab_closed_at`. Core is
+   untouched.
+4. **The remote branches left `OpenSessionsModel` first** (decision 4), as
+   a behaviour-preserving commit with the full suite green (6ade29a):
+   `RemoteTabController` owns the operations, the gate, the notice and
+   Discard handlers and every remote tab action; the model kept its tab
+   list, the activity heuristics, `applyLaunchDirectory` and the saved tab
+   set, and calls into the controller from its open, exit, close, title,
+   activation and quit seams (1965 lines became 1291 and 721).
+5. **Copy** (decision 5): "No sessions started from Temple."; the
+   left-running notice is the Sessions sheet's line for the same reason
+   plus where to stop it, from one function; Resume anyway (and Start a
+   new session for a pending Codex session Temple can't reach) confirm in
+   a sheet with a short title, one sentence, and the `tmux -L temple
+   kill-session` command apart and selectable; Discard's help tag says
+   whether it removes the row or archives it (named, pinned, colored,
+   imported or with a transcript); no em-dash in any of it.
+
+What the boxes showed, which shaped the build:
+
+6. **Codex's shared app server writes the rollouts by default.** codex
+   0.158 and 0.163 (the standalone release at `~/.local/bin/codex` on both
+   boxes; no npm launcher is installed on either) hand each interactive
+   session to `codex app-server --managed-daemon`, which holds every
+   rollout it writes open (`O_RDWR|O_APPEND`) and serves every TUI of the
+   account. On masterblaster that server runs from before (ppid 1), so the
+   pane's tree holds no rollout and the check reads "no session file is
+   open right now". On jetson the first TUI started it as its own child,
+   inside the tree, where it could have held another TUI's rollout: a
+   process whose argv names `app-server` holding a rollout makes the walk
+   inconclusive (`lasting`, "a shared Codex app server writes this
+   session's transcript"), never a claim. With `codex --no-daemon` the
+   TUI writes its own rollout and holds it open from the first prompt
+   while idle, at depth 0 (the pane pid), and the walk adopts it at the
+   first check on both boxes. Temple passes no flag of its own to Codex
+   (AGENTS.md: no opinion on how a CLI runs); `--no-daemon` is the user's
+   to add in Settings' extra arguments, and without it every new Codex
+   session on these boxes is identified by the question.
+7. **The rollout appears with the first prompt**, and an app server's
+   rollout records the prompt only as a user message item behind Codex's
+   injected blocks (no `user_message` event): the question names it
+   through `CodexFormat.firstTypedPrompt`, which skips items that begin
+   with `<`. The local catalog's titles are unchanged.
+8. **The walk** reads every `/proc/<pid>/stat` with the shell's `read`
+   (no process per entry) past the last `)`, walks descendants of the
+   pane pid whose start time is no earlier than their parent's, to a
+   depth of 4, verifies the pane pid's start time and tmux's
+   `#{pane_pid}`, collects descriptors linking to `<home>/sessions/
+   **/rollout-*.jsonl` whose `fdinfo` access mode is write or read-write,
+   and re-reads each process's start time after its descriptors (a
+   process gone or reused mid-walk is inconclusive). A stat that exists
+   but can't be read, an unreadable descriptor table, a pane whose start
+   time changed, tmux naming another pane, none or more than one rollout:
+   inconclusive. The found file is the run's only when its header's id is
+   its file name's id, its `cwd` is the run's folder and it is not a
+   subagent's thread.
+9. **The Codex home** is resolved by the same login query as the PATH and
+   `CLAUDE_CONFIG_DIR` (`printenv CODEX_HOME` in the frame), handed to the
+   pane explicitly (`-e TEMPLE_CDX`/`TEMPLE_CDX_VALUE`, set or unset; told
+   nothing, the pane records `failed<TAB>cdx` and starts no agent) and
+   recorded hex-encoded in `ok`. The check and the lookup canonicalize it
+   on the host (`pwd -P`; relative values against the pane's folder, as
+   Codex does). An empty `CODEX_HOME` is not guessed at: lasting
+   inconclusive and no suggestions. A Codex resume starts against the home
+   of the session's latest run.
+10. **Claims.** A claim is written in one immediate transaction that
+    refuses an id any other run on the host holds, and a partial unique
+    index (`runs_claim`, `(host, session_id) WHERE claim IS NOT NULL`)
+    makes two claims of one id impossible; runs of one session that are
+    its resumes stay allowed (astra's implementation note 1). The core
+    join follows the claim; it is durable work like the claim (only the
+    quit defers it); a refusal (`hostConflict`, `agentConflict`) releases
+    the claim and the tab shows core's reason; a join is marked
+    (`joined_at`), and the next launch joins every claim that was not
+    (reconciliation step one). A session whose runs all ended resumes on
+    its next Open as before (step two). A claimed run's conversation is
+    confirmed.
+11. **The schedule** (2, 5, 15, 60 s after `ok`, then each minute while
+    attached) is one owned operation per open (`RemoteOperations` kind
+    `identity`, cancelled with the open, the host and the quit); a check
+    also runs on activation (not twice in 5 s) and at the exit. One host's
+    checks are serial (`RemoteSessions.serially`). The question is shown
+    once the check can't answer: for good, when the agent ended, or once
+    something was typed (the rollout exists only from the first prompt).
+12. **Pending tabs.** A new Codex tab on a host opens a pending run
+    (`openPending`, no id on the agent's argv; the run written before the
+    spawn) and reopens it by handle, attach-only while it runs. Closing it
+    while idle checks its identity once more (its agent still runs), then
+    stops it: identified, the tab closes; unidentified with something
+    typed, it stays as "Codex ended before Temple learned its session id.
+    Its transcript is still on <host>." with the question, Start a new
+    session and Discard; with nothing typed, Temple stops tracking it.
+    Detach keeps it running, closes its tab (`tab_closed_at`) and lists it
+    under Sessions on <host>, which gains Open for a pending session. A
+    quit never stops a pending run (it could not be resumed without its
+    id): it detaches. Pending runs not discarded, never failed and whose
+    tab was not closed restore at launch as chips from the runs alone.
+    Discard of a pending session dismisses its run; no row is ever made
+    from a handle.
+13. **The gate** has eight new completions (`pendingOpenResult`,
+    `identityResult`, `suggestionsLoaded`, `confirmResult`,
+    `pendingStopOutcome`, `pendingRestore`, `pendingDiscardNotice`,
+    `identityNotice`), each in the walk. `identityResult` is walked
+    without the close disruption: closing a pending tab checks its
+    identity once more on purpose, so that check's own answer is
+    admitted (tested on its own).
+
+Also folded in from the on-screen check of 1a: an acknowledged stop and a
+proven absence remove the run's pane output (`.out`, kept in memory for
+the diagnostics header), which the pane now creates under `umask 077`;
+Return in the folder sheet starts the session (the window's key catcher
+took it for the sidebar while no tab was active: a sheet now owns every
+key); a host's project heading leads with the globe and keeps the host
+apart from the name; every Test connection row has Show output.
 
