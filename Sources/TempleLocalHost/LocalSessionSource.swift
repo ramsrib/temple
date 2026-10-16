@@ -354,7 +354,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             // can be vouched for (coverage moves on). A root that appeared
             // or was touched is listed again and every transcript under it
             // reported.
-            armLocked(); recoverLocked(resetCoverage: dropped || rootChanged); return
+            rearmAndReconcileLocked(resetCoverage: dropped || rootChanged); return
         }
         guard let path else { return }
         let url = URL(fileURLWithPath: path)
@@ -660,8 +660,23 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         guard let folder = sentinelFolder, !FileManager.default.fileExists(atPath: folder.path) else { return }
         sentinelFolder = nil
         invalidateProofsLocked()
-        if running, monitorChanges { armLocked() }
+        if running, monitorChanges { rearmAndReconcileLocked(resetCoverage: false) }
     }
+
+    /// Re-arms the stream and reconciles everything the re-arm can have
+    /// discarded. The new stream starts from now, and every batch the old
+    /// one had queued, with the rest of the batch being processed, is
+    /// dropped by its generation: so the stores are listed again (every
+    /// transcript reported, or coverage reset) and the shared facts read
+    /// again, whatever the reason for the re-arm.
+    private func rearmAndReconcileLocked(resetCoverage: Bool) {
+        armLocked()
+        recoverLocked(resetCoverage: resetCoverage)
+        sharedFactsChangedLocked()
+    }
+
+    /// The sentinel folder in use (tests).
+    var currentSentinelFolder: URL? { queue.sync { sentinelFolder } }
 
     /// Whether the store root and every volume mounted inside it are local
     /// filesystems (`localFilesystemProbe`, a test seam).

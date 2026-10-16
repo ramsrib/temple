@@ -104,6 +104,48 @@ final class LocalAbsenceProofTests: XCTestCase {
         XCTAssertTrue(source.isMonitoring)
     }
 
+    /// A re-arm drops the rest of its batch and every batch the old stream
+    /// had queued, and the new stream only hears what happens from now. A
+    /// sentinel-folder removal re-arms too, so it must reconcile like the
+    /// other re-arms: a transcript created just before, whose event sits in
+    /// the same batch behind the removal, is still reported. The stream's
+    /// latency is long, so only the reconciliation can report it in time.
+    func testASentinelRemovalReArmsWithoutLosingTheChangesItDropped() async throws {
+        let project = root.appendingPathComponent("claude/-work-project")
+        let source = LocalSessionSource(stores: [ClaudeSessionStore(root: root.appendingPathComponent("claude"))],
+                                        debounceInterval: 30)
+        let seen = SeenIDs()
+        let changes = source.changes()
+        observers.append(Task {
+            do {
+                for try await change in changes {
+                    if case .transcripts(let ids, _) = change { seen.add(ids) }
+                }
+            } catch {}
+        })
+        let ready = Date().addingTimeInterval(3)
+        while !source.isMonitoring, Date() < ready { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(source.isMonitoring)
+        let sentinel = try XCTUnwrap(source.currentSentinelFolder)
+        let generation = source.currentStreamGeneration
+
+        let id = UUID().uuidString.lowercased()
+        let transcript = project.appendingPathComponent("\(id).jsonl")
+        try Data(#"{"type":"user","sessionId":"\#(id)"}"#.utf8).write(to: transcript)
+        try FileManager.default.removeItem(at: sentinel)
+        source.enqueueStreamBatch([
+            (sentinel.path, UInt32(kFSEventStreamEventFlagItemRemoved | kFSEventStreamEventFlagItemIsDir)),
+            (transcript.path, UInt32(kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemIsFile)),
+        ], streamGeneration: generation)
+
+        XCTAssertGreaterThan(source.currentStreamGeneration, generation, "the removal re-armed")
+        let deadline = Date().addingTimeInterval(5)
+        while !seen.contains(id), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(seen.contains(id), "the transcript whose event was dropped is reported by the reconciliation")
+        XCTAssertNotEqual(source.currentSentinelFolder, sentinel, "a new sentinel folder is watched")
+        XCTAssertTrue(source.isMonitoring)
+    }
+
     // MARK: Round 8
 
     private func settledSource(latency: TimeInterval = 0.01) async throws -> LocalSessionSource {
@@ -246,4 +288,12 @@ final class LocalAbsenceProofTests: XCTestCase {
         XCTAssertTrue(proof.exhaustive)
         XCTAssertFalse(proof.quiescent)
     }
+}
+
+/// Session ids a change stream reported, read from the test.
+private final class SeenIDs: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ids: Set<String> = []
+    func add(_ more: Set<String>) { lock.lock(); ids.formUnion(more); lock.unlock() }
+    func contains(_ id: String) -> Bool { lock.lock(); defer { lock.unlock() }; return ids.contains(id) }
 }
