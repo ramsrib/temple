@@ -26,6 +26,10 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     private let debounceInterval: TimeInterval
     private let queue = DispatchQueue(label: "com.sriramb.temple.local-source")
     private var stream: FSEventStreamRef?
+    /// Moves with every arm and stop. A stream's batches carry the value it
+    /// was armed under and are dropped once it has moved: a batch queued by
+    /// a stream that has since been replaced or stopped is not this stream's.
+    private var streamGeneration: UInt64 = 0
     private var running = false
     private var roots: [RootMapping] = []
     private var files: [String: (URL, Agent)] = [:]
@@ -216,6 +220,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         unresolvedCandidates.removeAll()
         running = false
         monitoring = false
+        streamGeneration &+= 1
         invalidateProofsLocked()
         work?.cancel(); work = nil
         if let stream {
@@ -230,6 +235,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
 
     private func armLocked() {
         invalidateProofsLocked()
+        streamGeneration &+= 1
         if let stream {
             FSEventStreamStop(stream); FSEventStreamInvalidate(stream); FSEventStreamRelease(stream)
             self.stream = nil
@@ -248,7 +254,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         let paths = requestedPaths.filter { path in
             !requestedPaths.contains { other in other != path && path.hasPrefix(other + "/") }
         }
-        let relay = EventRelay(self)
+        let relay = EventRelay(self, streamGeneration: streamGeneration)
         var context = FSEventStreamContext(version: 0,
             info: Unmanaged.passUnretained(relay).toOpaque(),
             retain: { pointer in
@@ -258,15 +264,20 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             release: { pointer in
                 if let pointer { Unmanaged<EventRelay>.fromOpaque(pointer).release() }
             }, copyDescription: nil)
+        // The callback only copies its batch into owned values and queues it.
+        // Processing an event can re-arm (stop, invalidate and release this
+        // very stream) or stop the source, and neither may happen inside the
+        // stream's own callback, while FSEvents is still delivering from it.
         let callback: FSEventStreamCallback = { _, info, count, rawPaths, flags, _ in
             guard let info else { return }
-            guard let watcher = Unmanaged<EventRelay>.fromOpaque(info).takeUnretainedValue().watcher else { return }
+            let relay = Unmanaged<EventRelay>.fromOpaque(info).takeUnretainedValue()
+            guard let watcher = relay.watcher else { return }
             let paths = unsafeBitCast(rawPaths, to: NSArray.self)
             var batch: [String: FSEventStreamEventFlags] = [:]
             for i in 0..<count {
                 if let path = paths[i] as? String { batch[path, default: 0] |= flags[i] }
             }
-            for (path, flags) in batch { watcher.eventLocked(path, flags: flags) }
+            watcher.enqueueStreamBatch(batch.map { ($0.key, $0.value) }, streamGeneration: relay.streamGeneration)
         }
         guard let created = FSEventStreamCreate(kCFAllocatorDefault, callback, &context,
             Array(paths) as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
@@ -283,6 +294,23 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             LocalHostLog.watcher.error("FSEvents stream failed to start")
         }
     }
+
+    /// A stream's batch, processed on the queue after its callback has
+    /// returned, and only while the stream that sent it is still the armed
+    /// one of a running source.
+    func enqueueStreamBatch(_ batch: [(String, FSEventStreamEventFlags)], streamGeneration: UInt64) {
+        queue.async { [weak self = self] in
+            guard let self, self.running, streamGeneration == self.streamGeneration else { return }
+            for (path, flags) in batch {
+                // An event before this one may have re-armed or stopped.
+                guard self.running, streamGeneration == self.streamGeneration else { return }
+                self.eventLocked(path, flags: flags)
+            }
+        }
+    }
+
+    /// The armed stream's generation (tests).
+    var currentStreamGeneration: UInt64 { queue.sync { streamGeneration } }
 
     /// Deterministic recovery seam; production and tests use the same classifier.
     func reconcileEvent(path: String, flags: FSEventStreamEventFlags) {
@@ -1025,7 +1053,12 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
 /// a retain cycle and a queued callback dereferencing a destroyed watcher.
 private final class EventRelay {
     weak var watcher: LocalSessionSource?
-    init(_ watcher: LocalSessionSource) { self.watcher = watcher }
+    /// The generation the stream owning this relay was armed under.
+    let streamGeneration: UInt64
+    init(_ watcher: LocalSessionSource, streamGeneration: UInt64) {
+        self.watcher = watcher
+        self.streamGeneration = streamGeneration
+    }
 }
 
 private struct LocalAdoptionWindow {

@@ -74,6 +74,36 @@ final class LocalAbsenceProofTests: XCTestCase {
         XCTAssertFalse(proof.proves(id))
     }
 
+    // MARK: The stream's callback
+
+    /// A stream's batch is processed after its callback returns, never in
+    /// it: an event that re-arms (here a dropped-events notice) replaces the
+    /// stream from the queue, and the source keeps monitoring under the new
+    /// one. A batch the replaced stream had queued is dropped: delivered
+    /// under the old generation, its own dropped-events notice re-arms
+    /// nothing. The live generation's still does.
+    func testAReArmFromAnEventWorksAndAStaleBatchIsDropped() async throws {
+        let source = LocalSessionSource(stores: [ClaudeSessionStore(root: root.appendingPathComponent("claude"))],
+                                        debounceInterval: 0.01)
+        try await observed(source)
+        let dropped = UInt32(kFSEventStreamEventFlagKernelDropped)
+        let path = root.appendingPathComponent("claude").path
+
+        let first = source.currentStreamGeneration
+        source.enqueueStreamBatch([(path, dropped)], streamGeneration: first)
+        let second = source.currentStreamGeneration
+        XCTAssertGreaterThan(second, first, "the event re-armed the stream")
+        XCTAssertTrue(source.isMonitoring, "and the new stream is running")
+
+        source.enqueueStreamBatch([(path, dropped)], streamGeneration: first)
+        XCTAssertEqual(source.currentStreamGeneration, second, "the replaced stream's batch is dropped")
+
+        source.enqueueStreamBatch([(path, dropped), (path, dropped)], streamGeneration: second)
+        XCTAssertEqual(source.currentStreamGeneration, second + 1,
+                       "the live stream's batch re-arms once; the rest of it belonged to the stream it replaced")
+        XCTAssertTrue(source.isMonitoring)
+    }
+
     // MARK: Round 8
 
     private func settledSource(latency: TimeInterval = 0.01) async throws -> LocalSessionSource {
