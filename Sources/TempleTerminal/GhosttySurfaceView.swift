@@ -474,6 +474,21 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         }
     }
 
+    // MARK: Clipboard
+
+    /// Every paste ends here: libghostty asks for the clipboard (⌘V's
+    /// `paste_from_clipboard`, a middle-click, `paste_from_selection`, a
+    /// confirmed unsafe paste, an OSC 52 read) and this hands it over, so
+    /// this is the one place a paste is reported as input, whatever gesture
+    /// started it and whether or not the mouse is captured. (An OSC 52 read
+    /// is the program's own request; reporting it too only costs an early
+    /// close its shortcut.)
+    func deliverClipboard(_ text: String, state: UnsafeMutableRawPointer?, confirmed: Bool) {
+        onInput?()
+        guard let surface else { return }
+        text.withCString { ghostty_surface_complete_clipboard_request(surface, $0, state, confirmed) }
+    }
+
     // MARK: Mouse
 
     /// Whether the program in the terminal has mouse reporting on, so a

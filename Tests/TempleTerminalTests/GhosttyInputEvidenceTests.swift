@@ -82,4 +82,24 @@ final class GhosttyInputEvidenceTests: XCTestCase {
         XCTAssertEqual(recorder.inputs, 6, "a scroll through Temple's own scrollback")
         XCTAssertEqual(recorder.submits, 0)
     }
+
+    /// A middle-click with the mouse not captured pastes (libghostty asks
+    /// for the clipboard): the click itself is not input, the paste is,
+    /// at the one place every paste is handed over.
+    func testAnUncapturedMiddleClickPasteIsInputWhereThePasteIsDelivered() {
+        let surface = GhosttyTerminalSurface(app: GhosttyApp.shared, appearance: .default)
+        let recorder = Recorder()
+        surface.delegate = recorder
+        let view = try! XCTUnwrap(surface.view as? GhosttySurfaceView)
+        view.mouseReachesProgram = { false }
+        view.otherMouseDown(with: mouse(.otherMouseDown))
+        view.otherMouseUp(with: mouse(.otherMouseUp))
+        XCTAssertEqual(recorder.inputs, 0, "the click itself reaches no program")
+        // What libghostty's clipboard request then does (onReadClipboard).
+        view.deliverClipboard("pasted prompt", state: nil, confirmed: false)
+        XCTAssertEqual(recorder.inputs, 1)
+        // A confirmed (unsafe) paste is delivered the same way.
+        view.deliverClipboard("rm -rf x\n", state: nil, confirmed: true)
+        XCTAssertEqual(recorder.inputs, 2)
+    }
 }

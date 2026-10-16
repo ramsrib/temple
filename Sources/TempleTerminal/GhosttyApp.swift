@@ -147,6 +147,13 @@ public final class GhosttyApp {
             // (docs/designs/remote-ssh.md section 4). libghostty's default,
             // pinned so it cannot drift; reads still ask.
             "clipboard-write = allow",
+            // A click at a prompt moves the cursor by sending arrow keys, for
+            // a program that declares prompt clicks (OSC 133 click_events):
+            // bytes to the pty from an ordinary click, which nothing on
+            // Temple's side could see. Neither agent declares it (measured on
+            // claude 2.1.301 and codex 0.163), and tmux does not pass it on,
+            // so the path is closed rather than watched.
+            "cursor-click-to-move = false",
         ]
         if let family = appearance.fontFamily, !family.isEmpty {
             lines.append("font-family = \(family)")
@@ -356,11 +363,11 @@ public final class GhosttyApp {
         state: UnsafeMutableRawPointer?
     ) -> Bool {
         MainActor.assumeIsolated {
-            guard let surface = surfaceView(from: userdata)?.surface else { return false }
+            guard let view = surfaceView(from: userdata), view.surface != nil else { return false }
             guard let str = NSPasteboard.general.string(forType: .string), !str.isEmpty else {
                 return false
             }
-            str.withCString { ghostty_surface_complete_clipboard_request(surface, $0, state, false) }
+            view.deliverClipboard(str, state: state, confirmed: false)
             return true
         }
     }
@@ -373,8 +380,8 @@ public final class GhosttyApp {
     ) {
         // Auto-confirm the pending request with the provided string.
         MainActor.assumeIsolated {
-            guard let surface = surfaceView(from: userdata)?.surface, let string else { return }
-            ghostty_surface_complete_clipboard_request(surface, string, state, true)
+            guard let view = surfaceView(from: userdata), let string else { return }
+            view.deliverClipboard(String(cString: string), state: state, confirmed: true)
         }
     }
 

@@ -2423,6 +2423,27 @@ its own.
     an agent that never retitles (`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`,
     or a CLI with no titles) reading as working forever, prompting at every
     close and detaching at every quit until a bell.
+  - **Every way a user action becomes bytes to the pty** (hands-on review
+    round 4: enumerated once from libghostty's `Surface.zig`, every
+    `queueIo` that writes, rather than one gesture at a time). An early
+    rest needs none of them since the spawn; each is recorded at the
+    Temple-side hook named, as `surfaceDidReceiveInput`
+    (`OpenSessionsModel.inputSinceSpawn`).
+
+    | Path (libghostty) | Bytes | Temple-side hook |
+    |---|---|---|
+    | `keyCallback`, `endKeySequence`: every key, keypad Enter, Esc, IME text committed inside a key press | key encoding | `GhosttySurfaceView.keyDown` (every press, before the surface) |
+    | Keybind actions `text:`, `csi:`, `esc:`, `cursor_key` (`performBindingAction`) | the bound bytes | `keyDown` (they are reached only by a key; Temple's own binding actions are search, which writes nothing) |
+    | `write_screen_file:paste` | a file path | `keyDown` (keybind only) |
+    | `completeClipboardPaste`: ⌘V `paste_from_clipboard`, middle-click (captured or not), `paste_from_selection`, an unsafe paste confirmed | the clipboard | `GhosttySurfaceView.deliverClipboard`, the one place every clipboard read is handed over (`onReadClipboard`, `onConfirmReadClipboard`) |
+    | `completeClipboardReadOSC52`: the program's own clipboard read | the clipboard | `deliverClipboard` too (counted although the program asked: over-counting only costs the shortcut) |
+    | `ghostty_surface_text`: IME commit outside a key press, a drop's text | the text | `GhosttySurfaceView.insertText` (outside a key press) |
+    | `mouseReport` from `mouseButtonCallback`, `cursorPosCallback` (drag), `scrollCallback`, while the program captures the mouse | mouse reports | `mouseDown`/`Up`, `right…`, `other…`, `…Dragged`, `scrollWheel` when `ghostty_surface_mouse_captured` (under tmux `mouse on`: always) |
+    | `cursorPosCallback` motion reports (mode 1003, no button) | mouse reports | not recorded: no button, nothing chosen; tmux asks for button events only |
+    | `scrollCallback` alternate scroll (alternate screen, no capture) | cursor Up/Down | not recorded (accepted, round 4): only Up/Down, and libghostty does not say when it applies |
+    | `maybePromptClick` (a click at a prompt that declared OSC 133 click_events) | cursor Left/Right | closed: `cursor-click-to-move = false` in Temple's ghostty config (neither agent declares it; tmux does not pass it) |
+    | `focusCallback` (mode 1004), `colorSchemeCallback` (mode 2031), the title report (CSI 21 t), and termio's answers to queries (DA, DSR, OSC 10/11) | reports | not input: the terminal's own state or answers to the program's queries, no content from the user |
+    | `resize` | none (a window size, SIGWINCH) | not input |
 - **T1, T2**: Fable's spec (the host on a second line under the name; the
   `--no-daemon` hint in secondary, the flag monospaced).
 - **T3, colours.** Under Temple's own chain, tmux 3.4 asks the outer
