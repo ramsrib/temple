@@ -1716,8 +1716,8 @@ become the launch path. A catalog cache had to be something that file was not.
   layout (`schemaVersion`) and the facts version
   (`TranscriptFormats.factsVersion`, which **moves with any change to what a
   format's facts produce**), and a build with other parsers uses its own
-  file and never touches this one while it is in use. Any contention — a busy or locked
-  database, a held transaction, a write that times out — or a file whose own
+  file and never touches this one while it is in use. Any contention (a busy or locked
+  database, a held transaction, a write that times out), or a file whose own
   record disagrees with its name makes the process keep its summaries in
   memory for the run, and leaves the file as it is. Only a file SQLite
   reports corrupt is deleted and rebuilt, and only while no other process
@@ -1754,12 +1754,15 @@ shows anything (0.1 s at 2,000 transcripts, 0.4 s at 10,000); showing the
 last snapshot at once is History's to do, not the catalog's. A corrupt file
 that another Temple has open is not rebuilt: this process keeps memory only
 for the run, and the next one alone with it rebuilds it. An older version's
-file (lower layout or facts version, neither higher) is deleted, with its
-journal and lock files, when a newer build opens its own and can take that
-version's lock exclusively without waiting (amended 2026-10-16; until then
-every old file stayed, a few MB each). A file an older build still has open
-stays until a later launch finds it free, and a newer version's file is left
-for the newer build, so after a downgrade it stays until that build runs again.
+database (lower layout or facts version, neither higher) is deleted, with its
+journal files, when a newer build opens its own and can take that version's
+lock exclusively without waiting (amended 2026-10-16; until then every old
+file stayed, a few MB each). Its lock file is never deleted: unlinked, a lock
+file a process had already opened and one created under the same name would
+be two locks, each holder sure it was alone. A file an older build still has
+open stays until a later launch finds it free. A downgraded build leaves a
+newer version's cache untouched; going back to the newer build reuses that
+cache, and it can then sweep the older ones.
 
 **Measured** with a release-built harness calling `LocalSessionSource.catalog`
 on the synthetic stores (`/private/tmp/history-perf`, one process per launch,

@@ -27,10 +27,11 @@ import TempleCore
 ///   `SQLITE_NOTADB`) is deleted and rebuilt, and only while this process
 ///   holds the lock file exclusively — that is, while no other process has
 ///   the file open. Otherwise memory only, and the file stays.
-/// - An older version's file (a lower layout or facts version, neither
+/// - An older version's database (a lower layout or facts version, neither
 ///   higher) is swept once this process has its own file open, by the same
 ///   rule: only while its lock file can be taken exclusively without
-///   waiting. A newer version's file is left for the newer build.
+///   waiting. Lock files are never deleted. A newer version's file is left
+///   for the newer build.
 /// Writes are batched per catalog read, only for what changed, never on a
 /// timer.
 final class CatalogDiskCache: @unchecked Sendable {
@@ -259,20 +260,22 @@ final class CatalogDiskCache: @unchecked Sendable {
         return (schema, facts)
     }
 
-    /// Deletes the files of every older version in this directory that no
-    /// process has open: its lock file is taken exclusively without
-    /// waiting, the database and its journal files go while that is held,
-    /// and the lock file goes last. A process that opens the lock file
-    /// before it is unlinked finds it held and keeps its summaries in
-    /// memory; one that opens it after creates a new one, and a new file,
-    /// after this is done deleting. A held lock (another Temple using that
-    /// version) leaves everything of that version as it is. The current
-    /// version's files are never touched, nor a newer version's.
+    /// Deletes the database files of every older version in this directory
+    /// that no process has open: its lock file is taken exclusively without
+    /// waiting, and the database and its journal files go while that is
+    /// held. The lock file itself is never deleted. Unlinked, it would stop
+    /// being one lock: a process that had opened it before the unlink could
+    /// take it afterwards while another opened a new file under the same
+    /// name, and each would believe it held the only lock on a database the
+    /// other was using (or deleting). A kept lock file is a few bytes. A held
+    /// lock (another Temple using that version) leaves everything of that
+    /// version as it is. The current version's files are never touched, nor
+    /// a newer version's.
     private func sweepOlderVersions() {
         let directory = url.deletingLastPathComponent()
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return }
         var older = Set<String>()
-        for name in names {
+        for name in names where !name.hasSuffix(".lock") {   // a lock file alone has nothing to sweep
             guard let (schema, facts) = Self.versions(inFileName: name) else { continue }
             guard (schema, facts) != (self.schema, self.facts), schema <= self.schema, facts <= self.facts else { continue }
             older.insert(Self.fileName(schema: schema, facts: facts))
@@ -289,7 +292,6 @@ final class CatalogDiskCache: @unchecked Sendable {
             for suffix in ["", "-wal", "-shm", "-journal"] {
                 try? FileManager.default.removeItem(atPath: path + suffix)
             }
-            try? FileManager.default.removeItem(atPath: path + ".lock")
             LocalHostLog.catalog.notice("removed an older catalog cache: \(base, privacy: .public)")
         }
     }

@@ -228,16 +228,24 @@ final class CatalogCacheTests: XCTestCase {
         return disk
     }
 
-    /// Opening its own file sweeps an older version's, every sibling of it,
-    /// when nobody holds that version's lock.
+    private func inode(_ url: URL) -> UInt64? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.systemFileNumber] as? NSNumber)?.uint64Value
+    }
+
+    /// Opening its own file sweeps an older version's database and journal
+    /// files when nobody holds that version's lock. The lock file stays, the
+    /// same file: deleting it would stop it being one lock.
     func testAnOlderVersionsFilesAreRemovedWhenNobodyHoldsThem() throws {
         let schema = CatalogDiskCache.schemaVersion, facts = TranscriptFormats.factsVersion
         let olderLayout = try leaveFiles(schema: schema - 1, facts: facts)
         let olderFacts = try leaveFiles(schema: schema, facts: facts - 1)
+        let locks = [olderLayout[3], olderFacts[3]]
+        let inodes = locks.map(inode)
         let disk = openCurrent()
-        for url in olderLayout + olderFacts {
+        for url in olderLayout.prefix(3) + olderFacts.prefix(3) {
             XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "\(url.lastPathComponent) removed")
         }
+        XCTAssertEqual(locks.map(inode), inodes, "the lock files are kept, the same files")
         XCTAssertTrue(FileManager.default.fileExists(atPath: disk.url.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: disk.lockURL.path))
     }
@@ -260,10 +268,40 @@ final class CatalogCacheTests: XCTestCase {
         for url in held + newer + mixed + [other, signed] {
             XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "\(url.lastPathComponent) kept")
         }
-        // Released, it goes on the next open.
+        // Released, its database goes on the next open; its lock stays.
         flock(lock, LOCK_UN)
         _ = openCurrent()
-        for url in held { XCTAssertFalse(FileManager.default.fileExists(atPath: url.path)) }
+        for url in held.prefix(3) { XCTAssertFalse(FileManager.default.fileExists(atPath: url.path)) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: held[3].path))
+    }
+
+    /// The race an unlinked lock file allowed. Sweeper B opens the older
+    /// version's lock file and pauses before taking it. Sweeper A sweeps.
+    /// An older Temple then starts: it opens the lock file by name, takes it
+    /// shared and builds a new database. B resumes and asks for the lock:
+    /// it must find it held, because the name still leads to the file B
+    /// opened. (Had A unlinked it, the older Temple would hold a new file
+    /// and B would take the old one, then delete the live database.)
+    func testTwoSweepersAndAnOlderTempleShareOneLock() throws {
+        let schema = CatalogDiskCache.schemaVersion, facts = TranscriptFormats.factsVersion
+        let files = try leaveFiles(schema: schema, facts: facts - 1)
+        let lockPath = files[3].path
+        let sweeperB = Darwin.open(lockPath, O_RDWR | O_CREAT | O_CLOEXEC, 0o644)
+        XCTAssertGreaterThanOrEqual(sweeperB, 0)
+        defer { close(sweeperB) }
+
+        _ = openCurrent()   // sweeper A
+        XCTAssertFalse(FileManager.default.fileExists(atPath: files[0].path), "A swept the database")
+
+        let olderTemple = Darwin.open(lockPath, O_RDWR | O_CREAT | O_CLOEXEC, 0o644)
+        XCTAssertGreaterThanOrEqual(olderTemple, 0)
+        defer { close(olderTemple) }
+        XCTAssertEqual(flock(olderTemple, LOCK_SH | LOCK_NB), 0)
+        try Data("live".utf8).write(to: files[0])
+
+        XCTAssertNotEqual(flock(sweeperB, LOCK_EX | LOCK_NB), 0, "B finds the older Temple's hold: one lock")
+        _ = openCurrent()   // and a sweep through the cache itself keeps it too
+        XCTAssertEqual(try Data(contentsOf: files[0]), Data("live".utf8), "the live database is kept")
     }
 
     /// The current version's own file, with what it holds, is never swept,
