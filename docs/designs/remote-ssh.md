@@ -1930,3 +1930,68 @@ took it for the sidebar while no tab was active: a sheet now owns every
 key); a host's project heading leads with the globe and keeps the host
 apart from the name; every Test connection row has Show output.
 
+## Phase 1b round 1 (sol and astra review; Fable's decisions; the coordinator's rulings)
+
+1. **Ownership, not descendance.** A rollout is adopted only when the
+   pane's own process holds it, or, when the pane is a launcher shim (an
+   interpreter whose arguments name a script `codex` or `codex.js`, as
+   Codex's npm package installs), its direct child that is the launched
+   CLI: an executable whose name begins with `codex`, given exactly the
+   arguments the pane was given after the script (`/proc/<pid>/exe` and
+   `cmdline`). Any other writer (another child, every deeper descendant,
+   a nested codex the agent ran, Codex's shared app server) proves nothing
+   about the run: when only such writers hold a rollout the check is
+   lastingly inconclusive ("the session file is held by a process Temple
+   didn't start") and the question takes over. Note 6's app-server rule is
+   now a case of this one. Every read in the walk that fails (a link, an
+   `fdinfo`, a `cmdline`, an `exe`) is a retry, never skipped; flags must
+   be octal and their access mode exactly 1 or 2. Acceptance checks the
+   rule on each box's real `/proc` with processes it starts (a real nested
+   codex can't be arranged from outside the agent).
+2. **Temple passes no `--no-daemon`** (Fable 1). The question and the
+   ended header say: "With --no-daemon in Codex's arguments (Settings),
+   Temple identifies the session itself." No button writes Settings (the
+   arguments field is global and would change local Codex too).
+3. **The suggestions** take paths as `find -exec` arguments and send them
+   in hex; an unreadable file, a folder that can't be searched or an
+   answer not framed whole (each frame's length and end marker, then
+   `done` with nothing after it) is unavailable, never a partial list.
+   Every candidate is listed by its first line and filtered for
+   eligibility before the newest twenty are read for their prompts. A
+   store that can't say what was declined or held makes the question
+   unavailable. A yes reruns the eligibility check and claims only a
+   candidate that still passes; the claim refuses a declined file in its
+   own transaction. The home keeps a trailing newline (`pwd -P` with a
+   sentinel).
+4. **Joins by outcome.** Only a join core wrote is marked (`joined_at`); a
+   refusal releases the claim with core's reason; a failed write leaves the
+   claim unjoined for the next check and the next launch, and the schedule
+   keeps checking until the tab is the session.
+5. **Quit** (ruling 3): pending runs follow phase 1a (working detached,
+   idle stopped). Stopped, a run typed into keeps its ended record for the
+   question after relaunch; one never typed into is let go. A failed stop
+   is left running and never retried.
+6. **An ended yes is at rest** (ruling 4): confirming an ended session
+   records who it was and leaves its tab at rest ("This Codex session
+   ended on <host>. Resume it to continue the conversation." with
+   Resume); nothing starts until the user asks.
+7. **Input evidence is kept** (ruling 5, persisted): `r5-input` adds
+   `runs.input_seen_at`, written the first time a pending tab is typed
+   into, so a restored chip still asks and a close keeps it.
+8. **Hand-over.** A tab that becomes its session marks its run handed over
+   to `open_tabs` (`tab_closed_at`); a claimed run that never was (the
+   claim landed after the quit froze the tab set) is restored at launch as
+   that session's chip, then handed over.
+9. **Owned writes.** Every pending run's own write (its tab closed or
+   handed over, its run dismissed, its input kept, a refused claim
+   released) is owned and a failure is said once (`pendingWriteNotice`,
+   in the walk). A pending open answered "identified elsewhere" joins and
+   opens as that session instead of staying opening.
+10. **Test connection**: a CLI that prints nothing still has Show output
+    (the command and its exit status).
+
+Not done here, by decision: the local catalog's titles for app-server
+rollouts (Fable 6, its own commit before the next release); Codex's shared
+history and index lines and jetson's initialised `~/.codex` stay (Fable 4);
+the dark-mode tmux contrast check is for the hands-on pass (Fable 7).
+
