@@ -1245,7 +1245,7 @@ public final class RemoteSessions {
             guard !offered.isEmpty else { return .candidates([]) }
             let exec: RemoteExec
             do { exec = try await queryExec() } catch { return .unavailable(error.localizedDescription) }
-            let heads = await CodexSuggestionLookup.heads(offered.map(\.rolloutPath), using: exec) ?? [:]
+            let heads = await CodexSuggestionLookup.heads(offered.map(\.rolloutPath), using: exec)
             return .candidates(CodexSuggestionLookup.withPrompts(offered, heads: heads))
         }
     }

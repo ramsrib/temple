@@ -223,16 +223,21 @@ public struct CodexSuggestion: Sendable, Equatable, Identifiable {
     public var id: String { rolloutPath }
     public let rolloutPath: String
     public let sessionID: String
-    /// The first thing typed into it; nil when it has none yet.
+    /// The first thing typed into it; nil when it has none yet (or, when
+    /// `promptKnown` is false, when its head couldn't be read).
     public let firstPrompt: String?
+    /// Whether `firstPrompt` is known: false when the head could not be read
+    /// or was cut short before a prompt; never shown as "no prompt" then.
+    public let promptKnown: Bool
     /// When it began, on the host's clock.
     public let startedAt: Date
     /// Its folder (the run's own).
     public let directory: String
 
-    public init(rolloutPath: String, sessionID: String, firstPrompt: String?, startedAt: Date, directory: String) {
+    public init(rolloutPath: String, sessionID: String, firstPrompt: String?, startedAt: Date, directory: String,
+                promptKnown: Bool = true) {
         self.rolloutPath = rolloutPath; self.sessionID = sessionID; self.firstPrompt = firstPrompt
-        self.startedAt = startedAt; self.directory = directory
+        self.startedAt = startedAt; self.directory = directory; self.promptKnown = promptKnown
     }
 }
 
@@ -395,8 +400,10 @@ public enum CodexSuggestionLookup {
             let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
             if let tag = fields.first, skips.contains(tag), fields.count == 2, LaunchRecords.hex(fields[1]) != nil { continue }
             guard let tag = fields.first, tags.contains(tag), fields.count == 3, let path = LaunchRecords.hex(fields[1]),
-                  let count = Int(fields[2]), count >= 0,
-                  data.distance(from: index, to: data.endIndex) >= count + end.count else { return nil }
+                  let count = Int(fields[2]), count >= 0 else { return nil }
+            // By subtraction: a length near Int.max must not overflow.
+            let remaining = data.distance(from: index, to: data.endIndex)
+            guard remaining >= end.count, count <= remaining - end.count else { return nil }
             let bodyEnd = data.index(index, offsetBy: count)
             guard data[bodyEnd..<data.index(bodyEnd, offsetBy: end.count)].elementsEqual(end) else { return nil }
             frames.append((path, Data(data[index..<bodyEnd])))
@@ -428,12 +435,17 @@ public enum CodexSuggestionLookup {
         .sorted { $0.startedAt > $1.startedAt }
     }
 
-    /// The same suggestions with the first prompt each head holds.
-    static func withPrompts(_ suggestions: [CodexSuggestion], heads: [String: Data]) -> [CodexSuggestion] {
+    /// The same suggestions with the first prompt each head holds. `heads`
+    /// nil (the query failed or its answer was not whole), a head that
+    /// couldn't be read, or one cut short before any prompt: the prompt is
+    /// unknown, never "no prompt" (round 2).
+    static func withPrompts(_ suggestions: [CodexSuggestion], heads: [String: Data]?) -> [CodexSuggestion] {
         suggestions.map {
-            CodexSuggestion(rolloutPath: $0.rolloutPath, sessionID: $0.sessionID,
-                            firstPrompt: heads[$0.rolloutPath].flatMap(CodexFormat.firstTypedPrompt(in:)),
-                            startedAt: $0.startedAt, directory: $0.directory)
+            let head = heads?[$0.rolloutPath]
+            let prompt = head.flatMap(CodexFormat.firstTypedPrompt(in:))
+            let known = head.map { prompt != nil || $0.count < headBytes } ?? false
+            return CodexSuggestion(rolloutPath: $0.rolloutPath, sessionID: $0.sessionID, firstPrompt: prompt,
+                                   startedAt: $0.startedAt, directory: $0.directory, promptKnown: known)
         }
     }
 }

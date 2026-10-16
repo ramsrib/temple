@@ -133,9 +133,13 @@ public struct RemoteSuggestion: Equatable, Identifiable {
     public let firstPrompt: String?
     public let startedAt: Date
     public let directory: String
-    public init(rolloutPath: String, sessionID: String, firstPrompt: String?, startedAt: Date, directory: String) {
+    /// False when the prompt could not be read: shown as unknown, never
+    /// as "no prompt".
+    public let promptKnown: Bool
+    public init(rolloutPath: String, sessionID: String, firstPrompt: String?, startedAt: Date, directory: String,
+                promptKnown: Bool = true) {
         self.rolloutPath = rolloutPath; self.sessionID = sessionID; self.firstPrompt = firstPrompt
-        self.startedAt = startedAt; self.directory = directory
+        self.startedAt = startedAt; self.directory = directory; self.promptKnown = promptKnown
     }
 }
 
@@ -490,7 +494,8 @@ public enum RemoteCopy {
 
     /// The question about one candidate: never a fact.
     public static func suggestionQuestion(_ suggestion: RemoteSuggestion, now: Date = Date()) -> String {
-        let prompt = suggestion.firstPrompt.map { "\u{201C}\($0)\u{201D}" } ?? "(no prompt)"
+        let prompt = suggestion.firstPrompt.map { "\u{201C}\($0)\u{201D}" }
+            ?? (suggestion.promptKnown ? "(no prompt)" : "(its first prompt couldn't be read)")
         let folder = URL(fileURLWithPath: suggestion.directory).lastPathComponent
         return "Is this the session? \(prompt), started \(startTime(suggestion.startedAt, now: now)) in \(folder)."
     }

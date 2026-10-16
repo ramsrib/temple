@@ -425,6 +425,26 @@ final class CodexIdentityTests: XCTestCase {
         }
         XCTAssertEqual(parse("now\t1\nunavailable\tnot every session file could be read\n"),
                        .unavailable("not every session file could be read"))
+        // A length near Int.max is refused, not an overflow (round 2).
+        guard case .unavailable = parse("now\t1\nfile\t\(path)\t\(Int.max)\n{}\nend\ndone\n"),
+              case .unavailable = parse("now\t1\nfile\t\(path)\t\(Int.max - 2)\n{}\nend\ndone\n") else {
+            return XCTFail("an Int.max length was accepted")
+        }
+    }
+
+    /// A prompt that couldn't be read is unknown, never "no prompt" (round
+    /// 2): the head query failed, the file was skipped, or its head was cut
+    /// short before any prompt.
+    func testAnUnreadablePromptIsUnknown() {
+        let suggestion = CodexSuggestion(rolloutPath: "/r/a", sessionID: "a", firstPrompt: nil, startedAt: Date(), directory: "/w")
+        let short = Data(#"{"type":"session_meta","payload":{}}"#.utf8)
+        let long = Data(repeating: 0x20, count: CodexSuggestionLookup.headBytes)
+        XCTAssertEqual(CodexSuggestionLookup.withPrompts([suggestion], heads: nil).first?.promptKnown, false)
+        XCTAssertEqual(CodexSuggestionLookup.withPrompts([suggestion], heads: [:]).first?.promptKnown, false)
+        XCTAssertEqual(CodexSuggestionLookup.withPrompts([suggestion], heads: ["/r/a": long]).first?.promptKnown, false)
+        let none = CodexSuggestionLookup.withPrompts([suggestion], heads: ["/r/a": short]).first
+        XCTAssertEqual(none?.promptKnown, true)
+        XCTAssertNil(none?.firstPrompt)
     }
 
     /// Codex's app server records the prompt as a user message item behind

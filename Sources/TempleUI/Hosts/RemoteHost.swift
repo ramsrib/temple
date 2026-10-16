@@ -263,7 +263,7 @@ final class RemoteHostLauncher: RemoteSessionHost {
         case .candidates(let found):
             .candidates(found.map {
                 RemoteSuggestion(rolloutPath: $0.rolloutPath, sessionID: $0.sessionID, firstPrompt: $0.firstPrompt,
-                                 startedAt: $0.startedAt, directory: $0.directory)
+                                 startedAt: $0.startedAt, directory: $0.directory, promptKnown: $0.promptKnown)
             })
         }
     }
@@ -271,7 +271,7 @@ final class RemoteHostLauncher: RemoteSessionHost {
     func confirm(_ handle: String, suggestion: RemoteSuggestion) async -> RemoteIdentity {
         let candidate = CodexSuggestion(rolloutPath: suggestion.rolloutPath, sessionID: suggestion.sessionID,
                                         firstPrompt: suggestion.firstPrompt, startedAt: suggestion.startedAt,
-                                        directory: suggestion.directory)
+                                        directory: suggestion.directory, promptKnown: suggestion.promptKnown)
         return await identity(await sessions.confirm(handle, suggestion: candidate), handle: handle)
     }
 

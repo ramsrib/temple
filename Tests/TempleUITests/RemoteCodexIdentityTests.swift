@@ -459,6 +459,10 @@ final class RemoteCodexIdentityTests: XCTestCase {
                 .hasPrefix(RemoteCopy.leftRunningLine("box", reason: reason)))
         }
         XCTAssertEqual(RemoteCopy.noTrackedSessions, "No sessions started from Temple.")
+        let unread = RemoteSuggestion(rolloutPath: "/r", sessionID: "x", firstPrompt: nil, startedAt: Date(),
+                                      directory: "/w", promptKnown: false)
+        XCTAssertTrue(RemoteCopy.suggestionQuestion(unread).hasPrefix("Is this the session? (its first prompt couldn't be read), started "))
+        XCTAssertFalse(RemoteCopy.suggestionQuestion(unread).contains("(no prompt)"))
         let copy = [RemoteCopy.codexEndedPending("box"), RemoteCopy.couldNotTell, RemoteCopy.noDaemonHint,
                     RemoteCopy.endedIdentified("box"), RemoteCopy.resumeAnyway("box"),
                     RemoteCopy.startNewPending("box"), RemoteCopy.stopHint("box"), RemoteCopy.discardHelp(archives: true),
