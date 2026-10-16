@@ -2333,3 +2333,31 @@ locale short times stay, with a date when the time is on another day.
 2. A well-framed answer whose `find` failed is a transport that worked: it
    lists nothing, charges nothing, and resets the breaker's count like any
    answer (the test now says so and asserts it).
+
+### Phase 2 round 3: one byte-exact path type
+
+The second round on how remote paths compare, so the fix moved to the
+type: `RemotePath` wraps a path's UTF-8 bytes and is equal, hashed and
+ordered by them alone (Swift's `String` is equal under canonical
+equivalence, so a precomposed and a decomposed spelling, two folders on a
+Linux host, were one key). Every remote root (`RemoteTranscriptRoot`'s
+value and base, so two such roots are two groups and both are searched),
+listed path, hint and its stat, store prefix, Codex home and the
+path-to-home cache in `TempleRemoteHost` is one; so are the Codex
+identity's folder comparison (`verify`, `eligible`), its seen and declined
+rollout sets (`RemoteStateStore.declined` returns `Set<RemotePath>`) and
+the suggestion heads. A `String` is made from one only for display, a
+script argument (its bytes are the path's) or a locator handed to the
+engine. Tested together in one batch and in the cache, locally (an exec
+that answers from its arguments, since APFS folds the two spellings) and
+on both boxes (ext4 keeps two folders; one batch finds each session under
+its own, and each Codex read titles from its own home's history).
+
+What remains outside this module: core's `TranscriptLocator` equality and
+`TranscriptCandidates.assign`'s de-duplication compare `String`s. Within
+one session's own store two files whose paths differ only in
+normalization (two Claude project folders spelled both ways, holding the
+same id) would be offered as one candidate; identity verification still
+decides which file is the session's, and nothing of another session can
+reach the row. A byte-exact locator is a core change, for a decision of
+its own.
