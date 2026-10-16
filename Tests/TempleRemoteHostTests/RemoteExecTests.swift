@@ -25,12 +25,28 @@ final class RemoteExecTests: XCTestCase {
     }
 
     func testCancellationKillsTheProcess() async throws {
-        let task = Task { try await ProcessRunner.run("/bin/sleep", ["30"], deadline: 60) }
-        try await Task.sleep(for: .milliseconds(200))
+        let tree = TempTree("cancel")
+        let pidFile = tree.path + "/pid"
+        let task = Task { try await ProcessRunner.run("/bin/sh", ["-c", "echo $$ > \(pidFile); exec sleep 30"], deadline: 60) }
+        try await Task.sleep(for: .milliseconds(300))
         let started = Date()
         task.cancel()
         do { _ = try await task.value; XCTFail("cancelled") } catch is CancellationError {}
         XCTAssertLessThan(Date().timeIntervalSince(started), 3)
+        let pid = try XCTUnwrap(Int32(try String(contentsOfFile: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        try await Task.sleep(for: .milliseconds(1500))
+        XCTAssertNotEqual(kill(pid, 0), 0, "the cancelled query's process is gone")
+    }
+
+    /// Cancelled before it starts: nothing is started at all.
+    func testACancelledRunStartsNothing() async throws {
+        let launches = RemoteProcessCounter.launches
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await ProcessRunner.run("/bin/sleep", ["30"], deadline: 60)
+        }
+        do { _ = try await task.value; XCTFail("cancelled") } catch is CancellationError {}
+        XCTAssertEqual(RemoteProcessCounter.launches, launches)
     }
 
     func testALaunchFailureSaysWhy() async {

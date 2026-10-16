@@ -149,8 +149,10 @@ final class RemoteHostsTests: XCTestCase {
         XCTAssertEqual(hosts.statusLine(for: "added-box"), HostTestSummary.notTested)
     }
 
-    /// Writes are read-modify-write of one key: an entry another process
-    /// added meanwhile survives, and one this build cannot read is kept.
+    /// Writes are read-modify-write of one key: an entry stored after this
+    /// model loaded (another Temple on the domain) survives a later write,
+    /// and one this build cannot read is kept. (Not a cross-process
+    /// transaction: two writes in the same instant can still lose one.)
     func testWritesKeepWhatOthersStored() throws {
         let defaults = enabledDefaults([added])
         let hosts = RemoteHostsModel(defaults: defaults, readConfigAliases: { [] })

@@ -131,6 +131,9 @@ public enum TmuxCheck: Sendable, Equatable {
     case refused(version: String, command: String?, line: String)
     /// An attached client failed where a detached one did not.
     case attachedFailed(version: String, line: String)
+    /// The detached chain was accepted, but the attached check never
+    /// reported (it ran out of time, or ssh dropped): proves nothing.
+    case attachedUnconfirmed(version: String, reason: String)
     case missing
     case notChecked(reason: String)
 
@@ -153,6 +156,7 @@ public enum TmuxCheck: Sendable, Equatable {
         d=${TMPDIR:-/tmp}/temple-launch-$(id -u)
         cleanup() { tmux -L "$s" kill-server >/dev/null 2>&1; rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$s"; }
         if [ -n "$a" ]; then
+          tmux -L "temple-check-$a" kill-server >/dev/null 2>&1; rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/temple-check-$a"
           if [ -f "$d/check-$a.err" ]; then printf 'attached-error\\t%s\\n' "$(head -n 1 "$d/check-$a.err")"; fi
           rm -f "$d/check-$a.err" "$d/check-$a.pane"
         fi
@@ -238,10 +242,15 @@ public enum TmuxCheck: Sendable, Equatable {
         }
         if let number, number < TmuxChain.floor { return .tooOld(version: shown) }
         if let attachedStatus, attachedStatus != 0 {
-            let fallback = attachedStatus == 124
-                ? "the attached check didn't finish within 30 seconds"
-                : "the attached client exited with status \(attachedStatus)"
-            return .attachedFailed(version: shown, line: attachedError ?? fallback)
+            // 124: Temple stopped waiting; 255: ssh itself failed. Neither
+            // is tmux's answer, so neither proves the host can't run it.
+            if attachedStatus == 124 {
+                return .attachedUnconfirmed(version: shown, reason: "it didn't finish within 30 seconds")
+            }
+            if attachedStatus == 255, attachedError == nil {
+                return .attachedUnconfirmed(version: shown, reason: "ssh exited before it finished")
+            }
+            return .attachedFailed(version: shown, line: attachedError ?? "the attached client exited with status \(attachedStatus)")
         }
         return .accepted(version: shown, passthrough: number.map { $0 >= TmuxChain.passthroughSince } ?? true)
     }
@@ -249,7 +258,7 @@ public enum TmuxCheck: Sendable, Equatable {
     public var provesUnavailable: Bool {
         switch self {
         case .tooOld, .refused, .attachedFailed, .missing: true
-        case .accepted, .notChecked: false
+        case .accepted, .attachedUnconfirmed, .notChecked: false
         }
     }
 }
@@ -391,6 +400,7 @@ public struct HostTestSummary: Sendable, Equatable {
         case .tooOld(let version): "tmux \(version): Temple needs tmux 3.2 or newer to keep sessions running."
         case .refused(let version, _, let line): "tmux \(version) refused the launch chain: \(line)"
         case .attachedFailed(let version, let line): "tmux \(version) couldn't run an attached session: \(line)"
+        case .attachedUnconfirmed(let version, let reason): "tmux \(version): Temple couldn't finish the attached check; \(reason)."
         case .missing: "No tmux on this host. Install tmux 3.2 or newer to start sessions here."
         case .notChecked(let reason): "tmux wasn't checked: \(reason)"
         }

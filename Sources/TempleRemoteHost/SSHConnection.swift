@@ -51,7 +51,11 @@ public struct SSHConnection: Sendable, Equatable {
         } else {
             var directory = temporaryDirectory
             while directory.hasSuffix("/") { directory.removeLast() }
-            controlPath = "\(directory)/temple-ssh-\(uid)/\(key)"
+            let fallback = "\(directory)/temple-ssh-\(uid)/\(key)"
+            // A temporary directory long enough to overflow too: /tmp, which
+            // always fits (the key still carries the state directory).
+            controlPath = fallback.utf8.count <= Self.maximumControlPathLength
+                ? fallback : "/tmp/temple-ssh-\(uid)/\(key)"
             usesFallbackDirectory = true
         }
     }
@@ -163,6 +167,7 @@ public enum SocketHygiene {
     public static func removeIfNothingListens(_ path: String) -> Bool {
         var info = stat()
         guard lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFSOCK else { return false }
+        let identity = (info.st_dev, info.st_ino)
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { return false }
         defer { close(descriptor) }
@@ -180,6 +185,12 @@ public enum SocketHygiene {
             }
         }
         guard result != 0, errno == ECONNREFUSED else { return false }
+        // Only the file that refused: a master another Temple bound at this
+        // path since is a different file, and stays. (The window between
+        // this check and the unlink is not closed, only narrowed; ssh
+        // recovers from a missing socket by connecting directly.)
+        var again = stat()
+        guard lstat(path, &again) == 0, (again.st_dev, again.st_ino) == identity else { return false }
         return unlink(path) == 0
     }
 }

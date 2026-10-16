@@ -101,9 +101,10 @@ public struct RemoteHostList: Equatable, Sendable {
         var seen: Set<String> = []
         for element in array {
             guard let bytes = try? JSONSerialization.data(withJSONObject: element, options: [.sortedKeys, .fragmentsAllowed]) else { continue }
-            if let record = try? JSONDecoder().decode(RemoteHostRecord.self, from: bytes),
-               !record.name.isEmpty, seen.insert(record.name).inserted {
-                list.records.append(record)
+            if let record = try? JSONDecoder().decode(RemoteHostRecord.self, from: bytes), !record.name.isEmpty {
+                // A second entry for a name is the same host: dropped, so a
+                // Remove can never leave a copy behind to come back.
+                if seen.insert(record.name).inserted { list.records.append(record) }
             } else {
                 list.unreadable.append(bytes)
             }

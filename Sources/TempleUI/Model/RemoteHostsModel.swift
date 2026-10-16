@@ -149,9 +149,11 @@ public final class RemoteHostsModel: ObservableObject {
 
     // MARK: Persistence
 
-    /// Read-modify-write against what is stored now, one key, so another
-    /// Temple on the same domain never loses an entry it just added, and an
-    /// entry this build cannot read is written back untouched.
+    /// Read-modify-write against what is stored now, one key: an entry
+    /// another Temple on the same domain added since this one loaded
+    /// survives, and an entry this build cannot read is written back
+    /// untouched. Not a transaction across processes (UserDefaults has
+    /// none): two writes in the same instant can still lose one.
     private func mutate(_ change: (inout [RemoteHostRecord]) -> Void) {
         var list = Self.load(defaults)
         change(&list.records)

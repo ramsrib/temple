@@ -273,6 +273,8 @@ public final class ConnectionTest: ObservableObject, Identifiable {
             Row(id: "tmux", verdict: .problem, line: "tmux: \(version), " + (command.map { "`\($0)`: " } ?? "") + line)
         case .attachedFailed(let version, let line):
             Row(id: "tmux", verdict: .problem, line: "tmux: \(version), attached client failed: \(line)")
+        case .attachedUnconfirmed(let version, let reason):
+            Row(id: "tmux", verdict: .info, line: "tmux: \(version), launch chain accepted detached; the attached check is unconfirmed: \(reason)")
         case .missing:
             Row(id: "tmux", verdict: .problem, line: "tmux: not on PATH")
         case .notChecked(let reason):

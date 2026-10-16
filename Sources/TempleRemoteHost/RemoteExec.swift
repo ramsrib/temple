@@ -154,23 +154,29 @@ public enum ProcessRunner {
                     state.terminated(status: finished.terminationStatus)
                 }
                 do {
+                    // Cancelled before the process existed: start nothing.
+                    guard !state.isCancelled else { throw CancellationError() }
                     RemoteProcessCounter.increment()
                     try process.run()
                 } catch {
                     outPipe.fileHandleForReading.readabilityHandler = nil
                     errPipe.fileHandleForReading.readabilityHandler = nil
-                    state.fail(RemoteExecError.launchFailed(error.localizedDescription))
+                    state.fail(error is CancellationError ? error : RemoteExecError.launchFailed(error.localizedDescription))
                     return
                 }
-                state.process = process
-                // Cancelled before the process existed: the handler found nothing to kill.
-                if Task.isCancelled, state.stop(with: CancellationError()) { kill(process) }
+                // Cancelled while it was starting: the handler found no
+                // process to kill, so it is killed here, answered or not.
+                if state.publish(process) {
+                    _ = state.stop(with: CancellationError())
+                    kill(process)
+                }
                 DispatchQueue.global().asyncAfter(deadline: .now() + deadline) {
                     if state.stop(with: RemoteExecError.deadline(seconds: deadline)) { kill(process) }
                 }
             }
         } onCancel: {
-            if state.stop(with: CancellationError()), let process = state.process { kill(process) }
+            _ = state.stop(with: CancellationError())
+            if let process = state.cancel() { kill(process) }
         }
     }
 
@@ -200,12 +206,26 @@ public enum ProcessRunner {
     /// awaited, and the one answer.
     private final class RunState: @unchecked Sendable {
         private let lock = NSLock()
-        var continuation: CheckedContinuation<Output, Error>?
-        var process: Process? {
-            get { lock.withLock { _process } }
-            set { lock.withLock { _process = newValue } }
+        var continuation: CheckedContinuation<Output, Error>? {
+            get { lock.withLock { _continuation } }
+            set { lock.withLock { _continuation = newValue } }
         }
-        private var _process: Process?
+        private var _continuation: CheckedContinuation<Output, Error>?
+        private var process: Process?
+        private var cancelled = false
+
+        var isCancelled: Bool { lock.withLock { cancelled } }
+
+        /// Records the started process; true when the run was cancelled
+        /// meanwhile (the caller kills it).
+        func publish(_ started: Process) -> Bool {
+            lock.withLock { process = started; return cancelled }
+        }
+
+        /// Records the cancellation; the process to kill, if it has started.
+        func cancel() -> Process? {
+            lock.withLock { cancelled = true; return process }
+        }
         var stdout = Data()
         var stderr = Data()
         private var pending = 0
@@ -228,7 +248,7 @@ public enum ProcessRunner {
         private func finishIfDone(_ update: () -> Void) {
             let resume: (CheckedContinuation<Output, Error>, Output)? = lock.withLock {
                 update()
-                guard pending == 0, !answered, let continuation else { return nil }
+                guard pending == 0, !answered, let continuation = _continuation else { return nil }
                 answered = true
                 return (continuation, Output(status: status, stdout: String(decoding: stdout, as: UTF8.self),
                                              stderr: String(decoding: stderr, as: UTF8.self)))
@@ -239,7 +259,7 @@ public enum ProcessRunner {
         /// Answers with `error` unless already answered; true when it did.
         func stop(with error: Error) -> Bool {
             let continuation: CheckedContinuation<Output, Error>? = lock.withLock {
-                guard !answered, let continuation else { return nil }
+                guard !answered, let continuation = _continuation else { return nil }
                 answered = true
                 return continuation
             }

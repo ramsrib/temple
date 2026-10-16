@@ -114,8 +114,13 @@ final class HostChecksTests: XCTestCase {
         let output = RemoteOutput(status: 0, stdout: "attached-error\topen terminal failed: missing or unsuitable terminal: xterm-ghostty\nversion\ttmux 3.4\nchain\t0\n", stderr: "")
         XCTAssertEqual(TmuxCheck.parse(output, attachedStatus: 1),
                        .attachedFailed(version: "3.4", line: "open terminal failed: missing or unsuitable terminal: xterm-ghostty"))
-        XCTAssertEqual(TmuxCheck.parse(RemoteOutput(status: 0, stdout: "version\ttmux 3.4\nchain\t0\n", stderr: ""), attachedStatus: 124),
-                       .attachedFailed(version: "3.4", line: "the attached check didn't finish within 30 seconds"))
+        // Temple stopped waiting, or ssh dropped: not tmux's answer, proves nothing.
+        let late = TmuxCheck.parse(RemoteOutput(status: 0, stdout: "version\ttmux 3.4\nchain\t0\n", stderr: ""), attachedStatus: 124)
+        XCTAssertEqual(late, .attachedUnconfirmed(version: "3.4", reason: "it didn't finish within 30 seconds"))
+        XCTAssertFalse(late.provesUnavailable)
+        XCTAssertEqual(HostTestSummary(tmux: late).unavailableReason(for: .claude), nil)
+        XCTAssertEqual(TmuxCheck.parse(RemoteOutput(status: 0, stdout: "version\ttmux 3.4\nchain\t0\n", stderr: ""), attachedStatus: 255),
+                       .attachedUnconfirmed(version: "3.4", reason: "ssh exited before it finished"))
         XCTAssertEqual(TmuxCheck.parse(RemoteOutput(status: 0, stdout: "version\ttmux 3.2a\nchain\t0\n", stderr: ""), attachedStatus: 0),
                        .accepted(version: "3.2a", passthrough: false))
         XCTAssertEqual(TmuxCheck.parse(RemoteOutput(status: 0, stdout: "version\ttmux 3.1c\nchain\t0\n", stderr: ""), attachedStatus: 0),

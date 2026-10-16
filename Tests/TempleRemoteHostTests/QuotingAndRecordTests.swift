@@ -84,11 +84,15 @@ final class RemoteHostRecordTests: XCTestCase {
             RemoteHostRecord(name: "added", source: .temple, address: "10.0.0.2", user: "me", port: 2222,
                              identityFile: "~/.ssh/id_box", proxyJump: "bastion"),
         ])
-        XCTAssertEqual(list.unreadable.count, 3, "no name, not an object, a duplicate name: kept, not erased")
+        XCTAssertEqual(list.unreadable.count, 2, "no name, not an object: kept, not erased")
         // A round trip writes the unreadable entries back as they were.
         let again = RemoteHostList.decode(list.encode())
         XCTAssertEqual(again.records, list.records)
-        XCTAssertEqual(again.unreadable.count, 3)
+        XCTAssertEqual(again.unreadable.count, 2)
+        // A duplicate name is the same host, so a removal takes it for good.
+        var removed = list
+        removed.records.removeAll { $0.name == "box" }
+        XCTAssertEqual(RemoteHostList.decode(removed.encode()).records.map(\.name), ["added"])
         XCTAssertEqual(RemoteHostList.decode(nil), RemoteHostList())
         XCTAssertEqual(RemoteHostList.decode(Data("garbage".utf8)), RemoteHostList())
     }

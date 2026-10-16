@@ -8,8 +8,9 @@ import TempleCore
 /// tmux, reads, the agent itself); when resolution fails, everything uses
 /// ssh's default environment instead, and says so.
 ///
-/// Memory only: per host, per run of Temple; re-resolved on Test connection
-/// and after a transport failure. Never persisted.
+/// Memory only, never persisted: phase 0 keeps the last Test connection's
+/// answer per host (in its `HostTestSummary`) and resolves again on every
+/// Test connection.
 public struct RemoteEnvironment: Sendable, Equatable {
     /// The login shell asked (`$SHELL` on the host).
     public let shell: String
@@ -78,15 +79,4 @@ public struct RemoteEnvironment: Sendable, Equatable {
         let name = shell.isEmpty ? "the login shell" : shell
         return RemoteEnvironment(shell: shell, path: nil, problem: "\(name) printed no PATH")
     }
-}
-
-/// Resolved environments, per host, for this run of Temple only.
-@MainActor
-public final class RemoteEnvironmentStore {
-    private var byHost: [HostID: RemoteEnvironment] = [:]
-    public init() {}
-    public func environment(for host: HostID) -> RemoteEnvironment? { byHost[host] }
-    public func record(_ environment: RemoteEnvironment, for host: HostID) { byHost[host] = environment }
-    /// A transport failure: the next query resolves again.
-    public func forget(_ host: HostID) { byHost[host] = nil }
 }

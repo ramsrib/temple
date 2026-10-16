@@ -68,6 +68,11 @@ final class SSHConnectionTests: XCTestCase {
         XCTAssertLessThanOrEqual(connection.controlPath.utf8.count, SSHConnection.maximumControlPathLength)
         let short = SSHConnection(record: added, stateDirectory: state, sshPath: "/usr/bin/ssh")
         XCTAssertFalse(short.usesFallbackDirectory)
+        // A temporary directory too long as well: /tmp, which always fits.
+        let longTemp = SSHConnection(record: added, stateDirectory: long, sshPath: "/usr/bin/ssh",
+                                     temporaryDirectory: "/var/folders/" + String(repeating: "t", count: 60), uid: 501)
+        XCTAssertEqual(longTemp.socketDirectory, "/tmp/temple-ssh-501")
+        XCTAssertLessThanOrEqual(longTemp.controlPath.utf8.count, SSHConnection.maximumControlPathLength)
         // The installed app's own directory fits.
         let real = URL(fileURLWithPath: "/Users/someone/Library/Application Support/Temple", isDirectory: true)
         XCTAssertFalse(SSHConnection(record: added, stateDirectory: real, sshPath: "/usr/bin/ssh").usesFallbackDirectory)
