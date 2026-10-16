@@ -93,10 +93,16 @@ public enum LaunchStage {
     exit 0
     """#
 
-    /// Argument: the marker. Removes every staged launch of that run.
+    /// Argument: the marker. The run's end is proven: prints the last
+    /// 4 KiB of what its pane showed (for a header about an agent that
+    /// ended at once), then removes that output file and every staged
+    /// launch of the run. Nothing of an ended run stays behind but the
+    /// records Temple has not acknowledged yet.
     static let discardRunScript = RecordDirectory.functions + "\n" + #"""
     rd=$(temple_record_dir) || exit 0
-    rm -f "$rd/$1".s-*
+    p=$rd/$1.out
+    [ -f "$p" ] && [ ! -L "$p" ] && tail -c 4096 "$p"
+    rm -f "$rd/$1".s-* "$p"
     exit 0
     """#
 
@@ -131,10 +137,15 @@ public enum LaunchStage {
         }
     }
 
-    /// Best effort: every staged launch of a run that has ended.
-    public static func discardAll(marker: String, using exec: RemoteExec) async {
+    /// Best effort, for a run whose end is proven: its staged launches and
+    /// its pane's output file go. Returns what the output file held (its
+    /// last 4 KiB), nil when there was none or no answer.
+    @discardableResult
+    public static func discardAll(marker: String, using exec: RemoteExec) async -> String? {
         precondition(RemoteQuoting.isSafeToken(marker))
-        _ = try? await exec.run(script: discardRunScript, args: [marker], deadline: 5)
+        guard let output = try? await exec.run(script: discardRunScript, args: [marker], deadline: 5),
+              output.reachedCommand, output.status == 0, !output.stdout.isEmpty else { return nil }
+        return output.stdout
     }
 
     /// Best effort: a staged launch nothing will read.

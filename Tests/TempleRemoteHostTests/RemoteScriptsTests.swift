@@ -913,8 +913,17 @@ final class RemoteScriptsTests: XCTestCase {
         let output = try String(contentsOfFile: records + "/m1.out", encoding: .utf8)
         XCTAssertTrue(output.contains("agent \(evidence.panePID)"), "the agent is the pane's process: \(output)")
         XCTAssertFalse(FileManager.default.fileExists(atPath: host.tree.path + "/pwned"))
+        // Private, whatever the server's umask: only this account reads
+        // what the agent showed.
+        let mode = try FileManager.default.attributesOfItem(atPath: records + "/m1.out")[.posixPermissions] as? Int
+        XCTAssertEqual(mode, 0o600, "the pane's output is created 0600")
         let fetched = try await LaunchRecords.fetch(marker: "m1", using: host.exec)
         XCTAssertTrue(fetched.output?.contains("No conversation found") == true)
+        // The run's end is proven: its output goes with its staged launches,
+        // and what it held is handed back once.
+        let taken = await LaunchStage.discardAll(marker: "m1", using: host.exec)
+        XCTAssertTrue(taken?.contains("No conversation found") == true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: records + "/m1.out"))
     }
 
     func testRealTmuxStopRefusesWhenTemplesClientWasReplacedBeforeItRan() async throws {

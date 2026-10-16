@@ -152,9 +152,12 @@ final class RemoteSessionsTests: XCTestCase {
         XCTAssertTrue(attached)
 
         // Close while idle: Temple's client goes first, then the one-command stop.
+        let output = host.recordDirectory + "/" + RecordDirectory.marker(from: proven.recordPath)! + ".out"
+        XCTAssertTrue(FileManager.default.fileExists(atPath: output), "the pane pipes what it shows")
         client.end()
         let stopped = try await sessions.stop(first.handle, fromAttachedTab: true)
         XCTAssertEqual(stopped, RemoteSessions.StopRecord(outcome: .killed))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output), "an acknowledged stop removes the pane's output")
         XCTAssertEqual(try store.run(first.handle)?.endEvidence, .killed)
         guard case .unknown(_, true) = await sessions.exitCheck(first.handle) else { return XCTFail() }
         XCTAssertEqual(try store.run(first.handle)?.endEvidence, .killed)
@@ -167,6 +170,34 @@ final class RemoteSessionsTests: XCTestCase {
         XCTAssertEqual(try store.runs(host: record.host, sessionID: "sess-1").map(\.handle), [first.handle, third.handle])
         try await sessions.abandon(third.handle, reason: "test")
         XCTAssertEqual(try store.run(third.handle)?.creation, .failed)
+    }
+
+    /// An exit check that proves the end removes the pane's output file;
+    /// what it held is still what the diagnostics show, once.
+    func testAProvenAbsenceRemovesThePanesOutputAndKeepsItForTheDiagnostics() async throws {
+        let host = StandIn()
+        try host.installRealTmux()
+        installAgent(host)
+        defer { _ = try? host.tmux(["-L", "temple", "kill-server"]) }
+        let store = try RemoteStateStore()
+        let sessions = controller(host, store: store)
+        let first = try plan(await sessions.open(request()))
+        let client = try tab(host, first)
+        defer { client.end() }
+        let collected = await until(15) { if case .ok = await sessions.collect(first.handle) { return true }; return false }
+        XCTAssertTrue(collected)
+        let marker = try XCTUnwrap(RecordDirectory.marker(from: try XCTUnwrap(store.run(first.handle)).recordPath))
+        let output = host.recordDirectory + "/" + marker + ".out"
+        try "the agent's last words\n".write(toFile: output, atomically: false, encoding: .utf8)
+        // Another tmux server keeps the socket alive, so the pinned server
+        // answers that this session is gone.
+        _ = try host.tmux(["-L", "temple", "new-session", "-d", "-s", "keeper", "sleep 60"])
+        _ = try host.tmux(["-L", "temple", "kill-session", "-t", "=temple-\(first.handle)"])
+        let liveness = await sessions.exitCheck(first.handle)
+        XCTAssertEqual(liveness, .absent)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output))
+        let diagnostics = await sessions.diagnostics(first.handle)
+        XCTAssertEqual(diagnostics, "the agent's last words\n")
     }
 
     func testAnOKNeverCollectedIsRecoveredOnTheNextOpenBeforeTheAttach() async throws {

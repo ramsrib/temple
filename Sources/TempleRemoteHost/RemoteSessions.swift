@@ -175,6 +175,9 @@ public final class RemoteSessions {
     private var claudeConfig: RemoteEnvironment.ClaudeConfig?
     /// The host was removed or edited: nothing here runs again.
     public private(set) var retired = false
+    /// What an ended run's pane showed, taken when its end was proven (the
+    /// file is removed then), for the diagnostics that may follow.
+    private var endedOutput: [String: String] = [:]
     /// Launch scripts planned but not yet staged, by stage name. `sent`:
     /// a write was attempted (it may have landed).
     private var pendingStages: [String: PendingStage] = [:]
@@ -713,6 +716,8 @@ public final class RemoteSessions {
     /// pane's and the client's records are not touched (they are
     /// acknowledged only once their evidence is written).
     public func diagnostics(_ handle: String) async -> String? {
+        // Taken when the end was proven (the file went with it).
+        if let taken = endedOutput.removeValue(forKey: handle) { return taken }
         guard let run = await run(handle), let exec = try? await queryExec(), !retired else { return nil }
         return await LaunchRecords.takeOutput(marker: marker(run), using: exec)
     }
@@ -833,7 +838,7 @@ public final class RemoteSessions {
             do { try await markEnded(handle, evidence: .absent) } catch {
                 return .unknown(reason: "Temple couldn't record that it ended: \(error.localizedDescription)", socketMissing: false)
             }
-            if !retired { await LaunchStage.discardAll(marker: marker(run), using: exec) }
+            if !retired { endedOutput[handle] = await LaunchStage.discardAll(marker: marker(run), using: exec) }
         case .unknown(_, false):
             transportFailed()
         default:
@@ -988,6 +993,8 @@ public final class RemoteSessions {
                 reached = true
                 if (try? await markEnded(run.handle, evidence: .absent)) == nil {
                     tracked.append(Tracked(run: run, state: .unknown("Temple couldn't record that it ended")))
+                } else if !retired {
+                    await LaunchStage.discardAll(marker: marker(run), using: exec)
                 }
             case .unknown(let reason, let reachedHost):
                 reached = reached || reachedHost
@@ -1013,7 +1020,9 @@ public final class RemoteSessions {
             case .present: reached = true
             case .absent:
                 reached = true
-                try? await markEnded(run.handle, evidence: .absent)
+                if (try? await markEnded(run.handle, evidence: .absent)) != nil, !retired {
+                    await LaunchStage.discardAll(marker: marker(run), using: exec)
+                }
             case .unknown(_, let reachedHost): reached = reached || reachedHost
             }
         }

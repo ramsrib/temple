@@ -331,7 +331,7 @@ public struct TmuxKeepAlive: KeepAlive {
         cd -- "$d" || { rec "failed${T}cd${T}$?"; exit 1; }
         if [ -n "$m" ] && [ -n "$TMUX_PANE" ]; then
           q=$(printf '%s' "$m.out" | sed "s/'/'\\\\''/g; s/#/##/g")
-          tmux pipe-pane -t "$TMUX_PANE" "exec head -c 65536 >> '$q'" 2>/dev/null
+          tmux pipe-pane -t "$TMUX_PANE" "umask 077; exec head -c 65536 >> '$q'" 2>/dev/null
         fi
         w=$(pwd -P; printf x); w=${w%x}; w=${w%"$NL"}
         t=${TMUX%,*}; sp=${t##*,}; so=${t%,*}
