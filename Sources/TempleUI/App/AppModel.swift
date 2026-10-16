@@ -924,7 +924,15 @@ public final class AppModel: ObservableObject {
         FileManager.default.createFile(atPath: marker.path, contents: nil)
     }
 
+    /// How long a quit waits for the engines and their sources to stop
+    /// before replying anyway: a stuck host must never make Temple
+    /// unquittable. Hitting it is logged.
+    var engineShutdownTimeout: TimeInterval = 2
+
     /// App-quit drain (ADR-010) → returns true once all surfaces are down.
+    /// `completion` (the reply to AppKit) always comes asynchronously, after
+    /// the engines and their sources have stopped (or the timeout passed),
+    /// so nothing of theirs is running into `exit()`.
     public func drainForQuit(completion: @escaping () -> Void) {
         // The command line is answered no more: what it could change is
         // being frozen for the next launch.
@@ -943,10 +951,18 @@ public final class AppModel: ObservableObject {
             // Final barrier for writes queued while the processes drained.
             overlay.flushPendingTitles()
             overlay.flushPendingTouches()
-            engineSet.stop()
-            // Nothing from the stopped engines is written after this.
-            overlay.applyFacts([:])
-            completion()
+            // No engine snapshot is applied after this call; the engines
+            // and their sources then stop, and the reply waits for them.
+            engineSet.stopListening()
+            let timeout = engineShutdownTimeout
+            Task { @MainActor [self] in
+                if await !self.engineSet.shutDown(timeout: timeout) {
+                    TempleUILog.lifecycle.error("quit: the engines did not stop within \(timeout, privacy: .public) s; quitting anyway")
+                }
+                // Nothing from the stopped engines is written after this.
+                self.overlay.applyFacts([:])
+                completion()
+            }
         }
     }
 

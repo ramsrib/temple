@@ -56,6 +56,11 @@ public protocol HostSessionSource: Sendable {
     /// whole span, judged by `AbsenceProof.decide`. Nothing the host or an
     /// engine keeps between calls stands in for it.
     func proveAbsent(ids: Set<String>, agent: Agent) async -> AbsenceProof
+    /// The app is quitting: stop observing for good (end every change
+    /// stream, stop the file events) and return once that is done, so
+    /// nothing of the source's runs on into `exit()`. A source with nothing
+    /// running in the background has nothing to do (the default).
+    func shutDown() async
 }
 
 public struct LocateRequest: Sendable, Equatable {
@@ -232,4 +237,8 @@ public protocol HostSourceDiagnostics: Sendable {
 
 public enum DirectoryEvidence: Sendable, Equatable {
     case exists, missing, unknown
+}
+
+public extension HostSessionSource {
+    func shutDown() async {}
 }

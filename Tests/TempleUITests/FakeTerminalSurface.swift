@@ -162,7 +162,23 @@ final class FakeEngine: HostEngine, @unchecked Sendable {
     private var stops = 0
     /// How many times the engine was stopped.
     var stopCount: Int { lock.lock(); defer { lock.unlock() }; return stops }
-    func stop() async { lock.lock(); stops += 1; lock.unlock() }
+    func stop() async { lock.withLock { stops += 1 } }
+    /// How long `shutDown` takes (a stuck host, when long). The wait does
+    /// not end on cancellation: a stuck host does not answer one either.
+    var shutDownDelay: TimeInterval = 0
+    private var shutDowns = 0
+    /// How many shut-downs have finished.
+    var shutDownCount: Int { lock.lock(); defer { lock.unlock() }; return shutDowns }
+    func shutDown() async {
+        await stop()
+        if shutDownDelay > 0 {
+            let delay = shutDownDelay
+            await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global().asyncAfter(deadline: .now() + delay) { done.resume() }
+            }
+        }
+        lock.withLock { shutDowns += 1 }
+    }
     func requestResolution(_ id: String, awaitingCreation: Bool) async { lock.lock(); requests.append(id); lock.unlock() }
     func reconcileMembership(_ id: String) async { lock.lock(); reconciles.append(id); lock.unlock() }
     func confirmAbsence(_ id: String) async -> Bool { absent }

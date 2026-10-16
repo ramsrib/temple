@@ -309,6 +309,18 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         }
     }
 
+    /// Quitting: every change stream ends, the FSEvents stream is stopped,
+    /// invalidated and released, and running proofs and adoptions are
+    /// answered, all on the queue; returns once that has run.
+    public func shutDown() async {
+        await onQueue {
+            let continuations = Array(self.changeContinuations.values)
+            self.changeContinuations.removeAll()
+            continuations.forEach { $0.finish() }
+            if self.running { self.stopLocked() }
+        }
+    }
+
     /// The armed stream's generation (tests).
     var currentStreamGeneration: UInt64 { queue.sync { streamGeneration } }
 

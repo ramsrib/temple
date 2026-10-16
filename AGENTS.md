@@ -167,7 +167,7 @@ the band hit-tests to: mark a new band control `TitleBandControl` instead.
 ## Quitting: ask before the window goes, and never reply early
 
 Temple is single-window, so **closing the window quits** — the red button routes
-through `windowShouldClose` → `applicationShouldTerminate` → drain. Three traps
+through `windowShouldClose` → `applicationShouldTerminate` → drain. Four traps
 here, each one shipped as a bug first.
 
 - **Ask in `windowShouldClose`, not in `applicationShouldTerminate`.** AppKit only
@@ -189,6 +189,14 @@ here, each one shipped as a bug first.
   forever for a reply that had already come. Symptom: **the app cannot be quit at
   all** — window open, close button and `⌘Q` both inert, no error anywhere.
   Reachable whenever a tab's agent had already exited.
+- **Every quit with a model drains, tabs or not, and the reply waits for the
+  engines.** A quit with no tabs used to return `.terminateNow` and leave the
+  engines, their FSEvents streams and proofs running into `exit()`.
+  `drainForQuit` now stops listening to engine snapshots in the same call as
+  the drain's end, then replies only once every engine and its source has
+  stopped (`HostEngine.shutDown`), or after `engineShutdownTimeout` (2 s,
+  logged): a stuck host must never make Temple unquittable. The race is two
+  unstructured tasks, not a task group, which would wait for a stuck child.
 
 Deciding in `windowShouldClose` means displacing SwiftUI's own window delegate, so
 `WindowCloseInterceptor` answers that one selector and forwards everything else via

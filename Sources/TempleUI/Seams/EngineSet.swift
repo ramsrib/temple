@@ -51,6 +51,40 @@ public final class EngineSet {
         for engine in engines { Task { await engine.stop() } }
     }
 
+    /// No snapshot reaches the app after this call (the first half of a
+    /// quit, done in the same call as the drain's end).
+    public func stopListening() {
+        tasks.forEach { $0.cancel() }; tasks.removeAll()
+        perHost.removeAll()
+        latest = nil; onUpdate = nil
+    }
+
+    /// Quitting: stops every engine and its source (`HostEngine.shutDown`)
+    /// and returns once all of them have, or once `timeout` has passed,
+    /// whichever comes first, so a stuck host can never hold up the quit.
+    /// Returns whether every engine finished in time.
+    @discardableResult
+    public func shutDown(timeout: TimeInterval) async -> Bool {
+        stopListening()
+        let engines = self.engines
+        // Not a task group: a group waits for every child before it returns,
+        // so an engine that never finished would hold the quit after all.
+        // The two racers are unstructured, and the first answer wins.
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let answer = FirstAnswer(continuation)
+            Task.detached {
+                await withTaskGroup(of: Void.self) { all in
+                    for engine in engines { all.addTask { await engine.shutDown() } }
+                }
+                answer.give(true)
+            }
+            Task.detached {
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                answer.give(false)
+            }
+        }
+    }
+
     /// A row joined, left or changed host: the merge is decided again.
     public func ownershipChanged() { remerge() }
 
@@ -85,5 +119,19 @@ public extension EngineSnapshot {
             for (id, ref) in snapshot.memberships where owner(id) == host && ref.host == host { memberships[id] = ref }
         }
         return EngineSnapshot(generation: generation, resolutions: resolutions, facts: facts, memberships: memberships)
+    }
+}
+
+/// Resumes a continuation with the first answer given, and ignores the rest.
+private final class FirstAnswer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+    init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
+    func give(_ value: Bool) {
+        let pending: CheckedContinuation<Bool, Never>? = lock.withLock {
+            defer { continuation = nil }
+            return continuation
+        }
+        pending?.resume(returning: value)
     }
 }

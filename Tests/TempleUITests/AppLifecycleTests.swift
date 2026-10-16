@@ -269,13 +269,15 @@ final class AppLifecycleTests: XCTestCase {
         withExtendedLifetime(model) {}
     }
 
-    /// A quit with no tabs open still goes through the drain: the engines
-    /// (their FSEvents streams and proofs) are stopped before the reply, so
+    /// A quit with no tabs open still goes through the drain, and the reply
+    /// waits for it: when AppKit hears "terminate", every engine and its
+    /// source have already stopped (their FSEvents streams and proofs), so
     /// nothing of theirs is running into `exit()`. And the reply comes after
     /// `.terminateLater` has been returned, never inside the call: replied
     /// first, AppKit would wait forever for a reply that already came.
-    func testAQuitWithNoTabsStopsTheEnginesAndRepliesAfterReturning() async throws {
+    func testAQuitWithNoTabsStopsTheEnginesBeforeReplying() async throws {
         let engine = FakeEngine(CatalogFixtureIndex(projects: []))
+        engine.shutDownDelay = 0.2
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [engine],
                              database: try TempleDB.inMemory(),
                              settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
@@ -283,18 +285,39 @@ final class AppLifecycleTests: XCTestCase {
         let delegate = TempleAppDelegate()
         delegate.model = model
         var replies: [Bool] = []
-        delegate.replyToTermination = { replies.append($0) }
+        var shutDownWhenReplied: Int?
+        delegate.replyToTermination = { replies.append($0); shutDownWhenReplied = engine.shutDownCount }
         XCTAssertTrue(model.openSessions.allSurfaces.isEmpty)
 
         XCTAssertEqual(delegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
         XCTAssertEqual(replies, [], "no reply inside the call")
         let deadline = Date().addingTimeInterval(3)
-        while (replies.isEmpty || engine.stopCount == 0), Date() < deadline {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
+        while replies.isEmpty, Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
         XCTAssertEqual(replies, [true])
-        XCTAssertEqual(engine.stopCount, 1, "the engines were stopped")
+        XCTAssertEqual(shutDownWhenReplied, 1, "the engine had finished shutting down when the reply went")
         XCTAssertTrue(model.openSessions.isQuitting)
+    }
+
+    /// A host that never finishes stopping cannot make Temple unquittable:
+    /// the reply goes after the timeout.
+    func testAStuckEngineDelaysTheQuitOnlyUntilTheTimeout() async throws {
+        let engine = FakeEngine(CatalogFixtureIndex(projects: []))
+        engine.shutDownDelay = 30
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [engine],
+                             database: try TempleDB.inMemory(),
+                             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+                             hostRegistry: Fixture.hostsWithoutFolderEvidence())
+        model.engineShutdownTimeout = 0.3
+        let delegate = TempleAppDelegate()
+        delegate.model = model
+        var replies: [Bool] = []
+        delegate.replyToTermination = { replies.append($0) }
+        let started = Date()
+        XCTAssertEqual(delegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
+        while replies.isEmpty, Date().timeIntervalSince(started) < 3 { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(replies, [true])
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2, "replied at the timeout, not after the stuck host")
+        XCTAssertEqual(engine.shutDownCount, 0, "the host was still stopping")
     }
 
     /// Only a delegate with no model (a startup-failure window) quits at once.

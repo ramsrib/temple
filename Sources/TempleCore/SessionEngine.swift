@@ -10,6 +10,9 @@ public protocol HostEngine: AnyObject, Sendable {
     func snapshots() -> AsyncStream<EngineSnapshot>
     func start() async
     func stop() async
+    /// The app is quitting: stop, and return once the host's source has
+    /// stopped its own background work too (`HostSessionSource.shutDown`).
+    func shutDown() async
     /// An explicit open: a refreshed listing and a reset parse budget.
     func requestResolution(_ id: String, awaitingCreation: Bool) async
     /// Re-read the member's row and follow it (join, leave, rejoin, a new hint).
@@ -20,6 +23,7 @@ public protocol HostEngine: AnyObject, Sendable {
 
 public extension HostEngine {
     func requestResolution(_ id: String) async { await requestResolution(id, awaitingCreation: false) }
+    func shutDown() async { await stop() }
 }
 
 /// One host's member state machine: locate → verify → enrich → back off →
@@ -167,6 +171,12 @@ public actor SessionEngine: HostEngine {
             await Self.followChanges(first: stream, source: source, sleep: sleep, epoch: epoch, engine: WeakEngine(self))
         }
         loadMembership()
+    }
+
+    /// Stops, then waits for the source to stop observing (quit only).
+    public func shutDown() async {
+        stop()
+        await source.shutDown()
     }
 
     public func stop() {

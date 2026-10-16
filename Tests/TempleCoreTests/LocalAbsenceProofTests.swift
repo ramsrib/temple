@@ -146,6 +146,25 @@ final class LocalAbsenceProofTests: XCTestCase {
         XCTAssertTrue(source.isMonitoring)
     }
 
+    /// Quitting: `shutDown` returns once the source has stopped on its
+    /// queue. Its change streams have ended and nothing is monitored.
+    func testShutDownStopsTheSourceBeforeReturning() async throws {
+        let source = LocalSessionSource(stores: [ClaudeSessionStore(root: root.appendingPathComponent("claude"))],
+                                        debounceInterval: 0.01)
+        let changes = source.changes()
+        let ended = expectation(description: "the change stream ended")
+        observers.append(Task { do { for try await _ in changes {} } catch {}; ended.fulfill() })
+        let ready = Date().addingTimeInterval(3)
+        while !source.isMonitoring, Date() < ready { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(source.isMonitoring)
+        let generation = source.currentStreamGeneration
+
+        await source.shutDown()
+        XCTAssertFalse(source.isMonitoring, "stopped when shutDown returned")
+        XCTAssertGreaterThan(source.currentStreamGeneration, generation, "every queued batch is now stale")
+        await fulfillment(of: [ended], timeout: 2)
+    }
+
     // MARK: Round 8
 
     private func settledSource(latency: TimeInterval = 0.01) async throws -> LocalSessionSource {
