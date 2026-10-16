@@ -357,7 +357,7 @@ public enum CodexSuggestionLookup {
                   candidate.createdAt >= from, candidate.createdAt <= until,
                   !held.contains(candidate.id) else { return nil }
             return CodexSuggestion(rolloutPath: file.path, sessionID: candidate.id,
-                                   firstPrompt: CodexFormat.firstUserMessage(in: file.head),
+                                   firstPrompt: CodexFormat.firstTypedPrompt(in: file.head),
                                    startedAt: candidate.createdAt, directory: candidate.cwd)
         }
         .sorted { $0.startedAt > $1.startedAt }

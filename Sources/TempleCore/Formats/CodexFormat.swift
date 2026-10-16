@@ -214,6 +214,24 @@ public struct CodexFormat: TranscriptFormat {
         return nil
     }
 
+    /// The first prompt typed into a rollout, wherever this Codex wrote it:
+    /// a `user_message` event, or (a rollout written by Codex's app server,
+    /// which records no such event) the first user message item that is not
+    /// one of the blocks Codex injects (`<environment_context>` and the like).
+    public static func firstTypedPrompt(in head: Data) -> String? {
+        if let prompt = firstUserMessage(in: head) { return prompt }
+        for line in TranscriptText.lineData(head) {
+            guard let obj = TranscriptText.jsonObject(line), (obj["type"] as? String) == "response_item",
+                  let item = obj["payload"] as? [String: Any], (item["type"] as? String) == "message",
+                  (item["role"] as? String) == "user",
+                  let text = Self.text(from: item)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !text.isEmpty, !text.hasPrefix("<") else { continue }
+            let cleaned = TranscriptText.cleanTitle(text)
+            if !cleaned.isEmpty { return cleaned }
+        }
+        return nil
+    }
+
     private static func text(from payload: [String: Any]) -> String? {
         if let text = payload["text"] as? String { return text }
         if let message = payload["message"] as? String { return message }

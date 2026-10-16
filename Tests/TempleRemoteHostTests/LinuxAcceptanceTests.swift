@@ -298,6 +298,10 @@ final class LinuxAcceptanceTests: XCTestCase {
         let paneComm = try await sh("ps -o comm= -p \"$1\"", [String(run.panePID ?? 0)])
         log.append("pane process: \(paneComm)")
         XCTAssertTrue(paneComm.contains("claude"), "\(name): \(paneComm)")
+        // What the pane shows is piped beside its record, private to the account.
+        let outputMode = try await sh("stat -c '%a' \"$HOME/.temple/launch/$1.out\" 2>/dev/null || echo missing", [markers[0]])
+        log.append("pane output file mode: \(outputMode)")
+        XCTAssertEqual(outputMode, "600", "\(name)")
         let observed1 = try await tmux("display-message -p -t =\(session): '#{pane_pid}'")
         XCTAssertEqual(observed1, String(run.panePID ?? 0))
         // TERM: xterm-256color outside, tmux-256color in the pane, both known to the host.
@@ -492,6 +496,14 @@ final class LinuxAcceptanceTests: XCTestCase {
             XCTAssertTrue(words?.contains("No conversation found") == true, "\(name): \(words ?? "nil")")
         }
 
+        // Every run here ended with its end proven (stops acknowledged, an
+        // absence checked): none leaves its pane's output behind.
+        let leftOutputs = try await sh("""
+        n=0; for mk in "$@"; do [ -e "$HOME/.temple/launch/$mk.out" ] && n=$((n+1)); done; echo $n
+        """, markers)
+        log.append("pane output files left by ended runs: \(leftOutputs)")
+        XCTAssertEqual(leftOutputs, "0", "\(name)")
+
         // The resolver's containment, on this host's own sh: a login shell
         // that ignores TERM and leaves a child is abandoned within the
         // budget, and nothing of it is left running.
@@ -540,6 +552,329 @@ final class LinuxAcceptanceTests: XCTestCase {
         XCTAssertTrue(missing.contains("status=1"))
         let after = try await sh("tmux -L temple ls -F '#{session_name}' 2>/dev/null || true")
         log.append("Temple server after: \(after.isEmpty ? "(none)" : after)")
+    }
+}
+
+extension LinuxAcceptanceTests {
+    // MARK: Phase 1b
+
+    /// Codex identity on each box (section 3, phase 1b), with the real
+    /// `codex` as installed there and a throwaway prompt in a temp folder:
+    ///
+    /// - **Automatic**: `codex --no-daemon` writes its own rollout, so the
+    ///   pane's process tree holds it open and the walk adopts its id (the
+    ///   default `codex` hands its sessions to a shared app server, which
+    ///   is not this run's process: logged as what the walk said).
+    /// - **Suggested**: with `/proc` hidden from the check (the test hook a
+    ///   host without `/proc` stands for), the check is inconclusive for
+    ///   good and the suggestion lookup offers the run's own rollout; the
+    ///   user's yes claims it.
+    ///
+    /// Everything it made is removed: its tmux sessions, its folder, its
+    /// records, the rollouts its sessions wrote (by id) and their writer
+    /// locks, a trust entry Codex saved for the folder, and a Codex app
+    /// server its own codex started where none ran before.
+    @MainActor
+    func testPhase1bCodexIdentityOnEachHost() async throws {
+        guard !hosts.isEmpty else { throw XCTSkip("set TEMPLE_REMOTE_ACCEPTANCE=<alias>[,<alias>] to run") }
+        for name in hosts {
+            precondition(name.hasSuffix("-mentes"), "acceptance runs only against the -mentes agent accounts")
+            try await codexIdentity(name)
+        }
+    }
+
+    @MainActor
+    private func pendingPlan(_ outcome: RemoteSessions.PendingOpenOutcome) throws -> RemoteSessions.OpenPlan {
+        guard case .plan(let plan) = outcome else { throw XCTSkip("expected a plan, got \(outcome)") }
+        return plan
+    }
+
+    @MainActor
+    private func codexIdentity(_ name: String) async throws {
+        let state = TempTree("acceptance-1b")
+        var log: [String] = ["== \(name) (phase 1b)"]
+        defer { print(log.joined(separator: "\n")) }
+        let store = try RemoteStateStore(directory: state.url)
+        let sessions = RemoteSessions(record: .config(name), stateDirectory: state.url, sshPath: "/usr/bin/ssh", store: { store })
+        let connection = try await sessions.resolvedConnection()
+        defer {
+            let check = connection.masterCheckArgv
+            let exit = [check[0], check[1], check[2]] + SSHConnection.helperOptions + ["-O", "exit", "--", name]
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: exit[0])
+            process.arguments = Array(exit.dropFirst())
+            process.standardError = FileHandle.nullDevice
+            try? process.run()
+            process.waitUntilExit()
+        }
+        let exec = try await sessions.queryExec()
+        func sh(_ script: String, _ args: [String] = []) async throws -> String {
+            let out = try await exec.run(script: script, args: args, deadline: 30)
+            return out.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let started = try await sh("date +%s")
+        log.append("codex: \(try await sh("command -v codex; codex --version 2>&1 | head -n 1"))")
+        let before = try await sh("tmux -L temple ls -F '#{session_name}' 2>/dev/null || true")
+        let recordsBefore = try await sh("[ -e \"$HOME/.temple\" ] && echo yes || echo no")
+        let daemonBefore = try await sh("""
+        p=$(sed -n 's/.*"pid":\\([0-9]*\\).*/\\1/p' "$HOME/.codex/app-server-daemon/daemon.pid" 2>/dev/null)
+        [ -n "$p" ] && kill -0 "$p" 2>/dev/null && echo "$p" || echo none
+        """)
+        log.append("Codex app server before: \(daemonBefore)")
+        let folder = try await sh("mktemp -d /tmp/temple-accept-XXXXXX")
+        XCTAssertTrue(folder.hasPrefix("/tmp/temple-accept-"), folder)
+        let canonicalFolder = try await sh("cd -- \"$1\" && pwd -P", [folder])
+        let configBefore = try await sh("cksum < \"$HOME/.codex/config.toml\" 2>/dev/null || echo none")
+        var handles: [String] = []
+        var markers: [String] = []
+        var clients: [AcceptanceClient] = []
+        var trusted = false
+        defer {
+            for client in clients { client.end() }
+            let cleanup = #"""
+            f=$1; since=$2; noneBefore=$3; markers=$4; recordsBefore=$5; daemonBefore=$6; trusted=$7; shift 7
+            for h in "$@"; do tmux -L temple kill-session -t "=temple-$h" 2>/dev/null; done
+            # The rollouts this test's sessions wrote: those whose header
+            # names its folder, written since it started; removed by id, with
+            # their writer locks.
+            ids=
+            for r in $(find "$HOME/.codex/sessions" -name 'rollout-*.jsonl' -newermt "@$since" 2>/dev/null); do
+              head -c 65536 "$r" | head -n 1 | grep -qF "\"$f\"" || continue
+              id=${r%.jsonl}; id=$(printf '%s' "$id" | sed 's/.*-\([0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}\)$/\1/')
+              ids="$ids $id"
+            done
+            for id in $ids; do
+              for r in $(find "$HOME/.codex/sessions" -name "rollout-*-$id.jsonl" 2>/dev/null); do rm -f "$r" && echo "removed rollout $id"; done
+              rm -f "$HOME/.codex/thread-writer-locks/$id.lock"
+            done
+            # A Codex app server this test's codex started (none ran before):
+            # stopped first, since it is what persists the trust decision.
+            if [ "$daemonBefore" = none ]; then
+              p=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$HOME/.codex/app-server-daemon/daemon.pid" 2>/dev/null)
+              if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
+                kill "$p" && echo "stopped the Codex app server this test started ($p)"
+                i=0; while kill -0 "$p" 2>/dev/null && [ $i -lt 30 ]; do sleep 0.1; i=$((i+1)); done
+              fi
+            fi
+            case $f in /tmp/temple-accept-*) rm -rf -- "$f" ;; esac
+            # Trust entries Codex saved for this test's folders (only those
+            # blocks, and only for temp folders that no longer exist).
+            c=$HOME/.codex/config.toml
+            if [ "$trusted" = yes ] && [ -f "$c" ]; then
+              awk 'skip && /^\[/ {skip=0}
+                   /^\[projects\."\/tmp\/temple-accept-[A-Za-z0-9]+"\]$/ { d=$0; sub(/^\[projects\."/, "", d); sub(/"\]$/, "", d)
+                     if (system("test -e \"" d "\"") != 0) { skip=1; next } }
+                   !skip' "$c" > "$c.temple-accept" && cat "$c.temple-accept" > "$c"
+              rm -f "$c.temple-accept"
+              echo "removed the trust entries for this test's folders: $(grep -c 'temple-accept' "$c") left"
+            fi
+            if [ "$noneBefore" = 1 ] && ! tmux -L temple ls >/dev/null 2>&1; then
+              rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/temple"
+            fi
+            for mk in $markers; do rm -f "$HOME/.temple/launch/$mk" "$HOME/.temple/launch/$mk".*; done
+            if [ "$recordsBefore" = no ]; then rmdir "$HOME/.temple/launch" "$HOME/.temple" 2>/dev/null; fi
+            echo "left: tmux=$(tmux -L temple ls -F '#{session_name}' 2>/dev/null | grep -c . ) folder=$([ -e "$f" ] && echo yes || echo no) codex=$(pgrep -u "$(id -u)" -f "$f" | grep -c .)"
+            """#
+            let semaphore = DispatchSemaphore(value: 0)
+            let args = [canonicalFolder, started, before.isEmpty ? "1" : "0", markers.joined(separator: " "),
+                        recordsBefore, daemonBefore, trusted ? "yes" : "no"] + handles
+            var cleanupLog = ""
+            Task.detached {
+                cleanupLog = (try? await exec.run(script: cleanup, args: args, deadline: 30).stdout) ?? "(cleanup did not answer)"
+                semaphore.signal()
+            }
+            semaphore.wait()
+            log.append("cleanup:\n" + cleanupLog.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        /// Starts a pending Codex session and waits for its composer.
+        func launch(_ extra: [String], label: String) async throws -> (plan: RemoteSessions.OpenPlan, socket: String) {
+            let outcome = try await sessions.openPending(handle: nil, directory: folder, extraArguments: extra)
+            let plan = try pendingPlan(outcome)
+            handles.append(plan.handle)
+            markers.append(RecordDirectory.marker(from: try XCTUnwrap(store.run(plan.handle)).recordPath) ?? "")
+            XCTAssertTrue(plan.creating)
+            XCTAssertEqual(plan.agentArgv, ["codex"] + extra, "codex mints its own id")
+            clients.append(try AcceptanceClient(plan.argv))
+            if !plan.staged {
+                let staged = await sessions.stage(plan.stage)
+                XCTAssertEqual(staged, .staged, "\(name): \(label)")
+            }
+            var collected = RemoteSessions.Collected.nothing
+            for _ in 0..<40 {
+                collected = await sessions.collect(plan.handle)
+                if case .ok = collected { break }
+                try await Task.sleep(for: .milliseconds(500))
+            }
+            guard case .ok(let directory) = collected else {
+                XCTFail("\(name): \(label): no ok record: \(collected)\n\(clients.last?.diagnosis ?? "")")
+                throw XCTSkip("no ok record")
+            }
+            XCTAssertEqual(directory, canonicalFolder)
+            let run = try XCTUnwrap(store.run(plan.handle))
+            XCTAssertEqual(run.codexHome, .unset, "\(name): the pane recorded the Codex home it was given")
+            let socket = try XCTUnwrap(run.socketPath)
+            let session = "temple-\(plan.handle)"
+            var screen = ""
+            var ready = false
+            for _ in 0..<60 {
+                try await Task.sleep(for: .seconds(1))
+                screen = try await sh("tmux -S \"$1\" capture-pane -p -t \"=$2:\"", [socket, session])
+                if screen.contains("Update now") {
+                    log.append("\(label): Codex offered an update; skipped it (Esc)")
+                    _ = try await sh("tmux -S \"$1\" send-keys -t \"=$2:\" Escape", [socket, session])
+                    continue
+                }
+                if screen.contains("Trust this folder") {
+                    log.append("\(label): Codex asked about trust; chose Trust and continue (removed afterwards)")
+                    trusted = true
+                    _ = try await sh("tmux -S \"$1\" send-keys -t \"=$2:\" Enter", [socket, session])
+                    continue
+                }
+                if screen.contains("Ask Codex") || screen.contains("OpenAI Codex") && screen.contains("›") { ready = true; break }
+            }
+            XCTAssertTrue(ready, "\(name): \(label): the composer never came; screen:\n\(screen)")
+            // A TUI that has just drawn can drop typed keys and the first
+            // Enter: type until the composer holds the prompt, Enter until it
+            // shows above the composer as sent.
+            var sent = false
+            for attempt in 1...10 {
+                screen = try await sh("tmux -S \"$1\" capture-pane -p -t \"=$2:\"", [socket, session])
+                // Codex's own screens can come up after the composer has drawn.
+                if screen.contains("Trust this folder") {
+                    if !trusted { log.append("\(label): Codex asked about trust; chose Trust and continue (removed afterwards)") }
+                    trusted = true
+                    _ = try await sh("tmux -S \"$1\" send-keys -t \"=$2:\" Enter", [socket, session])
+                    try await Task.sleep(for: .seconds(2))
+                    continue
+                }
+                if screen.contains("Update now") {
+                    _ = try await sh("tmux -S \"$1\" send-keys -t \"=$2:\" Escape", [socket, session])
+                    try await Task.sleep(for: .seconds(2))
+                    continue
+                }
+                let prompts = screen.split(separator: "\n").filter { $0.hasPrefix("›") }.map(String.init)
+                if prompts.dropLast().contains(where: { $0.contains("reply with the word ok") }) {
+                    if attempt > 2 { log.append("\(label): the prompt went in after \(attempt - 1) tries") }
+                    sent = true
+                    break
+                }
+                if prompts.last?.contains("reply with the word ok") == true {
+                    _ = try await sh("tmux -S \"$1\" send-keys -t \"=$2:\" Enter", [socket, session])
+                } else {
+                    _ = try await sh("tmux -S \"$1\" send-keys -t \"=$2:\" -l 'reply with the word ok'", [socket, session])
+                }
+                try await Task.sleep(for: .seconds(2))
+            }
+            XCTAssertTrue(sent, "\(name): \(label): the prompt never went in; screen:\n\(screen)")
+            return (plan, socket)
+        }
+
+        /// The rollout a session wrote, by id: its header's id and folder.
+        func rollout(_ id: String) async throws -> String {
+            try await sh(#"""
+            r=$(find "$HOME/.codex/sessions" -name "rollout-*-$1.jsonl" 2>/dev/null | head -n 1)
+            [ -n "$r" ] || { echo none; exit 0; }
+            h=$(head -c 65536 "$r" | head -n 1)
+            case $h in *"$2"*) i=yes ;; *) i=no ;; esac
+            case $h in *"$3"*) c=yes ;; *) c=no ;; esac
+            echo "header id=$i cwd=$c"
+            """#, [id, "\"id\":\"\(id)\"", "\"cwd\":\"\(canonicalFolder)\""])
+        }
+
+        // 1. Automatic: codex writing its own rollout (--no-daemon).
+        let model = ["-m", "gpt-5.6-luna"]
+        let automatic = try await launch(["--no-daemon"] + model, label: "automatic")
+        var identity = RemoteSessions.Identity.inconclusive(.retry("not checked"))
+        var tries: [String] = []
+        for _ in 0..<30 {
+            try await Task.sleep(for: .seconds(2))
+            identity = await sessions.identify(automatic.plan.handle)
+            if case .adopted = identity { break }
+            if case .inconclusive(let why) = identity { tries.append(why.reason) }
+        }
+        log.append("automatic (codex --no-daemon): \(identity) after \(tries.count) inconclusive checks \(Set(tries).sorted())")
+        guard case .adopted(let adoptedID) = identity else {
+            let screen = (try? await sh("tmux -S \"$1\" capture-pane -p -t \"=$2:\" | grep -v '^ *$' | tail -n 25",
+                                        [automatic.socket, "temple-\(automatic.plan.handle)"])) ?? "(no screen)"
+            return XCTFail("\(name): the process tree never adopted: \(identity)\nscreen:\n\(screen)")
+        }
+        let adoptedRun = try XCTUnwrap(store.run(automatic.plan.handle))
+        XCTAssertEqual(adoptedRun.claim, .verified)
+        XCTAssertEqual(adoptedRun.sessionID, adoptedID)
+        let adoptedFile = try await rollout(adoptedID)
+        log.append("adopted \(adoptedID): rollout \(adoptedFile)")
+        XCTAssertEqual(adoptedFile, "header id=yes cwd=yes")
+        let writer = try await sh("""
+        p=$1; for f in /proc/$p/fd/*; do l=$(readlink "$f" 2>/dev/null); case $l in *rollout-*$2.jsonl) echo "pane pid $p holds it: $(grep flags /proc/$p/fdinfo/${f##*/} | tr -d '\t')"; exit 0;; esac; done
+        for c in $(pgrep -P "$p"); do for f in /proc/$c/fd/*; do l=$(readlink "$f" 2>/dev/null); case $l in *rollout-*$2.jsonl) echo "child $c holds it"; exit 0;; esac; done; done
+        echo "not held right now"
+        """, [String(adoptedRun.panePID ?? 0), adoptedID])
+        log.append("writer: \(writer)")
+        clients.removeLast().end()
+        let stoppedAutomatic = try await sessions.stop(automatic.plan.handle, fromAttachedTab: true).outcome
+        XCTAssertEqual(stoppedAutomatic, .killed)
+        log.append("stopped: \(stoppedAutomatic)")
+
+        // 2. The default codex (its shared app server writes the rollout):
+        // what the walk says, then the suggestion path with /proc hidden.
+        let suggested = try await launch(model, label: "suggested")
+        var shared = RemoteSessions.Identity.inconclusive(.retry("not checked"))
+        var appeared = false
+        for _ in 0..<30 {
+            try await Task.sleep(for: .seconds(2))
+            shared = await sessions.identify(suggested.plan.handle)
+            if case .adopted = shared { break }
+            let written = try await sh("""
+            find "$HOME/.codex/sessions" -name 'rollout-*.jsonl' -newermt "@$1" 2>/dev/null | while read -r r; do
+              head -c 65536 "$r" | head -n 1 | grep -qF "\"$2\"" && echo "$r"; done | grep -c .
+            """, [started, canonicalFolder])
+            if (Int(written) ?? 0) >= 2 { appeared = true; break }
+        }
+        log.append("default codex, process tree: \(shared)")
+        XCTAssertTrue(appeared, "\(name): the default codex wrote no rollout for the prompt")
+        if case .adopted = shared { log.append("(the default codex wrote in-process here: adopted without the suggestion path)") }
+        sessions.procRoot = "/nonexistent-proc-\(RemoteQuoting.nonce())"
+        var hidden = RemoteSessions.Identity.inconclusive(.retry("not checked"))
+        if case .adopted = shared {} else {
+            hidden = await sessions.identify(suggested.plan.handle)
+            log.append("with /proc hidden: \(hidden)")
+            XCTAssertEqual(hidden, .inconclusive(.lasting("this host has no /proc")))
+            // The question names the first prompt once Codex has written it.
+            var offered: [CodexSuggestion] = []
+            for _ in 0..<15 {
+                guard case .candidates(let found) = await sessions.suggestions(suggested.plan.handle) else {
+                    return XCTFail("\(name): no suggestions")
+                }
+                offered = found
+                if found.first?.firstPrompt != nil { break }
+                try await Task.sleep(for: .seconds(2))
+            }
+            log.append("suggestions: \(offered.map { "\($0.sessionID) prompt=\($0.firstPrompt ?? "(none)")" })")
+            XCTAssertEqual(offered.count, 1, "\(name): only this run's own rollout (the adopted one is held by its run)")
+            let candidate = try XCTUnwrap(offered.first)
+            XCTAssertNotEqual(candidate.sessionID, adoptedID)
+            XCTAssertEqual(candidate.firstPrompt, "reply with the word ok")
+            let yes = await sessions.confirm(suggested.plan.handle, suggestion: candidate)
+            log.append("confirmed: \(yes)")
+            XCTAssertEqual(yes, .adopted(candidate.sessionID))
+            XCTAssertEqual(try store.run(suggested.plan.handle)?.claim, .confirmed)
+            let confirmedFile = try await rollout(candidate.sessionID)
+            log.append("confirmed \(candidate.sessionID): rollout \(confirmedFile)")
+            XCTAssertEqual(confirmedFile, "header id=yes cwd=yes")
+        }
+        sessions.procRoot = "/proc"
+        clients.removeLast().end()
+        let stoppedSuggested = try await sessions.stop(suggested.plan.handle, fromAttachedTab: true).outcome
+        XCTAssertEqual(stoppedSuggested, .killed)
+        log.append("stopped: \(stoppedSuggested)")
+        let leftOutputs = try await sh("""
+        n=0; for mk in "$@"; do [ -e "$HOME/.temple/launch/$mk.out" ] && n=$((n+1)); done; echo $n
+        """, markers)
+        log.append("pane output files left by ended runs: \(leftOutputs)")
+        XCTAssertEqual(leftOutputs, "0", "\(name)")
+        let configNow = try await sh("cksum < \"$HOME/.codex/config.toml\" 2>/dev/null || echo none")
+        log.append("codex config changed by the run: \(configNow != configBefore) (trust asked: \(trusted))")
     }
 }
 

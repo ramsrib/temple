@@ -269,6 +269,25 @@ final class CodexIdentityTests: XCTestCase {
         XCTAssertEqual(early.map(\.sessionID), [mine.id])
     }
 
+    /// Codex's app server records the prompt as a user message item behind
+    /// its injected blocks, with no `user_message` event: the question still
+    /// names it.
+    func testTheFirstPromptOfAnAppServerRollout() {
+        let lines: [[String: Any]] = [
+            ["type": "session_meta", "payload": ["id": "x", "cwd": "/w", "timestamp": "2026-10-16T17:00:00Z"]],
+            ["type": "response_item", "payload": ["type": "message", "role": "developer",
+                                                  "content": [["type": "input_text", "text": "<skills_instructions>x"]]]],
+            ["type": "response_item", "payload": ["type": "message", "role": "user",
+                                                  "content": [["type": "input_text", "text": "<environment_context>\n<cwd>/w</cwd>"]]]],
+            ["type": "response_item", "payload": ["type": "message", "role": "user",
+                                                  "content": [["type": "input_text", "text": "reply with the word ok"]]]],
+        ]
+        let head = Data(lines.map { String(decoding: try! JSONSerialization.data(withJSONObject: $0), as: UTF8.self) }
+            .joined(separator: "\n").utf8)
+        XCTAssertNil(CodexFormat.firstUserMessage(in: head))
+        XCTAssertEqual(CodexFormat.firstTypedPrompt(in: head), "reply with the word ok")
+    }
+
     func testTheFolderIsMatchedAsJSONSpellsIt() {
         XCTAssertEqual(CodexSuggestionLookup.jsonString("/home/u/a \"b\"\\c\n\u{1}é/"), #""/home/u/a \"b\"\\c\n\u0001é/""#)
         let header: [String: Any] = ["cwd": "/home/u/a \"b\"\\c\n\u{1}é/"]
