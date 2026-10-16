@@ -339,7 +339,7 @@ final class RemoteGateWalkTests: XCTestCase {
     /// row that left and joined again meanwhile is left alone.
     func testDiscardLeavesAReplacedRowAlone() async throws {
         let h = try Harness(host: hostID)
-        var handled: [String?] = []
+        var handled: [String] = []
         h.app.openSessions.discardHandler = { _, _, incarnation in handled.append(incarnation) }
         h.remote.decision = true
         let row = Fixture.row("s1", project: "/p", host: hostID)
@@ -351,6 +351,6 @@ final class RemoteGateWalkTests: XCTestCase {
         await settle { tab.remote?.phase == .needsDecision(checked: true) }
         h.app.openSessions.discardRemoteSession(tab)
         await settle { !handled.isEmpty }
-        XCTAssertEqual(handled, [before], "the incarnation captured when Discard was chosen travels with it")
+        XCTAssertEqual(handled, [try XCTUnwrap(before)], "the incarnation captured when Discard was chosen travels with it")
     }
 }

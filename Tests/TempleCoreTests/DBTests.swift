@@ -1221,6 +1221,44 @@ extension DBTests {
         XCTAssertFalse(try db.leave(sessionID: "r", host: remote), "opened since: kept")
     }
 
+    /// A remote Discard's disposition is one transaction under (id, host,
+    /// incarnation): the membership it was chosen for goes (or, made the
+    /// user's, is archived); one replaced through another connection is
+    /// left alone, whatever this connection last saw.
+    func testRemoteDiscardActsOnlyOnTheMembershipItWasChosenFor() throws {
+        let (db, path) = try database()
+        let remote = HostID(rawValue: "ssh:box")
+        let core = SessionCore(host: remote)
+        try db.join(sessionID: "plain", via: .created, core: core)
+        try db.join(sessionID: "named", via: .created, core: core)
+        try db.setCustomName("Mine", sessionID: "named")
+        try db.join(sessionID: "replaced", via: .created, core: core)
+        let plain = try XCTUnwrap(db.sessionState("plain")?.incarnation)
+        let named = try XCTUnwrap(db.sessionState("named")?.incarnation)
+        let stale = try XCTUnwrap(db.sessionState("replaced")?.incarnation)
+
+        // Another connection replaces one membership: it leaves and joins again.
+        let raw = try DatabaseQueue(path: path.path)
+        try raw.write { try $0.execute(sql: "DELETE FROM session_state WHERE id = 'replaced'") }
+        let other = try TempleDB(path: path)
+        try other.join(sessionID: "replaced", via: .created, core: core)
+        let fresh = try XCTUnwrap(other.sessionState("replaced")?.incarnation)
+        XCTAssertNotEqual(fresh, stale)
+
+        XCTAssertEqual(try db.discardRemoteSession(sessionID: "replaced", host: remote, incarnation: stale), .unchanged)
+        XCTAssertEqual(try db.sessionState("replaced")?.incarnation, fresh, "the replacement is untouched")
+        XCTAssertEqual(try db.sessionState("replaced")?.archived, false)
+        XCTAssertEqual(try db.discardRemoteSession(sessionID: "plain", host: .local, incarnation: plain), .unchanged,
+                       "another host's id names nothing here")
+        XCTAssertEqual(try db.discardRemoteSession(sessionID: "plain", host: remote, incarnation: plain), .deleted)
+        XCTAssertNil(try db.sessionState("plain"))
+        XCTAssertEqual(try db.discardRemoteSession(sessionID: "named", host: remote, incarnation: named), .archived)
+        let archived = try XCTUnwrap(db.sessionState("named"))
+        XCTAssertTrue(archived.archived)
+        XCTAssertEqual(archived.customName, "Mine")
+        XCTAssertEqual(try db.discardRemoteSession(sessionID: "named", host: remote, incarnation: named), .unchanged)
+    }
+
     func testFillsAndHintsReportDistinctOutcomesUnderTheIncarnationPredicate() throws {
         let (db, _) = try database()
         try db.join(sessionID: "s", via: .imported)

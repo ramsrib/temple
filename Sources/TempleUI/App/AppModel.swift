@@ -706,14 +706,13 @@ public final class AppModel: ObservableObject {
         }
         openSessions.rowIncarnation = { [weak self] id in self?.overlay.rows[id]?.incarnation }
         openSessions.discardHandler = { [weak self] id, host, incarnation in
-            // Only the membership Discard was chosen for: a row that left
-            // and joined again since is another session's to keep.
-            guard let self, self.overlay.rows[id]?.host == host, self.overlay.rows[id]?.incarnation == incarnation else { return }
-            // A row the user made theirs (named, pinned, colored) is archived,
-            // reversibly, rather than let go.
-            if !self.overlay.discardUnstartedCreation(id, host: host) {
-                self.archiveSession(id, undoManager: nil)
-            }
+            // One transaction under (id, host, incarnation): the row goes,
+            // or (the user made it theirs: named, pinned, colored) is
+            // archived, reversibly. A membership replaced since, through
+            // any connection, is another session's and is left alone. A
+            // failed write throws, and the caller says so.
+            guard let self else { return }
+            _ = try self.overlay.discardRemoteSession(id, host: host, incarnation: incarnation)
             self.openSessions.forgetClosedTabs(sessionID: id)
         }
         // ⌘T then close without typing: the minted id never got a transcript,

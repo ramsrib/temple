@@ -391,6 +391,13 @@ public final class SessionOverlayStore: ObservableObject {
         }
     }
 
+    /// A remote Discard's row disposition, in one transaction under the
+    /// membership it was chosen for (`TempleDB.discardRemoteSession`). A
+    /// failed write throws: the caller says so.
+    public func discardRemoteSession(_ id: String, host: HostID, incarnation: String) throws -> TempleDB.DiscardDisposition {
+        try db.discardRemoteSession(sessionID: id, host: host, incarnation: incarnation, at: now())
+    }
+
     /// The session was opened in a tab. Written for members only (it never
     /// joins one), so an import undone later can tell the session was used:
     /// `TempleDB.leave` keeps a row opened since.

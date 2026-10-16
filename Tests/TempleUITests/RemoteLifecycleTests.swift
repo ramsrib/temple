@@ -602,6 +602,7 @@ final class RemoteLifecycleTests: XCTestCase {
     func testAnUnconfirmedConversationOffersStartANewSessionOrDiscard() async throws {
         remote.decision = true
         var discardedRows: [String] = []
+        model.rowIncarnation = { "inc-\($0)" }
         model.discardHandler = { id, _, _ in discardedRows.append(id) }
         let row = Fixture.row("u", project: "/p", host: hostID)
         rows["u"] = row
@@ -623,6 +624,25 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertFalse(model.tabs.contains { $0 === second })
         await settle(discardedRows == ["v"])
         XCTAssertEqual(remote.discarded, ["v"])
+    }
+
+    /// The row's disposition is durable work too: a write that fails is
+    /// said, never swallowed.
+    func testADispositionThatFailsIsSaid() async throws {
+        remote.decision = true
+        model.rowIncarnation = { "inc-\($0)" }
+        model.discardHandler = { _, _, _ in throw CocoaError(.fileWriteUnknown) }
+        var notices: [String] = []
+        model.remoteNoticeHandler = { _, text in notices.append(text) }
+        let row = Fixture.row("w", project: "/p", host: hostID)
+        rows["w"] = row
+        model.openSession(row)
+        let tab = try XCTUnwrap(model.activeTab)
+        await settle(tab.remote?.phase == .needsDecision(checked: true))
+        model.discardRemoteSession(tab)
+        await settle(!notices.isEmpty)
+        XCTAssertEqual(remote.discarded, ["w"])
+        XCTAssertEqual(notices.count, 1)
     }
 
     func testTypedInputConfirmsNothing() async throws {

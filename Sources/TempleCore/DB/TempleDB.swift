@@ -717,6 +717,62 @@ public final class TempleDB: @unchecked Sendable {
         return left
     }
 
+    /// What a Discard did to its row.
+    public enum DiscardDisposition: Sendable, Equatable {
+        /// The row said nothing beyond its creation: it went.
+        case deleted
+        /// The user had made it theirs (named, colored, pinned, opened from
+        /// History, kept): archived, reversibly, as a person's archive.
+        case archived
+        /// Not the membership Discard was chosen for (it left, or left and
+        /// joined again), or already archived: nothing written.
+        case unchanged
+    }
+
+    /// Discard of a remote session whose conversation never started (the
+    /// decision header's Discard), in one transaction under `(id, host,
+    /// incarnation)`: the row goes when it still says nothing beyond its
+    /// creation (the same guards as `discardUnstartedCreation`), otherwise
+    /// it is archived as a person's archive (pin dropped, no reason). A
+    /// membership replaced since, by this connection or any other, matches
+    /// neither statement and is left alone. A write that fails throws.
+    @discardableResult
+    public func discardRemoteSession(sessionID: String, host: HostID, incarnation: String,
+                                     at: Date = Date()) throws -> DiscardDisposition {
+        let disposition = try db.write { database -> DiscardDisposition in
+            try database.execute(
+                sql: """
+                    DELETE FROM session_state
+                    WHERE id = ? AND host = ? AND incarnation = ? AND joined_via = ?
+                      AND transcript_path IS NULL
+                      AND pinned = 0 AND archived = 0
+                      AND custom_name IS NULL AND color IS NULL
+                      AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
+                    """,
+                arguments: [sessionID, host.rawValue, incarnation, JoinedVia.created.rawValue, sessionID])
+            if database.changesCount > 0 { return .deleted }
+            try database.execute(
+                sql: """
+                    UPDATE session_state
+                    SET archived = 1, pinned = 0, archive_reason = NULL, kept_at = NULL, archived_at = ?
+                    WHERE id = ? AND host = ? AND incarnation = ?
+                      AND (archived IS NOT 1 OR pinned != 0 OR archive_reason IS NOT NULL OR kept_at IS NOT NULL)
+                    """,
+                arguments: [at, sessionID, host.rawValue, incarnation])
+            return database.changesCount > 0 ? .archived : .unchanged
+        }
+        switch disposition {
+        case .deleted:
+            committedLeave(sessionID)
+            committedRowChange(sessionID)
+        case .archived:
+            committedRowChange(sessionID)
+        case .unchanged:
+            break
+        }
+        return disposition
+    }
+
     // MARK: Temple's archive (ADR-030)
 
     /// Temple's own archive of rows nobody can resume any more (the CLI

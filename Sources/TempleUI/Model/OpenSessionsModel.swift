@@ -83,7 +83,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Discard on a session whose conversation was never confirmed: the
     /// app lets its row go (or archives it, if the row is the user's), only
     /// while the row is still the membership Discard was chosen for.
-    public var discardHandler: ((_ sessionID: String, _ host: HostID, _ incarnation: String?) -> Void)?
+    public var discardHandler: ((_ sessionID: String, _ host: HostID, _ incarnation: String) throws -> Void)?
     /// A row's membership identity, read when Discard is chosen.
     public var rowIncarnation: (_ sessionID: String) -> String? = { _ in nil }
     /// Every asynchronous operation on a host, owned through close, host
@@ -1634,12 +1634,15 @@ extension OpenSessionsModel {
         let hostID = tab.host
         let ticket = remoteGate.ticket(host: hostID)
         let incarnation = rowIncarnation(sid)
+        // Held here, not looked up later: the disposition is durable work
+        // and must not depend on this model outliving the window.
+        let disposition = discardHandler
         removeTab(tab.id)
         forgetClosedTabs(sessionID: sid)
         remoteOperations.run(host: hostID, .write) { [weak self] in
             do {
                 try await host.discard(sessionID: sid)
-                self?.discardHandler?(sid, hostID, incarnation)
+                if let incarnation { try disposition?(sid, hostID, incarnation) }
             } catch {
                 guard let self, self.remoteGate.admit(.discardNotice, ticket) else { return }
                 self.remoteNoticeHandler?(hostID, RemoteCopy.unrecorded(host.hostName, detail: error.localizedDescription))
