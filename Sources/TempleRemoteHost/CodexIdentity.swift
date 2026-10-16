@@ -82,18 +82,17 @@ public enum CodexIdentityCheck {
     /// (`fdinfo` flags, octal, access mode exactly 1 or 2); re-reads each
     /// process's start time after its descriptors, so a process that
     /// vanished or whose pid was reused makes the walk inconclusive. Any
-    /// read that fails (a `stat`, a descriptor's link, its `fdinfo`, a
-    /// `cmdline` or an `exe`) is inconclusive, never skipped.
+    /// read that fails (a `stat`, a descriptor's link, its `fdinfo`) is
+    /// inconclusive, never skipped.
     ///
-    /// Only the run's own process counts as a writer (round 1): the pane's
-    /// process itself, or, when the pane is a launcher shim (an interpreter
-    /// running a script named `codex` or `codex.js`, as Codex's npm package
-    /// installs), its direct child that is the launched CLI: an executable
-    /// whose name begins with `codex`, given exactly the arguments the pane
-    /// was given after the script. A rollout held by anything else in the
-    /// tree (another child, any deeper descendant, Codex's shared app
-    /// server) proves nothing about this run: when only such processes hold
-    /// one, the walk is inconclusive for good and the question takes over.
+    /// Only the run's own process counts as a writer (round 2): the pane's
+    /// process itself, the one the launch `exec`ed. A rollout held by
+    /// anything else in the tree (any child, any deeper descendant, a codex
+    /// behind an npm launcher, Codex's shared app server) proves nothing
+    /// about this run: when only such processes hold one, the walk is
+    /// inconclusive for good and the question takes over. (Round 1 also
+    /// accepted a launcher's child by its arguments; two review rounds found
+    /// that evidence insufficient, so the exception is gone.)
     ///
     /// Prints `inconclusive<TAB><kind><TAB><reason>`, or `found<TAB><hex
     /// path>`, then `header`, then the rollout's first line. `stat` is read
@@ -102,12 +101,10 @@ public enum CodexIdentityCheck {
     P=$1; pid=$2; start=$3; sock=$4; s=$5; hs=$6; hv=$7; base=$8
     NL='
     '
-    SEP=$(printf '\001')
     no() { printf 'inconclusive\t%s\t%s\n' "$1" "$2"; exit 0; }
     nohome() { no lasting "$1"; }
     st() { _s=; IFS= read -r _s < "$P/$1/stat" 2>/dev/null || return 1; _s=${_s##*)}; set -- $_s; [ $# -ge 20 ] || return 1; ppid=$2; begin=${20}; return 0; }
     t() { if [ -n "$sock" ]; then tmux -S "$sock" "$@"; else tmux -L temple "$@"; fi; }
-    args() { tr '\0' "$SEP" < "$P/$1/cmdline" 2>/dev/null; }
     [ -d "$P" ] || no lasting "this host has no /proc"
     \#(CodexHomeRoot.resolve)
     sess=$h/sessions
@@ -136,19 +133,6 @@ public enum CodexIdentityCheck {
       done
       tree="$tree$next"; frontier=$next; depth=$((depth + 1))
     done
-    # The pane as a launcher shim: the script it runs, and the arguments
-    # after it, which the launched CLI must have been given.
-    pa=$(args "$pid") || no retry "the session's process couldn't be read"
-    pexe=$(readlink "$P/$pid/exe" 2>/dev/null) || no retry "the session's process couldn't be read"
-    shim=; tail=
-    case ${pexe##*/} in codex*) ;; *)
-      rest=${pa#*"$SEP"}
-      while [ -n "$rest" ]; do
-        case $rest in *"$SEP"*) ;; *) break ;; esac
-        a=${rest%%"$SEP"*}; rest=${rest#*"$SEP"}
-        case ${a##*/} in codex|codex.js) shim=yes; tail=$rest; break ;; esac
-      done ;;
-    esac
     found=; n=0; foreign=
     for m in $tree; do
       p=${m%%:*}; rest=${m#*:}; b=${rest%%:*}; dp=${rest#*:}
@@ -164,14 +148,7 @@ public enum CodexIdentityCheck {
         case $fl in ''|*[!0-7]*) no retry "a session file's flags couldn't be read" ;; esac
         am=$(( 0$fl % 4 ))
         [ "$am" -eq 1 ] || [ "$am" -eq 2 ] || continue
-        own=
-        if [ "$dp" -eq 0 ]; then own=yes
-        elif [ "$dp" -eq 1 ] && [ -n "$shim" ]; then
-          ca=$(args "$p") || no retry "a process's arguments couldn't be read"
-          ce=$(readlink "$P/$p/exe" 2>/dev/null) || no retry "a process's executable couldn't be read"
-          case ${ce##*/} in codex*) [ "${ca#*"$SEP"}" = "$tail" ] && own=yes ;; esac
-        fi
-        if [ -z "$own" ]; then foreign=yes; continue; fi
+        if [ "$dp" -ne 0 ]; then foreign=yes; continue; fi
         case "$NL$found" in *"$NL$l$NL"*) ;; *) found="$found$l$NL"; n=$((n + 1)) ;; esac
       done
       st "$p" && [ "$begin" = "$b" ] || no retry "a process ended during the check"

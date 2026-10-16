@@ -86,29 +86,26 @@ final class CodexIdentityTests: XCTestCase {
 
     // MARK: The walk
 
-    /// Codex's npm launcher is the pane's process (an interpreter running
-    /// `codex.js`); the native binary under it, given the same arguments,
-    /// is the launched CLI and writes the rollout: found at depth 1, and its
-    /// header verifies.
-    func testTheLaunchedCLIUnderTheLauncherIsFound() async throws {
+    /// Codex behind its npm launcher: the pane is the launcher, and the
+    /// native binary under it writes the rollout. That child is not the
+    /// process the launch exec'd, so it is never adopted (round 2): the
+    /// question takes over, as for Codex's shared app server.
+    func testACodexBehindALauncherGoesToTheQuestion() async throws {
         let f = Fixture()
         let rollout = f.rollout()
         f.process(100, parent: 1, start: 1000, name: "node", argv: ["node", "/usr/lib/node_modules/@openai/codex/bin/codex.js", "--no-daemon"],
                   exe: "/usr/bin/node")
         f.process(101, parent: 100, start: 1001, argv: ["/usr/lib/codex/codex-x86_64-unknown-linux-musl", "--no-daemon"],
-                  exe: "/usr/lib/codex/codex-x86_64-unknown-linux-musl",
-                  files: [(rollout.path, Self.writing), ("/dev/null", Self.writing)])
-        f.process(102, parent: 101, start: 1005, name: "bash", argv: ["bash"], exe: "/usr/bin/bash")
-        guard case .found(let path, let header) = await f.check() else { return XCTFail("not found") }
-        XCTAssertEqual(path, rollout.path)
-        XCTAssertEqual(CodexIdentityCheck.verify(path: path, header: header, directory: f.folder), rollout.id)
+                  exe: "/usr/lib/codex/codex-x86_64-unknown-linux-musl", files: [(rollout.path, Self.writing)])
+        let answer = await f.check()
+        XCTAssertEqual(inconclusive(answer), .lasting("the session file is held by a process Temple didn't start"))
     }
 
-    /// Only the run's own process counts (round 1): a child of a pane that
-    /// is not a launcher shim, a child given other arguments than the pane,
-    /// a child that is not a codex executable, and every deeper descendant
-    /// (a codex the agent ran, say) prove nothing about this run. When
-    /// only such processes hold a rollout, the question takes over.
+    /// Only the run's own process counts (rounds 1 and 2): a child, whatever
+    /// its arguments or executable, and every deeper descendant (a codex the
+    /// agent ran, say) prove nothing about this run. When only such
+    /// processes hold a rollout, the question takes over. `codex` appearing
+    /// as an ordinary argument changes nothing.
     func testAWriterThatIsNotTheRunsOwnProcessIsNeverAdopted() async throws {
         let foreign = CodexIdentityCheck.Inconclusive.lasting("the session file is held by a process Temple didn't start")
         // The pane is codex itself; a nested `codex --no-daemon` under it
@@ -120,25 +117,19 @@ final class CodexIdentityTests: XCTestCase {
         f.process(102, parent: 101, start: 1002, argv: ["codex", "--no-daemon"], files: [(rollout.path, Self.writing)])
         var answer = await f.check()
         XCTAssertEqual(inconclusive(answer), foreign, "a nested codex is never this run's")
-        // The same at depth 1, under a pane that is codex (not a shim).
+        // The same at depth 1.
         f = Fixture()
         rollout = f.rollout()
         f.process(100, parent: 1, start: 1000)
         f.process(101, parent: 100, start: 1001, argv: ["codex", "exec", "hi"], files: [(rollout.path, Self.writing)])
         answer = await f.check()
         XCTAssertEqual(inconclusive(answer), foreign)
-        // Under a shim, a child given other arguments is not the launched CLI.
+        // A pane whose arguments merely mention codex and codex.js, with a
+        // codex child given the same arguments.
         f = Fixture()
         rollout = f.rollout()
-        f.process(100, parent: 1, start: 1000, name: "node", argv: ["node", "/x/bin/codex.js"], exe: "/usr/bin/node")
-        f.process(101, parent: 100, start: 1001, argv: ["codex", "exec", "hi"], files: [(rollout.path, Self.writing)])
-        answer = await f.check()
-        XCTAssertEqual(inconclusive(answer), foreign)
-        // Under a shim, a child whose executable is not codex's.
-        f = Fixture()
-        rollout = f.rollout()
-        f.process(100, parent: 1, start: 1000, name: "node", argv: ["node", "/x/bin/codex.js"], exe: "/usr/bin/node")
-        f.process(101, parent: 100, start: 1001, argv: ["python3"], exe: "/usr/bin/python3", files: [(rollout.path, Self.writing)])
+        f.process(100, parent: 1, start: 1000, name: "node", argv: ["node", "wrapper.js", "/tmp/codex.js", "codex"], exe: "/usr/bin/node")
+        f.process(101, parent: 100, start: 1001, argv: ["codex", "codex"], files: [(rollout.path, Self.writing)])
         answer = await f.check()
         XCTAssertEqual(inconclusive(answer), foreign)
         // The pane's own writer is adopted even with a foreign one beside it.
@@ -187,22 +178,6 @@ final class CodexIdentityTests: XCTestCase {
             }
         }
 
-        // The pane's arguments can't be read.
-        f = Fixture()
-        rollout = f.rollout()
-        f.process(100, parent: 1, start: 1000, files: [(rollout.path, Self.writing)])
-        chmod(f.proc + "/100/cmdline", 0)
-        answer = await f.check()
-        XCTAssertEqual(inconclusive(answer), .retry("the session's process couldn't be read"))
-
-        // A launched child's arguments can't be read.
-        f = Fixture()
-        rollout = f.rollout()
-        f.process(100, parent: 1, start: 1000, name: "node", argv: ["node", "/x/bin/codex.js"], exe: "/usr/bin/node")
-        f.process(101, parent: 100, start: 1001, argv: ["codex"], files: [(rollout.path, Self.writing)])
-        chmod(f.proc + "/101/cmdline", 0)
-        answer = await f.check()
-        XCTAssertEqual(inconclusive(answer), .retry("a process's arguments couldn't be read"))
     }
 
     /// A Codex home whose name ends in a newline is that folder, not its
