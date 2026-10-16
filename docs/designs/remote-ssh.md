@@ -1564,8 +1564,12 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
 9. **Trailing newlines.** `pwd -P` is captured with a sentinel in the pane
    and the folder check, so a folder whose name ends in a newline keeps it.
 10. **One PATH policy.** One resolver is shared by the environment query
-    and the launch. All its attempts share one 5 s budget, enforced by
-    `timeout` where the host has it; the resolver runs in a process group of
+    and the launch. All its attempts share one 5 s budget, enforced only
+    by the watchdog below, never by `timeout` (GNU `timeout` moves its
+    command into a process group of its own, and on masterblaster a hung
+    login shell's children escaped the watchdog that way; the first box
+    run of this check passed vacuously, its resolver script mangled by a
+    missing newline, and now also asserts the hang ran); the resolver runs in a process group of
     its own (`setsid` on Linux, where dash has no job control without a
     tty; the shell's job control where `setsid` is missing), and at the
     budget the whole group is sent TERM, then KILL, and its leader reaped
@@ -1640,12 +1644,31 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
 20. **Diagnostics take only the output file.** The pane's and the client's
     records are acknowledged only after their evidence is written; a
     storage failure is shown, never swallowed.
-21. **An unexplained acceptance stall.** In round 2, two of about eight
-    box runs (once on each box) reached no `ok` record within 20 s: the
-    local client was still running, and the host had no wrapper, no tmux
-    and no record. It did not recur in four runs after the acceptance
-    began keeping the client's pty output for such a failure. The
-    acceptance now watches the ssh child itself (its pid and exit status)
-    with ssh's own `-v` trace, so a recurrence says where ssh was waiting;
-    the product side is the startup-evidence deadline (note 19).
+21. **The acceptance stall, explained: macOS ssh's mux at 8 KiB.** In
+    round 2, two of about eight box runs reached no `ok` record; the
+    "client still running" then was `script`'s pid, not ssh's. With the
+    ssh child and its `-v -E` trace captured (round 3), jetson failed three
+    runs in a row, each the same way: `auto-mux: Trying existing master`,
+    then `mm_send_fd: sendmsg(2): Message too long` and
+    `mux_client_request_session: send fds failed`; ssh exit 255, nothing
+    on the host. A mux client writes its session request to the master's
+    socket and then passes its stdio with `sendmsg`; on macOS the sender
+    loses send space for each byte the master has not read yet, so a
+    request ending just below a multiple of the 8 KiB socket buffer cannot
+    pass its descriptors. Measured against a jetson master with plain
+    `ssh -t` and `ssh -T`: commands of 8,060 to 8,100 bytes failed 2 or 3
+    times in 3, 16,250 to 16,290 bytes 1 or 2 in 3, every size between and
+    around passed. Round 3's create command (the resolver now inside the
+    wrapper) was about 8,000 bytes plus the host's PATH; jetson's PATH is
+    about 46 bytes longer than masterblaster's, which put its launch in
+    the band, and round 2's slightly shorter command sat at its edge.
+    `SSHConnection.argv` now pads any remote command ending in the last
+    1,280 bytes below a multiple of 8 KiB to 128 bytes past it, with
+    trailing spaces the remote shell ignores (unit-tested through `sh`),
+    for launches, queries and the connection test alike; the acceptance
+    sends band-sized commands through that argv to each box's real master
+    and requires all of them to reach the host. In the product this
+    failure is not a stall: ssh exits 255 at once with those two lines on
+    the tab, and the exit check decides what is known. The startup-evidence
+    deadline (note 19) stays for a client that really does wait.
 
