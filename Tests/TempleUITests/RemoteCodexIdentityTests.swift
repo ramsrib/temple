@@ -150,6 +150,27 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertTrue(remote.joinedMarks.isEmpty)
     }
 
+    /// Two rollouts whose paths differ only in normalization (a precomposed
+    /// and a decomposed folder, which the host keeps apart) are two
+    /// suggestions: declining one leaves the other, and only its bytes are
+    /// declined.
+    func testSpellingsTheHostKeepsApartAreTwoSuggestions() async throws {
+        let composed = RemoteSuggestion(rolloutPath: "/home/u/.codex/sessions/caf\u{E9}/rollout-a.jsonl", sessionID: "ca",
+                                        firstPrompt: "one", startedAt: Date(), directory: "/home/u/project")
+        let decomposed = RemoteSuggestion(rolloutPath: "/home/u/.codex/sessions/cafe\u{301}/rollout-a.jsonl", sessionID: "cb",
+                                          firstPrompt: "two", startedAt: Date(), directory: "/home/u/project")
+        XCTAssertEqual(composed.rolloutPath, decomposed.rolloutPath, "Swift calls the two spellings equal")
+        XCTAssertNotEqual(composed.id, decomposed.id)
+        remote.suggestionsResult = .candidates([composed, decomposed])
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(tab.remote?.suggestions.count == 2)
+        model.remoteTabs.decline(decomposed, in: tab)
+        XCTAssertEqual(tab.remote?.suggestions.map(\.sessionID), ["ca"])
+        await settle(self.remote.declines.count == 1)
+        XCTAssertEqual(remote.declines.map { Array($0.path.utf8) }, [Array(decomposed.rolloutPath.utf8)])
+    }
+
     /// An id another run holds is refused: the tab says Temple couldn't
     /// tell, and keeps asking.
     func testAnIDAnotherRunHoldsIsRefused() async throws {

@@ -219,8 +219,9 @@ public enum CodexIdentityCheck {
 
 /// A rollout that may be a pending run's session, for the user to confirm
 /// or decline. Never adopted without a yes.
+/// Identified and compared by the path's bytes (`RemotePath`).
 public struct CodexSuggestion: Sendable, Equatable, Identifiable {
-    public var id: String { rolloutPath }
+    public var id: RemotePath { RemotePath(rolloutPath) }
     public let rolloutPath: String
     public let sessionID: String
     /// The first thing typed into it; nil when it has none yet (or, when
@@ -238,6 +239,12 @@ public struct CodexSuggestion: Sendable, Equatable, Identifiable {
                 promptKnown: Bool = true) {
         self.rolloutPath = rolloutPath; self.sessionID = sessionID; self.firstPrompt = firstPrompt
         self.startedAt = startedAt; self.directory = directory; self.promptKnown = promptKnown
+    }
+
+    public static func == (lhs: CodexSuggestion, rhs: CodexSuggestion) -> Bool {
+        lhs.id == rhs.id && Array(lhs.sessionID.utf8) == Array(rhs.sessionID.utf8)
+            && lhs.firstPrompt == rhs.firstPrompt && lhs.promptKnown == rhs.promptKnown
+            && lhs.startedAt == rhs.startedAt && RemotePath(lhs.directory) == RemotePath(rhs.directory)
     }
 }
 

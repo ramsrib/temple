@@ -1362,7 +1362,7 @@ public final class RemoteSessions {
         case .unavailable(let reason):
             return .inconclusive(.retry(reason))
         case .candidates(let current):
-            guard current.contains(where: { $0.rolloutPath == suggestion.rolloutPath && $0.sessionID == suggestion.sessionID }) else {
+            guard current.contains(where: { $0.id == suggestion.id && Array($0.sessionID.utf8) == Array(suggestion.sessionID.utf8) }) else {
                 return .inconclusive(.retry("that session is no longer a candidate for this one"))
             }
             return await claim(handle, sessionID: suggestion.sessionID, how: .confirmed, rolloutPath: suggestion.rolloutPath)

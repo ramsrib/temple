@@ -371,6 +371,12 @@ final class RemoteSourceTests: XCTestCase {
         try store.decline("h", rolloutPath: nfdPath)
         XCTAssertEqual(try store.declined("h"), [RemotePath(nfcPath), RemotePath(nfdPath)])
         XCTAssertEqual(try store.declined("h").count, 2)
+        // The two suggestions are two: by id and by equality, so a yes for
+        // one is never matched by the other in the recheck.
+        XCTAssertEqual(both.count, 2)
+        XCTAssertNotEqual(both[0].id, both[1].id)
+        XCTAssertNotEqual(both[0], both[1])
+        XCTAssertEqual(Set(both.map(\.id)).count, 2)
     }
 
     /// A hint hiding `..` behind a combining mark is never stat'ed or offered.

@@ -126,8 +126,11 @@ public enum RemoteIdentity: Equatable {
 }
 
 /// A rollout that may be a pending run's session, offered as a question.
+/// Identified and compared by the path's bytes: two spellings the host
+/// keeps apart (precomposed and decomposed) are two suggestions, though
+/// Swift calls the strings equal.
 public struct RemoteSuggestion: Equatable, Identifiable {
-    public var id: String { rolloutPath }
+    public var id: [UInt8] { Array(rolloutPath.utf8) }
     public let rolloutPath: String
     public let sessionID: String
     public let firstPrompt: String?
@@ -140,6 +143,12 @@ public struct RemoteSuggestion: Equatable, Identifiable {
                 promptKnown: Bool = true) {
         self.rolloutPath = rolloutPath; self.sessionID = sessionID; self.firstPrompt = firstPrompt
         self.startedAt = startedAt; self.directory = directory; self.promptKnown = promptKnown
+    }
+
+    public static func == (lhs: RemoteSuggestion, rhs: RemoteSuggestion) -> Bool {
+        lhs.id == rhs.id && Array(lhs.sessionID.utf8) == Array(rhs.sessionID.utf8)
+            && lhs.firstPrompt == rhs.firstPrompt && lhs.startedAt == rhs.startedAt
+            && Array(lhs.directory.utf8) == Array(rhs.directory.utf8) && lhs.promptKnown == rhs.promptKnown
     }
 }
 
@@ -342,7 +351,7 @@ public struct RemoteTabState: Equatable {
     /// reason for refusing the id.
     public var identityNote: String?
     /// The suggestion whose yes is being written.
-    public var confirming: String?
+    public var confirming: [UInt8]?
     /// The owned identity schedule of this open.
     var identityOperation: UUID?
     /// This launch attached a client to the run (a restored chip never
