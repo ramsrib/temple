@@ -169,7 +169,7 @@ public enum TranscriptFormats {
     /// so **bump it with any change to a format's facts** — a field read
     /// differently, a new field, a different title rule. `FormatGoldenTests`
     /// fails on such a change; this is the number that must move with it.
-    public static let factsVersion = 2
+    public static let factsVersion = 3
 }
 
 public enum TranscriptVerification: Equatable, Sendable {

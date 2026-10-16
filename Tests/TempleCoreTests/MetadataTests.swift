@@ -102,7 +102,7 @@ final class MetadataTests: XCTestCase {
                 .write(to: sessions.appendingPathComponent("rollout-\(id).jsonl"),
                        atomically: true, encoding: .utf8)
         }
-        let instructions = #"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"AGENTS.md instructions blob"}]}}"#
+        let instructions = ##"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /work/project\n\n<INSTRUCTIONS>\nblob\n</INSTRUCTIONS>"}]}}"##
         let prompt = #"{"type":"event_msg","payload":{"type":"user_message","message":"prompt from rollout"}}"#
         try writeRollout("hist-id", lines: [prompt])
         try writeRollout("index-id", lines: [prompt])
@@ -129,6 +129,44 @@ final class MetadataTests: XCTestCase {
         XCTAssertEqual(byID["bare-id"], "(no prompt)")
         XCTAssertEqual(byID["deep-id"], "prompt from rollout")
         XCTAssertEqual(byID["beyond-id"], "prompt from rollout")
+    }
+
+    /// Both rollout shapes title from the typed prompt. The TUI writes it as
+    /// a `user_message` event (beside a user message item); Codex's shared
+    /// app server writes only the item, after the blocks it injects
+    /// (environment, AGENTS.md), which never title.
+    func testCodexTitlesBothRolloutShapesFromTheTypedPrompt() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = root.appendingPathComponent("sessions")
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        func writeRollout(_ id: String, lines: [String]) throws {
+            let meta = #"{"type":"session_meta","payload":{"id":"\#(id)","cwd":"/work/project","originator":"codex_cli_rs"}}"#
+            try ([meta] + lines).joined(separator: "\n")
+                .write(to: sessions.appendingPathComponent("rollout-\(id).jsonl"), atomically: true, encoding: .utf8)
+        }
+        func item(_ text: String) -> String {
+            FormatCorpus.json(["type": "response_item", "payload": ["type": "message", "role": "user",
+                                                                    "content": [["type": "input_text", "text": text]]]])
+        }
+        let environment = item("<environment_context>\n  <cwd>/work/project</cwd>\n</environment_context>")
+        let agents = item("# AGENTS.md instructions for /work/project\n\n<INSTRUCTIONS>\nbe brief\n</INSTRUCTIONS>")
+        let event = #"{"type":"event_msg","payload":{"type":"user_message","message":"tui prompt"}}"#
+        try writeRollout("tui", lines: [agents, environment, item("tui prompt"), event])
+        try writeRollout("app-server", lines: [agents, environment, item("  app   server prompt "),
+                                               item("a later prompt")])
+        // Injected blocks long enough to push the prompt past the head window:
+        // the one wider read finds it in the same shape.
+        let longAgents = item("# AGENTS.md instructions for /work/project\n\n" + String(repeating: "r", count: 90_000))
+        try writeRollout("app-server-wide", lines: [longAgents, environment, item("wide app server prompt")])
+        try writeRollout("app-server-injected-only", lines: [agents, environment])
+
+        let byID = Dictionary(uniqueKeysWithValues:
+            CodexSessionStore(root: root).loadSummaries().map { ($0.id, $0.title) })
+        XCTAssertEqual(byID["tui"], "tui prompt")
+        XCTAssertEqual(byID["app-server"], "app server prompt")
+        XCTAssertEqual(byID["app-server-wide"], "wide app server prompt")
+        XCTAssertEqual(byID["app-server-injected-only"], "(no prompt)")
     }
 
     func testAutomationOriginatorIsNoise() {

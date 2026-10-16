@@ -168,10 +168,13 @@ public struct CodexFormat: TranscriptFormat {
         }
 
         // Nothing in the head stated the prompt: one wider read may find it.
-        // A head that is already the whole file is its own wider read.
+        // A head that is already the whole file is its own wider read. Both
+        // read it the way the prompt was written: a `user_message` event, or,
+        // in a rollout Codex's app server wrote (no such event), the first
+        // user message item that is not one Codex injected.
         if fallbackTitle == nil {
-            if let wider = bytes.widerHead { fallbackTitle = Self.firstUserMessage(in: wider) }
-            else if bytes.headIsWholeFile { fallbackTitle = Self.firstUserMessage(in: bytes.head) }
+            if let wider = bytes.widerHead { fallbackTitle = Self.firstTypedPrompt(in: wider) }
+            else if bytes.headIsWholeFile { fallbackTitle = Self.firstTypedPrompt(in: bytes.head) }
             else { return .needsWiderHead(bytes: Self.promptScanBytes) }
         }
 
@@ -217,7 +220,9 @@ public struct CodexFormat: TranscriptFormat {
     /// The first prompt typed into a rollout, wherever this Codex wrote it:
     /// a `user_message` event, or (a rollout written by Codex's app server,
     /// which records no such event) the first user message item that is not
-    /// one of the blocks Codex injects (`<environment_context>` and the like).
+    /// one of the blocks Codex injects: the tagged ones (`<environment_context>`
+    /// and the like) and the project's AGENTS.md, which Codex writes as
+    /// `# AGENTS.md instructions for <folder>` (measured on codex 0.163).
     public static func firstTypedPrompt(in head: Data) -> String? {
         if let prompt = firstUserMessage(in: head) { return prompt }
         for line in TranscriptText.lineData(head) {
@@ -225,11 +230,17 @@ public struct CodexFormat: TranscriptFormat {
                   let item = obj["payload"] as? [String: Any], (item["type"] as? String) == "message",
                   (item["role"] as? String) == "user",
                   let text = Self.text(from: item)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !text.isEmpty, !text.hasPrefix("<") else { continue }
+                  !text.isEmpty, !isInjectedBlock(text) else { continue }
             let cleaned = TranscriptText.cleanTitle(text)
             if !cleaned.isEmpty { return cleaned }
         }
         return nil
+    }
+
+    /// A user message item Codex wrote itself, never a prompt.
+    static let agentsInstructionsPrefix = "# AGENTS.md instructions for "
+    static func isInjectedBlock(_ text: String) -> Bool {
+        text.hasPrefix("<") || text.hasPrefix(agentsInstructionsPrefix)
     }
 
     private static func text(from payload: [String: Any]) -> String? {
