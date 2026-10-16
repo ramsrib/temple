@@ -2401,9 +2401,12 @@ its own.
   (⌘W, the CLI's `close`) now takes a running tab as at rest before the
   timer only on positive evidence that its agent has done nothing this
   spawn: nothing typed since it spawned, no title that brought it back from
-  rest, and its title quiet for the quiet window (an agent booting,
-  resuming, reattached or at a trust screen; Claude at its trust screen
-  was the same path). Anything after a Return keeps the old behaviour (the
+  rest, and its title quiet for the quiet window, after a spawn that
+  started the agent (a launch or a resume: an agent booting, resuming or at
+  a trust screen; Claude at its trust screen was the same path). A
+  reattach to a remote run already running is no such evidence (the
+  agent's state carries over from before the detach, perhaps mid tool
+  call): it keeps the timer, then the working prompt. Anything after a Return keeps the old behaviour (the
   timer, then the working prompt): a quiet or unrelated title then is no
   evidence (a long tool call holds its title, a tool can set its own), so
   ⌘W within 15 s of an answer still asks, the safe failure. A misread at

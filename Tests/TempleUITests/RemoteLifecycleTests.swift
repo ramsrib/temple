@@ -594,9 +594,10 @@ final class RemoteLifecycleTests: XCTestCase {
     }
 
     /// B2: ⌘W closes a running tab as at rest early only on positive
-    /// evidence that its agent has done nothing this spawn: nothing typed
-    /// since it spawned, no title bringing it back from rest, and its title
-    /// quiet (a reopen whose resume went quiet, a trust screen). Anything
+    /// evidence that its agent has done nothing this spawn: a spawn that
+    /// started it (a launch or a resume, never a reattach), nothing typed
+    /// since, no title bringing it back from rest, and its title quiet (a
+    /// reopen whose resume went quiet, a trust screen). Anything
     /// after a Return waits for the settle timer, then asks: an answered
     /// prompt, a long tool call with an unrelated retitle, an agent that
     /// never retitles; so does a title still moving. Quit is unchanged: a
@@ -674,6 +675,30 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertNotNil(model.remoteTabs.quitPlan(for: tool, state: try XCTUnwrap(tool.remote)))
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(remote.stops.count, stopsBefore, "quit stops nothing that ran this spawn")
+    }
+
+    /// A reattach is no evidence of rest: detached while working, then
+    /// reopened (an attach to the run, which still runs), a static title
+    /// quiet past the window: ⌘W asks, as before the early rule.
+    func testAReattachToAWorkingRunIsNeverAtRestEarly() async throws {
+        model.titleQuietWindow = 0.15
+        let tab = await openRow("s1")
+        let surface = try XCTUnwrap(factory.created.last)
+        surface.simulateSubmitInput()
+        surface.simulateTitle("✳ Running the tests")
+        model.requestClose(tabID: tab.id)
+        XCTAssertEqual(model.pendingRemoteCloseTabID, tab.id)
+        model.remoteTabs.confirmDetach()
+        XCTAssertFalse(model.tabs.contains { $0 === tab })
+        let again = await openRow("s1")
+        XCTAssertEqual(again.remote?.creating, false, "an attach to the run still running")
+        try XCTUnwrap(factory.created.last).simulateTitle("✳ Running the tests")
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertFalse(model.isAtRestNow(again))
+        model.requestClose(tabID: again.id)
+        XCTAssertEqual(model.pendingRemoteCloseTabID, again.id, "a reattach keeps the timer, then the prompt")
+        model.remoteTabs.cancelClose()
+        XCTAssertTrue(remote.stops.isEmpty)
     }
 
     func testClosingAWorkingTabAsksDetachOrStop() async throws {

@@ -610,8 +610,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     /// Whether a `.running` tab may be closed as at rest now, before the
     /// settle timer has fired: only on positive evidence that the agent has
-    /// done nothing this spawn. Nothing was typed into it since it spawned
-    /// (a launch, a reopen, a resume, an attach), its title did not bring it
+    /// done nothing this spawn. The spawn started the agent (a launch, a
+    /// reopen's resume; never a reattach to a running remote run), nothing
+    /// was typed into it since, its title did not bring it
     /// back from rest, and its title has been quiet for `titleQuietWindow`:
     /// an agent booting, resuming or waiting at a trust screen. Anything
     /// else waits for the timer, then the working prompt: a quiet or
@@ -634,10 +635,13 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         tab.activity = .idle
     }
 
-    /// A spawn (a launch, a reopen, an attach): what came before is not
-    /// this process's.
-    func markSpawned(_ tab: SessionTab) {
-        activeSinceSpawn.remove(tab.id)
+    /// A spawn. One that starts the agent (a launch, a resume): what came
+    /// before is not this process's. A reattach to a remote run already
+    /// running (`startsAgent` false) is not: the agent's state carries over
+    /// from before the detach (it may be mid tool call), so it is never
+    /// taken as at rest early.
+    func markSpawned(_ tab: SessionTab, startsAgent: Bool = true) {
+        if startsAgent { activeSinceSpawn.remove(tab.id) } else { activeSinceSpawn.insert(tab.id) }
     }
 
     private func settleIfQuiet(_ tab: SessionTab) {
