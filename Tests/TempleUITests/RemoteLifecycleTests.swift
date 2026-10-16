@@ -492,7 +492,7 @@ final class RemoteLifecycleTests: XCTestCase {
         // stands apart in its sheet.
         XCTAssertEqual(RemoteCopy.resumeAnyway("box"),
                        "Temple can't reach this session on box and can't tell whether it is still running. "
-                       + "If the original is still running, it keeps running.")
+                       + "If it is, it keeps running.")
         XCTAssertEqual(model.remoteTabs.stopCommand(tab), "tmux -L temple kill-session -t temple-h1")
         // Opening again is attach-only.
         model.remoteTabs.reconnect(tab)

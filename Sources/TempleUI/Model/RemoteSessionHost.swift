@@ -398,7 +398,7 @@ public enum RemoteCopy {
 
     public static func resumeAnyway(_ host: String) -> String {
         "Temple can't reach this session on \(host) and can't tell whether it is still running. "
-            + "If the original is still running, it keeps running."
+            + "If it is, it keeps running."
     }
 
     /// The hint under either confirmation: how to stop the original there.
@@ -408,7 +408,8 @@ public enum RemoteCopy {
     public static let startNewPendingTitle = "Start a new session?"
 
     public static func startNewPending(_ host: String) -> String {
-        "Temple can't tell whether Codex is still running on \(host). If the original is still running, it keeps running."
+        "Temple can't tell whether Codex is still running on \(host). "
+            + "If it is, it keeps running, and a new session starts beside it."
     }
 
     public static func notSetUp(_ host: String) -> String {
@@ -508,13 +509,13 @@ public enum RemoteCopy {
     // Codex identity (phase 1b)
 
     public static func codexEndedPending(_ host: String) -> String {
-        "Codex ended before Temple learned its session id. Its transcript is still on \(host)."
+        "Codex ended before Temple learned its session ID. Its transcript is still on \(host)."
     }
 
     /// The question about one candidate: never a fact.
     public static func suggestionQuestion(_ suggestion: RemoteSuggestion, now: Date = Date()) -> String {
         let prompt = suggestion.firstPrompt.map { "\u{201C}\($0)\u{201D}" }
-            ?? (suggestion.promptKnown ? "(no prompt)" : "(its first prompt couldn't be read)")
+            ?? (suggestion.promptKnown ? "No prompt yet" : "First prompt unreadable")
         let folder = URL(fileURLWithPath: suggestion.directory).lastPathComponent
         return "Is this the session? \(prompt), started \(startTime(suggestion.startedAt, now: now)) in \(folder)."
     }
@@ -539,7 +540,7 @@ public enum RemoteCopy {
     public static let couldNotTell = "Temple couldn't tell which Codex session this is."
 
     /// Under the question: how Temple can tell by itself (Fable, round 1).
-    public static let noDaemonHint = "With --no-daemon in Codex's arguments (Settings), Temple identifies the session itself."
+    public static let noDaemonHint = "With --no-daemon in Codex's arguments (Settings), Temple identifies the session on its own."
 
     public static func endedIdentified(_ host: String) -> String {
         "This Codex session ended on \(host). Resume it to continue the conversation."

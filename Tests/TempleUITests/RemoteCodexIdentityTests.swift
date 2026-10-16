@@ -117,7 +117,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertTrue(remote.suggestionLookups.isEmpty, "no question before anything was typed")
         model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
         await settle(tab.remote?.suggestions.count == 2)
-        XCTAssertEqual(RemoteCopy.suggestionQuestion(suggestion("c8", prompt: nil)).hasPrefix("Is this the session? (no prompt), started at "), true)
+        XCTAssertEqual(RemoteCopy.suggestionQuestion(suggestion("c8", prompt: nil)).hasPrefix("Is this the session? No prompt yet, started at "), true)
         model.remoteTabs.decline(try XCTUnwrap(tab.remote?.suggestions.last), in: tab)
         XCTAssertEqual(tab.remote?.suggestions.map(\.sessionID), ["c7"])
         await settle(self.remote.declines.map(\.path) == [self.suggestion("c8").rolloutPath])
@@ -736,8 +736,8 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(RemoteCopy.noTrackedSessions, "No sessions started from Temple.")
         let unread = RemoteSuggestion(rolloutPath: "/r", sessionID: "x", firstPrompt: nil, startedAt: Date(),
                                       directory: "/w", promptKnown: false)
-        XCTAssertTrue(RemoteCopy.suggestionQuestion(unread).hasPrefix("Is this the session? (its first prompt couldn't be read), started "))
-        XCTAssertFalse(RemoteCopy.suggestionQuestion(unread).contains("(no prompt)"))
+        XCTAssertTrue(RemoteCopy.suggestionQuestion(unread).hasPrefix("Is this the session? First prompt unreadable, started "))
+        XCTAssertFalse(RemoteCopy.suggestionQuestion(unread).contains("No prompt yet"))
         let copy = [RemoteCopy.codexEndedPending("box"), RemoteCopy.couldNotTell, RemoteCopy.noDaemonHint,
                     RemoteCopy.endedIdentified("box"), RemoteCopy.resumeAnyway("box"),
                     RemoteCopy.startNewPending("box"), RemoteCopy.stopHint("box"), RemoteCopy.discardHelp(archives: true),

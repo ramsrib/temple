@@ -151,11 +151,13 @@ private struct SessionTerminalView: View {
                 }
                 .padding(.leading, 20)
             }
-            Text(RemoteCopy.noDaemonHint)
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 20)
+            if !remote.identityRefused {
+                Text(RemoteCopy.noDaemonHint)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 20)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)

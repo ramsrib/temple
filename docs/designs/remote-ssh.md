@@ -2094,3 +2094,27 @@ Two rounds in the same place, so the mechanism moved up a level:
 - **A failure is logged first** (`remote` category, at notice), so a notice
   the gate suppresses still leaves a diagnostic.
 
+
+## Phase 1b final copy (Fable's final read)
+
+Approved for push with these wording changes, which override the strings
+quoted earlier in these notes:
+
+- The question with no prompt reads "Is this the session? No prompt yet,
+  started at <time> in <folder>." and, when the prompt couldn't be read,
+  "First prompt unreadable" in the same place.
+- "Codex ended before Temple learned its session ID. Its transcript is
+  still on <host>." (ID, as in the Copy session ID menus).
+- Resume anyway: "Temple can't reach this session on <host> and can't
+  tell whether it is still running. If it is, it keeps running."
+- Start a new session: "Temple can't tell whether Codex is still running
+  on <host>. If it is, it keeps running, and a new session starts beside
+  it."
+- The hint reads "With --no-daemon in Codex's arguments (Settings), Temple
+  identifies the session on its own." and is hidden while the tab shows a
+  remembered refusal, where it doesn't apply.
+
+Before any release that turns remote on: local catalog titles for Codex
+app-server rollouts (they lose the first prompt the same way; reuse
+`CodexFormat.firstTypedPrompt`), and the dark-mode contrast comparison of a
+remote tab against a local one.
