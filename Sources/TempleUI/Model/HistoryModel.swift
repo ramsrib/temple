@@ -205,6 +205,10 @@ public final class HistoryModel: ObservableObject {
     @Published public private(set) var scrollRequest = 0
     /// Bumped by ⌘F: the view moves keyboard focus into the search field.
     @Published public private(set) var focusSearchRequest = 0
+    /// Bumped by a click on a row or Tab from the search field: the view
+    /// takes keyboard focus out of the search field, so the list's keys
+    /// (⌘A, ⌘C, ⌘⌫, ⇧-arrows) act on rows (HistoryKeys).
+    @Published public private(set) var focusListRequest = 0
     /// History's own search field holds keyboard focus. The view keeps it
     /// current; the key router reads it to tell this field from any other
     /// (sidebar search, a chip being renamed), whose keys are not History's.
@@ -1007,6 +1011,7 @@ public final class HistoryModel: ObservableObject {
     }
 
     public func requestSearchFocus() { focusSearchRequest += 1 }
+    public func requestListFocus() { focusListRequest += 1 }
 
     // MARK: Opening and restoring
 

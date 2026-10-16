@@ -488,7 +488,7 @@ Fixture variants must be described in the run log with titles, IDs, membership, 
 - **Preconditions:** History search focused with a known query and caret at its end; no session tabs.
 - **Steps:** Press `⌘K`, type `endpoint` immediately and inspect both fields. Esc, then append a marker without clicking History. Repeat `⌘K`, type, Esc, then append again. Open `⌘K`, switch directly to `⌘N`, type `acme` into the picker without Return, then Esc and append another marker to History.
 - **Expected:** Exactly one panel at a time. Palette/picker text never reaches History. Each dismissal returns to History's prior caret at the end, and the marker appends instead of replacing the query. No permanent inability to type. A focus-transition character drop is recorded under PAL-004, never excused as leakage.
-- **Notes:** Passed in Pass 3. Use actual typing, not setValue, to prove routing. `⌘A` in History can select view rows rather than replace its search text; use its clear control when resetting the query.
+- **Notes:** Passed in Pass 3. Use actual typing, not setValue, to prove routing. `⌘A` in History's focused search selects its text (since 2026-10-16; before, it selected view rows).
 
 ### 4.8 History
 
@@ -537,7 +537,7 @@ Fixture variants must be described in the run log with titles, IDs, membership, 
 #### HIS-007: Mouse selection and select all
 - **Priority:** P1. **Safety:** Safe in demo, single-click only.
 - **Preconditions:** All; no sheet.
-- **Steps:** Single-click a row; Shift-click another; Command-click a discontiguous row where supported. Filter to acme-api and press `⌘A`; use Deselect.
+- **Steps:** Single-click a row; Shift-click another; Command-click a discontiguous row where supported. Filter to acme-api, click a row (the list takes the keyboard from the search field) and press `⌘A`; use Deselect. Then click the search field, press `⌘A` and type: the query is replaced and the row selection is unchanged.
 - **Expected:** Native single/range/toggle selection. `⌘A` selects nine currently visible matching rows, not all 25. Bar says **9 selected · all in Temple** and offers applicable actions. Deselect removes bulk selection.
 - **Notes:** Click plus Shift+Down is the first-pass fallback, not proof of modifier-click support.
 
@@ -572,8 +572,8 @@ Fixture variants must be described in the run log with titles, IDs, membership, 
 #### HIS-012: Archive selection and text-edit boundary
 - **Priority:** P0. **Safety:** Safe in demo, closed member rows only.
 - **Preconditions:** In Temple; select two closed acme-api rows, with empty search.
-- **Steps:** Use **Archive 2**; undo. Repeat with `⌘⌫`. Then put text in focused History search and press `⌘⌫`. Test an ineligible mixed selection using an outside fixture if available.
-- **Expected:** Eligible selection archives in one undoable action; counts and sidebar agree. With focused nonempty search, chord deletes text rather than archiving rows. Archive is unavailable/no-op when any selected row is ineligible, including open tabs or outside rows.
+- **Steps:** Use **Archive 2**; undo. Select the two rows again by clicking (a click gives the list the keyboard) and repeat with `⌘⌫`. Then put text in focused History search and press `⌘⌫`; also press `⌘⌫` in the empty focused search. Test an ineligible mixed selection using an outside fixture if available.
+- **Expected:** Eligible selection archives in one undoable action; counts and sidebar agree. With the search focused, empty or not, the chord is the field's and archives nothing. Archive is unavailable/no-op when any selected row is ineligible, including open tabs or outside rows.
 - **Notes:** Inspect Edit's undo label to distinguish text edits from archive actions.
 
 #### HIS-013: Foreign-field and sheet keyboard ownership
@@ -586,8 +586,8 @@ Fixture variants must be described in the run log with titles, IDs, membership, 
 #### HIS-014: Copy commands and context actions
 - **Priority:** P1. **Safety:** Needs care, clipboard/Finder; never execute copied text.
 - **Preconditions:** Base History with known fixture IDs.
-- **Steps:** Select two rows and `⌘C`; inspect copied resume commands. Select text inside History search and `⌘C` again. Inspect row menus across active/archive/outside variants; use Show only acme-api.
-- **Expected:** Row selection copies one command per row; selected field text takes precedence. Menu status/actions match row relationship. Archived menu includes Restore and, when applicable, Restore project. Show only filters the project; rename/pin/color remain sidebar actions.
+- **Steps:** Click-select two rows (the list has the keyboard) and `⌘C`; inspect copied resume commands. Select text inside History search and `⌘C` again. Inspect row menus across active/archive/outside variants; use Show only acme-api.
+- **Expected:** Row selection copies one command per row; with the search field focused, `⌘C` is the field's. Menu status/actions match row relationship. Archived menu includes Restore and, when applicable, Restore project. Show only filters the project; rename/pin/color remain sidebar actions.
 - **Notes:** Reveal only an existing fake transcript, never resolve an unknown path.
 
 #### HIS-015: Show in History and Show in sidebar bridges
@@ -790,9 +790,9 @@ Retired 2026-10-05. Outside the owner-defined Temple app UI scope. No executable
 | ⌘⇧Y | History Archived, retaining filters; repeat stays | HIS-001 |
 | ⌘R | Refresh History; Check again on Settings | HIS-016; SET-002 inspect only |
 | ⌘I | Request History import | IMP-001/002, explicit fake import only |
-| ⌘A | Select History view rows unless foreign field owns key | HIS-007/013 |
-| ⌘C | History resume commands, or selected search text | HIS-014 |
-| ⌘⌫ | Archive eligible History selection; nonempty focused search edits text | HIS-012 |
+| ⌘A | Select History view rows when no field has focus; in any field, its text | HIS-007/013 |
+| ⌘C | History resume commands when no field has focus; in a field, its text | HIS-014 |
+| ⌘⌫ | Archive eligible History selection when no field has focus; in a field, edits text | HIS-012 |
 | ↑ / ↓, ⇧↑ / ⇧↓ | Move/extend History selection; sidebar arrows only browse | HIS-006, SID-003 |
 | ⌥↑ / ⌥↓, ⌘↑ / ⌘↓ | Jump History day/ends; Shift extends | HIS-006 |
 | Return / double-click | Open History row; nonresumable archive restores; all-archive multi-selection restores | HIS-011, restricted |

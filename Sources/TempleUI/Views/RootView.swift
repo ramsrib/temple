@@ -369,7 +369,7 @@ final class PanelHostingView<Content: View>: NSHostingView<Content>, TitleBandCo
 /// Installs an app-local key monitor for Temple's shortcuts (UX "Keyboard
 /// shortcuts"). Centralized here so menu/window defaults never fight the tab
 /// keybindings (⌘W closes the *tab*, not the window).
-private struct KeyCatcher: NSViewRepresentable {
+struct KeyCatcher: NSViewRepresentable {
     @EnvironmentObject var model: AppModel
 
     func makeNSView(context: Context) -> NSView {
@@ -492,8 +492,10 @@ private struct KeyCatcher: NSViewRepresentable {
             resignObserver = nil
         }
 
+        /// Whether Temple used the key (the monitor then swallows it). Not
+        /// private: tests send real key events through it.
         @MainActor
-        private func handle(_ event: NSEvent, _ model: AppModel) -> Bool {
+        func handle(_ event: NSEvent, _ model: AppModel) -> Bool {
             // A confirmation dialog owns the keyboard — pass everything through
             // so Return/Esc reach the alert instead of our shortcuts.
             if model.openSessions.pendingCloseTabID != nil { return false }
@@ -592,7 +594,9 @@ private struct KeyCatcher: NSViewRepresentable {
                 && !model.commandPalettePresented
                 && !model.newSessionPickerPresented
                 && !model.shortcutsPresented
-            if browsing && !cmd && !ctrl {
+            // ⇧ with an arrow in a field (the sidebar search) selects text.
+            let selectingText = shift && event.window?.firstResponder is NSTextView
+            if browsing && !cmd && !ctrl && !selectingText {
                 switch event.keyCode {
                 case 125: model.moveHighlight(by: 1); return true    // ↓
                 case 126: model.moveHighlight(by: -1); return true   // ↑
@@ -664,8 +668,9 @@ private struct KeyCatcher: NSViewRepresentable {
         /// Where a key goes while History is the active tab (HistoryKeys).
         /// Its keys are taken here, not by the view, so they work whether
         /// History's search field has focus or nothing does: arrows and Return
-        /// drive the list even while typing a query, as the old overlay's did.
-        /// Any other field keeps its keys — a field editor that is not
+        /// drive the list even while typing a query, as the old overlay's did,
+        /// while the field keeps every key that edits or selects its text.
+        /// Any other field keeps all its keys — a field editor that is not
         /// History's search belongs to the sidebar search or a chip rename.
         @MainActor
         private func historyRoute(_ event: NSEvent, _ model: AppModel) -> HistoryKeyRoute {
@@ -681,9 +686,7 @@ private struct KeyCatcher: NSViewRepresentable {
                 characters: event.charactersIgnoringModifiers ?? "",
                 modifiers: event.modifierFlags,
                 focus: focus,
-                sheetAttached: sheetAttached,
-                searchHasSelection: focus == .historySearch && (editor?.selectedRange().length ?? 0) > 0,
-                searchHasText: focus == .historySearch && !(editor?.string.isEmpty ?? true))
+                sheetAttached: sheetAttached)
         }
 
         /// Returns whether the key was used (a ⌘C with nothing selected is not).

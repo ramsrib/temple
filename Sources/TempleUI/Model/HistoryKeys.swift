@@ -4,7 +4,10 @@ import AppKit
 public enum HistoryKeyFocus: Equatable, Sendable {
     /// No text field: the list itself.
     case none
-    /// History's own search field.
+    /// History's own search field. Its editing keys are its own (⌘A, ⌘C,
+    /// ⌘X, ⌘V, ⌘Z, ⌘⌫, ⇧ with an arrow); the keys a one-line field has no use
+    /// for (↑ ↓ without ⇧, Return, Esc, Tab) and History's own ⌘I, ⌘R and ⌘F
+    /// still drive the page, so typing then Return opens the first match.
     case historySearch
     /// Any other field — the sidebar search, a chip being renamed. Its keys
     /// are its own: Return commits it, Esc ends it, ⌘A selects its text.
@@ -24,6 +27,9 @@ public enum HistoryKeyCommand: Equatable, Sendable {
     case archiveSelection
     case refresh
     case focusSearch
+    /// Tab from History's search field: the keyboard goes to the list, where
+    /// ⌘A, ⌘C, ⌘⌫ and ⇧-arrows act on rows.
+    case focusList
     case copyResumeCommands
 }
 
@@ -41,19 +47,22 @@ public enum HistoryKeyRoute: Equatable, Sendable {
 /// an event or a window. RootView's key monitor asks it on every keyDown while
 /// History is the active tab.
 enum HistoryKeys {
+    /// One rule decides between a text field and the list: while a text
+    /// field has the keyboard, every key that edits or selects text is the
+    /// field's, whatever History has selected (⌘A in the search field
+    /// selects the typed text, never the rows). The list's ⌘A, ⌘C, ⌘⌫ and
+    /// ⇧-arrows act on rows only when no field has the keyboard: after a
+    /// click on a row, or Tab from the search field.
+    ///
     /// - Parameters:
     ///   - characters: `charactersIgnoringModifiers`.
-    ///   - searchHasSelection: text is selected in History's search field
-    ///     (⌘C then copies that text, not resume commands).
-    ///   - searchHasText: History's search field has text (⌘⌫ then deletes
-    ///     it, as in any field, rather than archiving rows).
     static func route(keyCode: UInt16, characters: String, modifiers: NSEvent.ModifierFlags,
-                      focus: HistoryKeyFocus, sheetAttached: Bool,
-                      searchHasSelection: Bool = false, searchHasText: Bool = false) -> HistoryKeyRoute {
+                      focus: HistoryKeyFocus, sheetAttached: Bool) -> HistoryKeyRoute {
         if sheetAttached { return .toSheet }
         // Another field has the keyboard: none of History's keys are taken
         // from it. ⌘F and ⌘R still reach History through their menu items.
         if focus == .foreignField { return .general }
+        let editing = focus == .historySearch
 
         let flags = modifiers.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.control) { return .general }
@@ -63,6 +72,8 @@ enum HistoryKeys {
 
         switch keyCode {
         case 125, 126:   // ↓ ↑ (⇧ extends, ⌥ jumps a day, ⌘ to the end)
+            // ⇧ with an arrow selects text in a field.
+            if editing && shift { return .general }
             let down = keyCode == 125
             if cmd { return .history(.moveToEnd(top: !down, extend: shift)) }
             if option { return .history(.moveByDay(forward: down, extend: shift)) }
@@ -71,19 +82,21 @@ enum HistoryKeys {
             return cmd ? .general : .history(.open)
         case 53:         // esc: clear search → the chip → selection → previous tab
             return .history(.escape)
-        case 51 where cmd && !option && !shift:   // ⌘⌫
-            return searchHasText ? .general : .history(.archiveSelection)
+        case 48 where editing && flags.isEmpty:   // tab: from the search to the list
+            return .history(.focusList)
+        case 51 where cmd && !option && !shift:   // ⌘⌫: the field's delete, else archive
+            return editing ? .general : .history(.archiveSelection)
         default:
             break
         }
 
         guard cmd, !option else { return .general }
         switch characters.lowercased() {
-        case "a": return .history(.selectAll)
+        case "a": return editing ? .general : .history(.selectAll)
+        case "c": return editing ? .general : .history(.copyResumeCommands)
         case "i": return .history(.importSelection)
         case "r": return .history(.refresh)
         case "f": return .history(.focusSearch)
-        case "c": return searchHasSelection ? .general : .history(.copyResumeCommands)
         default: return .general
         }
     }
@@ -121,6 +134,8 @@ enum HistoryKeys {
             history.refresh()
         case .focusSearch:
             history.requestSearchFocus()
+        case .focusList:
+            history.requestListFocus()
         case .copyResumeCommands:
             let rows = history.selectedRows
             guard !rows.isEmpty else { return .notHandled }

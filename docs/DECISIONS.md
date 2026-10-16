@@ -1564,6 +1564,15 @@ disk knows about, one status per row. If a session is not in the sidebar,
   typing then Return opens the first match, ⌘A then ⌘⌫ after a filter
   archives what the filter shows, one Return opens one tab, and nothing acts
   on rows the user never saw.
+
+  *Amended 2026-10-16:* which keys are commands depends on who has the
+  keyboard. While a text field has it, History's search included, every key
+  that edits or selects text is the field's: ⌘A, ⌘C, ⌘X, ⌘V, ⌘Z, ⌘⌫ and
+  any arrow with ⇧. Typing a query and pressing ⌘A selected the rows, which
+  the owner reported as a bug. From History's search, ↑ and ↓ (with ⌥ or ⌘
+  too), Return, Esc, ⌘I, ⌘R and ⌘F still drive the page, and Tab gives the
+  list the keyboard, as a click on a row does. So "⌘A then ⌘⌫ after a filter"
+  is now from the list.
 - **The page lays out by the pane it is given.** Its width is read from what
   the detail pane offers, never from the page's own content, and the page is
   clipped to it: a page that measured itself reported its overflow as its

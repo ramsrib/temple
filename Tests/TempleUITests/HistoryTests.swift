@@ -1491,45 +1491,72 @@ final class HistoryUndoEngineTests: XCTestCase {
 /// active): what it takes, and what it leaves to another field or a sheet.
 final class HistoryKeysTests: XCTestCase {
     private func route(_ keyCode: UInt16, _ characters: String = "", _ modifiers: NSEvent.ModifierFlags = [],
-                       focus: HistoryKeyFocus = .none, sheet: Bool = false,
-                       searchSelection: Bool = false, searchText: Bool = false) -> HistoryKeyRoute {
+                       focus: HistoryKeyFocus = .none, sheet: Bool = false) -> HistoryKeyRoute {
         HistoryKeys.route(keyCode: keyCode, characters: characters, modifiers: modifiers,
-                          focus: focus, sheetAttached: sheet, searchHasSelection: searchSelection,
-                          searchHasText: searchText)
+                          focus: focus, sheetAttached: sheet)
     }
 
     private enum Key {
         static let down: UInt16 = 125, up: UInt16 = 126, ret: UInt16 = 36, enter: UInt16 = 76, esc: UInt16 = 53
         static let a: UInt16 = 0, c: UInt16 = 8, f: UInt16 = 3, i: UInt16 = 34, r: UInt16 = 15
-        static let k: UInt16 = 40, w: UInt16 = 13, y: UInt16 = 16, delete: UInt16 = 51
+        static let k: UInt16 = 40, w: UInt16 = 13, y: UInt16 = 16, delete: UInt16 = 51, tab: UInt16 = 48
+        static let x: UInt16 = 7, v: UInt16 = 9, z: UInt16 = 6, left: UInt16 = 123, right: UInt16 = 124
     }
 
-    /// ⌘⌫ archives the selection, from the list or an empty search field;
-    /// with text in the field it deletes text, as in any field, and another
-    /// field keeps it.
-    func testCommandDeleteArchivesTheSelectionUnlessTheSearchHasText() {
+    /// ⌘⌫ archives the selection only from the list; in a field, History's
+    /// own search included, it is the field's delete.
+    func testCommandDeleteArchivesTheSelectionOnlyFromTheList() {
         XCTAssertEqual(route(Key.delete, "\u{7f}", [.command]), .history(.archiveSelection))
-        XCTAssertEqual(route(Key.delete, "\u{7f}", [.command], focus: .historySearch), .history(.archiveSelection))
-        XCTAssertEqual(route(Key.delete, "\u{7f}", [.command], focus: .historySearch, searchText: true), .general)
+        XCTAssertEqual(route(Key.delete, "\u{7f}", [.command], focus: .historySearch), .general)
         XCTAssertEqual(route(Key.delete, "\u{7f}", [.command], focus: .foreignField), .general)
         XCTAssertEqual(route(Key.delete, "\u{7f}"), .general, "plain delete is not History's")
         XCTAssertEqual(route(Key.delete, "\u{7f}", [.command, .option]), .general)
     }
 
-    func testTheListTakesItsKeysWithNoFieldOrHistorysOwnSearchFocused() {
-        for focus in [HistoryKeyFocus.none, .historySearch] {
-            XCTAssertEqual(route(Key.down, focus: focus), .history(.moveCursor(by: 1, extend: false)))
-            XCTAssertEqual(route(Key.up, "", [.shift], focus: focus), .history(.moveCursor(by: -1, extend: true)))
-            XCTAssertEqual(route(Key.down, "", [.option], focus: focus), .history(.moveByDay(forward: true, extend: false)))
-            XCTAssertEqual(route(Key.up, "", [.command, .shift], focus: focus), .history(.moveToEnd(top: true, extend: true)))
-            XCTAssertEqual(route(Key.ret, focus: focus), .history(.open))
-            XCTAssertEqual(route(Key.enter, focus: focus), .history(.open))
-            XCTAssertEqual(route(Key.esc, focus: focus), .history(.escape))
-            XCTAssertEqual(route(Key.a, "a", [.command], focus: focus), .history(.selectAll))
-            XCTAssertEqual(route(Key.c, "c", [.command], focus: focus), .history(.copyResumeCommands))
-            XCTAssertEqual(route(Key.i, "i", [.command], focus: focus), .history(.importSelection))
-            XCTAssertEqual(route(Key.r, "r", [.command], focus: focus), .history(.refresh))
-            XCTAssertEqual(route(Key.f, "f", [.command], focus: focus), .history(.focusSearch))
+    func testTheListTakesItsKeysWhenNoFieldIsFocused() {
+        XCTAssertEqual(route(Key.down), .history(.moveCursor(by: 1, extend: false)))
+        XCTAssertEqual(route(Key.up, "", [.shift]), .history(.moveCursor(by: -1, extend: true)))
+        XCTAssertEqual(route(Key.down, "", [.option]), .history(.moveByDay(forward: true, extend: false)))
+        XCTAssertEqual(route(Key.up, "", [.command, .shift]), .history(.moveToEnd(top: true, extend: true)))
+        XCTAssertEqual(route(Key.ret), .history(.open))
+        XCTAssertEqual(route(Key.enter), .history(.open))
+        XCTAssertEqual(route(Key.esc), .history(.escape))
+        XCTAssertEqual(route(Key.a, "a", [.command]), .history(.selectAll))
+        XCTAssertEqual(route(Key.c, "c", [.command]), .history(.copyResumeCommands))
+        XCTAssertEqual(route(Key.i, "i", [.command]), .history(.importSelection))
+        XCTAssertEqual(route(Key.r, "r", [.command]), .history(.refresh))
+        XCTAssertEqual(route(Key.f, "f", [.command]), .history(.focusSearch))
+        XCTAssertEqual(route(Key.tab), .general, "Tab from the list is not History's")
+    }
+
+    /// The owner's report: typing in the search field, then ⌘A, selected the
+    /// sessions. In History's own search the keys a one-line field has no
+    /// use for still drive the page; every key that edits or selects the
+    /// typed text is the field's.
+    func testHistorysSearchKeepsItsEditingKeysAndLendsTheRest() {
+        let focus = HistoryKeyFocus.historySearch
+        XCTAssertEqual(route(Key.down, focus: focus), .history(.moveCursor(by: 1, extend: false)))
+        XCTAssertEqual(route(Key.up, focus: focus), .history(.moveCursor(by: -1, extend: false)))
+        XCTAssertEqual(route(Key.down, "", [.option], focus: focus), .history(.moveByDay(forward: true, extend: false)))
+        XCTAssertEqual(route(Key.up, "", [.command], focus: focus), .history(.moveToEnd(top: true, extend: false)))
+        XCTAssertEqual(route(Key.ret, focus: focus), .history(.open))
+        XCTAssertEqual(route(Key.enter, focus: focus), .history(.open))
+        XCTAssertEqual(route(Key.esc, focus: focus), .history(.escape))
+        XCTAssertEqual(route(Key.tab, focus: focus), .history(.focusList))
+        XCTAssertEqual(route(Key.i, "i", [.command], focus: focus), .history(.importSelection))
+        XCTAssertEqual(route(Key.r, "r", [.command], focus: focus), .history(.refresh))
+        XCTAssertEqual(route(Key.f, "f", [.command], focus: focus), .history(.focusSearch))
+
+        for (keyCode, characters, modifiers) in [
+            (Key.a, "a", NSEvent.ModifierFlags.command), (Key.c, "c", [.command]), (Key.x, "x", [.command]),
+            (Key.v, "v", [.command]), (Key.z, "z", [.command]), (Key.z, "z", [.command, .shift]),
+            (Key.delete, "\u{7f}", [.command]),
+            (Key.down, "", [.shift]), (Key.up, "", [.shift]), (Key.up, "", [.shift, .command]),
+            (Key.down, "", [.shift, .option]), (Key.left, "", [.shift]), (Key.right, "", [.shift, .command]),
+            (Key.tab, "\t", [.shift]),
+        ] {
+            XCTAssertEqual(route(keyCode, characters, modifiers, focus: focus), .general,
+                           "key \(keyCode) \(modifiers) belongs to the field")
         }
     }
 
@@ -1539,7 +1566,7 @@ final class HistoryKeysTests: XCTestCase {
         for (keyCode, characters, modifiers) in [
             (Key.down, "", NSEvent.ModifierFlags()), (Key.up, "", [.shift]), (Key.ret, "", []),
             (Key.enter, "", []), (Key.esc, "", []), (Key.a, "a", [.command]), (Key.c, "c", [.command]),
-            (Key.i, "i", [.command]), (Key.r, "r", [.command]), (Key.f, "f", [.command]),
+            (Key.i, "i", [.command]), (Key.r, "r", [.command]), (Key.f, "f", [.command]), (Key.tab, "\t", []),
         ] {
             XCTAssertEqual(route(keyCode, characters, modifiers, focus: .foreignField), .general,
                            "key \(keyCode) \(modifiers)")
@@ -1556,11 +1583,6 @@ final class HistoryKeysTests: XCTestCase {
             XCTAssertEqual(route(Key.y, "y", [.command], focus: focus, sheet: true), .toSheet)
             XCTAssertEqual(route(Key.k, "k", [.command], focus: focus, sheet: true), .toSheet)
         }
-    }
-
-    func testTextSelectedInHistorysSearchCopiesAsText() {
-        XCTAssertEqual(route(Key.c, "c", [.command], focus: .historySearch, searchSelection: true), .general)
-        XCTAssertEqual(route(Key.a, "a", [.command], focus: .historySearch, searchSelection: true), .history(.selectAll))
     }
 
     func testOtherChordsAreNotHistorys() {
@@ -2531,5 +2553,109 @@ final class HistoryArchiveTests: XCTestCase {
         await history.rebuild()
         XCTAssertEqual(history.rebuildCount, installs)
         XCTAssertEqual(published, 0)
+    }
+}
+
+/// The owner's report, through the real path: RootView's key monitor
+/// (`KeyCatcher.Coordinator.handle`) given a real ⌘A while a real field
+/// editor holds the keyboard in a real window. Typed text in History's
+/// search, then ⌘A: the field's (the key passes through), never the rows.
+@MainActor
+final class HistoryKeyRoutingTests: XCTestCase {
+    private var window: NSWindow!
+    private var field: NSTextField!
+    private var model: AppModel!
+    private let catcher = KeyCatcher.Coordinator()
+
+    override func setUp() async throws {
+        let database = try TempleDB.inMemory()
+        Fixture.join([Fixture.row("a1", project: "/p/a", title: "Alpha one", updated: 40),
+                      Fixture.row("a2", project: "/p/a", title: "Alpha two", updated: 30),
+                      Fixture.row("b1", project: "/p/b", title: "Beta one", updated: 20)], to: database)
+        model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+                         engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
+                         database: database,
+                         settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+                         overlay: SessionOverlayStore(db: database))
+        model.history.catalog = { AsyncStream { $0.finish() } }
+        model.showHistory()
+        model.history.activate()
+        model.history.scope = .all
+        await model.history.settle()
+        XCTAssertEqual(model.history.visibleRows.count, 3)
+
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+                          styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        field = NSTextField(frame: NSRect(x: 10, y: 360, width: 300, height: 22))
+        try XCTUnwrap(window.contentView).addSubview(field)
+    }
+
+    override func tearDown() async throws {
+        model.history.deactivate()
+        window.makeFirstResponder(nil)
+        window.close()
+    }
+
+    private func key(_ code: UInt16, _ characters: String, _ flags: NSEvent.ModifierFlags = []) -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                         windowNumber: window.windowNumber, context: nil, characters: characters,
+                         charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)!
+    }
+
+    /// The search field as History's view leaves it: typed into, with the
+    /// field editor as first responder and the page told it is its field.
+    private func typeIntoHistorysSearch(_ text: String) throws -> NSTextView {
+        XCTAssertTrue(window.makeFirstResponder(field))
+        model.history.searchFieldFocused = true
+        let editor = try XCTUnwrap(window.firstResponder as? NSTextView, "a real field editor has the keyboard")
+        editor.insertText(text, replacementRange: editor.selectedRange())
+        return editor
+    }
+
+    func testCommandAInHistorysSearchIsTheFieldsNotTheRows() async throws {
+        let editor = try typeIntoHistorysSearch("alpha")
+        let before = model.history.selectedIDs
+
+        XCTAssertFalse(catcher.handle(key(0, "a", .command), model), "⌘A passes through to the field")
+        for (code, chars, flags) in [(UInt16(8), "c", NSEvent.ModifierFlags.command), (7, "x", .command),
+                                     (9, "v", .command), (6, "z", .command), (51, "\u{7f}", .command),
+                                     (125, "\u{f701}", [.shift]), (126, "\u{f700}", [.shift])] {
+            XCTAssertFalse(catcher.handle(key(code, chars, flags), model), "key \(code) \(flags) is the field's")
+        }
+        await model.history.settle()
+        XCTAssertEqual(model.history.selectedIDs, before, "no row was selected by an editing key")
+        XCTAssertIdentical(window.firstResponder, editor, "the field still has the keyboard")
+
+        // What the passed-through ⌘A then does (the Edit menu's Select All).
+        XCTAssertEqual(window.firstResponder?.tryToPerform(#selector(NSText.selectAll(_:)), with: nil), true)
+        XCTAssertEqual(editor.selectedRange(), NSRange(location: 0, length: 5), "the typed text is selected")
+
+        // ↓ and Return still drive the list from the field.
+        XCTAssertTrue(catcher.handle(key(125, "\u{f701}"), model))
+    }
+
+    /// Once the list has the keyboard (a click on a row, or Tab from the
+    /// field), ⌘A selects every row.
+    func testCommandAFromTheListSelectsTheRows() async throws {
+        _ = try typeIntoHistorysSearch("")
+        let before = model.history.focusListRequest
+        XCTAssertTrue(catcher.handle(key(48, "\t"), model), "Tab from History's search goes to the list")
+        XCTAssertEqual(model.history.focusListRequest, before + 1)
+
+        // What the view does on that request: the field lets go.
+        window.makeFirstResponder(nil)
+        model.history.searchFieldFocused = false
+        XCTAssertTrue(catcher.handle(key(0, "a", .command), model))
+        await model.history.settle()
+        XCTAssertEqual(model.history.selectedIDs.count, 3)
+    }
+
+    /// Another field (the sidebar search) keeps ⌘A while History is active.
+    func testCommandAInAnotherFieldIsThatFields() async throws {
+        XCTAssertTrue(window.makeFirstResponder(field))
+        model.history.searchFieldFocused = false
+        XCTAssertFalse(catcher.handle(key(0, "a", .command), model))
+        XCTAssertFalse(catcher.handle(key(125, "\u{f701}", .shift), model))
     }
 }

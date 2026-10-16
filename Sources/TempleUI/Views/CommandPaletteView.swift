@@ -137,8 +137,15 @@ struct CommandPaletteView: View {
         // A redraw can drop the highlighted session (its tab closed): the
         // highlight moves to a row that is listed, and Return follows it.
         .onChange(of: results.map(\.id)) { cursor.anchor(in: results) }
-        .onKeyPress(.downArrow) { move(1); return .handled }
-        .onKeyPress(.upArrow) { move(-1); return .handled }
+        // ⇧ with an arrow is the field's: it selects text.
+        .onKeyPress(.downArrow, phases: [.down, .repeat]) { press in
+            if press.modifiers.contains(.shift) { return .ignored }
+            move(1); return .handled
+        }
+        .onKeyPress(.upArrow, phases: [.down, .repeat]) { press in
+            if press.modifiers.contains(.shift) { return .ignored }
+            move(-1); return .handled
+        }
         .onKeyPress(.escape) { model.commandPalettePresented = false; return .handled }
     }
 

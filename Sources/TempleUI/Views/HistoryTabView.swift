@@ -18,9 +18,12 @@ import TempleCore
 /// prepared by the projection, so drawing one looks nothing up.
 ///
 /// Keys (arrows, Return, Esc, ⌘A/⌘I/⌘R/⌘C/⌘F/⌘⌫) are handled by RootView's
-/// KeyCatcher while this tab is active (HistoryKeys), so they work whether
-/// the search field or nothing at all has focus — and stand aside when some
-/// other field (sidebar search, a chip rename) has it.
+/// KeyCatcher while this tab is active (HistoryKeys). Arrows, Return and Esc
+/// drive the list from the search field too; the field keeps every key that
+/// edits or selects its text (⌘A included), and the list's ⌘A/⌘C/⌘⌫ act on
+/// rows once a click on a row, or Tab, has taken the keyboard out of the
+/// field. Every key stands aside when some other field (sidebar search, a
+/// chip rename) has it.
 struct HistoryTabView: View {
     @ObservedObject var history: HistoryModel
     @Environment(\.undoManager) private var undoManager
@@ -104,6 +107,10 @@ struct HistoryTabView: View {
         }
         .onChange(of: history.focusSearchRequest) {
             FieldFocus.claim { searchFocused = true }
+        }
+        // A click on a row, or Tab from the field: the list has the keyboard.
+        .onChange(of: history.focusListRequest) {
+            searchFocused = false
         }
         .alert(history.pendingImport?.title ?? "",
                isPresented: Binding(get: { history.pendingImport != nil },
@@ -758,7 +765,10 @@ private struct HistoryPageRow: View, Equatable {
                 }
             }
             .contentShape(Rectangle())
-            .onTapGesture { history.click(session.id, modifier: Self.clickModifier()) }
+            .onTapGesture {
+                history.requestListFocus()
+                history.click(session.id, modifier: Self.clickModifier())
+            }
             .simultaneousGesture(TapGesture(count: 2).onEnded { history.primaryAction(session, undoManager: undoManager) })
             status(lit: inputs.selected || hovering)
                 .frame(width: 84, alignment: .trailing)

@@ -77,8 +77,15 @@ struct NewSessionPickerView: View {
         .panelChrome()
         // The field takes the keyboard on mount and gives it back when the
         // picker goes (OverlayFocus).
-        .onKeyPress(.downArrow) { move(1, rowCount: rowCount); return .handled }
-        .onKeyPress(.upArrow) { move(-1, rowCount: rowCount); return .handled }
+        // ⇧ with an arrow is the field's: it selects text.
+        .onKeyPress(.downArrow, phases: [.down, .repeat]) { press in
+            if press.modifiers.contains(.shift) { return .ignored }
+            move(1, rowCount: rowCount); return .handled
+        }
+        .onKeyPress(.upArrow, phases: [.down, .repeat]) { press in
+            if press.modifiers.contains(.shift) { return .ignored }
+            move(-1, rowCount: rowCount); return .handled
+        }
         .onKeyPress(.escape) { model.newSessionPickerPresented = false; return .handled }
     }
 

@@ -365,7 +365,11 @@ join and archived ones come back
 - **Selection** is the native vocabulary: click, `⌘`-click, `⇧`-click, arrows
   (`⇧` extends, `⌥` jumps a day, `⌘` to the ends), `⌘A` for everything in the
   current view. Hover is a separate fill and never moves the selection. On
-  open the search field has focus and the first row is selected.
+  open the search field has focus and the first row is selected. While the
+  search field has focus, every key that edits or selects its text is the
+  field's (`⌘A` selects the typed text, `⇧` with an arrow selects text); a
+  click on a row, or Tab, gives the list the keyboard, and then `⌘A`, `⌘C`,
+  `⌘⌫` and `⇧`-arrows act on rows.
 - **Return or a double-click opens** the selected session — an outside one
   joins as opened, like any resume, and an archived one is restored on the
   way. An archived row that cannot resume (no transcript, folder or agent) is
@@ -407,13 +411,14 @@ join and archived ones come back
   stay in the sidebar.
 - **Keys** while History is active: `⌘F` focuses its search (Edit ▸ Find in
   History), `⌘R` refreshes, `⌘C` copies the selection's resume commands, `⌘⌫`
-  archives the selection (when the search field is empty or not focused), Esc
+  archives the selection (when the list has the keyboard), Esc
   clears the search, then the "Archived just now" chip, then the selection,
   then goes back to the previous tab.
   Esc and Return act on what is typed, even within the search's debounce.
-  The list's keys (arrows, Return, Esc, `⌘A`, `⌘C`) are History's only while
-  its search field or no field has focus: in the sidebar search or a chip
-  being renamed they stay that field's. While the import sheet is up, every key
+  Arrows, Return and Esc drive the list from History's own search field too;
+  `⌘A`, `⌘C`, `⌘⌫` and `⇧`-arrows are the list's only while no field has
+  focus. In the sidebar search or a chip being renamed every key stays that
+  field's. While the import sheet is up, every key
   goes to it.
 - `⌘⇧Y` (View ▸ Archived Sessions, the launcher's Archived sessions) opens
   History in its Archived scope, leaving search and filters as they are;
@@ -549,8 +554,8 @@ of truth.
 | **⌘G / ⌘⇧G** | Next / previous match while the find bar is open. |
 | **⌘K** | Command palette: open sessions by recency when empty; ranked search over everything when typed. |
 | **⌘Y** | History tab: every session on disk, by day. Opens or focuses it; pressed on it, stays. |
-| **⌘R / ⌘I / ⌘A** | On the History tab: refresh the snapshot / import the selection / select every row in view. |
-| **⌘⌫** | On the History tab: archive the selection, when every selected row can be. |
+| **⌘R / ⌘I / ⌘A** | On the History tab: refresh the snapshot / import the selection / select every row in view (from the list; in the search field ⌘A selects its text). |
+| **⌘⌫** | On the History tab: archive the selection, when every selected row can be (from the list; in the search field it deletes text). |
 | **⌘⇧Y** | Archived sessions, in History: the History tab in its Archived scope; pressed there, stays. |
 | **⌘/** | Open the Keyboard Shortcuts reference overlay. |
 | **⌘B** | Toggle the sidebar. |
