@@ -85,6 +85,7 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertEqual(app.remoteNotice?.message, "2 sessions left running on box")
         XCTAssertTrue(remote.stops.isEmpty, "a contact lists; it never stops")
         app.dismissRemoteNotice()
+        await settle { remote.unnoticed == 0 }
         XCTAssertEqual(remote.unnoticed, 0, "dismissed, it does not come back")
         XCTAssertNil(app.remoteNotice)
         XCTAssertEqual(RemoteCopy.leftRunningCount(1, host: "box"), "1 session left running on box")

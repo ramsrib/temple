@@ -16,6 +16,8 @@ final class FakeRemoteHost: RemoteSessionHost {
         var ended = false
         var leftRunning: RemoteLeftRunningReason?
         var resume: Bool
+        var confirmed = false
+        var dismissed = false
     }
 
     let hostName: String
@@ -26,48 +28,66 @@ final class FakeRemoteHost: RemoteSessionHost {
     var liveness: RemoteLiveness = .present
     var stopResult: RemoteStopResult = .stopped
     var master = true
-    /// Holds a stop until released (a quit's hung query), by handle.
+    /// Holds a stop until released (a quit's hung query), by handle; a
+    /// held stop that is cancelled throws, as one with no answer does.
     var stopGate: ((String) async -> Void)?
     var openError: Error?
+    var openGate: (() async -> Void)?
     /// Holds an exit check until released.
     var exitGate: (() async -> Void)?
+    var diagnosticsText: String?
+    var decision = false
+    private(set) var retired = false
 
-    private(set) var opens: [(sessionID: String, resume: Bool, directory: String, resumeAnyway: Bool)] = []
+    private(set) var opens: [(sessionID: String, resume: Bool, directory: String, resumeAnyway: Bool, startNew: Bool)] = []
     private(set) var collects: [String] = []
     private(set) var stops: [(handle: String, fromAttachedTab: Bool)] = []
     private(set) var leftRunningCalls: [(handle: String, reason: RemoteLeftRunningReason)] = []
     private(set) var abandoned: [String] = []
     private(set) var unproven: [String] = []
     private(set) var kept: [String] = []
+    private(set) var confirmations: [String] = []
+    private(set) var discarded: [String] = []
 
     init(_ name: String) { hostName = name }
 
     func availability(_ agent: Agent) -> LaunchAvailability { agent == .codex ? .unavailable(reason: "1b") : .available }
     func prepare(_ spec: AgentLaunchSpec) throws -> AgentLaunch { throw HostLaunchError.preparation("async only") }
 
-    func live(_ sessionID: String) -> Int? { runs.lastIndex { $0.sessionID == sessionID && !$0.ended } }
+    func live(_ sessionID: String) -> Int? { runs.lastIndex { $0.sessionID == sessionID && !$0.ended && !$0.dismissed } }
 
-    func open(agent: Agent, sessionID: String, resume: Bool, directory: String, resumeAnyway: Bool) async throws -> RemoteOpenPlan {
-        opens.append((sessionID, resume, directory, resumeAnyway))
+    func open(agent: Agent, sessionID: String, resume: Bool, directory: String, resumeAnyway: Bool,
+              startNew: Bool) async throws -> RemoteOpenResult {
+        opens.append((sessionID, resume, directory, resumeAnyway, startNew))
+        if let openGate { await openGate() }
         if let openError { throw openError }
-        if let index = live(sessionID), !resumeAnyway {
+        if let index = live(sessionID), !resumeAnyway, !startNew {
             runs[index].attachment += 1
             runs[index].leftRunning = nil
-            return RemoteOpenPlan(handle: runs[index].handle, attachment: runs[index].attachment, creating: false,
-                                  command: TerminalCommand(argv: ["ssh", "attach", runs[index].handle], cwd: "/Users/me"),
-                                  displayArgv: ["claude", "--resume", sessionID])
+            return .plan(RemoteOpenPlan(handle: runs[index].handle, attachment: runs[index].attachment, creating: false,
+                                        command: TerminalCommand(argv: ["ssh", "attach", runs[index].handle], cwd: "/Users/me"),
+                                        displayArgv: ["claude", "--resume", sessionID],
+                                        evidenceDirectory: "/home/u/evidence"))
         }
+        if decision, resume, !startNew, !resumeAnyway { return .needsDecision }
         counter += 1
-        let run = Run(handle: "h\(counter)", sessionID: sessionID, resume: resume)
+        let run = Run(handle: "h\(counter)", sessionID: sessionID, resume: resume && !startNew)
         runs.append(run)
-        return RemoteOpenPlan(handle: run.handle, attachment: 1, creating: true,
-                              command: TerminalCommand(argv: ["ssh", "create", run.handle], cwd: "/Users/me"),
-                              displayArgv: ["claude", resume ? "--resume" : "--session-id", sessionID])
+        return .plan(RemoteOpenPlan(handle: run.handle, attachment: 1, creating: true,
+                                    command: TerminalCommand(argv: ["ssh", "create", run.handle], cwd: "/Users/me"),
+                                    displayArgv: ["claude", run.resume ? "--resume" : "--session-id", sessionID]))
     }
 
-    func abandon(_ handle: String) { abandoned.append(handle) }
+    func abandon(_ handle: String) async { abandoned.append(handle) }
     func collect(_ handle: String) async -> RemoteLaunchOutcome { collects.append(handle); return collectResult }
-    func markCreationUnproven(_ handle: String) { unproven.append(handle) }
+    func diagnostics(_ handle: String) async -> String? { diagnosticsText }
+    func markCreationUnproven(_ handle: String) async { unproven.append(handle) }
+    func confirmConversation(_ handle: String) async { confirmations.append(handle) }
+
+    func discard(sessionID: String) async throws {
+        discarded.append(sessionID)
+        for index in runs.indices where runs[index].sessionID == sessionID { runs[index].dismissed = true }
+    }
 
     func exitCheck(_ handle: String) async -> RemoteLiveness {
         if let exitGate { await exitGate() }
@@ -75,40 +95,44 @@ final class FakeRemoteHost: RemoteSessionHost {
         return liveness
     }
 
-    func attachment(of handle: String) -> Int? { runs.first { $0.handle == handle }?.attachment }
+    func attachment(of handle: String) async -> Int? { runs.first { $0.handle == handle }?.attachment }
 
-    func stop(_ handle: String, fromAttachedTab: Bool) async -> RemoteStopResult {
+    func stop(_ handle: String, fromAttachedTab: Bool) async throws -> RemoteStopResult {
         stops.append((handle, fromAttachedTab))
         if let stopGate { await stopGate(handle) }
-        if Task.isCancelled { return .leftRunning(.quitDeadline, detail: nil) }
+        if Task.isCancelled { throw CancellationError() }
         guard let index = runs.firstIndex(where: { $0.handle == handle }) else { return stopResult }
         switch stopResult {
         case .stopped: runs[index].ended = true
         case .leftRunning(let reason, _): runs[index].leftRunning = reason
+        case .unrecorded: break
         }
         return stopResult
     }
 
-    func leaveRunning(_ handle: String, reason: RemoteLeftRunningReason) {
+    func leaveRunning(_ handle: String, reason: RemoteLeftRunningReason) async {
         leftRunningCalls.append((handle, reason))
-        if let index = runs.firstIndex(where: { $0.handle == handle }) { runs[index].leftRunning = reason }
+        if let index = runs.firstIndex(where: { $0.handle == handle }), !runs[index].ended { runs[index].leftRunning = reason }
     }
 
-    func liveRun(sessionID: String) -> RemoteRunSummary? {
-        live(sessionID).map { RemoteRunSummary(handle: runs[$0].handle, leftRunning: runs[$0].leftRunning != nil) }
-    }
-
+    func hasLiveRun(sessionID: String) -> Bool { live(sessionID) != nil }
+    func liveRunHandle(sessionID: String) async -> String? { live(sessionID).map { runs[$0].handle } }
     func hasLiveMaster() async -> Bool { master }
     func manualStopCommand(handle: String) -> String { "tmux -L temple kill-session -t temple-\(handle)" }
-    var listing: RemoteSessionListing = .sessions([])
-    func listSessions() async -> RemoteSessionListing { listing }
-    func stopListed(_ name: String) async -> RemoteStopResult { stopResult }
-    func keep(_ handle: String) { kept.append(handle) }
+    var tracked: (sessions: [RemoteTrackedSession], checked: Bool) = ([], true)
+    func trackedSessions() async -> (sessions: [RemoteTrackedSession], checked: Bool) { tracked }
+    func keep(_ handle: String) async { kept.append(handle) }
     var unnoticed = 0
-    func unnoticedLeftRunningCount() -> Int { unnoticed }
-    func noticeLeftRunning() { unnoticed = 0 }
+    var hostAnswers = true
+    func contactLeftRunning() async -> Int? { hostAnswers ? unnoticed : nil }
+    func noticeLeftRunning() async { unnoticed = 0 }
     var folder: RemoteFolderCheck = .missing
-    func checkFolder(_ path: String) async -> RemoteFolderCheck { folder }
+    var folderGate: (() async -> Void)?
+    func checkFolder(_ path: String) async -> RemoteFolderCheck {
+        if let folderGate { await folderGate() }
+        return folder
+    }
+    func retire() { retired = true }
 }
 
 @MainActor
@@ -186,7 +210,7 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["ssh", "attach", "old"])
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertTrue(remote.collects.isEmpty, "an attach runs no pane and produces no record")
-        XCTAssertTrue(recordedDirectories.isEmpty)
+        XCTAssertEqual(recordedDirectories.map(\.2), ["/home/u/evidence"], "only the creation's persisted evidence")
     }
 
     func testARefusedOpenSpawnsNothingAndSaysWhy() async throws {
@@ -346,7 +370,7 @@ final class RemoteLifecycleTests: XCTestCase {
         other.activity = .idle
         model.closeTab(other.id)
         await settle(self.notices.count == 2)
-        XCTAssertEqual(notices.last, "Left running: someone else is attached to it. Stop it under Sessions on box.")
+        XCTAssertEqual(notices.last, "Left running: another terminal is attached to it. Stop it under Sessions on box.")
     }
 
     func testClosingAWorkingTabAsksDetachOrStop() async throws {
@@ -403,14 +427,47 @@ final class RemoteLifecycleTests: XCTestCase {
     func testStopOnHostFromARowWithoutATab() async throws {
         remote.runs = [.init(handle: "h9", sessionID: "s9", resume: true)]
         rows["s9"] = Fixture.row("s9", project: "/p", host: hostID)
-        XCTAssertEqual(model.remoteRun(sessionID: "s9", host: hostID)?.handle, "h9")
+        XCTAssertTrue(model.hasRemoteRun(sessionID: "s9", host: hostID))
         model.stopRemoteSession(sessionID: "s9", host: hostID)
         await settle(self.remote.stops.count == 1)
         XCTAssertEqual(remote.stops.first?.fromAttachedTab, false)
-        XCTAssertNil(model.remoteRun(sessionID: "s9", host: hostID))
+        await settle(!self.model.hasRemoteRun(sessionID: "s9", host: hostID))
     }
 
-    // MARK: Quit
+    // MARK: Ownership
+
+    private func drain(timeout: TimeInterval = 0.5) async -> TimeInterval {
+        let plan = model.quitDrainPlan()
+        let done = expectation(description: "drained")
+        let started = Date()
+        SessionRuntimeController(gracefulTimeout: timeout).drainAll(graceful: plan.graceful, detach: plan.detach,
+                                                                    remote: model.remoteOperations) { done.fulfill() }
+        await fulfillment(of: [done], timeout: 5)
+        return Date().timeIntervalSince(started)
+    }
+
+    /// A close's stop is owned past the tab: the quit waits for it inside
+    /// its window and, at the deadline, records it left running.
+    func testAClosesStopInFlightIsOwnedThroughTheQuit() async throws {
+        let gate = Gate()
+        remote.stopGate = { _ in await gate.wait() }
+        let tab = await openRow()
+        tab.activity = .idle
+        model.closeTab(tab.id)
+        XCTAssertFalse(model.tabs.contains { $0 === tab })
+        await settle(self.remote.stops.count == 1)
+        XCTAssertEqual(model.remoteOperations.stopsOutstanding, 1)
+        model.prepareForQuit()
+        let elapsed = await drain()
+        XCTAssertLessThan(elapsed, 1.5)
+        await settle(self.remote.leftRunningCalls.count == 1)
+        XCTAssertEqual(remote.leftRunningCalls.first?.reason, .quitDeadline)
+        let written = await model.remoteOperations.waitForAll(until: Date().addingTimeInterval(1))
+        XCTAssertFalse(written, "the hung stop is still owned (its answer, if it came, would be written)")
+        await gate.open()
+        let finished = await model.remoteOperations.waitForAll(until: Date().addingTimeInterval(2))
+        XCTAssertTrue(finished)
+    }
 
     func testTheQuitDrainDetachesWorkingStopsIdleAndBoundsHungStops() async throws {
         let working = await openRow("w")
@@ -425,20 +482,13 @@ final class RemoteLifecycleTests: XCTestCase {
             if handle == "h3" { await gate.wait() }
         }
         model.prepareForQuit()
-        let plan = model.quitDrainPlan()
-        XCTAssertEqual(plan.graceful.count, 0)
-        XCTAssertEqual(plan.detach.count, 1)
-        XCTAssertEqual(plan.stops.count, 2)
-        let done = expectation(description: "drained")
-        let started = Date()
-        SessionRuntimeController(gracefulTimeout: 0.5).drainAll(graceful: plan.graceful, detach: plan.detach,
-                                                                stops: plan.stops) { done.fulfill() }
+        let elapsed = await drain()
         XCTAssertTrue(workingSurface.didTerminate, "a working agent's client goes at once, with no exit input")
         XCTAssertFalse(workingSurface.didRequestGracefulExit)
-        await fulfillment(of: [done], timeout: 3)
-        XCTAssertLessThan(Date().timeIntervalSince(started), 1.5)
+        XCTAssertLessThan(elapsed, 1.5)
         XCTAssertEqual(remote.stops.map(\.handle).sorted(), ["h2", "h3"])
         XCTAssertTrue(remote.stops.allSatisfy(\.fromAttachedTab))
+        await settle(self.remote.leftRunningCalls.count == 1)
         XCTAssertEqual(remote.leftRunningCalls.map(\.reason), [.quitDeadline])
         XCTAssertEqual(remote.leftRunningCalls.first?.handle, "h3")
         XCTAssertTrue(remote.runs.first { $0.handle == "h2" }!.ended)
@@ -446,24 +496,136 @@ final class RemoteLifecycleTests: XCTestCase {
         await gate.open()
     }
 
+    /// Planned from the run and the tab, not only from a live client: an
+    /// agent whose client had already ended while it was idle is stopped
+    /// too (with no Temple client attached); one last seen working is not.
+    func testAQuitStopsADisconnectedIdleAgentButNotADisconnectedWorkingOne() async throws {
+        let idle = await openRow("i")
+        idle.activity = .idle
+        let working = await openRow("w")
+        working.activity = .running
+        try await Task.sleep(for: .milliseconds(600))
+        idle.surface.map { ($0 as? FakeTerminalSurface)?.simulateExit(status: 0) }
+        working.surface.map { ($0 as? FakeTerminalSurface)?.simulateExit(status: 0) }
+        await settle(idle.remote?.phase == .disconnected && working.remote?.phase == .disconnected)
+        model.prepareForQuit()
+        _ = await drain()
+        XCTAssertEqual(remote.stops.map(\.handle), [idle.remote!.handle!])
+        XCTAssertEqual(remote.stops.first?.fromAttachedTab, false)
+    }
+
     func testAQuitDoesNotAskAHostWithoutALiveMaster() async throws {
         let idle = await openRow("i")
         idle.activity = .idle
         remote.master = false
         model.prepareForQuit()
-        let plan = model.quitDrainPlan()
-        let done = expectation(description: "drained")
-        SessionRuntimeController(gracefulTimeout: 0.5).drainAll(graceful: plan.graceful, detach: plan.detach,
-                                                                stops: plan.stops) { done.fulfill() }
-        await fulfillment(of: [done], timeout: 3)
+        _ = await drain()
+        await settle(!self.remote.leftRunningCalls.isEmpty)
         XCTAssertTrue(remote.stops.isEmpty)
         XCTAssertEqual(remote.leftRunningCalls.map(\.reason), [.hostDidNotAnswer])
     }
 
-    func testAQuitWithOnlyStopsAndNoTabsStillCompletesAsynchronously() {
+    func testAQuitWithNothingStillCompletesAsynchronously() {
         var completed = false
-        SessionRuntimeController(gracefulTimeout: 0.2).drainAll(graceful: [], detach: [], stops: []) { completed = true }
+        SessionRuntimeController(gracefulTimeout: 0.2).drainAll(graceful: [], detach: [], remote: RemoteOperations()) {
+            completed = true
+        }
         XCTAssertFalse(completed, "never synchronously")
+    }
+
+    /// A host removed or edited: its operations are cancelled (a stop is
+    /// recorded left running), its open is not spawned even when its answer
+    /// comes, and its connected clients are detached.
+    func testRetiringAHostCancelsItsWorkAndDetachesItsClients() async throws {
+        let connected = await openRow("c")
+        let surface = try XCTUnwrap(connected.surface as? FakeTerminalSurface)
+        let openGate = Gate()
+        remote.openGate = { await openGate.wait() }
+        let row = Fixture.row("o", project: "/p", host: hostID)
+        rows["o"] = row
+        model.openSession(row)
+        let opening = try XCTUnwrap(model.activeTab)
+        let stopGate = Gate()
+        remote.stopGate = { _ in await stopGate.wait() }
+        model.stopRemoteSession(sessionID: "c", host: hostID)
+        await settle(self.remote.stops.count == 1)
+        model.retireRemoteHost(hostID)
+        XCTAssertTrue(remote.retired)
+        XCTAssertTrue(surface.didTerminate)
+        await settle(self.remote.leftRunningCalls.count == 1)
+        XCTAssertEqual(remote.leftRunningCalls.first?.reason, .stopNotAcknowledged)
+        await openGate.open()
+        await stopGate.open()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(opening.surface, "an open answered for a retired host spawns nothing")
+        XCTAssertEqual(factory.created.count, 1)
+    }
+
+    func testAFinalCollectionAfterACloseChangesNothing() async throws {
+        let gate = Gate()
+        remote.exitGate = { await gate.wait() }
+        remote.collectResult = .nothing
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(100))
+        remote.collectResult = .ok(directory: "/home/u/late")
+        factory.created.last?.simulateExit(status: 0)
+        model.closeTab(tab.id)
+        await gate.open()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(recordedDirectories.contains { $0.2 == "/home/u/late" })
+    }
+
+    // MARK: Unconfirmed conversations, diagnostics
+
+    func testAnUnconfirmedConversationOffersStartANewSessionOrDiscard() async throws {
+        remote.decision = true
+        var discardedRows: [String] = []
+        model.discardHandler = { id, _ in discardedRows.append(id) }
+        let row = Fixture.row("u", project: "/p", host: hostID)
+        rows["u"] = row
+        model.openSession(row)
+        let tab = try XCTUnwrap(model.activeTab)
+        await settle(tab.remote?.phase == .needsDecision)
+        XCTAssertTrue(factory.created.isEmpty, "never resumed blindly")
+        model.startNewRemoteSession(tab)
+        await settle(tab.hasLiveProcess)
+        XCTAssertEqual(remote.opens.last?.startNew, true)
+        XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["ssh", "create", "h1"])
+        // Discard instead, on another.
+        let other = Fixture.row("v", project: "/p", host: hostID)
+        rows["v"] = other
+        model.openSession(other)
+        let second = try XCTUnwrap(model.activeTab)
+        await settle(second.remote?.phase == .needsDecision)
+        model.discardRemoteSession(second)
+        XCTAssertFalse(model.tabs.contains { $0 === second })
+        await settle(discardedRows == ["v"])
+        XCTAssertEqual(remote.discarded, ["v"])
+    }
+
+    func testTheFirstInputConfirmsTheConversation() async throws {
+        let tab = await openRow()
+        let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
+        model.surfaceDidSubmitInput(surface)
+        model.surfaceDidSubmitInput(surface)
+        await settle(self.remote.confirmations == ["h1"])
+        XCTAssertEqual(remote.confirmations, ["h1"], "once")
+    }
+
+    func testAnAgentThatFailsAtOnceShowsWhatItPrinted() async throws {
+        remote.liveness = .absent
+        remote.diagnosticsText = "\u{1b}[2J\u{1b}[1;31mError:\u{1b}[0m No conversation found with session ID: s1\r\n\u{1b}]0;title\u{07}"
+        let tab = await openRow()
+        factory.created.last?.simulateExit(status: 1)
+        await settle(!(tab.remote?.diagnostics ?? []).isEmpty)
+        XCTAssertEqual(tab.remote?.phase, .exitedEarly)
+        XCTAssertEqual(tab.remote?.diagnostics, ["Error: No conversation found with session ID: s1"])
+    }
+
+    func testAnAttachReplaysThePersistedEvidence() async throws {
+        remote.runs = [.init(handle: "old", sessionID: "s1", resume: false)]
+        _ = await openRow()
+        await settle(self.recordedDirectories.contains { $0.2 == "/home/u/evidence" })
     }
 
     func testWorkingCountsAreLocalOnlyAndNameTheHosts() async throws {

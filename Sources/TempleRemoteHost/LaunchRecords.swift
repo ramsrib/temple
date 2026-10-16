@@ -39,42 +39,59 @@ public struct ClientFailure: Sendable, Equatable {
     public var line: String
 }
 
-/// Both records as one fetch found them.
+/// Both records as one fetch found them, and the end of what the pane
+/// showed (its diagnostics, for an agent that failed at once).
 public struct CollectedRecords: Sendable, Equatable {
     public var pane: PaneRecord?
     public var client: ClientFailure?
-    public init(pane: PaneRecord? = nil, client: ClientFailure? = nil) { self.pane = pane; self.client = client }
+    /// The last 4 KiB of the pane's first 64 KiB of output, raw.
+    public var output: String?
+    public init(pane: PaneRecord? = nil, client: ClientFailure? = nil, output: String? = nil) {
+        self.pane = pane; self.client = client; self.output = output
+    }
     public var isEmpty: Bool { pane == nil && client == nil }
 }
 
-/// Fetching and acknowledging a launch's records by the name the run row
-/// persisted, so an `ok` written but never collected (a quit or crash before
-/// the first fetch, a dropped connection) is recovered on the next Open.
-/// Records live 24 hours on the host (the launch's stale sweep).
+/// Fetching and acknowledging a launch's records by the locator the run row
+/// persisted (`~/.temple/launch/<marker>`, the same for every connection),
+/// so an `ok` written but never collected (a quit or crash before the first
+/// fetch, a dropped connection) is recovered on the next Open. Every
+/// operation checks the directory first (`RecordDirectory`). Records live
+/// 24 hours on the host (the launch's stale sweep).
 public enum LaunchRecords {
-    static let directoryLine = #"mdir=${TMPDIR:-/tmp}/temple-launch-$(id -u)"#
-
     /// Argument: the marker. Prints each record that exists as a header
-    /// line (`pane <bytes>` or `client <bytes>`) followed by exactly that
-    /// many bytes, then `end`.
-    static let fetchScript = """
-    m=$1; \(directoryLine)
-    for f in pane client; do
-      p=$mdir/$m; [ "$f" = client ] && p=$mdir/$m.client
-      [ -f "$p" ] || continue
+    /// line (`pane <bytes>`, `client <bytes>`, `output <bytes>`) followed by
+    /// exactly that many bytes, then `end`; `unsafe` when the directory is
+    /// not a private one of this user's.
+    static let fetchScript = RecordDirectory.functions + "\n" + """
+    m=$1
+    rd=$(temple_record_dir) || { echo unsafe; exit 0; }
+    for f in pane client output; do
+      case $f in pane) p=$rd/$m ;; client) p=$rd/$m.client ;; *) p=$rd/$m.out ;; esac
+      [ -f "$p" ] && [ ! -L "$p" ] || continue
+      if [ "$f" = output ]; then
+        rm -f "$rd/$m.tail"; ( set -C; tail -c 4096 "$p" > "$rd/$m.tail" ) 2>/dev/null || continue
+        p=$rd/$m.tail
+      fi
       n=$(wc -c < "$p" | tr -d ' ')
       printf '%s %s\\n' "$f" "$n"
       cat "$p"
     done
+    rm -f "$rd/$m.tail"
     printf 'end\\n'
     """
 
-    /// Argument: the marker. Deletes both records, after their evidence has
-    /// been written on this side, and the creating client's stderr file,
-    /// which a client hung up while attached never got to remove.
-    static let acknowledgeScript = """
-    m=$1; \(directoryLine)
-    rm -f "$mdir/$m" "$mdir/$m.client" "$mdir/$m.tmp" "$mdir/$m.client.tmp" "$mdir/$m.err"
+    /// Arguments: the marker, then `all` to drop the pane's diagnostics too.
+    /// Deletes the records once their evidence is written on this side, and
+    /// the creating client's stderr file, which a client hung up while
+    /// attached never got to remove. The diagnostics stay until the run's
+    /// exit has been handled.
+    static let acknowledgeScript = RecordDirectory.functions + "\n" + """
+    m=$1
+    rd=$(temple_record_dir) || exit 0
+    rm -f "$rd/$m" "$rd/$m.client" "$rd/$m.tmp" "$rd/$m.client.tmp" "$rd/$m.err"
+    [ "$2" = all ] && rm -f "$rd/$m.out"
+    exit 0
     """
 
     public static let deadline: TimeInterval = 5
@@ -82,10 +99,14 @@ public enum LaunchRecords {
     public enum FetchError: Error, Equatable, LocalizedError {
         case transport(String)
         case malformed(String)
+        /// The record directory is not a private one of this user's: its
+        /// records are not evidence.
+        case unsafeDirectory
         public var errorDescription: String? {
             switch self {
             case .transport(let line): line
             case .malformed(let line): "the launch record could not be read: \(line)"
+            case .unsafeDirectory: "~/.temple/launch on the host is not a private folder of this account's"
             }
         }
     }
@@ -101,12 +122,14 @@ public enum LaunchRecords {
         guard output.reachedCommand, output.status == 0 else {
             throw FetchError.transport(output.firstErrorLine ?? "ssh exited with status \(output.status)")
         }
+        if output.stdout == "unsafe\n" { throw FetchError.unsafeDirectory }
         return try parseFetch(Data(output.stdout.utf8))
     }
 
-    public static func acknowledge(marker: String, using exec: RemoteExec) async {
+    /// `all`: the diagnostics go too (the run's exit has been handled).
+    public static func acknowledge(marker: String, all: Bool = false, using exec: RemoteExec) async {
         precondition(RemoteQuoting.isSafeToken(marker))
-        _ = try? await exec.run(script: acknowledgeScript, args: [marker], deadline: deadline)
+        _ = try? await exec.run(script: acknowledgeScript, args: [marker, all ? "all" : ""], deadline: deadline)
     }
 
     static func parseFetch(_ data: Data) throws -> CollectedRecords {
@@ -125,6 +148,7 @@ public enum LaunchRecords {
             switch parts[0] {
             case "pane": records.pane = parsePane(body)
             case "client": records.client = parseClient(body)
+            case "output": records.output = body
             default: throw FetchError.malformed(header)
             }
         }
@@ -182,11 +206,18 @@ public enum FolderCheck: Sendable, Equatable {
     case cannotEnter(String)
     case transport(String)
 
+    /// `pwd -P` is captured with a sentinel, so a folder whose name ends in
+    /// a newline keeps it.
     static let script = """
-    d=$1
+    d=$1; NL='
+    '
     case $d in "~") d=$HOME;; "~/"*) d=$HOME/${d#"~/"};; esac
     [ -e "$d" ] || { echo missing; exit 0; }
-    if e=$(cd -- "$d" 2>&1 >/dev/null); then cd -- "$d" && printf 'ok\\t%s\\n' "$(pwd -P)"; else printf 'denied\\t%s\\n' "$e"; fi
+    if e=$(cd -- "$d" 2>&1 >/dev/null); then
+      cd -- "$d" || exit 0
+      w=$(pwd -P; printf x); w=${w%x}; w=${w%"$NL"}
+      printf 'ok\\t%s\\n' "$w"
+    else printf 'denied\\t%s\\n' "$e"; fi
     """
 
     public static let deadline: TimeInterval = 10

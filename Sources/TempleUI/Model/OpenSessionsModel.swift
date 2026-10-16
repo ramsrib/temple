@@ -80,6 +80,15 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     public var launchDirectoryHandler: ((_ sessionID: String, _ host: HostID, _ directory: String) -> Void)?
     /// A session on a host was left running when it was closed: one notice.
     public var remoteNoticeHandler: ((_ host: HostID, _ message: String) -> Void)?
+    /// Discard on a session whose conversation was never confirmed: the
+    /// app lets its row go (or archives it, if the row is the user's).
+    public var discardHandler: ((_ sessionID: String, _ host: HostID) -> Void)?
+    /// Every asynchronous operation on a host, owned through close, host
+    /// changes and quit.
+    public let remoteOperations = RemoteOperations()
+    /// Tabs whose host was removed or edited while connected: their exit
+    /// asks nothing of the old host.
+    var hostRetiredTabs: Set<SessionTab.ID> = []
     private var awaitingExitDiagnosis: Set<SessionTab.ID> = []
 
     /// Transitional lookup: legacy callers, restore and reopen prefer the durable row.
@@ -1175,6 +1184,7 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
     public func surfaceDidSubmitInput(_ surface: TerminalSurface) {
         guard !isQuitting, let tab = tab(for: surface), tab.kind == .session else { return }
         tab.inputSubmitted = true
+        confirmRemoteConversation(tab)
         if let sid = tab.sessionID { touchHandler?(sid, tab.host, nil) }
         tab.activity = .running
         // Restart the settle clock so it can decay again once work finishes.
@@ -1230,9 +1240,10 @@ extension OpenSessionsModel {
         launcherForHost(tab.host) as? RemoteSessionHost
     }
 
-    /// The host side of a session row: its live run, for "Stop on <host>".
-    public func remoteRun(sessionID: String, host: HostID) -> RemoteRunSummary? {
-        (launcherForHost(host) as? RemoteSessionHost)?.liveRun(sessionID: sessionID)
+    /// Whether a session on a host has a run there that is not Ended (as
+    /// last read), for "Stop on <host>".
+    public func hasRemoteRun(sessionID: String, host: HostID) -> Bool {
+        (launcherForHost(host) as? RemoteSessionHost)?.hasLiveRun(sessionID: sessionID) ?? false
     }
 
     static func reconnectable(_ state: RemoteTabState) -> Bool {
@@ -1243,10 +1254,12 @@ extension OpenSessionsModel {
     }
 
     /// Opens a tab on a host: the host decides attach or create from the
-    /// run (recovering an uncollected record first) and writes the run
-    /// before anything spawns. A late answer for an earlier open, a closed
-    /// tab or a quit spawns nothing, and a creation it planned is abandoned.
-    func ensureRemoteSurface(for tab: SessionTab, on host: RemoteSessionHost, resumeAnyway: Bool) {
+    /// run (one transaction, recovering an uncollected record first) and
+    /// writes the run before anything spawns. The open is owned: a host
+    /// change or the quit cancels it, a late answer for an earlier open, a
+    /// closed tab or a replaced launcher spawns nothing, and a creation it
+    /// planned is abandoned durably.
+    func ensureRemoteSurface(for tab: SessionTab, on host: RemoteSessionHost, resumeAnyway: Bool, startNew: Bool = false) {
         // One open at a time: a second activation while the first decides
         // would race it for the same run.
         if tab.remote?.phase == .opening { return }
@@ -1270,26 +1283,33 @@ extension OpenSessionsModel {
         let agent = tab.agent, directory = tab.projectPath
         // A tab that never sent anything started no transcript: its minted
         // id is used again, never resumed.
-        let resume = tab.isResume || tab.inputSubmitted || resumeAnyway
-        Task { @MainActor [weak self, weak tab] in
-            let plan: RemoteOpenPlan
+        let resume = (tab.isResume || tab.inputSubmitted || resumeAnyway) && !startNew
+        remoteOperations.run(host: tab.host, .open) { [weak self, weak tab] in
+            let result: RemoteOpenResult
             do {
-                plan = try await host.open(agent: agent, sessionID: sid, resume: resume, directory: directory,
-                                           resumeAnyway: resumeAnyway)
+                result = try await host.open(agent: agent, sessionID: sid, resume: resume, directory: directory,
+                                             resumeAnyway: resumeAnyway, startNew: startNew)
             } catch {
-                guard let self, let tab, tab.remote?.openToken == token, self.tabs.contains(where: { $0 === tab }) else { return }
+                guard let self, let tab, tab.remote?.openToken == token, self.tabs.contains(where: { $0 === tab }),
+                      !(error is CancellationError) else { return }
                 TempleUILog.launch.error("remote open refused: \(error.localizedDescription, privacy: .public)")
                 tab.remote = nil
                 tab.launchPreparationError = error.localizedDescription
                 tab.activity = .exited(status: -1)
                 return
             }
-            guard let self, let tab, !self.isQuitting, tab.remote?.openToken == token, tab.surface == nil,
-                  self.tabs.contains(where: { $0 === tab }) else {
-                if plan.creating { host.abandon(plan.handle) }
+            guard let self, let tab, !self.isQuitting, !Task.isCancelled, tab.remote?.openToken == token,
+                  tab.surface == nil, self.tabs.contains(where: { $0 === tab }),
+                  (self.launcherForHost(tab.host) as AnyObject?) === (host as AnyObject) else {
+                if case .plan(let plan) = result, plan.creating { await host.abandon(plan.handle) }
                 return
             }
-            self.spawnRemote(tab, plan: plan, host: host)
+            switch result {
+            case .needsDecision:
+                tab.remote?.phase = .needsDecision
+            case .plan(let plan):
+                self.spawnRemote(tab, plan: plan, host: host)
+            }
         }
     }
 
@@ -1297,6 +1317,7 @@ extension OpenSessionsModel {
         tab.remote?.handle = plan.handle
         tab.remote?.attachment = plan.attachment
         tab.remote?.creating = plan.creating
+        tab.remote?.diagnostics = []
         tab.setLaunch(AgentLaunch(command: plan.command, displayArgv: plan.displayArgv, result: nil))
         let surface = surfaceFactory.makeSurface(appearance: appearanceProvider())
         surface.delegate = self
@@ -1307,37 +1328,44 @@ extension OpenSessionsModel {
             try surface.start(TerminalIdentity.apply(to: plan.command))
         } catch {
             TempleUILog.launch.error("remote spawn failed: \(String(describing: error), privacy: .public)")
-            if plan.creating { host.abandon(plan.handle) }
+            if plan.creating { remoteOperations.run(host: tab.host, .write) { await host.abandon(plan.handle) } }
             tab.remote?.phase = .failedToStart(directory: tab.projectPath)
             tab.commandWasSuspect = true
             tab.activity = .exited(status: -1)
             return
         }
-        // Only a created pane reports a folder; an attach claims none.
+        // Only a created pane reports a folder; an attach replays what its
+        // creation's pane reported, once persisted.
         tab.launchObservation = SessionTab.LaunchObservation(at: spawnedAt, directory: nil)
         if let sid = tab.sessionID, !isQuitting { touchHandler?(sid, tab.host, spawnedAt) }
         tab.activity = .running
         lastTitleChange[tab.id] = Date()
         scheduleSettle(for: tab)
-        if plan.creating { pollRecords(tab, host: host, handle: plan.handle, attachment: plan.attachment) }
+        if tab.inputSubmitted { confirmRemoteConversation(tab, force: true) }
+        if plan.creating {
+            pollRecords(tab, host: host, handle: plan.handle, attachment: plan.attachment)
+        } else if let directory = plan.evidenceDirectory {
+            recordRemoteDirectory(tab, directory)
+        }
     }
 
     /// While the tab is connected, the creation's `ok` is fetched on a
     /// bounded schedule; the folder is recorded the moment it arrives.
     private func pollRecords(_ tab: SessionTab, host: RemoteSessionHost, handle: String, attachment: Int) {
         let delays = recordPollDelays
-        Task { @MainActor [weak self, weak tab] in
+        remoteOperations.run(host: tab.host, .collect) { [weak self, weak tab] in
             for delay in delays {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                guard let self, let tab, !self.isQuitting, tab.remote?.handle == handle,
+                guard let self, let tab, !Task.isCancelled, !self.isQuitting, tab.remote?.handle == handle,
                       tab.remote?.attachment == attachment, tab.remote?.phase == .connected else { return }
                 let outcome = await host.collect(handle)
-                guard tab.remote?.handle == handle, tab.remote?.attachment == attachment, !self.isQuitting else { return }
+                guard !Task.isCancelled, !self.isQuitting, self.tabs.contains(where: { $0 === tab }),
+                      tab.remote?.handle == handle, tab.remote?.attachment == attachment else { return }
                 switch outcome {
                 case .ok(let directory):
                     self.recordRemoteDirectory(tab, directory)
                     return
-                case .failedCD, .clientFailed:
+                case .failedCD, .clientFailed, .storage:
                     return
                 case .nothing, .transport:
                     continue
@@ -1388,14 +1416,30 @@ extension OpenSessionsModel {
         persist()
     }
 
+    /// The first time a Temple tab sends a remote agent something, its
+    /// conversation is recorded as confirmed (a stopped session whose
+    /// conversation was never confirmed is not resumed blindly).
+    func confirmRemoteConversation(_ tab: SessionTab, force: Bool = false) {
+        guard let host = remoteHost(for: tab), let handle = tab.remote?.handle,
+              force || tab.remote?.conversationConfirmed == false else { return }
+        tab.remote?.conversationConfirmed = true
+        remoteOperations.run(host: tab.host, .write) { await host.confirmConversation(handle) }
+    }
+
     // MARK: Exit
 
     /// The tab's ssh is a tmux client: its exit proves nothing. The final
     /// collection, then the exit check on the pinned server, decide; every
-    /// answer is dropped if the run has a newer attachment, the tab was
-    /// closed, or the app is quitting.
+    /// tab-side effect is dropped if the run has a newer attachment, the tab
+    /// was closed, the host changed or the app is quitting.
     func handleRemoteExit(_ tab: SessionTab, surface: TerminalSurface, status: Int32) {
         if let sid = tab.sessionID { touchHandler?(sid, tab.host, nil) }
+        if hostRetiredTabs.remove(tab.id) != nil {
+            // The host was removed or edited: nothing is asked of the old one.
+            tab.remote?.phase = tab.remote?.handle == nil ? .opening : .disconnected
+            tab.activity = .exited(status: status)
+            return
+        }
         let userClosed = closingTabIDs.remove(tab.id) != nil
         if userClosed {
             // Detach and Stop now remove the tab; an explicit Stop keeps it
@@ -1409,51 +1453,59 @@ extension OpenSessionsModel {
         }
         let attachment = state.attachment, creating = state.creating, token = state.openToken
         let age = tab.spawnedAt.map { Date().timeIntervalSince($0) } ?? .infinity
+        tab.remote?.lastSeenWorking = tab.activity == .running
         cancelSettle(for: tab.id)
         tab.remote?.phase = .checking
         tab.activity = .exited(status: status)
-        Task { @MainActor [weak self, weak tab] in
+        let grace = earlyExitGraceSeconds
+        remoteOperations.run(host: tab.host, .exitCheck) { [weak self, weak tab] in
+            @MainActor func current() async -> SessionTab? {
+                guard let self, let tab, !Task.isCancelled, !self.isQuitting, self.tabs.contains(where: { $0 === tab }),
+                      tab.remote?.openToken == token else { return nil }
+                guard await host.attachment(of: handle) == attachment, tab.remote?.openToken == token else { return nil }
+                return tab
+            }
             var outcome = RemoteLaunchOutcome.nothing
             if creating {
                 outcome = await host.collect(handle)
                 switch outcome {
                 case .ok(let directory):
-                    if let self, let tab, tab.remote?.openToken == token { self.recordRemoteDirectory(tab, directory) }
+                    if let tab = await current() { self?.recordRemoteDirectory(tab, directory) }
                 case .nothing, .transport, .clientFailed:
-                    host.markCreationUnproven(handle)
-                case .failedCD:
+                    await host.markCreationUnproven(handle)
+                case .failedCD, .storage:
                     break
                 }
             }
-            @MainActor func current() -> SessionTab? {
-                guard let self, let tab, !self.isQuitting, self.tabs.contains(where: { $0 === tab }),
-                      tab.remote?.openToken == token, host.attachment(of: handle) == attachment else { return nil }
-                return tab
-            }
             if case .failedCD(let directory) = outcome {
-                guard let tab = current() else { return }
+                guard let tab = await current() else { return }
                 tab.remote?.phase = .failedToStart(directory: directory)
                 tab.launchFailure = LaunchFailure(category: .cdFailed,
                                                   message: RemoteCopy.cannotEnter(directory, host: host.hostName))
                 return
             }
             let liveness = await host.exitCheck(handle)
-            guard let self, let tab = current() else { return }
+            guard let tab = await current(), let self else { return }
             switch liveness {
             case .present:
                 tab.remote?.phase = .disconnected
             case .unknown(let reason):
                 tab.remote?.phase = .unknown(reason: reason)
             case .absent:
-                if !creating, !state.resumedAfterAbsence, age < self.earlyExitGraceSeconds, tab.sessionID != nil {
+                if !creating, !state.resumedAfterAbsence, age < grace, tab.sessionID != nil {
                     // The attach found nothing there: the end is proven, so
                     // the session resumes from its transcript, once.
                     tab.remote?.resumedAfterAbsence = true
                     tab.dropSurface()
                     self.ensureSurface(for: tab)
-                } else if creating, age < self.earlyExitGraceSeconds {
-                    // An agent that died at once keeps its tab, as locally.
+                } else if age < grace {
+                    // An agent that died at once keeps its tab, with what it
+                    // printed when that can be had.
                     tab.remote?.phase = .exitedEarly
+                    let raw = await host.diagnostics(handle)
+                    if let raw, let tab = await current() {
+                        tab.remote?.diagnostics = RemoteCopy.diagnosticLines(raw)
+                    }
                 } else {
                     // The agent finished: the tab closes, as a local one does.
                     self.removeTab(tab.id)
@@ -1462,7 +1514,7 @@ extension OpenSessionsModel {
         }
     }
 
-    // MARK: Reconnect, Resume anyway
+    // MARK: Reconnect, Resume anyway, the unconfirmed conversation
 
     /// Opens a disconnected tab again: an attach, never a creation, while
     /// the run is not Ended.
@@ -1481,6 +1533,7 @@ extension OpenSessionsModel {
         tab.dropSurface()
         tab.launchPreparationError = nil
         tab.activity = .idle
+        tab.remote?.phase = .disconnected
         ensureRemoteSurface(for: tab, on: host, resumeAnyway: true)
     }
 
@@ -1490,12 +1543,41 @@ extension OpenSessionsModel {
         return RemoteCopy.resumeAnyway(host.hostName, stopCommand: host.manualStopCommand(handle: handle))
     }
 
+    /// Start a new session, for a session stopped with its conversation
+    /// unconfirmed: a fresh agent under the same id, never a resume.
+    public func startNewRemoteSession(_ tab: SessionTab) {
+        guard let host = remoteHost(for: tab), tab.remote?.phase == .needsDecision, !isQuitting else { return }
+        tab.dropSurface()
+        tab.launchPreparationError = nil
+        tab.activity = .idle
+        tab.remote?.phase = .disconnected
+        ensureRemoteSurface(for: tab, on: host, resumeAnyway: false, startNew: true)
+    }
+
+    /// Discard, for the same: its runs are dismissed and its row let go
+    /// (or archived, if the user named or kept it). The tab closes.
+    public func discardRemoteSession(_ tab: SessionTab) {
+        guard let host = remoteHost(for: tab), let sid = tab.sessionID, tab.remote?.phase == .needsDecision else { return }
+        let hostID = tab.host
+        removeTab(tab.id)
+        forgetClosedTabs(sessionID: sid)
+        remoteOperations.run(host: hostID, .write) { [weak self] in
+            do {
+                try await host.discard(sessionID: sid)
+                self?.discardHandler?(sid, hostID)
+            } catch {
+                self?.remoteNoticeHandler?(hostID, RemoteCopy.unrecorded(host.hostName, detail: error.localizedDescription))
+            }
+        }
+    }
+
     // MARK: Close
 
     enum RemoteClose {
         /// ⌘W, ✕, the CLI: an idle agent is stopped now; a tab that is not
-        /// connected stops it if the host answers. Either way the tab goes,
-        /// and a stop not confirmed leaves it running with one notice.
+        /// connected stops it if the host answers. Either way the tab goes;
+        /// the stop stays owned until its outcome is written, and a stop not
+        /// confirmed leaves it running with one notice.
         case stopIfRunning
         /// The working prompt's Detach: the agent keeps working.
         case detach
@@ -1560,11 +1642,8 @@ extension OpenSessionsModel {
             detachClient()
             removeTab(tab.id)
             guard mayRun, let host, let handle else { return }
-            Task { @MainActor [weak self] in
-                let result = await host.stop(handle, fromAttachedTab: live)
-                guard case .leftRunning(let reason, let detail) = result else { return }
-                self?.remoteNoticeHandler?(hostID, RemoteCopy.leftRunning(host.hostName, agent: agent, reason: reason,
-                                                                          detail: detail))
+            startStop(host: host, hostID: hostID, handle: handle, fromAttachedTab: live) { [weak self] result in
+                self?.notice(result, host: host, hostID: hostID, agent: agent)
             }
         case .stop:
             guard let host, let handle else {
@@ -1574,27 +1653,48 @@ extension OpenSessionsModel {
             }
             tab.remote?.phase = .stopping
             detachClient()
-            Task { @MainActor [weak self, weak tab] in
-                let result = await host.stop(handle, fromAttachedTab: live)
+            startStop(host: host, hostID: hostID, handle: handle, fromAttachedTab: live) { [weak self, weak tab] result in
                 guard let self else { return }
                 guard let tab, self.tabs.contains(where: { $0 === tab }) else {
-                    if case .leftRunning(let reason, let detail) = result {
-                        self.remoteNoticeHandler?(hostID, RemoteCopy.leftRunning(host.hostName, agent: agent,
-                                                                                 reason: reason, detail: detail))
-                    }
+                    self.notice(result, host: host, hostID: hostID, agent: agent)
                     return
                 }
                 switch result {
                 case .stopped:
                     self.removeTab(tab.id)
                 case .leftRunning(let reason, let detail):
-                    let message = reason == .anotherClientAttached
+                    tab.remote?.phase = .stopFailed(reason == .anotherClientAttached
                         ? RemoteCopy.leftRunning(host.hostName, agent: agent, reason: reason, detail: detail)
                         : RemoteCopy.couldNotStop(host.hostName, agent: agent,
-                                                  reason: detail ?? "the host didn't confirm the stop")
-                    tab.remote?.phase = .stopFailed(message)
+                                                  reason: detail ?? "the host didn't confirm the stop"))
+                case .unrecorded(let detail):
+                    tab.remote?.phase = .stopFailed(RemoteCopy.unrecorded(host.hostName, detail: detail))
                 }
             }
+        }
+    }
+
+    /// A stop, owned until its outcome is written. Cancelled before its
+    /// answer (the host changed, the quit's window closed), it is recorded
+    /// left running with the canceller's reason; never retried.
+    private func startStop(host: RemoteSessionHost, hostID: HostID, handle: String, fromAttachedTab: Bool,
+                           completion: @escaping @MainActor (RemoteStopResult) -> Void) {
+        remoteOperations.run(host: hostID, .stop, onCancel: { reason in
+            await host.leaveRunning(handle, reason: reason)
+        }) {
+            guard let result = try? await host.stop(handle, fromAttachedTab: fromAttachedTab) else { return }
+            completion(result)
+        }
+    }
+
+    private func notice(_ result: RemoteStopResult, host: RemoteSessionHost, hostID: HostID, agent: Agent) {
+        switch result {
+        case .stopped:
+            break
+        case .leftRunning(let reason, let detail):
+            remoteNoticeHandler?(hostID, RemoteCopy.leftRunning(host.hostName, agent: agent, reason: reason, detail: detail))
+        case .unrecorded(let detail):
+            remoteNoticeHandler?(hostID, RemoteCopy.unrecorded(host.hostName, detail: detail))
         }
     }
 
@@ -1608,52 +1708,112 @@ extension OpenSessionsModel {
             closeRemote(tab, tab.hasLiveProcess ? .stop : .stopIfRunning)
             return
         }
-        guard let host = launcherForHost(hostID) as? RemoteSessionHost,
-              let run = host.liveRun(sessionID: sessionID) else { return }
+        guard let host = launcherForHost(hostID) as? RemoteSessionHost else { return }
         let agent = sessionRow(sessionID)?.agent ?? .claude
-        Task { @MainActor [weak self] in
-            let result = await host.stop(run.handle, fromAttachedTab: false)
-            guard case .leftRunning(let reason, let detail) = result else { return }
-            self?.remoteNoticeHandler?(hostID, RemoteCopy.leftRunning(host.hostName, agent: agent, reason: reason,
-                                                                      detail: detail))
+        remoteOperations.run(host: hostID, .exitCheck) { [weak self] in
+            guard let handle = await host.liveRunHandle(sessionID: sessionID), !Task.isCancelled, let self else { return }
+            self.startStop(host: host, hostID: hostID, handle: handle, fromAttachedTab: false) { [weak self] result in
+                self?.notice(result, host: host, hostID: hostID, agent: agent)
+            }
+        }
+    }
+
+    /// Stop, from "Sessions on <host>": a tracked run, no Temple client
+    /// attached (a connected tab of it is stopped through the tab). The
+    /// stop is owned here, so closing the sheet abandons nothing.
+    public func stopTracked(handle: String, host hostID: HostID, agent: Agent,
+                            completion: @escaping @MainActor (RemoteStopResult) -> Void) {
+        guard let host = launcherForHost(hostID) as? RemoteSessionHost else { return }
+        if let tab = tabs.first(where: { $0.host == hostID && $0.remote?.handle == handle }), tab.hasLiveProcess {
+            tab.remote?.phase = .stopping
+            closingTabIDs.insert(tab.id)
+            tab.surface?.terminate()
+            startStop(host: host, hostID: hostID, handle: handle, fromAttachedTab: true) { [weak self, weak tab] result in
+                if let self, let tab, self.tabs.contains(where: { $0 === tab }) {
+                    if result == .stopped { self.removeTab(tab.id) } else { tab.remote?.phase = .disconnected }
+                }
+                completion(result)
+            }
+            return
+        }
+        startStop(host: host, hostID: hostID, handle: handle, fromAttachedTab: false, completion: completion)
+    }
+
+    // MARK: A host removed or edited
+
+    /// Retires a host's connection context before its registry entry goes:
+    /// its launcher queries nothing more, every operation of its is
+    /// cancelled (a stop recorded left running), pending opens and their
+    /// results are invalidated, and connected tabs are detached (their
+    /// agents keep running; the next Open uses whatever the host is now).
+    public func retireRemoteHost(_ hostID: HostID) {
+        (launcherForHost(hostID) as? RemoteSessionHost)?.retire()
+        remoteOperations.cancel(host: hostID)
+        for tab in tabs where tab.kind == .session && tab.host == hostID && tab.remote != nil {
+            tab.remote?.openToken = UUID()
+            if tab.remote?.handle == nil {
+                tab.remote = nil
+                continue
+            }
+            if tab.hasLiveProcess, let surface = tab.surface {
+                hostRetiredTabs.insert(tab.id)
+                surface.terminate()
+            } else if tab.remote?.phase == .checking || tab.remote?.phase == .stopping {
+                tab.remote?.phase = .disconnected
+            }
         }
     }
 
     // MARK: Quit
 
-    /// One idle remote tab's stop inside the quit's drain window.
-    public struct RemoteQuitStop {
-        public let run: @MainActor () async -> Void
-        public let onDeadline: @MainActor () -> Void
-    }
-
-    /// The quit's drain, split by what each tab is: local agents get the
-    /// graceful exit; a working agent on a host is detached at once (no
-    /// exit input, which would reach it through tmux); an idle one is
-    /// stopped by the one-command stop when its host has a live master,
-    /// and left running when it has none, or when the window closes first.
-    public func quitDrainPlan() -> (graceful: [TerminalSurface], detach: [TerminalSurface], stops: [RemoteQuitStop]) {
-        var graceful: [TerminalSurface] = [], detach: [TerminalSurface] = [], stops: [RemoteQuitStop] = []
+    /// The quit's drain, planned from each tab's run and gate: local agents
+    /// get the graceful exit; a working agent on a host is detached at once
+    /// (no exit input, which would reach it through tmux); an idle one, or
+    /// one whose client had already ended while it was idle, is stopped by
+    /// the one-command stop when its host has a live master, and left
+    /// running when it has none or the window closes first. What only
+    /// looks (opens, polls, checks) is cancelled; stops already running
+    /// carry on inside the window.
+    public func quitDrainPlan() -> (graceful: [TerminalSurface], detach: [TerminalSurface]) {
+        remoteOperations.cancelForQuit()
+        var graceful: [TerminalSurface] = [], detach: [TerminalSurface] = []
         for tab in tabs where tab.kind == .session {
-            guard let surface = tab.surface, tab.hasLiveProcess else { continue }
-            guard tab.remote != nil else { graceful.append(surface); continue }
-            guard tab.activity != .running, let host = remoteHost(for: tab), let handle = tab.remote?.handle else {
-                detach.append(surface)
+            guard let state = tab.remote else {
+                if let surface = tab.surface, tab.hasLiveProcess { graceful.append(surface) }
                 continue
             }
-            stops.append(RemoteQuitStop(run: {
-                if await host.hasLiveMaster() {
-                    surface.terminate()
-                    _ = await host.stop(handle, fromAttachedTab: true)
-                } else {
-                    host.leaveRunning(handle, reason: .hostDidNotAnswer)
-                    surface.terminate()
+            guard let host = remoteHost(for: tab), let handle = state.handle else {
+                if let surface = tab.surface, tab.hasLiveProcess { detach.append(surface) }
+                continue
+            }
+            if let surface = tab.surface, tab.hasLiveProcess {
+                if tab.activity == .running { detach.append(surface) } else {
+                    startQuitStop(host: host, hostID: tab.host, handle: handle, surface: surface)
                 }
-            }, onDeadline: {
-                host.leaveRunning(handle, reason: .quitDeadline)
-                surface.terminate()
-            }))
+                continue
+            }
+            switch state.phase {
+            case .disconnected, .unknown, .checking:
+                if !state.lastSeenWorking { startQuitStop(host: host, hostID: tab.host, handle: handle, surface: nil) }
+            default:
+                break
+            }
         }
-        return (graceful, detach, stops)
+        return (graceful, detach)
+    }
+
+    private func startQuitStop(host: RemoteSessionHost, hostID: HostID, handle: String, surface: TerminalSurface?) {
+        remoteOperations.run(host: hostID, .stop, onCancel: { reason in
+            surface?.terminate()
+            await host.leaveRunning(handle, reason: reason)
+        }) {
+            guard await host.hasLiveMaster() else {
+                surface?.terminate()
+                await host.leaveRunning(handle, reason: .hostDidNotAnswer)
+                return
+            }
+            surface?.terminate()
+            _ = try? await host.stop(handle, fromAttachedTab: surface != nil)
+        }
     }
 }

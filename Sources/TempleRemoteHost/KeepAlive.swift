@@ -10,6 +10,9 @@ import TempleCore
 /// - liveness is three-valued and only a positive absence ends a run;
 /// - the one destructive action is a stop whose outcome is decoded once,
 ///   the same way everywhere.
+///
+/// It never lists or discovers sessions: Temple only ever asks about the
+/// sessions it started, each on the server it was created on.
 public protocol KeepAlive: Sendable {
     /// The remote command (for `ssh -t … -- <host> <command>`) that creates
     /// the session and runs the pane command in it.
@@ -18,15 +21,28 @@ public protocol KeepAlive: Sendable {
     /// nothing.
     func attachCommand(_ launch: RemoteLaunchPlan) -> String
     func liveness(session: String, socket: String?, using exec: RemoteExec) async -> Liveness
+    /// Liveness with the attached count, for "Sessions on <host>".
+    func probe(session: String, socket: String?, using exec: RemoteExec) async -> Probe
     /// The one-command, attached-checked stop. `waitTenths`: how long the
     /// host may wait for Temple's own client (already detached on this
     /// side) to leave before the check, in tenths of a second.
-    func stop(session: String, socket: String?, waitTenths: Int, using exec: RemoteExec) async -> StopOutcome
-    func list(using exec: RemoteExec) async -> SessionListing
+    func stop(session: String, socket: String?, waitTenths: Int, using exec: RemoteExec) async throws -> StopOutcome
 }
 
 /// Everything one launch on a host needs, decided before anything runs.
 public struct RemoteLaunchPlan: Sendable, Equatable {
+    /// How the launch gets its PATH (section 2's one policy).
+    public enum Path: Sendable, Equatable {
+        /// The login shell's PATH, resolved by a query.
+        case resolved(String)
+        /// Resolution ran on the host and found none: ssh's default
+        /// environment, as the checks used.
+        case fallback
+        /// Not resolved yet (no query has reached the host): the launch asks
+        /// the login shell itself, with the same resolver and its bound.
+        case unresolved
+    }
+
     /// The run's handle: the session is `temple-<handle>`.
     public var handle: String
     /// The launch record's name on the host (`[A-Za-z0-9._-]`).
@@ -36,15 +52,26 @@ public struct RemoteLaunchPlan: Sendable, Equatable {
     /// The agent's argv, run by the pane with `exec` (the pane pid is the
     /// agent's).
     public var agentArgv: [String]
-    /// The resolved remote PATH; nil when Temple has none yet, and then the
-    /// launch asks the login shell itself, as the environment query would.
-    public var path: String?
+    public var path: Path
     /// The pinned server's socket, for an attach (nil: `-L temple`).
     public var socket: String?
 
-    public init(handle: String, marker: String, directory: String, agentArgv: [String], path: String?, socket: String?) {
+    public init(handle: String, marker: String, directory: String, agentArgv: [String], path: Path, socket: String?) {
         self.handle = handle; self.marker = marker; self.directory = directory
         self.agentArgv = agentArgv; self.path = path; self.socket = socket
+    }
+}
+
+/// tmux's words for a session that is not there: the one diagnostic that
+/// proves absence, matched exactly for the name asked about.
+enum TmuxDiagnostic {
+    static func isMissing(_ output: RemoteOutput, session: String) -> Bool {
+        output.status == 1 && output.firstErrorLine == "can't find session: \(session)"
+    }
+
+    static func socketMissing(_ stderr: String) -> Bool {
+        stderr.contains("no server running on")
+            || (stderr.contains("error connecting to") && stderr.contains("No such file or directory"))
     }
 }
 
@@ -57,31 +84,35 @@ public enum Liveness: Sendable, Equatable {
     /// that ends a run.
     case absent
     /// Anything else. `socketMissing`: tmux said there is no server at the
-    /// socket (`no server running on`, or 3.2a's `error connecting to …
-    /// (No such file or directory)`), which in v1 is not proof: tmux can lose
-    /// its socket while the server lives.
+    /// socket (`no server running on`, or `error connecting to … (No such
+    /// file or directory)`), which in v1 is not proof: tmux can lose its
+    /// socket while the server lives.
     case unknown(reason: String, socketMissing: Bool)
 
-    public static func classify(_ output: RemoteOutput) -> Liveness {
+    public static func classify(_ output: RemoteOutput, session: String) -> Liveness {
         guard output.reachedCommand else {
             return .unknown(reason: output.firstErrorLine ?? "ssh exited with status \(output.status)", socketMissing: false)
         }
         if output.status == 0 { return .present }
-        let stderr = output.stderr
-        if output.status == 1, stderr.contains("can't find session") { return .absent }
+        if TmuxDiagnostic.isMissing(output, session: session) { return .absent }
         let line = output.firstErrorLine ?? (output.status == 127 ? "tmux is not on PATH" : "tmux exited with status \(output.status)")
-        let missing = stderr.contains("no server running on")
-            || (stderr.contains("error connecting to") && stderr.contains("No such file or directory"))
-        return .unknown(reason: line, socketMissing: missing)
+        return .unknown(reason: line, socketMissing: TmuxDiagnostic.socketMissing(output.stderr))
     }
+}
+
+/// Liveness with the session's attached count.
+public enum Probe: Sendable, Equatable {
+    case present(attached: Int)
+    case absent
+    case unknown(reason: String, reachedHost: Bool)
 }
 
 /// One decoded stop outcome, the same everywhere (implementation note 5):
 /// the query succeeded without `temple-not-killed` → killed; the marker →
 /// refused (another client is attached); the pinned server answered that the
-/// session is not there → absent; anything else, a failure or a deadline →
-/// unconfirmed. A cancelled query may already have taken effect, so an
-/// unconfirmed stop is never retried automatically.
+/// session is not there (its exact words) → absent; anything else, a failure
+/// or a deadline → unconfirmed. A cancelled query may already have taken
+/// effect, so an unconfirmed stop is never retried automatically.
 public enum StopOutcome: Sendable, Equatable {
     case killed
     case refused
@@ -92,7 +123,7 @@ public enum StopOutcome: Sendable, Equatable {
 
     public static let notKilledMarker = "temple-not-killed"
 
-    public static func decode(_ output: RemoteOutput) -> StopOutcome {
+    public static func decode(_ output: RemoteOutput, session: String) -> StopOutcome {
         guard output.reachedCommand else {
             return .unconfirmed(reason: output.firstErrorLine ?? "ssh exited with status \(output.status)", reachedHost: false)
         }
@@ -100,34 +131,55 @@ public enum StopOutcome: Sendable, Equatable {
             return .refused
         }
         if output.status == 0 { return .killed }
-        if output.status == 1, output.stderr.contains("can't find session") { return .absent }
+        if TmuxDiagnostic.isMissing(output, session: session) { return .absent }
         return .unconfirmed(reason: output.firstErrorLine ?? "tmux exited with status \(output.status)", reachedHost: true)
     }
 
+    /// A query that failed without an answer. A deadline may have reached
+    /// the host; a process that never started did not.
     public static func failed(_ error: Error) -> StopOutcome {
-        .unconfirmed(reason: error.localizedDescription, reachedHost: !(error is CancellationError) && Self.mayHaveReached(error))
-    }
-
-    /// A deadline or a cancellation may have reached the host; a process
-    /// that never started did not.
-    private static func mayHaveReached(_ error: Error) -> Bool {
-        if case RemoteExecError.launchFailed? = error as? RemoteExecError { return false }
-        return true
+        if case RemoteExecError.launchFailed? = error as? RemoteExecError {
+            return .unconfirmed(reason: error.localizedDescription, reachedHost: false)
+        }
+        return .unconfirmed(reason: error.localizedDescription, reachedHost: true)
     }
 }
 
-/// The sessions on Temple's private server.
-public enum SessionListing: Sendable, Equatable {
-    public struct Entry: Sendable, Equatable {
-        public let name: String
-        public let attached: Int
-        public init(name: String, attached: Int) { self.name = name; self.attached = attached }
+/// Where launch records live on a host, and how they are written: a real
+/// directory the user owns, mode 0700, not a symlink, checked before every
+/// record operation; records written beside without following a link, then
+/// moved into place. A stable location in the account's home, the same for
+/// every connection: `~/.temple/launch/<marker>`.
+public enum RecordDirectory {
+    /// The locator a run row persists.
+    public static func locator(marker: String) -> String { "~/.temple/launch/\(marker)" }
+
+    /// The marker a locator names; nil for anything else.
+    public static func marker(from locator: String) -> String? {
+        let name = locator.split(separator: "/").last.map(String.init) ?? locator
+        guard RemoteQuoting.isSafeToken(name), locator == Self.locator(marker: name) || locator == name else { return nil }
+        return name
     }
-    case listed([Entry])
-    /// No server at Temple's socket: nothing is listed, and nothing is
-    /// proven gone (the socket may be lost).
-    case noServer
-    case failed(String)
+
+    /// `temple_record_dir` prints the checked directory or fails;
+    /// `temple_write <path> <text>` writes a record.
+    static let functions = #"""
+    temple_record_dir() {
+      _d=$HOME/.temple; _r=$_d/launch; _u=$(id -u)
+      [ -n "$HOME" ] || return 1
+      umask 077
+      [ -L "$_d" ] && return 1
+      [ -d "$_d" ] || mkdir -m 700 "$_d" 2>/dev/null || return 1
+      [ -n "$(find "$_d" -maxdepth 0 -type d -user "$_u" ! -perm -020 ! -perm -002 2>/dev/null)" ] || return 1
+      [ -L "$_r" ] && return 1
+      [ -d "$_r" ] || mkdir -m 700 "$_r" 2>/dev/null || return 1
+      [ -n "$(find "$_r" -maxdepth 0 -type d -user "$_u" -perm 700 2>/dev/null)" ] || return 1
+      printf '%s' "$_r"
+    }
+    temple_write() {
+      rm -f "$1.tmp" && ( set -C; printf '%s\n' "$2" > "$1.tmp" ) && mv -f "$1.tmp" "$1"
+    }
+    """#
 }
 
 /// The hidden tmux server, one command queue per creation (section 4).
@@ -141,56 +193,45 @@ public struct TmuxKeepAlive: KeepAlive {
     ///
     /// - `create`: one client invocation, one command queue on one server:
     ///   configure, then `new-session` (no `-A`: a duplicate name is a loud
-    ///   failure, never an attach to something Temple did not start). The
-    ///   pane learns where to write its record from `-e TEMPLE_RECORD`.
-    ///   The client's own failure goes to `<marker>.client`, apart from the
-    ///   pane's `<marker>` (implementation note 3): a tmux client can fail
-    ///   after the session exists, so it proves nothing about creation.
+    ///   failure, never an attach to something Temple did not start), in `/`
+    ///   (the pane enters the folder itself; `-c` is format-expanded by tmux,
+    ///   so no user path goes there). The pane learns where to write its
+    ///   record from `-e TEMPLE_RECORD`. The client's own failure goes to
+    ///   `<marker>.client`, apart from the pane's `<marker>` (note 3): a tmux
+    ///   client can fail after the session exists.
     /// - `attach`: `attach-session` on the pinned socket (`-S`), or on
     ///   `-L temple` when the run has no pin yet. It runs no pane command
     ///   and writes no record.
     ///
-    /// Without a resolved PATH it asks the login shell first, exactly as the
-    /// environment query does, so the agent and tmux see the PATH the probe
-    /// saw.
+    /// PATH follows the plan: the resolved PATH, ssh's default environment,
+    /// or (not resolved yet) the login shell asked here by the same bounded
+    /// resolver the environment query uses.
     public static var wrapperScript: String {
-        """
+        RemoteEnvironment.resolverFunction + "\n" + RecordDirectory.functions + "\n" + """
         mode=$1; m=$2; sock=$3; pane=$4
         s=temple-$TEMPLE_HANDLE
+        T=$(printf '\\t')
         unset TMUX TEMPLE_HANDLE
         if [ -n "$TEMPLE_RESOLVE_PATH" ]; then
           unset TEMPLE_RESOLVE_PATH
-          k=__temple_path_$$__; sh_=${SHELL:-/bin/sh}
-          for v in 1 2 3; do
-            case $v in
-              1) o=$("$sh_" -lic "echo $k; printenv PATH; echo $k" </dev/null 2>/dev/null) ;;
-              2) o=$("$sh_" -l -c "echo $k; printenv PATH; echo $k" </dev/null 2>/dev/null) ;;
-              *) o=$("$sh_" -c "echo $k; printenv PATH; echo $k" </dev/null 2>/dev/null) ;;
-            esac
-            case $o in *"$k"*"$k"*)
-              p=${o#*"$k"}; p=${p%"$k"*}; p=$(printf '%s\\n' "$p" | grep / | head -n 1)
-              [ -n "$p" ] && { PATH=$p; export PATH; }
-              break ;;
-            esac
-          done
+          p=$(temple_login_path "__temple_path_$$__") && { PATH=$p; export PATH; }
         fi
-        mdir=${TMPDIR:-/tmp}/temple-launch-$(id -u); umask 077
-        mkdir -p "$mdir" 2>/dev/null && find "$mdir" -type f -mmin +1440 -delete 2>/dev/null
-        { [ -d "$mdir" ] && [ -w "$mdir" ]; } || m=
+        rd=
+        if [ -n "$m" ]; then rd=$(temple_record_dir) || rd=; fi
+        [ -n "$rd" ] && find "$rd" -type f -mmin +1440 -delete 2>/dev/null
         case $mode in
         attach)
           if [ -n "$sock" ]; then exec tmux -S "$sock" attach-session -t "=$s"; fi
           exec tmux -L temple attach-session -t "=$s" ;;
         create)
           r=; e=/dev/null
-          if [ -n "$m" ]; then r=$mdir/$m; e=$mdir/$m.err; fi
-          tmux -L temple -f /dev/null \(TmuxChain.head) new-session -s "$s" -c "$HOME" -e PATH="$PATH" -e TEMPLE_RECORD="$r" "$pane" 2>"$e"
+          if [ -n "$rd" ]; then r=$rd/$m; e=$rd/$m.err; rm -f "$e"; fi
+          tmux -L temple -f /dev/null \(TmuxChain.head) new-session -s "$s" -c / -e PATH="$PATH" -e TEMPLE_RECORD="$r" "$pane" 2>"$e"
           st=$?
-          if [ "$st" -ne 0 ] && [ -n "$m" ]; then
-            l=$(head -n 1 "$e" 2>/dev/null)
-            printf 'failed\\ttmux\\t%s\\t%s\\n' "$st" "$l" > "$mdir/$m.client.tmp" && mv -f "$mdir/$m.client.tmp" "$mdir/$m.client"
+          if [ "$st" -ne 0 ] && [ -n "$rd" ]; then
+            temple_write "$rd/$m.client" "failed${T}tmux${T}${st}${T}$(head -n 1 "$e" 2>/dev/null)"
           fi
-          [ -n "$m" ] && rm -f "$e"
+          [ -n "$rd" ] && rm -f "$e"
           exit "$st" ;;
         esac
         exit 2
@@ -198,31 +239,39 @@ public struct TmuxKeepAlive: KeepAlive {
     }
 
     /// The pane, run by the server's `/bin/sh -c`, arguments `dir argv…`:
-    /// expands `~`, enters the folder or reports that it could not, records
-    /// `ok` with the remote clock, the canonical folder, its own pid and
-    /// start time, and the server it runs under (from `$TMUX`, parsed from
-    /// the right: `<socket>,<server pid>,<session index>`, and a socket path
-    /// may hold commas), then `exec`s the agent: the pane pid is the agent's.
-    /// `/proc/<pid>/stat` is read past the last `)`, so a process name with
-    /// spaces or parentheses cannot shift the fields (note 2).
-    public static let paneScript = #"""
-    d=$1; shift
-    m=$TEMPLE_RECORD
-    unset TEMPLE_RECORD
-    T=$(printf '\t')
-    case $d in "~") d=$HOME;; "~/"*) d=$HOME/${d#"~/"};; esac
-    rec() { [ -n "$m" ] || return 0; printf '%s\n' "$1" > "$m.tmp" && mv -f "$m.tmp" "$m"; }
-    pst() { [ -r "/proc/$1/stat" ] || return 0; x=$(cat "/proc/$1/stat" 2>/dev/null) || return 0; x=${x##*)}; set -- $x; [ $# -ge 20 ] || return 0; shift 19; printf '%s' "$1"; }
-    cd -- "$d" || { rec "failed${T}cd${T}$?"; exit 1; }
-    t=${TMUX%,*}; sp=${t##*,}; so=${t%,*}
-    rec "ok
-    epoch${T}$(date +%s)
-    pane${T}$$${T}$(pst $$)
-    server${T}${sp}${T}$(pst "$sp")
-    socket${T}${so}
-    dir${T}$(pwd -P)"
-    exec "$@"
-    """#
+    /// expands `~`, enters the folder or reports that it could not, pipes
+    /// what the pane shows (its first 64 KiB, `pipe-pane`) beside its record
+    /// so an agent that fails at once leaves its own words, records `ok`
+    /// with the remote clock, the canonical folder (trailing newlines
+    /// kept), its own pid and start time, and the server it runs under
+    /// (from `$TMUX`, parsed from the right: `<socket>,<server pid>,
+    /// <session index>`), then `exec`s the agent: the pane pid is the
+    /// agent's, and the diagnostics change nothing about liveness.
+    /// `/proc/<pid>/stat` is read past the last `)` (note 2). The record
+    /// directory is checked before it is written.
+    public static var paneScript: String {
+        RecordDirectory.functions + "\n" + #"""
+        d=$1; shift
+        r=$TEMPLE_RECORD
+        unset TEMPLE_RECORD
+        T=$(printf '\t'); NL='
+        '
+        m=
+        if [ -n "$r" ]; then rd=$(temple_record_dir) && [ "${r%/*}" = "$rd" ] && m=$r; fi
+        rec() { [ -n "$m" ] || return 0; temple_write "$m" "$1"; }
+        pst() { [ -r "/proc/$1/stat" ] || return 0; x=$(cat "/proc/$1/stat" 2>/dev/null) || return 0; x=${x##*)}; set -- $x; [ $# -ge 20 ] || return 0; shift 19; printf '%s' "$1"; }
+        case $d in "~") d=$HOME;; "~/"*) d=$HOME/${d#"~/"};; esac
+        cd -- "$d" || { rec "failed${T}cd${T}$?"; exit 1; }
+        if [ -n "$m" ] && [ -n "$TMUX_PANE" ]; then
+          q=$(printf '%s' "$m.out" | sed "s/'/'\\\\''/g; s/#/##/g")
+          tmux pipe-pane -t "$TMUX_PANE" "exec head -c 65536 >> '$q'" 2>/dev/null
+        fi
+        w=$(pwd -P; printf x); w=${w%x}; w=${w%"$NL"}
+        t=${TMUX%,*}; sp=${t##*,}; so=${t%,*}
+        rec "ok${NL}epoch${T}$(date +%s)${NL}pane${T}$$${T}$(pst $$)${NL}server${T}${sp}${T}$(pst "$sp")${NL}socket${T}${so}${NL}dir${T}${w}"
+        exec "$@"
+        """#
+    }
 
     /// The pane command tmux runs: `exec sh -c '<pane script>' temple-pane
     /// <dir> <argv…>`, quoted by the one quoting function.
@@ -239,13 +288,18 @@ public struct TmuxKeepAlive: KeepAlive {
         Self.remoteCommand(mode: "attach", launch: launch, pane: "")
     }
 
-    /// `env PATH=… TEMPLE_HANDLE=… sh -c '<wrapper>' temple-launch <mode>
-    /// <marker> <socket> <pane>`: every word single-quoted; the handle in an
-    /// environment assignment, never a shell word of its own.
+    /// `env [PATH=…|TEMPLE_RESOLVE_PATH=1] TEMPLE_HANDLE=… sh -c '<wrapper>'
+    /// temple-launch <mode> <marker> <socket> <pane>`: every word
+    /// single-quoted; the handle in an environment assignment, never a shell
+    /// word of its own.
     static func remoteCommand(mode: String, launch: RemoteLaunchPlan, pane: String) -> String {
         precondition(RemoteQuoting.isSafeToken(launch.handle) && RemoteQuoting.isSafeToken(launch.marker))
         var words = ["env"]
-        if let path = launch.path { words.append("PATH=\(path)") } else { words.append("TEMPLE_RESOLVE_PATH=1") }
+        switch launch.path {
+        case .resolved(let path): words.append("PATH=\(path)")
+        case .fallback: break
+        case .unresolved: words.append("TEMPLE_RESOLVE_PATH=1")
+        }
         words += ["TEMPLE_HANDLE=\(launch.handle)", "sh", "-c", wrapperScript, "temple-launch", mode, launch.marker,
                   launch.socket ?? "", pane]
         return RemoteQuoting.command(words)
@@ -262,30 +316,36 @@ public struct TmuxKeepAlive: KeepAlive {
     t has-session -t "=$s"
     """
 
+    /// Arguments `socket session`: present with its attached count, in one
+    /// queue (`has-session` first: a target pane that names no session does
+    /// not fail on its own).
+    static let probeScript = """
+    sock=$1; s=$2
+    \(tmuxFunction)
+    t has-session -t "=$s" ';' display-message -p -t "=$s:" '#{session_attached}'
+    """
+
     /// Arguments `socket session wait`. Waits up to `wait` tenths of a
     /// second for the session's attached count to reach zero (Temple's own
-    /// client was detached first, on this side), then one non-yielding
-    /// command in one client: the server checks that no client is attached
-    /// and kills in the same queue, or prints `temple-not-killed`
+    /// client was detached first, on this side), then one command queue in
+    /// one client: `has-session` (a gone session answers with tmux's own
+    /// words, never as a refusal), then the server checks that no client is
+    /// attached and kills in the same queue, or prints `temple-not-killed`
     /// (implementation note 4). `display-message` and `if-shell` take a
-    /// target pane, where an exact session is `=<name>:` (a bare `=<name>`
-    /// does not resolve there, and the check would then never pass).
+    /// target pane, where an exact session is `=<name>:`.
     static let stopScript = """
     sock=$1; s=$2; w=$3
     \(tmuxFunction)
     i=0
     while [ "$i" -lt "$w" ]; do
+      t has-session -t "=$s" 2>/dev/null || break
       n=$(t display-message -p -t "=$s:" '#{session_attached}' 2>/dev/null) || break
       [ "$n" = 0 ] && break
       sleep 0.1 2>/dev/null || sleep 1
       i=$((i+1))
     done
-    t if-shell -F -t "=$s:" '#{==:#{session_attached},0}' "kill-session -t =$s" 'display-message -p \(StopOutcome.notKilledMarker)'
+    t has-session -t "=$s" ';' if-shell -F -t "=$s:" '#{==:#{session_attached},0}' "kill-session -t =$s" 'display-message -p \(StopOutcome.notKilledMarker)'
     """
-
-    /// The attached count first, then the name: a tab in tmux's output is
-    /// printed as `_` under a C locale, and a name may hold spaces.
-    static let listScript = "tmux -L temple list-sessions -F '#{session_attached} #{session_name}'"
 
     public static let queryDeadline: TimeInterval = 5
     public static let stopDeadline: TimeInterval = 10
@@ -294,45 +354,42 @@ public struct TmuxKeepAlive: KeepAlive {
         precondition(RemoteQuoting.isSafeToken(session))
         do {
             return Liveness.classify(try await exec.run(script: Self.hasSessionScript, args: [socket ?? "", session],
-                                                        deadline: Self.queryDeadline))
+                                                        deadline: Self.queryDeadline), session: session)
         } catch {
             return .unknown(reason: error.localizedDescription, socketMissing: false)
         }
     }
 
-    public func stop(session: String, socket: String?, waitTenths: Int, using exec: RemoteExec) async -> StopOutcome {
+    public func probe(session: String, socket: String?, using exec: RemoteExec) async -> Probe {
+        precondition(RemoteQuoting.isSafeToken(session))
+        do {
+            let output = try await exec.run(script: Self.probeScript, args: [socket ?? "", session], deadline: Self.queryDeadline)
+            if output.reachedCommand, output.status == 0,
+               let count = Int(output.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return .present(attached: count)
+            }
+            switch Liveness.classify(output, session: session) {
+            case .absent: return .absent
+            case .present: return .unknown(reason: "tmux answered without a count", reachedHost: true)
+            case .unknown(let reason, _): return .unknown(reason: reason, reachedHost: output.reachedCommand)
+            }
+        } catch {
+            return .unknown(reason: error.localizedDescription, reachedHost: false)
+        }
+    }
+
+    /// Throws only `CancellationError`, when the query was cancelled before
+    /// any answer arrived: an answer that did arrive is always decoded.
+    public func stop(session: String, socket: String?, waitTenths: Int, using exec: RemoteExec) async throws -> StopOutcome {
         precondition(RemoteQuoting.isSafeToken(session))
         do {
             return StopOutcome.decode(try await exec.run(script: Self.stopScript,
                                                          args: [socket ?? "", session, String(max(0, waitTenths))],
-                                                         deadline: Self.stopDeadline))
+                                                         deadline: Self.stopDeadline), session: session)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             return .failed(error)
         }
-    }
-
-    public func list(using exec: RemoteExec) async -> SessionListing {
-        do {
-            return Self.parseListing(try await exec.run(script: Self.listScript, args: [], deadline: Self.queryDeadline))
-        } catch {
-            return .failed(error.localizedDescription)
-        }
-    }
-
-    static func parseListing(_ output: RemoteOutput) -> SessionListing {
-        guard output.reachedCommand else { return .failed(output.firstErrorLine ?? "ssh exited with status \(output.status)") }
-        if output.status != 0 {
-            if output.stderr.contains("no server running on")
-                || (output.stderr.contains("error connecting to") && output.stderr.contains("No such file or directory")) {
-                return .noServer
-            }
-            return .failed(output.firstErrorLine ?? "tmux exited with status \(output.status)")
-        }
-        let entries = output.stdout.split(whereSeparator: \.isNewline).compactMap { line -> SessionListing.Entry? in
-            let fields = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
-            guard fields.count == 2, let attached = Int(fields[0]), !fields[1].isEmpty else { return nil }
-            return SessionListing.Entry(name: String(fields[1]), attached: attached)
-        }
-        return .listed(entries)
     }
 }

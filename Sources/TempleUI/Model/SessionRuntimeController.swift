@@ -43,7 +43,7 @@ public final class SessionRuntimeController {
     /// App-quit drain (ADR-010): gracefully end every live surface, wait, force
     /// the stragglers, then call `completion` (wire to `.terminateLater`).
     public func drainAll(_ surfaces: [TerminalSurface], completion: @escaping () -> Void) {
-        drainAll(graceful: surfaces, detach: [], stops: [], completion: completion)
+        drainAll(graceful: surfaces, detach: [], remote: nil, completion: completion)
     }
 
     /// The quit's one bounded window (docs/designs/remote-ssh.md section 5):
@@ -53,17 +53,17 @@ public final class SessionRuntimeController {
     /// - `detach` (working agents on hosts): `terminate()` at once, with no
     ///   exit input, which would reach the agent through tmux; it keeps
     ///   working there;
-    /// - `stops` (idle agents on hosts): each a remote stop, dispatched in
-    ///   parallel; one still outstanding at the deadline is cancelled (its
-    ///   query's ssh is killed) and its `onDeadline` records why.
+    /// - `remote`: the stops it owns (an idle agent's, and any a close
+    ///   started) run in parallel inside the same window; those still
+    ///   outstanding at the deadline are expired, each recording why.
     ///
     /// `completion` comes when everything has finished or at the deadline,
     /// and always asynchronously, after `.terminateLater` has been returned.
     public func drainAll(graceful surfaces: [TerminalSurface], detach: [TerminalSurface],
-                         stops: [OpenSessionsModel.RemoteQuitStop], completion: @escaping () -> Void) {
+                         remote: RemoteOperations?, completion: @escaping () -> Void) {
         for surface in detach where Self.isRunning(surface) { surface.terminate() }
         let running = surfaces.filter(Self.isRunning)
-        guard !running.isEmpty || !stops.isEmpty else {
+        guard !running.isEmpty || (remote?.stopsOutstanding ?? 0) > 0 else {
             // NEVER synchronously: the caller wires this to
             // `reply(toApplicationShouldTerminate:)`, which AppKit requires to
             // come *after* `.terminateLater` has been returned. Replying first
@@ -74,38 +74,16 @@ public final class SessionRuntimeController {
             return
         }
         for surface in running { surface.requestGracefulExit() }
-        let state = DrainState(count: stops.count)
-        let tasks = stops.enumerated().map { index, stop in
-            Task { @MainActor in
-                await stop.run()
-                state.finish(index)
-            }
-        }
         let timeout = gracefulTimeout
         Task { @MainActor in
             let deadline = Date().addingTimeInterval(timeout)
             while Date() < deadline {
-                if !running.contains(where: Self.isRunning), state.allFinished { break }
+                if !running.contains(where: Self.isRunning), (remote?.stopsOutstanding ?? 0) == 0 { break }
                 try? await Task.sleep(nanoseconds: 50_000_000)
             }
             for surface in running where Self.isRunning(surface) { surface.terminate() }
-            for (index, task) in tasks.enumerated() where !state.isFinished(index) {
-                // Decided here, on the main actor: a stop that finishes after
-                // this cannot also be recorded as finished.
-                state.finish(index)
-                task.cancel()
-                stops[index].onDeadline()
-            }
+            remote?.expireStops()
             completion()
         }
-    }
-
-    @MainActor private final class DrainState {
-        private var finished: Set<Int> = []
-        private let count: Int
-        init(count: Int) { self.count = count }
-        func finish(_ index: Int) { finished.insert(index) }
-        func isFinished(_ index: Int) -> Bool { finished.contains(index) }
-        var allFinished: Bool { finished.count == count }
     }
 }

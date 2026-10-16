@@ -48,31 +48,32 @@ extension AppModel {
     /// The sidebar's Show: the sheet for that host. A count line is then
     /// acted on, and never comes back for the same flags.
     public func showRemoteSessions(_ host: HostID) {
-        if case .count? = remoteNotice?.kind, remoteNotice?.host == host {
-            remoteHost(host)?.noticeLeftRunning()
+        if case .count? = remoteNotice?.kind, remoteNotice?.host == host, let launcher = remoteHost(host) {
             remoteNotice = nil
+            openSessions.remoteOperations.run(host: host, .write) { await launcher.noticeLeftRunning() }
         }
         remoteSessionsSheet = RemoteSessionsRequest(host: host)
     }
 
     public func dismissRemoteNotice() {
         guard let notice = remoteNotice else { return }
-        if case .count = notice.kind { remoteHost(notice.host)?.noticeLeftRunning() }
         remoteNotice = nil
+        if case .count = notice.kind, let launcher = remoteHost(notice.host) {
+            openSessions.remoteOperations.run(host: notice.host, .write) { await launcher.noticeLeftRunning() }
+        }
     }
 
     /// At launch, a host with sessions flagged left running (whose line has
-    /// not been shown) is asked once, by listing Temple's private server;
-    /// when it answers, the line says how many are still left running.
-    /// Nothing is stopped: the listing only lists.
+    /// not been shown) is asked about each of them, on its own pinned
+    /// server; when the host answers, the line says how many are still left
+    /// running. Nothing is stopped: a contact only asks.
     func contactHostsWithSessionsLeftRunning() {
         guard remoteHosts.isEnabled else { return }
         for host in remoteHosts.registeredHosts.map(\.host) {
-            guard let launcher = remoteHost(host), launcher.unnoticedLeftRunningCount() > 0 else { continue }
-            Task { @MainActor [weak self] in
-                guard case .sessions = await launcher.listSessions() else { return }
-                let count = launcher.unnoticedLeftRunningCount()
-                guard let self, count > 0, self.remoteNotice == nil else { return }
+            guard let launcher = remoteHost(host) else { continue }
+            openSessions.remoteOperations.run(host: host, .exitCheck) { [weak self] in
+                guard let count = await launcher.contactLeftRunning(), count > 0, !Task.isCancelled,
+                      let self, self.remoteNotice == nil else { return }
                 self.remoteNotice = RemoteNotice(host: host, message: RemoteCopy.leftRunningCount(count, host: host.rawValue),
                                                  kind: .count(count))
             }

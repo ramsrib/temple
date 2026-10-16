@@ -25,10 +25,21 @@ public struct RemoteOpenPlan: Equatable {
     public let command: TerminalCommand
     /// The agent's own argv, for a failure header (never the wrapper).
     public let displayArgv: [String]
-    public init(handle: String, attachment: Int, creating: Bool, command: TerminalCommand, displayArgv: [String]) {
+    /// An attach to a run whose creation evidence is persisted: its folder,
+    /// replayed into the row and tab (`applyLaunchDirectory`).
+    public let evidenceDirectory: String?
+    public init(handle: String, attachment: Int, creating: Bool, command: TerminalCommand, displayArgv: [String],
+                evidenceDirectory: String? = nil) {
         self.handle = handle; self.attachment = attachment; self.creating = creating
-        self.command = command; self.displayArgv = displayArgv
+        self.command = command; self.displayArgv = displayArgv; self.evidenceDirectory = evidenceDirectory
     }
+}
+
+public enum RemoteOpenResult: Equatable {
+    case plan(RemoteOpenPlan)
+    /// The session was stopped with its conversation unconfirmed: nothing is
+    /// resumed blindly; the tab offers Start a new session and Discard.
+    case needsDecision
 }
 
 /// What a creation's records said, once persisted.
@@ -38,6 +49,8 @@ public enum RemoteLaunchOutcome: Equatable {
     case clientFailed(String)
     case nothing
     case transport(String)
+    /// The host's answer could not be written here; nothing follows from it.
+    case storage(String)
 }
 
 /// The liveness contract's three answers.
@@ -55,28 +68,28 @@ public enum RemoteStopResult: Equatable {
     /// Left running, with the reason; `detail` is what failed (ssh's or
     /// tmux's words) when there is one.
     case leftRunning(RemoteLeftRunningReason, detail: String?)
+    /// The outcome could not be written; `detail` says why.
+    case unrecorded(detail: String)
 }
 
-/// A session on the host's private server, as "Sessions on <host>" lists it.
-public struct RemoteListedSession: Equatable, Identifiable {
-    public var id: String { name }
-    public let name: String
-    public let attached: Bool
-    /// The run Temple has under this name, if any ("Not in Temple" otherwise).
-    public let handle: String?
+/// A session Temple started on a host, as "Sessions on <host>" lists it.
+/// Only tracked runs are ever listed; nothing is discovered.
+public struct RemoteTrackedSession: Equatable, Identifiable {
+    public enum State: Equatable {
+        case present(attached: Bool)
+        /// Temple couldn't check it; why.
+        case unknown(String)
+    }
+    public var id: String { handle }
+    public let handle: String
     public let sessionID: String?
+    public let agent: Agent
+    public let state: State
     public let leftRunning: RemoteLeftRunningReason?
-    public init(name: String, attached: Bool, handle: String?, sessionID: String?, leftRunning: RemoteLeftRunningReason?) {
-        self.name = name; self.attached = attached; self.handle = handle; self.sessionID = sessionID
+    public init(handle: String, sessionID: String?, agent: Agent, state: State, leftRunning: RemoteLeftRunningReason?) {
+        self.handle = handle; self.sessionID = sessionID; self.agent = agent; self.state = state
         self.leftRunning = leftRunning
     }
-}
-
-public enum RemoteSessionListing: Equatable {
-    case sessions([RemoteListedSession])
-    /// No server at Temple's socket: nothing listed, nothing proven gone.
-    case noServer
-    case failed(String)
 }
 
 /// The folder sheet's advisory check.
@@ -87,38 +100,47 @@ public enum RemoteFolderCheck: Equatable {
     case transport(String)
 }
 
-/// A live run of a session, as a row's menu needs it.
-public struct RemoteRunSummary: Equatable {
-    public let handle: String
-    public let leftRunning: Bool
-}
-
 @MainActor
 public protocol RemoteSessionHost: HostLauncher {
     var hostName: String { get }
-    /// Decides attach or create, recovers an uncollected record first, and
-    /// writes the run before returning. Throws (refusing the open) when the
-    /// run store cannot be read or written.
-    func open(agent: Agent, sessionID: String, resume: Bool, directory: String, resumeAnyway: Bool) async throws -> RemoteOpenPlan
+    /// Decides attach or create (one transaction), recovers an uncollected
+    /// record first, and writes the run before returning. Throws (refusing
+    /// the open) when the run store cannot be read or written.
+    func open(agent: Agent, sessionID: String, resume: Bool, directory: String, resumeAnyway: Bool,
+              startNew: Bool) async throws -> RemoteOpenResult
     /// An open that was planned but never spawned.
-    func abandon(_ handle: String)
+    func abandon(_ handle: String) async
     func collect(_ handle: String) async -> RemoteLaunchOutcome
-    func markCreationUnproven(_ handle: String)
+    /// What the pane showed (ANSI and all), for an agent that ended at once.
+    func diagnostics(_ handle: String) async -> String?
+    func markCreationUnproven(_ handle: String) async
+    func confirmConversation(_ handle: String) async
+    /// Discard: the session's runs are never attached to or resumed again.
+    func discard(sessionID: String) async throws
     func exitCheck(_ handle: String) async -> RemoteLiveness
     /// The run's current attachment; asynchronous results for another are dropped.
-    func attachment(of handle: String) -> Int?
-    func stop(_ handle: String, fromAttachedTab: Bool) async -> RemoteStopResult
-    func leaveRunning(_ handle: String, reason: RemoteLeftRunningReason)
-    func liveRun(sessionID: String) -> RemoteRunSummary?
+    func attachment(of handle: String) async -> Int?
+    /// Throws `CancellationError` only when cancelled before any answer.
+    func stop(_ handle: String, fromAttachedTab: Bool) async throws -> RemoteStopResult
+    func leaveRunning(_ handle: String, reason: RemoteLeftRunningReason) async
+    /// Whether the session has a run that is not Ended (as last read).
+    func hasLiveRun(sessionID: String) -> Bool
+    /// The session's live run's handle, read now.
+    func liveRunHandle(sessionID: String) async -> String?
     /// Whether a master answers on Temple's socket for this host now.
     func hasLiveMaster() async -> Bool
     func manualStopCommand(handle: String) -> String
-    func listSessions() async -> RemoteSessionListing
-    func stopListed(_ name: String) async -> RemoteStopResult
-    func keep(_ handle: String)
-    func unnoticedLeftRunningCount() -> Int
-    func noticeLeftRunning()
+    /// The tracked sessions, each checked on its own server; `checked`:
+    /// whether the host answered at all.
+    func trackedSessions() async -> (sessions: [RemoteTrackedSession], checked: Bool)
+    func keep(_ handle: String) async
+    /// At launch: nil when the host did not answer, else how many flagged
+    /// sessions are still left running there.
+    func contactLeftRunning() async -> Int?
+    func noticeLeftRunning() async
     func checkFolder(_ path: String) async -> RemoteFolderCheck
+    /// The host was removed or edited: nothing queries it again.
+    func retire()
 }
 
 /// A remote tab's side of its run (memory only; the run row is durable).
@@ -143,6 +165,9 @@ public struct RemoteTabState: Equatable {
         case stopping
         /// Stop was chosen and could not be confirmed.
         case stopFailed(String)
+        /// The session was stopped before Temple saw anything sent to it:
+        /// Start a new session or Discard, never a blind resume.
+        case needsDecision
     }
     public var phase: Phase
     public var handle: String?
@@ -150,6 +175,14 @@ public struct RemoteTabState: Equatable {
     public var creating = false
     /// This Open already turned an attach that found nothing into a resume.
     public var resumedAfterAbsence = false
+    /// Whether the agent was working when its client ended (the quit stops
+    /// only an agent last seen idle).
+    public var lastSeenWorking = false
+    /// A Temple tab sent this run's agent something (recorded once).
+    public var conversationConfirmed = false
+    /// What the pane showed, for an agent that ended at once: the last
+    /// lines, plain text.
+    public var diagnostics: [String] = []
     /// Identifies one open, so a late answer for an earlier one is dropped.
     var openToken = UUID()
 
@@ -159,7 +192,7 @@ public struct RemoteTabState: Equatable {
     var mayBeRunning: Bool {
         switch phase {
         case .connected, .checking, .disconnected, .unknown, .stopping, .stopFailed: handle != nil
-        case .opening, .failedToStart, .exitedEarly: false
+        case .opening, .failedToStart, .exitedEarly, .needsDecision: false
         }
     }
 }
@@ -205,7 +238,7 @@ public enum RemoteCopy {
         case .hostDidNotAnswer:
             "Left running: \(host) didn't answer when you closed it. Stop it under Sessions on \(host)."
         case .anotherClientAttached:
-            "Left running: someone else is attached to it. Stop it under Sessions on \(host)."
+            "Left running: another terminal is attached to it. Stop it under Sessions on \(host)."
         case .stopNotAcknowledged, .quitDeadline:
             couldNotStop(host, agent: agent, reason: detail ?? "the host didn't confirm the stop")
         }
@@ -215,7 +248,7 @@ public enum RemoteCopy {
     public static func leftRunningLine(_ host: String, reason: RemoteLeftRunningReason) -> String {
         switch reason {
         case .hostDidNotAnswer: "Left running: \(host) didn't answer when you closed it."
-        case .anotherClientAttached: "Left running: someone else is attached to it."
+        case .anotherClientAttached: "Left running: another terminal is attached to it."
         case .stopNotAcknowledged: "Left running: \(host) didn't confirm the stop."
         case .quitDeadline: "Left running: \(host) didn't answer before Temple quit."
         }
@@ -234,6 +267,52 @@ public enum RemoteCopy {
     }
 
     public static func noFolder(_ path: String, host: String) -> String { "No folder \(path) on \(host)." }
+
+    public static func couldNotCheck(_ reason: String) -> String {
+        "Temple couldn't check these sessions: \(sentence(reason))"
+    }
+
+    public static let noTrackedSessions = "No Temple sessions to show."
+
+    public static func unrecorded(_ host: String, detail: String) -> String {
+        "Temple couldn't save what happened to this session on \(host): \(sentence(detail))"
+    }
+
+    public static let unconfirmedConversation =
+        "This session was stopped before Temple saw anything sent to it, so it may have no conversation to resume."
+
+    public static func exitedImmediately(_ host: String, agent: Agent) -> String {
+        "\(agent.displayName) exited immediately on \(host)."
+    }
+
+    /// What the pane printed, for a header: escape sequences and carriage
+    /// returns removed, the last few lines that say something.
+    public static func diagnosticLines(_ raw: String, limit: Int = 8) -> [String] {
+        var text = String.UnicodeScalarView()
+        var scalars = Array(raw.unicodeScalars)[...]
+        while let scalar = scalars.popFirst() {
+            if scalar == "\u{1b}" {
+                guard let next = scalars.popFirst() else { break }
+                if next == "[" {
+                    // CSI: parameters, then a final byte in @...~.
+                    while let byte = scalars.popFirst(), !(0x40...0x7e).contains(byte.value) {}
+                } else if next == "]" || next == "P" || next == "_" || next == "^" {
+                    // OSC and other strings: to BEL or ST.
+                    while let byte = scalars.popFirst() {
+                        if byte == "\u{07}" { break }
+                        if byte == "\u{1b}", scalars.first == "\\" { scalars.removeFirst(); break }
+                    }
+                }
+                continue
+            }
+            if scalar == "\r" { continue }
+            if scalar.value < 0x20, scalar != "\n", scalar != "\t" { continue }
+            text.append(scalar)
+        }
+        let lines = String(text).split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        return Array(lines.suffix(limit))
+    }
 
     public static func newCodexWaits(_ host: String) -> String {
         "Temple can't start new Codex sessions on \(host) yet."

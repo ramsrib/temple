@@ -35,7 +35,15 @@ final class RemoteScriptsTests: XCTestCase {
             return environment
         }
 
-        var recordDirectory: String { home + "/tmp/temple-launch-\(getuid())" }
+        var recordDirectory: String { home + "/.temple/launch" }
+
+        /// The record directory as the launch makes it: private, this user's.
+        func makeRecordDirectory() throws {
+            try FileManager.default.createDirectory(atPath: recordDirectory, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            chmod(home + "/.temple", 0o700)
+            chmod(recordDirectory, 0o700)
+        }
 
         var exec: LocalShellExec { LocalShellExec(path: nil, environment: environment) }
 
@@ -138,10 +146,10 @@ final class RemoteScriptsTests: XCTestCase {
     }
 
     private func plan(_ host: StandIn, handle: String = "h1", marker: String = "m1", directory: String? = nil,
-                      argv: [String]? = nil, path: String?? = .none, socket: String? = nil) -> RemoteLaunchPlan {
+                      argv: [String]? = nil, path: RemoteLaunchPlan.Path? = nil, socket: String? = nil) -> RemoteLaunchPlan {
         RemoteLaunchPlan(handle: handle, marker: marker, directory: directory ?? host.home,
                          agentArgv: argv ?? ["/bin/sh", "-c", "sleep 30"],
-                         path: path ?? host.path, socket: socket)
+                         path: path ?? .resolved(host.path), socket: socket)
     }
 
     /// `realpath`: Foundation's symlink resolution turns /private/tmp into
@@ -183,7 +191,7 @@ final class RemoteScriptsTests: XCTestCase {
         let newSession = try XCTUnwrap(argv.firstIndex(of: "new-session"))
         XCTAssertGreaterThan(newSession, 5)
         XCTAssertEqual(Array(argv[newSession...].prefix(9)),
-                       ["new-session", "-s", "temple-h1", "-c", host.home, "-e", "PATH=\(host.path)",
+                       ["new-session", "-s", "temple-h1", "-c", "/", "-e", "PATH=\(host.path)",
                         "-e", "TEMPLE_RECORD=\(host.recordDirectory)/m1"])
         XCTAssertFalse(argv.contains("-A"), "a duplicate is a loud failure, never an attach")
         XCTAssertTrue(argv.last?.hasPrefix("exec 'sh' '-c' ") == true, "\(argv.last ?? "")")
@@ -232,7 +240,7 @@ final class RemoteScriptsTests: XCTestCase {
         eval "$1"
         """, executable: true)
         host.extra = ["SHELL": host.bin + "/fakeshell"]
-        try host.runLaunch(TmuxKeepAlive().createCommand(plan(host, path: .some(nil))))
+        try host.runLaunch(TmuxKeepAlive().createCommand(plan(host, path: .unresolved)))
         let argv = try XCTUnwrap(host.calls.first)
         XCTAssertTrue(argv.contains("PATH=\(host.bin):/login/only/bin:/usr/bin:/bin"), "\(argv)")
     }
@@ -240,7 +248,7 @@ final class RemoteScriptsTests: XCTestCase {
     func testStaleRecordsAreSweptByTheNextLaunch() throws {
         let host = StandIn()
         host.installStub()
-        try FileManager.default.createDirectory(atPath: host.recordDirectory, withIntermediateDirectories: true)
+        try host.makeRecordDirectory()
         let old = host.recordDirectory + "/old", fresh = host.recordDirectory + "/fresh"
         FileManager.default.createFile(atPath: old, contents: Data("ok\n".utf8))
         FileManager.default.createFile(atPath: fresh, contents: Data("ok\n".utf8))
@@ -257,6 +265,30 @@ final class RemoteScriptsTests: XCTestCase {
         var info = stat()
         XCTAssertEqual(stat(host.recordDirectory, &info), 0)
         XCTAssertEqual(info.st_mode & 0o777, 0o700)
+    }
+
+    func testARecordDirectoryThatIsALinkOrNotPrivateIsNeverUsed() async throws {
+        for setup in ["link", "mode"] {
+            let host = StandIn()
+            host.installStub()
+            let elsewhere = host.tree.directory("elsewhere")
+            try FileManager.default.createDirectory(atPath: host.home + "/.temple", withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            if setup == "link" {
+                try FileManager.default.createSymbolicLink(atPath: host.recordDirectory, withDestinationPath: elsewhere.path)
+            } else {
+                try FileManager.default.createDirectory(atPath: host.recordDirectory, withIntermediateDirectories: true)
+                chmod(host.recordDirectory, 0o755)
+            }
+            try host.runLaunch(TmuxKeepAlive().createCommand(plan(host)))
+            let argv = try XCTUnwrap(host.calls.first)
+            XCTAssertTrue(argv.contains("TEMPLE_RECORD="), "\(setup): no record path is handed to the pane")
+            do {
+                _ = try await LaunchRecords.fetch(marker: "m1", using: host.exec)
+                XCTFail("\(setup): a fetch refuses the directory")
+            } catch LaunchRecords.FetchError.unsafeDirectory {}
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: elsewhere.path), [], setup)
+        }
     }
 
     // MARK: The pane
@@ -280,7 +312,8 @@ final class RemoteScriptsTests: XCTestCase {
 
     func testThePaneRecordsOKThenExecsTheAgentAsItsOwnPid() throws {
         let host = StandIn()
-        let record = host.tree.path + "/rec"
+        try host.makeRecordDirectory()
+        let record = host.recordDirectory + "/rec"
         let pidFile = host.tree.path + "/agent.pid"
         let status = try runPane(host, directory: host.home, argv: ["/bin/sh", "-c", "echo $$ > \"$1\"; echo \"$TEMPLE_RECORD\" > \"$1.env\"", "agent", pidFile], record: record)
         XCTAssertEqual(status, 0)
@@ -302,7 +335,8 @@ final class RemoteScriptsTests: XCTestCase {
         let host = StandIn()
         let real = host.tree.directory("real/it's a \"project\"")
         try FileManager.default.createSymbolicLink(atPath: host.home + "/link", withDestinationPath: real.path)
-        let record = host.tree.path + "/rec"
+        try host.makeRecordDirectory()
+        let record = host.recordDirectory + "/rec"
         XCTAssertEqual(try runPane(host, directory: "~/link", argv: ["/usr/bin/true"], record: record), 0)
         guard case .ok(let evidence) = LaunchRecords.parsePane(try String(contentsOfFile: record, encoding: .utf8)) else {
             return XCTFail()
@@ -315,9 +349,25 @@ final class RemoteScriptsTests: XCTestCase {
         XCTAssertEqual(home.directory, canonical(host.home))
     }
 
+    func testAFolderWhoseNameEndsInANewlineKeepsIt() async throws {
+        let host = StandIn()
+        let odd = host.tree.directory("home/ends-in-newline\n")
+        try host.makeRecordDirectory()
+        let record = host.recordDirectory + "/rec"
+        XCTAssertEqual(try runPane(host, directory: odd.path, argv: ["/usr/bin/true"], record: record), 0)
+        guard case .ok(let evidence) = LaunchRecords.parsePane(try String(contentsOfFile: record, encoding: .utf8)) else {
+            return XCTFail()
+        }
+        XCTAssertEqual(evidence.directory, canonical(odd.path))
+        XCTAssertTrue(evidence.directory.hasSuffix("\n"))
+        let checked = await FolderCheck.run(odd.path, using: host.exec)
+        XCTAssertEqual(checked, .exists(resolved: canonical(odd.path)))
+    }
+
     func testThePaneThatCannotEnterItsFolderRecordsFailedAndRunsNothing() throws {
         let host = StandIn()
-        let record = host.tree.path + "/rec"
+        try host.makeRecordDirectory()
+        let record = host.recordDirectory + "/rec"
         let ran = host.tree.path + "/ran"
         let status = try runPane(host, directory: host.home + "/gone", argv: ["/usr/bin/touch", ran], record: record)
         XCTAssertEqual(status, 1)
@@ -343,7 +393,7 @@ final class RemoteScriptsTests: XCTestCase {
 
     func testFetchRecoversByNameThenAcknowledgeDeletes() async throws {
         let host = StandIn()
-        try FileManager.default.createDirectory(atPath: host.recordDirectory, withIntermediateDirectories: true)
+        try host.makeRecordDirectory()
         let dir = "/srv/a folder\twith a tab"
         let ok = "ok\nepoch\t1700000000\npane\t4321\t998877\nserver\t4000\t12\nsocket\t/tmp/tmux-1000/temple\ndir\t\(dir)\n"
         try ok.write(toFile: host.recordDirectory + "/mk", atomically: true, encoding: .utf8)
@@ -376,30 +426,40 @@ final class RemoteScriptsTests: XCTestCase {
         func out(_ status: Int32, _ stderr: String, reached: Bool = true) -> RemoteOutput {
             RemoteOutput(status: status, stdout: "", stderr: stderr, reachedCommand: reached)
         }
-        XCTAssertEqual(Liveness.classify(out(0, "")), .present)
-        XCTAssertEqual(Liveness.classify(out(1, "can't find session: temple-h1\n")), .absent)
-        XCTAssertEqual(Liveness.classify(out(1, "no server running on /tmp/tmux-1000/temple\n")),
+        XCTAssertEqual(Liveness.classify(out(0, ""), session: "temple-h1"), .present)
+        XCTAssertEqual(Liveness.classify(out(1, "can't find session: temple-h1\n"), session: "temple-h1"), .absent)
+        XCTAssertEqual(Liveness.classify(out(1, "no server running on /tmp/tmux-1000/temple\n"), session: "temple-h1"),
                        .unknown(reason: "no server running on /tmp/tmux-1000/temple", socketMissing: true))
         // tmux 3.2a's socket-missing words.
-        XCTAssertEqual(Liveness.classify(out(1, "error connecting to /tmp/tmux-1000/temple (No such file or directory)\n")),
+        XCTAssertEqual(Liveness.classify(out(1, "error connecting to /tmp/tmux-1000/temple (No such file or directory)\n"), session: "temple-h1"),
                        .unknown(reason: "error connecting to /tmp/tmux-1000/temple (No such file or directory)", socketMissing: true))
-        XCTAssertEqual(Liveness.classify(out(1, "error connecting to /tmp/x (Permission denied)\n")),
+        XCTAssertEqual(Liveness.classify(out(1, "error connecting to /tmp/x (Permission denied)\n"), session: "temple-h1"),
                        .unknown(reason: "error connecting to /tmp/x (Permission denied)", socketMissing: false))
-        XCTAssertEqual(Liveness.classify(out(1, "protocol version mismatch (client 8, server 7)\n")),
+        XCTAssertEqual(Liveness.classify(out(1, "protocol version mismatch (client 8, server 7)\n"), session: "temple-h1"),
                        .unknown(reason: "protocol version mismatch (client 8, server 7)", socketMissing: false))
-        XCTAssertEqual(Liveness.classify(out(127, "")), .unknown(reason: "tmux is not on PATH", socketMissing: false))
-        XCTAssertEqual(Liveness.classify(out(255, "ssh: connect to host x port 22: Connection refused", reached: false)),
+        // Only tmux's exact words for this session prove absence.
+        XCTAssertEqual(Liveness.classify(out(1, "error connecting to /tmp/can't find session: temple-h1 (No such file or directory)\n"),
+                                         session: "temple-h1"),
+                       .unknown(reason: "error connecting to /tmp/can't find session: temple-h1 (No such file or directory)",
+                                socketMissing: true))
+        XCTAssertEqual(Liveness.classify(out(1, "can't find session: temple-h10\n"), session: "temple-h1"),
+                       .unknown(reason: "can't find session: temple-h10", socketMissing: false))
+        XCTAssertEqual(Liveness.classify(out(127, ""), session: "temple-h1"), .unknown(reason: "tmux is not on PATH", socketMissing: false))
+        XCTAssertEqual(Liveness.classify(out(255, "ssh: connect to host x port 22: Connection refused", reached: false), session: "temple-h1"),
                        .unknown(reason: "ssh: connect to host x port 22: Connection refused", socketMissing: false))
     }
 
     func testOneDecodedStopOutcome() {
-        XCTAssertEqual(StopOutcome.decode(RemoteOutput(status: 0, stdout: "", stderr: "")), .killed)
+        XCTAssertEqual(StopOutcome.decode(RemoteOutput(status: 1, stdout: "", stderr: "can't find session: temple-h10"),
+                                          session: "temple-h1"),
+                       .unconfirmed(reason: "can't find session: temple-h10", reachedHost: true))
+        XCTAssertEqual(StopOutcome.decode(RemoteOutput(status: 0, stdout: "", stderr: ""), session: "temple-h1"), .killed)
         // The false branch exits 0 too: the marker decides, never the status.
-        XCTAssertEqual(StopOutcome.decode(RemoteOutput(status: 0, stdout: "temple-not-killed\n", stderr: "")), .refused)
-        XCTAssertEqual(StopOutcome.decode(RemoteOutput(status: 1, stdout: "", stderr: "can't find session: temple-h1")), .absent)
-        XCTAssertEqual(StopOutcome.decode(RemoteOutput(status: 1, stdout: "", stderr: "no server running on /tmp/s")),
+        XCTAssertEqual(StopOutcome.decode(RemoteOutput(status: 0, stdout: "temple-not-killed\n", stderr: ""), session: "temple-h1"), .refused)
+        XCTAssertEqual(StopOutcome.decode(RemoteOutput(status: 1, stdout: "", stderr: "can't find session: temple-h1"), session: "temple-h1"), .absent)
+        XCTAssertEqual(StopOutcome.decode(RemoteOutput(status: 1, stdout: "", stderr: "no server running on /tmp/s"), session: "temple-h1"),
                        .unconfirmed(reason: "no server running on /tmp/s", reachedHost: true))
-        XCTAssertEqual(StopOutcome.decode(RemoteOutput(status: 255, stdout: "", stderr: "Connection timed out", reachedCommand: false)),
+        XCTAssertEqual(StopOutcome.decode(RemoteOutput(status: 255, stdout: "", stderr: "Connection timed out", reachedCommand: false), session: "temple-h1"),
                        .unconfirmed(reason: "Connection timed out", reachedHost: false))
         XCTAssertEqual(StopOutcome.failed(RemoteExecError.deadline(seconds: 10)),
                        .unconfirmed(reason: "Didn't answer within 10 seconds.", reachedHost: true))
@@ -450,30 +510,33 @@ final class RemoteScriptsTests: XCTestCase {
         // Temple's own client goes first; another is still attached: refused.
         a.end()
         XCTAssertTrue(try waitFor { try self.attachedCount(host, "temple-ha") == 1 })
-        let refused = await keepAlive.stop(session: "temple-ha", socket: pinned, waitTenths: 5, using: exec)
+        let refused = try await keepAlive.stop(session: "temple-ha", socket: pinned, waitTenths: 5, using: exec)
         XCTAssertEqual(refused, .refused)
         XCTAssertEqual(try attachedCount(host, "temple-ha"), 1, "nothing killed")
 
         // No one attached: killed, and the acknowledgement is the evidence.
         second.end()
-        let killed = await keepAlive.stop(session: "temple-ha", socket: pinned, waitTenths: 30, using: exec)
+        let killed = try await keepAlive.stop(session: "temple-ha", socket: pinned, waitTenths: 30, using: exec)
         XCTAssertEqual(killed, .killed)
         let absent = await keepAlive.liveness(session: "temple-ha", socket: pinned, using: exec)
         XCTAssertEqual(absent, .absent, "the server lives on for hb and answers")
 
-        // A listing names what is there.
-        let listing = await keepAlive.list(using: exec)
-        XCTAssertEqual(listing, .listed([SessionListing.Entry(name: "temple-hb", attached: 1)]))
+        // A probe answers for one tracked session, with its attached count.
+        let probed = await keepAlive.probe(session: "temple-hb", socket: pinned, using: exec)
+        XCTAssertEqual(probed, .present(attached: 1))
+        let gone = await keepAlive.probe(session: "temple-ha", socket: pinned, using: exec)
+        XCTAssertEqual(gone, .absent)
 
         // The last session: stopped, the server exits, and a later check
         // reads "no server running", which is unknown in v1.
         b.end()
-        let last = await keepAlive.stop(session: "temple-hb", socket: pinned, waitTenths: 30, using: exec)
+        let last = try await keepAlive.stop(session: "temple-hb", socket: pinned, waitTenths: 30, using: exec)
         XCTAssertEqual(last, .killed)
         let after = await keepAlive.liveness(session: "temple-hb", socket: pinned, using: exec)
         guard case .unknown(_, true) = after else { return XCTFail("\(after)") }
-        let noServer = await keepAlive.list(using: exec)
-        XCTAssertEqual(noServer, .noServer)
+        guard case .unknown(_, true) = await keepAlive.probe(session: "temple-hb", socket: pinned, using: exec) else {
+            return XCTFail("a missing server is unknown, never absent")
+        }
 
         // A socket Temple may not reach is unknown, never absent.
         let locked = host.tree.directory("locked")
@@ -481,6 +544,48 @@ final class RemoteScriptsTests: XCTestCase {
         defer { chmod(locked.path, 0o700) }
         let denied = await keepAlive.liveness(session: "temple-hb", socket: locked.path + "/sock", using: exec)
         guard case .unknown(_, false) = denied else { return XCTFail("\(denied)") }
+    }
+
+    func testRealTmuxStopOfAGoneSessionIsAbsentNeverRefused() async throws {
+        let host = StandIn()
+        try host.installRealTmux()
+        let keepAlive = TmuxKeepAlive()
+        defer { _ = try? host.tmux(["-L", "temple", "kill-server"]) }
+        _ = try host.tmux(["-L", "temple", "-f", "/dev/null", "new-session", "-d", "-s", "temple-keep", "sleep 30"])
+        // `if-shell -t =name:` on a missing session would print the refusal
+        // with status 0; has-session in the same queue answers first.
+        let outcome = try await keepAlive.stop(session: "temple-gone", socket: nil, waitTenths: 0, using: host.exec)
+        XCTAssertEqual(outcome, .absent)
+        let probe = await keepAlive.probe(session: "temple-gone", socket: nil, using: host.exec)
+        XCTAssertEqual(probe, .absent)
+    }
+
+    /// A home whose path tmux would read as a format, and a quote: `-c /`
+    /// keeps it out of tmux, and the pane's diagnostics land exactly there,
+    /// with the agent still the pane's own process.
+    func testRealTmuxDiagnosticsAndAnOddHome() async throws {
+        let host = StandIn()
+        try host.installRealTmux()
+        let oddHome = host.tree.directory("h#{session_name}'q #(touch pwned)").path
+        host.extra = ["HOME": oddHome]
+        let keepAlive = TmuxKeepAlive()
+        defer { _ = try? host.tmux(["-L", "temple", "kill-server"]) }
+        let client = try PTYClient(keepAlive.createCommand(plan(host, directory: "~",
+            argv: ["/bin/sh", "-c", "echo \"agent $$\"; echo 'No conversation found with session ID: x' >&2; sleep 1; exit 3"])),
+                                   environment: host.environment)
+        defer { client.end() }
+        let records = oddHome + "/.temple/launch"
+        XCTAssertTrue(try waitFor { FileManager.default.fileExists(atPath: records + "/m1") })
+        XCTAssertTrue(try waitFor { ((try? String(contentsOfFile: records + "/m1.out", encoding: .utf8)) ?? "").contains("No conversation") })
+        guard case .ok(let evidence) = LaunchRecords.parsePane(try String(contentsOfFile: records + "/m1", encoding: .utf8)) else {
+            return XCTFail()
+        }
+        XCTAssertEqual(evidence.directory, canonical(oddHome))
+        let output = try String(contentsOfFile: records + "/m1.out", encoding: .utf8)
+        XCTAssertTrue(output.contains("agent \(evidence.panePID)"), "the agent is the pane's process: \(output)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: host.tree.path + "/pwned"))
+        let fetched = try await LaunchRecords.fetch(marker: "m1", using: host.exec)
+        XCTAssertTrue(fetched.output?.contains("No conversation found") == true)
     }
 
     func testRealTmuxStopRefusesWhenTemplesClientWasReplacedBeforeItRan() async throws {
@@ -497,7 +602,7 @@ final class RemoteScriptsTests: XCTestCase {
         let other = try launchClient(host, "tmux -L temple attach-session -t =temple-hr")
         defer { other.end() }
         XCTAssertTrue(try waitFor { try self.attachedCount(host, "temple-hr") == 1 })
-        let outcome = await keepAlive.stop(session: "temple-hr", socket: nil, waitTenths: 5, using: host.exec)
+        let outcome = try await keepAlive.stop(session: "temple-hr", socket: nil, waitTenths: 5, using: host.exec)
         XCTAssertEqual(outcome, .refused)
         let present = await keepAlive.liveness(session: "temple-hr", socket: nil, using: host.exec)
         XCTAssertEqual(present, .present)
@@ -516,14 +621,14 @@ final class RemoteScriptsTests: XCTestCase {
         // The next launch configures a fresh server in the same queue.
         let second = try launchClient(host, keepAlive.createCommand(plan(host, handle: "h2", marker: "m2",
             argv: ["/bin/sh", "-c", "printf '%s\\n' \"$PATH\" > \(out)/p2; printf '%s\\n' \"$TERM\" > \(out)/t2; sleep 30"],
-            path: .some("\(host.bin):/first/path:/usr/bin:/bin"))))
+            path: .resolved("\(host.bin):/first/path:/usr/bin:/bin"))))
         defer { second.end() }
         XCTAssertTrue(try waitFor { FileManager.default.fileExists(atPath: out + "/t2") })
         XCTAssertEqual(try host.tmux(["-L", "temple", "show", "-gv", "status"]).stdout.trimmingCharacters(in: .whitespacesAndNewlines), "off")
         // A server started with one PATH: -e hands the next pane its own.
         let third = try launchClient(host, keepAlive.createCommand(plan(host, handle: "h3", marker: "m3",
             argv: ["/bin/sh", "-c", "printf '%s\\n' \"$PATH\" > \(out)/p3; sleep 30"],
-            path: .some("\(host.bin):/third/path:/usr/bin:/bin"))))
+            path: .resolved("\(host.bin):/third/path:/usr/bin:/bin"))))
         defer { third.end() }
         XCTAssertTrue(try waitFor { FileManager.default.fileExists(atPath: out + "/p3") })
         XCTAssertEqual(try String(contentsOfFile: out + "/p2", encoding: .utf8), "\(host.bin):/first/path:/usr/bin:/bin\n")

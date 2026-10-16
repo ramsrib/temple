@@ -701,6 +701,15 @@ public final class AppModel: ObservableObject {
         openSessions.remoteNoticeHandler = { [weak self] host, message in
             self?.remoteNotice = RemoteNotice(host: host, message: message, kind: .closed)
         }
+        openSessions.discardHandler = { [weak self] id, host in
+            guard let self, self.overlay.rows[id]?.host == host else { return }
+            // A row the user made theirs (named, pinned, colored) is archived,
+            // reversibly, rather than let go.
+            if !self.overlay.discardUnstartedCreation(id, host: host) {
+                self.archiveSession(id, undoManager: nil)
+            }
+            self.openSessions.forgetClosedTabs(sessionID: id)
+        }
         // ⌘T then close without typing: the minted id never got a transcript,
         // and its row would read "New Claude session" forever. The tab's
         // process is gone by now; only a fresh, completed absence from the
@@ -926,6 +935,9 @@ public final class AppModel: ObservableObject {
         // Removed, or edited (a new address is a new connection): the old
         // entry and engine go. Their sessions keep running on the host.
         for (host, record) in managedRemoteHosts where wantedByHost[host] != record {
+            // Its connection context goes first: queries cancelled, opens and
+            // results invalidated, clients detached.
+            openSessions.retireRemoteHost(host)
             hostBox.value = hostBox.value.removing(host)
             engineSet.remove(host: host)
             managedRemoteHosts.removeValue(forKey: host)
@@ -1015,7 +1027,8 @@ public final class AppModel: ObservableObject {
         // section 5). The engine barrier below is unchanged; the remote
         // store's writes happen as each stop completes, so none waits on it.
         let plan = openSessions.quitDrainPlan()
-        SessionRuntimeController().drainAll(graceful: plan.graceful, detach: plan.detach, stops: plan.stops) { [self] in
+        SessionRuntimeController().drainAll(graceful: plan.graceful, detach: plan.detach,
+                                            remote: openSessions.remoteOperations) { [self] in
             // Final barrier for writes queued while the processes drained.
             overlay.flushPendingTitles()
             overlay.flushPendingTouches()
@@ -1024,8 +1037,16 @@ public final class AppModel: ObservableObject {
             engineSet.stopListening()
             let timeout = engineShutdownTimeout
             Task { @MainActor [self] in
-                if await !self.engineSet.shutDown(timeout: timeout) {
+                // The remote store's writes (stop outcomes, left-running
+                // flags) share the engines' deadline and never extend it.
+                let deadline = Date().addingTimeInterval(timeout)
+                async let enginesStopped = self.engineSet.shutDown(timeout: timeout)
+                async let remoteWritten = self.openSessions.remoteOperations.waitForAll(until: deadline)
+                if await !enginesStopped {
                     TempleUILog.lifecycle.error("quit: the engines did not stop within \(timeout, privacy: .public) s; quitting anyway")
+                }
+                if await !remoteWritten {
+                    TempleUILog.lifecycle.error("quit: remote operations were still writing at the deadline; quitting anyway")
                 }
                 // Nothing from the stopped engines is written after this.
                 self.overlay.applyFacts([:])

@@ -7,10 +7,15 @@ import TempleCore
 /// (headers, prompts, notices) lives in the app; everything the host says,
 /// and what Temple concludes from it, is decided and written here.
 ///
-/// The run row is written before anything spawns; a read or write that
-/// fails refuses the open, never reads as "no run, mint another". Nothing
-/// here kills a session without being asked to by a caller acting for the
-/// user, and an unconfirmed stop is never retried.
+/// - The run row is written before anything spawns; a read or write that
+///   fails refuses the open, never reads as "no run, mint another". The
+///   ordinary find-or-reserve is one immediate transaction across processes.
+/// - Store work runs off the main actor; a write that fails is reported,
+///   never reported as success.
+/// - Only tracked runs are ever asked about, each on its own pinned server;
+///   nothing is discovered, and nothing Temple did not start is stopped.
+/// - Nothing here kills a session without being asked to by a caller acting
+///   for the user, and an unconfirmed stop is never retried.
 @MainActor
 public final class RemoteSessions {
     public let record: RemoteHostRecord
@@ -29,10 +34,14 @@ public final class RemoteSessions {
         /// The user chose Resume anyway: a new run under a new handle,
         /// whatever the latest one's state; the old row is kept.
         public var resumeAnyway: Bool
+        /// The user chose Start a new session for a session whose
+        /// conversation was never confirmed: a new run with the same id,
+        /// started fresh, never resumed.
+        public var startNew: Bool
         public init(agent: Agent, sessionID: String, mode: Mode, directory: String, extraArguments: [String] = [],
-                    resumeAnyway: Bool = false) {
+                    resumeAnyway: Bool = false, startNew: Bool = false) {
             self.agent = agent; self.sessionID = sessionID; self.mode = mode; self.directory = directory
-            self.extraArguments = extraArguments; self.resumeAnyway = resumeAnyway
+            self.extraArguments = extraArguments; self.resumeAnyway = resumeAnyway; self.startNew = startNew
         }
     }
 
@@ -46,22 +55,32 @@ public final class RemoteSessions {
         public var argv: [String]
         /// The agent's own argv, for a failure header (never the wrapper).
         public var agentArgv: [String]
-        /// The record the creation will write, recovered on a later Open
-        /// if this one never collects it.
         public var directoryIntent: String
+        /// An attach to a run whose creation evidence was persisted: the
+        /// folder its pane reported, replayed into the row and tab.
+        public var evidenceDirectory: String?
+    }
+
+    public enum OpenOutcome: Sendable, Equatable {
+        case plan(OpenPlan)
+        /// The session's last run ended with its conversation unconfirmed:
+        /// the user chooses Start a new session or Discard.
+        case needsDecision
     }
 
     /// What the launch records said, once persisted.
     public enum Collected: Sendable, Equatable {
-        /// The pane ran in this folder (its `pwd -P`).
+        /// The pane ran in this folder (its `pwd -P`), recorded.
         case ok(directory: String)
-        /// The pane could not enter the folder; no agent ran.
+        /// The pane could not enter the folder; no agent ran. Recorded.
         case failedCD(directory: String)
         /// The tmux client failed; creation is unproven, not disproven.
         case clientFailed(String)
         /// Nothing there (yet).
         case nothing
         case transport(String)
+        /// The host's answer could not be written here: nothing acknowledged.
+        case storage(String)
     }
 
     public enum OpenError: Error, LocalizedError, Equatable {
@@ -75,13 +94,40 @@ public final class RemoteSessions {
         }
     }
 
+    /// A stop's decoded outcome and whether it was written.
+    public struct StopRecord: Sendable, Equatable {
+        public var outcome: StopOutcome
+        /// Why the outcome could not be written, if it could not.
+        public var storageError: String?
+    }
+
+    /// One tracked session as "Sessions on <host>" shows it.
+    public struct Tracked: Sendable, Equatable {
+        public enum State: Sendable, Equatable {
+            case present(attached: Int)
+            case unknown(String)
+        }
+        public var run: RemoteRun
+        public var state: State
+    }
+
+    /// The remote PATH (section 2's one policy), memory only.
+    public enum PathState: Sendable, Equatable {
+        /// No query has reached the host since the last transport failure.
+        case unresolved
+        case resolved(String)
+        /// Resolution ran on the host and found no PATH: ssh's default
+        /// environment, for the checks and the launch alike.
+        case fallback(String)
+    }
+
     private let storeProvider: () throws -> RemoteStateStore
     /// Whether the store's file exists; reads never create it.
     private let storeExists: () -> Bool
     private var openedStore: RemoteStateStore?
     private let keepAlive: KeepAlive
     private let stateDirectory: URL
-    private let sshPath: String
+    private let sshPath: () -> String
     private let resolve: ([String]) async -> ConnectionTest.Resolution
     private let makeExec: (SSHConnection, String?) -> RemoteExec
     private let masterCheck: ([String]) async -> Bool
@@ -89,10 +135,11 @@ public final class RemoteSessions {
     private let token: () -> String
 
     private var connection: SSHConnection?
-    /// The remote PATH, memory only; resolved again after a transport failure.
-    private var environment: RemoteEnvironment?
+    public private(set) var pathState: PathState = .unresolved
+    /// The host was removed or edited: nothing here runs again.
+    public private(set) var retired = false
 
-    public init(record: RemoteHostRecord, stateDirectory: URL, sshPath: String,
+    public init(record: RemoteHostRecord, stateDirectory: URL, sshPath: @autoclosure @escaping () -> String,
                 store: @escaping () throws -> RemoteStateStore,
                 storeExists: @escaping () -> Bool = { true },
                 keepAlive: KeepAlive = TmuxKeepAlive(),
@@ -115,6 +162,19 @@ public final class RemoteSessions {
         self.token = token
     }
 
+    /// The host was removed or its record edited: its connection and PATH
+    /// are dropped and nothing here queries the host again. The caller
+    /// cancels the tasks already running.
+    public func retire() {
+        retired = true
+        connection = nil
+        pathState = .unresolved
+    }
+
+    struct Retired: Error, LocalizedError {
+        var errorDescription: String? { "the host's settings changed" }
+    }
+
     // MARK: Store
 
     /// The store, opened on first use: with no remote session ever opened,
@@ -126,51 +186,79 @@ public final class RemoteSessions {
         return store
     }
 
-    /// The store for a read: nil, rather than a new empty file, when there
-    /// is none yet.
-    private func readableStore() -> RemoteStateStore? {
-        guard openedStore != nil || storeExists() else { return nil }
-        return try? store()
+    /// A store operation, off the main actor.
+    func write<T: Sendable>(_ body: @escaping @Sendable (RemoteStateStore) throws -> T) async throws -> T {
+        try await store().perform(body)
     }
 
-    public func liveRun(sessionID: String) -> RemoteRun? {
-        try? readableStore()?.liveRun(host: host, sessionID: sessionID)
+    /// A read: nil, rather than a new empty file, when there is none yet.
+    func read<T: Sendable>(_ body: @escaping @Sendable (RemoteStateStore) throws -> T) async -> T? {
+        guard openedStore != nil || storeExists(), let store = try? store() else { return nil }
+        return try? await store.perform(body)
     }
 
-    public func run(_ handle: String) -> RemoteRun? { try? readableStore()?.run(handle) }
+    public func liveRun(sessionID: String) async -> RemoteRun? {
+        let host = host
+        return await read { try $0.liveRun(host: host, sessionID: sessionID) } ?? nil
+    }
 
-    public func runs() -> [RemoteRun] { (try? readableStore()?.runs(host: host)) ?? [] }
+    public func run(_ handle: String) async -> RemoteRun? { await read { try $0.run(handle) } ?? nil }
+
+    public func runs() async -> [RemoteRun] {
+        let host = host
+        return await read { try $0.runs(host: host) } ?? []
+    }
 
     // MARK: Connection
 
     /// The connection, keyed by where `ssh -G` resolves the host (as the
-    /// Test connection keys it), its socket directory prepared.
-    public func resolvedConnection() async throws -> SSHConnection {
-        if let connection { return connection }
-        let provisional = SSHConnection(record: record, stateDirectory: stateDirectory, sshPath: sshPath)
-        guard case .resolved(let values) = await resolve(provisional.resolutionArgv) else {
+    /// Test connection keys it), its socket directory prepared. `refresh`
+    /// (explicit opens and contacts) asks `ssh -G` again: an alias
+    /// retargeted in `~/.ssh/config` gets a new connection and its PATH is
+    /// resolved again.
+    public func resolvedConnection(refresh: Bool = false) async throws -> SSHConnection {
+        guard !retired else { throw Retired() }
+        if !refresh, let connection { return connection }
+        let provisional = SSHConnection(record: record, stateDirectory: stateDirectory, sshPath: sshPath())
+        let answer = await resolve(provisional.resolutionArgv)
+        guard !retired else { throw Retired() }
+        guard case .resolved(let values) = answer else {
             throw OpenError.refused("ssh couldn't read its configuration for \(record.name).")
         }
-        let resolved = SSHConnection(record: record, stateDirectory: stateDirectory, sshPath: sshPath, resolved: values)
+        let resolved = SSHConnection(record: record, stateDirectory: stateDirectory, sshPath: sshPath(), resolved: values)
+        if let connection, connection == resolved { return connection }
         try resolved.prepareSocketDirectory()
         SocketHygiene.removeIfNothingListens(resolved.controlPath)
+        if connection != nil { pathState = .unresolved }
         connection = resolved
         return resolved
     }
 
-    /// A query exec with the resolved PATH, resolving it first when Temple
-    /// has none (one environment policy, section 2).
-    func queryExec() async throws -> RemoteExec {
-        let connection = try await resolvedConnection()
-        if environment == nil {
+    /// A query exec with the PATH policy's answer, resolving it first when
+    /// no query has reached the host yet.
+    func queryExec(refresh: Bool = false) async throws -> RemoteExec {
+        let connection = try await resolvedConnection(refresh: refresh)
+        if case .unresolved = pathState {
             let resolved = await RemoteEnvironment.resolve(using: makeExec(connection, nil))
-            if resolved.reachedHost { environment = resolved }
+            guard !retired else { throw Retired() }
+            if resolved.reachedHost {
+                pathState = resolved.path.map(PathState.resolved) ?? .fallback(resolved.problem ?? "no PATH")
+            }
         }
-        return makeExec(connection, environment?.path)
+        if case .resolved(let path) = pathState { return makeExec(connection, path) }
+        return makeExec(connection, nil)
     }
 
     /// A transport failure: the next query resolves the PATH again.
-    func transportFailed() { environment = nil }
+    func transportFailed() { pathState = .unresolved }
+
+    var launchPath: RemoteLaunchPlan.Path {
+        switch pathState {
+        case .unresolved: .unresolved
+        case .resolved(let path): .resolved(path)
+        case .fallback: .fallback
+        }
+    }
 
     /// Whether a master answers on Temple's socket for this host (`ssh -O
     /// check`, local). Quit asks it before stopping anything there.
@@ -185,69 +273,84 @@ public final class RemoteSessions {
 
     // MARK: Open
 
-    /// Decides attach or create from the run's state, recovers an
-    /// uncollected record first, and writes the run row before returning
-    /// the command. Attach-only for every run that is not Ended: Temple
-    /// never creates from a state where the original may still be running.
-    public func open(_ request: OpenRequest) async throws -> OpenPlan {
+    /// Decides attach or create from the run's state (one transaction),
+    /// recovers an uncollected record first, and writes the run before
+    /// returning the command. Attach-only for every run that is not Ended:
+    /// Temple never creates from a state where the original may be running.
+    public func open(_ request: OpenRequest) async throws -> OpenOutcome {
         guard RemoteQuoting.isSafeToken(request.sessionID) else { throw OpenError.refused("This session id can't be sent to a host.") }
-        if request.agent == .codex, request.mode == .new {
+        if request.agent == .codex, request.mode == .new || request.startNew {
             throw OpenError.refused("Temple can't start new Codex sessions on \(record.name) yet.")
         }
-        let connection = try await resolvedConnection()
-        let store: RemoteStateStore
-        let live: RemoteRun?
-        do {
-            store = try self.store()
-            live = try store.liveRun(host: host, sessionID: request.sessionID)
-        } catch {
-            throw OpenError.store(error.localizedDescription)
+        let connection = try await resolvedConnection(refresh: true)
+        let resume = request.mode == .resume && !request.startNew
+        let candidate = newRun(request, resume: resume)
+        if request.resumeAnyway || request.startNew {
+            // Explicit choices, never the ordinary reservation.
+            do { try await write { try $0.insert(candidate) } } catch { throw OpenError.store(error.localizedDescription) }
+            return .plan(createPlan(candidate, request: request, connection: connection))
         }
-        if var run = live, !request.resumeAnyway {
-            // An `ok` written but never collected is recovered before the attach.
-            if run.creation == nil || run.creation == .unproven {
-                if case .failedCD = await collect(run.handle) {
-                    // Never created: a new run, as the request says.
-                    return try await create(request, connection: connection, store: store,
-                                            resume: request.mode == .resume)
-                }
-                run = (try? store.run(run.handle)) ?? run
-            }
-            guard let attachment = try? store.update(run.handle, { row in
-                row.attachment += 1
-                // Open clears the left-running flag (state table).
-                row.leftRunningAt = nil
-                row.leftRunningReason = nil
-                row.leftRunningNoticedAt = nil
-            })?.attachment else { throw OpenError.store("the run could not be updated") }
-            let plan = RemoteLaunchPlan(handle: run.handle, marker: run.recordPath, directory: run.directoryIntent,
-                                        agentArgv: [], path: environment?.path, socket: run.socketPath)
-            return OpenPlan(handle: run.handle, attachment: attachment, creating: false,
-                            argv: localArgv(connection, keepAlive.attachCommand(plan)),
-                            agentArgv: agentArgv(run.agent, sessionID: request.sessionID, resume: run.mode == .resume,
-                                                 extra: request.extraArguments),
-                            directoryIntent: run.directoryIntent)
-        }
-        // The app says new or resume: it knows whether the tab ever sent
-        // the agent anything (a Claude session with no input has no
-        // transcript to resume, and keeps its minted id).
-        return try await create(request, connection: connection, store: store, resume: request.mode == .resume)
+        return try await reserveAndPlan(request, candidate: candidate, connection: connection, recovering: true)
     }
 
-    private func create(_ request: OpenRequest, connection: SSHConnection, store: RemoteStateStore,
-                        resume: Bool) async throws -> OpenPlan {
-        let handle = token()
+    private func reserveAndPlan(_ request: OpenRequest, candidate: RemoteRun, connection: SSHConnection,
+                                recovering: Bool) async throws -> OpenOutcome {
+        let reservation: RemoteStateStore.Reservation
+        do { reservation = try await write { try $0.reserve(candidate, allowUnconfirmed: false) } } catch {
+            throw OpenError.store(error.localizedDescription)
+        }
+        switch reservation {
+        case .needsDecision:
+            return .needsDecision
+        case .created(let run):
+            return .plan(createPlan(run, request: request, connection: connection))
+        case .existing(var run):
+            // An `ok` written but never collected is recovered before the attach.
+            if recovering, run.creation == nil || run.creation == .unproven {
+                switch await collect(run.handle) {
+                case .failedCD:
+                    // Never created: reserve again, which now creates.
+                    return try await reserveAndPlan(request, candidate: newRun(request, resume: candidate.mode == .resume),
+                                                    connection: connection, recovering: false)
+                case .storage(let reason):
+                    throw OpenError.store(reason)
+                default:
+                    run = await self.run(run.handle) ?? run
+                }
+            }
+            let plan = RemoteLaunchPlan(handle: run.handle, marker: marker(run), directory: run.directoryIntent,
+                                        agentArgv: [], path: launchPath, socket: run.socketPath)
+            return .plan(OpenPlan(handle: run.handle, attachment: run.attachment, creating: false,
+                                  argv: localArgv(connection, keepAlive.attachCommand(plan)),
+                                  agentArgv: agentArgv(run.agent, sessionID: request.sessionID, resume: run.mode == .resume,
+                                                       extra: request.extraArguments),
+                                  directoryIntent: run.directoryIntent,
+                                  evidenceDirectory: run.creation == .proven ? run.directory : nil))
+        }
+    }
+
+    private func newRun(_ request: OpenRequest, resume: Bool) -> RemoteRun {
         let marker = "r-" + token()
-        let argv = agentArgv(request.agent, sessionID: request.sessionID, resume: resume, extra: request.extraArguments)
-        let run = RemoteRun(handle: handle, host: host, agent: request.agent, mode: resume ? .resume : .new,
+        var run = RemoteRun(handle: token(), host: host, agent: request.agent, mode: resume ? .resume : .new,
                             directoryIntent: request.directory, sessionID: request.sessionID,
-                            recordPath: marker, startedAt: now())
-        do { try store.insert(run) } catch { throw OpenError.store(error.localizedDescription) }
-        let plan = RemoteLaunchPlan(handle: handle, marker: marker, directory: request.directory, agentArgv: argv,
-                                    path: environment?.path, socket: nil)
-        return OpenPlan(handle: handle, attachment: run.attachment, creating: true,
+                            recordPath: RecordDirectory.locator(marker: marker), startedAt: now())
+        run.conversation = resume ? .confirmed : .unconfirmed
+        return run
+    }
+
+    private func createPlan(_ run: RemoteRun, request: OpenRequest, connection: SSHConnection) -> OpenPlan {
+        let argv = agentArgv(run.agent, sessionID: request.sessionID, resume: run.mode == .resume,
+                             extra: request.extraArguments)
+        let plan = RemoteLaunchPlan(handle: run.handle, marker: marker(run), directory: run.directoryIntent,
+                                    agentArgv: argv, path: launchPath, socket: nil)
+        return OpenPlan(handle: run.handle, attachment: run.attachment, creating: true,
                         argv: localArgv(connection, keepAlive.createCommand(plan)), agentArgv: argv,
-                        directoryIntent: request.directory)
+                        directoryIntent: run.directoryIntent, evidenceDirectory: nil)
+    }
+
+    /// The marker the run's persisted locator names.
+    private func marker(_ run: RemoteRun) -> String {
+        RecordDirectory.marker(from: run.recordPath) ?? "invalid"
     }
 
     /// `/usr/bin/env TERM=xterm-256color ssh -t <arguments> -- <name> <remote>`:
@@ -272,63 +375,87 @@ public final class RemoteSessions {
     }
 
     /// An open that was planned but never spawned (the tab closed, the
-    /// spawn failed): no session was created, so the run is over.
-    public func abandon(_ handle: String, reason: String) {
-        _ = try? store().update(handle) { run in
-            guard run.creation == nil, run.attachment == 1 else { return }
-            run.creation = .failed
-            run.failure = reason
-            run.endedAt = self.now()
+    /// spawn failed, the host changed): no session was created.
+    public func abandon(_ handle: String, reason: String) async throws {
+        let now = now()
+        try await write {
+            try $0.update(handle) { run in
+                guard run.creation == nil, run.attachment == 1 else { return }
+                run.creation = .failed
+                run.failure = reason
+                run.endedAt = now
+            }
         }
     }
 
     // MARK: Records
 
-    /// Fetches the run's records by their persisted name, writes the
-    /// evidence, and only then acknowledges (deletes) them on the host.
+    /// Fetches the run's records by their persisted locator, writes the
+    /// evidence, and only then acknowledges (deletes) them on the host. A
+    /// write that fails is `.storage`, and nothing is acknowledged.
     public func collect(_ handle: String) async -> Collected {
-        guard let run = run(handle) else { return .nothing }
+        guard let run = await run(handle) else { return .nothing }
         if run.creation == .proven, let directory = run.directory { return .ok(directory: directory) }
+        if run.creation == .failed, run.failure == "cd" { return .failedCD(directory: run.directoryIntent) }
+        let marker = marker(run)
         let records: CollectedRecords
+        let exec: RemoteExec
         do {
-            records = try await LaunchRecords.fetch(marker: run.recordPath, using: try await queryExec())
+            exec = try await queryExec()
+            records = try await LaunchRecords.fetch(marker: marker, using: exec)
         } catch {
-            transportFailed()
+            if case LaunchRecords.FetchError.transport? = error as? LaunchRecords.FetchError { transportFailed() }
             return .transport(error.localizedDescription)
         }
+        let now = now()
         switch records.pane {
         case .ok(let evidence)?:
-            let written = try? store().update(handle) { row in
-                row.directory = evidence.directory
-                row.okAt = evidence.epoch
-                row.panePID = evidence.panePID
-                row.paneStart = evidence.paneStart
-                row.socketPath = evidence.socketPath
-                row.serverPID = evidence.serverPID
-                row.serverStart = evidence.serverStart
-                row.creation = .proven
+            do {
+                try await write {
+                    try $0.update(handle) { row in
+                        row.directory = evidence.directory
+                        row.okAt = evidence.epoch
+                        row.panePID = evidence.panePID
+                        row.paneStart = evidence.paneStart
+                        row.socketPath = evidence.socketPath
+                        row.serverPID = evidence.serverPID
+                        row.serverStart = evidence.serverStart
+                        row.creation = .proven
+                    }
+                }
+            } catch {
+                return .storage(error.localizedDescription)
             }
-            if written != nil, let exec = try? await queryExec() {
-                await LaunchRecords.acknowledge(marker: run.recordPath, using: exec)
-            }
+            await LaunchRecords.acknowledge(marker: marker, using: exec)
             return .ok(directory: evidence.directory)
         case .failedCD?:
-            let written = try? store().update(handle) { row in
-                row.creation = .failed
-                row.failure = "cd"
-                row.endedAt = self.now()
+            do {
+                try await write {
+                    try $0.update(handle) { row in
+                        row.creation = .failed
+                        row.failure = "cd"
+                        row.endedAt = now
+                    }
+                }
+            } catch {
+                return .storage(error.localizedDescription)
             }
-            if written != nil, let exec = try? await queryExec() {
-                await LaunchRecords.acknowledge(marker: run.recordPath, using: exec)
-            }
+            await LaunchRecords.acknowledge(marker: marker, all: true, using: exec)
             return .failedCD(directory: run.directoryIntent)
         case .unreadable(let line)?:
             return .transport("the launch record could not be read: \(line)")
         case nil:
             if let client = records.client {
-                _ = try? store().update(handle) { row in
-                    if row.creation == nil { row.creation = .unproven }
-                    row.failure = client.line.isEmpty ? "tmux exited with status \(client.status)" : client.line
+                let line = client.line.isEmpty ? "tmux exited with status \(client.status)" : client.line
+                do {
+                    try await write {
+                        try $0.update(handle) { row in
+                            if row.creation == nil { row.creation = .unproven }
+                            row.failure = line
+                        }
+                    }
+                } catch {
+                    return .storage(error.localizedDescription)
                 }
                 return .clientFailed(client.line)
             }
@@ -336,180 +463,211 @@ public final class RemoteSessions {
         }
     }
 
+    /// What the pane showed, for an agent that ended at once: the end of
+    /// its first 64 KiB, raw. Fetched once, then removed from the host.
+    public func diagnostics(_ handle: String) async -> String? {
+        guard let run = await run(handle), let exec = try? await queryExec(),
+              let records = try? await LaunchRecords.fetch(marker: marker(run), using: exec) else { return nil }
+        await LaunchRecords.acknowledge(marker: marker(run), all: true, using: exec)
+        return records.output
+    }
+
     /// A creation whose tab ended with nothing collected: unproven, so
     /// every later Open is attach-only.
-    public func markCreationUnproven(_ handle: String) {
-        _ = try? store().update(handle) { row in
-            if row.creation == nil { row.creation = .unproven }
-        }
+    public func markCreationUnproven(_ handle: String) async throws {
+        try await write { try $0.update(handle) { row in if row.creation == nil { row.creation = .unproven } } }
+    }
+
+    /// A Temple tab sent this run's agent something: the conversation exists.
+    public func confirmConversation(_ handle: String) async throws {
+        try await write { try $0.update(handle) { $0.conversation = .confirmed } }
+    }
+
+    /// Discard: none of the session's runs is attached to or resumed again.
+    public func dismiss(sessionID: String) async throws {
+        let host = host, now = now()
+        try await write { try $0.dismiss(host: host, sessionID: sessionID, at: now) }
     }
 
     // MARK: Exit check
 
     /// `has-session` on the pinned socket. Only a positive absence ends the
-    /// run (written here, durably); the caller drops the answer if the
-    /// attachment moved on.
+    /// run, and only once that is written; the caller drops the answer if
+    /// the attachment moved on.
     public func exitCheck(_ handle: String) async -> Liveness {
-        guard let run = run(handle) else { return .unknown(reason: "Temple has no record of this session", socketMissing: false) }
+        guard let run = await run(handle) else { return .unknown(reason: "Temple has no record of this session", socketMissing: false) }
         let exec: RemoteExec
         do { exec = try await queryExec() } catch {
             return .unknown(reason: error.localizedDescription, socketMissing: false)
         }
         let liveness = await keepAlive.liveness(session: run.sessionName, socket: run.socketPath, using: exec)
-        if case .absent = liveness {
-            _ = try? store().update(handle) { row in
+        switch liveness {
+        case .absent:
+            do { try await markEnded(handle, evidence: .absent) } catch {
+                return .unknown(reason: "Temple couldn't record that it ended: \(error.localizedDescription)", socketMissing: false)
+            }
+        case .unknown(_, false):
+            transportFailed()
+        default:
+            break
+        }
+        return liveness
+    }
+
+    private func markEnded(_ handle: String, evidence: RemoteRun.EndEvidence) async throws {
+        let now = now()
+        try await write {
+            try $0.update(handle) { row in
                 guard row.endedAt == nil else { return }
-                row.endedAt = self.now()
-                row.endEvidence = .absent
+                row.endedAt = now
+                row.endEvidence = evidence
                 row.leftRunningAt = nil
                 row.leftRunningReason = nil
             }
-        } else if case .unknown(_, false) = liveness {
-            transportFailed()
         }
-        return liveness
     }
 
     // MARK: Stop
 
     /// The one-command, attached-checked stop. `fromAttachedTab`: Temple's
     /// own client was just detached on this side, and the host waits up to
-    /// three seconds for it to leave before the check (note 4). The outcome
-    /// is written here whether or not a tab still exists to show it; a
-    /// cancelled stop (the quit's deadline) writes nothing, for its caller
-    /// records why.
-    public func stop(_ handle: String, fromAttachedTab: Bool) async -> StopOutcome {
-        guard let run = run(handle) else { return .unconfirmed(reason: "Temple has no record of this session", reachedHost: false) }
-        let exec: RemoteExec
-        do { exec = try await queryExec() } catch {
-            let outcome = StopOutcome.unconfirmed(reason: error.localizedDescription, reachedHost: false)
-            record(outcome, for: handle)
-            return outcome
+    /// three seconds for it to leave before the check (note 4). An answer
+    /// that arrived is decoded and written whether or not anyone is still
+    /// waiting (a cancellation after it arrived changes nothing); a query
+    /// cancelled before any answer throws `CancellationError`, and its
+    /// owner records why.
+    public func stop(_ handle: String, fromAttachedTab: Bool) async throws -> StopRecord {
+        guard let run = await run(handle) else {
+            return StopRecord(outcome: .unconfirmed(reason: "Temple has no record of this session", reachedHost: false))
         }
-        let outcome = await keepAlive.stop(session: run.sessionName, socket: run.socketPath,
-                                           waitTenths: fromAttachedTab ? 30 : 0, using: exec)
-        guard !Task.isCancelled else { return outcome }
-        record(outcome, for: handle)
-        return outcome
+        let outcome: StopOutcome
+        do {
+            let exec = try await queryExec()
+            outcome = try await keepAlive.stop(session: run.sessionName, socket: run.socketPath,
+                                               waitTenths: fromAttachedTab ? 30 : 0, using: exec)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            outcome = .unconfirmed(reason: error.localizedDescription, reachedHost: false)
+        }
+        do {
+            try await record(outcome, for: handle)
+            return StopRecord(outcome: outcome)
+        } catch {
+            return StopRecord(outcome: outcome, storageError: error.localizedDescription)
+        }
     }
 
     /// The durable completion of a stop.
-    public func record(_ outcome: StopOutcome, for handle: String) {
+    public func record(_ outcome: StopOutcome, for handle: String) async throws {
         switch outcome {
-        case .killed, .absent:
-            _ = try? store().update(handle) { row in
-                guard row.endedAt == nil else { return }
-                row.endedAt = self.now()
-                row.endEvidence = outcome == .killed ? .killed : .absent
-                row.leftRunningAt = nil
-                row.leftRunningReason = nil
-            }
-        case .refused:
-            leaveRunning(handle, reason: .anotherClientAttached)
+        case .killed: try await markEnded(handle, evidence: .killed)
+        case .absent: try await markEnded(handle, evidence: .absent)
+        case .refused: try await leaveRunning(handle, reason: .anotherClientAttached)
         case .unconfirmed(_, let reached):
             if !reached { transportFailed() }
-            leaveRunning(handle, reason: reached ? .stopNotAcknowledged : .hostDidNotAnswer)
+            try await leaveRunning(handle, reason: reached ? .stopNotAcknowledged : .hostDidNotAnswer)
         }
     }
 
     /// A stop Temple could not carry out and confirm: the session is left
     /// running, with the reason, and listed for the user. Nothing follows.
-    public func leaveRunning(_ handle: String, reason: RemoteRun.LeftRunningReason) {
-        _ = try? store().update(handle) { row in
-            guard row.endedAt == nil else { return }
-            row.leftRunningAt = self.now()
-            row.leftRunningReason = reason
-            row.leftRunningNoticedAt = nil
+    public func leaveRunning(_ handle: String, reason: RemoteRun.LeftRunningReason) async throws {
+        let now = now()
+        try await write {
+            try $0.update(handle) { row in
+                guard row.endedAt == nil else { return }
+                row.leftRunningAt = now
+                row.leftRunningReason = reason
+                row.leftRunningNoticedAt = nil
+            }
         }
     }
 
     /// Keep, in "Sessions on <host>": the flag goes; the session is an
     /// ordinary detached one (fable must-fix 6).
-    public func keep(_ handle: String) {
-        _ = try? store().update(handle) { row in
-            row.leftRunningAt = nil
-            row.leftRunningReason = nil
+    public func keep(_ handle: String) async throws {
+        try await write {
+            try $0.update(handle) { row in
+                row.leftRunningAt = nil
+                row.leftRunningReason = nil
+            }
         }
     }
 
     /// The sidebar's line for these flags was dismissed or acted on.
-    public func noticeLeftRunning() {
-        let now = now()
-        for run in (try? readableStore()?.leftRunning(host: host)) ?? [] where run.leftRunningNoticedAt == nil {
-            _ = try? store().update(run.handle) { $0.leftRunningNoticedAt = now }
+    public func noticeLeftRunning() async throws {
+        let host = host, now = now()
+        try await write { store in
+            for run in try store.leftRunning(host: host) where run.leftRunningNoticedAt == nil {
+                try store.update(run.handle) { $0.leftRunningNoticedAt = now }
+            }
         }
     }
 
     /// Runs flagged left running whose flag the sidebar has not shown yet.
-    public func unnoticedLeftRunning() -> [RemoteRun] {
-        ((try? readableStore()?.leftRunning(host: host)) ?? []).filter { $0.leftRunningNoticedAt == nil }
+    public func unnoticedLeftRunning() async -> [RemoteRun] {
+        let host = host
+        return (await read { try $0.leftRunning(host: host) } ?? []).filter { $0.leftRunningNoticedAt == nil }
     }
 
     // MARK: Sessions on the host
 
-    public struct Listed: Sendable, Equatable {
-        public var name: String
-        public var attached: Int
-        /// The run Temple has under this name, if any ("Not in Temple" otherwise).
-        public var run: RemoteRun?
-    }
-
-    public enum Listing: Sendable, Equatable {
-        case sessions([Listed])
-        case noServer
-        case failed(String)
-    }
-
-    /// The sessions on Temple's private server, mapped to runs. Only the
-    /// `-L temple` server is asked; the user's own tmux never is. A flagged
-    /// run whose server answered without it is positively absent there.
-    public func listSessions() async -> Listing {
+    /// "Sessions on <host>": the runs Temple tracks there that are not
+    /// Ended, each asked about on its own pinned server. A run that server
+    /// says is gone is Ended and left out; one Temple can't check stays,
+    /// with why. `reachedHost`: whether any answer came from the host.
+    public func trackedSessions() async -> (sessions: [Tracked], reachedHost: Bool) {
+        let live = await runs().filter { !$0.isEnded && $0.dismissedAt == nil }
+        guard !live.isEmpty else { return ([], true) }
         let exec: RemoteExec
-        do { exec = try await queryExec() } catch { return .failed(error.localizedDescription) }
-        switch await keepAlive.list(using: exec) {
-        case .failed(let line):
-            transportFailed()
-            return .failed(line)
-        case .noServer:
-            return .noServer
-        case .listed(let entries):
-            let runs = self.runs()
-            let byName = Dictionary(runs.map { ($0.sessionName, $0) }, uniquingKeysWith: { _, last in last })
-            let names = Set(entries.map(\.name))
-            let defaultSocket = runs.compactMap(\.socketPath).first
-            for run in runs where run.isLeftRunning && !names.contains(run.sessionName)
-                && (run.socketPath == nil || run.socketPath == defaultSocket) {
-                // Listed by the server it was created on, and not there.
-                _ = try? store().update(run.handle) { row in
-                    guard row.endedAt == nil else { return }
-                    row.endedAt = self.now(); row.endEvidence = .absent
-                    row.leftRunningAt = nil; row.leftRunningReason = nil
-                }
-            }
-            return .sessions(entries.map { Listed(name: $0.name, attached: $0.attached, run: byName[$0.name]) })
+        do { exec = try await queryExec(refresh: true) } catch {
+            return (live.map { Tracked(run: $0, state: .unknown(error.localizedDescription)) }, false)
         }
+        var tracked: [Tracked] = []
+        var reached = false
+        for run in live {
+            switch await keepAlive.probe(session: run.sessionName, socket: run.socketPath, using: exec) {
+            case .present(let attached):
+                reached = true
+                tracked.append(Tracked(run: run, state: .present(attached: attached)))
+            case .absent:
+                reached = true
+                if (try? await markEnded(run.handle, evidence: .absent)) == nil {
+                    tracked.append(Tracked(run: run, state: .unknown("Temple couldn't record that it ended")))
+                }
+            case .unknown(let reason, let reachedHost):
+                reached = reached || reachedHost
+                tracked.append(Tracked(run: run, state: .unknown(reason)))
+            }
+        }
+        if !reached { transportFailed() }
+        return (tracked, reached)
     }
 
-    /// Stop, from the sheet or a row's menu: no Temple client is attached
-    /// (`<n>` = 0). A session with no run ("Not in Temple") is stopped by
-    /// its exact name on Temple's private server and nothing is written.
-    public func stopListed(_ name: String) async -> StopOutcome {
-        if let run = runs().last(where: { $0.sessionName == name && !$0.isEnded }) {
-            return await stop(run.handle, fromAttachedTab: false)
+    /// At launch, for a host with flags the sidebar has not shown: each
+    /// flagged run is asked about on its pinned server; nil when the host
+    /// did not answer, otherwise how many are still left running.
+    public func contactLeftRunning() async -> Int? {
+        let flagged = await unnoticedLeftRunning()
+        guard !flagged.isEmpty, let exec = try? await queryExec(refresh: true) else { return nil }
+        var reached = false
+        for run in flagged {
+            switch await keepAlive.probe(session: run.sessionName, socket: run.socketPath, using: exec) {
+            case .present: reached = true
+            case .absent:
+                reached = true
+                try? await markEnded(run.handle, evidence: .absent)
+            case .unknown(_, let reachedHost): reached = reached || reachedHost
+            }
         }
-        guard RemoteQuoting.isSafeToken(name) else {
-            return .unconfirmed(reason: "Temple can't name this session safely", reachedHost: false)
-        }
-        do {
-            return await keepAlive.stop(session: name, socket: nil, waitTenths: 0, using: try await queryExec())
-        } catch {
-            return .unconfirmed(reason: error.localizedDescription, reachedHost: false)
-        }
+        guard reached else { return nil }
+        return await unnoticedLeftRunning().count
     }
 
     /// The folder sheet's advisory check.
     public func checkFolder(_ path: String) async -> FolderCheck {
-        do { return await FolderCheck.run(path, using: try await queryExec()) } catch {
+        do { return await FolderCheck.run(path, using: try await queryExec(refresh: true)) } catch {
             return .transport(error.localizedDescription)
         }
     }

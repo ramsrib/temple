@@ -76,6 +76,11 @@ public struct RemoteRun: Equatable, Sendable {
     /// flag: it does not come back (fable must-fix 6).
     public var leftRunningNoticedAt: Date?
     public var dismissedAt: Date?
+    /// Whether the session is known to have a conversation to resume.
+    /// A new Claude run starts unconfirmed, and is confirmed once a Temple
+    /// tab sends it something; a stopped session still unconfirmed is not
+    /// resumed blindly (its row offers Start a new session or Discard).
+    public var conversation: Conversation?
     /// A launch failure's words (`failed cd`, `failed tmux`).
     public var failure: String?
 
@@ -89,6 +94,8 @@ public struct RemoteRun: Equatable, Sendable {
     }
 
     /// Ended: absent proven, or Temple's kill acknowledged, or never created.
+    public enum Conversation: String, Sendable { case unconfirmed, confirmed }
+
     public var isEnded: Bool { endedAt != nil }
     public var isLeftRunning: Bool { leftRunningAt != nil && endedAt == nil }
 }
@@ -162,6 +169,9 @@ public final class RemoteStateStore: @unchecked Sendable {
                 );
                 """)
         }
+        migrator.registerMigration("r2-conversation") { database in
+            try database.execute(sql: "ALTER TABLE runs ADD COLUMN conversation TEXT")
+        }
         return migrator
     }
 
@@ -172,15 +182,17 @@ public final class RemoteStateStore: @unchecked Sendable {
 
     /// Written before the spawn: a failure refuses the open.
     public func insert(_ run: RemoteRun) throws {
-        try queue.write { database in
+        try queue.write { database in try Self.insert(run, in: database) }
+    }
+
+    private static func insert(_ run: RemoteRun, in database: Database) throws {
             try database.execute(sql: """
                 INSERT INTO runs (handle, host, agent, mode, session_name, directory_intent, directory, session_id,
                     attachment, record_path, started_at, ok_at, pane_pid, pane_start, socket_path, server_pid,
                     server_start, creation, ended_at, end_evidence, left_running_at, left_running_reason,
-                    left_running_noticed_at, dismissed_at, failure)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    left_running_noticed_at, dismissed_at, failure, conversation)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, arguments: StatementArguments(Self.values(run)))
-        }
     }
 
     public func run(_ handle: String) throws -> RemoteRun? {
@@ -230,7 +242,7 @@ public final class RemoteStateStore: @unchecked Sendable {
                     session_id = ?, attachment = ?, record_path = ?, started_at = ?, ok_at = ?, pane_pid = ?,
                     pane_start = ?, socket_path = ?, server_pid = ?, server_start = ?, creation = ?, ended_at = ?,
                     end_evidence = ?, left_running_at = ?, left_running_reason = ?, left_running_noticed_at = ?,
-                    dismissed_at = ?, failure = ?
+                    dismissed_at = ?, failure = ?, conversation = ?
                 WHERE handle = ?
                 """, arguments: StatementArguments(Array(Self.values(run).dropFirst()) + [handle]))
             return run
@@ -248,7 +260,8 @@ public final class RemoteStateStore: @unchecked Sendable {
          run.okAt, run.panePID, run.paneStart, run.socketPath, run.serverPID, run.serverStart,
          run.creation?.rawValue, run.endedAt?.timeIntervalSince1970, run.endEvidence?.rawValue,
          run.leftRunningAt?.timeIntervalSince1970, run.leftRunningReason?.rawValue,
-         run.leftRunningNoticedAt?.timeIntervalSince1970, run.dismissedAt?.timeIntervalSince1970, run.failure]
+         run.leftRunningNoticedAt?.timeIntervalSince1970, run.dismissedAt?.timeIntervalSince1970, run.failure,
+         run.conversation?.rawValue]
     }
 
     private static func run(_ row: Row) -> RemoteRun {
@@ -275,7 +288,89 @@ public final class RemoteStateStore: @unchecked Sendable {
         run.leftRunningNoticedAt = date("left_running_noticed_at")
         run.dismissedAt = date("dismissed_at")
         run.failure = row["failure"]
+        run.conversation = (row["conversation"] as String?).flatMap(RemoteRun.Conversation.init(rawValue:))
         return run
+    }
+
+    /// What an ordinary Open found or reserved, decided in one immediate
+    /// transaction: two Temple processes on one state directory can never
+    /// both find no run and start two agents for one conversation.
+    public enum Reservation: Sendable, Equatable {
+        /// The latest run that is not Ended: attach to it (its attachment
+        /// incremented, its left-running flag cleared, as an Open does).
+        case existing(RemoteRun)
+        /// No such run: `candidate` was inserted, to be created.
+        case created(RemoteRun)
+        /// The session's last run ended with its conversation unconfirmed:
+        /// nothing is resumed blindly; the user chooses.
+        case needsDecision(RemoteRun)
+    }
+
+    /// `candidate` is inserted only when the session has no live run (and,
+    /// for a resume, its last run's conversation is not unconfirmed, unless
+    /// `allowUnconfirmed`). Resume anyway is not this path: it inserts.
+    public func reserve(_ candidate: RemoteRun, allowUnconfirmed: Bool) throws -> Reservation {
+        try queue.writeWithoutTransaction { database in
+            var result = Reservation.created(candidate)
+            try database.inTransaction(.immediate) {
+                let runs = try Row.fetchAll(database, sql: """
+                    SELECT * FROM runs WHERE host = ? AND session_id = ? ORDER BY started_at, rowid
+                    """, arguments: [candidate.host.rawValue, candidate.sessionID]).map(Self.run)
+                let current = runs.filter { $0.dismissedAt == nil }
+                if var live = current.last(where: { !$0.isEnded }) {
+                    live.attachment += 1
+                    live.leftRunningAt = nil
+                    live.leftRunningReason = nil
+                    live.leftRunningNoticedAt = nil
+                    try database.execute(sql: """
+                        UPDATE runs SET attachment = ?, left_running_at = NULL, left_running_reason = NULL,
+                            left_running_noticed_at = NULL WHERE handle = ?
+                        """, arguments: [live.attachment, live.handle])
+                    result = .existing(live)
+                } else if !allowUnconfirmed, candidate.mode == .resume, let last = current.last,
+                          last.agent == .claude, last.conversation == .unconfirmed {
+                    result = .needsDecision(last)
+                } else {
+                    try Self.insert(candidate, in: database)
+                    result = .created(candidate)
+                }
+                return .commit
+            }
+            return result
+        }
+    }
+
+    /// Discard: the session's runs are dismissed; none is attached to or
+    /// resumed again.
+    public func dismiss(host: HostID, sessionID: String, at date: Date) throws {
+        try queue.write { database in
+            try database.execute(sql: """
+                UPDATE runs SET dismissed_at = ? WHERE host = ? AND session_id = ? AND dismissed_at IS NULL
+                """, arguments: [date.timeIntervalSince1970, host.rawValue, sessionID])
+        }
+    }
+
+    /// Runs `body` off the caller's thread (the main actor never waits on
+    /// SQLite's busy timeout).
+    public func perform<T: Sendable>(_ body: @escaping @Sendable (RemoteStateStore) throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(with: Result { try body(self) })
+            }
+        }
+    }
+
+    /// Tests only: every change to a run fails until mended.
+    func breakWritesForTests() throws {
+        try queue.write { database in
+            try database.execute(sql: """
+                CREATE TEMP TRIGGER broken_runs BEFORE UPDATE ON runs BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END
+                """)
+        }
+    }
+
+    func mendWritesForTests() throws {
+        try queue.write { try $0.execute(sql: "DROP TRIGGER IF EXISTS broken_runs") }
     }
 
     // MARK: Remote project state

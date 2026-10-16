@@ -29,23 +29,44 @@ public struct RemoteEnvironment: Sendable, Equatable {
     /// The resolution query's deadline.
     public static let deadline: TimeInterval = 5
 
-    /// Asks the login shell for its PATH, with `-lic`, then `-l -c`, then
-    /// `-c` (csh and tcsh reject the bundled flags), each answer framed by a
-    /// marker so motd, prompts and rc chatter are discarded. Run with no
-    /// PATH of its own: this is what decides it.
-    static let script = """
-    m=$1; s=${SHELL:-/bin/sh}
-    p="echo $m; printenv PATH; echo $m"
-    for v in 1 2 3; do
-      case $v in
-        1) out=$("$s" -lic "$p" </dev/null 2>/dev/null) ;;
-        2) out=$("$s" -l -c "$p" </dev/null 2>/dev/null) ;;
-        *) out=$("$s" -c "$p" </dev/null 2>/dev/null) ;;
-      esac
-      case $out in *"$m"*"$m"*) echo "shell $s"; printf '%s\\n' "$out"; exit 0 ;; esac
-    done
-    echo "shell $s"
-    exit 3
+    /// The one resolver, as shell text, shared by the environment query and
+    /// the launch (one policy, section 2): `temple_login_path <marker>`
+    /// asks `$SHELL` with `-lic`, then `-l -c`, then `-c` (csh and tcsh
+    /// reject the bundled flags), each answer framed by the marker so motd,
+    /// prompts and rc chatter are discarded, each bounded by 5 seconds
+    /// where the host has `timeout` (a hung shell is not asked again). It
+    /// prints the PATH and returns 0, or
+    /// prints nothing and returns 3.
+    public static let resolverFunction = """
+    temple_login_path() {
+      _m=$1; _s=${SHELL:-/bin/sh}; _p="echo $_m; printenv PATH; echo $_m"
+      _t=; command -v timeout >/dev/null 2>&1 && _t="timeout 5"
+      for _v in 1 2 3; do
+        case $_v in
+          1) _o=$($_t "$_s" -lic "$_p" </dev/null 2>/dev/null) ;;
+          2) _o=$($_t "$_s" -l -c "$_p" </dev/null 2>/dev/null) ;;
+          *) _o=$($_t "$_s" -c "$_p" </dev/null 2>/dev/null) ;;
+        esac
+        # A shell that hung past the bound is not asked again: 5 s in all.
+        [ $? -eq 124 ] && return 3
+        case $_o in *"$_m"*"$_m"*)
+          _o=${_o#*"$_m"}; _o=${_o%"$_m"*}
+          _o=$(printf '%s\n' "$_o" | grep / | head -n 1)
+          [ -n "$_o" ] && { printf '%s\n' "$_o"; return 0; }
+          return 3 ;;
+        esac
+      done
+      return 3
+    }
+    """
+
+    /// The query: the shell's name, then the PATH between markers.
+    static let script = resolverFunction + """
+
+    m=$1
+    echo "shell ${SHELL:-/bin/sh}"
+    p=$(temple_login_path "$m") || exit 3
+    echo "$m"; printf '%s\n' "$p"; echo "$m"
     """
 
     /// Resolves through `exec`, which must carry no PATH of its own.

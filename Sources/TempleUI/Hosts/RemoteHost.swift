@@ -45,10 +45,14 @@ final class RemoteHostLauncher: RemoteSessionHost {
     let sessions: RemoteSessions
     private let check: (Agent) -> LaunchAvailability
     private let extraArgs: (Agent) -> [String]
+    /// Session ids with a run that is not Ended, as last read (for a row's
+    /// menu, which is built synchronously).
+    private var liveSessions: Set<String> = []
 
     init(sessions: RemoteSessions, availability: @escaping (Agent) -> LaunchAvailability,
          extraArgs: @escaping (Agent) -> [String]) {
         self.sessions = sessions; self.check = availability; self.extraArgs = extraArgs
+        Task { [weak self] in await self?.refreshLiveSessions() }
     }
 
     var host: HostID { sessions.host }
@@ -65,19 +69,34 @@ final class RemoteHostLauncher: RemoteSessionHost {
         throw HostLaunchError.preparation("Temple opens sessions on \(hostName) asynchronously.")
     }
 
-    func open(agent: Agent, sessionID: String, resume: Bool, directory: String,
-              resumeAnyway: Bool) async throws -> RemoteOpenPlan {
-        let plan = try await sessions.open(.init(agent: agent, sessionID: sessionID, mode: resume ? .resume : .new,
-                                                 directory: directory, extraArguments: extraArgs(agent),
-                                                 resumeAnyway: resumeAnyway))
-        // The terminal's working directory is this Mac's home: a remote path
-        // never becomes a local cwd.
-        return RemoteOpenPlan(handle: plan.handle, attachment: plan.attachment, creating: plan.creating,
-                              command: TerminalCommand(argv: plan.argv, cwd: NSHomeDirectory()),
-                              displayArgv: plan.agentArgv)
+    private func refreshLiveSessions() async {
+        liveSessions = Set(await sessions.runs().filter { !$0.isEnded && $0.dismissedAt == nil }.compactMap(\.sessionID))
     }
 
-    func abandon(_ handle: String) { sessions.abandon(handle, reason: "not started") }
+    func open(agent: Agent, sessionID: String, resume: Bool, directory: String, resumeAnyway: Bool,
+              startNew: Bool) async throws -> RemoteOpenResult {
+        let outcome = try await sessions.open(.init(agent: agent, sessionID: sessionID, mode: resume ? .resume : .new,
+                                                    directory: directory, extraArguments: extraArgs(agent),
+                                                    resumeAnyway: resumeAnyway, startNew: startNew))
+        await refreshLiveSessions()
+        switch outcome {
+        case .needsDecision:
+            return .needsDecision
+        case .plan(let plan):
+            // The terminal's working directory is this Mac's home: a remote
+            // path never becomes a local cwd.
+            return .plan(RemoteOpenPlan(handle: plan.handle, attachment: plan.attachment, creating: plan.creating,
+                                        command: TerminalCommand(argv: plan.argv, cwd: NSHomeDirectory()),
+                                        displayArgv: plan.agentArgv, evidenceDirectory: plan.evidenceDirectory))
+        }
+    }
+
+    func abandon(_ handle: String) async {
+        do { try await sessions.abandon(handle, reason: "not started") } catch {
+            TempleUILog.db.error("remote run not abandoned: \(error.localizedDescription, privacy: .public)")
+        }
+        await refreshLiveSessions()
+    }
 
     func collect(_ handle: String) async -> RemoteLaunchOutcome {
         switch await sessions.collect(handle) {
@@ -86,68 +105,99 @@ final class RemoteHostLauncher: RemoteSessionHost {
         case .clientFailed(let line): .clientFailed(line)
         case .nothing: .nothing
         case .transport(let line): .transport(line)
+        case .storage(let line): .storage(line)
         }
     }
 
-    func markCreationUnproven(_ handle: String) { sessions.markCreationUnproven(handle) }
+    func diagnostics(_ handle: String) async -> String? { await sessions.diagnostics(handle) }
+
+    func markCreationUnproven(_ handle: String) async {
+        do { try await sessions.markCreationUnproven(handle) } catch {
+            TempleUILog.db.error("remote run not marked unproven: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    func confirmConversation(_ handle: String) async {
+        do { try await sessions.confirmConversation(handle) } catch {
+            TempleUILog.db.error("remote conversation not confirmed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    func discard(sessionID: String) async throws {
+        try await sessions.dismiss(sessionID: sessionID)
+        await refreshLiveSessions()
+    }
 
     func exitCheck(_ handle: String) async -> RemoteLiveness {
-        switch await sessions.exitCheck(handle) {
-        case .present: .present
-        case .absent: .absent
-        case .unknown(let reason, _): .unknown(reason: reason)
+        let liveness = await sessions.exitCheck(handle)
+        await refreshLiveSessions()
+        switch liveness {
+        case .present: return .present
+        case .absent: return .absent
+        case .unknown(let reason, _): return .unknown(reason: reason)
         }
     }
 
-    func attachment(of handle: String) -> Int? { sessions.run(handle)?.attachment }
+    func attachment(of handle: String) async -> Int? { await sessions.run(handle)?.attachment }
 
-    func stop(_ handle: String, fromAttachedTab: Bool) async -> RemoteStopResult {
-        Self.result(await sessions.stop(handle, fromAttachedTab: fromAttachedTab))
+    func stop(_ handle: String, fromAttachedTab: Bool) async throws -> RemoteStopResult {
+        let record = try await sessions.stop(handle, fromAttachedTab: fromAttachedTab)
+        await refreshLiveSessions()
+        return Self.result(record)
     }
 
-    static func result(_ outcome: StopOutcome) -> RemoteStopResult {
-        switch outcome {
-        case .killed, .absent: .stopped
-        case .refused: .leftRunning(.anotherClientAttached, detail: nil)
+    static func result(_ record: RemoteSessions.StopRecord) -> RemoteStopResult {
+        if let error = record.storageError { return .unrecorded(detail: error) }
+        switch record.outcome {
+        case .killed, .absent: return .stopped
+        case .refused: return .leftRunning(.anotherClientAttached, detail: nil)
         case .unconfirmed(let reason, let reached):
-            .leftRunning(reached ? .stopNotAcknowledged : .hostDidNotAnswer, detail: reason)
+            return .leftRunning(reached ? .stopNotAcknowledged : .hostDidNotAnswer, detail: reason)
         }
     }
 
-    func leaveRunning(_ handle: String, reason: RemoteLeftRunningReason) {
-        sessions.leaveRunning(handle, reason: RemoteRun.LeftRunningReason(rawValue: reason.rawValue) ?? .hostDidNotAnswer)
+    func leaveRunning(_ handle: String, reason: RemoteLeftRunningReason) async {
+        do {
+            try await sessions.leaveRunning(handle, reason: RemoteRun.LeftRunningReason(rawValue: reason.rawValue) ?? .hostDidNotAnswer)
+        } catch {
+            TempleUILog.db.error("left-running flag not written: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
-    func liveRun(sessionID: String) -> RemoteRunSummary? {
-        sessions.liveRun(sessionID: sessionID).map { RemoteRunSummary(handle: $0.handle, leftRunning: $0.isLeftRunning) }
-    }
+    func hasLiveRun(sessionID: String) -> Bool { liveSessions.contains(sessionID) }
+
+    func liveRunHandle(sessionID: String) async -> String? { await sessions.liveRun(sessionID: sessionID)?.handle }
 
     func hasLiveMaster() async -> Bool { await sessions.hasLiveMaster() }
 
     func manualStopCommand(handle: String) -> String { RemoteSessions.manualStopCommand(handle: handle) }
 
-    func listSessions() async -> RemoteSessionListing {
-        switch await sessions.listSessions() {
-        case .noServer: return .noServer
-        case .failed(let line): return .failed(line)
-        case .sessions(let listed):
-            return .sessions(listed.map { entry in
-                RemoteListedSession(name: entry.name, attached: entry.attached > 0, handle: entry.run?.handle,
-                                    sessionID: entry.run?.sessionID,
-                                    leftRunning: entry.run.flatMap { run in
-                                        run.isLeftRunning ? run.leftRunningReason.flatMap { RemoteLeftRunningReason(rawValue: $0.rawValue) } : nil
-                                    })
-            })
+    func trackedSessions() async -> (sessions: [RemoteTrackedSession], checked: Bool) {
+        let answer = await sessions.trackedSessions()
+        await refreshLiveSessions()
+        return (answer.sessions.map { tracked in
+            let state: RemoteTrackedSession.State
+            switch tracked.state {
+            case .present(let attached): state = .present(attached: attached > 0)
+            case .unknown(let reason): state = .unknown(reason)
+            }
+            return RemoteTrackedSession(handle: tracked.run.handle, sessionID: tracked.run.sessionID, agent: tracked.run.agent,
+                                        state: state,
+                                        leftRunning: tracked.run.isLeftRunning
+                                            ? tracked.run.leftRunningReason.flatMap { RemoteLeftRunningReason(rawValue: $0.rawValue) }
+                                            : nil)
+        }, answer.reachedHost)
+    }
+
+    func keep(_ handle: String) async {
+        do { try await sessions.keep(handle) } catch {
+            TempleUILog.db.error("left-running flag not cleared: \(error.localizedDescription, privacy: .public)")
         }
     }
 
-    func stopListed(_ name: String) async -> RemoteStopResult { Self.result(await sessions.stopListed(name)) }
+    func contactLeftRunning() async -> Int? { await sessions.contactLeftRunning() }
 
-    func keep(_ handle: String) { sessions.keep(handle) }
-
-    func unnoticedLeftRunningCount() -> Int { sessions.unnoticedLeftRunning().count }
-
-    func noticeLeftRunning() { sessions.noticeLeftRunning() }
+    func noticeLeftRunning() async { try? await sessions.noticeLeftRunning() }
 
     func checkFolder(_ path: String) async -> RemoteFolderCheck {
         switch await sessions.checkFolder(path) {
@@ -157,6 +207,8 @@ final class RemoteHostLauncher: RemoteSessionHost {
         case .transport(let line): .transport(line)
         }
     }
+
+    func retire() { sessions.retire() }
 }
 
 /// Remote project masks and order in `remote-state.sqlite`.

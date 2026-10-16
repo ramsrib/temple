@@ -101,6 +101,8 @@ private struct SessionTerminalView: View {
         case unknown(String)
         case stopFailed(String)
         case failure
+        case exitedEarly
+        case decision
 
         static func make(_ phase: RemoteTabState.Phase) -> RemoteHeader? {
             switch phase {
@@ -108,7 +110,9 @@ private struct SessionTerminalView: View {
             case .disconnected: .disconnected
             case .unknown(let reason): .unknown(reason)
             case .stopFailed(let message): .stopFailed(message)
-            case .failedToStart, .exitedEarly: .failure
+            case .failedToStart: .failure
+            case .exitedEarly: .exitedEarly
+            case .needsDecision: .decision
             }
         }
     }
@@ -119,6 +123,15 @@ private struct SessionTerminalView: View {
         switch header {
         case .failure:
             if case .exited(let status) = tab.activity { launchFailure(status: status) }
+        case .exitedEarly:
+            exitedEarly(host)
+        case .decision:
+            notice(symbol: "questionmark.circle", text: RemoteCopy.unconfirmedConversation) {
+                HStack(spacing: 12) {
+                    Button("Start a new session") { model.openSessions.startNewRemoteSession(tab) }
+                    Button("Discard") { model.openSessions.discardRemoteSession(tab) }
+                }
+            }
         case .disconnected:
             notice(symbol: "bolt.horizontal.circle", text: RemoteCopy.disconnected(host)) {
                 Button("Reconnect") { model.openSessions.reconnect(tab) }
@@ -136,6 +149,46 @@ private struct SessionTerminalView: View {
             notice(symbol: "exclamationmark.triangle", text: message) {
                 Button("Sessions on \(host)") { model.showRemoteSessions(tab.host) }
             }
+        }
+    }
+
+    /// An agent on a host that ended seconds after it started: what it
+    /// printed (the pane's own output, fetched with its record), then the
+    /// agent's argv. The tab stays, as a local one does.
+    private func exitedEarly(_ host: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 9) {
+                Image(systemName: "exclamationmark.octagon.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.orange)
+                Text(RemoteCopy.exitedImmediately(host, agent: tab.agent))
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            ForEach(Array((tab.remote?.diagnostics ?? []).enumerated()), id: \.offset) { _, line in
+                Text(line)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 20)
+            }
+            if let argv = tab.displayArgv, !argv.isEmpty {
+                Text(argv.joined(separator: " "))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .textSelection(.enabled)
+                    .lineLimit(2)
+                    .padding(.leading, 20)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.surfaceFill)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Palette.hairline).frame(height: 1)
         }
     }
 
