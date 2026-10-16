@@ -1027,6 +1027,32 @@ private struct ProjectDisclosure: View {
         }
     }
 
+    /// A project on a host says so at any width: the globe of ⌘N's
+    /// "Folder on <host>…" row leads and never truncates, then the folder's
+    /// name in the heading's own style, then the host, weaker and as the
+    /// host spells it. Name and host give way before the globe does.
+    private var remoteTitle: some View {
+        let title = ProjectHeaderTitle(project.key)
+        return HStack(spacing: 5) {
+            Image(systemName: title.glyph ?? "network")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .layoutPriority(2)
+            Text(title.name)
+                .font(.system(size: 11, weight: .medium))
+                .tracking(1.4)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(1)
+            Text(title.host ?? "")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+    }
+
     /// The group heading, in the launcher's section language: an uppercase,
     /// letter-spaced label trailed by a hairline rule — one vocabulary across
     /// the rail and the home pane. A small chevron leads it and rotates with
@@ -1042,11 +1068,15 @@ private struct ProjectDisclosure: View {
             // sidebar label style, which dims with window key-state — making
             // project titles the ONLY thing in the app that reacts to focus
             // changes. Plain Text renders like the session rows and holds.
-            Text(project.name.uppercased())
-                .font(.system(size: 11, weight: .medium))
-                .tracking(1.4)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            if project.key.host.isLocal {
+                Text(project.name.uppercased())
+                    .font(.system(size: 11, weight: .medium))
+                    .tracking(1.4)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else {
+                remoteTitle
+            }
             Rectangle()
                 .fill(Palette.hairline)
                 .frame(height: 1)
@@ -1056,7 +1086,7 @@ private struct ProjectDisclosure: View {
         }
         .frame(height: 28)
         // A project on a host says where it is: `host:/absolute/path`.
-        .help(project.key.host.isLocal ? "" : "\(project.key.host.rawValue):\(project.path)")
+        .help(ProjectHeaderTitle.help(project.key))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(project.name)
         .accessibilityAddTraits(.isHeader)
@@ -1146,4 +1176,25 @@ private struct NewSessionMenu: View {
         .onHover { hovering = $0 }
         .help("New session in \(project.displayName)")
     }
+}
+
+/// What a project's heading says: the folder's name, uppercase in the
+/// section language; and for a project on a host, the globe of ⌘N's host
+/// rows and the host as it spells itself (never uppercased, never folded
+/// into the name, where truncation would cut it off first).
+struct ProjectHeaderTitle: Equatable {
+    let glyph: String?
+    let name: String
+    let host: String?
+
+    init(glyph: String?, name: String, host: String?) { self.glyph = glyph; self.name = name; self.host = host }
+
+    init(_ key: ProjectKey) {
+        name = key.name.uppercased()
+        glyph = key.host.isLocal ? nil : "network"
+        host = key.host.isLocal ? nil : key.host.rawValue
+    }
+
+    /// The tooltip: `host:/path` on a host, nothing here.
+    static func help(_ key: ProjectKey) -> String { key.host.isLocal ? "" : "\(key.host.rawValue):\(key.path)" }
 }

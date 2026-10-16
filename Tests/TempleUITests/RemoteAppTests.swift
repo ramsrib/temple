@@ -173,6 +173,18 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertFalse(catcher.handle(returnKey(), app), "the Sessions sheet owns Return too")
     }
 
+    /// A host's project heading keeps the host apart from the name (it was
+    /// one uppercase string the rail truncated, host first) and leads with
+    /// the globe; this Mac's projects are unchanged.
+    func testAHostsProjectHeadingKeepsTheHostApartBehindAGlobe() {
+        let remote = ProjectHeaderTitle(ProjectKey(host: hostID, path: "/home/u/temple-cu-1a"))
+        XCTAssertEqual(remote, ProjectHeaderTitle(glyph: "network", name: "TEMPLE-CU-1A", host: "box"))
+        XCTAssertEqual(ProjectHeaderTitle.help(ProjectKey(host: hostID, path: "/home/u/temple-cu-1a")), "box:/home/u/temple-cu-1a")
+        let local = ProjectHeaderTitle(ProjectKey(host: .local, path: "/Users/me/temple"))
+        XCTAssertEqual(local, ProjectHeaderTitle(glyph: nil, name: "TEMPLE", host: nil))
+        XCTAssertEqual(ProjectHeaderTitle.help(ProjectKey(host: .local, path: "/Users/me/temple")), "")
+    }
+
     /// Discard's row disposition acts only on the membership it was chosen
     /// for: a stale incarnation (the row left and joined again) changes nothing.
     func testDiscardDisposesOnlyTheSameMembership() async throws {
