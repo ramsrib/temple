@@ -54,14 +54,18 @@ public protocol CodexAdopting: AnyObject {
 /// the one rollout header in the launch window for that folder, or nothing.
 @MainActor
 public final class CodexAdopter: CodexAdopting {
-    private let registry: HostRegistry
+    /// The registry as it is when a launch asks: hosts come and go.
+    private let registry: () -> HostRegistry
     private let window: TimeInterval
-    public init(registry: HostRegistry, window: TimeInterval = 5) {
+    public convenience init(registry: HostRegistry, window: TimeInterval = 5) {
+        self.init(registry: { registry }, window: window)
+    }
+    public init(registry: @escaping () -> HostRegistry, window: TimeInterval = 5) {
         self.registry = registry; self.window = window
     }
     public func reconcile(host: HostID, projectPath: String, startedAt: Date,
                           adopt: @escaping (String, TranscriptLocator?) -> Void) {
-        guard let source = registry.entry(for: host)?.source else { return }
+        guard let source = registry().entry(for: host)?.source else { return }
         let request = AdoptionRequest(directory: projectPath, startedAt: startedAt, window: window)
         Task {
             let result = try? await source.adopt(request)

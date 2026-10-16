@@ -235,9 +235,9 @@ public final class AppModel: ObservableObject {
     public func enableArchiveSweep() {
         archiveSweepScheduler = SessionOverlayStore.schedule
         sweepTimer = SessionOverlayStore.schedule
-        let hosts = hostRegistry
-        folderEvidence = { key in await hosts.entry(for: key.host)?.source.directoryEvidence(key.path) ?? .unknown }
-        proveAbsence = { host, agent, ids in await hosts.entry(for: host)?.source.proveAbsent(ids: ids, agent: agent) ?? .unproven }
+        let hosts = hostBox
+        folderEvidence = { key in await hosts.value.entry(for: key.host)?.source.directoryEvidence(key.path) ?? .unknown }
+        proveAbsence = { host, agent, ids in await hosts.value.entry(for: host)?.source.proveAbsent(ids: ids, agent: agent) ?? .unproven }
         armPeriodicSweep()
     }
 
@@ -528,7 +528,15 @@ public final class AppModel: ObservableObject {
     let databaseDirectory: URL?
     /// One engine per registry host, merged by current row ownership.
     let engineSet: EngineSet
-    public let hostRegistry: HostRegistry
+    /// The registry as it stands: this Mac, plus every enabled remote host
+    /// while `temple.feature.remoteHosts` is on (`rebuildRemoteHosts`).
+    public var hostRegistry: HostRegistry { hostBox.value }
+    private let hostBox: HostRegistryBox
+    /// The Hosts connection manager (Settings), dark behind its flag.
+    let remoteHosts: RemoteHostsModel
+    /// Remote hosts this model registered (never ones a caller passed in).
+    private var managedRemoteHosts: Set<HostID> = []
+    private let makeEngine: (any HostSessionSource) -> any HostEngine
 
     private var cancellables: Set<AnyCancellable> = []
     private var themeObserver: NSObjectProtocol?
@@ -544,7 +552,8 @@ public final class AppModel: ObservableObject {
                 database: TempleDB,
                 settings: SettingsStore? = nil,
                 overlay: SessionOverlayStore? = nil,
-                hostRegistry: HostRegistry? = nil) {
+                hostRegistry: HostRegistry? = nil,
+                remoteHosts: RemoteHostsModel? = nil) {
         // Defaults that touch @MainActor types are built here (not as default
         // arguments, which evaluate in a nonisolated context).
         let settings = settings ?? SettingsStore(defaults: SettingsKeysProbe.scratchDefaults() ?? TempleState.settingsDefaults)
@@ -560,11 +569,13 @@ public final class AppModel: ObservableObject {
         let hosts = hostRegistry ?? HostRegistry(localLauncher: LocalHostLauncher(
             binaryPath: { toolchain.launchPath(for: $0) },
             extraArgs: { settings.extraArgs(for: $0) }, availability: { toolchain.launchAvailability($0) }))
-        self.hostRegistry = hosts
-        let engineSet = EngineSet(engines: engines ?? hosts.entries.map {
-            SessionEngine(source: $0.source, database: database)
-        })
-        let reconciler = reconciler ?? CodexAdopter(registry: hosts)
+        let hostBox = HostRegistryBox(hosts)
+        self.hostBox = hostBox
+        self.remoteHosts = remoteHosts ?? RemoteHostsModel(defaults: settings.defaults)
+        let makeEngine: (any HostSessionSource) -> any HostEngine = { SessionEngine(source: $0, database: database) }
+        self.makeEngine = makeEngine
+        let engineSet = EngineSet(engines: engines ?? hosts.entries.map { makeEngine($0.source) })
+        let reconciler = reconciler ?? CodexAdopter(registry: { hostBox.value })
         self.settings = settings
         self.overlay = overlay
         self.uiState = uiState
@@ -572,8 +583,8 @@ public final class AppModel: ObservableObject {
         self.engineSet = engineSet
         self.databaseDirectory = database.fileURL?.deletingLastPathComponent()
         self.notifications = NotificationController()
-        self.history = HistoryModel(overlay: overlay, catalog: { hosts.catalog() },
-            directoryEvidence: { key in await hosts.entry(for: key.host)?.source.directoryEvidence(key.path) ?? .unknown })
+        self.history = HistoryModel(overlay: overlay, catalog: { hostBox.value.catalog() },
+            directoryEvidence: { key in await hostBox.value.entry(for: key.host)?.source.directoryEvidence(key.path) ?? .unknown })
 
 
         let runtime = SessionRuntimeController()
@@ -588,8 +599,8 @@ public final class AppModel: ObservableObject {
             reconciler: reconciler,
             persistence: persistence,
             defaultAgent: { settingsRef.defaultAgent },
-            launcherForHost: { hosts.entry(for: $0)?.launcher },
-            directoryEvidence: { key in await hosts.entry(for: key.host)?.source.directoryEvidence(key.path) ?? .unknown })
+            launcherForHost: { hostBox.value.entry(for: $0)?.launcher },
+            directoryEvidence: { key in await hostBox.value.entry(for: key.host)?.source.directoryEvidence(key.path) ?? .unknown })
 
         // Now self is fully initialized — finish wiring the closures & observers.
         resolveAppearance = { [weak self] in
@@ -625,6 +636,8 @@ public final class AppModel: ObservableObject {
             .store(in: &cancellables)
         wire()
         wireHistory(database: database)
+        self.remoteHosts.onChange = { [weak self] in self?.rebuildRemoteHosts() }
+        rebuildRemoteHosts()
         overlayFocus.focusActiveTerminal = { [weak self] in self?.openSessions.focusActiveTerminal() }
         // NB: detection is NOT started here. It runs real binaries (`claude --version`),
         // and `AppModel` is constructed by tests — which must not shell out to whatever
@@ -880,6 +893,32 @@ public final class AppModel: ObservableObject {
         if let sid = tab.sessionID, let row = presentedByID[sid],
            let title = row.state.customName ?? row.state.title { return title }
         return tab.title
+    }
+
+    // MARK: Remote hosts
+
+    /// The registry follows the enabled host list: an added host gets its
+    /// entry and engine, a removed one loses both, this Mac is untouched.
+    /// Registration never waits for, or depends on, a test.
+    func rebuildRemoteHosts() {
+        let wanted = remoteHosts.registeredHosts
+        let wantedHosts = Set(wanted.map(\.host))
+        for host in managedRemoteHosts.subtracting(wantedHosts) {
+            hostBox.value = hostBox.value.removing(host)
+            engineSet.remove(host: host)
+            managedRemoteHosts.remove(host)
+        }
+        for record in wanted where !managedRemoteHosts.contains(record.host) {
+            // A host the caller registered itself (tests) is theirs.
+            guard hostBox.value.entry(for: record.host) == nil else { continue }
+            let name = record.name
+            let entry = HostRegistry.Entry.remote(record) { [weak remoteHosts] agent in
+                remoteHosts?.availability(of: name, agent: agent) ?? .available
+            }
+            hostBox.value = hostBox.value.adding(entry)
+            engineSet.add(makeEngine(entry.source))
+            managedRemoteHosts.insert(record.host)
+        }
     }
 
     // MARK: Lifecycle

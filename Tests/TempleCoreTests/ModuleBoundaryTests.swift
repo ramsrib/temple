@@ -23,6 +23,13 @@ final class ModuleBoundaryTests: XCTestCase {
         "Sources/templectl/main.swift",
     ]
 
+    /// The same rule for the remote module (docs/designs/remote-ssh.md
+    /// section 6): one composition file, so deleting remote is deleting
+    /// the module, that file and the views that use what it names.
+    static let allowedRemoteImporters: Set<String> = [
+        "Sources/TempleUI/Hosts/RemoteHost.swift",
+    ]
+
     private static let repo = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 
@@ -39,6 +46,14 @@ final class ModuleBoundaryTests: XCTestCase {
 
     static func importsLocalHost(_ text: String) -> Bool {
         importPattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    private static let remoteImportPattern = try! NSRegularExpression(
+        pattern: importPattern.pattern.replacingOccurrences(of: "TempleLocalHost", with: "TempleRemoteHost"),
+        options: [.anchorsMatchLines])
+
+    static func importsRemoteHost(_ text: String) -> Bool {
+        remoteImportPattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }
 
     static func filesystemHits(_ text: String, path: String) -> [String] {
@@ -66,6 +81,17 @@ final class ModuleBoundaryTests: XCTestCase {
             .map(\.path))
         XCTAssertEqual(importers, Self.allowedImporters,
                        "TempleLocalHost may be imported only by \(Self.allowedImporters.sorted()); found \(importers.sorted())")
+    }
+
+    func testOnlyTheCompositionFileImportsTheRemoteHost() throws {
+        let importers = Set(try swiftFiles(under: "Sources")
+            .filter { !$0.path.hasPrefix("Sources/TempleRemoteHost/") && Self.importsRemoteHost($0.text) }
+            .map(\.path))
+        XCTAssertEqual(importers, Self.allowedRemoteImporters,
+                       "TempleRemoteHost may be imported only by \(Self.allowedRemoteImporters.sorted()); found \(importers.sorted())")
+        XCTAssertTrue(Self.importsRemoteHost("@testable import TempleRemoteHost"))
+        XCTAssertFalse(Self.importsRemoteHost("import TempleLocalHost"))
+        XCTAssertFalse(Self.importsLocalHost("import TempleRemoteHost"))
     }
 
     func testFormatsTouchNoFilesystem() throws {

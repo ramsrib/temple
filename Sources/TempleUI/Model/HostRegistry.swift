@@ -50,6 +50,33 @@ public struct HostRegistry: Sendable {
     }
 }
 
+public extension HostRegistry {
+    /// This registry with `entry` added (a host enabled in Settings).
+    func adding(_ entry: Entry) -> HostRegistry {
+        guard self.entry(for: entry.source.host) == nil else { return self }
+        return HostRegistry(entries: entries + [entry])
+    }
+
+    /// This registry without `host` (removed or disabled). Never the local host.
+    func removing(_ host: HostID) -> HostRegistry {
+        guard !host.isLocal else { return self }
+        return HostRegistry(entries: entries.filter { $0.source.host != host })
+    }
+}
+
+/// The registry as it stands now, for the closures that outlive one value
+/// of it (launches, folder evidence, History's catalog): hosts are added
+/// and removed while the app runs.
+final class HostRegistryBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: HostRegistry
+    init(_ registry: HostRegistry) { current = registry }
+    var value: HostRegistry {
+        get { lock.withLock { current } }
+        set { lock.withLock { current = newValue } }
+    }
+}
+
 /// One host's catalog batch, as `HostRegistry.catalog` delivers it.
 public struct HostCatalogEvent: Equatable, Sendable {
     public let host: HostID

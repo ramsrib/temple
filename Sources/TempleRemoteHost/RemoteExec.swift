@@ -109,6 +109,15 @@ public struct LocalShellExec: RemoteExec {
     }
 }
 
+/// Every local process the remote module has started (ssh queries, `ssh
+/// -G`), counted where it starts: the flag-off tests assert it never moves.
+public enum RemoteProcessCounter {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var count = 0
+    public static var launches: Int { lock.withLock { count } }
+    static func increment() { lock.withLock { count += 1 } }
+}
+
 /// Runs a local process, reads both streams to the end, and always comes
 /// back: at the deadline (or on cancellation) the process is sent SIGTERM,
 /// then SIGKILL a second later, and the caller is answered without waiting
@@ -145,6 +154,7 @@ public enum ProcessRunner {
                     state.terminated(status: finished.terminationStatus)
                 }
                 do {
+                    RemoteProcessCounter.increment()
                     try process.run()
                 } catch {
                     outPipe.fileHandleForReading.readabilityHandler = nil

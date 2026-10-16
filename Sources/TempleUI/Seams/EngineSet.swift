@@ -9,9 +9,12 @@ import TempleCore
 /// before the row did.
 @MainActor
 public final class EngineSet {
-    public let engines: [any HostEngine]
+    /// The local engine and one per enabled remote host. Remote hosts come
+    /// and go with Settings (`add`, `remove`); the local engine never does.
+    public private(set) var engines: [any HostEngine]
     private var perHost: [HostID: EngineSnapshot] = [:]
-    private var tasks: [Task<Void, Never>] = []
+    private var tasks: [HostID: [Task<Void, Never>]] = [:]
+    private var started = false
     private var generation: UInt64 = 0
     private var onUpdate: ((EngineSnapshot) -> Void)?
     /// The host whose row holds the id now (nil: not a member anywhere).
@@ -28,24 +31,47 @@ public final class EngineSet {
     public func start(onUpdate: @escaping (EngineSnapshot) -> Void) {
         self.onUpdate = onUpdate
         if let latest { onUpdate(latest) }
-        guard tasks.isEmpty else { return }
-        for engine in engines {
-            let snapshots = engine.snapshots()
-            let host = engine.host
-            tasks.append(Task { [weak self] in
-                for await snapshot in snapshots {
-                    guard !Task.isCancelled, let self else { break }
-                    if let old = self.perHost[host], snapshot.generation < old.generation { continue }
-                    self.perHost[host] = snapshot
-                    self.remerge()
-                }
-            })
-            tasks.append(Task { await engine.start() })
-        }
+        guard !started else { return }
+        started = true
+        for engine in engines { run(engine) }
+    }
+
+    private func run(_ engine: any HostEngine) {
+        let snapshots = engine.snapshots()
+        let host = engine.host
+        tasks[host, default: []].append(Task { [weak self] in
+            for await snapshot in snapshots {
+                guard !Task.isCancelled, let self else { break }
+                if let old = self.perHost[host], snapshot.generation < old.generation { continue }
+                self.perHost[host] = snapshot
+                self.remerge()
+            }
+        })
+        tasks[host, default: []].append(Task { await engine.start() })
+    }
+
+    /// A host was enabled: its engine joins, and starts at once if the set
+    /// is running. A host already present is left as it is.
+    public func add(_ engine: any HostEngine) {
+        guard self.engine(for: engine.host) == nil else { return }
+        engines.append(engine)
+        if started { run(engine) }
+    }
+
+    /// A host was removed or disabled: its engine stops and nothing it
+    /// published stays in the merge.
+    public func remove(host: HostID) {
+        guard let engine = engine(for: host) else { return }
+        engines.removeAll { $0.host == host }
+        tasks.removeValue(forKey: host)?.forEach { $0.cancel() }
+        Task { await engine.stop() }
+        guard perHost.removeValue(forKey: host) != nil else { return }
+        remerge(force: true)
     }
 
     public func stop() {
-        tasks.forEach { $0.cancel() }; tasks.removeAll()
+        tasks.values.joined().forEach { $0.cancel() }; tasks.removeAll()
+        started = false
         perHost.removeAll()
         latest = nil; onUpdate = nil
         for engine in engines { Task { await engine.stop() } }
@@ -54,7 +80,8 @@ public final class EngineSet {
     /// No snapshot reaches the app after this call (the first half of a
     /// quit, done in the same call as the drain's end).
     public func stopListening() {
-        tasks.forEach { $0.cancel() }; tasks.removeAll()
+        tasks.values.joined().forEach { $0.cancel() }; tasks.removeAll()
+        started = false
         perHost.removeAll()
         latest = nil; onUpdate = nil
     }
@@ -94,8 +121,8 @@ public final class EngineSet {
         Task { await engine.reconcileMembership(id) }
     }
 
-    private func remerge() {
-        guard !perHost.isEmpty else { return }
+    private func remerge(force: Bool = false) {
+        guard !perHost.isEmpty || force else { return }
         let merged = EngineSnapshot.merged(perHost: perHost, owner: owner, generation: generation &+ 1)
         if let latest, latest.resolutions == merged.resolutions, latest.facts == merged.facts,
            latest.memberships == merged.memberships { return }

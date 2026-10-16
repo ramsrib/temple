@@ -72,7 +72,9 @@ public final class SettingsStore: ObservableObject {
     @Published public var claudeExtraArgs: String { didSet { write(claudeExtraArgs, Key.claudeExtraArgs) } }
     @Published public var codexExtraArgs: String { didSet { write(codexExtraArgs, Key.codexExtraArgs) } }
 
-    private let defaults: UserDefaults
+    /// Temple's settings domain. Internal so the Hosts connection manager
+    /// keeps its list in the same one (`RemoteHostsModel`).
+    let defaults: UserDefaults
     private var loading = false
 
     public init(defaults: UserDefaults = .standard) {
