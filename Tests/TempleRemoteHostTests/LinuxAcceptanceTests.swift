@@ -262,6 +262,20 @@ final class LinuxAcceptanceTests: XCTestCase {
         XCTAssertEqual(directory, canonicalFolder)
         let run = try XCTUnwrap(store.run(first.handle))
         log.append("ok record: dir=\(directory) pane=\(run.panePID ?? -1) start=\(run.paneStart ?? "-") socket=\(run.socketPath ?? "-") server=\(run.serverPID ?? -1)/\(run.serverStart ?? "-")")
+        // The executor on this host's sh and find: a staged file that is not
+        // exactly 0600 is refused and never run; a private one runs once.
+        let executor = try await sh("""
+        d=$HOME/.temple/launch; n=st-accept-$1; o=$d/ran-$1
+        printf 'touch %s\\n' "$o" > "$d/$n"; chmod 644 "$d/$n"
+        sh -c "$2" temple-launch "$n" 1 2>/dev/null; a=$?; [ -e "$o" ] && a="$a ran"
+        rm -f "$d/$n" "$d/.run-$n"
+        printf 'touch %s\\n' "$o" > "$d/$n"; chmod 600 "$d/$n"
+        sh -c "$2" temple-launch "$n" 1 2>/dev/null; b=$?; [ -e "$o" ] && b="$b ran"; [ -e "$d/$n" ] && b="$b left"
+        rm -f "$d/$n" "$d/.run-$n" "$o"
+        echo "0644: $a; 0600: $b"
+        """, [RemoteQuoting.nonce(), LaunchStage.runner])
+        log.append("executor: \(executor)")
+        XCTAssertEqual(executor, "0644: 125; 0600: 0 ran", "\(name)")
         let socket = try XCTUnwrap(run.socketPath)
         let session = "temple-\(first.handle)"
         func tmux(_ args: String) async throws -> String { try await sh("tmux -S \"$1\" \(args)", [socket]) }

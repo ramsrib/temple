@@ -1703,10 +1703,25 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
     creation; `.s-a<nonce>` for an attach) by a bounded, non-interactive
     query over Temple's master, its bytes on stdin: noclobber and mode
     0600 beside, its length checked, then linked into place, so a partial
-    file is never read. The tab's ssh runs `sh -c '<runner>' temple-launch
-    <name> <wait>`: it waits up to 30 s for the file, checks it is a
-    regular file of this account's, reads it, deletes it, and runs it; a
-    file that never comes is said in the tab (status 125), nothing run.
+    file is never read. The tab's ssh runs `sh -c '<executor>' temple-launch
+    <name> <wait>`: it waits up to 30 s for the file, then (round 5)
+    checks the private chain as the writer does (`~/.temple` a real
+    directory of this account's, not group- or world-writable; `launch` a
+    real directory of this account's, exactly 0700), takes the file by an
+    atomic rename to a fresh name inside that directory (nobody but the
+    account can put anything there, so what is checked is what is read),
+    checks what it took (a regular file, not a symlink, this account's,
+    exactly 0600), reads it, deletes it, and runs it. Anything else, or a
+    file that never comes, is said in the tab (status 125) and nothing
+    runs; each unsafe case is tested against the executor itself, and the
+    acceptance checks a 0644 file is refused on both boxes. A `mkdir` of
+    the directory that loses a race with another Temple operation (EEXIST)
+    is accepted after the same checks on what the winner made (this was
+    the intermittent failure of the cross-process reservation test: two
+    cold opens staged at once, the loser's staging was refused, and the
+    test's `async let` cancelled the other open, which then read as a
+    refusal; the test now awaits both answers whole, and a cancellation
+    during staging stays a cancellation).
     What nothing read is removed when the creation's record is
     acknowledged, when the run's end is proven (exit check or stop), and
     by the 24-hour sweep. **First contact:** when no master answers at
@@ -1720,4 +1735,28 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
     first) is recorded failed, not unproven, and a stop of it asks
     nothing of the host: nothing can be running there. Tested on both
     boxes: the first launch of each run is a first contact.
+    A pending launch keeps the exact connection planned for its tab and is
+    written over that connection's master only (`.overMaster`): never a
+    direct connection, never a newer connection another open re-resolved
+    meanwhile. "Failed, nothing ran" is claimed (stop reads Absent, the
+    exit says why) only once that write has committed, in one statement
+    guarded on the run still being an unstarted first attachment; a run
+    another open attached to meanwhile is left as it is, and a write that
+    fails is a storage error with the proof kept for the next try, never a
+    claim.
+23. **Every command line is a short fixed bootstrap** (round 5). Queries
+    too: the command line carries only `sh -c '<bootstrap>' temple <end>`
+    (the same bytes for every query); the program (`set --` with the
+    arguments, the resolved PATH, the script), an end line and then the
+    query's own input travel on stdin. The bootstrap reads the program a
+    line at a time (`read` takes no more than the line from a pipe) and
+    runs it only if the end line arrived, so a program cut short runs
+    nothing; what follows stays on stdin for the script (the staging
+    payload). A test builds every real query script over both query
+    transports with a 48 KB PATH, 40 KB arguments and 100 KB of input, and
+    every interactive command, and asserts each command line is within
+    1 KiB. The stdin writer is the run's own nonblocking write source,
+    cancelled with the readers when the run is answered (an exit, a
+    deadline, a cancellation): a 4 MiB upload to a process whose child
+    holds stdin without reading leaves no descriptor or worker behind.
 
