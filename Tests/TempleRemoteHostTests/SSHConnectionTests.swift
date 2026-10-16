@@ -481,3 +481,48 @@ extension SSHConnectionTests {
     }
 }
 
+// Resolves with the real `ssh -G`: kept with the other ssh-invoking tests.
+extension SSHConnectionTests {
+    /// Retargeting an alias in the config gives it a new socket at once:
+    /// the old destination's master is never asked, and the identity shown
+    /// is the one the socket was keyed by. Resolved by the real `ssh -G`
+    /// against a fixture config.
+    @MainActor
+    func testARetargetedAliasNeverReusesTheOldMaster() async throws {
+        let tree = TempTree("ct-retarget")
+        let config = tree.path + "/config"
+        let ssh = ConnectionTestTests.standInSSH(tree)
+        try "master".write(toFile: tree.path + "/mode", atomically: true, encoding: .utf8)
+        let state = tree.directory("state")
+        func test(target: String) async throws -> ConnectionTest {
+            try "Host box\n  HostName \(target)\n  User mentes\n".write(toFile: config, atomically: true, encoding: .utf8)
+            let test = ConnectionTest(record: .config("box"), stateDirectory: state, sshPath: ssh.path,
+                                      makeExec: { _, path in ConnectionTestTests.host(PathLog())(path) },
+                                      resolve: { argv in await ConnectionTest.sshResolve(["/usr/bin/ssh", "-F", config] + argv.dropFirst()) })
+            let started = await test.start()
+            XCTAssertTrue(started)
+            return test
+        }
+        let first = try await test(target: "10.0.0.1")
+        let firstPath = try XCTUnwrap(first.connection?.controlPath)
+        try await ConnectionTestTests.runTerminal(first)
+        first.terminalExited()
+        await ConnectionTestTests.waitUntil { first.phase == .finished }
+        XCTAssertEqual(first.summary?.statusLine.hasPrefix("Connected as mentes@10.0.0.1."), true)
+
+        // The same alias, pointed elsewhere, while the first master lives on.
+        let second = try await test(target: "10.0.0.2")
+        let secondPath = try XCTUnwrap(second.connection?.controlPath)
+        XCTAssertNotEqual(secondPath, firstPath, "a new destination, a new socket")
+        try await ConnectionTestTests.runTerminal(second)
+        second.terminalExited()
+        await ConnectionTestTests.waitUntil { second.phase == .finished }
+        XCTAssertEqual(second.summary?.statusLine.hasPrefix("Connected as mentes@10.0.0.2."), true)
+        let checks = try String(contentsOfFile: tree.path + "/calls", encoding: .utf8).split(separator: "\n")
+            .filter { $0.contains("-O check") }
+        XCTAssertEqual(checks.count, 2)
+        XCTAssertTrue(checks[1].contains(secondPath), "the second test asked its own socket, not the old master's")
+        XCTAssertFalse(checks[1].contains(firstPath))
+    }
+}
+
