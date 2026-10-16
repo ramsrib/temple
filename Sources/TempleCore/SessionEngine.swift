@@ -173,10 +173,17 @@ public actor SessionEngine: HostEngine {
         loadMembership()
     }
 
-    /// Stops, then waits for the source to stop observing (quit only).
+    /// Stops, then waits for the source to stop observing and for this
+    /// engine's own workers to finish (quit only). `stop` cancels the
+    /// workers and lets go of them, but a cancelled worker can still be in
+    /// a read the source does not abandon on cancellation (a remote call,
+    /// the local source's dispatched file read): the handles are kept here
+    /// and awaited. Unbounded on its own; the quit bounds it (`EngineSet`).
     public func shutDown() async {
+        let workers = [drainTask, changesTask, timerTask].compactMap { $0 }
         stop()
         await source.shutDown()
+        for worker in workers { await worker.value }
     }
 
     public func stop() {

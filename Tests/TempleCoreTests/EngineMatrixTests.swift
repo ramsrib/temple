@@ -192,6 +192,26 @@ final class EngineMatrixTests: XCTestCase {
         return gate
     }
 
+    /// Quitting: `shutDown` returns only once the engine's workers have
+    /// finished. A read the source does not abandon on cancellation (a
+    /// gate that ignores it, as a remote call would) keeps it waiting;
+    /// released, it returns. Plain `stop` does not wait (and stays
+    /// restartable); the quit bounds the wait (EngineSet).
+    func testShutDownWaitsForAReadInFlight() async throws {
+        let h = try harness()
+        let id = uuid()
+        h.source.write(claudePath(id), agent: .claude, data: claudeData(id))
+        try join(h, id, path: claudePath(id))
+        let gate = try await holdNextRead(h)
+        let done = Flag()
+        let shutting = Task { await h.engine.shutDown(); done.set() }
+        try await settle(300)
+        XCTAssertFalse(done.isSet, "not while the read is held")
+        gate.open()
+        try await waitUntil("shutDown returned") { done.isSet }
+        await shutting.value
+    }
+
     // MARK: §2.6 suspended-read matrix
 
     /// 1. A leave while the read is in flight: nothing is written, the member

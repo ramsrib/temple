@@ -2,6 +2,7 @@ import AppKit
 import XCTest
 @testable import TempleUI
 import TempleCore
+import TempleTestSupport
 
 /// Closing the window quits (the window IS the app), so the quit gate now stands
 /// between a stray click on the red button and a working agent.
@@ -318,6 +319,41 @@ final class AppLifecycleTests: XCTestCase {
         XCTAssertEqual(replies, [true])
         XCTAssertLessThan(Date().timeIntervalSince(started), 2, "replied at the timeout, not after the stuck host")
         XCTAssertEqual(engine.shutDownCount, 0, "the host was still stopping")
+    }
+
+    /// The same with a real engine: its read is held by a source that never
+    /// lets go and ignores cancellation. The engine's shutdown waits for it,
+    /// and the quit still replies at the timeout.
+    func testAQuitRepliesByTheTimeoutWhileARealEnginesReadNeverReturns() async throws {
+        let source = FakeHostSource()
+        let database = try TempleDB.inMemory()
+        let id = UUID().uuidString.lowercased()
+        let path = "/home/me/.agent-a/projects/-work/\(id).jsonl"
+        source.write(path, agent: .claude, data: Data(#"{"type":"user","sessionId":"\#(id)","cwd":"/work","message":{"content":"hi"}}"#.utf8))
+        try database.join(sessionID: id, via: .imported, agent: .claude,
+                          locator: TranscriptLocator(host: source.host, path: path), core: SessionCore(host: source.host))
+        let gate = FakeGate()   // never opened
+        source.readGate = gate
+        let engine = SessionEngine(source: source, database: database)
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [engine], database: database,
+                             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+                             hostRegistry: Fixture.hostsWithoutFolderEvidence())
+        model.engineShutdownTimeout = 0.3
+        await engine.start()
+        let held = Date().addingTimeInterval(5)
+        while gate.arrivals == 0, Date() < held { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertGreaterThan(gate.arrivals, 0, "a read is in flight")
+
+        let delegate = TempleAppDelegate()
+        delegate.model = model
+        var replies: [Bool] = []
+        delegate.replyToTermination = { replies.append($0) }
+        let started = Date()
+        XCTAssertEqual(delegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
+        while replies.isEmpty, Date().timeIntervalSince(started) < 3 { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(replies, [true])
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2, "replied at the timeout, the read still held")
+        gate.open()   // let the engine's worker finish after the test
     }
 
     /// Only a delegate with no model (a startup-failure window) quits at once.
