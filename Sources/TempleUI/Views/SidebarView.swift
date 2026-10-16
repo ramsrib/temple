@@ -712,8 +712,12 @@ private struct ProjectsFoldHeader: View {
                     .tracking(1.4)
                     .foregroundStyle(hovering ? .primary : .secondary)
                     .lineLimit(1)
+                    // The label is the control's whole meaning; the rule is
+                    // decoration and gives way first (the rail is narrow).
+                    .layoutPriority(1)
                 Rectangle()
                     .fill(Palette.hairline)
+                    .frame(minWidth: 0, maxHeight: 1)
                     .frame(height: 1)
                     .padding(.leading, 4)
             }
