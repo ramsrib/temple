@@ -15,7 +15,7 @@ Scripts/demo-app.sh  # the bundled equivalent's app: a renamed copy of dist/Temp
 
 Use `make demo` for anything visual: screenshots, UI verification, driving the app.
 
-Three traps, each hit for real:
+Four traps, each hit for real:
 
 - **`open dist/Temple.app` may not launch what you built.** LaunchServices resolves
   the bundle id and will happily activate the copy in `/Applications` instead — you
