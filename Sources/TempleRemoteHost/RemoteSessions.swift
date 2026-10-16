@@ -1210,12 +1210,13 @@ public final class RemoteSessions {
         }
     }
 
-    private func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim) async -> Identity {
+    private func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim, rolloutPath: String? = nil) async -> Identity {
         do {
-            switch try await write({ try $0.claim(handle, sessionID: sessionID, how: how) }) {
+            switch try await write({ try $0.claim(handle, sessionID: sessionID, how: how, rolloutPath: rolloutPath) }) {
             case .claimed: return .adopted(sessionID)
             case .alreadyKnown(let id): return .known(id)
             case .taken: return .taken
+            case .declined: return .inconclusive(.retry("that session was declined for this one"))
             case .gone: return .inconclusive(.ended("Temple no longer tracks this session"))
             }
         } catch {
@@ -1232,8 +1233,25 @@ public final class RemoteSessions {
     /// Rollouts that may be this pending run's session: in its folder (as
     /// its pane spelled it), begun between its `ok` and its end (or now) on
     /// the host's clock, not declined for this run, not an id another run
-    /// holds. Asks; never adopts. Only for a run Temple started.
+    /// holds; the newest `limit` of those, with their first prompts. Asks;
+    /// never adopts. Only for a run Temple started. A store that can't be
+    /// read, a lookup that isn't whole: unavailable, never a guess.
     public func suggestions(_ handle: String) async -> Suggestions {
+        switch await eligible(handle) {
+        case .unavailable(let reason):
+            return .unavailable(reason)
+        case .candidates(let found):
+            let offered = Array(found.prefix(CodexSuggestionLookup.limit))
+            guard !offered.isEmpty else { return .candidates([]) }
+            let exec: RemoteExec
+            do { exec = try await queryExec() } catch { return .unavailable(error.localizedDescription) }
+            let heads = await CodexSuggestionLookup.heads(offered.map(\.rolloutPath), using: exec) ?? [:]
+            return .candidates(CodexSuggestionLookup.withPrompts(offered, heads: heads))
+        }
+    }
+
+    /// Every eligible candidate for the run, read now (no prompts).
+    private func eligible(_ handle: String) async -> Suggestions {
         guard !retired else { return .unavailable(Retired().localizedDescription) }
         guard let run = await run(handle), run.isPending, run.dismissedAt == nil else { return .candidates([]) }
         guard let okAt = run.okAt, let directory = run.directory else {
@@ -1245,9 +1263,9 @@ public final class RemoteSessions {
         let exec: RemoteExec
         do { exec = try await queryExec() } catch { return .unavailable(error.localizedDescription) }
         let asked = now()
-        let answer = await CodexSuggestionLookup.run(home: home, since: okAt, directory: directory, using: exec)
-        guard case .files(let remoteNow, let files) = answer else {
-            if case .unavailable(let reason) = answer { return .unavailable(reason) }
+        let listing = await CodexSuggestionLookup.list(home: home, since: okAt, directory: directory, using: exec)
+        guard case .headers(let remoteNow, let files) = listing else {
+            if case .unavailable(let reason) = listing { return .unavailable(reason) }
             return .unavailable("no answer")
         }
         // The end on the host's clock: its end as this Mac saw it, moved by
@@ -1256,16 +1274,32 @@ public final class RemoteSessions {
         let until = run.endedAt.map { $0.addingTimeInterval(offset + 30) }
             ?? Date(timeIntervalSince1970: TimeInterval(remoteNow + 5))
         let host = host
-        let declined = await read { try $0.declined(handle) } ?? []
-        let held = await read { try $0.sessionIDs(host: host) } ?? []
-        return .candidates(CodexSuggestionLookup.candidates(files, directory: directory, since: okAt, until: until,
-                                                            declined: declined, held: held))
+        let declined: Set<String>, held: Set<String>
+        do {
+            declined = try await write { try $0.declined(handle) }
+            held = try await write { try $0.sessionIDs(host: host) }
+        } catch {
+            return .unavailable("Temple couldn't read what it knows about this session: \(error.localizedDescription)")
+        }
+        return .candidates(CodexSuggestionLookup.eligible(files, directory: directory, since: okAt, until: until,
+                                                          declined: declined, held: held))
     }
 
-    /// The user said "Yes, that's it": the id is claimed for the run, under
-    /// the same uniqueness as a verified one.
+    /// The user said "Yes, that's it": the candidate is checked again now
+    /// (still there, still this run's folder and window, not declined, not
+    /// held), then claimed under the same uniqueness as a verified id, the
+    /// claim refusing a declined file in its own transaction. A check that
+    /// can't be made claims nothing.
     public func confirm(_ handle: String, suggestion: CodexSuggestion) async -> Identity {
-        await claim(handle, sessionID: suggestion.sessionID, how: .confirmed)
+        switch await eligible(handle) {
+        case .unavailable(let reason):
+            return .inconclusive(.retry(reason))
+        case .candidates(let current):
+            guard current.contains(where: { $0.rolloutPath == suggestion.rolloutPath && $0.sessionID == suggestion.sessionID }) else {
+                return .inconclusive(.retry("that session is no longer a candidate for this one"))
+            }
+            return await claim(handle, sessionID: suggestion.sessionID, how: .confirmed, rolloutPath: suggestion.rolloutPath)
+        }
     }
 
     /// "Not this one": never offered again for this run.

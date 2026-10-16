@@ -444,6 +444,8 @@ public final class RemoteStateStore: @unchecked Sendable {
         /// Another run on this host already serves that id: refused, the
         /// run stays pending.
         case taken
+        /// The user declined that file for this run.
+        case declined
         /// The run is gone or was discarded.
         case gone
     }
@@ -452,7 +454,7 @@ public final class RemoteStateStore: @unchecked Sendable {
     /// transaction across processes: refused when any other run on the
     /// host already holds that id (a claim, or a run of that session).
     /// Written before the core join; a claimed conversation exists.
-    public func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim) throws -> ClaimOutcome {
+    public func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim, rolloutPath: String? = nil) throws -> ClaimOutcome {
         try queue.writeWithoutTransaction { database in
             var outcome = ClaimOutcome.gone
             try database.inTransaction(.immediate) {
@@ -462,6 +464,12 @@ public final class RemoteStateStore: @unchecked Sendable {
                 }
                 if let known = run.sessionID {
                     outcome = .alreadyKnown(known)
+                    return .commit
+                }
+                if let rolloutPath, try Int.fetchOne(database, sql: """
+                    SELECT COUNT(*) FROM declined_candidates WHERE handle = ? AND rollout_path = ?
+                    """, arguments: [handle, rolloutPath]) ?? 0 > 0 {
+                    outcome = .declined
                     return .commit
                 }
                 let held = try Int.fetchOne(database, sql: """
@@ -614,6 +622,11 @@ public final class RemoteStateStore: @unchecked Sendable {
                 CREATE TEMP TRIGGER broken_runs BEFORE UPDATE ON runs BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END
                 """)
         }
+    }
+
+    /// Tests only: the declined candidates can't be read.
+    func breakDeclinedForTests() throws {
+        try queue.write { try $0.execute(sql: "ALTER TABLE declined_candidates RENAME TO declined_broken") }
     }
 
     func mendWritesForTests() throws {

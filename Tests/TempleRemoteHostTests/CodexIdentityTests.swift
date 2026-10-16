@@ -377,23 +377,79 @@ final class CodexIdentityTests: XCTestCase {
         let declined = f.rollout(created: "2026-10-16T17:20:10.000Z")
         let held = f.rollout(created: "2026-10-16T17:20:20.000Z")
         let since = Int(ISO8601DateFormatter().date(from: "2026-10-16T17:19:00Z")!.timeIntervalSince1970)
-        let answer = await CodexSuggestionLookup.run(home: ("unset", "", f.folder), since: Int(Date().timeIntervalSince1970) - 60,
-                                                     directory: f.folder, using: f.exec)
-        guard case .files(let now, let files) = answer else { return XCTFail("\(answer)") }
+        let listing = await CodexSuggestionLookup.list(home: ("unset", "", f.folder), since: Int(Date().timeIntervalSince1970) - 60,
+                                                       directory: f.folder, using: f.exec)
+        guard case .headers(let now, let files) = listing else { return XCTFail("\(listing)") }
         XCTAssertLessThan(abs(now - Int(Date().timeIntervalSince1970)), 5)
         XCTAssertEqual(Set(files.map(\.path)).count, 5, "only the folder's rollouts are read")
-        let candidates = CodexSuggestionLookup.candidates(files, directory: f.folder, since: since,
-                                                          until: Date(timeIntervalSince1970: TimeInterval(since + 3600)),
-                                                          declined: [declined.path], held: [held.id])
-        XCTAssertEqual(candidates.map(\.sessionID), [blank.id, mine.id])
+        let eligible = CodexSuggestionLookup.eligible(files, directory: f.folder, since: since,
+                                                      until: Date(timeIntervalSince1970: TimeInterval(since + 3600)),
+                                                      declined: [declined.path], held: [held.id])
+        XCTAssertEqual(eligible.map(\.sessionID), [blank.id, mine.id])
+        let fetched = await CodexSuggestionLookup.heads(eligible.map(\.rolloutPath), using: f.exec)
+        let heads = try XCTUnwrap(fetched)
+        let candidates = CodexSuggestionLookup.withPrompts(eligible, heads: heads)
         XCTAssertEqual(candidates.last?.firstPrompt, "reply with the word ok")
         XCTAssertNil(candidates.first?.firstPrompt)
         XCTAssertFalse(candidates.contains { $0.sessionID == before.id })
         // The window's end bounds it too.
-        let early = CodexSuggestionLookup.candidates(files, directory: f.folder, since: since,
-                                                     until: ISO8601DateFormatter().date(from: "2026-10-16T17:20:05Z")!,
-                                                     declined: [], held: [])
+        let early = CodexSuggestionLookup.eligible(files, directory: f.folder, since: since,
+                                                   until: ISO8601DateFormatter().date(from: "2026-10-16T17:20:05Z")!,
+                                                   declined: [], held: [])
         XCTAssertEqual(early.map(\.sessionID), [mine.id])
+    }
+
+    /// Paths travel whole (a folder whose name holds a newline is one
+    /// path); a session file that can't be read, or a folder that can't be
+    /// searched, makes the lookup unavailable rather than a partial list.
+    func testTheLookupIsPathSafeAndNeverPartial() async throws {
+        var f = Fixture()
+        let odd = f.sessions + "/x\ny"
+        try FileManager.default.createDirectory(atPath: odd, withIntermediateDirectories: true)
+        let id = UUID().uuidString.lowercased()
+        let header: [String: Any] = ["type": "session_meta", "timestamp": "2026-10-16T17:20:00Z",
+                                     "payload": ["id": id, "cwd": f.folder, "timestamp": "2026-10-16T17:20:00Z"]]
+        let path = odd + "/rollout-2026-10-16T10-18-52-\(id).jsonl"
+        FileManager.default.createFile(atPath: path, contents: try JSONSerialization.data(withJSONObject: header, options: [.withoutEscapingSlashes]) + Data("\n".utf8))
+        var listing = await CodexSuggestionLookup.list(home: ("unset", "", f.folder), since: Int(Date().timeIntervalSince1970) - 60,
+                                                       directory: f.folder, using: f.exec)
+        guard case .headers(_, let files) = listing else { return XCTFail("\(listing)") }
+        XCTAssertEqual(files.map(\.path), [path])
+
+        f = Fixture()
+        let unreadable = f.rollout()
+        chmod(unreadable.path, 0)
+        listing = await CodexSuggestionLookup.list(home: ("unset", "", f.folder), since: Int(Date().timeIntervalSince1970) - 60,
+                                                   directory: f.folder, using: f.exec)
+        XCTAssertEqual(listing, .unavailable("not every session file could be read"))
+
+        f = Fixture()
+        _ = f.rollout()
+        let closed = f.sessions + "/closed"
+        try FileManager.default.createDirectory(atPath: closed, withIntermediateDirectories: true)
+        chmod(closed, 0)
+        defer { chmod(closed, 0o755) }
+        listing = await CodexSuggestionLookup.list(home: ("unset", "", f.folder), since: Int(Date().timeIntervalSince1970) - 60,
+                                                   directory: f.folder, using: f.exec)
+        XCTAssertEqual(listing, .unavailable("not every session file could be read"))
+    }
+
+    /// The answer must be whole: a frame cut short, a wrong length, bytes
+    /// after `done`, or no `done` at all is unavailable.
+    func testTheLookupsFramingIsStrict() {
+        let path = Data("/h/sessions/rollout-x.jsonl".utf8).map { String(format: "%02x", $0) }.joined()
+        func parse(_ text: String) -> CodexSuggestionLookup.Listing { CodexSuggestionLookup.parseList(Data(text.utf8)) }
+        guard case .headers(1, let files) = parse("now\t1\nfile\t\(path)\t2\n{}\nend\ndone\n") else { return XCTFail() }
+        XCTAssertEqual(files.map(\.header), [Data("{}".utf8)])
+        for broken in ["now\t1\nfile\t\(path)\t2\n{}\nend\n",
+                       "now\t1\nfile\t\(path)\t3\n{}\nend\ndone\n",
+                       "now\t1\nfile\t\(path)\t2\n{}\nend\ndone\nextra",
+                       "now\t1\nfile\t\(path)\t2\n{}",
+                       "now\t1\n"] {
+            guard case .unavailable = parse(broken) else { return XCTFail("accepted: \(broken.debugDescription)") }
+        }
+        XCTAssertEqual(parse("now\t1\nunavailable\tnot every session file could be read\n"),
+                       .unavailable("not every session file could be read"))
     }
 
     /// Codex's app server records the prompt as a user message item behind
@@ -478,6 +534,9 @@ final class CodexIdentityTests: XCTestCase {
         try store.decline("a", rolloutPath: "/r/1")
         XCTAssertEqual(try store.declined("a"), ["/r/1"])
         XCTAssertEqual(try store.declined("b"), [])
+        XCTAssertEqual(try store.claim("a", sessionID: "z1", how: .confirmed, rolloutPath: "/r/1"), .declined,
+                       "a declined file is refused in the claim's own transaction")
+        XCTAssertNil(try store.run("a")?.sessionID)
         try store.update("b") { $0.tabClosedAt = Date() }
         try store.dismissRun("c", at: Date())
         XCTAssertEqual(try store.pendingRuns(host: HostID(rawValue: "box")).map(\.handle), ["a"])

@@ -260,54 +260,74 @@ public struct CodexSuggestion: Sendable, Equatable, Identifiable {
 }
 
 /// The suggestion lookup: rollouts under the run's Codex home touched since
-/// the run's `ok`, whose header names the run's folder; the caller keeps
-/// those that began inside the run's window.
+/// the run's `ok`, whose first line names the run's folder. The caller keeps
+/// those that are eligible (begun inside the run's window, not declined, not
+/// an id another run holds), then reads the heads of at most `limit` of them
+/// for their first prompt. Paths travel as arguments and hex, never split on
+/// a newline; a file that can't be read, a traversal that fails, or output
+/// that is not framed whole makes the lookup unavailable, never a partial
+/// list.
 public enum CodexSuggestionLookup {
-    public enum Answer: Sendable, Equatable {
-        /// The host's clock now, and each candidate's path and the head of
-        /// its file (the header first).
-        case files(remoteNow: Int, [(path: String, head: Data)])
+    public enum Listing: Sendable, Equatable {
+        /// The host's clock now, and each candidate's path and first line.
+        case headers(remoteNow: Int, [Candidate])
         case unavailable(String)
-
-        public static func == (lhs: Answer, rhs: Answer) -> Bool {
-            switch (lhs, rhs) {
-            case (.unavailable(let a), .unavailable(let b)): a == b
-            case (.files(let n1, let f1), .files(let n2, let f2)):
-                n1 == n2 && f1.map(\.path) == f2.map(\.path) && f1.map(\.head) == f2.map(\.head)
-            default: false
-            }
-        }
     }
 
-    /// How much of each candidate is read: the header and the first prompt
-    /// (Codex puts its instructions in the header line, about 20 KB).
+    public struct Candidate: Sendable, Equatable {
+        public let path: String
+        public let header: Data
+    }
+
+    /// How much of each offered candidate is read: the header and the first
+    /// prompt (Codex puts its instructions in the header line, about 20 KB).
     public static let headBytes = 256 * 1024
-    /// At most this many candidates are read.
+    /// At most this many eligible candidates are offered (newest first).
     public static let limit = 20
+    /// A folder with more rollouts than this since the run began is not
+    /// listed (unavailable, never truncated).
+    public static let listLimit = 500
 
     /// Arguments `hs hv base since needle`: `needle` is the run's folder as
-    /// JSON spells it, quoted; only files whose first line contains it are
-    /// read. Prints `now<TAB><epoch>`, then per candidate
-    /// `file<TAB><hex path><TAB><bytes>` and that many bytes of its head;
-    /// `unavailable<TAB><reason>` when the home can't be read.
-    static let script = #"""
+    /// JSON spells it, quoted. Prints `now<TAB><epoch>`, then per file whose
+    /// first line contains the needle `file<TAB><hex path><TAB><bytes>`, that
+    /// line, and `\nend`; then `done`, or `unavailable<TAB><reason>`.
+    static let listScript = #"""
     hs=$1; hv=$2; base=$3; since=$4; needle=$5
     nohome() { printf 'unavailable\t%s\n' "$1"; exit 0; }
     \#(CodexHomeRoot.resolve)
     now=$(date +%s)
     printf 'now\t%s\n' "$now"
-    [ -d "$h/sessions" ] || exit 0
+    [ -d "$h/sessions" ] || { printf 'done\n'; exit 0; }
     m=$(( (now - since) / 60 + 2 ))
-    k=0
-    find "$h/sessions" -type f -name 'rollout-*.jsonl' -mmin "-$m" 2>/dev/null | while IFS= read -r f; do
-      [ "$k" -lt \#(limit) ] || break
-      l=$(head -c 65536 "$f" 2>/dev/null | head -n 1)
-      case $l in *"$needle"*) ;; *) continue ;; esac
-      n=$(head -c \#(headBytes) "$f" 2>/dev/null | wc -c | tr -d ' ')
-      printf 'file\t%s\t%s\n' "$(printf '%s' "$f" | od -An -tx1 | tr -d ' \n')" "$n"
-      head -c "$n" "$f"
-      k=$((k + 1))
+    if find "$h/sessions" -type f -name 'rollout-*.jsonl' -mmin "-$m" -exec sh -c '
+      NL="
+    "
+      needle=$1; shift
+      for f; do
+        l=$(head -c 65536 -- "$f") || exit 3
+        l=${l%%"$NL"*}
+        case $l in *"$needle"*) ;; *) continue ;; esac
+        printf "file\t%s\t%s\n" "$(printf "%s" "$f" | od -An -tx1 | tr -d " \n")" "$(printf "%s" "$l" | wc -c | tr -d " ")"
+        printf "%s\nend\n" "$l"
+      done' temple-scan "$needle" {} +; then
+      printf 'done\n'
+    else
+      printf 'unavailable\t%s\n' "not every session file could be read"
+    fi
+    """#
+
+    /// Arguments: paths. Prints per path `head<TAB><hex path><TAB><bytes>`,
+    /// that much of its head and `\nend`, or `skip<TAB><hex path>` when it
+    /// can't be read; then `done`.
+    static let headsScript = #"""
+    for f; do
+      x=$(printf '%s' "$f" | od -An -tx1 | tr -d ' \n')
+      t=$(head -c \#(headBytes) -- "$f") || { printf 'skip\t%s\n' "$x"; continue; }
+      printf 'head\t%s\t%s\n' "$x" "$(printf '%s' "$t" | wc -c | tr -d ' ')"
+      printf '%s\nend\n' "$t"
     done
+    printf 'done\n'
     """#
 
     public static let deadline: TimeInterval = 20
@@ -333,72 +353,110 @@ public enum CodexSuggestionLookup {
         return out + "\""
     }
 
-    public static func run(home: (state: String, value: String, base: String), since: Int, directory: String,
-                           using exec: RemoteExec) async -> Answer {
+    public static func list(home: (state: String, value: String, base: String), since: Int, directory: String,
+                            using exec: RemoteExec) async -> Listing {
         do {
-            let output = try await exec.run(script: script,
+            let output = try await exec.run(script: listScript,
                                             args: [home.state, home.value, home.base, String(since), jsonString(directory)],
                                             deadline: deadline)
             guard output.reachedCommand, output.status == 0 else {
                 return .unavailable(output.firstErrorLine ?? "ssh exited with status \(output.status)")
             }
-            return parse(Data(output.stdout.utf8))
+            return parseList(Data(output.stdout.utf8))
         } catch {
             return .unavailable(error.localizedDescription)
         }
     }
 
-    static func parse(_ data: Data) -> Answer {
-        var index = data.startIndex
-        var now: Int?
-        var files: [(path: String, head: Data)] = []
-        while index < data.endIndex {
-            guard let newline = data[index...].firstIndex(of: 0x0a) else { break }
-            let line = String(decoding: data[index..<newline], as: UTF8.self)
-            index = data.index(after: newline)
-            let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
-            switch fields.first {
-            case "unavailable":
-                return .unavailable(fields.dropFirst().joined(separator: "\t"))
-            case "now":
-                now = fields.count > 1 ? Int(fields[1]) : nil
-            case "file":
-                guard fields.count == 3, let path = LaunchRecords.hex(fields[1]), let count = Int(fields[2]), count >= 0,
-                      data.distance(from: index, to: data.endIndex) >= count else {
-                    return .unavailable("the lookup printed something Temple didn't expect")
-                }
-                let end = data.index(index, offsetBy: count)
-                files.append((path, Data(data[index..<end])))
-                index = end
-            default:
-                return .unavailable("the lookup printed something Temple didn't expect")
-            }
-        }
-        guard let now else { return .unavailable("the lookup printed nothing Temple expected") }
-        return .files(remoteNow: now, files)
+    /// The heads of `paths`, by path; one that can't be read is missing
+    /// (its question shows no prompt). Nil when the answer is not whole.
+    public static func heads(_ paths: [String], using exec: RemoteExec) async -> [String: Data]? {
+        guard !paths.isEmpty else { return [:] }
+        guard let output = try? await exec.run(script: headsScript, args: paths, deadline: deadline),
+              output.reachedCommand, output.status == 0,
+              let frames = frames(Data(output.stdout.utf8), tags: ["head"], skips: ["skip"]) else { return nil }
+        return Dictionary(frames.map { ($0.path, $0.body) }, uniquingKeysWith: { first, _ in first })
     }
 
-    /// The candidates for a run: a header that parses as a session a person
-    /// started, whose id is also its file name's, in the run's folder,
-    /// begun inside [`since`, `until`] on the host's clock; not declined,
-    /// and not an id another run holds. Newest first.
-    static func candidates(_ files: [(path: String, head: Data)], directory: String, since: Int, until: Date,
-                           declined: Set<String>, held: Set<String>) -> [CodexSuggestion] {
+    static func parseList(_ data: Data) -> Listing {
+        guard let newline = data.firstIndex(of: 0x0a) else { return .unavailable("the lookup printed nothing Temple expected") }
+        let first = String(decoding: data[..<newline], as: UTF8.self)
+        if first.hasPrefix("unavailable\t") { return .unavailable(String(first.dropFirst("unavailable\t".count))) }
+        guard first.hasPrefix("now\t"), let now = Int(first.dropFirst(4)) else {
+            return .unavailable("the lookup printed nothing Temple expected")
+        }
+        let rest = Data(data[data.index(after: newline)...])
+        if let unavailable = lastLine(rest), unavailable.hasPrefix("unavailable\t") {
+            return .unavailable(String(unavailable.dropFirst("unavailable\t".count)))
+        }
+        guard let frames = frames(rest, tags: ["file"], skips: []) else {
+            return .unavailable("the lookup's answer was cut short")
+        }
+        guard frames.count <= listLimit else { return .unavailable("too many sessions in this folder to list") }
+        return .headers(remoteNow: now, frames.map { Candidate(path: $0.path, header: $0.body) })
+    }
+
+    private static func lastLine(_ data: Data) -> String? {
+        var trimmed = data
+        if trimmed.last == 0x0a { trimmed.removeLast() }
+        let start = trimmed.lastIndex(of: 0x0a).map { trimmed.index(after: $0) } ?? trimmed.startIndex
+        return String(decoding: trimmed[start...], as: UTF8.self)
+    }
+
+    /// Strict framing: `<tag><TAB><hex path><TAB><bytes>`, exactly that many
+    /// bytes, `\nend\n`; `<skip><TAB><hex path>` lines; and a final `done`
+    /// with nothing after it. Anything else is nil.
+    static func frames(_ data: Data, tags: Set<String>, skips: Set<String>) -> [(path: String, body: Data)]? {
+        var index = data.startIndex
+        var frames: [(path: String, body: Data)] = []
+        let end = Data("\nend\n".utf8)
+        while index < data.endIndex {
+            guard let newline = data[index...].firstIndex(of: 0x0a) else { return nil }
+            let line = String(decoding: data[index..<newline], as: UTF8.self)
+            index = data.index(after: newline)
+            if line == "done" { return index == data.endIndex ? frames : nil }
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            if let tag = fields.first, skips.contains(tag), fields.count == 2, LaunchRecords.hex(fields[1]) != nil { continue }
+            guard let tag = fields.first, tags.contains(tag), fields.count == 3, let path = LaunchRecords.hex(fields[1]),
+                  let count = Int(fields[2]), count >= 0,
+                  data.distance(from: index, to: data.endIndex) >= count + end.count else { return nil }
+            let bodyEnd = data.index(index, offsetBy: count)
+            guard data[bodyEnd..<data.index(bodyEnd, offsetBy: end.count)].elementsEqual(end) else { return nil }
+            frames.append((path, Data(data[index..<bodyEnd])))
+            index = data.index(bodyEnd, offsetBy: end.count)
+        }
+        return nil
+    }
+
+    /// The eligible candidates for a run: a header that parses as a session
+    /// a person started, whose id is also its file name's, in the run's
+    /// folder, begun inside [`since`, `until`] on the host's clock; not
+    /// declined, and not an id another run holds. Newest first, without
+    /// their prompts yet.
+    static func eligible(_ candidates: [Candidate], directory: String, since: Int, until: Date,
+                         declined: Set<String>, held: Set<String>) -> [CodexSuggestion] {
         let format = CodexFormat()
         let from = Date(timeIntervalSince1970: TimeInterval(since - 1))
         var seen = Set<String>()
-        return files.compactMap { file -> CodexSuggestion? in
+        return candidates.compactMap { file -> CodexSuggestion? in
             guard !declined.contains(file.path), seen.insert(file.path).inserted else { return nil }
-            let firstLine = file.head.split(separator: 0x0a, maxSplits: 1, omittingEmptySubsequences: false).first ?? Data()
             guard let named = format.name(path: file.path)?.threadID,
-                  let candidate = (try? format.header(firstLine: Data(firstLine))) ?? nil,
+                  let candidate = (try? format.header(firstLine: file.header)) ?? nil,
                   candidate.id.lowercased() == named, candidate.cwd == directory,
                   candidate.createdAt >= from, candidate.createdAt <= until,
                   !held.contains(candidate.id) else { return nil }
-            return CodexSuggestion(rolloutPath: file.path, sessionID: candidate.id,
-                                   firstPrompt: CodexFormat.firstTypedPrompt(in: file.head),
+            return CodexSuggestion(rolloutPath: file.path, sessionID: candidate.id, firstPrompt: nil,
                                    startedAt: candidate.createdAt, directory: candidate.cwd)
         }
         .sorted { $0.startedAt > $1.startedAt }
+    }
+
+    /// The same suggestions with the first prompt each head holds.
+    static func withPrompts(_ suggestions: [CodexSuggestion], heads: [String: Data]) -> [CodexSuggestion] {
+        suggestions.map {
+            CodexSuggestion(rolloutPath: $0.rolloutPath, sessionID: $0.sessionID,
+                            firstPrompt: heads[$0.rolloutPath].flatMap(CodexFormat.firstTypedPrompt(in:)),
+                            startedAt: $0.startedAt, directory: $0.directory)
+        }
     }
 }

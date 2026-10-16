@@ -895,8 +895,11 @@ final class RemoteSessionsTests: XCTestCase {
         let suggestion = try XCTUnwrap(after.first)
         let yes = await sessions.confirm(first.handle, suggestion: suggestion)
         XCTAssertEqual(yes, .adopted(mineID))
+        // The twin's yes is refused when it is checked again (the id is held
+        // now); the claim's own uniqueness would refuse it too.
         let twinYes = await sessions.confirm("twin", suggestion: suggestion)
-        XCTAssertEqual(twinYes, .taken)
+        guard case .inconclusive = twinYes else { return XCTFail("\(twinYes)") }
+        XCTAssertEqual(try store.claim("twin", sessionID: mineID, how: .confirmed), .taken)
         guard case .candidates(let twinAfter) = await sessions.suggestions("twin") else { return XCTFail() }
         XCTAssertFalse(twinAfter.contains { $0.sessionID == mineID }, "claimed by another run: never offered")
         let claimed = try XCTUnwrap(store.run(first.handle))
@@ -922,6 +925,63 @@ final class RemoteSessionsTests: XCTestCase {
         let attach = try plan(await sessions.open(codex))
         XCTAssertFalse(attach.creating)
         XCTAssertEqual(attach.handle, first.handle)
+    }
+
+    /// The suggestions are checked now, every time: the newest eligible
+    /// candidates are offered even behind many declined ones (the cap comes
+    /// after eligibility); a store that can't be read makes them
+    /// unavailable, never a list that forgot what was declined; and a yes
+    /// is checked again before the claim (a file gone or declined since is
+    /// refused, claiming nothing).
+    func testSuggestionsAndAYesAreCheckedNow() async throws {
+        let host = StandIn()
+        let store = try RemoteStateStore()
+        let sessions = controller(host, store: store)
+        let folder = canonical(host.tree.directory("work").path)
+        var run = RemoteRun(handle: "p1", host: record.host, agent: .codex, mode: .new, directoryIntent: "~",
+                            sessionID: nil, recordPath: RecordDirectory.locator(marker: "r-p1"), startedAt: Date())
+        run.creation = .proven; run.okAt = Int(Date().timeIntervalSince1970) - 30; run.directory = folder; run.codexHome = .unset
+        try store.insert(run)
+        let codexSessions = host.home + "/.codex/sessions/2026/10/16"
+        try FileManager.default.createDirectory(atPath: codexSessions, withIntermediateDirectories: true)
+        func rollout(_ offset: TimeInterval) throws -> (path: String, id: String) {
+            let id = UUID().uuidString.lowercased()
+            let stamp = ISO8601DateFormatter().string(from: Date().addingTimeInterval(offset))
+            let header: [String: Any] = ["type": "session_meta", "timestamp": stamp,
+                                         "payload": ["id": id, "timestamp": stamp, "cwd": folder]]
+            let path = "\(codexSessions)/rollout-2026-10-16T10-18-52-\(id).jsonl"
+            try (String(decoding: try JSONSerialization.data(withJSONObject: header, options: [.withoutEscapingSlashes]), as: UTF8.self)
+                 + "\n").write(toFile: path, atomically: true, encoding: .utf8)
+            return (path, id)
+        }
+        let target = try rollout(-20)
+        for index in 0..<25 {
+            let declined = try rollout(Double(-10 + index) / 10)
+            try store.decline("p1", rolloutPath: declined.path)
+        }
+        guard case .candidates(let offered) = await sessions.suggestions("p1") else { return XCTFail() }
+        XCTAssertEqual(offered.map(\.sessionID), [target.id], "the real candidate, behind 25 declined newer ones")
+
+        // A yes for a file that is gone since claims nothing.
+        let gone = try rollout(-15)
+        guard case .candidates(let both) = await sessions.suggestions("p1"),
+              let goneSuggestion = both.first(where: { $0.sessionID == gone.id }) else { return XCTFail() }
+        try FileManager.default.removeItem(atPath: gone.path)
+        let goneYes = await sessions.confirm("p1", suggestion: goneSuggestion)
+        guard case .inconclusive = goneYes else { return XCTFail("\(goneYes)") }
+        XCTAssertNil(try store.run("p1")?.sessionID)
+        // Declined after it was offered: refused too.
+        let targetSuggestion = try XCTUnwrap(offered.first)
+        try store.decline("p1", rolloutPath: target.path)
+        let declinedYes = await sessions.confirm("p1", suggestion: targetSuggestion)
+        guard case .inconclusive = declinedYes else { return XCTFail("\(declinedYes)") }
+        XCTAssertNil(try store.run("p1")?.sessionID)
+
+        // What was declined can't be read: unavailable, not a fresh list.
+        try store.breakDeclinedForTests()
+        guard case .unavailable = await sessions.suggestions("p1") else { return XCTFail("a list that forgot the declines") }
+        let blindYes = await sessions.confirm("p1", suggestion: targetSuggestion)
+        guard case .inconclusive = blindYes else { return XCTFail("\(blindYes)") }
     }
 
     /// A pending run reopened while it runs attaches (never a second
