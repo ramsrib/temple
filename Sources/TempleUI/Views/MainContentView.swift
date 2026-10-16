@@ -137,13 +137,16 @@ private struct SessionTerminalView: View {
                 Button("Reconnect") { model.openSessions.reconnect(tab) }
             }
         case .unknown(let reason):
-            notice(symbol: "questionmark.circle", text: RemoteCopy.unknown(host, agent: tab.agent, reason: reason)) {
-                HStack(spacing: 12) {
-                    Button("Reconnect") { model.openSessions.reconnect(tab) }
-                    if tab.sessionID != nil {
-                        Button("Resume anyway") { confirmingResumeAnyway = true }
+            VStack(spacing: 0) {
+                notice(symbol: "questionmark.circle", text: RemoteCopy.unknown(host, agent: tab.agent, reason: reason)) {
+                    HStack(spacing: 12) {
+                        Button("Reconnect") { model.openSessions.reconnect(tab) }
+                        if tab.sessionID != nil {
+                            Button("Resume anyway") { confirmingResumeAnyway = true }
+                        }
                     }
                 }
+                if let lines = tab.remote?.diagnostics, !lines.isEmpty { diagnosticLines(lines) }
             }
         case .stopFailed(let message):
             notice(symbol: "exclamationmark.triangle", text: message) {
@@ -166,13 +169,7 @@ private struct SessionTerminalView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             ForEach(Array((tab.remote?.diagnostics ?? []).enumerated()), id: \.offset) { _, line in
-                Text(line)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, 20)
+                diagnosticLine(line)
             }
             if let argv = tab.displayArgv, !argv.isEmpty {
                 Text(argv.joined(separator: " "))
@@ -190,6 +187,27 @@ private struct SessionTerminalView: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(Palette.hairline).frame(height: 1)
         }
+    }
+
+    private func diagnosticLine(_ line: String) -> some View {
+        Text(line)
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+            .lineLimit(2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 20)
+    }
+
+    /// What the pane printed before its agent ended, under a header.
+    private func diagnosticLines(_ lines: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in diagnosticLine(line) }
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.surfaceFill)
     }
 
     private func notice<Actions: View>(symbol: String, text: String,

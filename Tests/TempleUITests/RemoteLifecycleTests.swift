@@ -622,6 +622,18 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertEqual(tab.remote?.diagnostics, ["Error: No conversation found with session ID: s1"])
     }
 
+    /// The failing agent was the server's only session: the server went too,
+    /// the check can't tell (Unknown), and what it printed is still shown.
+    func testAFailureThatTookTheServerStillShowsWhatItPrinted() async throws {
+        remote.liveness = .unknown(reason: "no server running on /tmp/tmux-1000/temple")
+        remote.diagnosticsText = "No conversation found with session ID: s1\r\n"
+        let tab = await openRow()
+        factory.created.last?.simulateExit(status: 1)
+        await settle(!(tab.remote?.diagnostics ?? []).isEmpty)
+        XCTAssertEqual(tab.remote?.phase, .unknown(reason: "no server running on /tmp/tmux-1000/temple"))
+        XCTAssertEqual(tab.remote?.diagnostics, ["No conversation found with session ID: s1"])
+    }
+
     func testAnAttachReplaysThePersistedEvidence() async throws {
         remote.runs = [.init(handle: "old", sessionID: "s1", resume: false)]
         _ = await openRow()

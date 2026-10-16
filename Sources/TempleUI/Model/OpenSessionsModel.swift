@@ -1491,6 +1491,12 @@ extension OpenSessionsModel {
                 tab.remote?.phase = .disconnected
             case .unknown(let reason):
                 tab.remote?.phase = .unknown(reason: reason)
+                // An agent that ended at once as the server's only session
+                // takes the server with it, and the check can't tell; what
+                // it printed is still shown, and proves nothing either way.
+                if age < grace, let raw = await host.diagnostics(handle), let tab = await current() {
+                    tab.remote?.diagnostics = RemoteCopy.diagnosticLines(raw)
+                }
             case .absent:
                 if !creating, !state.resumedAfterAbsence, age < grace, tab.sessionID != nil {
                     // The attach found nothing there: the end is proven, so
