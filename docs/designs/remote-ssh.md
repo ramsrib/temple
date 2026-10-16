@@ -435,6 +435,9 @@ temple-launch <mode> <dir> <marker> [<pane command>]`, every argument
 single-quoted with `'\''` for an embedded quote, the one form bash, zsh and
 fish read the same way; the handle travels in an environment assignment,
 never in a shell word; ids and handles pass a `[A-Za-z0-9._-]` allowlist.
+(As built, round 4: the script and its values are staged on the host
+first and the remote string is a short runner naming the staged file;
+see phase 1a note 22. The script below is the design's first form.)
 
 **Fixed launch script**, arguments `mode dir marker [pane-command]`:
 
@@ -1520,12 +1523,24 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
    config root its agent was started with (round 3): the login
    environment's `CLAUDE_CONFIG_DIR` comes from the same bounded query as
    the PATH (framed so newlines and relative values survive), the launch
-   hands it to the pane through a file in the record directory (never a
-   tmux argument, so an older server's environment cannot win, set or
-   unset), and the pane records the root it has, which the run row keeps
-   (`r3-config`). Present: confirmed, and resumed. Absent only when that
-   root was checked to the end; an unknown root, an ancestor that can't be
-   searched, or a store that can't be read whole is Unknown. Absent: the
+   hands it to the pane explicitly, set or unset, through `new-session -e
+   TEMPLE_CFG` / `TEMPLE_CFG_VALUE` (round 4; `-e` values are not
+   format-expanded, measured on 3.2a, 3.4 and 3.7, and an older server's
+   environment never decides it). Without a resolved value the launch
+   passes its own environment's, explicitly; a pane told nothing valid
+   records `failed<TAB>cfg` and starts no agent, which the tab shows as a
+   launch failure. The pane records the root it has, hex-encoded and
+   decoded strictly (malformed or invalid UTF-8 is no evidence; an encoded
+   empty value is a value), which the run row keeps (`r3-config`). The
+   check uses the root of the session's latest relevant run (not
+   dismissed, not a creation that failed before it ran); a run that left
+   no evidence makes it Unknown, never an older run's root. A relative
+   root is made absolute against the folder that run was in, and a
+   resume after a present answer starts against exactly that root, not
+   the login environment's current one; any other resume uses the latest
+   run's root when known. Present: confirmed, and resumed. Absent only
+   when that root was checked to the end; an unknown root, an ancestor
+   that can't be searched, or a store that can't be read whole is Unknown. Absent: the
    tab offers **Start a new session**
    (a fresh agent under the same id) and **Discard** (its runs dismissed;
    its row let go, or archived when the user named, pinned or colored it).
@@ -1627,7 +1642,13 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
     row's disposition (let go, or archived when the user made the row
     theirs) finish together in one owned operation, for the membership
     (incarnation) Discard was chosen for; quit, retirement or a closed
-    window change nothing of it. Only its failure notice is gated.
+    window change nothing of it. Only its failure notice is gated. The
+    disposition is one database transaction under `(id, host,
+    incarnation)` (round 4, `TempleDB.discardRemoteSession`): the DELETE
+    and the archive both carry the predicate, so a membership replaced
+    through any connection, whatever the window's cache last saw, is left
+    alone (tested by replacing the row through a second connection), and
+    a write that fails is said.
 18. **Run evidence is mandatory at the gate** for the completions that
     apply it (record polls, the final collection, the failed-folder header,
     the exit verdict, diagnostics): each reads the run's persisted
@@ -1662,13 +1683,41 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
     wrapper) was about 8,000 bytes plus the host's PATH; jetson's PATH is
     about 46 bytes longer than masterblaster's, which put its launch in
     the band, and round 2's slightly shorter command sat at its edge.
-    `SSHConnection.argv` now pads any remote command ending in the last
-    1,280 bytes below a multiple of 8 KiB to 128 bytes past it, with
-    trailing spaces the remote shell ignores (unit-tested through `sh`),
-    for launches, queries and the connection test alike; the acceptance
-    sends band-sized commands through that argv to each box's real master
-    and requires all of them to reach the host. In the product this
-    failure is not a stall: ssh exits 255 at once with those two lines on
-    the tab, and the exit check decides what is known. The startup-evidence
+    Round 3 padded commands out of the band; round 4 replaced that, since
+    the request also carries `TERM` and whatever the user's ssh forwards
+    (`SendEnv`, `SetEnv`), which can move an unchanged command into the
+    band, and the band's place is measured, not a contract. The launch is
+    now staged (note 22) and every interactive command is short: 437 bytes
+    on both boxes, at most `LaunchStage.maximumCommandBytes` (1 KiB, which
+    a test asserts for every command Temple builds), so the forwarded
+    environment would need about 7 KiB of its own to reach the first band.
+    The acceptance asserts the sizes and still sends raw band-sized
+    commands to each master, for information: 2 of 3 were refused on each
+    box in round 4. In the product this failure is not a stall: ssh exits
+    255 at once with those two lines on the tab. The startup-evidence
     deadline (note 19) stays for a client that really does wait.
+22. **The launch is staged; the tab's command is short** (round 4). The
+    launch script, with every variable-length value in it (PATH, the
+    config root, the folder, the agent's argv, the record's locator, the
+    socket), is written to `~/.temple/launch/<marker>.s-c<nonce>` (a
+    creation; `.s-a<nonce>` for an attach) by a bounded, non-interactive
+    query over Temple's master, its bytes on stdin: noclobber and mode
+    0600 beside, its length checked, then linked into place, so a partial
+    file is never read. The tab's ssh runs `sh -c '<runner>' temple-launch
+    <name> <wait>`: it waits up to 30 s for the file, checks it is a
+    regular file of this account's, reads it, deletes it, and runs it; a
+    file that never comes is said in the tab (status 125), nothing run.
+    What nothing read is removed when the creation's record is
+    acknowledged, when the run's end is proven (exit check or stop), and
+    by the 24-hour sweep. **First contact:** when no master answers at
+    the open, the tab is spawned first, and its own interactive ssh
+    authenticates (the person may be asked) and becomes the master
+    (`ControlMaster=auto`, `ControlPersist`); Temple stages once `ssh -O
+    check` answers, never through the terminal. A staging write refused
+    before the spawn refuses the open (a creation is recorded failed); a
+    refusal after the spawn ends the tab's client and the tab says why. A
+    creation whose launch never left this Mac (its tab ended or closed
+    first) is recorded failed, not unproven, and a stop of it asks
+    nothing of the host: nothing can be running there. Tested on both
+    boxes: the first launch of each run is a first contact.
 
