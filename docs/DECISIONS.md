@@ -489,7 +489,7 @@ Four decisions came out of it.
   List's indent. The disclosure is `if expanded { rows }` inside a clipped
   stack: rows leave the tree when folded and are swallowed inside the group's
   box while they fade. Cost accepted: nothing is lazy; the rail is capped, and
-  "Show all projects" is the one path that could make that felt.
+  "N more projects" is the one path that could make that felt.
 - **Project headers speak the launcher's section language.** Uppercase,
   letter-spaced, a hairline rule, a chevron — one vocabulary across the rail
   and the home pane, and the rows become the primary items, which is what you

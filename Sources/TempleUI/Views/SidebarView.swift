@@ -234,23 +234,25 @@ struct SidebarView: View {
                     // counted that one as hidden while it was on screen.
                     let hidden = allProjects.count - capped.count
                     if hidden > 0 {
-                        // The rail has one expander voice (the per-project
-                        // "Show N more"), and the column says which list each
-                        // one continues: that one sits on the session title
-                        // column, this one on the project label column, with
-                        // the gap a group header gets above it so it is not
-                        // read as a second line of the last project's footer.
-                        // The noun is in the copy too; the count is the whole
-                        // label, as in the per-project one. No chevron and no
-                        // rule: those are the voice of a project, and this is
-                        // not one.
-                        sidebarExpander(showAllProjects
-                                        ? "Show fewer projects"
-                                        : "Show \(hidden) more project\(hidden == 1 ? "" : "s")") {
+                        // The fold is a row in the project headers' own style
+                        // (chevron column, tracked uppercase label, rule to the
+                        // edge, the group gap above): it folds project GROUPS,
+                        // so it speaks the groups' language, the way a project
+                        // header folds its rows. Collapsed it stands where the
+                        // folded projects would, "N MORE PROJECTS" with the
+                        // chevron pointing right; expanded it moves to the end
+                        // of what it revealed, "SHOW FEWER PROJECTS" with the
+                        // chevron down, the way a project's "Show fewer" ends
+                        // its list. The count is the whole label, as in the
+                        // per-project "Show N more".
+                        let noun = hidden == 1 ? "project" : "projects"
+                        ProjectsFoldHeader(
+                            title: showAllProjects ? "Show fewer projects" : "\(hidden) more \(noun)",
+                            spoken: showAllProjects ? "Show fewer projects" : "Show \(hidden) more \(noun)",
+                            expanded: showAllProjects
+                        ) {
                             showAllProjects.toggle()
                         }
-                        .padding(.leading, ProjectDisclosure.labelInset)
-                        .padding(.top, 12)
                     }
                 }
                 .padding(.horizontal, 6)
@@ -666,9 +668,8 @@ private struct FooterGearMenu: NSViewRepresentable {
     }
 }
 
-/// The rail's one expander: a quiet text line that continues the list it sits
-/// in, not a control of its own. Both "Show N more" (sessions, on the title
-/// column) and "Show N more projects" (on the project label column) are this,
+/// A project's expander: a quiet text line that continues the list it sits
+/// in, not a control of its own. "Show N more" and "Show fewer" are both this,
 /// so they cannot drift apart in size, tone or height.
 private func sidebarExpander(_ title: String, action: @escaping () -> Void) -> some View {
     Button(title, action: action)
@@ -676,6 +677,58 @@ private func sidebarExpander(_ title: String, action: @escaping () -> Void) -> s
         .foregroundStyle(.secondary)
         .buttonStyle(.plain)
         .frame(height: 26)
+}
+
+/// The rail-level fold over the projects past the cap, set exactly like a
+/// project header (`ProjectDisclosure.headerLabel`: the 12pt chevron column,
+/// the 11pt tracked uppercase label, the hairline to the trailing edge, 28pt
+/// tall, the 12pt group gap above) because it folds groups the way a header
+/// folds rows. What keeps it from reading as one more project: the label is a
+/// count or a verb, never a name; the pointer lifts the label a tone (a header
+/// shows its `+` instead, which this row has no use for); and to VoiceOver it
+/// is a button that says what it does, not a header. A real `Button`, so the
+/// keyboard reaches it and it reports as one; the plain style keeps the
+/// header's look.
+private struct ProjectsFoldHeader: View {
+    /// What is drawn, uppercased like a project name.
+    let title: String
+    /// What VoiceOver says: the action in full ("Show 10 more projects").
+    let spoken: String
+    /// Chevron down (the projects are out) or right (they are folded away).
+    let expanded: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                    .frame(width: 12)
+                Text(title.uppercased())
+                    .font(.system(size: 11, weight: .medium))
+                    .tracking(1.4)
+                    .foregroundStyle(hovering ? .primary : .secondary)
+                    .lineLimit(1)
+                Rectangle()
+                    .fill(Palette.hairline)
+                    .frame(height: 1)
+                    .padding(.leading, 4)
+            }
+            .frame(height: 28)
+            // Whole row is the control (chevron, label, rule, empty space),
+            // like a header's tap target.
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 4)
+        .padding(.top, 12)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .accessibilityLabel(spoken)
+    }
 }
 
 /// A project as a Codex-style disclosure group (default expanded) with a

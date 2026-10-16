@@ -81,9 +81,11 @@ open tabs; any other session returns the next time it is opened
   wins over recency; projects nobody has placed stay above the placed ones, so a
   new project still surfaces at the top rather than under the eight-project cap.
 - The initial view shows up to eight projects and six sessions per project.
-  **Show all projects** reveals the rest of the projects; within a project,
-  **Show N more** names how many are folded away and reveals ten at a time,
-  and **Show fewer** folds the list back.
+  A row set like a project header, **N MORE PROJECTS**, stands where the
+  rest of the projects would be; clicking it reveals them in place, and
+  **SHOW FEWER PROJECTS** at the end of the list folds them back. Within a
+  project, **Show N more** names how many are folded away and reveals ten at
+  a time, and **Show fewer** folds the list back.
 - Filesystem watching, an index cache, and retries for files caught mid-write
   keep the index current without blocking launch.
 - Agent badges distinguish Claude Code and Codex. Ambient and automation noise

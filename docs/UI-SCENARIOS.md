@@ -139,7 +139,7 @@ Fresh seed, empty demo state, import before prune, then wait for launch's comple
 | legacy-tools | 3 | 0 | 3 | 0 | 3 |
 | Total | 23 | 2 | 25 | 22 | 3 |
 
-The fresh sidebar order is acme-api, storefront, notes-app, pipeline, dotfiles. The first project has six visible rows and **Show 3 more**. All other active projects fit the six-row cap. There are no open terminals or pinned rows. The fixture has only six projects, so **Show all projects** needs an extension with more than eight visible projects.
+The fresh sidebar order is acme-api, storefront, notes-app, pipeline, dotfiles. The first project has six visible rows and **Show 3 more**. All other active projects fit the six-row cap. There are no open terminals or pinned rows. The fixture has only six projects, so **N MORE PROJECTS** needs an extension with more than eight visible projects.
 
 | Project | Exact seeded titles, in fixture order |
 |---|---|
@@ -246,8 +246,8 @@ Fixture variants must be described in the run log with titles, IDs, membership, 
 #### SID-002: Project and session caps
 - **Priority:** P2. **Safety:** Needs care, extended fake fixture.
 - **Preconditions:** At least nine active projects and a project with more than sixteen members.
-- **Steps:** Count initial projects/rows. Use **Show all projects** and **Show N more** repeatedly, then fold back.
-- **Expected:** Initial cap is eight projects and six sessions per project; each Show more reveals ten additional sessions or the remainder. N accurately names remaining hidden rows.
+- **Steps:** Count initial projects/rows. Use **N MORE PROJECTS** and **Show N more** repeatedly, then fold back with **SHOW FEWER PROJECTS** and **Show fewer**.
+- **Expected:** Initial cap is eight projects and six sessions per project; each Show more reveals ten additional sessions or the remainder. N accurately names remaining hidden rows. **N MORE PROJECTS** is a row in the project headers' style (chevron pointing right, uppercase label, hairline rule, the group gap above), level with the group names; its label lifts a tone on hover and VoiceOver reads it as the button "Show N more projects". Expanded, it becomes **SHOW FEWER PROJECTS** at the end of the list with the chevron pointing down. N counts only projects not on screen (an active project kept visible past the cap is not counted).
 - **Notes:** Base fixture cannot cover the project cap or multiple expansion batches.
 
 #### SID-003: Browse highlight versus opening
