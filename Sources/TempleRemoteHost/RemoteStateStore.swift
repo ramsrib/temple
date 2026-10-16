@@ -100,6 +100,9 @@ public struct RemoteRun: Equatable, Sendable {
     /// Something was typed into the run's tab (Return): a pending run that
     /// ends unidentified keeps its question, across relaunches.
     public var inputSeenAt: Date?
+    /// `inputSeenAt` of a run from before Temple kept it: unknown, kept as
+    /// typed into.
+    public static let inputBeforeRecorded = Date(timeIntervalSince1970: 0)
     /// A launch failure's words (`failed cd`, `failed tmux`).
     public var failure: String?
 
@@ -225,9 +228,12 @@ public final class RemoteStateStore: @unchecked Sendable {
                 """)
         }
         // Phase 1b round 1: whether a pending run's tab was typed into
-        // survives a relaunch.
+        // survives a relaunch. Runs from before it are unknown, not
+        // untouched (round 2): marked with the epoch, so their conversations
+        // are kept as if typed into.
         migrator.registerMigration("r5-input") { database in
             try database.execute(sql: "ALTER TABLE runs ADD COLUMN input_seen_at DOUBLE")
+            try database.execute(sql: "UPDATE runs SET input_seen_at = \(RemoteRun.inputBeforeRecorded.timeIntervalSince1970)")
         }
         return migrator
     }
@@ -644,6 +650,14 @@ public final class RemoteStateStore: @unchecked Sendable {
                 CREATE TEMP TRIGGER broken_runs BEFORE UPDATE ON runs BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END
                 """)
         }
+    }
+
+    /// Tests only: a store file migrated up to `migration` (inclusive) and
+    /// filled by `sql`, as an older Temple left it.
+    static func makeFixtureForTests(directory: URL, upTo migration: String, sql: String) throws {
+        let queue = try DatabaseQueue(path: directory.appendingPathComponent(fileName).path)
+        try migrator.migrate(queue, upTo: migration)
+        try queue.write { try $0.execute(sql: sql) }
     }
 
     /// Tests only: the declined candidates can't be read.

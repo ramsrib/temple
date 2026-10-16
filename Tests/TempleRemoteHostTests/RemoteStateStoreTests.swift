@@ -11,6 +11,25 @@ final class RemoteStateStoreTests: XCTestCase {
                   sessionID: session, recordPath: "m-\(handle)", startedAt: Date(timeIntervalSince1970: seconds))
     }
 
+    /// A store an r4 Temple left, with a pending Codex run in it: after
+    /// r5-input its input is unknown, kept as typed into, never read as
+    /// untouched (round 2).
+    func testRunsFromBeforeR5AreKeptAsTypedInto() throws {
+        let tree = TempTree("remote-store-r4")
+        try RemoteStateStore.makeFixtureForTests(directory: tree.url, upTo: "r4-codex-identity", sql: """
+            INSERT INTO runs (handle, host, agent, mode, session_name, directory_intent, directory, attachment, record_path,
+                              started_at, ok_at, creation, codex_home_state)
+            VALUES ('p-old', 'box', 'codex', 'new', 'temple-p-old', '~', '/home/u/p', 1, '~/.temple/launch/r-old',
+                    1000, 1001, 'proven', 'unset');
+            """)
+        let store = try RemoteStateStore(directory: tree.url)
+        let run = try XCTUnwrap(store.run("p-old"))
+        XCTAssertEqual(run.inputSeenAt, RemoteRun.inputBeforeRecorded)
+        XCTAssertEqual(try store.pendingRuns(host: host).map(\.handle), ["p-old"])
+        try store.insert(self.run("p-new", session: nil, at: 2000))
+        XCTAssertNil(try store.run("p-new")?.inputSeenAt, "a run made after r5 starts without it")
+    }
+
     func testItsOwnMigratorAndFile() throws {
         XCTAssertEqual(RemoteStateStore.migrationIdentifiers, ["r1-runs", "r2-conversation", "r3-config", "r4-codex-identity", "r5-input"])
         let tree = TempTree("remote-store")
