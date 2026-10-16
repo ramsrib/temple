@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import AppKit
 @testable import TempleCore
 @testable import TempleUI
 import TempleTestSupport
@@ -141,6 +142,35 @@ final class RemoteAppTests: XCTestCase {
         app.startRemoteSession(host: hostID, agent: .claude, folder: "/home/u/new")
         XCTAssertNil(app.remoteFolderSheet)
         XCTAssertEqual(app.openSessions.activeTab?.projectKey, ProjectKey(host: hostID, path: "/home/u/new"))
+    }
+
+    /// Return in the folder sheet is the sheet's: with no tab active (the
+    /// launcher on screen) the window's key catcher would otherwise take it
+    /// as "open the highlighted sidebar row" and the sheet never saw it.
+    func testTheFolderSheetOwnsReturnWhileTheLauncherIsOnScreen() async throws {
+        let remote = FakeRemoteHost("box")
+        let db = try TempleDB.inMemory()
+        Fixture.join([Fixture.row("a", project: "/home/u/old", updated: 1, host: hostID)], to: db)
+        let app = try app(remote, db: db)
+        await settle { app.sessions.count == 1 }
+        app.openSessions.showHome()
+        let catcher = KeyCatcher.Coordinator()
+        func returnKey() -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+                             context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false,
+                             keyCode: 36)!
+        }
+        XCTAssertTrue(catcher.handle(returnKey(), app), "without a sheet, Return opens the sidebar's row")
+        app.openSessions.showHome()
+        app.chooseRemoteFolder(host: hostID, agent: .claude)
+        XCTAssertFalse(catcher.handle(returnKey(), app), "with the folder sheet up, Return goes to its field")
+        XCTAssertFalse(catcher.handle(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                                                       timestamp: 0, windowNumber: 0, context: nil, characters: "w",
+                                                       charactersIgnoringModifiers: "w", isARepeat: false, keyCode: 13)!, app),
+                       "and no shortcut acts behind it")
+        app.remoteFolderSheet = nil
+        app.showRemoteSessions(hostID)
+        XCTAssertFalse(catcher.handle(returnKey(), app), "the Sessions sheet owns Return too")
     }
 
     /// Discard's row disposition acts only on the membership it was chosen

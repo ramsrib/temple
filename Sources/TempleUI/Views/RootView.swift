@@ -528,6 +528,12 @@ struct KeyCatcher: NSViewRepresentable {
             // so Return/Esc reach the alert instead of our shortcuts.
             if model.openSessions.pendingCloseTabID != nil { return false }
             if model.openSessions.pendingRemoteCloseTabID != nil { return false }
+            // A sheet owns every key: Return in the folder sheet's field is
+            // the field's (its Start), never the sidebar's "open the
+            // highlighted row" beneath it, which takes Return while no tab
+            // is active. Shortcuts do not act on the window behind a sheet.
+            if model.remoteFolderSheet != nil || model.remoteSessionsSheet != nil
+                || event.window?.sheetParent != nil || event.window?.attachedSheet != nil { return false }
 
             // History's import sheet and its failure alert own the keyboard
             // the same way. Asked first, so no binding below (⌘W, ⌘Y, ⌘K…)
