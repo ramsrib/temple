@@ -152,9 +152,37 @@ public struct SSHConnection: Sendable, Equatable {
     ]
 
     /// The whole argv: ssh, its arguments, `--`, the host's name, and the
-    /// remote command when there is one.
+    /// remote command when there is one (made mux-safe, below).
     public func argv(_ purpose: Purpose, remoteCommand: String?) -> [String] {
-        [sshPath] + arguments(for: purpose) + ["--", record.name] + (remoteCommand.map { [$0] } ?? [])
+        [sshPath] + arguments(for: purpose) + ["--", record.name] + (remoteCommand.map { [Self.muxSafe($0)] } ?? [])
+    }
+
+    /// A remote command padded, with trailing spaces the remote shell
+    /// ignores, out of the sizes where macOS's ssh cannot hand a session to
+    /// its master.
+    ///
+    /// A mux client writes its session request (the command, `TERM`, the
+    /// forwarded environment) to the master's socket, then passes its
+    /// stdio descriptors with `sendmsg`. On macOS a unix socket's sender
+    /// loses send space for every byte the receiver has not yet read, so
+    /// when the master has not read a request that ends just below a
+    /// multiple of the 8 KiB socket buffer, the descriptor pass fails
+    /// (`mm_send_fd: sendmsg(2): Message too long`, `mux_client_request_session:
+    /// send fds failed`) and ssh exits 255 before reaching the host.
+    /// Measured against a jetson master: commands of 8,060 to 8,100 bytes
+    /// failed 2 or 3 times in 3, and 16,250 to 16,290 bytes 1 or 2 in 3;
+    /// every size outside those bands passed. It is what stalled the Linux
+    /// acceptance's launches: the create command crossed into the first
+    /// band on the host with the longer PATH.
+    ///
+    /// A command ending in the last 1,280 bytes below a multiple of 8 KiB
+    /// is padded 128 bytes past it, so the request (the command plus well
+    /// under a kilobyte of the rest) never ends in the band.
+    static func muxSafe(_ command: String) -> String {
+        let page = 8192
+        let offset = command.utf8.count % page
+        guard offset > page - 1280 else { return command }
+        return command + String(repeating: " ", count: page - offset + 128)
     }
 
     /// `ssh -O check` on Temple's own socket for this host: exit 0 when a

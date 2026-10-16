@@ -8,6 +8,36 @@ final class SSHConnectionTests: XCTestCase {
     let added = RemoteHostRecord(name: "box", source: .temple, address: "10.0.0.2", user: "me", port: 2222,
                                  identityFile: "~/.ssh/id box", proxyJump: "bastion")
 
+    /// Commands near a multiple of 8 KiB are padded out of the band where
+    /// macOS's ssh fails to hand its descriptors to the master; others
+    /// pass untouched, and the padding is inert to the remote shell.
+    func testARemoteCommandIsPaddedOutOfTheMuxFailureBand() throws {
+        XCTAssertEqual(SSHConnection.muxSafe("true"), "true")
+        let small = String(repeating: "x", count: 6000)
+        XCTAssertEqual(SSHConnection.muxSafe(small), small)
+        for length in [7000, 8060, 8100, 8191, 16_250, 16_383] {
+            let padded = SSHConnection.muxSafe(String(repeating: "x", count: length))
+            XCTAssertEqual(padded.utf8.count % 8192, 128, "\(length)")
+            XCTAssertTrue(padded.hasPrefix(String(repeating: "x", count: length)))
+        }
+        let after = String(repeating: "x", count: 8192 + 64)
+        XCTAssertEqual(SSHConnection.muxSafe(after), after)
+        // Through argv, and still the same command to a shell.
+        let script = "printf '%s' ok #" + String(repeating: "x", count: 8070)
+        let argv = SSHConnection(record: .config("box"), stateDirectory: state, sshPath: "/usr/bin/ssh")
+            .argv(.query, remoteCommand: script)
+        let sent = try XCTUnwrap(argv.last)
+        XCTAssertNotEqual(sent, script)
+        let shell = Process()
+        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+        shell.arguments = ["-c", sent]
+        let out = Pipe()
+        shell.standardOutput = out
+        try shell.run()
+        shell.waitUntilExit()
+        XCTAssertEqual(String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self), "ok")
+    }
+
     func testAConfigAliasGetsTempleOptionsOnly() {
         let connection = SSHConnection(record: .config("masterblaster-mentes"), stateDirectory: state, sshPath: "/usr/bin/ssh")
         let key = SSHConnection.socketKey(stateDirectory: state, record: .config("masterblaster-mentes"))
