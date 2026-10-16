@@ -9,13 +9,15 @@ import TempleCore
 ///    ssh and nothing else: `ssh <arguments> -- <name> true`, with
 ///    `ControlMaster=auto`, so it creates the master. Whatever ssh asks is
 ///    answered there, and whatever it says stays on screen.
-/// 2. **On exit 0**, as reported by the terminal for that process, every
-///    check runs as a `BatchMode` query over the master through
-///    `RemoteExec`, with its deadline: the remote environment, `claude`,
-///    `codex`, tmux's version and the launch chain detached on a throwaway
-///    socket, logind. Any other end (a non-zero status, a status the
-///    terminal never reported, a close) runs no check and reconnects
-///    nothing: "Couldn't connect. See ssh's message above."
+/// 2. **When the terminal's process ends**, however it ends, the evidence
+///    is the master the connect created, not an exit status (libghostty
+///    launches through `/usr/bin/login`, whose status is not ssh's):
+///    `ssh -O check` on Temple's socket. A master is up: every check runs
+///    as a `BatchMode` query over it through `RemoteExec`, with its
+///    deadline: the remote environment, `claude`, `codex`, tmux's version
+///    and the launch chain detached on a throwaway socket, logind. No
+///    master: no check, no second connection, "Couldn't connect. See ssh's
+///    message above."
 ///
 /// The attached-client check (a terminal opening under tmux with
 /// `xterm-256color` outside and `tmux-256color` in the pane) is phase 1a's
@@ -57,7 +59,6 @@ public final class ConnectionTest: ObservableObject, Identifiable {
     private let makeExec: (String?) -> RemoteExec
     private let resolve: () async -> [String: String]
     private var task: Task<Void, Never>?
-    private var unknownEnd: Task<Void, Never>?
     private var started = false
 
     /// `makeExec(path)` builds a query exec with that PATH (nil: ssh's
@@ -98,31 +99,26 @@ public final class ConnectionTest: ObservableObject, Identifiable {
         return true
     }
 
-    /// The terminal's process ended with `status` (nil: the terminal never
-    /// reported one). Exit 0 while connecting starts the checks; anything
-    /// else fails the test without another connection.
-    public func terminalExited(status: Int32?) {
+    /// The terminal's process ended, by any status and in any way. Its
+    /// status proves nothing; whether the connect left a master on
+    /// Temple's socket does. Called again, it does nothing.
+    public func terminalExited() {
         guard started, phase == .connecting, task == nil else { return }
-        guard let status else {
-            // A terminal can report a close before the child's own status:
-            // wait a moment for it, then call the end unknown.
-            guard unknownEnd == nil else { return }
-            unknownEnd = Task { [weak self] in
-                try? await Task.sleep(for: .milliseconds(500))
-                guard let self, !Task.isCancelled, self.phase == .connecting, self.task == nil else { return }
-                self.finish(failure: .connectFailed(status: nil))
+        let argv = connection.masterCheckArgv
+        task = Task { [weak self] in
+            let output = try? await ProcessRunner.run(argv[0], Array(argv.dropFirst()), deadline: Self.masterCheckDeadline)
+            guard let self, !Task.isCancelled else { return }
+            guard output?.status == 0 else {
+                self.finish(failure: .connectFailed)
+                return
             }
-            return
+            self.phase = .checking
+            await self.runChecks()
         }
-        unknownEnd?.cancel()
-        unknownEnd = nil
-        guard status == 0 else {
-            finish(failure: .connectFailed(status: status))
-            return
-        }
-        phase = .checking
-        task = Task { [weak self] in await self?.runChecks() }
     }
+
+    /// How long `ssh -O check` may take (a local socket).
+    nonisolated static let masterCheckDeadline: TimeInterval = 5
 
     /// The sheet closed: outstanding queries are cancelled (each kills its
     /// own ssh client). The terminal's client is the sheet's to terminate;
@@ -130,8 +126,6 @@ public final class ConnectionTest: ObservableObject, Identifiable {
     public func cancel() {
         task?.cancel()
         task = nil
-        unknownEnd?.cancel()
-        unknownEnd = nil
         if phase == .connecting || phase == .checking { onFinished = nil }
     }
 

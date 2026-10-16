@@ -17,11 +17,6 @@ public enum TerminalProcessState: Sendable, Equatable {
     case notStarted
     case running(pid: pid_t)
     case exited(status: Int32)
-
-    /// The process is gone and its status was never reported (the terminal
-    /// closed it, or asked to be closed, without a child-exit report). Never
-    /// a status a process can return, so never mistaken for success.
-    public static let unknownExitStatus = Int32.min
 }
 
 /// Settings (U9) + theme (U10) → surface. System theme resolves to light/dark

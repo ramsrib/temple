@@ -53,9 +53,10 @@ final class HostsSettingsViewTests: XCTestCase {
     }
 
     /// The sheet's terminal runs the user's ssh itself, nothing wrapped
-    /// around it; its exit status is the connect's verdict; closing the
-    /// sheet tears the terminal down.
-    func testTheTestSheetRunsSSHAndReadsItsExit() throws {
+    /// around it; when it ends, whatever its status, the verdict is whether
+    /// a master is up on Temple's socket (here none: ssh -O check on an
+    /// empty socket path, local); closing the sheet tears the terminal down.
+    func testTheTestSheetRunsSSHAndAsksForTheMasterWhenItEnds() throws {
         let (app, factory) = try app(enabled: true, records: [.config("box")]) { [] }
         let test = try XCTUnwrap(app.remoteHosts.startTest(for: "box"))
         var closed = false
@@ -74,11 +75,12 @@ final class HostsSettingsViewTests: XCTestCase {
         XCTAssertGreaterThan(surface.focusCount, 0, "the terminal takes the keyboard: ssh may ask")
         XCTAssertEqual(test.phase, .connecting)
 
-        surface.simulateExit(status: 255)
-        XCTAssertEqual(test.phase, .failed)
+        surface.simulateExit(status: 0)
+        let deadline = Date().addingTimeInterval(10)
+        while test.phase == .connecting, Date() < deadline { spin(0.05) }
+        XCTAssertEqual(test.phase, .failed, "exit 0 is not a connection: no master, no checks")
         XCTAssertEqual(test.failure?.message, "Couldn't connect. See ssh's message above.")
-        XCTAssertEqual(app.remoteHosts.statusLine(for: "box"),
-                       "Couldn't connect: ssh exited with status 255. Test the connection to see ssh's message.")
+        XCTAssertEqual(app.remoteHosts.statusLine(for: "box"), "Couldn't connect. Test the connection to see ssh's message.")
         XCTAssertFalse(closed)
 
         window.contentView = nil

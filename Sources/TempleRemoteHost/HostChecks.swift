@@ -261,9 +261,9 @@ public enum SSHFailure: Sendable, Equatable {
     /// The changed-key banner; `offending` is ssh's `Offending … key in …:N`.
     case changedHostKey(offending: String?)
     case other(firstLine: String)
-    /// The interactive connect ended without success; ssh said why on the
-    /// terminal, where its words stay. nil: no status was reported.
-    case connectFailed(status: Int32?)
+    /// The interactive connect left no master: ssh said why on the
+    /// terminal, where its words stay.
+    case connectFailed
     /// This Mac could not prepare the test (the socket directory).
     case localSetup(String)
 
@@ -301,9 +301,8 @@ public enum SSHFailure: Sendable, Equatable {
     /// The line under a host in the Hosts list, where ssh's message is not
     /// on screen.
     public var listMessage: String {
-        guard case .connectFailed(let status) = self else { return message }
-        return "Couldn't connect" + (status.map { ": ssh exited with status \($0)" } ?? "")
-            + ". Test the connection to see ssh's message."
+        guard case .connectFailed = self else { return message }
+        return "Couldn't connect. Test the connection to see ssh's message."
     }
 
     public var allowsRetry: Bool {

@@ -48,15 +48,13 @@ public final class GhosttyTerminalSurface: TerminalSurface {
             self.delegate?.surfaceDidSubmitInput(self)
         }
         ghosttyView.onChildExited = { [weak self] code in
-            self?.markExited(status: code, reported: true)
+            self?.markExited(status: code)
         }
         ghosttyView.onCloseRequest = { [weak self] _ in
             // libghostty wants the surface closed (process gone, or an in-terminal
             // close). A Temple session tab is 1:1 with a live agent (ADR-010), so
-            // either way the surface's lifecycle is over: report exit. A close
-            // request carries no status, so none is claimed (never 0, which
-            // reads as success); a child-exit report that follows replaces it.
-            self?.markExited(status: TerminalProcessState.unknownExitStatus, reported: false)
+            // either way the surface's lifecycle is over: report exit.
+            self?.markExited(status: 0)
         }
         ghosttyView.onSearchStarted = { [weak self] needle in
             guard let self else { return }
@@ -76,16 +74,8 @@ public final class GhosttyTerminalSurface: TerminalSurface {
         }
     }
 
-    /// Whether the exit recorded so far is a placeholder (a close request)
-    /// that the child's own reported status may still replace.
-    private var exitIsPlaceholder = false
-
-    private func markExited(status: Int32, reported: Bool) {
-        if case .exited = processState {
-            // Only a real status replaces a placeholder, and only once.
-            guard reported, exitIsPlaceholder else { return }
-        }
-        exitIsPlaceholder = !reported
+    private func markExited(status: Int32) {
+        if case .exited = processState { return }
         processState = .exited(status: status)
     }
 

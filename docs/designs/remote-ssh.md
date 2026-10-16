@@ -199,16 +199,17 @@ authentication or host-key error offers the same button.
    process, nothing wrapped around it; the user answers ssh there; the
    surface stays visible for the whole test, so the fingerprint ssh showed
    is still on screen with the result.
-2. **Check, on exit 0** (the status the terminal reports for that very
-   process). Environment resolution, then the tool checks (section 7), as
-   `BatchMode` queries over the master through `RemoteExec` with their
-   deadlines. Results render under the surface, one row each (login shell
-   and PATH, `claude`, `codex`, `tmux`, logind), each with the verdict and
-   that tool's own first line, expandable. Any other end (non-zero, a
-   status the terminal never reported, a close): no checks and no second
-   connection; the sheet reads "Couldn't connect. See ssh's message above."
-   with ssh's own words kept on the terminal. (Phase 0 as built; see the
-   end notes.)
+2. **Check, when a master is up.** However the terminal's process ends,
+   its exit status is not the evidence (libghostty launches through
+   `/usr/bin/login`, whose status is not ssh's); the master the connect
+   created is: `ssh -O check` on Temple's socket. Master up: environment
+   resolution, then the tool checks (section 7), as `BatchMode` queries
+   over the master through `RemoteExec` with their deadlines. Results
+   render under the surface, one row each (login shell and PATH, `claude`,
+   `codex`, `tmux`, logind), each with the verdict and that tool's own
+   first line, expandable. No master: no checks and no second connection;
+   the sheet reads "Couldn't connect. See ssh's message above." with ssh's
+   own words kept on the terminal. (Phase 0 as built; see the end notes.)
 
 Host-key copy: unknown key ("Host key verification failed." without the
 banner) reads "ssh hasn't seen this host's key before. Test the connection to
@@ -1443,16 +1444,21 @@ altitude decision in the second):
    helper in the sheet's terminal; three findings in a row landed in that
    wrapper (supervision, signals, storage failures), so it was deleted
    rather than patched. The terminal's process is `/usr/bin/env ssh
-   <arguments> -- <name> true`; its verdict is the exit status libghostty
-   reports for that process (a close request is never reported as exit 0:
-   `TerminalProcessState.unknownExitStatus`, which the child's own status
-   replaces). Exit 0 starts the checks, all `BatchMode` queries over the
-   master. Anything else runs nothing and reconnects nothing: "Couldn't
-   connect. See ssh's message above." in the sheet, "Couldn't connect: ssh
-   exited with status <n>. Test the connection to see ssh's message." in
-   the Hosts list. ssh's stderr is on the terminal, not in Temple, so the
-   unknown-key and changed-key copy apply to queries (phase 1), and a
-   changed key gets the generic copy in the sheet with Test again.
+   <arguments> -- <name> true`. Its exit status is never used: libghostty
+   launches through `/usr/bin/login`, whose parent exits 0 whatever ssh
+   did. When the process ends, by any status and in any way, Temple runs
+   `ssh -O check` on its own ControlPath for that alias (local, no remote
+   command, never `-O exit`): a master up means the connect worked, and
+   the checks run as `BatchMode` queries over it. No master runs nothing
+   and reconnects nothing: "Couldn't connect. See ssh's message above." in
+   the sheet, "Couldn't connect. Test the connection to see ssh's
+   message." in the Hosts list. ssh's stderr is on the terminal, not in
+   Temple, so the unknown-key and changed-key copy apply to queries (phase
+   1), and a changed key gets the generic copy in the sheet with Test
+   again. A master left from an earlier test (it persists 10 minutes)
+   counts as connected, which it is. Linux acceptance proves the evidence
+   on both boxes: no master before the connect, one after, the checks
+   riding it.
 2. **The attached-client check moves to phase 1a's acceptance**: a
    terminal opening a client under tmux, `TERM=xterm-256color` outside and
    `tmux-256color` in the pane (`tput colors`, `tput cup`), are validated
@@ -1466,8 +1472,10 @@ altitude decision in the second):
    `/tmp/temple-ssh-<uid>/`. The socket directory is created or checked
    without following a symlink, must be this user's, and is made 0700;
    anything else fails the test before a terminal starts.
-4. **Hosts, users and jump hosts pass a strict grammar** (host names in
-   their IDNA ASCII form, IPv4, IPv6; `[A-Za-z0-9._-]` users;
-   `[user@]host[:port]` hops), because ssh substitutes them into a
-   `ProxyCommand`'s shell text. Every check for shell syntax works on
-   Unicode scalars, not Characters.
+4. **Hosts, users and jump hosts pass a strict grammar** (ASCII host
+   names, IPv4, IPv6; `[A-Za-z0-9._-]` users; `[user@]host[:port]` hops),
+   because ssh substitutes them into a `ProxyCommand`'s shell text. A
+   non-ASCII name is refused with "Use the host's ASCII name. For an
+   international name, add it to ~/.ssh/config or enter its xn-- form.";
+   Temple does no IDNA conversion of its own. Every check for shell syntax
+   works on Unicode scalars or bytes, not Characters.

@@ -15,8 +15,10 @@ import TempleCore
 /// --version`, `codex --version`, `tmux -V`, the launch chain detached on a
 /// throwaway socket, logind. (An attached client under `xterm-256color`
 /// with a `tmux-256color` pane is phase 1a's acceptance.)
-/// Nothing starts an agent session. No master is created: these runs use
-/// `ControlMaster=no` throughout.
+/// Nothing starts an agent session. The connect creates a master on a
+/// socket under a temp state directory, as the Test sheet does, and the
+/// queries ride it; the test ends that master itself when done (Temple
+/// never does).
 final class LinuxAcceptanceTests: XCTestCase {
     private var hosts: [String] {
         (ProcessInfo.processInfo.environment["TEMPLE_REMOTE_ACCEPTANCE"] ?? "")
@@ -35,6 +37,31 @@ final class LinuxAcceptanceTests: XCTestCase {
     private func check(_ name: String, stateDirectory: URL) async throws {
         let connection = SSHConnection(record: .config(name), stateDirectory: stateDirectory, sshPath: "/usr/bin/ssh")
         var lines: [String] = ["== \(name)"]
+
+        // The Test connection's evidence: no master before the connect,
+        // one after it (the sheet's terminal runs these same arguments; `-T`
+        // here only because there is no terminal; the keys need no answer).
+        try connection.prepareSocketDirectory()
+        let check = connection.masterCheckArgv
+        let before = try await ProcessRunner.run(check[0], Array(check.dropFirst()), deadline: 5)
+        XCTAssertNotEqual(before.status, 0, "\(name): no master yet")
+        let connect = connection.argv(.interactive, remoteCommand: "true").map { $0 == "-t" ? "-T" : $0 }
+        let connected = try await ProcessRunner.run(connect[0], Array(connect.dropFirst()) + [], deadline: 30)
+        XCTAssertEqual(connected.status, 0, "\(name): \(connected.stderr)")
+        let after = try await ProcessRunner.run(check[0], Array(check.dropFirst()), deadline: 5)
+        XCTAssertEqual(after.status, 0, "\(name): the connect left a master")
+        lines.append("Master after connect: \(after.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
+        defer {
+            // Test cleanup only: Temple itself never ends a master. This one
+            // is the test's own, on a socket in a directory it removes.
+            let exit = [check[0], check[1], check[2], "-O", "exit", "--", name]
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: exit[0])
+            process.arguments = Array(exit.dropFirst())
+            process.standardError = FileHandle.nullDevice
+            try? process.run()
+            process.waitUntilExit()
+        }
 
         let environment = await RemoteEnvironment.resolve(using: SSHExec(connection: connection, path: nil))
         XCTAssertNil(environment.problem, name)

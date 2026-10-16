@@ -118,6 +118,14 @@ public struct SSHConnection: Sendable, Equatable {
         [sshPath] + arguments(for: purpose) + ["--", record.name] + (remoteCommand.map { [$0] } ?? [])
     }
 
+    /// `ssh -O check` on Temple's own socket for this host: exit 0 when a
+    /// master is up there. Local, no remote command, never creates a master
+    /// (`-O` only talks to one), and never `-O exit`.
+    public var masterCheckArgv: [String] {
+        [sshPath, "-o", "ControlPath=\(Self.optionValue(Self.escapePercent(controlPath)))", "-o", "BatchMode=yes",
+         "-O", "check", "--", record.name]
+    }
+
     /// `ssh -G`: what ssh will use for this host, without connecting.
     public var resolutionArgv: [String] {
         [sshPath, "-G"] + hostOptions + ["--", record.name]
