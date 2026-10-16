@@ -211,31 +211,34 @@ final class RemoteHostRecordTests: XCTestCase {
         }
     }
 
-    /// Unicode host names reach ssh in their ASCII (IDNA) form; the length
-    /// limit is the name's, an optional root dot aside.
-    func testUnicodeHostNamesBecomeASCII() {
-        XCTAssertEqual(HostGrammar.asciiAddress("bücher.example"), "xn--bcher-kva.example")
-        XCTAssertEqual(HostGrammar.asciiAddress("München.de"), "xn--mnchen-3ya.de")
-        XCTAssertEqual(HostGrammar.asciiAddress("例え.テスト"), "xn--r8jz45g.xn--zckzah")
-        XCTAssertEqual(HostGrammar.asciiAddress("例え。テスト"), "xn--r8jz45g.xn--zckzah", "an ideographic full stop separates labels")
-        XCTAssertEqual(HostGrammar.asciiAddress("Box.LAN"), "Box.LAN", "ASCII is kept as typed")
-        XCTAssertEqual(HostGrammar.asciiAddress("2001:db8::1"), "2001:db8::1")
-        XCTAssertNil(HostGrammar.asciiAddress("bü cher.example"))
-        XCTAssertNil(HostGrammar.asciiAddress("a'\u{0301}b"))
-        XCTAssertEqual(HostGrammar.asciiJumpList("me@bücher.example:22,jump"), "me@xn--bcher-kva.example:22,jump")
-        var form = RemoteHostForm()
-        form.name = "idn"; form.address = "bücher.example"; form.proxyJump = "jäger"
-        if case .success(let record) = form.validate(editing: nil, existing: Set<String>(), configAliases: Set<String>()) {
-            XCTAssertEqual(record.address, "xn--bcher-kva.example")
-            XCTAssertEqual(record.proxyJump, "xn--jger-loa")
-        } else { XCTFail("an IDN refused") }
+    /// Host names are taken in ASCII only, with advice for an
+    /// international one; the length limit is the name's, an optional
+    /// root dot aside; labels are split by byte.
+    func testHostNamesAreASCIIOnly() {
+        for address in ["bücher.example", "例え.テスト", "a.\u{0301}b", "box\u{0301}"] {
+            var form = RemoteHostForm()
+            form.name = "idn"; form.address = address
+            guard case .failure(let problems) = form.validate(editing: nil, existing: Set<String>(), configAliases: Set<String>()) else {
+                return XCTFail("\(address) accepted")
+            }
+            XCTAssertEqual(problems.byField[.address],
+                           "Use the host's ASCII name. For an international name, add it to ~/.ssh/config or enter its xn-- form.")
+        }
+        var jump = RemoteHostForm()
+        jump.name = "j"; jump.address = "box"; jump.proxyJump = "jäger"
+        if case .failure(let problems) = jump.validate(editing: nil, existing: Set<String>(), configAliases: Set<String>()) {
+            XCTAssertEqual(problems.byField[.proxyJump], HostGrammar.internationalNameAdvice)
+        } else { XCTFail("a non-ASCII jump host accepted") }
+        XCTAssertTrue(HostGrammar.isAddress("xn--bcher-kva.example"), "the xn-- form is an ASCII name")
         let label = String(repeating: "a", count: 63)
         let longest = [label, label, label, String(repeating: "b", count: 61)].joined(separator: ".")
         XCTAssertEqual(longest.utf8.count, 253)
-        XCTAssertEqual(HostGrammar.asciiAddress(longest), longest)
-        XCTAssertEqual(HostGrammar.asciiAddress(longest + "."), longest + ".", "the root dot does not count")
-        XCTAssertNil(HostGrammar.asciiAddress(longest + "b"))
-        XCTAssertNil(HostGrammar.asciiAddress(String(repeating: "a", count: 64) + ".lan"), "a label is 63 at most")
+        XCTAssertTrue(HostGrammar.isAddress(longest))
+        XCTAssertTrue(HostGrammar.isAddress(longest + "."), "the root dot does not count")
+        XCTAssertFalse(HostGrammar.isAddress(longest + "b"))
+        XCTAssertFalse(HostGrammar.isAddress(String(repeating: "a", count: 64) + ".lan"), "a label is 63 at most")
+        XCTAssertFalse(HostGrammar.isAddress("."))
+        XCTAssertFalse(HostGrammar.isAddress("a..b"))
     }
 
     func testAnIdentityPathCannotHideAQuoteOrBreak() {
