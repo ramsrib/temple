@@ -2224,14 +2224,15 @@ dimmed or auto-archived for a missing transcript.
 
 Deviations from section 6, with reasons:
 
-- `session_index.jsonl` travels as the session's own lines, not whole:
-  the facts for one id are the same (both shared readers key by id), the
-  transfer stays proportional to the session, and no other session's
-  title crosses the wire.
+- `session_index.jsonl` travels as the lines that contain the session's
+  id, not whole: the facts for one id are the same (both shared readers key
+  by id) and the transfer stays proportional to the session. Substring
+  filtering is an optimisation, not a guarantee that no unrelated line
+  crosses the wire (a line that merely mentions the id does).
 - No shared revision: `sharedRevision` is empty and a read's is nil. Each
-  read takes the shared lines fresh in the same exec as the rollout, so its
-  titles are never older than the read; there is no change stream to
-  announce a newer revision anyway.
+  read takes the shared lines in the same exec as the rollout, so its
+  titles are fresh when read; v1 enrichment is one-shot and NULL-only, with
+  no change stream to announce a newer revision.
 - Hints are honoured (inside the root's store), as the local source does;
   section 6 lists only the `find`.
 - `directoryEvidence` stays unknown (as built since phase 0) rather than
@@ -2267,3 +2268,55 @@ What the boxes showed (`LinuxAcceptanceTests.testPhase2EnrichmentOnEachHost`):
   rollouts the test made were removed; Codex's history and index lines and
   the boxes' app servers were left alone; no `temple-read.*` temp file was
   left behind.
+
+### Phase 2 round 1 (sol and astra review)
+
+Astra's decisions on the open questions, adopted: the startup cost (one
+identity read per remote row with a transcript) is accepted for v1 and
+the engine stays generic; jetson's authenticated Claude conversation stays
+an explicit acceptance gap; separate source counters are fine for v1
+(`HostSourceDiagnostics` with `isMonitoring = false` later, if wanted);
+locale short times stay, with a date when the time is on another day.
+
+1. **An environment that couldn't be read is a transport failure.**
+   `queryExec` keeps going without a PATH when the environment query
+   doesn't reach the host; enrichment no longer does.
+   `RemoteSessions.transcriptContext` throws ssh's line when the query for
+   this connection didn't reach the host, so a lookup is charged once on
+   the breaker and retried, instead of finding nothing under roots that
+   only looked unknown. A root that is unknown because the host said so
+   (a variable it couldn't print, set empty, relative with no folder)
+   stays unknown, not a failure. Tested failure then recovery.
+2. **Links are refused, not followed.** A transcript that is a link (or
+   anything but a regular file) is `.unreadable` in the listing (each
+   record now carries its type: GNU `%y`, `test -L`/`-f` under BSD), as a
+   hint, and in a read. A link's own stat (what the local source's
+   `lstat` reports too) says nothing about the file a read takes, its size
+   or its growth, so the signature could never move with the content; and
+   no agent writes its transcript as a link. The store folder itself is
+   still followed (`find -H`). Checked on both boxes.
+3. **Admission after the permit.** Work that waited for one of the two
+   permits checks the breaker and its own cancellation again before asking
+   for a context or spawning, so nothing queued spawns once the breaker
+   trips meanwhile.
+4. **Hints are contained.** A hint is looked at only when it is a normal
+   absolute path (no empty, `.` or `..` component; every path the source
+   lists is one) and in the agent's shape inside the store, as the local
+   stores' `acceptsTranscript` decides: Claude `<store>/<folder>/<id>.jsonl`,
+   Codex a `rollout-*.jsonl` below `sessions`. Listed files pass the same
+   check.
+5. **Malformed is not a failed find.** A listing whose records or status
+   aren't well formed is a transport failure of the lookup (charged, never
+   clearing the breaker); a well-formed one whose `find` reported a status
+   other than 0 lists nothing for its group and is a successful answer. A
+   record whose path is not UTF-8 is well formed and passed over.
+6. **A response budget, on the host.** A read prints at most
+   `RemoteTranscripts.responseBudget` (6 MiB) of bodies: the script adds
+   each part's size before printing it, and a session whose head, tail and
+   shared lines would pass it ends with `unreadable` (that session's,
+   never the host's breaker); nothing past the budget crosses the wire.
+   Checked on both boxes with 320 KB of a session's history lines against
+   a 128 KiB budget.
+7. **Each coalesced caller gets its own answer**, built from its own
+   requests (agents, hints) out of the shared listing.
+8. **The breaker's times carry the date** when they fall on another day.
