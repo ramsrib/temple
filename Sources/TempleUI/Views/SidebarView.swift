@@ -909,6 +909,8 @@ private struct ProjectDisclosure: View {
     /// The drag payload is a private, in-process type — never plain text — so a
     /// drop that misses the rail cannot paste a path into a live terminal.
     static let dragType = UTType(exportedAs: "com.sriramb.temple.project-order")
+    /// The gap above a heading, inside its hit shape and drop target.
+    static let headerGap: CGFloat = 12
 
     /// The insertion line: where the dragged project will land if released now.
     private var dropLine: some View {
@@ -970,7 +972,7 @@ private struct ProjectDisclosure: View {
         // dragged down the rail never crosses a dead band where the
         // insertion line blinks off. It also puts the "before this project"
         // line in the gap, where an insertion between groups reads right.
-        .padding(.top, 12)
+        .padding(.top, Self.headerGap)
         // No hover pill: a filled pill under a rule-style heading fought the
         // rule. Hover shows the `+`; the label's tone lifts a step instead.
         .animation(.easeOut(duration: 0.12), value: headerHovering)
@@ -980,11 +982,14 @@ private struct ProjectDisclosure: View {
         .onHover { headerHovering = $0 }
         .onTapGesture { withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() } }
         .contextMenu { headerContextMenu }
-        .overlay(alignment: .trailing) {
+        .overlay(alignment: .topTrailing) {
             // Quiet until the pointer is on the row, like Finder's "Hide".
+            // Placed on the first line (the gap above it, then the line), so
+            // a host's second line leaves it where a local heading has it.
             NewSessionMenu(project: project.key)
                 .opacity(headerHovering ? 1 : 0)
                 .animation(.easeOut(duration: 0.12), value: headerHovering)
+                .frame(height: Self.headerGap + ProjectHeaderTitle.lineHeight, alignment: .trailing)
         }
         // The header is the drag handle. Dropping on a header lands the
         // dragged project above it; when this project is collapsed, the lower
@@ -1027,64 +1032,58 @@ private struct ProjectDisclosure: View {
         }
     }
 
-    /// A project on a host says so at any width: the globe of ⌘N's
-    /// "Folder on <host>…" row leads and never truncates, then the folder's
-    /// name in the heading's own style, then the host, weaker and as the
-    /// host spells it. Name and host give way before the globe does.
-    private var remoteTitle: some View {
-        let title = ProjectHeaderTitle(project.key)
-        return HStack(spacing: 5) {
-            Image(systemName: title.glyph ?? "network")
-                .font(.system(size: 10))
+    /// A project on a host: line 1 is exactly the local heading; line 2,
+    /// under the name (past the chevron's 12 and the 6 between), says the
+    /// host: the globe of ⌘N's host rows, then the host as it spells
+    /// itself, truncated in the middle so "-mentes" survives a narrow rail.
+    private func hostLine(_ line: ProjectHeaderTitle.HostLine) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: line.glyph)
+                .font(.system(size: 9))
                 .foregroundStyle(.secondary)
-                .layoutPriority(2)
-            Text(title.name)
-                .font(.system(size: 11, weight: .medium))
-                .tracking(1.4)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .layoutPriority(1)
-            Text(title.host ?? "")
+            Text(line.host)
                 .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .truncationMode(.tail)
+                .truncationMode(.middle)
         }
+        .padding(.leading, ProjectHeaderTitle.nameIndent)
     }
 
     /// The group heading, in the launcher's section language: an uppercase,
     /// letter-spaced label trailed by a hairline rule — one vocabulary across
     /// the rail and the home pane. A small chevron leads it and rotates with
-    /// the disclosure. No folder glyph: every entry here is a folder.
+    /// the disclosure. No folder glyph: every entry here is a folder. A
+    /// project on a host adds a second line for the host, collapsed or not.
     private var headerLabel: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "chevron.right")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.tertiary)
-                .rotationEffect(.degrees(expanded ? 90 : 0))
-                .frame(width: 12)
-            // Hand-rolled, not Label(_, systemImage:): a Label picks up the
-            // sidebar label style, which dims with window key-state — making
-            // project titles the ONLY thing in the app that reacts to focus
-            // changes. Plain Text renders like the session rows and holds.
-            if project.key.host.isLocal {
-                Text(project.name.uppercased())
+        let title = ProjectHeaderTitle(project.key)
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                    .frame(width: 12)
+                // Hand-rolled, not Label(_, systemImage:): a Label picks up the
+                // sidebar label style, which dims with window key-state — making
+                // project titles the ONLY thing in the app that reacts to focus
+                // changes. Plain Text renders like the session rows and holds.
+                Text(title.name)
                     .font(.system(size: 11, weight: .medium))
                     .tracking(1.4)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-            } else {
-                remoteTitle
+                Rectangle()
+                    .fill(Palette.hairline)
+                    .frame(height: 1)
+                    .padding(.leading, 4)
+                    // The `+` lands over the rule's end on hover; leave it room.
+                    .padding(.trailing, headerHovering ? 22 : 0)
             }
-            Rectangle()
-                .fill(Palette.hairline)
-                .frame(height: 1)
-                .padding(.leading, 4)
-                // The `+` lands over the rule's end on hover; leave it room.
-                .padding(.trailing, headerHovering ? 22 : 0)
+            .frame(height: ProjectHeaderTitle.lineHeight)
+            if let line = title.hostLine { hostLine(line) }
         }
-        .frame(height: 28)
+        .frame(height: title.rowHeight, alignment: .top)
         // A project on a host says where it is: `host:/absolute/path`.
         .help(ProjectHeaderTitle.help(project.key))
         .accessibilityElement(children: .combine)
@@ -1179,21 +1178,33 @@ private struct NewSessionMenu: View {
 }
 
 /// What a project's heading says: the folder's name, uppercase in the
-/// section language; and for a project on a host, the globe of ⌘N's host
-/// rows and the host as it spells itself (never uppercased, never folded
-/// into the name, where truncation would cut it off first).
+/// section language, on a first line identical for every project; and for
+/// a project on a host, a second line with the globe of ⌘N's host rows and
+/// the host as it spells itself (never uppercased, never folded into the
+/// name, where truncation would cut it off first).
 struct ProjectHeaderTitle: Equatable {
-    let glyph: String?
+    struct HostLine: Equatable {
+        let glyph: String
+        let host: String
+    }
     let name: String
-    let host: String?
+    let hostLine: HostLine?
 
-    init(glyph: String?, name: String, host: String?) { self.glyph = glyph; self.name = name; self.host = host }
+    /// The first line's height, the whole local heading's.
+    static let lineHeight: CGFloat = 28
+    /// A host's heading: the first line, 2 between, the host line.
+    static let remoteRowHeight: CGFloat = 44
+    /// Where the name starts: past the chevron (12) and the spacing (6).
+    static let nameIndent: CGFloat = 18
+
+    init(name: String, hostLine: HostLine?) { self.name = name; self.hostLine = hostLine }
 
     init(_ key: ProjectKey) {
         name = key.name.uppercased()
-        glyph = key.host.isLocal ? nil : "network"
-        host = key.host.isLocal ? nil : key.host.rawValue
+        hostLine = key.host.isLocal ? nil : HostLine(glyph: "network", host: key.host.rawValue)
     }
+
+    var rowHeight: CGFloat { hostLine == nil ? Self.lineHeight : Self.remoteRowHeight }
 
     /// The tooltip: `host:/path` on a host, nothing here.
     static func help(_ key: ProjectKey) -> String { key.host.isLocal ? "" : "\(key.host.rawValue):\(key.path)" }

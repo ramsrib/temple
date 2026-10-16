@@ -173,16 +173,20 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertFalse(catcher.handle(returnKey(), app), "the Sessions sheet owns Return too")
     }
 
-    /// A host's project heading keeps the host apart from the name (it was
-    /// one uppercase string the rail truncated, host first) and leads with
-    /// the globe; this Mac's projects are unchanged.
-    func testAHostsProjectHeadingKeepsTheHostApartBehindAGlobe() {
+    /// A host's project heading: its first line is exactly a local one (the
+    /// name, nothing else), and the host goes on a second line behind the
+    /// globe, as the host spells it; the row grows from 28 to 44. This
+    /// Mac's projects are unchanged.
+    func testAHostsProjectHeadingPutsTheHostOnASecondLine() {
         let remote = ProjectHeaderTitle(ProjectKey(host: hostID, path: "/home/u/temple-cu-1a"))
-        XCTAssertEqual(remote, ProjectHeaderTitle(glyph: "network", name: "TEMPLE-CU-1A", host: "box"))
+        XCTAssertEqual(remote, ProjectHeaderTitle(name: "TEMPLE-CU-1A", hostLine: .init(glyph: "network", host: "box")))
+        XCTAssertEqual(remote.rowHeight, 44)
         XCTAssertEqual(ProjectHeaderTitle.help(ProjectKey(host: hostID, path: "/home/u/temple-cu-1a")), "box:/home/u/temple-cu-1a")
         let local = ProjectHeaderTitle(ProjectKey(host: .local, path: "/Users/me/temple"))
-        XCTAssertEqual(local, ProjectHeaderTitle(glyph: nil, name: "TEMPLE", host: nil))
+        XCTAssertEqual(local, ProjectHeaderTitle(name: "TEMPLE", hostLine: nil))
+        XCTAssertEqual(local.rowHeight, 28)
         XCTAssertEqual(ProjectHeaderTitle.help(ProjectKey(host: .local, path: "/Users/me/temple")), "")
+        XCTAssertEqual(ProjectHeaderTitle.nameIndent, 18, "the host line starts under the name")
     }
 
     /// Discard's row disposition acts only on the membership it was chosen
