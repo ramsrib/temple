@@ -1415,3 +1415,11 @@ Approved 2026-10-16. For phase 1a:
 
 4. Attachment count is not client identity: with `<n> = 1` another client can replace Temple's before the command runs. Detach Temple's own client first and require zero attached clients in the same server-side condition (or validate the initiating client's identity there). Test replacement of the original client before execution.
 5. One decoded kill outcome everywhere: query success without `temple-not-killed` = killed; the marker = refused (another client attached); failure or timeout = unconfirmed (left running). Never "exit 0" alone (the false branch also exits 0). Say "never retried automatically", not "at once or not at all": a cancelled query may already have taken effect.
+
+## Fable approval of revisions 7 to 9, and one must-fix
+
+Approved 2026-10-16 (fable final read of the lifecycle changes). Must-fix for phase 1a:
+
+6. **Keep clears the flag.** In "Sessions on <host>", Keep on a left-running session clears `left_running_at`/`left_running_reason` (it becomes an ordinary Detached session), so the state table's Left running row exits by Open, Stop **or Keep**. The sidebar line "N sessions left running on <host>" shows once per flag (dismissed or acted on, it does not return on the next contact), so a session the user chose to keep never nags.
+
+Adopt astra's note 4 (detach Temple's own client, require zero attached) before 1a lands. Not in v1: growing the "Not in Temple" rows; a "still running" nudge for sessions detached while working (the v1.1 lever if acceptance shows they get forgotten).
