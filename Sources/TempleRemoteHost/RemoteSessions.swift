@@ -171,6 +171,9 @@ public final class RemoteSessions {
     /// The connection `pathState` was resolved over: an answer for another
     /// is never cached.
     private var pathConnection: SSHConnection?
+    /// Why the last environment query didn't reach the host (ssh's line),
+    /// until one does.
+    private var environmentFailure: String?
     /// Claude's config root from the same login environment as the PATH.
     private var claudeConfig: RemoteEnvironment.ClaudeConfig?
     /// Codex's home from the same login environment.
@@ -318,6 +321,9 @@ public final class RemoteSessions {
                 claudeConfig = resolved.claudeConfig
                 codexHome = resolved.codexHome
                 pathConnection = connection
+                environmentFailure = nil
+            } else if !resolved.reachedHost {
+                environmentFailure = resolved.problem ?? "the host's login environment couldn't be read"
             }
         }
         guard !retired else { throw Retired() }
@@ -342,6 +348,12 @@ public final class RemoteSessions {
     /// store that exists but can't be read makes every root unknown.
     public func transcriptContext(sessionIDs: [String], refresh: Bool) async throws -> RemoteTranscriptContext {
         let exec = try await queryExec(refresh: refresh)
+        // The environment query didn't reach the host: a transport failure,
+        // said in ssh's words, never roots that merely look unknown (a row
+        // relying on the login root would settle with nothing looked up).
+        guard let connection, pathConnection == connection else {
+            throw EnvironmentUnreachable(reason: environmentFailure ?? "the host's login environment couldn't be read")
+        }
         guard !sessionIDs.isEmpty else { return RemoteTranscriptContext(exec: exec, roots: [:]) }
         let login: [Agent: RemoteTranscriptRoot] = [
             .claude: RemoteTranscriptRoot(launchConfig, base: nil),
@@ -372,6 +384,11 @@ public final class RemoteSessions {
             roots[id] = RemoteTranscriptRoot(variable, base: latest.directory).map { [latest.agent: $0] } ?? [:]
         }
         return RemoteTranscriptContext(exec: exec, roots: roots)
+    }
+
+    struct EnvironmentUnreachable: Error, LocalizedError {
+        let reason: String
+        var errorDescription: String? { reason }
     }
 
     /// A query failed in transit (enrichment's): the next one resolves the
