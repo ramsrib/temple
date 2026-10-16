@@ -57,7 +57,7 @@ public enum RemoteQuoting {
     }
 
     /// A random token for markers and throwaway names.
-    static func nonce() -> String {
+    public static func nonce() -> String {
         var bytes = [UInt8](repeating: 0, count: 8)
         for index in bytes.indices { bytes[index] = UInt8.random(in: 0...255) }
         return bytes.map { String(format: "%02x", $0) }.joined()
