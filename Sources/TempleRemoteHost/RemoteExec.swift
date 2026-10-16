@@ -83,13 +83,13 @@ public struct SSHExec: RemoteExec {
         return Self.unframe(raw, marker: marker)
     }
 
-    /// The marker, on stdout and stderr, then the fixed bootstrap
-    /// (`RemoteQuoting.invocation`); everything else on stdin. `echo` and
-    /// `exec` read the same in sh, bash, zsh and fish.
+    /// The fixed bootstrap (`RemoteQuoting.invocation`), which prints the
+    /// marker on both streams from `sh` itself, so the login shell runs one
+    /// plain command whatever it is (sh, bash, zsh, fish, csh, tcsh);
+    /// everything else on stdin.
     public static func invocation(script: String, args: [String], path: String?, input: Data?,
                                   marker: String) -> (command: String, stdin: Data) {
-        let query = RemoteQuoting.invocation(script: script, args: args, path: path, input: input)
-        return ("echo \(marker); echo \(marker) >&2; exec " + query.command, query.stdin)
+        RemoteQuoting.invocation(script: script, args: args, path: path, input: input, marker: marker)
     }
 
     /// Drops what came before the marker on each stream. A stream without

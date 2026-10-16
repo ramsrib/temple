@@ -82,6 +82,62 @@ final class RemoteQuotingTests: XCTestCase {
                                  LaunchStage.maximumCommandBytes)
     }
 
+    /// The whole query invocation (markers included) under a csh or tcsh
+    /// login shell: the markers come from `sh`, so csh's `>&2` (a file
+    /// named `2`) never happens, both streams are framed, and the arguments
+    /// and input arrive whole. The tab's executor command reads the same
+    /// way there. Skipped where neither shell is installed.
+    func testAQueryAndTheTabsCommandWorkUnderCshAndTcsh() throws {
+        let shells = ["/bin/csh", "/bin/tcsh"].filter { FileManager.default.isExecutableFile(atPath: $0) }
+        guard !shells.isEmpty else { throw XCTSkip("neither csh nor tcsh is installed on this Mac") }
+        let tree = TempTree("csh")
+        let script = #"for a in "$@"; do printf '%s|' "$a"; done; echo oops >&2; cat"#
+        for shell in shells {
+            let marker = "__temple_m__"
+            let query = SSHExec.invocation(script: script, args: Self.hard, path: "/usr/bin:/bin",
+                                           input: Data("in\n".utf8), marker: marker)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: shell)
+            process.arguments = ["-c", "echo rc chatter; " + query.command]
+            process.currentDirectoryURL = tree.url
+            process.environment = ["PATH": "/usr/bin:/bin", "HOME": tree.path]
+            let out = Pipe(), err = Pipe(), input = Pipe()
+            process.standardOutput = out; process.standardError = err; process.standardInput = input
+            try process.run()
+            let writer = input.fileHandleForWriting
+            DispatchQueue.global().async { writer.write(query.stdin); try? writer.close() }
+            let stdout = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            let stderr = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            process.waitUntilExit()
+            let framed = SSHExec.unframe(ProcessRunner.Output(status: process.terminationStatus, stdout: stdout, stderr: stderr),
+                                         marker: marker)
+            XCTAssertTrue(framed.reachedCommand, shell)
+            XCTAssertEqual(framed.stdout, Self.hard.map { $0 + "|" }.joined() + "in\n", shell)
+            XCTAssertEqual(framed.stderr, "oops\n", shell)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: tree.path + "/2"), "\(shell): no file named 2")
+            // The tab's executor command: one line csh passes to sh whole.
+            let tab = try run(shell, ["-c", LaunchStage.command(stage: "r-x.s-cnothing", wait: 0) + "; echo status=$status"],
+                              allowFailure: true)
+            XCTAssertTrue(String(decoding: tab, as: UTF8.self).contains("status=125"), shell)
+        }
+    }
+
+    /// The end line is one that appears nowhere in the encoded program: an
+    /// argument, the PATH or a script line equal to the preferred one
+    /// cannot end the program early.
+    func testTheEndLineNeverCollidesWithTheProgram() throws {
+        let fixed = "__temple_end_fixed__"
+        let script = "for a in \"$@\"; do printf '%s|' \"$a\"; done; printf 'P=%s|' \"$PATH\"\n: '\n\(fixed)\n'\ncat"
+        let query = RemoteQuoting.invocation(script: script, args: ["a", "x\n\(fixed)\ny", fixed], path: "/usr/bin:/bin:/x\n\(fixed)",
+                                             input: Data("\(fixed)\n".utf8), end: fixed)
+        XCTAssertFalse(query.command.contains(fixed), "another end line was chosen")
+        let output = try run("/bin/sh", ["-c", query.command], stdin: query.stdin)
+        XCTAssertEqual(String(decoding: output, as: UTF8.self),
+                       "a|x\n\(fixed)\ny|\(fixed)|P=/usr/bin:/bin:/x\n\(fixed)|\(fixed)\n")
+        // Without a collision the preferred end line is kept.
+        XCTAssertTrue(RemoteQuoting.invocation(script: "true", args: [], path: nil, input: nil, end: fixed).command.contains(fixed))
+    }
+
     /// A program cut short in transit (no end line) runs nothing.
     func testATruncatedProgramRunsNothing() throws {
         let marker = "/private/tmp/temple-truncated-\(UUID().uuidString)"
@@ -115,7 +171,7 @@ final class RemoteQuotingTests: XCTestCase {
         for token in ["", "a b", "a'b", "a;b", "a/b", "é", "$x", "a\nb", "a'\u{0301}"] { XCTAssertFalse(RemoteQuoting.isSafeToken(token), token) }
     }
 
-    private func run(_ shell: String, _ arguments: [String], stdin: Data? = nil) throws -> Data {
+    private func run(_ shell: String, _ arguments: [String], stdin: Data? = nil, allowFailure: Bool = false) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shell)
         process.arguments = arguments
@@ -132,7 +188,7 @@ final class RemoteQuotingTests: XCTestCase {
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        XCTAssertEqual(process.terminationStatus, 0, shell)
+        if !allowFailure { XCTAssertEqual(process.terminationStatus, 0, shell) }
         return data
     }
 }
