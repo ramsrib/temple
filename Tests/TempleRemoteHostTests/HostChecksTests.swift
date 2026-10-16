@@ -58,7 +58,7 @@ final class HostChecksTests: XCTestCase {
         case "$*" in *"prefix None"*) echo 'invalid key: None' >&2; exit 1 ;; esac
         exit 0
         """, executable: true)
-        let check = await TmuxCheck.run(nonce: "abc", attachedNonce: nil, attachedStatus: nil, using: host(tree))
+        let check = await TmuxCheck.run(nonce: "abc", using: host(tree))
         XCTAssertEqual(check, .refused(version: "3.0a", command: "prefix None", line: "invalid key: None"))
         XCTAssertEqual(HostTestSummary(tmux: check).statusLine, "Connected. tmux 3.0a refused the launch chain: invalid key: None")
         let calls = try String(contentsOfFile: log, encoding: .utf8)
@@ -75,69 +75,38 @@ final class HostChecksTests: XCTestCase {
         let exec = LocalShellExec(path: tree.directory("bin").path + ":/usr/bin:/bin",
                                   environment: hostEnvironment(home: tree.path, path: "/usr/bin:/bin"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: "/usr/bin/tmux"), "this Mac's /usr/bin has no tmux")
-        let check = await TmuxCheck.run(nonce: "n", attachedNonce: nil, attachedStatus: nil, using: exec)
+        let check = await TmuxCheck.run(nonce: "n", using: exec)
         XCTAssertEqual(check, .missing)
         XCTAssertEqual(HostTestSummary(tmux: check).statusLine,
                        "Connected. No tmux on this host. Install tmux 3.2 or newer to start sessions here.")
     }
 
-    /// The real launch chain against this Mac's tmux, on a throwaway socket
-    /// that is gone afterwards; and an attached client in a pseudo-terminal
-    /// under `TERM=xterm-256color`, whose pane draws under `tmux-256color`.
-    func testTheRealChainIsAcceptedDetachedAndAttached() async throws {
+    /// The real launch chain against this Mac's tmux, detached, on a
+    /// throwaway socket that is gone afterwards. (An attached client is
+    /// phase 1a's acceptance.)
+    func testTheRealChainIsAcceptedDetached() async throws {
         guard let tmux = installedTmux() else { throw XCTSkip("no tmux installed (brew install tmux)") }
         let tree = TempTree("tmux-real")
         let tmuxDirectory = (tmux as NSString).deletingLastPathComponent
         let exec = LocalShellExec(path: "\(tmuxDirectory):/usr/bin:/bin",
                                   environment: hostEnvironment(home: tree.path, path: "/usr/bin:/bin",
                                                                extra: ["TMUX_TMPDIR": tree.path]))
-        // Attached, through script(1) for a terminal.
-        let attachedNonce = "att\(UInt32.random(in: 0...UInt32.max))"
-        let attached = RemoteQuoting.shellCommand(script: TmuxCheck.attachedScript, args: [attachedNonce],
-                                                  path: "\(tmuxDirectory):/usr/bin:/bin")
-        var environment = hostEnvironment(home: tree.path, path: "/usr/bin:/bin", extra: ["TMUX_TMPDIR": tree.path])
-        environment["TERM"] = "xterm-256color"
-        let terminal = try await ProcessRunner.run("/usr/bin/script", ["-q", "/dev/null", "/bin/sh", "-c", attached],
-                                                   environment: environment, deadline: 20)
-        XCTAssertEqual(terminal.status, 0, terminal.stdout + terminal.stderr)
-
-        let check = await TmuxCheck.run(nonce: "n\(UInt32.random(in: 0...UInt32.max))", attachedNonce: attachedNonce,
-                                        attachedStatus: terminal.status, using: exec)
+        let check = await TmuxCheck.run(nonce: "n\(UInt32.random(in: 0...UInt32.max))", using: exec)
         guard case .accepted(let version, let passthrough) = check else { return XCTFail("\(check)") }
         XCTAssertEqual(passthrough, TmuxVersion("tmux \(version)").map { $0 >= TmuxChain.passthroughSince } ?? true)
-        let leftovers = try FileManager.default.subpathsOfDirectory(atPath: tree.path)
-            .filter { $0.contains("temple-check") || $0.hasPrefix("tmp/temple-launch") && $0.contains("check-") }
-        XCTAssertEqual(leftovers, [], "the throwaway socket and the attached check's files are removed")
+        XCTAssertEqual(ConnectionTest.row(check).line.hasPrefix("tmux: \(version), detached tmux check passed"), true)
+        let leftovers = try FileManager.default.subpathsOfDirectory(atPath: tree.path).filter { $0.contains("temple-check") }
+        XCTAssertEqual(leftovers, [], "the throwaway socket is removed")
     }
 
-    func testAnAttachedFailureIsReportedWithItsReason() {
-        let output = RemoteOutput(status: 0, stdout: "attached-error\topen terminal failed: missing or unsuitable terminal: xterm-ghostty\nversion\ttmux 3.4\nchain\t0\n", stderr: "")
-        XCTAssertEqual(TmuxCheck.parse(output, attachedStatus: 1),
-                       .attachedFailed(version: "3.4", line: "open terminal failed: missing or unsuitable terminal: xterm-ghostty"))
-        // Temple stopped waiting, or ssh dropped: not tmux's answer, proves nothing.
-        let late = TmuxCheck.parse(RemoteOutput(status: 0, stdout: "version\ttmux 3.4\nchain\t0\n", stderr: ""), attachedStatus: 124)
-        XCTAssertEqual(late, .attachedUnconfirmed(version: "3.4", reason: "it didn't finish in time"))
-        XCTAssertFalse(late.provesUnavailable)
-        XCTAssertEqual(HostTestSummary(tmux: late).unavailableReason(for: .claude), nil)
-        XCTAssertEqual(TmuxCheck.parse(RemoteOutput(status: 0, stdout: "version\ttmux 3.4\nchain\t0\n", stderr: ""), attachedStatus: 255),
-                       .attachedUnconfirmed(version: "3.4", reason: "ssh exited before it finished"))
-        XCTAssertEqual(TmuxCheck.parse(RemoteOutput(status: 0, stdout: "version\ttmux 3.2a\nchain\t0\n", stderr: ""), attachedStatus: 0),
+    func testTmuxVerdictsFromItsOutput() {
+        XCTAssertEqual(TmuxCheck.parse(RemoteOutput(status: 0, stdout: "version\ttmux 3.2a\nchain\t0\n", stderr: "")),
                        .accepted(version: "3.2a", passthrough: false))
-        XCTAssertEqual(TmuxCheck.parse(RemoteOutput(status: 0, stdout: "version\ttmux 3.1c\nchain\t0\n", stderr: ""), attachedStatus: 0),
+        XCTAssertEqual(TmuxCheck.parse(RemoteOutput(status: 0, stdout: "version\ttmux 3.1c\nchain\t0\n", stderr: "")),
                        .tooOld(version: "3.1c"))
-    }
-
-    /// Only tmux's own words prove an attached failure: an empty error
-    /// file (made before tmux started) with ssh's 255 is transport.
-    func testAnAttachedFailureNeedsTmuxsWords() {
-        let emptyError = RemoteOutput(status: 0, stdout: "attached-error\t\nversion\ttmux 3.4\nchain\t0\n", stderr: "")
-        let dropped = TmuxCheck.parse(emptyError, attachedStatus: 255)
-        XCTAssertEqual(dropped, .attachedUnconfirmed(version: "3.4", reason: "ssh exited before it finished"))
-        XCTAssertFalse(dropped.provesUnavailable)
-        XCTAssertEqual(TmuxCheck.parse(emptyError, attachedStatus: 1),
-                       .attachedUnconfirmed(version: "3.4", reason: "it ended with status 1 and no word from tmux"))
-        XCTAssertEqual(TmuxCheck.parse(RemoteOutput(status: 0, stdout: "attached-error\tthe pane could not draw (tput failed under tmux-256color)\nversion\ttmux 3.4\nchain\t0\n", stderr: ""), attachedStatus: 3),
-                       .attachedFailed(version: "3.4", line: "the pane could not draw (tput failed under tmux-256color)"))
+        XCTAssertEqual(TmuxCheck.parse(RemoteOutput(status: 255, stdout: "", stderr: "Connection closed by 10.0.0.2 port 22\n")),
+                       .notChecked(reason: "Connection closed by 10.0.0.2 port 22"))
+        XCTAssertFalse(TmuxCheck.notChecked(reason: "x").provesUnavailable, "transport proves nothing")
     }
 
     func testLogind() {

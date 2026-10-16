@@ -67,10 +67,8 @@ enum RemoteHostComposition {
     @MainActor
     static func connectionTest(for record: RemoteHostRecord, stateDirectory: URL) -> ConnectionTest {
         let connection = SSHConnection(record: record, stateDirectory: stateDirectory, sshPath: sshPath)
-        let work = FileManager.default.temporaryDirectory
-            .appendingPathComponent("temple-test-\(UUID().uuidString.lowercased())", isDirectory: true)
         let argv = connection.resolutionArgv
-        return ConnectionTest(record: record, connection: connection, workDirectory: work,
+        return ConnectionTest(record: record, connection: connection,
                               makeExec: { SSHExec(connection: connection, path: $0) },
                               resolve: {
                                   guard let output = try? await ProcessRunner.run(argv[0], Array(argv.dropFirst()), deadline: 5),

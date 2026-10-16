@@ -5,11 +5,11 @@ import TempleCore
 
 @MainActor
 final class ConnectionTestTests: XCTestCase {
-    private func makeTest(_ tree: TempTree, exec: @escaping (String?) -> RemoteExec) -> ConnectionTest {
-        let connection = SSHConnection(record: .config("box"), stateDirectory: tree.directory("state"), sshPath: "/usr/bin/ssh")
-        return ConnectionTest(record: .config("box"), connection: connection, workDirectory: tree.url.appendingPathComponent("work"),
-                              makeExec: exec, resolve: { ["user": "mentes", "hostname": "10.0.0.2"] },
-                              pollInterval: .milliseconds(20))
+    private func makeTest(_ tree: TempTree, sshPath: String = "/usr/bin/ssh",
+                          exec: @escaping (String?) -> RemoteExec) -> ConnectionTest {
+        let connection = SSHConnection(record: .config("box"), stateDirectory: tree.directory("state"), sshPath: sshPath)
+        return ConnectionTest(record: .config("box"), connection: connection, makeExec: exec,
+                              resolve: { ["user": "mentes", "hostname": "10.0.0.2"] })
     }
 
     private func waitUntil(_ condition: @escaping () -> Bool, timeout: TimeInterval = 10) async {
@@ -17,14 +17,10 @@ final class ConnectionTestTests: XCTestCase {
         while !condition(), Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }
     }
 
-    /// The sheet's whole run, with the terminal's part played by the test:
-    /// connect succeeds, the environment is read, the attached step is
-    /// handed over and reports, then each check runs as a query with the
-    /// resolved PATH. Rows read as the design gives them.
-    func testASuccessfulRunChecksEverythingWithTheResolvedPATH() async throws {
-        let tree = TempTree("ct-ok")
-        let paths = PathLog()
-        let test = makeTest(tree) { path in
+    /// A stand-in host answering every check the way the design's copy
+    /// expects.
+    private static func host(_ paths: PathLog) -> (String?) -> RemoteExec {
+        { path in
             paths.append(path)
             return RecordingExec { script, args in
                 if script == RemoteEnvironment.script {
@@ -36,198 +32,139 @@ final class ConnectionTestTests: XCTestCase {
                         : RemoteOutput(status: 0, stdout: "missing\n", stderr: "")
                 }
                 if script == TmuxCheck.script {
-                    XCTAssertEqual(args.count, 2)
+                    XCTAssertEqual(args.count, 1)
                     return RemoteOutput(status: 0, stdout: "version\ttmux 3.4\nchain\t0\n", stderr: "")
                 }
                 if script == LogindCheck.script { return RemoteOutput(status: 0, stdout: "busctl\t0\nb true\n", stderr: "") }
                 return RemoteOutput(status: 99, stdout: "", stderr: "unexpected script")
             }
         }
+    }
+
+    /// The terminal runs the user's ssh and nothing else, creating the
+    /// master; its exit 0 starts every check, each a query with the
+    /// resolved PATH; rows read as the design gives them.
+    func testASuccessfulConnectChecksEverythingOverQueries() async throws {
+        let tree = TempTree("ct-ok")
+        let paths = PathLog()
+        let test = makeTest(tree, exec: Self.host(paths))
         var finished: HostTestSummary?
         test.onFinished = { finished = $0 }
-        test.start()
-        XCTAssertEqual(test.phase, .connecting)
-        XCTAssertEqual(test.surfaceArgv.prefix(4), ["/usr/bin/env", "/bin/sh", "-c", ConnectionTest.wrapperScript])
-        XCTAssertTrue(test.surfaceArgv.contains("ControlMaster=auto"))
-        XCTAssertEqual(test.surfaceArgv.suffix(3), ["--", "box", "true"])
-        let work = test.workDirectory
-        try "0\n".write(to: work.appendingPathComponent("connect.status"), atomically: true, encoding: .utf8)
-        await waitUntil { FileManager.default.fileExists(atPath: work.appendingPathComponent("go").path) }
-        let go = try Data(contentsOf: work.appendingPathComponent("go"))
-        let argv = go.split(separator: 0).map { String(decoding: $0, as: UTF8.self) }
-        XCTAssertEqual(argv.prefix(2), ["/usr/bin/env", "TERM=xterm-256color"])
-        XCTAssertTrue(argv.contains("-t"))
-        XCTAssertTrue(argv.last!.hasPrefix("'env' 'PATH=/home/mentes/.local/bin:/usr/bin' 'sh' '-c' "), argv.last!)
-        try "0\n".write(to: work.appendingPathComponent("attach.status"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(test.surfaceArgv, ["/usr/bin/env", "/usr/bin/ssh"] + test.connection.arguments(for: .interactive)
+                       + ["--", "box", "true"])
+        for option in ["ControlMaster=auto", "ControlPersist=600", "-t"] {
+            XCTAssertTrue(test.surfaceArgv.contains(option), option)
+        }
+        XCTAssertFalse(test.surfaceArgv.contains("BatchMode=yes"), "the user answers ssh here")
+        XCTAssertFalse(test.surfaceArgv.contains("/bin/sh"), "no wrapper: the terminal's process is ssh")
+
+        test.terminalExited(status: 0)
+        XCTAssertEqual(test.phase, .connecting, "nothing before start")
+        XCTAssertTrue(test.start())
+        XCTAssertTrue(paths.values.isEmpty, "no query before the connect ends")
+        test.terminalExited(status: 0)
+        XCTAssertEqual(test.phase, .checking)
         await waitUntil { test.phase == .finished }
-        XCTAssertEqual(test.phase, .finished)
-        XCTAssertEqual(paths.values, [nil, "/home/mentes/.local/bin:/usr/bin"], "the environment query has no PATH; every check has the resolved one")
+        XCTAssertEqual(paths.values, [nil, "/home/mentes/.local/bin:/usr/bin"],
+                       "the environment query has no PATH; every check has the resolved one")
         XCTAssertEqual(test.rows.map(\.line), [
             "Login shell: /bin/bash, PATH read.",
-            "tmux: 3.4, launch chain accepted",
             "claude: 2.1.283 at /home/mentes/.local/bin/claude",
             "codex: not on PATH",
+            "tmux: 3.4, detached tmux check passed",
             "This host ends your processes when your last login ends (KillUserProcesses=yes). Sessions won't survive a disconnect unless lingering is enabled (loginctl enable-linger).",
         ])
         XCTAssertEqual(finished?.statusLine, "Connected as mentes@10.0.0.2. Claude Code 2.1.283, tmux 3.4. No codex on PATH.")
         XCTAssertEqual(finished?.unavailableReason(for: .codex), "No codex on PATH.")
-        test.cancel()
-        XCTAssertFalse(FileManager.default.fileExists(atPath: work.path), "the work files go with the sheet")
+        test.terminalExited(status: 1)
+        XCTAssertEqual(test.phase, .finished, "a later exit changes nothing")
     }
 
-    func testAFailedConnectRunsNoChecksAndKeepsSSHsLine() async throws {
+    /// Any other end runs no check and reconnects nothing.
+    func testAFailedConnectRunsNoChecks() async throws {
         let tree = TempTree("ct-fail")
-        let exec = RecordingExec { _, _ in RemoteOutput(status: 0, stdout: "", stderr: "") }
-        let test = makeTest(tree) { _ in exec }
-        test.start()
-        let work = test.workDirectory
-        try "Offending ECDSA key in /Users/me/.ssh/known_hosts:3\nWARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!\nHost key verification failed.\n"
-            .write(to: work.appendingPathComponent("connect.err"), atomically: true, encoding: .utf8)
-        try "255\n".write(to: work.appendingPathComponent("connect.status"), atomically: true, encoding: .utf8)
-        await waitUntil { test.phase == .failed }
-        XCTAssertEqual(test.failure, .changedHostKey(offending: "Offending ECDSA key in /Users/me/.ssh/known_hosts:3"))
-        XCTAssertEqual(test.summary?.statusLine, test.failure?.message)
-        XCTAssertTrue(exec.calls.isEmpty, "no checks after a failed connect")
-        test.cancel()
-    }
-
-    func testClosingTheTerminalEndsAConnectingTest() async {
-        let tree = TempTree("ct-closed")
-        let test = makeTest(tree) { _ in RecordingExec { _, _ in RemoteOutput(status: 0, stdout: "", stderr: "") } }
-        test.start()
-        test.terminalEnded()
-        XCTAssertEqual(test.phase, .failed)
-        XCTAssertEqual(test.failure?.message, "Couldn't connect: the terminal closed before ssh finished.")
-        test.cancel()
-    }
-
-    /// The wrapper itself, under /bin/sh: the connect's status and stderr
-    /// are recorded (stderr still reaching the terminal), and the attached
-    /// step runs from the handed-over argv and reports its status. Run in a
-    /// pseudo-terminal, as libghostty runs it.
-    func testTheWrapperRecordsStatusAndRunsTheHandedOverStep() async throws {
-        let tree = TempTree("ct-wrapper")
-        let work = tree.directory("work")
-        tree.write("work/attach.sh", ConnectionTest.attachScript)
-        let script = ConnectionTest.wrapperScript
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
-        process.arguments = ["-q", "/dev/null", "/bin/sh", "-c", script, "temple-test", work.path,
-                             "/bin/sh", "-c", "echo 'Warning: Permanently added box' >&2; echo hello; exit 0"]
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardInput = Pipe()
-        try process.run()
-        defer { process.terminate() }
-        await waitUntil { FileManager.default.fileExists(atPath: work.appendingPathComponent("connect.status").path) }
-        XCTAssertEqual(try String(contentsOf: work.appendingPathComponent("connect.status"), encoding: .utf8), "0\n")
-        XCTAssertEqual(try String(contentsOf: work.appendingPathComponent("connect.err"), encoding: .utf8),
-                       "Warning: Permanently added box\n")
-        var go = Data()
-        for word in ["/bin/sh", "-c", "exit 7"] { go.append(Data(word.utf8)); go.append(0) }
-        try go.write(to: work.appendingPathComponent("go"))
-        await waitUntil { FileManager.default.fileExists(atPath: work.appendingPathComponent("attach.status").path) }
-        XCTAssertEqual(try String(contentsOf: work.appendingPathComponent("attach.status"), encoding: .utf8), "7\n")
-        XCTAssertTrue(process.isRunning, "the terminal keeps what it showed until the sheet closes")
-    }
-
-    func testAFailingConnectSkipsTheAttachedStep() async throws {
-        let tree = TempTree("ct-wrapper-fail")
-        let work = tree.directory("work")
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", ConnectionTest.wrapperScript, "temple-test", work.path,
-                             "/bin/sh", "-c", "echo 'Permission denied (publickey).' >&2; exit 255"]
-        let errors = Pipe()
-        process.standardError = errors
-        process.standardOutput = Pipe()
-        try process.run()
-        defer { process.terminate() }
-        await waitUntil { FileManager.default.fileExists(atPath: work.appendingPathComponent("connect.status").path) }
-        XCTAssertEqual(try String(contentsOf: work.appendingPathComponent("connect.status"), encoding: .utf8), "255\n")
-        XCTAssertEqual(try String(contentsOf: work.appendingPathComponent("connect.err"), encoding: .utf8),
-                       "Permission denied (publickey).\n")
-        try await Task.sleep(for: .milliseconds(300))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: work.appendingPathComponent("attach.status").path))
-    }
-
-    /// The attached check hangs (a stand-in ssh that never returns): at the
-    /// timeout Temple ends that client, and only it, and calls the check
-    /// unconfirmed; the test still finishes.
-    func testAHungAttachedClientIsEndedAtTheTimeout() async throws {
-        let tree = TempTree("ct-hung")
-        let pids = tree.path + "/pids"
-        // Connect (`… true`) succeeds; the attached step hangs.
-        let ssh = tree.write("ssh", """
-        #!/bin/sh
-        for last; do :; done
-        [ "$last" = true ] && exit 0
-        echo $$ >> \(pids)
-        exec sleep 60
-        """, executable: true)
-        let connection = SSHConnection(record: .config("box"), stateDirectory: tree.directory("state"), sshPath: ssh.path)
-        let test = ConnectionTest(record: .config("box"), connection: connection, workDirectory: tree.url.appendingPathComponent("work"),
-            makeExec: { _ in RecordingExec { script, args in
-                if script == RemoteEnvironment.script {
-                    return RemoteOutput(status: 0, stdout: "shell /bin/sh\n\(args[0])\n/usr/bin:/bin\n\(args[0])\n", stderr: "")
-                }
-                if script == TmuxCheck.script { return RemoteOutput(status: 0, stdout: "version\ttmux 3.4\nchain\t0\n", stderr: "") }
-                return RemoteOutput(status: 0, stdout: "missing\n", stderr: "")
-            } },
-            resolve: { [:] }, pollInterval: .milliseconds(20), attachTimeout: 1)
+        let paths = PathLog()
+        let test = makeTest(tree, exec: Self.host(paths))
         XCTAssertTrue(test.start())
-        // The terminal, as libghostty would run it: a pseudo-terminal.
-        let terminal = Process()
-        terminal.executableURL = URL(fileURLWithPath: "/usr/bin/script")
-        terminal.arguments = ["-q", "/dev/null"] + test.surfaceArgv
-        terminal.standardInput = Pipe()
-        terminal.standardOutput = Pipe()
-        try terminal.run()
-        defer { terminal.terminate() }
-        await waitUntil({ test.phase == .finished }, timeout: 15)
-        XCTAssertEqual(test.phase, .finished)
-        XCTAssertEqual(test.summary?.tmux, .attachedUnconfirmed(version: "3.4", reason: "it didn't finish in time"))
-        let hung = try String(contentsOfFile: pids, encoding: .utf8).split(separator: "\n").compactMap { Int32($0) }
-        XCTAssertEqual(hung.count, 1)
-        try await Task.sleep(for: .milliseconds(1500))
-        XCTAssertNotEqual(kill(hung[0], 0), 0, "the attached client was ended")
-        XCTAssertTrue(terminal.isRunning, "the terminal itself stays until the sheet closes")
+        test.terminalExited(status: 255)
+        XCTAssertEqual(test.phase, .failed)
+        XCTAssertEqual(test.failure, .connectFailed(status: 255))
+        XCTAssertEqual(test.failure?.message, "Couldn't connect. See ssh's message above.")
+        XCTAssertEqual(test.summary?.statusLine, "Couldn't connect: ssh exited with status 255. Test the connection to see ssh's message.")
+        XCTAssertTrue(test.failure?.allowsRetry ?? false)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(paths.values.isEmpty, "no query, no reconnect")
+    }
+
+    /// A status the terminal never reported: a real one arriving in the
+    /// grace wins; otherwise the end is unknown, and nothing runs.
+    func testAnUnknownEndNeverStartsChecks() async throws {
+        let tree = TempTree("ct-unknown")
+        let paths = PathLog()
+        let unknown = makeTest(tree, exec: Self.host(paths))
+        XCTAssertTrue(unknown.start())
+        unknown.terminalExited(status: nil)
+        XCTAssertEqual(unknown.phase, .connecting)
+        await waitUntil { unknown.phase == .failed }
+        XCTAssertEqual(unknown.failure, .connectFailed(status: nil))
+        XCTAssertEqual(unknown.summary?.statusLine, "Couldn't connect. Test the connection to see ssh's message.")
+
+        let late = makeTest(tree, exec: Self.host(paths))
+        XCTAssertTrue(late.start())
+        late.terminalExited(status: nil)
+        late.terminalExited(status: 0)
+        XCTAssertEqual(late.phase, .checking, "the real status, in the grace, decides")
+        await waitUntil { late.phase == .finished }
+        XCTAssertEqual(late.phase, .finished)
+        late.cancel()
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertEqual(paths.values.count, 2, "only the run with a real 0 queried")
+    }
+
+    /// Closing the sheet mid-check cancels the outstanding query (its own
+    /// ssh client) and publishes nothing.
+    func testCancellingCancelsOutstandingQueries() async throws {
+        let tree = TempTree("ct-cancel")
+        let cancelled = PathLog()
+        let test = makeTest(tree) { _ in
+            RecordingExec { _, _ in
+                do { try await Task.sleep(for: .seconds(30)) } catch { cancelled.append("cancelled"); throw error }
+                return RemoteOutput(status: 0, stdout: "", stderr: "")
+            }
+        }
+        var published = false
+        test.onFinished = { _ in published = true }
+        XCTAssertTrue(test.start())
+        test.terminalExited(status: 0)
+        try await Task.sleep(for: .milliseconds(100))
         test.cancel()
+        await waitUntil { !cancelled.values.isEmpty }
+        XCTAssertEqual(cancelled.values.count, 1)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertFalse(published)
+        XCTAssertEqual(test.phase, .checking)
     }
 
-    /// Storage Temple can't write: the test fails before any terminal
-    /// starts, saying why.
-    func testUnwritableStorageFailsBeforeTheTerminal() throws {
-        let tree = TempTree("ct-unwritable")
-        let locked = tree.directory("locked")
-        chmod(locked.path, 0o500)
-        defer { chmod(locked.path, 0o700) }
-        let test = makeTest(tree) { _ in RecordingExec { _, _ in RemoteOutput(status: 0, stdout: "", stderr: "") } }
-        let blocked = ConnectionTest(record: test.record, connection: test.connection,
-                                     workDirectory: locked.appendingPathComponent("work"),
-                                     makeExec: { _ in RecordingExec { _, _ in RemoteOutput(status: 0, stdout: "", stderr: "") } },
-                                     resolve: { [:] })
+    /// A socket directory that can't be used fails the test before any
+    /// terminal starts, saying why.
+    func testAnUnusableSocketDirectoryFailsBeforeTheTerminal() throws {
+        let tree = TempTree("ct-socket")
+        let state = tree.directory("state")
+        tree.write("state/ssh", "a file, not a directory")
+        let test = ConnectionTest(record: .config("box"),
+                                  connection: SSHConnection(record: .config("box"), stateDirectory: state, sshPath: "/usr/bin/ssh"),
+                                  makeExec: { _ in RecordingExec { _, _ in RemoteOutput(status: 0, stdout: "", stderr: "") } },
+                                  resolve: { [:] })
         var finished: HostTestSummary?
-        blocked.onFinished = { finished = $0 }
-        XCTAssertFalse(blocked.start())
-        XCTAssertEqual(blocked.phase, .failed)
-        guard case .localSetup? = blocked.failure else { return XCTFail("\(String(describing: blocked.failure))") }
-        XCTAssertTrue(blocked.failure?.message.hasPrefix("Temple couldn't prepare the test: ") ?? false)
+        test.onFinished = { finished = $0 }
+        XCTAssertFalse(test.start())
+        XCTAssertEqual(test.phase, .failed)
+        guard case .localSetup? = test.failure else { return XCTFail("\(String(describing: test.failure))") }
+        XCTAssertEqual(test.failure?.message, "Temple couldn't prepare the test: Temple won't use \(state.path)/ssh for ssh's connection: it is not a directory.")
         XCTAssertNotNil(finished)
-        XCTAssertFalse(blocked.start(), "a failed test never starts again")
-    }
-
-    /// The wrapper, given a folder it can't write, says so on the terminal
-    /// and exits rather than waiting forever.
-    func testTheWrapperExitsVisiblyWhenItCannotRecord() async throws {
-        let tree = TempTree("ct-wrapper-locked")
-        let locked = tree.directory("locked")
-        chmod(locked.path, 0o500)
-        defer { chmod(locked.path, 0o700) }
-        let output = try await ProcessRunner.run("/bin/sh", ["-c", ConnectionTest.wrapperScript, "temple-test", locked.path, "/usr/bin/true"],
-                                                 deadline: 10)
-        XCTAssertEqual(output.status, 70)
-        XCTAssertEqual(output.stderr, "Temple could not record the test in \(locked.path): the folder is not writable\n")
+        XCTAssertFalse(test.start(), "a failed test never starts again")
+        test.terminalExited(status: 0)
+        XCTAssertEqual(test.phase, .failed)
     }
 
     func testSSHGResolutionParsing() {

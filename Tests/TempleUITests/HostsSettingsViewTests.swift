@@ -52,10 +52,10 @@ final class HostsSettingsViewTests: XCTestCase {
         window.close()
     }
 
-    /// The sheet's terminal runs the test's wrapper (never anything else),
-    /// a terminal that ends early ends the test, and closing the sheet tears
-    /// the terminal down and stops the test.
-    func testTheTestSheetRunsTheWrapperAndTearsDown() throws {
+    /// The sheet's terminal runs the user's ssh itself, nothing wrapped
+    /// around it; its exit status is the connect's verdict; closing the
+    /// sheet tears the terminal down.
+    func testTheTestSheetRunsSSHAndReadsItsExit() throws {
         let (app, factory) = try app(enabled: true, records: [.config("box")]) { [] }
         let test = try XCTUnwrap(app.remoteHosts.startTest(for: "box"))
         var closed = false
@@ -64,16 +64,21 @@ final class HostsSettingsViewTests: XCTestCase {
         let window = render(sheet, size: NSSize(width: 680, height: 520))
         spin()
         let surface = try XCTUnwrap(factory.created.last)
-        XCTAssertEqual(surface.startedCommand?.argv, test.surfaceArgv)
-        XCTAssertEqual(surface.startedCommand?.argv.prefix(3), ["/usr/bin/env", "/bin/sh", "-c"])
-        XCTAssertTrue(surface.startedCommand?.argv.contains("ControlMaster=auto") ?? false)
-        XCTAssertEqual(surface.startedCommand?.argv.suffix(3), ["--", "box", "true"])
+        let argv = try XCTUnwrap(surface.startedCommand?.argv)
+        XCTAssertEqual(argv, test.surfaceArgv)
+        XCTAssertEqual(argv.first, "/usr/bin/env")
+        XCTAssertTrue(argv[1].hasSuffix("/ssh"), argv[1])
+        XCTAssertFalse(argv.contains("/bin/sh"), "no wrapper")
+        XCTAssertTrue(argv.contains("ControlMaster=auto"))
+        XCTAssertEqual(argv.suffix(3), ["--", "box", "true"])
         XCTAssertGreaterThan(surface.focusCount, 0, "the terminal takes the keyboard: ssh may ask")
         XCTAssertEqual(test.phase, .connecting)
 
-        surface.simulateExit(status: 1)
+        surface.simulateExit(status: 255)
         XCTAssertEqual(test.phase, .failed)
-        XCTAssertEqual(app.remoteHosts.statusLine(for: "box"), "Couldn't connect: the terminal closed before ssh finished.")
+        XCTAssertEqual(test.failure?.message, "Couldn't connect. See ssh's message above.")
+        XCTAssertEqual(app.remoteHosts.statusLine(for: "box"),
+                       "Couldn't connect: ssh exited with status 255. Test the connection to see ssh's message.")
         XCTAssertFalse(closed)
 
         window.contentView = nil
@@ -81,6 +86,27 @@ final class HostsSettingsViewTests: XCTestCase {
         spin()
         XCTAssertTrue(surface.didTerminate)
         XCTAssertGreaterThan(surface.releaseCount, 0)
+    }
+
+    /// A socket directory Temple won't use: the sheet starts no terminal.
+    func testNoTerminalStartsWhenTheTestCannotBePrepared() throws {
+        let defaults = Fixture.uniqueDefaults()
+        defaults.set(true, forKey: RemoteHostsModel.featureKey)
+        defaults.set(RemoteHostList(records: [.config("box")]).encode(), forKey: RemoteHostsModel.hostsKey)
+        let state = URL(fileURLWithPath: "/private/tmp/temple-hosts-blocked-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: state) }
+        try Data("not a directory".utf8).write(to: state.appendingPathComponent("ssh"))
+        let hosts = RemoteHostsModel(defaults: defaults, readConfigAliases: { [] }, stateDirectory: { state })
+        let test = try XCTUnwrap(hosts.startTest(for: "box"))
+        let factory = FakeTerminalSurfaceFactory()
+        let window = render(ConnectionTestSheet(test: test, surfaceFactory: factory, appearance: .default,
+                                                onTestAgain: {}, onClose: {}), size: NSSize(width: 680, height: 520))
+        spin()
+        XCTAssertNil(factory.created.last?.startedCommand, "no ssh was started")
+        XCTAssertEqual(test.phase, .failed)
+        XCTAssertTrue(hosts.statusLine(for: "box").hasPrefix("Temple couldn't prepare the test: "))
+        window.close()
     }
 
     func testTheFormSheetRenders() {

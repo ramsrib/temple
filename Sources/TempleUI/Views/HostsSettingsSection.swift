@@ -417,7 +417,7 @@ final class TestTerminal: ObservableObject, TerminalSurfaceDelegate {
             try surface.start(TerminalCommand(argv: test.surfaceArgv, cwd: test.surfaceDirectory))
             surface.focus()
         } catch {
-            test.terminalEnded()
+            test.terminalExited(status: nil)
         }
     }
 
@@ -427,8 +427,11 @@ final class TestTerminal: ObservableObject, TerminalSurfaceDelegate {
         surface.release()
     }
 
+    /// The terminal's process is ssh itself: its exit status is the
+    /// connect's verdict. A status the terminal never reported is unknown.
     func surface(_ surface: TerminalSurface, didChangeState state: TerminalProcessState) {
-        if case .exited = state { test?.terminalEnded() }
+        guard case .exited(let status) = state else { return }
+        test?.terminalExited(status: status == TerminalProcessState.unknownExitStatus ? nil : status)
     }
     func surface(_ surface: TerminalSurface, didUpdateTitle title: String) {}
     func surfaceDidRing(_ surface: TerminalSurface) {}

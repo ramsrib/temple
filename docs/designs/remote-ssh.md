@@ -195,14 +195,20 @@ in a small terminal sheet, and every place a query fails with an
 authentication or host-key error offers the same button.
 
 1. **Connect, interactively.** A libghostty surface in the sheet runs
-   `ssh -t <arguments> -- <name> true` (creating the master); the user
-   answers ssh there; the surface stays visible for the whole test, so the
-   fingerprint ssh showed is still on screen with the result.
-2. **Check, on exit 0.** Environment resolution, then the tool checks
-   (section 7), as queries over the master. Results render under the
-   surface, one row each (login shell and PATH, `claude`, `codex`, `tmux`,
-   logind), each with the verdict and that tool's own first line, expandable.
-   Exit non-zero: no checks; the row reads ssh's first stderr line.
+   `ssh -t <arguments> -- <name> true` (creating the master) as its own
+   process, nothing wrapped around it; the user answers ssh there; the
+   surface stays visible for the whole test, so the fingerprint ssh showed
+   is still on screen with the result.
+2. **Check, on exit 0** (the status the terminal reports for that very
+   process). Environment resolution, then the tool checks (section 7), as
+   `BatchMode` queries over the master through `RemoteExec` with their
+   deadlines. Results render under the surface, one row each (login shell
+   and PATH, `claude`, `codex`, `tmux`, logind), each with the verdict and
+   that tool's own first line, expandable. Any other end (non-zero, a
+   status the terminal never reported, a close): no checks and no second
+   connection; the sheet reads "Couldn't connect. See ssh's message above."
+   with ssh's own words kept on the terminal. (Phase 0 as built; see the
+   end notes.)
 
 Host-key copy: unknown key ("Host key verification failed." without the
 banner) reads "ssh hasn't seen this host's key before. Test the connection to
@@ -502,8 +508,10 @@ What this guarantees:
   (section 3).
 - **Records are atomic** (`mv` over a temp file in the same directory).
 
-The Hosts test executes **this exact chain** twice. Detached, on a
-throwaway socket, from the sheet's query phase: `tmux -L
+The Hosts test executes **this exact chain** detached (phase 0); the
+attached run below is phase 1a's acceptance, not the Test sheet's (see
+the end notes). Detached, on a throwaway socket, from the sheet's query
+phase: `tmux -L
 temple-check-<nonce> -f /dev/null <the same configure commands> \;
 new-session -d -s check -c "$HOME" -e PATH="$PATH" 'exit 0' \;
 kill-server`, stderr captured. Attached, in the sheet's own terminal surface
@@ -835,8 +843,9 @@ The check (sheet, after a successful connect; re-run by Test connection):
 
 1. `command -v claude`, `claude --version`; the same for `codex`; each with
    status, framed.
-2. tmux by executing the exact launch chain on a throwaway socket (section
-   4).
+2. tmux by executing the exact launch chain, detached, on a throwaway
+   socket (section 4). The row reads "Detached tmux check passed"; an
+   attached client is phase 1a's acceptance.
 3. logind: `busctl get-property org.freedesktop.login1
    /org/freedesktop/login1 org.freedesktop.login1.Manager KillUserProcesses`
    where `busctl` exists; `true` → an advisory row: "This host ends your
@@ -1423,3 +1432,42 @@ Approved 2026-10-16 (fable final read of the lifecycle changes). Must-fix for ph
 6. **Keep clears the flag.** In "Sessions on <host>", Keep on a left-running session clears `left_running_at`/`left_running_reason` (it becomes an ordinary Detached session), so the state table's Left running row exits by Open, Stop **or Keep**. The sidebar line "N sessions left running on <host>" shows once per flag (dismissed or acted on, it does not return on the next contact), so a session the user chose to keep never nags.
 
 Adopt astra's note 4 (detach Temple's own client, require zero attached) before 1a lands. Not in v1: growing the "Not in Temple" rows; a "still running" nudge for sessions detached while working (the v1.1 lever if acceptance shows they get forgotten).
+
+## Phase 0 as built (implementation notes)
+
+Recorded after two sol review rounds on phase 0 (astra agreed the
+altitude decision in the second):
+
+1. **The Test connection's terminal runs the user's ssh and nothing
+   else.** An earlier build ran a local wrapper and an attached-check
+   helper in the sheet's terminal; three findings in a row landed in that
+   wrapper (supervision, signals, storage failures), so it was deleted
+   rather than patched. The terminal's process is `/usr/bin/env ssh
+   <arguments> -- <name> true`; its verdict is the exit status libghostty
+   reports for that process (a close request is never reported as exit 0:
+   `TerminalProcessState.unknownExitStatus`, which the child's own status
+   replaces). Exit 0 starts the checks, all `BatchMode` queries over the
+   master. Anything else runs nothing and reconnects nothing: "Couldn't
+   connect. See ssh's message above." in the sheet, "Couldn't connect: ssh
+   exited with status <n>. Test the connection to see ssh's message." in
+   the Hosts list. ssh's stderr is on the terminal, not in Temple, so the
+   unknown-key and changed-key copy apply to queries (phase 1), and a
+   changed key gets the generic copy in the sheet with Test again.
+2. **The attached-client check moves to phase 1a's acceptance**: a
+   terminal opening a client under tmux, `TERM=xterm-256color` outside and
+   `tmux-256color` in the pane (`tput colors`, `tput cup`), are validated
+   there, on both boxes, with the tab's own launch. Phase 0 already ran
+   that check on both boxes before the wrapper was removed: the attached
+   client exited 0 on `masterblaster-mentes` (tmux 3.4) and on
+   `jetson-mentes` (tmux 3.2a).
+3. **The socket path limit is 86 bytes, not 90**: ssh binds the master at
+   `<ControlPath>.<16 random characters>` and `sun_path` holds 104 bytes
+   with its NUL. A fallback still too long goes under
+   `/tmp/temple-ssh-<uid>/`. The socket directory is created or checked
+   without following a symlink, must be this user's, and is made 0700;
+   anything else fails the test before a terminal starts.
+4. **Hosts, users and jump hosts pass a strict grammar** (host names in
+   their IDNA ASCII form, IPv4, IPv6; `[A-Za-z0-9._-]` users;
+   `[user@]host[:port]` hops), because ssh substitutes them into a
+   `ProxyCommand`'s shell text. Every check for shell syntax works on
+   Unicode scalars, not Characters.

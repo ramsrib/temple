@@ -123,17 +123,13 @@ public struct TmuxVersion: Sendable, Equatable, Comparable, CustomStringConverti
 
 /// tmux on the host, by execution of the launch chain.
 public enum TmuxCheck: Sendable, Equatable {
-    /// The whole chain was accepted, detached and attached.
+    /// The whole chain was accepted, detached, on a throwaway socket. (An
+    /// attached client is phase 1a's acceptance.)
     case accepted(version: String, passthrough: Bool)
     /// The chain ran but this version is below the floor.
     case tooOld(version: String)
     /// tmux refused a command: which one, and tmux's own line.
     case refused(version: String, command: String?, line: String)
-    /// An attached client failed where a detached one did not.
-    case attachedFailed(version: String, line: String)
-    /// The detached chain was accepted, but the attached check never
-    /// reported (it ran out of time, or ssh dropped): proves nothing.
-    case attachedUnconfirmed(version: String, reason: String)
     case missing
     case notChecked(reason: String)
 
@@ -141,8 +137,7 @@ public enum TmuxCheck: Sendable, Equatable {
 
     /// Detached, on a throwaway socket: the chain with a `new-session -d`
     /// that exits at once, then `kill-server`. When the chain is refused,
-    /// each command is tried alone to name the one tmux would not take. The
-    /// attached check's leftovers (`$2`, its nonce) are read and removed.
+    /// each command is tried alone to name the one tmux would not take.
     static var script: String {
         let probes = TmuxChain.configure.map { command in
             "  e1=$(tmux -L \"$s\" -f /dev/null start-server ';' \(command.words) ';' kill-server 2>&1 >/dev/null) "
@@ -151,15 +146,9 @@ public enum TmuxCheck: Sendable, Equatable {
                 + "  cleanup\n"
         }.joined()
         return """
-        n=$1; a=$2
+        n=$1
         s=temple-check-$n
-        d=${TMPDIR:-/tmp}/temple-launch-$(id -u)
         cleanup() { tmux -L "$s" kill-server >/dev/null 2>&1; rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$s"; }
-        if [ -n "$a" ]; then
-          tmux -L "temple-check-$a" kill-server >/dev/null 2>&1; rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/temple-check-$a"
-          if [ -f "$d/check-$a.err" ]; then printf 'attached-error\\t%s\\n' "$(head -n 1 "$d/check-$a.err")"; fi
-          rm -f "$d/check-$a.err" "$d/check-$a.pane"
-        fi
         v=$(tmux -V 2>&1) || { printf 'missing\\t%s\\n' "$v"; exit 0; }
         printf 'version\\t%s\\n' "$v"
         e=$(tmux -L "$s" -f /dev/null \(TmuxChain.head) new-session -d -s check -c "$HOME" -e PATH="$PATH" 'exit 0' ';' kill-server 2>&1 >/dev/null); st=$?
@@ -174,40 +163,16 @@ public enum TmuxCheck: Sendable, Equatable {
         """
     }
 
-    /// Attached, in the sheet's own terminal: the same chain with a pane
-    /// that proves the terminal pair (`xterm-256color` outside,
-    /// `tmux-256color` inside) by drawing, then the throwaway server is
-    /// killed. Exit 0: the pane ran; 3: the client attached but the pane
-    /// could not draw; else tmux's own status. tmux's stderr is left in
-    /// `check-<nonce>.err` for the detached query to report.
-    static let attachedScript = """
-    n=$1
-    s=temple-check-$n
-    d=${TMPDIR:-/tmp}/temple-launch-$(id -u); umask 077; mkdir -p "$d"
-    r=$d/check-$n
-    rm -f "$r.pane"
-    tmux -L "$s" -f /dev/null \(TmuxChain.head) new-session -s check -c "$HOME" -e PATH="$PATH" -e TEMPLE_CHECK="$r.pane" 'tput colors >/dev/null && tput cup 0 0 && echo ok > "$TEMPLE_CHECK"' 2>"$r.err"
-    st=$?
-    tmux -L "$s" kill-server >/dev/null 2>&1; rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$s"
-    [ -s "$r.err" ] || rm -f "$r.err"
-    if [ "$st" -eq 0 ]; then
-      if [ -f "$r.pane" ]; then rm -f "$r.pane"; exit 0; fi
-      echo "the pane could not draw (tput failed under tmux-256color)" > "$r.err"; exit 3
-    fi
-    exit "$st"
-    """
-
-    public static func run(nonce: String, attachedNonce: String?, attachedStatus: Int32?,
-                           using exec: RemoteExec) async -> TmuxCheck {
+    public static func run(nonce: String, using exec: RemoteExec) async -> TmuxCheck {
         do {
-            let output = try await exec.run(script: script, args: [nonce, attachedNonce ?? ""], deadline: deadline)
-            return parse(output, attachedStatus: attachedStatus)
+            let output = try await exec.run(script: script, args: [nonce], deadline: deadline)
+            return parse(output)
         } catch {
             return .notChecked(reason: error.localizedDescription)
         }
     }
 
-    static func parse(_ output: RemoteOutput, attachedStatus: Int32?) -> TmuxCheck {
+    static func parse(_ output: RemoteOutput) -> TmuxCheck {
         guard output.status == 0 else {
             return .notChecked(reason: output.firstErrorLine ?? "ssh exited with status \(output.status)")
         }
@@ -215,7 +180,6 @@ public enum TmuxCheck: Sendable, Equatable {
         var chain: Int32?
         var refused: String?
         var refusedLine: String?
-        var attachedError: String?
         var chainLines: [String] = []
         var afterRefused = false
         for line in output.stdout.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
@@ -224,7 +188,6 @@ public enum TmuxCheck: Sendable, Equatable {
             case "missing": return .missing
             case "version": version = fields.count > 1 ? fields[1] : ""
             case "chain": chain = fields.count > 1 ? Int32(fields[1]) : nil
-            case "attached-error": attachedError = fields.count > 1 ? fields[1] : nil
             case "refused": refused = fields.count > 1 ? fields[1] : nil; afterRefused = true
             default:
                 let text = line.trimmingCharacters(in: .whitespaces)
@@ -241,28 +204,13 @@ public enum TmuxCheck: Sendable, Equatable {
             return .refused(version: shown, command: refused, line: refusedLine ?? chainLines.first ?? "exit status \(chain)")
         }
         if let number, number < TmuxChain.floor { return .tooOld(version: shown) }
-        if let attachedStatus, attachedStatus != 0 {
-            // Only tmux's own words (or the pane's, status 3) prove a
-            // failure. Without them the status is ssh's or Temple's: 124,
-            // Temple stopped waiting; 255, ssh dropped; anything else, an
-            // end nothing explained. None proves the host can't run it.
-            if let line = attachedError?.trimmingCharacters(in: .whitespaces), !line.isEmpty {
-                return .attachedFailed(version: shown, line: line)
-            }
-            let reason = switch attachedStatus {
-            case 124: "it didn't finish in time"
-            case 255: "ssh exited before it finished"
-            default: "it ended with status \(attachedStatus) and no word from tmux"
-            }
-            return .attachedUnconfirmed(version: shown, reason: reason)
-        }
         return .accepted(version: shown, passthrough: number.map { $0 >= TmuxChain.passthroughSince } ?? true)
     }
 
     public var provesUnavailable: Bool {
         switch self {
-        case .tooOld, .refused, .attachedFailed, .missing: true
-        case .accepted, .attachedUnconfirmed, .notChecked: false
+        case .tooOld, .refused, .missing: true
+        case .accepted, .notChecked: false
         }
     }
 }
@@ -313,7 +261,10 @@ public enum SSHFailure: Sendable, Equatable {
     /// The changed-key banner; `offending` is ssh's `Offending … key in …:N`.
     case changedHostKey(offending: String?)
     case other(firstLine: String)
-    /// This Mac could not prepare the test (a folder, the socket directory).
+    /// The interactive connect ended without success; ssh said why on the
+    /// terminal, where its words stay. nil: no status was reported.
+    case connectFailed(status: Int32?)
+    /// This Mac could not prepare the test (the socket directory).
     case localSetup(String)
 
     public static func classify(stderr: String, status: Int32) -> SSHFailure {
@@ -339,12 +290,22 @@ public enum SSHFailure: Sendable, Equatable {
                 + (offending.map { " ssh named the line: \($0)." } ?? "")
         case .other(let line):
             "Couldn't connect: \(line.hasSuffix(".") ? String(line.dropLast()) : line)."
+        case .connectFailed:
+            "Couldn't connect. See ssh's message above."
         case .localSetup(let reason):
             "Temple couldn't prepare the test: \(reason.hasSuffix(".") ? String(reason.dropLast()) : reason)."
         }
     }
 
     /// A changed key offers Close only: no retry until the user has looked.
+    /// The line under a host in the Hosts list, where ssh's message is not
+    /// on screen.
+    public var listMessage: String {
+        guard case .connectFailed(let status) = self else { return message }
+        return "Couldn't connect" + (status.map { ": ssh exited with status \($0)" } ?? "")
+            + ". Test the connection to see ssh's message."
+    }
+
     public var allowsRetry: Bool {
         if case .changedHostKey = self { return false }
         return true
@@ -374,7 +335,7 @@ public struct HostTestSummary: Sendable, Equatable {
     /// One status line: how it connected and what runs there, then each
     /// problem in its own sentence.
     public var statusLine: String {
-        if let failure { return failure.message }
+        if let failure { return failure.listMessage }
         var sentences: [String] = []
         sentences.append(connectedAs.map { "Connected as \($0)." } ?? "Connected.")
         var running: [String] = []
@@ -407,8 +368,6 @@ public struct HostTestSummary: Sendable, Equatable {
             passthrough ? nil : "tmux \(version): clipboard passthrough is off on this version."
         case .tooOld(let version): "tmux \(version): Temple needs tmux 3.2 or newer to keep sessions running."
         case .refused(let version, _, let line): "tmux \(version) refused the launch chain: \(line)"
-        case .attachedFailed(let version, let line): "tmux \(version) couldn't run an attached session: \(line)"
-        case .attachedUnconfirmed(let version, let reason): "tmux \(version): Temple couldn't finish the attached check; \(reason)."
         case .missing: "No tmux on this host. Install tmux 3.2 or newer to start sessions here."
         case .notChecked(let reason): "tmux wasn't checked: \(reason)"
         }

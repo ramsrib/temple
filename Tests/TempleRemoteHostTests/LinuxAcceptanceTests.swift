@@ -12,8 +12,9 @@ import TempleCore
 /// Each name is an `~/.ssh/config` alias reachable without a prompt
 /// (`BatchMode`). Read-only on the host except a throwaway tmux socket and
 /// the check's record files, all removed: the environment, `claude
-/// --version`, `codex --version`, `tmux -V`, the launch chain detached and
-/// attached (in a pseudo-terminal, under `TERM=xterm-256color`), logind.
+/// --version`, `codex --version`, `tmux -V`, the launch chain detached on a
+/// throwaway socket, logind. (An attached client under `xterm-256color`
+/// with a `tmux-256color` pane is phase 1a's acceptance.)
 /// Nothing starts an agent session. No master is created: these runs use
 /// `ControlMaster=no` throughout.
 final class LinuxAcceptanceTests: XCTestCase {
@@ -54,19 +55,7 @@ final class LinuxAcceptanceTests: XCTestCase {
             XCTAssertTrue(found.hasSuffix("/.local/bin/\(binary)"), "\(name): \(found)")
         }
 
-        // The attached chain, as the sheet's terminal runs it: ssh -t in a
-        // pseudo-terminal, TERM=xterm-256color outside.
-        let attachedNonce = RemoteQuoting.nonce()
-        let remote = RemoteQuoting.shellCommand(script: TmuxCheck.attachedScript, args: [attachedNonce], path: path)
-        let argv = ["/usr/bin/ssh"] + connection.arguments(for: .query).map { $0 == "-T" ? "-t" : $0 } + ["--", name, remote]
-        var environmentForTerminal = ProcessInfo.processInfo.environment
-        environmentForTerminal["TERM"] = "xterm-256color"
-        let attached = try await ProcessRunner.run("/usr/bin/script", ["-q", "/dev/null"] + argv,
-                                                   environment: environmentForTerminal, deadline: 30)
-        lines.append("  attached client exit status \(attached.status)")
-
-        let tmux = await TmuxCheck.run(nonce: RemoteQuoting.nonce(), attachedNonce: attachedNonce,
-                                       attachedStatus: attached.status, using: exec)
+        let tmux = await TmuxCheck.run(nonce: RemoteQuoting.nonce(), using: exec)
         lines.append(ConnectionTest.row(tmux).line)
         guard case .accepted = tmux else { XCTFail("\(name): \(tmux)"); return }
 
@@ -79,13 +68,9 @@ final class LinuxAcceptanceTests: XCTestCase {
                                       environment: environment, claude: claude, codex: codex, tmux: tmux, logind: logind)
         lines.append("Status: \(summary.statusLine)")
 
-        // Nothing left behind: no throwaway socket, no check files; the
-        // record directory is removed when the check left it empty.
+        // Nothing left behind: no throwaway socket.
         let leftovers = try await exec.run(script: """
-            d=${TMPDIR:-/tmp}/temple-launch-$(id -u)
             ls "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)" 2>/dev/null | grep '^temple-check-' || true
-            ls "$d" 2>/dev/null | grep '^check-' || true
-            rmdir "$d" 2>/dev/null || true
             """, args: [], deadline: 10)
         XCTAssertEqual(leftovers.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "", "\(name) leftovers")
         print(lines.joined(separator: "\n"))
