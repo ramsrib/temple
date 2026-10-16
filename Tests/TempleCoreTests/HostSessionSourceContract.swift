@@ -62,7 +62,7 @@ protocol SourceFixture: AnyObject {
 class HostSessionSourceContract: XCTestCase {
     func makeFixture() throws -> SourceFixture { throw XCTSkip("abstract contract") }
 
-    private var fixture: SourceFixture!
+    var fixture: SourceFixture!
     private var observers: [Task<Void, Never>] = []
     private var events = EventLog()
     var source: any HostSessionSource { fixture.source }

@@ -20,8 +20,9 @@ typealias ConnectionCheckRow = TempleRemoteHost.ConnectionTest.Row
 
 extension HostRegistry.Entry {
     /// An enabled host's entry, registered whether or not it was tested.
-    /// Its source reads nothing yet (enrichment is phase 2); its launcher
-    /// runs sessions there under the hidden tmux server.
+    /// Its source reads the transcripts of the sessions Temple has rows for
+    /// (enrichment, phase 2) over the same connection; its launcher runs
+    /// sessions there under the hidden tmux server.
     @MainActor static func remote(_ record: RemoteHostRecord,
                                   availability: @escaping (Agent) -> LaunchAvailability,
                                   extraArgs: @escaping (Agent) -> [String] = { _ in [] },
@@ -30,7 +31,7 @@ extension HostRegistry.Entry {
                                       sshPath: RemoteHostComposition.sshPath,
                                       store: { try RemoteHostComposition.store(in: stateDirectory) },
                                       storeExists: { RemoteHostComposition.storeExists(in: stateDirectory) })
-        return HostRegistry.Entry(source: RemoteSessionSource(host: record.host),
+        return HostRegistry.Entry(source: RemoteSessionSource(sessions: sessions),
                                   launcher: RemoteHostLauncher(sessions: sessions, availability: availability,
                                                                extraArgs: extraArgs))
     }

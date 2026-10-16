@@ -22,6 +22,8 @@ final class RemoteGateWalkTests: XCTestCase {
         let app: AppModel
         let db: TempleDB
         let remote: FakeRemoteHost
+        /// The host's transcripts, as enrichment reads them.
+        let source: FakeHostSource
         let factory: FakeTerminalSurfaceFactory
         let host: HostID
         var directories: [String] = []
@@ -34,12 +36,13 @@ final class RemoteGateWalkTests: XCTestCase {
         @MainActor init(host: HostID) throws {
             self.host = host
             remote = FakeRemoteHost(host.rawValue)
+            source = FakeHostSource(host: host)
             factory = FakeTerminalSurfaceFactory()
             let defaults = Fixture.uniqueDefaults()
             defaults.set(true, forKey: RemoteHostsModel.featureKey)
             defaults.set(try JSONEncoder().encode([["name": host.rawValue, "source": "config"]]), forKey: RemoteHostsModel.hostsKey)
             let local = Fixture.hostsWithoutFolderEvidence().entries[0]
-            let hosts = HostRegistry(entries: [local, .init(source: FakeHostSource(host: host), launcher: remote)])
+            let hosts = HostRegistry(entries: [local, .init(source: source, launcher: remote)])
             db = try TempleDB.inMemory()
             app = AppModel(surfaceFactory: factory, database: db,
                            settings: SettingsStore(defaults: defaults), hostRegistry: hosts,
@@ -412,6 +415,43 @@ final class RemoteGateWalkTests: XCTestCase {
                         XCTAssertEqual(h.app.openSessions.tabs.count, persistedBefore, "\(name): the frozen tab set is untouched")
                     }
                 }
+            }
+        }
+    }
+
+    /// Enrichment (phase 2) is outside the list, by design: it is the
+    /// host's engine, whose facts reach a row only through `EngineSet` and
+    /// `FactPersister`. Undisturbed, a remote row that lacks a title fills
+    /// from its transcript (durable, never gated). With its host retired
+    /// while a read is held (the engine removed with the entry, as
+    /// `rebuildRemoteHosts` does), the late answer touches no row and
+    /// leaves nothing in the merge.
+    func testEnrichmentOfARetiredHostTouchesNoRow() async throws {
+        for retire in [false, true] {
+            let h = try Harness(host: hostID)
+            let path = "/home/u/.claude/projects/-home-u-p/s9.jsonl"
+            h.source.write(path, agent: .claude, data: Data(#"""
+                {"type":"user","sessionId":"s9","cwd":"/home/u/p","timestamp":"2026-10-01T10:00:00Z","message":{"content":"Remote prompt"}}
+                """#.utf8))
+            let gate = FakeGate()
+            h.source.readGate = gate
+            try h.db.join(sessionID: "s9", via: .opened, agent: .claude, core: SessionCore(host: hostID))
+            await settle { gate.arrivals > 0 }
+            XCTAssertGreaterThan(gate.arrivals, 0, "the engine reads the row's transcript")
+            if retire {
+                h.app.openSessions.remoteTabs.retireHost(h.host)
+                h.app.hostBox.value = h.app.hostBox.value.removing(h.host)
+                h.app.engineSet.remove(host: h.host)
+            }
+            gate.open()
+            if retire {
+                try await Task.sleep(for: .milliseconds(300))
+                XCTAssertNil(try h.db.sessionState("s9")?.title, "retired: no fill")
+                XCTAssertNil(h.app.engineSet.latest?.resolutions["s9"], "retired: nothing left in the merge")
+            } else {
+                await settle { (try? h.db.sessionState("s9")?.title) != nil }
+                XCTAssertEqual(try h.db.sessionState("s9")?.title, "Remote prompt")
+                XCTAssertEqual(try h.db.sessionState("s9")?.directory, "/home/u/p")
             }
         }
     }

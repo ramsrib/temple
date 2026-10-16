@@ -9,7 +9,7 @@ import TempleCore
 /// the gate says (owned by `RemoteOperations`).
 ///
 /// This list is maintained by hand; `RemoteGateWalkTests` proves that each
-/// case is gated, not that the list is complete against the source. Four
+/// case is gated, not that the list is complete against the source. These
 /// asynchronous mechanisms are deliberately outside it, each a lifecycle of
 /// its own:
 ///
@@ -30,6 +30,13 @@ import TempleCore
 ///   follows: it happens whatever the tab is doing, and only the quit
 ///   defers it (to the next launch's reconciliation, which finds the claim
 ///   unjoined). What the tab shows of it is `.identityResult`.
+///
+/// - **Enrichment** (phase 2) is the host's engine: its facts reach a row
+///   only through `EngineSet`, which drops a removed or edited host's
+///   engine and everything it published, and its writes are
+///   `FactPersister`'s, durable and guarded by the row's id, host and
+///   incarnation. It touches no tab, sheet or tab set
+///   (`RemoteGateWalkTests.testEnrichmentOfARetiredHostTouchesNoRow`).
 ///
 /// The settle timer is not exempt: for a tab on a host it is `.settle`.
 public enum RemoteCompletion: String, CaseIterable, Sendable {

@@ -328,6 +328,56 @@ public final class RemoteSessions {
     /// A transport failure: the next query resolves the PATH again.
     func transportFailed() { pathState = .unresolved; pathConnection = nil; claudeConfig = nil; codexHome = nil }
 
+    // MARK: Enrichment (phase 2)
+
+    /// What enrichment needs for one query (`RemoteSessionSource`): the
+    /// query exec, with the PATH policy's answer, and per session where its
+    /// transcripts are. A session Temple ran here is looked for under the
+    /// root its latest relevant run's agent had (as that run's pane
+    /// recorded it), and only there: a run that left no evidence makes the
+    /// root unknown, never an older run's or the login environment's. A
+    /// session with no run (imported, or run before the store existed) is
+    /// looked for under the login environment's root, from the same bounded
+    /// query as the PATH. A root Temple doesn't know is not searched. A
+    /// store that exists but can't be read makes every root unknown.
+    public func transcriptContext(sessionIDs: [String], refresh: Bool) async throws -> RemoteTranscriptContext {
+        let exec = try await queryExec(refresh: refresh)
+        guard !sessionIDs.isEmpty else { return RemoteTranscriptContext(exec: exec, roots: [:]) }
+        let login: [Agent: RemoteTranscriptRoot] = [
+            .claude: RemoteTranscriptRoot(launchConfig, base: nil),
+            .codex: RemoteTranscriptRoot(launchCodexHome, base: nil),
+        ].compactMapValues { $0 }
+        let host = host
+        var runs: [RemoteRun] = []
+        if openedStore != nil || storeExists() {
+            do { runs = try await store().perform { try $0.runs(host: host) } } catch {
+                return RemoteTranscriptContext(exec: exec, roots: [:])
+            }
+        }
+        var bySession: [String: [RemoteRun]] = [:]
+        for run in runs { if let id = run.sessionID { bySession[id, default: []].append(run) } }
+        var roots: [String: [Agent: RemoteTranscriptRoot]] = [:]
+        for id in sessionIDs {
+            guard let sessionRuns = bySession[id], !sessionRuns.isEmpty else {
+                roots[id] = login
+                continue
+            }
+            guard let latest = sessionRuns.last(where: { $0.dismissedAt == nil && $0.creation != .failed }) else {
+                // Every run was dismissed or never ran: nothing says where
+                // its agent kept the conversation.
+                roots[id] = [:]
+                continue
+            }
+            let variable = latest.agent == .claude ? Self.effectiveRoot(of: latest) : Self.effectiveHome(of: latest)
+            roots[id] = RemoteTranscriptRoot(variable, base: latest.directory).map { [latest.agent: $0] } ?? [:]
+        }
+        return RemoteTranscriptContext(exec: exec, roots: roots)
+    }
+
+    /// A query failed in transit (enrichment's): the next one resolves the
+    /// environment again.
+    public func enrichmentTransportFailed() { transportFailed() }
+
     /// The config root to hand a launch: only one resolved over this
     /// connection (otherwise the launch resolves it with the PATH).
     var launchConfig: RemoteEnvironment.ClaudeConfig? {

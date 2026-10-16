@@ -10,8 +10,16 @@ public struct RemoteOutput: Sendable, Equatable {
     /// false means ssh, the master or the network failed first, and the
     /// status and stderr are ssh's.
     public var reachedCommand: Bool
+    /// What the command printed on stdout, byte for byte (`stdout` is the
+    /// same decoded as UTF-8, which replaces what isn't): what transcript
+    /// reads frame by length.
+    public var data: Data
     public init(status: Int32, stdout: String, stderr: String, reachedCommand: Bool = true) {
-        self.status = status; self.stdout = stdout; self.stderr = stderr; self.reachedCommand = reachedCommand
+        self.init(status: status, data: Data(stdout.utf8), stderr: stderr, reachedCommand: reachedCommand)
+    }
+    public init(status: Int32, data: Data, stderr: String, reachedCommand: Bool = true) {
+        self.status = status; self.stdout = String(decoding: data, as: UTF8.self); self.stderr = stderr
+        self.reachedCommand = reachedCommand; self.data = data
     }
 
     /// The first line of stderr that says something, trimmed; nil when none.
@@ -96,9 +104,28 @@ public struct SSHExec: RemoteExec {
     /// the marker never reached the command: stdout is then empty, and
     /// stderr is ssh's own (kept whole).
     static func unframe(_ raw: ProcessRunner.Output, marker: String) -> RemoteOutput {
-        let stdout = after(marker, in: raw.stdout)
-        return RemoteOutput(status: raw.status, stdout: stdout ?? "",
+        let stdout = after(marker, in: raw.stdoutData)
+        return RemoteOutput(status: raw.status, data: stdout ?? Data(),
                             stderr: after(marker, in: raw.stderr) ?? raw.stderr, reachedCommand: stdout != nil)
+    }
+
+    /// The bytes after the first line that is the marker (spaces and tabs
+    /// around it ignored, as `after(_:in:)` reads a line), or nil.
+    static func after(_ marker: String, in data: Data) -> Data? {
+        let wanted = Array(marker.utf8)
+        var start = data.startIndex
+        while start <= data.endIndex {
+            let newline = data[start...].firstIndex(of: 0x0a)
+            var line = data[start..<(newline ?? data.endIndex)]
+            while let first = line.first, first == 0x20 || first == 0x09 { line = line.dropFirst() }
+            while let last = line.last, last == 0x20 || last == 0x09 { line = line.dropLast() }
+            if line.elementsEqual(wanted) {
+                return newline.map { Data(data[data.index(after: $0)...]) } ?? Data()
+            }
+            guard let newline else { return nil }
+            start = data.index(after: newline)
+        }
+        return nil
     }
 
     static func after(_ marker: String, in text: String) -> String? {
@@ -152,10 +179,18 @@ public enum ProcessRunner {
         public var status: Int32
         public var stdout: String
         public var stderr: String
+        /// stdout, byte for byte.
+        public var stdoutData: Data
+        public init(status: Int32, stdout: String, stderr: String, stdoutData: Data? = nil) {
+            self.status = status; self.stdout = stdout; self.stderr = stderr
+            self.stdoutData = stdoutData ?? Data(stdout.utf8)
+        }
     }
 
-    /// Each stream is cut at this many bytes.
-    static let limit = 1 << 20
+    /// Each stream is cut at this many bytes: room for a transcript read
+    /// (a 1 MiB head, a tail and the session's shared lines), which is the
+    /// largest answer any query gives.
+    static let limit = 8 << 20
     /// How long the streams may stay open after the process has exited.
     static let drainGrace: TimeInterval = 0.5
 
@@ -394,7 +429,7 @@ public enum ProcessRunner {
                 guard !answered, let continuation = _continuation, let status else { return nil }
                 answered = true
                 return (continuation, Output(status: status, stdout: String(decoding: buffers[0], as: UTF8.self),
-                                             stderr: String(decoding: buffers[1], as: UTF8.self)))
+                                             stderr: String(decoding: buffers[1], as: UTF8.self), stdoutData: buffers[0]))
             }
             guard let (continuation, output) = answer else { return }
             teardown()

@@ -94,6 +94,19 @@ final class ModuleBoundaryTests: XCTestCase {
         XCTAssertFalse(Self.importsLocalHost("import TempleRemoteHost"))
     }
 
+    /// Enrichment on a host (phase 2) reads transcripts only through the
+    /// exec seam: the remote source and its scripts touch no local
+    /// filesystem API, and the remote module never reaches for this Mac's
+    /// stores.
+    func testRemoteEnrichmentReadsOnlyThroughTheExecSeam() throws {
+        let remote = try swiftFiles(under: "Sources/TempleRemoteHost")
+        XCTAssertEqual(remote.filter { Self.importsLocalHost($0.text) }.map(\.path), [])
+        let enrichment = remote.filter { $0.path.hasSuffix("/RemoteSessionSource.swift") || $0.path.hasSuffix("/RemoteTranscripts.swift") }
+        XCTAssertEqual(enrichment.count, 2)
+        let hits = enrichment.flatMap { Self.filesystemHits($0.text, path: $0.path) }
+        XCTAssertEqual(hits, [], hits.joined(separator: "\n"))
+    }
+
     func testFormatsTouchNoFilesystem() throws {
         let hits = try swiftFiles(under: "Sources/TempleCore/Formats").flatMap { Self.filesystemHits($0.text, path: $0.path) }
         XCTAssertEqual(hits, [], hits.joined(separator: "\n"))
