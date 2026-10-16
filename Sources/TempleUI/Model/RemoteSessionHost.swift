@@ -156,11 +156,15 @@ public struct RemotePendingRun: Equatable {
     public let ended: Bool
     /// Its id, for a run claimed after its tab set was saved.
     public let sessionID: String?
-    /// Something was typed into its tab.
+    /// Something was typed into its tab (or it is from before Temple kept
+    /// that, which counts the same).
     public let typed: Bool
-    public init(handle: String, directory: String, ended: Bool, sessionID: String? = nil, typed: Bool = false) {
+    /// Its claim reached core.
+    public let joined: Bool
+    public init(handle: String, directory: String, ended: Bool, sessionID: String? = nil, typed: Bool = false,
+                joined: Bool = false) {
         self.handle = handle; self.directory = directory; self.ended = ended
-        self.sessionID = sessionID; self.typed = typed
+        self.sessionID = sessionID; self.typed = typed; self.joined = joined
     }
 }
 
@@ -329,8 +333,11 @@ public struct RemoteTabState: Equatable {
     public var confirming: String?
     /// The owned identity schedule of this open.
     var identityOperation: UUID?
-    /// That something was typed is already kept with the run.
-    var inputRecorded = false
+    /// This launch attached a client to the run (a restored chip never
+    /// opened has not): only then does the quit stop it when idle.
+    var attachedThisLaunch = false
+    /// Core refused the id this run's check found: Try again is offered.
+    public var identityRefused = false
 
     public init(phase: Phase) { self.phase = phase }
 

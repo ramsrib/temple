@@ -410,6 +410,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Rows changed: the tab on screen that could not open for want of a
     /// folder opens now, if its row has learned one and the user is still on it.
     public func rowsChanged() {
+        remoteTabs.rowsChanged()
         guard let id = pendingRestoreActivation else { return }
         guard activeTabID == id, let tab = tabs.first(where: { $0.id == id }), !tab.hasSurface else {
             pendingRestoreActivation = nil
@@ -1019,6 +1020,15 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     }
 
     func persist() {
+        persistence.save(restorableTabs())
+    }
+
+    /// The same save, saying whether the tab set was written.
+    func persistAcknowledged() -> Bool {
+        persistence.saveAcknowledged(restorableTabs())
+    }
+
+    private func restorableTabs() -> [PersistedTab] {
         var restorable = tabs
             .filter { $0.kind == .session && !$0.isProvisional }
             .compactMap { tab -> PersistedTab? in
@@ -1035,7 +1045,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             restorable = restorable.filter { keys[$0.sessionID] == active }
                 + restorable.filter { keys[$0.sessionID] != active }
         }
-        persistence.save(restorable)
+        return restorable
     }
 
     /// Rebuild the per-project tab set + order as **inert chips** (no surface
@@ -1276,7 +1286,6 @@ extension OpenSessionsModel {
                              title: Agent.codex.newSessionTitle, isProvisional: true, host: host)
         var state = RemoteTabState(phase: ended ? .endedPending : .disconnected)
         state.handle = handle
-        state.inputRecorded = typed
         tab.remote = state
         // What was typed before the relaunch is kept with the run.
         tab.inputSubmitted = typed

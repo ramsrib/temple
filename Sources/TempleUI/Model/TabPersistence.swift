@@ -46,6 +46,10 @@ public struct PersistedTab: Codable, Equatable {
 public protocol TabPersistence: AnyObject {
     func load() -> [PersistedTab]
     func save(_ tabs: [PersistedTab])
+    /// The same save, saying whether it was written: what a caller that
+    /// must not let go of a fallback until the tab set is stored waits for
+    /// (a pending remote run handed over to `open_tabs`).
+    func saveAcknowledged(_ tabs: [PersistedTab]) -> Bool
     /// The ⌘P switcher's order: projects most recently used first. Kept beside
     /// the tabs because a relaunch restores both, and the tab set alone cannot
     /// say which project you were in before the one you quit in.
@@ -54,6 +58,12 @@ public protocol TabPersistence: AnyObject {
 }
 
 public extension TabPersistence {
+    /// A store that can't tell: saved, and taken as written.
+    func saveAcknowledged(_ tabs: [PersistedTab]) -> Bool {
+        save(tabs)
+        return true
+    }
+
     /// Stores without a place for it start every launch with no recency, which
     /// is what every build before this one did.
     func loadProjectRecency() -> [ProjectKey] { [] }
@@ -81,6 +91,10 @@ public final class DBTabPersistence: TabPersistence {
     }
 
     public func save(_ tabs: [PersistedTab]) {
+        _ = saveAcknowledged(tabs)
+    }
+
+    public func saveAcknowledged(_ tabs: [PersistedTab]) -> Bool {
         var positions: [String: Int] = [:]
         let records = tabs.map { tab in
             let position = positions[tab.projectPath, default: 0]
@@ -94,7 +108,12 @@ public final class DBTabPersistence: TabPersistence {
                 isActive: tab.isActive
             )
         }
-        try? db.replaceOpenTabs(records)
+        do {
+            try db.replaceOpenTabs(records)
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// In `ui_state`, not a new table: a migration would lock every older
@@ -203,7 +222,12 @@ public final class UserDefaultsTabPersistence: TabPersistence {
     }
 
     public func save(_ tabs: [PersistedTab]) {
-        guard let data = try? JSONEncoder().encode(tabs) else { return }
+        _ = saveAcknowledged(tabs)
+    }
+
+    public func saveAcknowledged(_ tabs: [PersistedTab]) -> Bool {
+        guard let data = try? JSONEncoder().encode(tabs) else { return false }
         defaults.set(data, forKey: key)
+        return true
     }
 }

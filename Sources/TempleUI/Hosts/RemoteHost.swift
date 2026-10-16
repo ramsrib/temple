@@ -293,7 +293,7 @@ final class RemoteHostLauncher: RemoteSessionHost {
     func pendingRuns() async -> [RemotePendingRun] {
         await sessions.pendingRuns().map {
             RemotePendingRun(handle: $0.handle, directory: $0.directory ?? $0.directoryIntent, ended: $0.isEnded,
-                             sessionID: $0.sessionID, typed: $0.inputSeenAt != nil)
+                             sessionID: $0.sessionID, typed: $0.inputSeenAt != nil, joined: $0.joinedAt != nil)
         }
     }
 

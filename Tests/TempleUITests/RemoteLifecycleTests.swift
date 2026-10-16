@@ -193,6 +193,7 @@ final class FakeRemoteHost: RemoteSessionHost {
         var tabClosed = false
         var typed = false
         var claimed = false
+        var joined = false
     }
     var pending: [Pending] = []
     private var pendingCounter = 0
@@ -243,8 +244,14 @@ final class FakeRemoteHost: RemoteSessionHost {
     }
 
     private(set) var inputs: [String] = []
+    /// How many input writes fail before one is written.
+    var inputFailures = 0
     func recordInput(_ handle: String) async throws {
         inputs.append(handle)
+        if inputFailures > 0 {
+            inputFailures -= 1
+            throw CocoaError(.fileWriteUnknown)
+        }
         if let index = pending.firstIndex(where: { $0.handle == handle }) { pending[index].typed = true }
     }
 
@@ -280,11 +287,18 @@ final class FakeRemoteHost: RemoteSessionHost {
     private(set) var released: [(handle: String, sessionID: String)] = []
     func releaseClaim(_ handle: String, sessionID: String) async throws {
         released.append((handle, sessionID))
-        if let index = pending.firstIndex(where: { $0.handle == handle }) { pending[index].sessionID = nil }
+        if let index = pending.firstIndex(where: { $0.handle == handle }) {
+            pending[index].sessionID = nil
+            pending[index].claimed = false
+        }
+        unjoined.removeAll { $0.handle == handle }
     }
 
     private(set) var joinedMarks: [String] = []
-    func markJoined(_ handle: String) async throws { joinedMarks.append(handle) }
+    func markJoined(_ handle: String) async throws {
+        joinedMarks.append(handle)
+        if let index = pending.firstIndex(where: { $0.handle == handle }) { pending[index].joined = true }
+    }
 
     var unjoined: [(handle: String, sessionID: String, directory: String?)] = []
     func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)] { unjoined }
@@ -294,7 +308,7 @@ final class FakeRemoteHost: RemoteSessionHost {
         if let pendingRunsGate { await pendingRunsGate() }
         return pending.filter { ($0.sessionID == nil || $0.claimed) && !$0.dismissed && !$0.tabClosed }
             .map { RemotePendingRun(handle: $0.handle, directory: $0.directory, ended: $0.ended,
-                                    sessionID: $0.claimed ? $0.sessionID : nil, typed: $0.typed) }
+                                    sessionID: $0.claimed ? $0.sessionID : nil, typed: $0.typed, joined: $0.joined) }
     }
 
     private(set) var closedPending: [String] = []

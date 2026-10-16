@@ -28,12 +28,12 @@ final class RemoteCodexIdentityTests: XCTestCase {
         makeModel()
     }
 
-    func makeModel() {
+    func makeModel(persistence override: TabPersistence? = nil) {
         let remote = self.remote!
         let host = hostID
         model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
             runtime: SessionRuntimeController(gracefulTimeout: 0.3), registry: InMemoryProcessRegistry(),
-            persistence: persistence, launcherForHost: { $0 == host ? remote : nil })
+            persistence: override ?? persistence, launcherForHost: { $0 == host ? remote : nil })
         model.earlyExitGraceSeconds = 0.3
         model.remoteTabs.recordPollDelays = [0.01]
         model.remoteTabs.identitySchedule = [0.02, 0.04]
@@ -354,23 +354,121 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertFalse(remote.released.contains { $0.sessionID == "c5" })
     }
 
-    /// A tab that becomes its session hands its run over to open_tabs; a
-    /// claim that landed after the quit froze the tab set comes back as
-    /// that session's chip and is handed over then.
-    func testAClaimedRunIsHandedOverOrRestored() async throws {
+    /// A tab that becomes its session hands its run over to open_tabs, but
+    /// only once the tab set is written (round 2).
+    func testAHandOverWaitsForTheTabSetToBeWritten() async throws {
         remote.identityResult = .adopted("c9", directory: "/home/u/project")
         let tab = await newCodex()
         await settle(tab.sessionID == "c9")
         await settle(self.remote.closedPending == ["p1"], "handed over")
-        makeModel()
-        remote.pending = [.init(handle: "p5", directory: "/home/u/late", sessionID: "c5", claimed: true)]
+
+        let failing = FailingTabPersistence()
+        makeModel(persistence: failing)
+        let second = await newCodex()
+        remote.identityResult = .adopted("c10", directory: "/home/u/project")
+        await settle(second.sessionID == "c10")
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(remote.closedPending.contains("p2"), "the run stays what restores the tab")
+    }
+
+    /// At launch, reconciliation decides each claimed run's chip (round 2):
+    /// joined, that session's chip, then handed over; refused, released and
+    /// restored by its handle as pending; failed, claimed but unjoined,
+    /// restored by its handle too (and joined when it is opened).
+    func testRestoreFollowsReconciliation() async throws {
+        remote.pending = [.init(handle: "p5", directory: "/home/u/late", sessionID: "c5", claimed: true),
+                          .init(handle: "p6", directory: "/home/u/refused", sessionID: "c6", claimed: true),
+                          .init(handle: "p7", directory: "/home/u/failed", sessionID: "c7", claimed: true),
+                          .init(handle: "p8", directory: "/home/u/old", sessionID: "c8", claimed: true, joined: true)]
+        remote.unjoined = [("p5", "c5", "/home/u/late"), ("p6", "c6", nil), ("p7", "c7", nil)]
+        var answers: [String: JoinResult] = ["c6": .refused(.agent(.claude)), "c7": .failed(CocoaError(.fileWriteUnknown))]
+        model.openedHandler = { [weak self] open in
+            self?.joins.append(open)
+            return answers.removeValue(forKey: open.id) ?? .joined
+        }
         model.remoteTabs.restorePending(hosts: [hostID])
-        await settle(self.model.tabs.contains { $0.sessionID == "c5" })
-        let chip = try XCTUnwrap(model.tabs.first { $0.sessionID == "c5" })
-        XCTAssertTrue(chip.isResume)
-        XCTAssertEqual(chip.projectKey, Fixture.key("/home/u/late", host: hostID))
+        await settle(self.model.tabs.count == 4)
+        XCTAssertEqual(model.tabs.first { $0.projectPath == "/home/u/late" }?.sessionID, "c5")
+        XCTAssertEqual(model.tabs.first { $0.projectPath == "/home/u/old" }?.sessionID, "c8")
+        let refused = try XCTUnwrap(model.tabs.first { $0.projectPath == "/home/u/refused" })
+        XCTAssertNil(refused.sessionID)
+        XCTAssertEqual(refused.remote?.handle, "p6")
+        let failed = try XCTUnwrap(model.tabs.first { $0.projectPath == "/home/u/failed" })
+        XCTAssertNil(failed.sessionID)
+        XCTAssertEqual(failed.remote?.handle, "p7")
+        await settle(Set(self.remote.closedPending) == ["p5", "p8"], "only accepted claims are handed over")
+        XCTAssertEqual(remote.released.map(\.sessionID), ["c6"])
         XCTAssertTrue(persistence.load().contains { $0.sessionID == "c5" })
-        await settle(self.remote.closedPending.contains("p5"))
+    }
+
+    /// A chip restored at launch and never opened is never stopped by the
+    /// quit (round 2): a stop that failed before the relaunch, or a session
+    /// detached while working, keeps running.
+    func testARestoredChipNeverOpenedIsNotStoppedAtQuit() async throws {
+        remote.pending = [.init(handle: "p7", directory: "/home/u/project"),
+                          .init(handle: "p8", directory: "/home/u/other", typed: true)]
+        model.remoteTabs.restorePending(hosts: [hostID])
+        await settle(self.model.tabs.count == 2)
+        model.prepareForQuit()
+        let plan = model.quitDrainPlan()
+        XCTAssertTrue(plan.detach.isEmpty)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(remote.stops.isEmpty, "nothing this launch didn't attach to is stopped")
+        XCTAssertTrue(remote.dismissedRuns.isEmpty)
+    }
+
+    /// Input evidence is committed only once written; a failed write is
+    /// tried again (bounded), then said, and the next Return tries afresh.
+    func testInputEvidenceIsCommittedOnlyOnceWritten() async throws {
+        model.remoteTabs.inputWriteRetries = [0.01, 0.01]
+        remote.inputFailures = 5
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(self.notices.count == 1, "three tries, then said")
+        XCTAssertEqual(remote.inputs.count, 3)
+        XCTAssertFalse(model.remoteTabs.inputCommitted("p1"))
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(self.model.remoteTabs.inputCommitted("p1"), "the next Return tries afresh")
+        XCTAssertEqual(remote.inputs.count, 6, "two more failures, then written")
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(remote.inputs.count, 6, "committed: not written again")
+    }
+
+    /// A core refusal is remembered (round 2): the schedule doesn't claim
+    /// and release the same id every minute; Try again, or the conflicting
+    /// row going away, lets it be claimed once more.
+    func testACoreRefusalIsRememberedUntilTryAgain() async throws {
+        joinAnswer = .refused(.host(HostID(rawValue: "jet")))
+        remote.identityResult = .adopted("c9", directory: "/home/u/project")
+        remote.suggestionsResult = .candidates([suggestion("c9"), suggestion("c8")])
+        let tab = await newCodex()
+        await settle(tab.remote?.identityRefused == true)
+        let asked = remote.identifies.count
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(remote.identifies.count, asked, "not claimed again on schedule")
+        XCTAssertEqual(remote.released.count, 1)
+        await settle(tab.remote?.suggestions.map(\.sessionID) == ["c8"], "the refused id is not offered")
+        joinAnswer = .joined
+        model.remoteTabs.retryIdentity(tab)
+        await settle(tab.sessionID == "c9", "Try again claims it anew")
+    }
+
+    func testAConflictingRowGoingAwayLiftsTheRefusal() async throws {
+        var rows: [String: Session] = ["c9": Fixture.row("c9", agent: .codex, project: "/x", host: HostID(rawValue: "jet"))]
+        model.sessionRow = { rows[$0] }
+        joinAnswer = .refused(.host(HostID(rawValue: "jet")))
+        remote.identityResult = .adopted("c9", directory: "/home/u/project")
+        let tab = await newCodex()
+        await settle(tab.remote?.identityRefused == true)
+        let asked = remote.identifies.count
+        model.rowsChanged()
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(remote.identifies.count, asked, "still there: still refused")
+        rows = [:]
+        joinAnswer = .joined
+        model.rowsChanged()
+        await settle(tab.sessionID == "c9", "the row went: claimed on the next check")
     }
 
     /// A pending run's own write that fails is said once, never swallowed.
@@ -473,4 +571,11 @@ final class RemoteCodexIdentityTests: XCTestCase {
                     RemoteCopy.unknown("box", agent: .codex, reason: "x"), RemoteCopy.stillConnecting("box")]
         for line in copy { XCTAssertFalse(line.contains("\u{2014}"), line) }
     }
+}
+
+/// A tab store whose writes fail (and say so).
+final class FailingTabPersistence: TabPersistence {
+    func load() -> [PersistedTab] { [] }
+    func save(_ tabs: [PersistedTab]) {}
+    func saveAcknowledged(_ tabs: [PersistedTab]) -> Bool { false }
 }

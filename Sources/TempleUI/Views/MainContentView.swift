@@ -138,11 +138,18 @@ private struct SessionTerminalView: View {
                 }
             }
             if let note = remote.identityNote {
-                Text(note)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, 20)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(note)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if remote.identityRefused {
+                        Button("Try again") { model.openSessions.remoteTabs.retryIdentity(tab) }
+                            .buttonStyle(.link)
+                            .font(.system(size: 11))
+                    }
+                }
+                .padding(.leading, 20)
             }
             Text(RemoteCopy.noDaemonHint)
                 .font(.system(size: 11))
