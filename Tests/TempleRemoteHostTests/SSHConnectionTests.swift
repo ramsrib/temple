@@ -35,6 +35,40 @@ final class SSHConnectionTests: XCTestCase {
         ])
     }
 
+    /// `ForkAfterAuthentication yes` in a config (no RemoteCommand, the
+    /// default SessionType) makes ssh refuse any invocation without a
+    /// command before doing anything: Temple's helpers (`-O check`, `-G`)
+    /// force it off. Argv, then each helper run against a fixture config
+    /// (`-G` resolves only; `-O check` asks a socket that isn't there and
+    /// can't fall back to a connection).
+    func testHelpersOverrideForkAfterAuthentication() throws {
+        let tree = TempTree("ssh-fork")
+        let config = tree.write("config", "Host box\n  HostName 127.0.0.1\n  ForkAfterAuthentication yes\n")
+        let connection = SSHConnection(record: .config("box"), stateDirectory: tree.url, sshPath: "/usr/bin/ssh")
+        for argv in [connection.masterCheckArgv, connection.resolutionArgv] {
+            XCTAssertNotNil(argv.firstIndex(of: "ForkAfterAuthentication=no"), "\(argv)")
+            XCTAssertLessThan(argv.firstIndex(of: "ForkAfterAuthentication=no")!, argv.firstIndex(of: "--")!)
+            var withConfig = argv
+            withConfig.insert(contentsOf: ["-F", config.path], at: 1)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: withConfig[0])
+            process.arguments = Array(withConfig.dropFirst())
+            let out = Pipe(), err = Pipe()
+            process.standardOutput = out
+            process.standardError = err
+            process.standardInput = FileHandle.nullDevice
+            try process.run()
+            let stdout = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            let stderr = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            process.waitUntilExit()
+            XCTAssertFalse(stderr.contains("Cannot fork into background"), stderr)
+            if argv.contains("-G") {
+                XCTAssertEqual(process.terminationStatus, 0, stderr)
+                XCTAssertTrue(stdout.contains("forkafterauthentication no"))
+            }
+        }
+    }
+
     /// A config that would eat a session's stdin or never run its command
     /// (`StdinNull`, `ForkAfterAuthentication`, `SessionType`,
     /// `RemoteCommand`) is overridden for every purpose: `ssh -G` with a

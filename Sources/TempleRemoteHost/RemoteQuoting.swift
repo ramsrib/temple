@@ -66,9 +66,11 @@ public enum RemoteQuoting {
         program += "\n"
         if let path { program += "PATH=\(quote(path)); export PATH\n" }
         program += script + "\n"
-        let lines = Set(program.split(separator: "\n", omittingEmptySubsequences: false).map(String.init))
+        // Lines as `read` splits them: on the byte 0x0A, not on Characters
+        // (a CRLF is one Character, but its LF still ends a line for sh).
+        let lines = Set(Array(program.utf8).split(separator: 0x0A, omittingEmptySubsequences: false).map { Array($0) })
         var chosen = end ?? "__temple_end_\(nonce())__"
-        while lines.contains(chosen) { chosen = "__temple_end_\(nonce())__" }
+        while lines.contains(Array(chosen.utf8)) { chosen = "__temple_end_\(nonce())__" }
         var stdin = Data((program + chosen + "\n").utf8)
         if let input { stdin.append(input) }
         return (command(["sh", "-c", bootstrap, "temple", chosen] + (marker.map { [$0] } ?? [])), stdin)

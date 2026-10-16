@@ -134,6 +134,13 @@ final class RemoteQuotingTests: XCTestCase {
         let output = try run("/bin/sh", ["-c", query.command], stdin: query.stdin)
         XCTAssertEqual(String(decoding: output, as: UTF8.self),
                        "a|x\n\(fixed)\ny|\(fixed)|P=/usr/bin:/bin:/x\n\(fixed)|\(fixed)\n")
+        // A CRLF is one Character but its LF ends a line for sh: still a
+        // collision, and still avoided.
+        let crlf = RemoteQuoting.invocation(script: "printf '%s|' \"$1\"", args: ["x\r\n\(fixed)\ny"], path: nil, input: nil,
+                                            end: fixed)
+        XCTAssertFalse(crlf.command.contains(fixed))
+        XCTAssertEqual(String(decoding: try run("/bin/sh", ["-c", crlf.command], stdin: crlf.stdin), as: UTF8.self),
+                       "x\r\n\(fixed)\ny|")
         // Without a collision the preferred end line is kept.
         XCTAssertTrue(RemoteQuoting.invocation(script: "true", args: [], path: nil, input: nil, end: fixed).command.contains(fixed))
     }

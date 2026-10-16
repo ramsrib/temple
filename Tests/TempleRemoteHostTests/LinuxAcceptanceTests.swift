@@ -61,7 +61,7 @@ final class LinuxAcceptanceTests: XCTestCase {
         defer {
             // Test cleanup only: Temple itself never ends a master. This one
             // is the test's own, on a socket in a directory it removes.
-            let exit = [check[0], check[1], check[2], "-O", "exit", "--", name]
+            let exit = [check[0], check[1], check[2]] + SSHConnection.helperOptions + ["-O", "exit", "--", name]
             let process = Process()
             process.executableURL = URL(fileURLWithPath: exit[0])
             process.arguments = Array(exit.dropFirst())
@@ -155,7 +155,7 @@ final class LinuxAcceptanceTests: XCTestCase {
         XCTAssertFalse(masterBefore, "\(name): a fresh socket directory")
         defer {
             let check = connection.masterCheckArgv
-            let exit = [check[0], check[1], check[2], "-O", "exit", "--", name]
+            let exit = [check[0], check[1], check[2]] + SSHConnection.helperOptions + ["-O", "exit", "--", name]
             let process = Process()
             process.executableURL = URL(fileURLWithPath: exit[0])
             process.arguments = Array(exit.dropFirst())

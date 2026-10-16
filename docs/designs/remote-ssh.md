@@ -1774,5 +1774,9 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
     `-n`, `-f`, `-N`/`-s` or a remote command cannot eat a query's
     program or a tab's keys; asserted in the argv, resolved with `ssh -G`
     against a fixture config, and run on both boxes with a throwaway `-F`
-    config that sets `StdinNull yes`.
+    config that sets `StdinNull yes`. The helpers without a remote command
+    (`-O check`, `-G`) force `ForkAfterAuthentication=no` too (round 7):
+    ssh refuses that setting without a command before doing anything. The
+    end line's collision check splits the program on the LF byte, as
+    `read` does (a CRLF is one Swift Character).
 

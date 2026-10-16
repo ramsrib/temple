@@ -176,13 +176,19 @@ public struct SSHConnection: Sendable, Equatable {
     /// first query over it proves the connection.
     public var masterCheckArgv: [String] {
         [sshPath, "-o", "ControlPath=\(Self.optionValue(Self.escapePercent(controlPath)))"] + Self.masterOnly
-            + ["-O", "check", "--", record.name]
+            + Self.helperOptions + ["-O", "check", "--", record.name]
     }
 
     /// `ssh -G`: what ssh will use for this host, without connecting.
     public var resolutionArgv: [String] {
-        [sshPath, "-G"] + hostOptions + ["--", record.name]
+        [sshPath, "-G"] + Self.helperOptions + hostOptions + ["--", record.name]
     }
+
+    /// What a helper without a remote command (`-O check`, `-G`) needs
+    /// whatever a config says: ssh refuses `ForkAfterAuthentication yes`
+    /// without a command ("Cannot fork into background without a command
+    /// to execute") before it checks the master or prints anything.
+    static let helperOptions = ["-o", "ForkAfterAuthentication=no"]
 
     /// An `-o` value as ssh tokenizes it: plain when it is one plain word,
     /// otherwise double-quoted with `\` and `"` escaped.
