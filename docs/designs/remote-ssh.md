@@ -2380,3 +2380,36 @@ its own.
   remote module is byte-exact at the type, and core is the cluster's last
   member. Either make the locator byte-exact, or record that core stays
   `String` because local stores are on APFS, which folds the spellings.
+
+## Phase 1b hands-on fixes (computer-use findings)
+
+- **B1, the title.** tmux titles every new pane with the host's name, and
+  the chain's `set-titles-string '#T'` handed it to the tab and, through
+  the title handler, to the row ("MasterBlaster"). The chain's title is now
+  the pane's title only once it is no longer the host's name (`host` or
+  `host_short`), measured on 3.2a, 3.4 and 3.7c; the terminal gets an
+  empty title until the agent sets one. A pending Codex tab reads "New
+  Codex session" until then; Codex then titles itself with its folder's
+  name (and a spinner while it works), which is the agent's own title, as
+  it is locally.
+- **B2, working at close.** A spawn (a launch, a reopen, an attach) boots
+  into running and only the 15 s settle timer took it back, so ⌘W soon
+  after a reopen, or after an answer, asked Detach or Stop. Measured on
+  masterblaster: Codex animates a spinner in its title while it works and
+  stops when it is done, in both modes (an app-server turn that errors
+  included); it rings no bell and its own state report (OSC 7501) does not
+  pass tmux. ⌘W and the CLI's close now ask the settle rule at once:
+  running is at rest when the title has been quiet for the quiet window
+  and no input is pending a reply. Claude at its trust screen was the same
+  path (no title, no input: at rest once quiet). The quit gate keeps the
+  timer's reading: there a misread only detaches.
+- **T1, T2**: Fable's spec (the host on a second line under the name; the
+  `--no-daemon` hint in secondary, the flag monospaced).
+- **T3, colours.** Under Temple's own chain, tmux 3.4 asks the outer
+  terminal for its colours on attach and answers a pane's OSC 10/11 with
+  exactly them (measured with a dark terminal), so Codex picks its palette
+  from Temple's background at startup, as locally; a Codex started while
+  Temple was light keeps its light bands after a switch to dark, locally
+  too. tmux 3.2a (jetson) neither asks nor answers (colour reports came in
+  3.3), and no option changes that: Codex there gets no answer and uses
+  its default palette. Acceptance: `testTerminalColoursAndTitleUnderTemplesChainOnEachHost`.
