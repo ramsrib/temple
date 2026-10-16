@@ -101,6 +101,36 @@ final class ControlServiceTests: XCTestCase {
         XCTAssertNil(app.openSessions.openTab(forSessionID: id))
     }
 
+    /// The CLI's close takes ⌘W's early rule (nothing done since the spawn,
+    /// title quiet: at rest) and its guard otherwise, deciding without
+    /// touching the tab: an expired request leaves it as it was.
+    func testCloseTakesTheEarlyRestRuleAndAnExpiredOneChangesNothing() async throws {
+        let app = model(try TempleDB.inMemory())
+        app.openSessions.titleQuietWindow = 0.1
+        let quiet = app.openSessions.newSession(agent: .claude, project: Fixture.key("/p"))
+        let quietID = try XCTUnwrap(quiet.sessionID)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(quiet.activity, .running)
+        let commit = ControlCommit()
+        _ = commit.expire()
+        _ = await app.handleControl(ControlRequest(.sessionsClose, id: quietID), commit: commit)
+        XCTAssertEqual(quiet.activity, .running, "an expired close changes nothing")
+        XCTAssertNotNil(app.openSessions.openTab(forSessionID: quietID))
+        let closed = await ask(app, ControlRequest(.sessionsClose, id: quietID))
+        XCTAssertNil(closed.error)
+        XCTAssertEqual(closed.session?.state, .idle, "it closed an agent at rest")
+        XCTAssertNil(app.openSessions.openTab(forSessionID: quietID))
+
+        let asked = app.openSessions.newSession(agent: .claude, project: Fixture.key("/p"))
+        let askedID = try XCTUnwrap(asked.sessionID)
+        (asked.surface as? FakeTerminalSurface)?.simulateSubmitInput()
+        (asked.surface as? FakeTerminalSurface)?.simulateTitle("running a long tool")
+        try await Task.sleep(for: .milliseconds(200))
+        let refused = await ask(app, ControlRequest(.sessionsClose, id: askedID))
+        XCTAssertEqual(refused.error?.code, .refused, "after a Return it is working")
+        XCTAssertEqual(asked.activity, .running)
+    }
+
     func testGetGivesTheResumeCommand() async throws {
         let db = try TempleDB.inMemory()
         Fixture.join([Fixture.row("m-1", project: "/p")], to: db)

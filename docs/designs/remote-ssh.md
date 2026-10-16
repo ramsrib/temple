@@ -2394,15 +2394,32 @@ its own.
   it is locally.
 - **B2, working at close.** A spawn (a launch, a reopen, an attach) boots
   into running and only the 15 s settle timer took it back, so ⌘W soon
-  after a reopen, or after an answer, asked Detach or Stop. Measured on
-  masterblaster: Codex animates a spinner in its title while it works and
-  stops when it is done, in both modes (an app-server turn that errors
-  included); it rings no bell and its own state report (OSC 7501) does not
-  pass tmux. ⌘W and the CLI's close now ask the settle rule at once:
-  running is at rest when the title has been quiet for the quiet window
-  and no input is pending a reply. Claude at its trust screen was the same
-  path (no title, no input: at rest once quiet). The quit gate keeps the
-  timer's reading: there a misread only detaches.
+  after a reopen asked Detach or Stop. Measured on masterblaster: Codex
+  animates a spinner in its title while it works and stops when it is
+  done, in both modes (an app-server turn that errors included); it rings
+  no bell and its own state report (OSC 7501) does not pass tmux. A close
+  (⌘W, the CLI's `close`) now takes a running tab as at rest before the
+  timer only on positive evidence that its agent has done nothing this
+  spawn: nothing typed since it spawned, no title that brought it back from
+  rest, and its title quiet for the quiet window (an agent booting,
+  resuming, reattached or at a trust screen; Claude at its trust screen
+  was the same path). Anything after a Return keeps the old behaviour (the
+  timer, then the working prompt): a quiet or unrelated title then is no
+  evidence (a long tool call holds its title, a tool can set its own), so
+  ⌘W within 15 s of an answer still asks, the safe failure. A misread at
+  close is never harmless: a local close hangs up and reaps the agent, a
+  remote one stops its session (`.stopIfRunning`); only the quit gate
+  detaches a working agent on a host. The CLI decides without touching the
+  tab and applies "at rest" only once its request is committed. Same rule
+  for local and remote tabs (round 1 of the hands-on review: Sol, Fable).
+  - **Follow-up, not changed here:** the quit gate keeps the timer's
+    reading, and that timer ignores an unanswered Return (pre-existing):
+    15 s after a Return with a quiet title it settles to idle, so a long
+    tool call that holds its title is stopped at quit as idle rather than
+    detached. Making the timer honour an unanswered Return trades that for
+    an agent that never retitles (`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`,
+    or a CLI with no titles) reading as working forever, prompting at every
+    close and detaching at every quit until a bell.
 - **T1, T2**: Fable's spec (the host on a second line under the name; the
   `--no-daemon` hint in secondary, the flag monospaced).
 - **T3, colours.** Under Temple's own chain, tmux 3.4 asks the outer

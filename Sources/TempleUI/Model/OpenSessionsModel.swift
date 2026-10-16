@@ -585,10 +585,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Last time each tab's title changed — feeds the settle heuristic.
     /// Also reset by a spawn and by input (the quiet window starts again).
     var lastTitleChange: [SessionTab.ID: Date] = [:]
-    /// Last input submitted (Return) since the tab's process spawned.
-    var lastInput: [SessionTab.ID: Date] = [:]
-    /// Last title the agent itself set since the tab's process spawned.
-    var lastTitleArrival: [SessionTab.ID: Date] = [:]
+    /// Tabs whose agent was given work, or took some up, since its process
+    /// spawned: input submitted, or a title that brought it back from rest.
+    /// Only a spawn clears it (a bell does not: the turn it ended was work).
+    var activeSinceSpawn: Set<SessionTab.ID> = []
     /// Last bell/notification per tab — guards the idle→running promotion.
     private var lastRing: [SessionTab.ID: Date] = [:]
     /// Pending settle timers, keyed by tab, so they can be cancelled/replaced.
@@ -608,22 +608,27 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         }
     }
 
-    /// The settle rule, asked at a decision (⌘W, the CLI's close) instead
-    /// of waiting for the timer. A `.running` tab is at rest now when its
-    /// title has been quiet for `titleQuietWindow` and nothing says work is
-    /// still to come: no input since it spawned (a spawn, a reopen or an
-    /// attach is not work: an agent booting, resuming or waiting at a trust
-    /// screen), or the agent retitled itself after the last input (it showed
-    /// work, and that work stopped). Input with no title since keeps it
-    /// working until the timer decides: the agent may not have started.
-    /// The quit gate is not asked this way: reading an idle agent as
-    /// working there only detaches it.
-    public func settleIfQuietNow(_ tab: SessionTab) {
-        guard tab.kind == .session, tab.activity == .running, let changed = lastTitleChange[tab.id],
-              Date().timeIntervalSince(changed) >= titleQuietWindow else { return }
-        if let input = lastInput[tab.id] {
-            guard let title = lastTitleArrival[tab.id], title > input else { return }
-        }
+    /// Whether a `.running` tab may be closed as at rest now, before the
+    /// settle timer has fired: only on positive evidence that the agent has
+    /// done nothing this spawn. Nothing was typed into it since it spawned
+    /// (a launch, a reopen, a resume, an attach), its title did not bring it
+    /// back from rest, and its title has been quiet for `titleQuietWindow`:
+    /// an agent booting, resuming or waiting at a trust screen. Anything
+    /// else waits for the timer, then the working prompt: a quiet or
+    /// unrelated title after a Return is no evidence (a long tool call holds
+    /// its title), and a misread at close destroys the turn (a local close
+    /// hangs up and reaps the agent; a remote one stops its session).
+    /// Asking changes nothing; `settleNow` applies it. The quit gate does
+    /// not ask: it keeps the timer's reading (there a working agent on a
+    /// host is detached, not stopped).
+    public func isAtRestNow(_ tab: SessionTab) -> Bool {
+        guard tab.kind == .session, tab.activity == .running, !activeSinceSpawn.contains(tab.id),
+              let changed = lastTitleChange[tab.id] else { return false }
+        return Date().timeIntervalSince(changed) >= titleQuietWindow
+    }
+
+    /// The tab at rest: its timer cancelled, idle.
+    public func settleNow(_ tab: SessionTab) {
         settleTasks[tab.id]?.cancel()
         settleTasks[tab.id] = nil
         tab.activity = .idle
@@ -632,8 +637,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// A spawn (a launch, a reopen, an attach): what came before is not
     /// this process's.
     func markSpawned(_ tab: SessionTab) {
-        lastInput[tab.id] = nil
-        lastTitleArrival[tab.id] = nil
+        activeSinceSpawn.remove(tab.id)
     }
 
     private func settleIfQuiet(_ tab: SessionTab) {
@@ -654,8 +658,6 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         settleTasks[tabID] = nil
         lastTitleChange[tabID] = nil
         lastRing[tabID] = nil
-        lastInput[tabID] = nil
-        lastTitleArrival[tabID] = nil
     }
 
     // MARK: Settings (U9) and History — singleton utility tabs
@@ -735,9 +737,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// exited / inert chip / Settings) closes immediately.
     public func requestClose(tabID: SessionTab.ID) {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
-        // "Working" is decided now, by the settle rule, not by whether the
-        // settle timer happened to have fired yet.
-        settleIfQuietNow(tab)
+        // An agent that has done nothing since it spawned is at rest once
+        // its title is quiet, whether or not the settle timer has fired.
+        if isAtRestNow(tab) { settleNow(tab) }
         // A working agent on a host: Detach (it keeps working) or Stop.
         if tab.kind == .session, tab.remote != nil, tab.hasLiveProcess, tab.activity == .running {
             pendingRemoteCloseTabID = tabID
@@ -865,6 +867,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         let tab = tabs[index]
         awaitingExitDiagnosis.remove(tabID)
         cancelSettle(for: tabID)
+        activeSinceSpawn.remove(tabID)
         // Nothing a closed tab's launch reports later can reach anyone.
         tab.launchResult?.cancel()
         tab.launchResult = nil
@@ -1202,7 +1205,6 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
         // Item E: a live-updating title means the agent is working — keep the
         // settle heuristic from prematurely idling it.
         lastTitleChange[tab.id] = Date()
-        lastTitleArrival[tab.id] = Date()
         // The same signal promotes a RESTING tab back to running. Return was
         // the only way back before, and plenty of resumptions never send one
         // through this surface: a permission prompt answered with a single
@@ -1215,6 +1217,7 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
         if tab.activity == .idle,
            Date().timeIntervalSince(lastRing[tab.id] ?? .distantPast) > ringGraceSeconds {
             tab.activity = .running
+            activeSinceSpawn.insert(tab.id)
             scheduleSettle(for: tab)
         }
         schedulePersistForTitleChurn()
@@ -1240,7 +1243,7 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
         tab.activity = .running
         // Restart the settle clock so it can decay again once work finishes.
         lastTitleChange[tab.id] = Date()
-        lastInput[tab.id] = Date()
+        activeSinceSpawn.insert(tab.id)
         scheduleSettle(for: tab)
     }
 

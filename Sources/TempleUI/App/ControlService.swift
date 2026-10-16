@@ -74,9 +74,12 @@ extension AppModel {
             guard let id = request.id else { return .failure(.invalid, "sessions close needs an id") }
             guard let tab = openSessions.openTab(forSessionID: id) else { return notOpen(id) }
             // ⌘W's guard: only a working agent with a live terminal asks, and
-            // the command line cannot ask, so it refuses.
-            openSessions.settleIfQuietNow(tab)
-            if tab.remote != nil, tab.hasLiveProcess, tab.activity == .running {
+            // the command line cannot ask, so it refuses. At rest by ⌘W's
+            // own early rule (nothing done since its spawn) is decided
+            // without touching the tab; it is applied only once committed.
+            let atRest = openSessions.isAtRestNow(tab)
+            let working = tab.activity == .running && !atRest
+            if tab.remote != nil, tab.hasLiveProcess, working {
                 // On a host, a working agent is never stopped from here:
                 // refused, or with --force detached (it keeps working).
                 guard request.force == true else {
@@ -87,11 +90,12 @@ extension AppModel {
                 openSessions.remoteTabs.detach(tab.id)
                 return ControlResponse(session: closed)
             }
-            if tab.hasSurface, tab.activity == .running, request.force != true {
+            if tab.hasSurface, working, request.force != true {
                 return .failure(.refused, "Its agent is working. Pass --force to close it anyway.")
             }
-            let closed = controlSession(tab)
+            let closed = controlSession(tab, atRest: atRest)
             guard commit.commit() else { return Self.expired }
+            if atRest { openSessions.settleNow(tab) }
             // An idle agent on a host is stopped now, as ⌘W stops it.
             openSessions.closeTab(tab.id)
             return ControlResponse(session: closed)
@@ -125,12 +129,14 @@ extension AppModel {
             ?? openSessions.openProjectKeys.first { ControlPaths.sameFolder($0.path, directory) }
     }
 
-    func controlSession(_ tab: SessionTab, detail: Bool = false) -> ControlSession {
+    /// `atRest`: the close decided it at rest before applying that (its
+    /// answer says what the close found).
+    func controlSession(_ tab: SessionTab, detail: Bool = false, atRest: Bool = false) -> ControlSession {
         let state: ControlSession.State
         if !tab.hasSurface { state = .restored }
         else {
             switch tab.activity {
-            case .running: state = .running
+            case .running: state = atRest ? .idle : .running
             case .idle: state = .idle
             case .needsAttention: state = .attention
             case .exited: state = .exited
