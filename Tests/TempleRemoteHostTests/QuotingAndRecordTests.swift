@@ -6,7 +6,7 @@ import TempleCore
 final class RemoteQuotingTests: XCTestCase {
     static let hard = ["plain", "two words", "it's", #"'\''"#, "line\nbreak", #"back\slash"#, #"\\"#, #"\'"#,
                       "$HOME `id` $(id) ; & | > <", "", "*", "~/x", "trailing\\", "'", "\"double\"", "tab\there",
-                      "émoji ✓"]
+                      "émoji ✓", "x'\u{0301}; id; #", "\\\u{0301}", "'\u{0301}\u{0302}", "a\u{0301}'b"]
 
     /// Each word comes back byte for byte from every shell installed here
     /// that a login shell might be (sh, bash, zsh, and fish where present).
@@ -49,9 +49,19 @@ final class RemoteQuotingTests: XCTestCase {
         XCTAssertEqual(String(decoding: try run("/bin/zsh", ["-c", outer]), as: UTF8.self), "it's|a\\b|x y|")
     }
 
+    /// A quote or backslash followed by a combining mark is one Character
+    /// but two shell bytes: quoting works on scalars, so it stays quoted.
+    func testCombiningMarksCannotHideAQuote() throws {
+        let attack = "x'\u{0301}; touch /tmp/temple-should-not-exist; #"
+        XCTAssertEqual(RemoteQuoting.quote(attack), "'x'\\''\u{0301}; touch /tmp/temple-should-not-exist; #'")
+        let output = try run("/bin/sh", ["-c", "printf '%s' " + RemoteQuoting.quote(attack)])
+        XCTAssertEqual(String(decoding: output, as: UTF8.self), attack)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: "/tmp/temple-should-not-exist"))
+    }
+
     func testTheTokenAllowlist() {
         for token in ["abc", "A-b_c.9", "0123456789abcdef"] { XCTAssertTrue(RemoteQuoting.isSafeToken(token), token) }
-        for token in ["", "a b", "a'b", "a;b", "a/b", "é", "$x", "a\nb"] { XCTAssertFalse(RemoteQuoting.isSafeToken(token), token) }
+        for token in ["", "a b", "a'b", "a;b", "a/b", "é", "$x", "a\nb", "a'\u{0301}"] { XCTAssertFalse(RemoteQuoting.isSafeToken(token), token) }
     }
 
     private func run(_ shell: String, _ arguments: [String]) throws -> Data {
@@ -201,6 +211,40 @@ final class RemoteHostRecordTests: XCTestCase {
         }
     }
 
+    /// Unicode host names reach ssh in their ASCII (IDNA) form; the length
+    /// limit is the name's, an optional root dot aside.
+    func testUnicodeHostNamesBecomeASCII() {
+        XCTAssertEqual(HostGrammar.asciiAddress("bücher.example"), "xn--bcher-kva.example")
+        XCTAssertEqual(HostGrammar.asciiAddress("München.de"), "xn--mnchen-3ya.de")
+        XCTAssertEqual(HostGrammar.asciiAddress("例え.テスト"), "xn--r8jz45g.xn--zckzah")
+        XCTAssertEqual(HostGrammar.asciiAddress("例え。テスト"), "xn--r8jz45g.xn--zckzah", "an ideographic full stop separates labels")
+        XCTAssertEqual(HostGrammar.asciiAddress("Box.LAN"), "Box.LAN", "ASCII is kept as typed")
+        XCTAssertEqual(HostGrammar.asciiAddress("2001:db8::1"), "2001:db8::1")
+        XCTAssertNil(HostGrammar.asciiAddress("bü cher.example"))
+        XCTAssertNil(HostGrammar.asciiAddress("a'\u{0301}b"))
+        XCTAssertEqual(HostGrammar.asciiJumpList("me@bücher.example:22,jump"), "me@xn--bcher-kva.example:22,jump")
+        var form = RemoteHostForm()
+        form.name = "idn"; form.address = "bücher.example"; form.proxyJump = "jäger"
+        if case .success(let record) = form.validate(editing: nil, existing: Set<String>(), configAliases: Set<String>()) {
+            XCTAssertEqual(record.address, "xn--bcher-kva.example")
+            XCTAssertEqual(record.proxyJump, "xn--jger-loa")
+        } else { XCTFail("an IDN refused") }
+        let label = String(repeating: "a", count: 63)
+        let longest = [label, label, label, String(repeating: "b", count: 61)].joined(separator: ".")
+        XCTAssertEqual(longest.utf8.count, 253)
+        XCTAssertEqual(HostGrammar.asciiAddress(longest), longest)
+        XCTAssertEqual(HostGrammar.asciiAddress(longest + "."), longest + ".", "the root dot does not count")
+        XCTAssertNil(HostGrammar.asciiAddress(longest + "b"))
+        XCTAssertNil(HostGrammar.asciiAddress(String(repeating: "a", count: 64) + ".lan"), "a label is 63 at most")
+    }
+
+    func testAnIdentityPathCannotHideAQuoteOrBreak() {
+        XCTAssertTrue(HostGrammar.isPassableIdentityPath("~/.ssh/id é"))
+        for path in ["a\"\u{0301}b", "a\n\u{0301}", "a\u{7f}", "a\u{2028}b"] {
+            XCTAssertFalse(HostGrammar.isPassableIdentityPath(path), path.debugDescription)
+        }
+    }
+
     func testCopyAsSSHConfig() {
         let record = RemoteHostRecord(name: "box", source: .temple, address: "10.0.0.2", user: "me", port: 2222,
                                       identityFile: "~/.ssh/my key", proxyJump: "bastion")
@@ -248,6 +292,11 @@ final class SSHConfigHostsTests: XCTestCase {
         XCTAssertEqual(SSHConfigHosts.words(#"x"y z"w"#), ["xy zw"])
         XCTAssertEqual(SSHConfigHosts.words("\ttab\tsep"), ["tab", "sep"])
         XCTAssertNil(SSHConfigHosts.words(#"open "quote"#), "invalid quotes")
+        // A quote or backslash with a combining mark after it still acts.
+        XCTAssertEqual(SSHConfigHosts.words("'a b'\u{0301} c"), ["a b\u{0301}", "c"])
+        XCTAssertNil(SSHConfigHosts.words("\"\u{0301}open"), "the quote opens, and is never closed")
+        XCTAssertEqual(SSHConfigHosts.words("a\\\u{0301}b"), ["a\\\u{0301}b"], "an unrecognised escape keeps its backslash")
+        XCTAssertEqual(SSHConfigHosts.aliases(in: "Host *\u{0301} ok !\u{0301}no"), ["ok"])
         XCTAssertNil(SSHConfigHosts.words("open 'quote"))
         XCTAssertEqual(SSHConfigHosts.aliases(in: "Host ok\nHost 'broken\nHost after\n"), ["ok", "after"])
     }

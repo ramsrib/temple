@@ -117,6 +117,13 @@ final class SSHConnectionTests: XCTestCase {
         XCTAssertEqual(resolved["port"], "9999")
     }
 
+    func testOptionValuesQuoteByScalar() {
+        XCTAssertEqual(SSHConnection.optionValue("plain/path"), "plain/path")
+        XCTAssertEqual(SSHConnection.optionValue("a\"\u{0301}b"), "\"a\\\"\u{0301}b\"")
+        XCTAssertEqual(SSHConnection.optionValue("é"), "\"é\"", "anything not plain ASCII is quoted")
+        XCTAssertEqual(SSHConnection.optionValue("a\\\u{0301}"), "\"a\\\\\u{0301}\"")
+    }
+
     func testStaleSocketsGoOnlyWhenNothingListens() throws {
         let tree = TempTree("sock")
         let dead = tree.path + "/dead"

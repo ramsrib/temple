@@ -126,16 +126,20 @@ public struct SSHConnection: Sendable, Equatable {
     /// An `-o` value as ssh tokenizes it: plain when it is one plain word,
     /// otherwise double-quoted with `\` and `"` escaped.
     static func optionValue(_ value: String) -> String {
+        // Scalars, not Characters: a quote with a combining mark after it
+        // is still a quote to ssh's tokenizer.
         let plain = value.unicodeScalars.allSatisfy { scalar in
-            CharacterSet.alphanumerics.contains(scalar) && scalar.isASCII || "._/~@:%+,-[]".unicodeScalars.contains(scalar)
+            scalar.isASCII && (CharacterSet.alphanumerics.contains(scalar) || "._/~@:%+,-[]".unicodeScalars.contains(scalar))
         }
         if plain && !value.isEmpty { return value }
-        var quoted = "\""
-        for character in value {
-            if character == "\\" || character == "\"" { quoted.append("\\") }
-            quoted.append(character)
+        var quoted = String.UnicodeScalarView()
+        quoted.append("\"")
+        for scalar in value.unicodeScalars {
+            if scalar == "\\" || scalar == "\"" { quoted.append("\\") }
+            quoted.append(scalar)
         }
-        return quoted + "\""
+        quoted.append("\"")
+        return String(quoted)
     }
 
     /// `ControlPath` expands `%` tokens; a literal `%` is `%%`.

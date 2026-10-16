@@ -14,17 +14,21 @@ import Foundation
 /// varies travels as further quoted, positional arguments, never spliced
 /// into a script.
 public enum RemoteQuoting {
+    /// Works on Unicode scalars, never Characters: a quote followed by a
+    /// combining mark is one Character, which a Character comparison would
+    /// miss, while every shell reads the quote byte on its own.
     public static func quote(_ word: String) -> String {
-        var out = "'"
-        for character in word {
-            switch character {
-            case "'": out += #"'\''"#
-            case "\\": out += #"'\\'"#
-            default: out.append(character)
+        var out = String.UnicodeScalarView()
+        out.append("'")
+        for scalar in word.unicodeScalars {
+            switch scalar {
+            case "'": out.append(contentsOf: #"'\''"#.unicodeScalars)
+            case "\\": out.append(contentsOf: #"'\\'"#.unicodeScalars)
+            default: out.append(scalar)
             }
         }
-        out += "'"
-        return out
+        out.append("'")
+        return String(out)
     }
 
     /// Several words, each quoted, separated by spaces.

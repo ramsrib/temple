@@ -174,7 +174,9 @@ public struct RemoteHostForm: Equatable, Sendable {
         if address.hasPrefix("["), address.hasSuffix("]") { address = String(address.dropFirst().dropLast()) }
         if address.isEmpty {
             problems[.address] = "Enter the host's address."
-        } else if !HostGrammar.isAddress(address) {
+        } else if let ascii = HostGrammar.asciiAddress(address) {
+            address = ascii
+        } else {
             problems[.address] = "Enter a host name, an IPv4 address or an IPv6 address."
         }
         let user = trimmed(self.user)
@@ -191,12 +193,16 @@ public struct RemoteHostForm: Equatable, Sendable {
             }
         }
         let identity = trimmed(self.identityFile)
-        if !identity.isEmpty, identity.contains(where: { $0 == "\"" || $0.isNewline || $0.asciiValue.map { $0 < 0x20 } == true }) {
+        if !identity.isEmpty, !HostGrammar.isPassableIdentityPath(identity) {
             problems[.identityFile] = "Temple can't pass a path with a double quote or a line break to ssh."
         }
-        let jump = trimmed(self.proxyJump)
-        if !jump.isEmpty, !HostGrammar.isJumpList(jump) {
-            problems[.proxyJump] = "A jump host is [user@]host[:port], several separated by commas."
+        var jump = trimmed(self.proxyJump)
+        if !jump.isEmpty {
+            if let ascii = HostGrammar.asciiJumpList(jump) {
+                jump = ascii
+            } else {
+                problems[.proxyJump] = "A jump host is [user@]host[:port], several separated by commas."
+            }
         }
         guard problems.isEmpty else { return .failure(Problems(byField: problems)) }
         return .success(RemoteHostRecord(name: name, source: .temple, address: address,
@@ -224,12 +230,13 @@ public enum HostGrammar {
         isHostName(text) || isIPv6(text)
     }
 
-    /// Labels of `[A-Za-z0-9_-]`, none empty or dash-led, 253 bytes at most.
-    /// An IPv4 address is one of these.
+    /// Labels of `[A-Za-z0-9_-]`, none empty or dash-led, 63 bytes each and
+    /// 253 in all, not counting an optional root dot. An IPv4 address is
+    /// one of these.
     static func isHostName(_ text: String) -> Bool {
-        guard !text.isEmpty, text.utf8.count <= 253 else { return false }
         var name = Substring(text)
         if name.hasSuffix(".") { name = name.dropLast() }
+        guard !name.isEmpty, name.utf8.count <= 253 else { return false }
         let labels = name.split(separator: ".", omittingEmptySubsequences: false)
         return labels.allSatisfy { label in
             !label.isEmpty && label.utf8.count <= 63 && !label.hasPrefix("-")
@@ -243,6 +250,39 @@ public enum HostGrammar {
         guard text.contains(":"), text.utf8.allSatisfy({ isHex($0) || $0 == 0x3a || $0 == 0x2e }) else { return false }
         var address = in6_addr()
         return inet_pton(AF_INET6, text, &address) == 1
+    }
+
+    /// The address as ssh should get it: a Unicode host name in its ASCII
+    /// (IDNA, punycode) form, label by label; an ASCII name or an IP
+    /// address unchanged. Nil when the result is not an address.
+    public static func asciiAddress(_ text: String) -> String? {
+        if isIPv6(text) { return text }
+        guard let ascii = IDNA.toASCII(text) else { return nil }
+        return isHostName(ascii) ? ascii : nil
+    }
+
+    /// A jump list with each hop's host in its ASCII form; nil when a hop
+    /// fails the grammar.
+    public static func asciiJumpList(_ text: String) -> String? {
+        var hops: [String] = []
+        for hop in text.split(separator: ",", omittingEmptySubsequences: false).map(String.init) {
+            var user = ""
+            var rest = Substring(hop)
+            if let at = rest.lastIndex(of: "@") {
+                user = String(rest[...at])
+                rest = rest[rest.index(after: at)...]
+            }
+            if !rest.hasPrefix("["), let colon = rest.lastIndex(of: ":") {
+                guard let host = IDNA.toASCII(String(rest[..<colon])) else { return nil }
+                rest = Substring(host + rest[colon...])
+            } else if !rest.hasPrefix("[") {
+                guard let host = IDNA.toASCII(String(rest)) else { return nil }
+                rest = Substring(host)
+            }
+            hops.append(user + rest)
+        }
+        let joined = hops.joined(separator: ",")
+        return isJumpList(joined) ? joined : nil
     }
 
     /// A login name: `[A-Za-z0-9._-]`, not dash-led.
@@ -289,6 +329,14 @@ public enum HostGrammar {
         return true
     }
 
+    /// An identity file path ssh's tokenizer gets whole once quoted: no
+    /// double quote, no control character (by scalar, so a combining mark
+    /// cannot hide one).
+    public static func isPassableIdentityPath(_ path: String) -> Bool {
+        !path.unicodeScalars.contains { $0 == "\"" || $0.value < 0x20 || $0.value == 0x7f
+            || CharacterSet.newlines.contains($0) }
+    }
+
     private static func isAlphanumeric(_ byte: UInt8) -> Bool {
         (byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5a) || (byte >= 0x61 && byte <= 0x7a)
     }
@@ -307,8 +355,86 @@ public enum HostGrammar {
         if let user = record.user, !isUser(user) { return false }
         if let port = record.port, !(1...65_535).contains(port) { return false }
         if let jump = record.proxyJump, !isJumpList(jump) { return false }
-        if let identity = record.identityFile,
-           identity.contains(where: { $0 == "\"" || $0.isNewline || $0.asciiValue.map { $0 < 0x20 } == true }) { return false }
+        if let identity = record.identityFile, !isPassableIdentityPath(identity) { return false }
         return true
+    }
+}
+
+/// Host names to ASCII (IDNA, RFC 5891 by way of RFC 3492's punycode):
+/// labels that are already ASCII are kept as typed; any other label is
+/// normalized (NFKC, lower case) and encoded as `xn--…`. Ideographic and
+/// full-width full stops separate labels too.
+enum IDNA {
+    static func toASCII(_ text: String) -> String? {
+        let separators: Set<Unicode.Scalar> = ["\u{3002}", "\u{FF0E}", "\u{FF61}"]
+        let unified = String(String.UnicodeScalarView(text.unicodeScalars.map { separators.contains($0) ? "." : $0 }))
+        var labels: [String] = []
+        for label in unified.split(separator: ".", omittingEmptySubsequences: false) {
+            if label.unicodeScalars.allSatisfy(\.isASCII) { labels.append(String(label)); continue }
+            let mapped = String(label).precomposedStringWithCompatibilityMapping.lowercased()
+            if mapped.unicodeScalars.allSatisfy(\.isASCII) { labels.append(mapped); continue }
+            guard let encoded = Punycode.encode(mapped) else { return nil }
+            labels.append("xn--" + encoded)
+        }
+        return labels.joined(separator: ".")
+    }
+}
+
+/// RFC 3492 punycode encoding.
+enum Punycode {
+    private static let base = 36, tMin = 1, tMax = 26, skew = 38, damp = 700
+    private static let initialBias = 72, initialN = 128
+
+    static func encode(_ text: String) -> String? {
+        let input = text.unicodeScalars.map { Int($0.value) }
+        var output = String.UnicodeScalarView()
+        for value in input where value < 0x80 { output.append(Unicode.Scalar(UInt8(value))) }
+        let basic = output.count
+        var handled = basic
+        if basic > 0 { output.append("-") }
+        var n = initialN, delta = 0, bias = initialBias
+        while handled < input.count {
+            guard let m = input.filter({ $0 >= n }).min() else { return nil }
+            let (product, overflow) = (m - n).multipliedReportingOverflow(by: handled + 1)
+            guard !overflow else { return nil }
+            delta += product
+            n = m
+            for value in input {
+                if value < n { delta += 1 }
+                if value == n {
+                    var q = delta
+                    var k = base
+                    while true {
+                        let t = k <= bias ? tMin : (k >= bias + tMax ? tMax : k - bias)
+                        if q < t { break }
+                        output.append(digit(t + (q - t) % (base - t)))
+                        q = (q - t) / (base - t)
+                        k += base
+                    }
+                    output.append(digit(q))
+                    bias = adapt(delta, points: handled + 1, first: handled == basic)
+                    delta = 0
+                    handled += 1
+                }
+            }
+            delta += 1
+            n += 1
+        }
+        return String(output)
+    }
+
+    private static func digit(_ value: Int) -> Unicode.Scalar {
+        Unicode.Scalar(UInt8(value < 26 ? 0x61 + value : 0x30 + value - 26))
+    }
+
+    private static func adapt(_ delta: Int, points: Int, first: Bool) -> Int {
+        var delta = first ? delta / damp : delta / 2
+        delta += delta / points
+        var k = 0
+        while delta > ((base - tMin) * tMax) / 2 {
+            delta /= base - tMin
+            k += base
+        }
+        return k + (base - tMin + 1) * delta / (delta + skew)
     }
 }

@@ -18,7 +18,7 @@ public enum SSHConfigHosts {
         var entries: [Entry] = []
         for rawLine in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
-            guard !line.isEmpty, !line.hasPrefix("#") else { continue }
+            guard let first = line.unicodeScalars.first, first != "#" else { continue }
             guard let (keyword, rest) = splitKeyword(line) else { continue }
             switch keyword.lowercased() {
             case "host":
@@ -83,18 +83,22 @@ public enum SSHConfigHosts {
 
     /// A name a person can pick: no wildcard, no negation, not an option.
     static func isAlias(_ word: String) -> Bool {
-        !word.isEmpty && !word.hasPrefix("!") && !word.hasPrefix("-") && !word.contains("*") && !word.contains("?")
+        let scalars = word.unicodeScalars
+        guard let first = scalars.first, first != "!", first != "-" else { return false }
+        return !scalars.contains("*") && !scalars.contains("?")
     }
 
-    /// `Keyword value…` or `Keyword=value…`, as ssh accepts both.
+    /// `Keyword value…` or `Keyword=value…`, as ssh accepts both (by
+    /// scalar, like the rest of the reader).
     private static func splitKeyword(_ line: String) -> (String, String)? {
-        guard let end = line.firstIndex(where: { $0 == " " || $0 == "\t" || $0 == "=" }) else {
+        let scalars = line.unicodeScalars
+        guard let end = scalars.firstIndex(where: { $0 == " " || $0 == "\t" || $0 == "=" }) else {
             return (line, "")
         }
-        let keyword = String(line[..<end])
-        var rest = line[end...].drop(while: { $0 == " " || $0 == "\t" })
+        let keyword = String(scalars[..<end])
+        var rest = scalars[end...].drop(while: { $0 == " " || $0 == "\t" })
         if rest.first == "=" { rest = rest.dropFirst().drop(while: { $0 == " " || $0 == "\t" }) }
-        return (keyword, String(rest))
+        return (keyword, String(String.UnicodeScalarView(rest)))
     }
 
     /// A line's arguments as OpenSSH's `argv_split` reads them (misc.c):
@@ -104,18 +108,20 @@ public enum SSHConfigHosts {
     /// the start of a word ends the line. A quote left open makes the line
     /// invalid, as ssh says ("invalid quotes"): nil.
     static func words(_ text: String) -> [String]? {
-        let s = Array(text)
+        // Scalars, as ssh reads bytes: a quote or backslash with a combining
+        // mark after it still quotes or escapes.
+        let s = Array(text.unicodeScalars)
         var words: [String] = []
         var i = 0
         while i < s.count {
             if s[i] == " " || s[i] == "\t" { i += 1; continue }
             if s[i] == "#" { break }
-            var word = ""
-            var quote: Character?
+            var word = String.UnicodeScalarView()
+            var quote: Unicode.Scalar?
             while i < s.count {
                 let c = s[i]
                 if c == "\\" {
-                    let next: Character? = i + 1 < s.count ? s[i + 1] : nil
+                    let next: Unicode.Scalar? = i + 1 < s.count ? s[i + 1] : nil
                     if let next, next == "'" || next == "\"" || next == "\\" || (quote == nil && next == " ") {
                         i += 1
                         word.append(next)
@@ -134,7 +140,7 @@ public enum SSHConfigHosts {
                 i += 1
             }
             if quote != nil { return nil }
-            words.append(word)
+            words.append(String(word))
         }
         return words
     }
