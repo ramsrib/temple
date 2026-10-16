@@ -432,6 +432,26 @@ final class CodexIdentityTests: XCTestCase {
         }
     }
 
+    /// A head that ends in a newline exactly at the cap keeps every byte, so
+    /// it reads as cut short (unknown) rather than as a whole file with no
+    /// prompt (round 3).
+    func testAHeadEndingInANewlineAtTheCapIsCutShort() async throws {
+        let f = Fixture()
+        let cap = CodexSuggestionLookup.headBytes
+        let header = #"{"type":"session_meta","payload":{"id":"x","cwd":"/w","timestamp":"2026-10-16T17:00:00Z"}}"#
+        let filler = String(repeating: " ", count: cap - header.utf8.count - 2)
+        let prompt = #"{"type":"event_msg","payload":{"type":"user_message","message":"past the cap"}}"#
+        let text = header + "\n" + filler + "\n" + prompt + "\n"
+        let path = f.sessions + "/rollout-2026-10-16T10-18-52-cap.jsonl"
+        FileManager.default.createFile(atPath: path, contents: Data(text.utf8))
+        XCTAssertEqual(Data(text.utf8)[cap - 1], 0x0a, "the cap falls right after a newline")
+        let fetched = await CodexSuggestionLookup.heads([path], using: f.exec)
+        let head = try XCTUnwrap(fetched?[path])
+        XCTAssertEqual(head.count, cap, "every byte up to the cap, the newline included")
+        let suggestion = CodexSuggestion(rolloutPath: path, sessionID: "x", firstPrompt: nil, startedAt: Date(), directory: "/w")
+        XCTAssertEqual(CodexSuggestionLookup.withPrompts([suggestion], heads: fetched).first?.promptKnown, false)
+    }
+
     /// A prompt that couldn't be read is unknown, never "no prompt" (round
     /// 2): the head query failed, the file was skipped, or its head was cut
     /// short before any prompt.

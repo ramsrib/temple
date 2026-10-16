@@ -301,11 +301,13 @@ public enum CodexSuggestionLookup {
 
     /// Arguments: paths. Prints per path `head<TAB><hex path><TAB><bytes>`,
     /// that much of its head and `\nend`, or `skip<TAB><hex path>` when it
-    /// can't be read; then `done`.
+    /// can't be read; then `done`. The head is captured with a sentinel, so
+    /// trailing newlines are kept and a head cut at the cap reads as cut.
     static let headsScript = #"""
     for f; do
       x=$(printf '%s' "$f" | od -An -tx1 | tr -d ' \n')
-      t=$(head -c \#(headBytes) -- "$f") || { printf 'skip\t%s\n' "$x"; continue; }
+      t=$(head -c \#(headBytes) -- "$f" && printf x) || { printf 'skip\t%s\n' "$x"; continue; }
+      t=${t%x}
       printf 'head\t%s\t%s\n' "$x" "$(printf '%s' "$t" | wc -c | tr -d ' ')"
       printf '%s\nend\n' "$t"
     done
