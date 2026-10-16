@@ -476,23 +476,32 @@ actor RemoteTranscriptAccess {
 
     /// A normal absolute path: no empty, `.` or `..` component, so its
     /// place is what its spelling says. Every path this source lists is
-    /// one; a hint that is not is never looked at.
+    /// one; a hint that is not is never looked at. Judged on UTF-8 bytes,
+    /// as the host's kernel reads a path: Characters would hide a `..`
+    /// behind a combining mark after its slash, and fold precomposed and
+    /// decomposed spellings the host keeps apart.
     static func isNormal(_ path: String) -> Bool {
-        guard path.hasPrefix("/"), path.count > 1, !path.hasSuffix("/") else { return false }
-        return !path.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
-            .contains { $0.isEmpty || $0 == "." || $0 == ".." }
+        let bytes = Array(path.utf8)
+        guard bytes.first == slash, bytes.count > 1, bytes.last != slash else { return false }
+        return !bytes.dropFirst().split(separator: slash, omittingEmptySubsequences: false)
+            .contains { $0.isEmpty || $0.elementsEqual([dot]) || $0.elementsEqual([dot, dot]) }
     }
+
+    private static let slash = UInt8(ascii: "/"), dot = UInt8(ascii: ".")
 
     /// Whether a transcript path is one the agent's store holds, as the
     /// local stores' `acceptsTranscript` decides: inside the store, normal,
     /// and the agent's shape (Claude: `<store>/<folder>/<id>.jsonl`; Codex:
-    /// a `rollout-*.jsonl` anywhere below `sessions`).
+    /// a `rollout-*.jsonl` anywhere below `sessions`). Bytes throughout, as
+    /// `isNormal`.
     static func accepts(_ path: String, store: String, agent: Agent) -> Bool {
-        guard isNormal(path), path.hasPrefix(store), path.hasSuffix(".jsonl") else { return false }
-        let inside = path.dropFirst(store.count).split(separator: "/", omittingEmptySubsequences: false)
+        let bytes = Array(path.utf8), prefix = Array(store.utf8)
+        guard isNormal(path), bytes.count > prefix.count, bytes.starts(with: prefix),
+              bytes.reversed().starts(with: Array(".jsonl".utf8).reversed()) else { return false }
+        let inside = bytes[prefix.count...].split(separator: slash, omittingEmptySubsequences: false)
         switch agent {
         case .claude: return inside.count == 2
-        case .codex: return inside.last?.hasPrefix("rollout-") == true
+        case .codex: return inside.last?.starts(with: Array("rollout-".utf8)) == true
         }
     }
 
@@ -609,11 +618,13 @@ actor RemoteTranscriptAccess {
     /// (`<home>/sessions/YYYY/MM/DD/rollout-….jsonl`), for a file no
     /// listing named; nil for any other shape.
     static func codexHome(of path: String) -> String? {
-        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
-        guard parts.count >= 7, parts.last?.hasPrefix("rollout-") == true, parts[parts.count - 5] == "sessions" else { return nil }
-        let digits = { (part: Substring, count: Int) in part.count == count && part.allSatisfy(\.isASCII) && part.allSatisfy(\.isNumber) }
+        guard isNormal(path) else { return nil }
+        let parts = Array(path.utf8).split(separator: slash, omittingEmptySubsequences: false)
+        guard parts.count >= 7, parts[parts.count - 1].starts(with: Array("rollout-".utf8)),
+              parts[parts.count - 5].elementsEqual(Array("sessions".utf8)) else { return nil }
+        let digits = { (part: ArraySlice<UInt8>, count: Int) in part.count == count && part.allSatisfy { (0x30...0x39).contains($0) } }
         guard digits(parts[parts.count - 4], 4), digits(parts[parts.count - 3], 2), digits(parts[parts.count - 2], 2) else { return nil }
-        let home = parts[..<(parts.count - 5)].joined(separator: "/")
-        return home.isEmpty ? nil : home
+        let home = Array(parts[..<(parts.count - 5)].joined(separator: [slash]))
+        return home.isEmpty ? nil : String(decoding: home, as: UTF8.self)
     }
 }

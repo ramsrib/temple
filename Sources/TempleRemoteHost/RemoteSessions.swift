@@ -841,8 +841,8 @@ public final class RemoteSessions {
         switch config {
         case .unset: return .unset
         case .set(let value) where value.isEmpty: return nil
-        case .set(let value) where value.hasPrefix("/"): return .set(value)
-        case .set(let value): return .set((base.hasSuffix("/") ? base : base + "/") + value)
+        case .set(let value) where value.utf8.first == UInt8(ascii: "/"): return .set(value)
+        case .set(let value): return .set((base.utf8.last == UInt8(ascii: "/") ? base : base + "/") + value)
         }
     }
 
@@ -854,10 +854,10 @@ public final class RemoteSessions {
         switch home {
         case .unset: return .unset
         case .set(let value) where value.isEmpty: return nil
-        case .set(let value) where value.hasPrefix("/"): return .set(value)
+        case .set(let value) where value.utf8.first == UInt8(ascii: "/"): return .set(value)
         case .set(let value):
             guard let base = run.directory else { return nil }
-            return .set((base.hasSuffix("/") ? base : base + "/") + value)
+            return .set((base.utf8.last == UInt8(ascii: "/") ? base : base + "/") + value)
         }
     }
 

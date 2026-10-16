@@ -228,6 +228,42 @@ final class RemoteSourceTests: XCTestCase {
         XCTAssertEqual(RemoteTranscriptAccess.store("/", agent: .claude), "/projects/")
     }
 
+    /// Paths are judged on UTF-8 bytes: a combining mark after a slash
+    /// does not hide a `..` component, and a precomposed store never
+    /// accepts a decomposed path (the host keeps them apart), nor the other
+    /// way round.
+    func testPathsAreJudgedOnBytes() {
+        let store = "/root/projects/"
+        let hidden = "/root/projects/../\u{0301}outside/session.jsonl"
+        XCTAssertFalse(RemoteTranscriptAccess.isNormal(hidden))
+        XCTAssertFalse(RemoteTranscriptAccess.accepts(hidden, store: store, agent: .claude))
+        XCTAssertFalse(RemoteTranscriptAccess.accepts("/root/sessions/./\u{0301}x/rollout-a.jsonl", store: "/root/sessions/", agent: .codex))
+        XCTAssertTrue(RemoteTranscriptAccess.isNormal("/root/projects/\u{0301}p/session.jsonl"), "a mark that starts a name is just a name")
+        XCTAssertTrue(RemoteTranscriptAccess.accepts("/root/projects/\u{0301}p/session.jsonl", store: store, agent: .claude))
+        let precomposed = "/home/caf\u{E9}/.claude/projects/", decomposed = "/home/cafe\u{301}/.claude/projects/"
+        XCTAssertEqual(precomposed, decomposed, "equal as Swift Strings")
+        XCTAssertTrue(RemoteTranscriptAccess.accepts(precomposed + "-p/s.jsonl", store: precomposed, agent: .claude))
+        XCTAssertTrue(RemoteTranscriptAccess.accepts(decomposed + "-p/s.jsonl", store: decomposed, agent: .claude))
+        XCTAssertFalse(RemoteTranscriptAccess.accepts(decomposed + "-p/s.jsonl", store: precomposed, agent: .claude))
+        XCTAssertFalse(RemoteTranscriptAccess.accepts(precomposed + "-p/s.jsonl", store: decomposed, agent: .claude))
+        XCTAssertNil(RemoteTranscriptAccess.codexHome(of: "/h/../\u{0301}x/sessions/2026/10/01/rollout-a.jsonl"))
+        XCTAssertEqual(RemoteTranscriptAccess.codexHome(of: "/h/.codex/sessions/2026/10/01/rollout-a.jsonl"), "/h/.codex")
+        XCTAssertEqual(RemoteTranscriptRoot(.set("/\u{0301}conf"), base: nil)?.state, "set")
+        XCTAssertEqual(RemoteTranscriptRoot(.set("/\u{0301}conf"), base: nil)?.base, "", "absolute by its first byte")
+    }
+
+    /// A hint hiding `..` behind a combining mark is never stat'ed or offered.
+    func testAHintHidingDotDotBehindACombiningMarkIsNotLookedAt() async throws {
+        let box = Box()
+        let id = uuid()
+        // Where the hint really leads on the host: outside the store.
+        box.tree.write("home/.claude/\u{0301}outside/\(id).jsonl", claudeLines(id).joined(separator: "\n"))
+        let source = RemoteSessionSource(host: Self.host, provider: Provider(box.exec))
+        let hint = TranscriptLocator(host: Self.host, path: box.home + "/.claude/projects/../\u{0301}outside/\(id).jsonl")
+        let result = try await source.locate([LocateRequest(id: id, agent: .claude, hint: hint)])
+        XCTAssertEqual(result.candidates[id], [])
+    }
+
     static func hex(_ text: String) -> String { Data(text.utf8).map { String(format: "%02x", $0) }.joined() }
 
     /// A transcript that is a link is unreadable, in the listing, as a hint
@@ -576,9 +612,11 @@ final class RemoteSourceTests: XCTestCase {
         XCTAssertEqual(source.counters.refused, 1)
     }
 
-    /// A listing that isn't framed is the host's transport failure; a valid
-    /// one whose `find` failed lists nothing and clears nothing.
-    func testAMalformedListingIsATransportFailureAndAFailedFindIsNot() async throws {
+    /// A listing that isn't framed is the host's transport failure (charged
+    /// on the breaker); a well-framed one whose `find` failed lists nothing,
+    /// charges nothing, and, being a transport that worked, resets the
+    /// breaker's count like any answer.
+    func testAMalformedListingIsChargedAndAFailedFindListsNothingAndResetsTheBreaker() async throws {
         let box = Box()
         let id = uuid()
         box.claude(id, lines: claudeLines(id))
@@ -602,7 +640,18 @@ final class RemoteSourceTests: XCTestCase {
         reply.text = "root\t0\tok\t\(hex("/r"))\nlist\t0\t\(hex(record))00\(hex("S1"))\ndone\n"
         let failed = try await source.locate([LocateRequest(id: id, agent: .claude)])
         XCTAssertEqual(failed.candidates[id], [], "a find that failed lists nothing")
-        XCTAssertEqual(provider.failures, 2)
+        XCTAssertEqual(provider.failures, 2, "and charges nothing")
+        // The count was reset: two more malformed answers (2, not 4) leave
+        // the breaker closed, and the next lookup still spawns; a third trips it.
+        reply.text = "root\t0\tok\t\(hex("/r"))\nlist\t0\t\(hex("garbage"))00\(hex("S0"))\ndone\n"
+        for _ in 0..<2 { _ = try? await source.locate([LocateRequest(id: id, agent: .claude)]) }
+        let spawned = exec.calls.count
+        _ = try? await source.locate([LocateRequest(id: id, agent: .claude)])
+        XCTAssertEqual(exec.calls.count, spawned + 1, "still closed after two failures since the reset")
+        XCTAssertEqual(source.counters.refused, 0)
+        _ = try? await source.locate([LocateRequest(id: id, agent: .claude)])
+        XCTAssertEqual(exec.calls.count, spawned + 1, "the third failure since the reset tripped it")
+        XCTAssertEqual(source.counters.refused, 1)
         XCTAssertEqual(RemoteTranscripts.listing(Data((record + "\0S1").utf8)), .failed)
         XCTAssertNil(RemoteTranscripts.listing(Data((record + "\0S").utf8)))
         XCTAssertNil(RemoteTranscripts.listing(Data(("\t3\t1.0\t7\t/r\0S0").utf8)))

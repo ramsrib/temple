@@ -29,9 +29,9 @@ public struct RemoteTranscriptRoot: Sendable, Hashable {
         switch variable {
         case .unset?: (state, value, self.base) = ("unset", "", "")
         case .set(let configured)? where configured.isEmpty: return nil
-        case .set(let configured)? where configured.hasPrefix("/"): (state, value, self.base) = ("set", configured, "")
+        case .set(let configured)? where configured.utf8.first == UInt8(ascii: "/"): (state, value, self.base) = ("set", configured, "")
         case .set(let configured)?:
-            guard let base, base.hasPrefix("/") else { return nil }
+            guard let base, base.utf8.first == UInt8(ascii: "/") else { return nil }
             (state, value, self.base) = ("set", configured, base)
         case nil: return nil
         }
@@ -231,7 +231,7 @@ enum RemoteTranscripts {
                       answer.roots[index] == nil else { return nil }
                 switch (fields[2], fields.count) {
                 case ("ok", 4):
-                    guard let root = LaunchRecords.hex(fields[3]), root.hasPrefix("/") else { return nil }
+                    guard let root = LaunchRecords.hex(fields[3]), root.utf8.first == UInt8(ascii: "/") else { return nil }
                     answer.roots[index] = .ok(root)
                 case ("none", 3): answer.roots[index] = RootOutcome.none
                 case ("failed", 3): answer.roots[index] = .failed
