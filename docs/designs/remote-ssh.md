@@ -1995,3 +1995,39 @@ rollouts (Fable 6, its own commit before the next release); Codex's shared
 history and index lines and jetson's initialised `~/.codex` stay (Fable 4);
 the dark-mode tmux contrast check is for the hands-on pass (Fable 7).
 
+## Phase 1b round 2 (coordinator's rulings)
+
+1. **Only the pane's own process is adopted.** Round 1's launcher
+   exception (a direct child of an interpreter whose arguments named
+   `codex` or `codex.js`, given the same arguments) drew a blocker in two
+   rounds in a row, so the mechanism changed instead of the evidence: the
+   writer must be the process the launch `exec`ed. A codex installed behind
+   Codex's npm launcher (where the native binary is the launcher's child)
+   is identified by the question, like the default app-server mode; with
+   the standalone install both boxes have, `--no-daemon` is adopted at
+   depth 0. The argument comparison is gone.
+2. **Restored chips are never stopped at quit.** Only a run this launch
+   attached to and saw idle is stopped; a chip restored and never opened
+   (one detached while working, or left running by a stop that failed)
+   keeps running.
+3. **Restore follows reconciliation.** At launch the unjoined claims are
+   joined first; a claimed run comes back as that session's chip only when
+   core holds it (joined now or before), and otherwise by its handle as a
+   pending chip (a refusal released it; a failed write left it claimed,
+   joined again when it is opened). A run is handed over (`tab_closed_at`)
+   only once the tab set is acknowledged as written
+   (`TabPersistence.saveAcknowledged`; local saves behave as before).
+4. **Input evidence.** `r5-input` marks runs from before it with the epoch:
+   unknown, kept as typed into. A pending tab's input is committed only
+   once written; a failed write is tried three times, then said, and the
+   next Return tries again.
+5. **Prompts.** A prompt query that fails, a file it couldn't read, or a
+   head cut short before any prompt is unknown ("its first prompt couldn't
+   be read"), never "no prompt".
+6. **Frames.** A length is checked against the bytes left by subtraction,
+   so a length near `Int.max` is refused, not an overflow.
+7. **Core refusals are remembered.** A run whose id core refused is not
+   claimed again on schedule, and that id is not offered; Try again (in
+   the tab) or the conflicting row leaving lets it be claimed once more. A
+   failed core write keeps retrying.
+
