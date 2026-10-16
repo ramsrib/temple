@@ -17,9 +17,11 @@ struct NewSessionPickerView: View {
     var body: some View {
         // One filter pass per render (the palettes' discipline).
         let projects = self.projects
-        // The trailing pseudo-row: "Choose folder…" is always reachable by
-        // keyboard, so a project Temple has never indexed is never mouse-only.
-        let rowCount = projects.count + 1
+        let hosts = model.remoteLaunchHosts
+        // The trailing pseudo-rows: "Choose folder…" is always reachable by
+        // keyboard, so a project Temple has never indexed is never mouse-only;
+        // below it, "Folder on <host>…" per host a session can start on.
+        let rowCount = projects.count + 1 + hosts.count
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -28,7 +30,7 @@ struct NewSessionPickerView: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 16))
                     .focused($fieldFocused)
-                    .onSubmit { open(index: selection, in: projects) }
+                    .onSubmit { open(index: selection, in: projects, hosts: hosts) }
                     .onChange(of: query) { selection = 0 }
                 if !query.isEmpty {
                     Button {
@@ -54,7 +56,7 @@ struct NewSessionPickerView: View {
                         ForEach(Array(projects.enumerated()), id: \.element.key) { idx, project in
                             ProjectPickerRow(project: project, selected: idx == selection) {
                                 selection = idx
-                                open(index: idx, in: projects)
+                                open(index: idx, in: projects, hosts: hosts)
                             }
                             .frame(height: Self.rowHeight)
                             .id(project.key)
@@ -62,14 +64,21 @@ struct NewSessionPickerView: View {
                         chooseFolderRow(selected: selection == projects.count)
                             .frame(height: Self.rowHeight)
                             .id(Self.chooseFolderID)
+                        ForEach(Array(hosts.enumerated()), id: \.element) { offset, host in
+                            hostFolderRow(host, selected: selection == projects.count + 1 + offset)
+                                .frame(height: Self.rowHeight)
+                                .id("temple.picker.host.\(host.rawValue)")
+                        }
                     }
                 }
                 .frame(height: min(CGFloat(rowCount) * Self.rowHeight, 340))
                 .thinScrollers()
                 .onChange(of: selection) {
-                    proxy.scrollTo(selection < projects.count
-                                   ? AnyHashable(projects[selection].key) : AnyHashable(Self.chooseFolderID),
-                                   anchor: .center)
+                    let target: AnyHashable
+                    if selection < projects.count { target = AnyHashable(projects[selection].key) }
+                    else if selection == projects.count { target = AnyHashable(Self.chooseFolderID) }
+                    else { target = AnyHashable("temple.picker.host.\(hosts[selection - projects.count - 1].rawValue)") }
+                    proxy.scrollTo(target, anchor: .center)
                 }
             }
         }
@@ -105,15 +114,30 @@ struct NewSessionPickerView: View {
         } action: { chooseFolder() }
     }
 
+    private func hostFolderRow(_ host: HostID, selected: Bool) -> some View {
+        PickerRowChrome(selected: selected) {
+            HStack(spacing: 10) {
+                Image(systemName: "network")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                Text("Folder on \(host.rawValue)…")
+                    .font(.system(size: 13))
+                Spacer()
+            }
+        } action: { model.chooseRemoteFolder(host: host, agent: model.newSessionPickerAgent) }
+    }
+
     private func move(_ delta: Int, rowCount: Int) {
         selection = max(0, min(rowCount - 1, selection + delta))
     }
 
-    private func open(index: Int, in projects: [SessionRowProject]) {
+    private func open(index: Int, in projects: [SessionRowProject], hosts: [HostID]) {
         if projects.indices.contains(index) {
             model.openSessions.newSession(agent: model.newSessionPickerAgent,
                                           project: projects[index].key)
             model.newSessionPickerPresented = false
+        } else if index > projects.count, hosts.indices.contains(index - projects.count - 1) {
+            model.chooseRemoteFolder(host: hosts[index - projects.count - 1], agent: model.newSessionPickerAgent)
         } else {
             chooseFolder()
         }

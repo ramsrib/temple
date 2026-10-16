@@ -59,9 +59,13 @@ private struct SessionTerminalView: View {
     @ObservedObject var tab: SessionTab
     @Environment(\.undoManager) private var undoManager
 
+    @State private var confirmingResumeAnyway = false
+
     var body: some View {
         VStack(spacing: 0) {
-            if case .exited(let status) = tab.activity {
+            if let remote = tab.remote, let header = RemoteHeader.make(remote.phase) {
+                remoteHeader(header)
+            } else if case .exited(let status) = tab.activity {
                 launchFailure(status: status)
             }
             if let surface = tab.surface {
@@ -70,15 +74,103 @@ private struct SessionTerminalView: View {
                     // surface keeps its size and the agent's prompt line, at
                     // the bottom, stays clear of it.
                     .overlay(alignment: .topTrailing) {
-                        TerminalFindOverlay(find: tab.find)
+                        TerminalFindOverlay(find: tab.find,
+                                            note: tab.host.isLocal ? nil : RemoteCopy.findNote(tab.host.rawValue))
                     }
             } else {
                 Color.clear.onAppear {
-                    guard tab.launchPreparationError == nil else { return }
+                    guard tab.launchPreparationError == nil, tab.remote == nil else { return }
                     model.openSessions.activate(tabID: tab.id)
                 }
             }
         }
+        .alert("Resume anyway?", isPresented: $confirmingResumeAnyway) {
+            Button("Cancel", role: .cancel) {}
+            Button("Resume anyway") { model.openSessions.resumeAnyway(tab) }
+                .keyboardShortcut(.defaultAction)
+        } message: {
+            Text(model.openSessions.resumeAnywayMessage(tab) ?? "")
+        }
+    }
+
+    /// What a remote tab's header says, by phase; nil for none.
+    private enum RemoteHeader {
+        case disconnected
+        case unknown(String)
+        case stopFailed(String)
+        case failure
+
+        static func make(_ phase: RemoteTabState.Phase) -> RemoteHeader? {
+            switch phase {
+            case .opening, .connected, .checking, .stopping: nil
+            case .disconnected: .disconnected
+            case .unknown(let reason): .unknown(reason)
+            case .stopFailed(let message): .stopFailed(message)
+            case .failedToStart, .exitedEarly: .failure
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func remoteHeader(_ header: RemoteHeader) -> some View {
+        let host = tab.host.rawValue
+        switch header {
+        case .failure:
+            if case .exited(let status) = tab.activity { launchFailure(status: status) }
+        case .disconnected:
+            notice(symbol: "bolt.horizontal.circle", text: RemoteCopy.disconnected(host)) {
+                Button("Reconnect") { model.openSessions.reconnect(tab) }
+            }
+        case .unknown(let reason):
+            notice(symbol: "questionmark.circle", text: RemoteCopy.unknown(host, agent: tab.agent, reason: reason)) {
+                HStack(spacing: 12) {
+                    Button("Reconnect") { model.openSessions.reconnect(tab) }
+                    if tab.sessionID != nil {
+                        Button("Resume anyway") { confirmingResumeAnyway = true }
+                    }
+                }
+            }
+        case .stopFailed(let message):
+            notice(symbol: "exclamationmark.triangle", text: message) {
+                Button("Sessions on \(host)") { model.showRemoteSessions(tab.host) }
+            }
+        }
+    }
+
+    private func notice<Actions: View>(symbol: String, text: String,
+                                       @ViewBuilder actions: () -> Actions) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 9) {
+            Image(systemName: symbol)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Text(text)
+                .font(.system(size: 12))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            actions()
+                .buttonStyle(.link)
+                .font(.system(size: 12))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.surfaceFill)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Palette.hairline).frame(height: 1)
+        }
+    }
+
+    /// The header's first line. On a host it names the host; a host that is
+    /// no longer set up says only that.
+    private func failureTitle(preparationError: String?, blameCommand: Bool, exited: String) -> String {
+        if !tab.host.isLocal, preparationError == RemoteCopy.notSetUp(tab.host.rawValue) {
+            return RemoteCopy.notSetUp(tab.host.rawValue)
+        }
+        if preparationError != nil {
+            return tab.host.isLocal ? "\(tab.agent.displayName) failed to start."
+                : RemoteCopy.failedToStart(tab.host.rawValue, agent: tab.agent)
+        }
+        return blameCommand ? "\(exited) — it failed to start." : "\(exited)."
     }
 
     /// An agent that died seconds after spawning (`OpenSessionsModel` keeps the tab
@@ -113,10 +205,9 @@ private struct SessionTerminalView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(blameCommand ? Color.red : Color.orange)
             VStack(alignment: .leading, spacing: 2) {
-                Text(preparationError != nil ? "\(tab.agent.displayName) failed to start."
-                     : blameCommand ? "\(exited) — it failed to start." : "\(exited).")
+                Text(failureTitle(preparationError: preparationError, blameCommand: blameCommand, exited: exited))
                     .font(.system(size: 12, weight: .medium))
-                if let preparationError {
+                if let preparationError, preparationError != RemoteCopy.notSetUp(tab.host.rawValue) {
                     Text(preparationError)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)

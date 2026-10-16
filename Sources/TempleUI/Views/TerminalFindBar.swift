@@ -7,11 +7,24 @@ import SwiftUI
 /// the terminal. ⌘G / ⌘⇧G work from the field or the terminal (KeyCatcher).
 struct TerminalFindOverlay: View {
     @ObservedObject var find: TerminalFindModel
+    /// A tab on a host: what ⌘F can see (tmux redraws only the screen on
+    /// attach, so earlier output is in tmux's history, not the tab's).
+    var note: String? = nil
 
     var body: some View {
         if find.isPresented {
-            TerminalFindBar(find: find)
-                .padding(10)
+            VStack(alignment: .trailing, spacing: 4) {
+                TerminalFindBar(find: find)
+                if let note {
+                    Text(note)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 5))
+                }
+            }
+            .padding(10)
         }
     }
 }

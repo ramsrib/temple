@@ -137,6 +137,33 @@ public struct RootView: View {
         } message: {
             Text("Its agent is still working — closing will interrupt it.")
         }
+        // A working agent on a host: Detach (the default; it keeps working
+        // there) or Stop, decided in the tab's own prompt.
+        .alert(pendingRemoteCloseTitle, isPresented: pendingRemoteCloseBinding) {
+            Button("Detach") { model.openSessions.confirmRemoteDetach() }
+                .keyboardShortcut(.defaultAction)
+            Button("Stop") { model.openSessions.confirmRemoteStop() }
+            Button("Cancel", role: .cancel) { model.openSessions.cancelRemoteClose() }
+        }
+        .sheet(item: $model.remoteSessionsSheet) { request in
+            RemoteSessionsSheet(request: request)
+                .environmentObject(model)
+        }
+        .sheet(item: $model.remoteFolderSheet) { request in
+            RemoteFolderSheet(request: request)
+                .environmentObject(model)
+        }
+    }
+
+    private var pendingRemoteCloseBinding: Binding<Bool> {
+        Binding(
+            get: { model.openSessions.pendingRemoteCloseTabID != nil },
+            set: { if !$0 { model.openSessions.cancelRemoteClose() } })
+    }
+
+    private var pendingRemoteCloseTitle: String {
+        guard let tab = model.openSessions.pendingRemoteCloseTab else { return "" }
+        return RemoteCopy.stillWorking(tab.host.rawValue, agent: tab.agent)
     }
 
     /// Any floating panel (⌘K / ⌘N / ⌘P / ⌘/) currently over the window.
@@ -209,7 +236,8 @@ public struct RootView: View {
                 OverlayBackdrop { model.shortcutsPresented = false }
                     .ignoresSafeArea()
                 PanelHost(focus: model.overlayFocus, token: model.overlayFocus.token) {
-                    ShortcutsView(maxHeight: max(200, geo.size.height - 2 * ShortcutsView.windowMargin))
+                    ShortcutsView(maxHeight: max(200, geo.size.height - 2 * ShortcutsView.windowMargin),
+                                  remoteNote: model.remoteHosts.isEnabled)
                 }
                 .fixedSize()
             }
@@ -499,6 +527,7 @@ struct KeyCatcher: NSViewRepresentable {
             // A confirmation dialog owns the keyboard — pass everything through
             // so Return/Esc reach the alert instead of our shortcuts.
             if model.openSessions.pendingCloseTabID != nil { return false }
+            if model.openSessions.pendingRemoteCloseTabID != nil { return false }
 
             // History's import sheet and its failure alert own the keyboard
             // the same way. Asked first, so no binding below (⌘W, ⌘Y, ⌘K…)

@@ -47,6 +47,12 @@ struct ShortcutsView: View {
     /// traffic lights. Bounded, it keeps its natural height when that fits
     /// and scrolls its sections when it does not.
     var maxHeight: CGFloat = .infinity
+    /// Sessions on hosts are on (`temple.feature.remoteHosts`): one line
+    /// on how scrolling works in them (tmux owns their scrollback).
+    var remoteNote = false
+
+    static let remoteScrollingNote =
+        "In a session on a host, scrolling up shows history; the first key you type returns to the prompt."
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -58,6 +64,12 @@ struct ShortcutsView: View {
                     section("Sessions & tabs", Self.sessions)
                     section("Navigation", Self.navigation)
                     section("App", Self.app)
+                    if remoteNote {
+                        Text(Self.remoteScrollingNote)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 .padding(.horizontal, 28)
                 .padding(.bottom, 28)

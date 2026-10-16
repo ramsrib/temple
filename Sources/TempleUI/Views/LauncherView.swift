@@ -173,6 +173,11 @@ struct LauncherView: View {
             LauncherRow(icon: .symbol("folder.badge.plus"), title: "New session in folder…") {
                 openFolder()
             }
+            ForEach(model.remoteLaunchHosts, id: \.self) { host in
+                LauncherRow(icon: .symbol("network"), title: "New session on \(host.rawValue)…") {
+                    model.chooseRemoteFolder(host: host)
+                }
+            }
             LauncherRow(icon: .symbol("command"), title: "Command palette", shortcut: "⌘K") {
                 model.toggleCommandPalette()
             }

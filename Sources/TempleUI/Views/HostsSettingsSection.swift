@@ -81,6 +81,7 @@ struct HostsSettingsSection: View {
                             .truncationMode(.middle)
                         Spacer(minLength: 8)
                         HostLink("Test connection") { startTest(record.name) }
+                        HostLink("Sessions on \(record.name)…") { model.showRemoteSessions(record.host) }
                         HostLink("Edit") { form = HostFormRequest(editing: record) }
                         HostLink("Remove") { hosts.remove(record.name) }
                     }
@@ -133,6 +134,7 @@ struct HostsSettingsSection: View {
                         Spacer(minLength: 8)
                         if enabled {
                             HostLink("Test connection") { startTest(alias) }
+                            HostLink("Sessions on \(alias)…") { model.showRemoteSessions(HostID(rawValue: alias)) }
                         }
                     }
                     if enabled {

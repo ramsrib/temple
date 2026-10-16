@@ -142,6 +142,11 @@ public final class GhosttyApp {
             "window-padding-y = 6",
             // Temple owns process lifecycle (ADR-010); no ghostty-side prompts.
             "confirm-close-surface = false",
+            // OSC 52 writes reach the Mac clipboard without asking: a session
+            // on a host copies through tmux's `set-clipboard on` this way
+            // (docs/designs/remote-ssh.md section 4). libghostty's default,
+            // pinned so it cannot drift; reads still ask.
+            "clipboard-write = allow",
         ]
         if let family = appearance.fontFamily, !family.isEmpty {
             lines.append("font-family = \(family)")

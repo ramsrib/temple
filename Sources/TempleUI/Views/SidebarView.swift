@@ -25,10 +25,19 @@ struct SidebarView: View {
                     .padding(.bottom, 8)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+            if let notice = model.remoteNotice {
+                RemoteNoticeBar(notice: notice,
+                                show: { model.showRemoteSessions(notice.host) },
+                                dismiss: { model.dismissRemoteNotice() })
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             Divider().opacity(0.4)
             footer
         }
         .animation(.easeOut(duration: 0.18), value: model.autoArchiveNotice)
+        .animation(.easeOut(duration: 0.18), value: model.remoteNotice)
         .background(.ultraThinMaterial)
         // The rail's actions live in the title bar, where a Mac app keeps
         // them (Finder, Mail, Notes) — not in a row of their own over the
@@ -373,6 +382,47 @@ private struct AutoArchiveNoticeBar: View {
                 .buttonStyle(.plain)
                 Button(action: undo) {
                     Text("Undo").font(.system(size: 11.5, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Palette.surfaceFill))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Palette.hairline))
+    }
+}
+
+/// A session on a host was left running: said once, at the foot of the
+/// rail, with Show (the host's "Sessions on <host>") and dismiss. Not a
+/// timer; it stays until Show, × or the end of the run.
+private struct RemoteNoticeBar: View {
+    let notice: RemoteNotice
+    let show: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 6) {
+                Text(notice.message)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                Spacer(minLength: 4)
+                Button(action: dismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 14, height: 14)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Dismiss")
+            }
+            HStack(spacing: 12) {
+                Spacer(minLength: 0)
+                Button(action: show) {
+                    Text("Show").font(.system(size: 11.5, weight: .semibold))
                 }
                 .buttonStyle(.plain)
             }

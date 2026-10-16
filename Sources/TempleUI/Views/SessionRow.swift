@@ -150,6 +150,13 @@ struct SessionRow: View {
             }
         }
         Button("Show in History") { model.showInHistory(sessionID: session.id) }
+        // A session on a host with a live run there: the one-command stop.
+        if !session.host.isLocal, model.openSessions.remoteRun(sessionID: session.id, host: session.host) != nil {
+            Divider()
+            Button("Stop on \(session.host.rawValue)") {
+                model.openSessions.stopRemoteSession(sessionID: session.id, host: session.host)
+            }
+        }
         if let tab = openTab {
             Divider()
             Button("Close tab") { model.openSessions.closeTab(tab.id) }
