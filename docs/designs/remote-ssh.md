@@ -2441,7 +2441,9 @@ its own.
     | `mouseReport` from `mouseButtonCallback`, `cursorPosCallback` (drag), `scrollCallback`, while the program captures the mouse | mouse reports | `mouseDown`/`Up`, `right…`, `other…`, `…Dragged`, `scrollWheel` when `ghostty_surface_mouse_captured` (under tmux `mouse on`: always) |
     | `cursorPosCallback` motion reports (mode 1003, no button) | mouse reports | not recorded: no button, nothing chosen; tmux asks for button events only |
     | `scrollCallback` alternate scroll (alternate screen, no capture) | cursor Up/Down | not recorded (accepted, round 4): only Up/Down, and libghostty does not say when it applies |
-    | `maybePromptClick` (a click at a prompt that declared OSC 133 click_events) | cursor Left/Right | closed: `cursor-click-to-move = false` in Temple's ghostty config (neither agent declares it; tmux does not pass it) |
+    | `maybePromptClick` (a click at a prompt that declared OSC 133): cursor arrows, or with `click_events` an SGR mouse report | cursor Left/Right, or a mouse report | closed: `cursor-click-to-move = false` in Temple's ghostty config (neither agent declares it; tmux does not pass it) |
+    | `flagsChanged`, `keyUp`: Kitty keyboard modifier and release reports, when the program enabled them | key reports | not recorded: a modifier or a release submits nothing; the press that does is recorded in `keyDown` |
+    | `clear_screen` keybind: an FF to the program when it is at a prompt | `\x0c` | `keyDown` (keybind only) |
     | `focusCallback` (mode 1004), `colorSchemeCallback` (mode 2031), the title report (CSI 21 t), and termio's answers to queries (DA, DSR, OSC 10/11) | reports | not input: the terminal's own state or answers to the program's queries, no content from the user |
     | `resize` | none (a window size, SIGWINCH) | not input |
 - **T1, T2**: Fable's spec (the host on a second line under the name; the
