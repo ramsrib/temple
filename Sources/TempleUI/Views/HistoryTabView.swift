@@ -625,6 +625,8 @@ struct HistoryTabView: View {
         .padding(.top, 60)
     }
 
+    /// An empty page's copy. A title is a phrase and ends without a period;
+    /// a detail is sentences and keeps theirs.
     private struct EmptyCopy {
         let title: String
         var detail: String?
@@ -645,7 +647,7 @@ struct HistoryTabView: View {
         if history.allRows.isEmpty {
             return EmptyCopy(
                 title: "No sessions yet",
-                detail: "Sessions you run with Claude Code or Codex — here or in any terminal — appear here.")
+                detail: "Sessions you run with Claude Code or Codex, here or in any terminal, appear here.")
         }
         let otherFilters = history.agentFilter != nil || history.projectKeyFilter != nil
         if history.scope == .archived {
@@ -667,7 +669,7 @@ struct HistoryTabView: View {
         }
         if !otherFilters, history.scope == .notInTemple {
             return EmptyCopy(
-                title: "Everything on disk is in Temple.",
+                title: "Everything on disk is in Temple",
                 detail: "Sessions from other terminals appear here the next time this page refreshes.")
         }
         if !otherFilters, history.scope == .inTemple {

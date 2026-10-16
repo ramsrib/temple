@@ -19,8 +19,18 @@ import TempleTerminalAPI
 @MainActor
 public final class OverlayFocus {
     private weak var inert: NSView?
-    /// The panel up now, by name; nil when none.
-    private(set) var panel: String?
+    /// The floating panels that own the keyboard while up.
+    enum Panel: Equatable {
+        /// ⌘K, the command palette.
+        case palette
+        /// ⌘N, the new-session project picker.
+        case picker
+        /// ⌘/, the keyboard shortcuts card.
+        case shortcuts
+    }
+
+    /// The panel up now; nil when none.
+    private(set) var panel: Panel?
     /// One per presentation (and per panel-to-panel hand-over). The view
     /// that draws a panel passes it to its host (`panelMounted`).
     public private(set) var token = 0
@@ -71,7 +81,7 @@ public final class OverlayFocus {
     }
 
     /// The app model's panel flags changed: `panel` is the one up now.
-    func panelChanged(to panel: String?) {
+    func panelChanged(to panel: Panel?) {
         guard panel != self.panel else { return }
         let previous = self.panel
         self.panel = panel

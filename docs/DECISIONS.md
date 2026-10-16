@@ -1313,52 +1313,51 @@ reacting to that, not initiating anything.
 
 - **The proof is taken when the sweep decides, through the host seam.**
   The engine's `.confirmedAbsent` is a hint: it makes an idle row a
-  candidate and arms a sweep, and dims the row; it may lag the truth by a
+  candidate, arms a sweep and dims the row, and it may lag the truth by a
   sweep (accepted). Right before it writes, the sweep asks the owning host's
-  `proveAbsent` — one call per host and agent for that sweep's hinted
-  candidates, every agent for a row that never recorded one — and archives
-  for the transcript only an id the proof says is missing from a listing
+  `proveAbsent`: one call per host and agent for that sweep's hinted
+  candidates, every agent for a row that never recorded one. Every host's
+  proofs run at once, and each host's archives are written, in one
+  transaction, as soon as its own proofs are in, so a slow host does not
+  widen the accepted window for another.
+- **What proves absence.** An id the proof says is missing from a listing
   that was exhaustive (ADR-032's rule) and quiescent: from before the
   listing to the change stream's latency after it, nothing happened that
-  could make a file named for an asked id appear or change what the
-  listing covers (`AbsenceProof.decide` has the table; writes to other
-  sessions' transcripts do not count, since FSEvents reports even an append
-  as a creation and live sessions would otherwise starve the sweep).
-
-  What the proof can and cannot vouch for is bounded honestly. It is
-  taken only for a store whose root, and every volume mounted inside it,
-  is a local filesystem (`MNT_LOCAL`, and not NFS, SMB, AFP, WebDAV or
-  FUSE): a network volume changes behind this Mac's event stream, so there
-  it is unproven. The window ends at a delivery barrier: a sentinel file
-  made in a folder of Temple's own that the stream also watches, and the
-  wait for its event. Within this Mac's per-host stream, on local volumes,
-  event IDs increase in the order events enter the stream (Apple's FSEvents
-  guide), so the sentinel's arrival means every event the stream already
-  held has been delivered. That bounds delivery; it is not a completeness
-  proof: a mutation that had not yet entered the stream when the sentinel
-  did is not seen. (A flush alone is not even that barrier: measured, an
-  event made just before `FSEventStreamFlushSync` arrives after it
-  returns.) A notification that says the stream lost track (dropped
-  events, a root changed, subdirectories to rescan, wrapped event IDs) —
-  wherever it points, the sentinel included — invalidates every running
-  proof and pending barrier and is never a barrier's evidence; a sentinel
-  folder deleted or moved fails what relied on it and is replaced. No
-  barrier, a stream stopped or re-armed, a dropped transport, a cancelled
-  proof (up to its very last step), or an agent with no store configured
-  on the host: nothing is proven. A proof
-  is for the memberships it was asked about: a leave and rejoin while it
-  runs proves nothing about the rejoin. Every host's proofs run at once,
-  and each host's archives are written, in one transaction, as soon as its
-  own proofs are in, so a slow host does not widen the accepted window for
-  another. A proof that was not quiescent is tried again a bounded number of times
-  (15 s, 1 min, 5 min), then left to the hourly sweep; sweeps run at
-  launch, on hints (coalesced) and hourly. An unproven hint leaves the
-  folder to decide. Accepted residue, two kinds: a file created in the gap
-  after the window and before the write, and a mutation not yet in the
-  stream when the sentinel landed. Both are bounded in practice by the
-  seven-day idle guard (a session nobody has touched in a week is rarely
-  being written to that second); there is no automatic un-archive (decided
-  against), and Undo or Restore brings the row back.
+  could make a file named for an asked id appear or change what the listing
+  covers (`AbsenceProof.decide` has the table). Writes to other sessions'
+  transcripts do not count, since FSEvents reports even an append as a
+  creation and live sessions would otherwise starve the sweep. The proof is
+  taken only for a store whose root, and every volume mounted inside it, is
+  a local filesystem (`MNT_LOCAL`, and not NFS, SMB, AFP, WebDAV or FUSE).
+  The window ends at a delivery barrier: a sentinel file made in a folder of
+  Temple's own that the stream also watches, and the wait for its event.
+  Within this Mac's per-host stream, on local volumes, event IDs increase in
+  the order events enter the stream (Apple's FSEvents guide), so the
+  sentinel's arrival means every event the stream already held has been
+  delivered. That bounds delivery; it is not a completeness proof: a
+  mutation that had not yet entered the stream when the sentinel did is not
+  seen. (A flush alone is not even that barrier: measured, an event made
+  just before `FSEventStreamFlushSync` arrives after it returns.)
+- **What never proves absence.** A network volume, which changes behind
+  this Mac's event stream. A notification that says the stream lost track
+  (dropped events, a root changed, subdirectories to rescan, wrapped event
+  IDs), wherever it points, the sentinel included: it invalidates every
+  running proof and pending barrier and is never a barrier's evidence. A
+  sentinel folder deleted or moved, which fails what relied on it and is
+  replaced. No barrier, a stream stopped or re-armed, a dropped transport, a
+  cancelled proof (up to its very last step), or an agent with no store
+  configured on the host. A proof is for the memberships it was asked
+  about: a leave and rejoin while it runs proves nothing about the rejoin.
+  A proof that was not quiescent is tried again a bounded number of times
+  (15 s, 1 min, 5 min), then left to the hourly sweep; sweeps run at launch,
+  on hints (coalesced) and hourly. An unproven hint leaves the folder to
+  decide.
+- **The idle week bounds what is left.** Two kinds of residue are accepted:
+  a file created in the gap after the window and before the write, and a
+  mutation not yet in the stream when the sentinel landed. Both are bounded
+  in practice by the seven-day idle guard (a session nobody has touched in a
+  week is rarely being written to that second). There is no automatic
+  un-archive (decided against); Undo or Restore brings the row back.
 - **Only on proof, only what nobody is using.** A row is archived by Temple
   when its transcript is proven gone at decision time, or its owning host
   says its folder is `.missing`, and it is not pinned, has no tab open or restored, has had no
@@ -1543,27 +1542,15 @@ disk knows about, one status per row. If a session is not in the sidebar,
   nothing; a new day, time zone or locale re-formats the page even when
   nothing else arrives. Every way into History (Show in History, the ⌘K
   bridge, which asks in All) clears the "Archived just now" chip.
-- **Commands on the selection follow one rule.** Arrows, ⌘A, Return, ⌘⌫,
-  Restore N and the selection's Import go to the model unconditionally; the
-  key router judges nothing. Accepting a command applies what is typed (a
-  pending debounce), and only then. If the page answering the current input
-  is installed and nothing is waiting, the command runs; otherwise it is
-  recorded with the generation it targets. Any newer input cancels every
-  recorded command: a keystroke that changes the search, a scope, filter or
-  chip change, Esc, the tab leaving, a bridge into History. When the
-  targeted generation installs, recorded commands run one at a time, the
-  generation and a cancellation token checked before each, and the first
-  mismatch drops the rest. A command runs against the installed page and
-  checks there whether it applies; one that does not does nothing. Running a
-  command never applies typing and never records a command. A command that
-  leaves the page or puts something in front of it (Return that opens a tab,
-  Import that asks with its sheet) is terminal: once it runs, every command
-  still recorded is cancelled in the same call. A command never runs while a
-  sheet or alert is up; it does nothing and cancels the rest. The app also
-  cancels, in the same call, whenever its active tab moves off History. So
-  typing then Return opens the first match, ⌘A then ⌘⌫ after a filter
-  archives what the filter shows, one Return opens one tab, and nothing acts
-  on rows the user never saw.
+- **Commands on the selection follow one rule.** A command (arrows, ⌘A,
+  Return, ⌘⌫, Restore N, the selection's Import) goes to the model
+  unconditionally, and acts only on the page that answers what was typed
+  when it was given: newer input cancels it, and it does nothing where it
+  does not apply. So typing then Return opens the first match, ⌘A then ⌘⌫
+  after a filter archives what the filter shows, one Return opens one tab,
+  and nothing acts on rows the user never saw. The protocol (when a command
+  is recorded, what cancels it, how a replay stops) is a comment on
+  `HistoryKeys.perform`, beside the code that keeps it.
 
   *Amended 2026-10-16:* which keys are commands depends on who has the
   keyboard. While a text field has it, History's search included, every key

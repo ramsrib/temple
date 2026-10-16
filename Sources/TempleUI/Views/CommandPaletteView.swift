@@ -83,7 +83,7 @@ struct CommandPaletteView: View {
                 SearchHistoryRow(query: trimmedQuery, selected: true) { searchHistory() }
                     .frame(height: Self.rowHeight)
             } else if results.isEmpty {
-                Text("No open sessions — type to search all")
+                Text("No open sessions; type to search all")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)

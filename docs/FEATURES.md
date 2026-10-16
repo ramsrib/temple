@@ -325,7 +325,8 @@ join and archived ones come back
   rows stream in newest first under a "Reading sessions on disk… 1,240 of
   3,810" line. The header says what is in the box ("3,812 sessions · 164 in
   Temple · 173 archived") and when it was taken ("Updated 2 min ago · Refresh"). Temple's rows
-  take the live index's copy, so their titles are current. Closing the tab
+  are its database rows (ADR-029), so their titles are the ones the sidebar
+  shows; a transcript only fills what a row does not state. Closing the tab
   forgets its search, filters and selection but keeps the rows: reopening
   shows them at once and refreshes underneath. The list is prepared off the
   main thread, so a disk of ten thousand sessions streams in and searches
@@ -399,8 +400,8 @@ join and archived ones come back
   while a row is still untouched — a session renamed, pinned, colored,
   archived, retitled by its agent, or opened since (even if its tab has
   closed again) stays in Temple, and so does one running in a tab; the line
-  says which reason kept which. An undone session leaves the live index at
-  once. A failed write is reported with its error and titles; the rest stay
+  says which reason kept which. An undone session leaves Temple's rows, and the
+  sidebar, at once. A failed write is reported with its error and titles; the rest stay
   imported.
 - **Context menu:** Open/Focus, Archive session, Import into Temple…, Copy
   resume command, Copy session ID, Reveal session file in Finder, Show in

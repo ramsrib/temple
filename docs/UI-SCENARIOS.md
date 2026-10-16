@@ -502,7 +502,7 @@ Fixture variants must be described in the run log with titles, IDs, membership, 
 - **Priority:** P0. **Safety:** Safe in demo, browsing only.
 - **Preconditions:** Fresh settled 25/22/3 fixture, no filters/chip/query.
 - **Steps:** Select All, In Temple, Archived, Not in Temple; count displayed rows and read header.
-- **Expected:** 25, 22, 3 and 0 respectively; header remains **25 sessions · 22 in Temple · 3 archived**. Narrowed scopes show **Showing N of 25**. Not in Temple says **Everything on disk is in Temple.** and **Sessions from other terminals appear here the next time this page refreshes.**
+- **Expected:** 25, 22, 3 and 0 respectively; header remains **25 sessions · 22 in Temple · 3 archived**. Narrowed scopes show **Showing N of 25**. Not in Temple says **Everything on disk is in Temple** and **Sessions from other terminals appear here the next time this page refreshes.**
 - **Notes:** Archived is a separate partition, although its rows remain members of Temple's database.
 
 #### HIS-003: Row facts, tags, dates and tooltips

@@ -111,6 +111,31 @@ enum HistoryKeys {
     /// A History key's command, carried out. The selection commands go to
     /// the model unconditionally (`HistoryModel.issue`): whether one applies
     /// is the model's to decide when it runs, against the page it targets.
+    ///
+    /// The protocol `issue` keeps (ADR-031, "Commands on the selection
+    /// follow one rule"):
+    /// - Arrows, ⌘A, Return, ⌘⌫, Restore N and the selection's Import go to
+    ///   the model unconditionally; the router judges nothing.
+    /// - Accepting a command applies what is typed (a pending debounce), and
+    ///   only then. If the page answering the current input is installed and
+    ///   nothing is waiting, the command runs; otherwise it is recorded with
+    ///   the generation it targets.
+    /// - Any newer input cancels every recorded command: a keystroke that
+    ///   changes the search, a scope, filter or chip change, Esc, the tab
+    ///   leaving, a bridge into History. The app also cancels, in the same
+    ///   call, whenever its active tab moves off History.
+    /// - When the targeted generation installs, recorded commands run one at
+    ///   a time, the generation and a cancellation token checked before
+    ///   each; the first mismatch drops the rest.
+    /// - A command runs against the installed page and checks there whether
+    ///   it applies; one that does not does nothing. Running a command never
+    ///   applies typing and never records a command.
+    /// - A command that leaves the page or puts something in front of it
+    ///   (Return that opens a tab, Import that asks with its sheet) is
+    ///   terminal: once it runs, every command still recorded is cancelled
+    ///   in the same call.
+    /// - A command never runs while a sheet or alert is up; it does nothing
+    ///   and cancels the rest.
     @MainActor
     static func perform(_ command: HistoryKeyCommand, on history: HistoryModel, undoManager: UndoManager?) -> Effect {
         switch command {

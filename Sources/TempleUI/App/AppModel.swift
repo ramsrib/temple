@@ -442,8 +442,8 @@ public final class AppModel: ObservableObject {
     public let overlayFocus = OverlayFocus()
 
     private func panelsChanged() {
-        overlayFocus.panelChanged(to: newSessionPickerPresented ? "picker"
-            : commandPalettePresented ? "palette" : shortcutsPresented ? "shortcuts" : nil)
+        overlayFocus.panelChanged(to: newSessionPickerPresented ? .picker
+            : commandPalettePresented ? .palette : shortcutsPresented ? .shortcuts : nil)
     }
 
     // ⌘P project switcher (ProjectSwitcherHUD) — modelled on ⌘⇥, not on ⌘K:
