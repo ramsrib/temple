@@ -11,28 +11,55 @@ import TempleCore
 // Paths come back hex-encoded, file bytes length-framed, and every answer
 // ends with `done` and nothing after it; anything else is not an answer.
 
+/// A path on a host, as the host's kernel names it: its UTF-8 bytes, and
+/// equal, hashed and ordered by those bytes alone. Swift's `String` is equal
+/// under Unicode canonical equivalence, so a precomposed and a decomposed
+/// spelling, two different files on a Linux host, would be one key, one
+/// root or one cache entry. Every remote root, hint, Codex home and
+/// transcript path key in this module is one of these; a `String` is made
+/// from it only to display it, to build a script argument (whose bytes are
+/// these), or to hand a locator to the engine.
+public struct RemotePath: Hashable, Comparable, Sendable, CustomStringConvertible, ExpressibleByStringLiteral {
+    public let bytes: [UInt8]
+    public init(_ text: String) { bytes = Array(text.utf8) }
+    public init(stringLiteral text: String) { self.init(text) }
+    init(bytes: [UInt8]) { self.bytes = bytes }
+    /// Lossless: Swift keeps a string's scalars as they were given, so its
+    /// UTF-8 is these bytes again.
+    public var string: String { String(decoding: bytes, as: UTF8.self) }
+    public var description: String { string }
+    public var isEmpty: Bool { bytes.isEmpty }
+    public var isAbsolute: Bool { bytes.first == UInt8(ascii: "/") }
+    public static func < (lhs: RemotePath, rhs: RemotePath) -> Bool { lhs.bytes.lexicographicallyPrecedes(rhs.bytes) }
+    func hasPrefix(_ other: RemotePath) -> Bool { bytes.starts(with: other.bytes) }
+    func appending(_ suffix: String) -> RemotePath { RemotePath(bytes: bytes + Array(suffix.utf8)) }
+}
+
 /// Where one agent keeps its transcripts on a host, as Temple knows it: the
 /// agent's root variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) set (absolute,
 /// or relative to `base`, the folder the agent ran in) or unset (the
 /// agent's default under `$HOME`). The host resolves and canonicalizes it
 /// (`pwd -P`, with a sentinel, so a name ending in a newline keeps it).
+/// Equal and hashed by bytes (`RemotePath`): two roots the host keeps apart
+/// are two groups, searched apart.
 public struct RemoteTranscriptRoot: Sendable, Hashable {
     public let state: String
-    public let value: String
-    public let base: String
+    public let value: RemotePath
+    public let base: RemotePath
 
     /// Nil when Temple doesn't know the root: the variable couldn't be read,
     /// it is set to the empty string (how the agent reads that is not
     /// established), or it is relative with no folder to resolve it
     /// against. Never a guess.
     public init?(_ variable: RemoteEnvironment.Variable?, base: String?) {
+        let none = RemotePath(bytes: [])
         switch variable {
-        case .unset?: (state, value, self.base) = ("unset", "", "")
+        case .unset?: (state, value, self.base) = ("unset", none, none)
         case .set(let configured)? where configured.isEmpty: return nil
-        case .set(let configured)? where configured.utf8.first == UInt8(ascii: "/"): (state, value, self.base) = ("set", configured, "")
+        case .set(let configured)? where RemotePath(configured).isAbsolute: (state, value, self.base) = ("set", RemotePath(configured), none)
         case .set(let configured)?:
-            guard let base, base.utf8.first == UInt8(ascii: "/") else { return nil }
-            (state, value, self.base) = ("set", configured, base)
+            guard let base, RemotePath(base).isAbsolute else { return nil }
+            (state, value, self.base) = ("set", RemotePath(configured), RemotePath(base))
         case nil: return nil
         }
     }
@@ -192,12 +219,12 @@ enum RemoteTranscripts {
     // MARK: Parsing
 
     enum RootOutcome: Equatable {
-        case ok(String)
+        case ok(RemotePath)
         case none, failed, unknown
     }
 
     struct Listed: Equatable {
-        let path: String
+        let path: RemotePath
         /// Present for a regular file; unreadable for a link or anything else.
         let stat: CandidateStat
     }
@@ -212,7 +239,7 @@ enum RemoteTranscripts {
         var roots: [Int: RootOutcome] = [:]
         /// Per group with a root: its files, or a listing that failed.
         var lists: [Int: ListOutcome] = [:]
-        var hints: [String: CandidateStat] = [:]
+        var hints: [RemotePath: CandidateStat] = [:]
     }
 
     /// Strict: every line known, every group answered once, `done` last
@@ -231,7 +258,7 @@ enum RemoteTranscripts {
                       answer.roots[index] == nil else { return nil }
                 switch (fields[2], fields.count) {
                 case ("ok", 4):
-                    guard let root = LaunchRecords.hex(fields[3]), root.utf8.first == UInt8(ascii: "/") else { return nil }
+                    guard let root = utf8Path(fields[3]), root.isAbsolute else { return nil }
                     answer.roots[index] = .ok(root)
                 case ("none", 3): answer.roots[index] = RootOutcome.none
                 case ("failed", 3): answer.roots[index] = .failed
@@ -244,7 +271,7 @@ enum RemoteTranscripts {
                       let listed = listing(bytes) else { return nil }
                 answer.lists[index] = listed
             case "hint":
-                guard fields.count >= 3, let path = LaunchRecords.hex(fields[1]) else { return nil }
+                guard fields.count >= 3, let path = utf8Path(fields[1]) else { return nil }
                 switch (fields[2], fields.count) {
                 case ("ok", 6):
                     guard let signature = signature(fields[3...5].joined(separator: "\t")) else { return nil }
@@ -282,8 +309,8 @@ enum RemoteTranscripts {
             guard fields.count == 5, fields[0].count == 1, fields[4].first == UInt8(ascii: "/"),
                   let signature = signature(String(decoding: Data(fields[1..<4].joined(separator: [0x09])), as: UTF8.self))
             else { return nil }
-            guard let path = String(data: Data(fields[4]), encoding: .utf8) else { continue }
-            files.append(Listed(path: path, stat: fields[0].first == UInt8(ascii: "f") ? .present(signature) : .unreadable))
+            guard String(data: Data(fields[4]), encoding: .utf8) != nil else { continue }
+            files.append(Listed(path: RemotePath(bytes: Array(fields[4])), stat: fields[0].first == UInt8(ascii: "f") ? .present(signature) : .unreadable))
         }
         return status == 0 ? .files(files) : .failed
     }
@@ -294,6 +321,12 @@ enum RemoteTranscripts {
         guard fields.count == 3, let size = Int(fields[0]), size >= 0,
               let seconds = Double(fields[1]), seconds.isFinite, let inode = UInt64(fields[2]) else { return nil }
         return TranscriptSignature(modifiedAt: Date(timeIntervalSince1970: seconds), size: size, identity: inode)
+    }
+
+    /// A hex-framed path whose bytes are valid UTF-8, kept as those bytes.
+    static func utf8Path(_ hex: String) -> RemotePath? {
+        guard let bytes = hexBytes(hex), String(data: bytes, encoding: .utf8) != nil else { return nil }
+        return RemotePath(bytes: Array(bytes))
     }
 
     static func hexBytes(_ text: String) -> Data? {

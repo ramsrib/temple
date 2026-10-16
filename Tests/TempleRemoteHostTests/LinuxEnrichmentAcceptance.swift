@@ -182,6 +182,55 @@ extension LinuxAcceptanceTests {
             guard case .unreadable? = error as? TranscriptReadError else { return XCTFail("\(name): \(error)") }
         }
         XCTAssertEqual(edges.counters.refused, 0)
+
+        // Two folders this box's filesystem keeps apart and Swift calls one
+        // String (precomposed and decomposed): one batch searches both
+        // roots, each session is found under its own bytes, and each Codex
+        // read takes the history lines of its own home.
+        let nfc = "caf\u{E9}", nfd = "cafe\u{301}"
+        // Pairs, never a String-keyed dictionary: the two keys would be one.
+        let spellings = [(nfc, UUID().uuidString.lowercased()), (nfd, UUID().uuidString.lowercased())]
+        let both = try await sh("""
+        f=$1; for pair in "$2:$3" "$4:$5"; do
+          d=$f/${pair%%:*}; id=${pair#*:}
+          mkdir -p "$d/cfg/projects/-p" "$d/cdx/sessions/2026/10/16" || exit 1
+          printf '{"type":"user","sessionId":"%s","cwd":"/w","message":{"content":"claude in %s"}}\n' "$id" "${pair%%:*}" \
+            > "$d/cfg/projects/-p/$id.jsonl"
+          printf '{"type":"session_meta","payload":{"id":"%s","cwd":"/w","timestamp":"2026-10-16T10:00:00Z"}}\n' "$id" \
+            > "$d/cdx/sessions/2026/10/16/rollout-2026-10-16T10-00-00-$id.jsonl"
+          printf '{"session_id":"%s","ts":1,"text":"codex in %s"}\n' "$id" "${pair%%:*}" > "$d/cdx/history.jsonl"
+        done
+        ls "$f" | grep -c caf
+        """, [canonical, nfc, spellings[0].1, nfd, spellings[1].1])
+        XCTAssertEqual(both, "2", "\(name): two folders on the host")
+        struct PerSession: RemoteTranscriptProvider {
+            let exec: RemoteExec
+            let roots: [String: [Agent: RemoteTranscriptRoot]]
+            func transcriptContext(sessionIDs: [String], refresh: Bool) async throws -> RemoteTranscriptContext {
+                RemoteTranscriptContext(exec: exec, roots: roots.filter { sessionIDs.contains($0.key) })
+            }
+            func transportFailed() async {}
+        }
+        var perSession: [String: [Agent: RemoteTranscriptRoot]] = [:]
+        for (folder, id) in spellings {
+            perSession[id] = [.claude: try XCTUnwrap(RemoteTranscriptRoot(.set("\(canonical)/\(folder)/cfg"), base: nil)),
+                              .codex: try XCTUnwrap(RemoteTranscriptRoot(.set("\(canonical)/\(folder)/cdx"), base: nil))]
+        }
+        let spelled = RemoteSessionSource(host: host, provider: PerSession(exec: exec, roots: perSession))
+        let found = try await spelled.locate(spellings.map { LocateRequest(id: $0.1) })
+        XCTAssertEqual(spelled.counters.listings, 1, "\(name): one batch")
+        for (folder, id) in spellings {
+            let mine = Array("\(canonical)/\(folder)/".utf8)
+            let candidates = found.candidates[id] ?? []
+            XCTAssertEqual(candidates.count, 2, "\(name): \(folder): both agents")
+            XCTAssertTrue(candidates.allSatisfy { Array($0.locator.path.utf8).starts(with: mine) }, "\(name): \(folder): its own bytes")
+            for candidate in candidates {
+                let summary = try await spelled.read(candidate.locator, agent: candidate.agent, expecting: id, facts: true).summary
+                let expected = "\(candidate.agent == .claude ? "claude" : "codex") in \(folder)"
+                XCTAssertEqual(summary?.titleFact.map { Array($0.utf8) }, Array(expected.utf8), "\(name): \(candidate.agent) in \(folder)")
+            }
+        }
+        log.append("both spellings: one batch, \(found.candidates.values.map(\.count).reduce(0, +)) candidates, each under its own folder")
     }
 
     /// A host that refuses connections: three transport failures, then the

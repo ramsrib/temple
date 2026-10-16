@@ -249,7 +249,7 @@ actor RemoteTranscriptAccess {
     private var shut = false
     /// Each listed Codex file's canonical home, for the shared inputs a read
     /// of it takes.
-    private var codexHomes: [String: String] = [:]
+    private var codexHomes: [RemotePath: RemotePath] = [:]
 
     func locate(_ requests: [LocateRequest]) async throws -> LocateResult {
         guard !shut else { throw LocateError.transport("Temple is quitting") }
@@ -391,16 +391,16 @@ actor RemoteTranscriptAccess {
         }
         // A hint is stat'ed only when it is a normal absolute path on this
         // host; whether it lies in a store is decided once the roots are known.
-        let hints = Array(Set(named.compactMap { request -> String? in
-            guard let hint = request.hint, hint.host == host, Self.isNormal(hint.path) else { return nil }
-            return hint.path
+        let hints = Array(Set(named.compactMap { request -> RemotePath? in
+            guard let hint = request.hint, hint.host == host, Self.isNormal(RemotePath(hint.path)) else { return nil }
+            return RemotePath(hint.path)
         })).sorted()
         var args: [String] = []
         for group in groups {
-            args += [group.agent.rawValue, group.root.state, group.root.value, group.root.base,
+            args += [group.agent.rawValue, group.root.state, group.root.value.string, group.root.base.string,
                      members[group, default: []].joined(separator: " ")]
         }
-        args += ["--"] + hints
+        args += ["--"] + hints.map(\.string)
         counters.update { $0.listings += 1 }
         let output: RemoteOutput
         do {
@@ -443,25 +443,29 @@ actor RemoteTranscriptAccess {
               case .files(let files)? = listing.answer.lists[index] else { return [] }
         let format = TranscriptFormats.format(for: agent)
         let store = Self.store(canonical, agent: agent)
-        var stats: [String: CandidateStat] = [:]
+        var stats: [RemotePath: CandidateStat] = [:]
         for file in files where Self.accepts(file.path, store: store, agent: agent) { stats[file.path] = file.stat }
         // The row's recorded path, when it is one this agent's store would
         // hold (as the local store's `acceptsTranscript` decides).
-        var hintPath: String?
-        if let hint = request.hint, hint.host == host, Self.isNormal(hint.path),
-           Self.accepts(hint.path, store: store, agent: agent), let stat = listing.answer.hints[hint.path] {
-            hintPath = hint.path
-            if stats[hint.path] == nil { stats[hint.path] = stat }
+        var hintPath: RemotePath?
+        if let hint = request.hint.map({ ($0.host, RemotePath($0.path)) }), hint.0 == host, Self.isNormal(hint.1),
+           Self.accepts(hint.1, store: store, agent: agent), let stat = listing.answer.hints[hint.1] {
+            hintPath = hint.1
+            if stats[hint.1] == nil { stats[hint.1] = stat }
         }
         let hintPresent = hintPath.map { stats[$0] != .missing } ?? false
         var list: [TranscriptCandidate] = []
+        // The seam's rule takes Strings; each assignment's path keeps the
+        // bytes it was given (a String keeps its scalars), and is looked up
+        // by those bytes again.
         let listed = files.map(\.path).filter { Self.accepts($0, store: store, agent: agent) }.sorted()
-        for assignment in TranscriptCandidates.assign(id: request.id, format: format, listed: listed,
-                                                     hint: hintPath, hintPresent: hintPresent) {
-            let stat = stats[assignment.path] ?? .missing
+        for assignment in TranscriptCandidates.assign(id: request.id, format: format, listed: listed.map(\.string),
+                                                     hint: hintPath?.string, hintPresent: hintPresent) {
+            let path = RemotePath(assignment.path)
+            let stat = stats[path] ?? .missing
             // A hint whose file is gone is no candidate.
             if assignment.role == .hinted, stat == .missing { continue }
-            if agent == .codex { remember(codexHome: canonical, for: assignment.path) }
+            if agent == .codex { remember(codexHome: canonical, for: path) }
             list.append(TranscriptCandidate(locator: TranscriptLocator(host: host, path: assignment.path),
                                             agent: agent, role: assignment.role, stat: stat))
         }
@@ -470,8 +474,8 @@ actor RemoteTranscriptAccess {
 
     /// The agent's store under a canonical root: `<root>/projects/` or
     /// `<root>/sessions/` (`/projects/` for a root of `/`).
-    static func store(_ root: String, agent: Agent) -> String {
-        (root == "/" ? "" : root) + (agent == .claude ? "/projects/" : "/sessions/")
+    static func store(_ root: RemotePath, agent: Agent) -> RemotePath {
+        RemotePath(bytes: root.bytes == [slash] ? [] : root.bytes).appending(agent == .claude ? "/projects/" : "/sessions/")
     }
 
     /// A normal absolute path: no empty, `.` or `..` component, so its
@@ -480,8 +484,8 @@ actor RemoteTranscriptAccess {
     /// as the host's kernel reads a path: Characters would hide a `..`
     /// behind a combining mark after its slash, and fold precomposed and
     /// decomposed spellings the host keeps apart.
-    static func isNormal(_ path: String) -> Bool {
-        let bytes = Array(path.utf8)
+    static func isNormal(_ path: RemotePath) -> Bool {
+        let bytes = path.bytes
         guard bytes.first == slash, bytes.count > 1, bytes.last != slash else { return false }
         return !bytes.dropFirst().split(separator: slash, omittingEmptySubsequences: false)
             .contains { $0.isEmpty || $0.elementsEqual([dot]) || $0.elementsEqual([dot, dot]) }
@@ -494,8 +498,8 @@ actor RemoteTranscriptAccess {
     /// and the agent's shape (Claude: `<store>/<folder>/<id>.jsonl`; Codex:
     /// a `rollout-*.jsonl` anywhere below `sessions`). Bytes throughout, as
     /// `isNormal`.
-    static func accepts(_ path: String, store: String, agent: Agent) -> Bool {
-        let bytes = Array(path.utf8), prefix = Array(store.utf8)
+    static func accepts(_ path: RemotePath, store: RemotePath, agent: Agent) -> Bool {
+        let bytes = path.bytes, prefix = store.bytes
         guard isNormal(path), bytes.count > prefix.count, bytes.starts(with: prefix),
               bytes.reversed().starts(with: Array(".jsonl".utf8).reversed()) else { return false }
         let inside = bytes[prefix.count...].split(separator: slash, omittingEmptySubsequences: false)
@@ -505,7 +509,7 @@ actor RemoteTranscriptAccess {
         }
     }
 
-    private func remember(codexHome: String, for path: String) {
+    private func remember(codexHome: RemotePath, for path: RemotePath) {
         if codexHomes.count > 4096 { codexHomes.removeAll() }
         codexHomes[path] = codexHome
     }
@@ -529,13 +533,14 @@ actor RemoteTranscriptAccess {
         var headBytes = window
         if case .firstLine(let cap) = format.identityScan { headBytes = max(headBytes, cap) }
         // Shared inputs (Codex), the session's lines only, from its own home.
-        let home = facts && agent == .codex ? codexHomes[locator.path] ?? Self.codexHome(of: locator.path) : nil
+        let path = RemotePath(locator.path)
+        let home = facts && agent == .codex ? codexHomes[path] ?? Self.codexHome(of: path) : nil
         let shareID = RemoteQuoting.isSafeToken(id) ? id : ""
         var changes = 0
         var widened = false
         while true {
             let answer = try await readOnce(locator.path, headBytes: headBytes, window: window, facts: facts,
-                                            home: home.flatMap { shareID.isEmpty ? nil : $0 } ?? "", id: shareID)
+                                            home: home.flatMap { shareID.isEmpty ? nil : $0.string } ?? "", id: shareID)
             let bytes: RemoteTranscripts.ReadBytes
             switch answer {
             case .missing: throw TranscriptReadError.missing
@@ -617,14 +622,14 @@ actor RemoteTranscriptAccess {
     /// A rollout's Codex home from its path's own shape
     /// (`<home>/sessions/YYYY/MM/DD/rollout-….jsonl`), for a file no
     /// listing named; nil for any other shape.
-    static func codexHome(of path: String) -> String? {
+    static func codexHome(of path: RemotePath) -> RemotePath? {
         guard isNormal(path) else { return nil }
-        let parts = Array(path.utf8).split(separator: slash, omittingEmptySubsequences: false)
+        let parts = path.bytes.split(separator: slash, omittingEmptySubsequences: false)
         guard parts.count >= 7, parts[parts.count - 1].starts(with: Array("rollout-".utf8)),
               parts[parts.count - 5].elementsEqual(Array("sessions".utf8)) else { return nil }
         let digits = { (part: ArraySlice<UInt8>, count: Int) in part.count == count && part.allSatisfy { (0x30...0x39).contains($0) } }
         guard digits(parts[parts.count - 4], 4), digits(parts[parts.count - 3], 2), digits(parts[parts.count - 2], 2) else { return nil }
         let home = Array(parts[..<(parts.count - 5)].joined(separator: [slash]))
-        return home.isEmpty ? nil : String(decoding: home, as: UTF8.self)
+        return home.isEmpty ? nil : RemotePath(bytes: home)
     }
 }

@@ -22,7 +22,7 @@ public enum CodexHomeRoot {
         switch home {
         case .unset?: return ("unset", "", base ?? "")
         case .set(let value)? where value.isEmpty: return nil
-        case .set(let value)? where value.hasPrefix("/"): return ("set", value, base ?? "")
+        case .set(let value)? where RemotePath(value).isAbsolute: return ("set", value, base ?? "")
         case .set(let value)?:
             guard let base else { return nil }
             return ("set", value, base)
@@ -212,7 +212,7 @@ public enum CodexIdentityCheck {
         let format = CodexFormat()
         guard let named = format.name(path: path)?.threadID,
               let candidate = (try? format.header(firstLine: header)) ?? nil,
-              candidate.id.lowercased() == named, candidate.cwd == directory else { return nil }
+              candidate.id.lowercased() == named, RemotePath(candidate.cwd) == RemotePath(directory) else { return nil }
         return candidate.id
     }
 }
@@ -354,12 +354,12 @@ public enum CodexSuggestionLookup {
 
     /// The heads of `paths`, by path; one that can't be read is missing
     /// (its question shows no prompt). Nil when the answer is not whole.
-    public static func heads(_ paths: [String], using exec: RemoteExec) async -> [String: Data]? {
+    public static func heads(_ paths: [String], using exec: RemoteExec) async -> [RemotePath: Data]? {
         guard !paths.isEmpty else { return [:] }
         guard let output = try? await exec.run(script: headsScript, args: paths, deadline: deadline),
               output.reachedCommand, output.status == 0,
               let frames = frames(Data(output.stdout.utf8), tags: ["head"], skips: ["skip"]) else { return nil }
-        return Dictionary(frames.map { ($0.path, $0.body) }, uniquingKeysWith: { first, _ in first })
+        return Dictionary(frames.map { (RemotePath($0.path), $0.body) }, uniquingKeysWith: { first, _ in first })
     }
 
     static func parseList(_ data: Data) -> Listing {
@@ -420,15 +420,17 @@ public enum CodexSuggestionLookup {
     /// declined, and not an id another run holds. Newest first, without
     /// their prompts yet.
     static func eligible(_ candidates: [Candidate], directory: String, since: Int, until: Date,
-                         declined: Set<String>, held: Set<String>) -> [CodexSuggestion] {
+                         declined: Set<RemotePath>, held: Set<String>) -> [CodexSuggestion] {
         let format = CodexFormat()
         let from = Date(timeIntervalSince1970: TimeInterval(since - 1))
-        var seen = Set<String>()
+        let folder = RemotePath(directory)
+        var seen = Set<RemotePath>()
         return candidates.compactMap { file -> CodexSuggestion? in
-            guard !declined.contains(file.path), seen.insert(file.path).inserted else { return nil }
+            let path = RemotePath(file.path)
+            guard !declined.contains(path), seen.insert(path).inserted else { return nil }
             guard let named = format.name(path: file.path)?.threadID,
                   let candidate = (try? format.header(firstLine: file.header)) ?? nil,
-                  candidate.id.lowercased() == named, candidate.cwd == directory,
+                  candidate.id.lowercased() == named, RemotePath(candidate.cwd) == folder,
                   candidate.createdAt >= from, candidate.createdAt <= until,
                   !held.contains(candidate.id) else { return nil }
             return CodexSuggestion(rolloutPath: file.path, sessionID: candidate.id, firstPrompt: nil,
@@ -441,9 +443,9 @@ public enum CodexSuggestionLookup {
     /// nil (the query failed or its answer was not whole), a head that
     /// couldn't be read, or one cut short before any prompt: the prompt is
     /// unknown, never "no prompt" (round 2).
-    static func withPrompts(_ suggestions: [CodexSuggestion], heads: [String: Data]?) -> [CodexSuggestion] {
+    static func withPrompts(_ suggestions: [CodexSuggestion], heads: [RemotePath: Data]?) -> [CodexSuggestion] {
         suggestions.map {
-            let head = heads?[$0.rolloutPath]
+            let head = heads?[RemotePath($0.rolloutPath)]
             let prompt = head.flatMap(CodexFormat.firstTypedPrompt(in:))
             let known = head.map { prompt != nil || $0.count < headBytes } ?? false
             return CodexSuggestion(rolloutPath: $0.rolloutPath, sessionID: $0.sessionID, firstPrompt: prompt,

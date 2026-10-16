@@ -359,7 +359,7 @@ final class CodexIdentityTests: XCTestCase {
         XCTAssertEqual(Set(files.map(\.path)).count, 5, "only the folder's rollouts are read")
         let eligible = CodexSuggestionLookup.eligible(files, directory: f.folder, since: since,
                                                       until: Date(timeIntervalSince1970: TimeInterval(since + 3600)),
-                                                      declined: [declined.path], held: [held.id])
+                                                      declined: [RemotePath(declined.path)], held: [held.id])
         XCTAssertEqual(eligible.map(\.sessionID), [blank.id, mine.id])
         let fetched = await CodexSuggestionLookup.heads(eligible.map(\.rolloutPath), using: f.exec)
         let heads = try XCTUnwrap(fetched)
@@ -446,7 +446,7 @@ final class CodexIdentityTests: XCTestCase {
         FileManager.default.createFile(atPath: path, contents: Data(text.utf8))
         XCTAssertEqual(Data(text.utf8)[cap - 1], 0x0a, "the cap falls right after a newline")
         let fetched = await CodexSuggestionLookup.heads([path], using: f.exec)
-        let head = try XCTUnwrap(fetched?[path])
+        let head = try XCTUnwrap(fetched?[RemotePath(path)])
         XCTAssertEqual(head.count, cap, "every byte up to the cap, the newline included")
         let suggestion = CodexSuggestion(rolloutPath: path, sessionID: "x", firstPrompt: nil, startedAt: Date(), directory: "/w")
         XCTAssertEqual(CodexSuggestionLookup.withPrompts([suggestion], heads: fetched).first?.promptKnown, false)

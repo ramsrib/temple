@@ -547,11 +547,14 @@ public final class RemoteStateStore: @unchecked Sendable {
         }
     }
 
-    public func declined(_ handle: String) throws -> Set<String> {
-        try queue.read { database in
-            Set(try String.fetchAll(database, sql: "SELECT rollout_path FROM declined_candidates WHERE handle = ?",
-                                    arguments: [handle]))
+    /// By bytes (`RemotePath`), as SQLite compares them: two spellings the
+    /// host keeps apart stay two paths.
+    public func declined(_ handle: String) throws -> Set<RemotePath> {
+        let paths: [String] = try queue.read { database in
+            try String.fetchAll(database, sql: "SELECT rollout_path FROM declined_candidates WHERE handle = ?",
+                                arguments: [handle])
         }
+        return Set(paths.map { RemotePath($0) })
     }
 
     /// Codex runs restored as chips at launch from the runs alone: pending

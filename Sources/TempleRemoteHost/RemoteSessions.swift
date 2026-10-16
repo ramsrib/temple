@@ -1341,7 +1341,7 @@ public final class RemoteSessions {
         let until = run.endedAt.map { $0.addingTimeInterval(offset + 30) }
             ?? Date(timeIntervalSince1970: TimeInterval(remoteNow + 5))
         let host = host
-        let declined: Set<String>, held: Set<String>
+        let declined: Set<RemotePath>, held: Set<String>
         do {
             declined = try await write { try $0.declined(handle) }
             held = try await write { try $0.sessionIDs(host: host) }

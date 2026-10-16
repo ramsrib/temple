@@ -220,12 +220,10 @@ final class RemoteSourceTests: XCTestCase {
         }
         XCTAssertFalse(watching.outputs.contains { String(decoding: $0, as: UTF8.self).contains("hint\t") && String(decoding: $0, as: UTF8.self).contains(Self.hex("/..")) },
                        "a path with `..` is not even stat'ed")
-        XCTAssertTrue(RemoteTranscriptAccess.accepts(canonicalHome + "/.codex/sessions/2026/10/01/rollout-x.jsonl",
-                                                     store: canonicalHome + "/.codex/sessions/", agent: .codex))
-        XCTAssertFalse(RemoteTranscriptAccess.accepts(canonicalHome + "/.codex/sessions/2026/10/01/other.jsonl",
-                                                      store: canonicalHome + "/.codex/sessions/", agent: .codex))
-        XCTAssertFalse(RemoteTranscriptAccess.isNormal("/a/b/"))
-        XCTAssertEqual(RemoteTranscriptAccess.store("/", agent: .claude), "/projects/")
+        XCTAssertTrue(RemoteTranscriptAccess.accepts(RemotePath(canonicalHome + "/.codex/sessions/2026/10/01/rollout-x.jsonl"), store: RemotePath(canonicalHome + "/.codex/sessions/"), agent: .codex))
+        XCTAssertFalse(RemoteTranscriptAccess.accepts(RemotePath(canonicalHome + "/.codex/sessions/2026/10/01/other.jsonl"), store: RemotePath(canonicalHome + "/.codex/sessions/"), agent: .codex))
+        XCTAssertFalse(RemoteTranscriptAccess.isNormal(RemotePath("/a/b/")))
+        XCTAssertEqual(RemoteTranscriptAccess.store("/", agent: .claude), RemotePath("/projects/"))
     }
 
     /// Paths are judged on UTF-8 bytes: a combining mark after a slash
@@ -235,21 +233,144 @@ final class RemoteSourceTests: XCTestCase {
     func testPathsAreJudgedOnBytes() {
         let store = "/root/projects/"
         let hidden = "/root/projects/../\u{0301}outside/session.jsonl"
-        XCTAssertFalse(RemoteTranscriptAccess.isNormal(hidden))
-        XCTAssertFalse(RemoteTranscriptAccess.accepts(hidden, store: store, agent: .claude))
-        XCTAssertFalse(RemoteTranscriptAccess.accepts("/root/sessions/./\u{0301}x/rollout-a.jsonl", store: "/root/sessions/", agent: .codex))
-        XCTAssertTrue(RemoteTranscriptAccess.isNormal("/root/projects/\u{0301}p/session.jsonl"), "a mark that starts a name is just a name")
-        XCTAssertTrue(RemoteTranscriptAccess.accepts("/root/projects/\u{0301}p/session.jsonl", store: store, agent: .claude))
+        XCTAssertFalse(RemoteTranscriptAccess.isNormal(RemotePath(hidden)))
+        XCTAssertFalse(RemoteTranscriptAccess.accepts(RemotePath(hidden), store: RemotePath(store), agent: .claude))
+        XCTAssertFalse(RemoteTranscriptAccess.accepts(RemotePath("/root/sessions/./\u{0301}x/rollout-a.jsonl"), store: RemotePath("/root/sessions/"), agent: .codex))
+        XCTAssertTrue(RemoteTranscriptAccess.isNormal(RemotePath("/root/projects/\u{0301}p/session.jsonl")), "a mark that starts a name is just a name")
+        XCTAssertTrue(RemoteTranscriptAccess.accepts(RemotePath("/root/projects/\u{0301}p/session.jsonl"), store: RemotePath(store), agent: .claude))
         let precomposed = "/home/caf\u{E9}/.claude/projects/", decomposed = "/home/cafe\u{301}/.claude/projects/"
         XCTAssertEqual(precomposed, decomposed, "equal as Swift Strings")
-        XCTAssertTrue(RemoteTranscriptAccess.accepts(precomposed + "-p/s.jsonl", store: precomposed, agent: .claude))
-        XCTAssertTrue(RemoteTranscriptAccess.accepts(decomposed + "-p/s.jsonl", store: decomposed, agent: .claude))
-        XCTAssertFalse(RemoteTranscriptAccess.accepts(decomposed + "-p/s.jsonl", store: precomposed, agent: .claude))
-        XCTAssertFalse(RemoteTranscriptAccess.accepts(precomposed + "-p/s.jsonl", store: decomposed, agent: .claude))
-        XCTAssertNil(RemoteTranscriptAccess.codexHome(of: "/h/../\u{0301}x/sessions/2026/10/01/rollout-a.jsonl"))
-        XCTAssertEqual(RemoteTranscriptAccess.codexHome(of: "/h/.codex/sessions/2026/10/01/rollout-a.jsonl"), "/h/.codex")
+        XCTAssertTrue(RemoteTranscriptAccess.accepts(RemotePath(precomposed + "-p/s.jsonl"), store: RemotePath(precomposed), agent: .claude))
+        XCTAssertTrue(RemoteTranscriptAccess.accepts(RemotePath(decomposed + "-p/s.jsonl"), store: RemotePath(decomposed), agent: .claude))
+        XCTAssertFalse(RemoteTranscriptAccess.accepts(RemotePath(decomposed + "-p/s.jsonl"), store: RemotePath(precomposed), agent: .claude))
+        XCTAssertFalse(RemoteTranscriptAccess.accepts(RemotePath(precomposed + "-p/s.jsonl"), store: RemotePath(decomposed), agent: .claude))
+        XCTAssertNil(RemoteTranscriptAccess.codexHome(of: RemotePath("/h/../\u{0301}x/sessions/2026/10/01/rollout-a.jsonl")))
+        XCTAssertEqual(RemoteTranscriptAccess.codexHome(of: RemotePath("/h/.codex/sessions/2026/10/01/rollout-a.jsonl")), RemotePath("/h/.codex"))
         XCTAssertEqual(RemoteTranscriptRoot(.set("/\u{0301}conf"), base: nil)?.state, "set")
-        XCTAssertEqual(RemoteTranscriptRoot(.set("/\u{0301}conf"), base: nil)?.base, "", "absolute by its first byte")
+        XCTAssertEqual(RemoteTranscriptRoot(.set("/\u{0301}conf"), base: nil)?.base, RemotePath(""), "absolute by its first byte")
+    }
+
+    /// Answers the locate from its own arguments (one root and one file per
+    /// group, every hint present with a size of its own) and records every
+    /// call's arguments; a read answers `missing`.
+    final class Echo: RemoteExec, @unchecked Sendable {
+        private let lock = NSLock()
+        private var _calls: [(script: String, args: [String])] = []
+        var calls: [(script: String, args: [String])] { lock.withLock { _calls } }
+        func run(script: String, args: [String], input: Data?, deadline: TimeInterval) async throws -> RemoteOutput {
+            lock.withLock { _calls.append((script, args)) }
+            guard script == RemoteTranscripts.locateScript else { return RemoteOutput(status: 0, stdout: "missing\n", stderr: "") }
+            let hex = RemoteSourceTests.hex
+            var out = "", index = 0, rest = args[...]
+            while rest.count >= 5, rest.first != "--" {
+                let agent = rest[rest.startIndex], value = rest[rest.startIndex + 2], ids = rest[rest.startIndex + 4]
+                rest = rest.dropFirst(5)
+                var records = ""
+                for id in ids.split(separator: " ") {
+                    let file = agent == "claude" ? "\(value)/projects/-p/\(id).jsonl"
+                        : "\(value)/sessions/2026/10/01/rollout-2026-10-01T10-00-00-\(id).jsonl"
+                    records += hex("f\t10\t1.0\t\(index + 1)\t\(file)") + "00"
+                }
+                out += "root\t\(index)\tok\t\(hex(value))\nlist\t\(index)\t\(records)\(hex("S0"))\n"
+                index += 1
+            }
+            for (offset, hint) in rest.dropFirst().enumerated() {
+                out += "hint\t\(hex(hint))\tok\t\(100 + offset)\t1.0\t\(900 + offset)\n"
+            }
+            return RemoteOutput(status: 0, stdout: out + "done\n", stderr: "")
+        }
+    }
+
+    /// Per id, its own roots.
+    struct PerSession: RemoteTranscriptProvider {
+        let exec: RemoteExec
+        let roots: [String: [Agent: RemoteTranscriptRoot]]
+        func transcriptContext(sessionIDs: [String], refresh: Bool) async throws -> RemoteTranscriptContext {
+            RemoteTranscriptContext(exec: exec, roots: roots.filter { sessionIDs.contains($0.key) })
+        }
+        func transportFailed() async {}
+    }
+
+    static let precomposed = "/r/caf\u{E9}", decomposed = "/r/cafe\u{301}"
+
+    /// Two roots that differ only in normalization (equal as Swift Strings,
+    /// two folders on a Linux host) are two groups in one batch, each
+    /// session found under its own bytes; two such hints are two stats; and
+    /// each rollout's read takes its own Codex home from the cache.
+    func testSpellingsTheHostKeepsApartStayApartInOneBatchAndInTheCache() async throws {
+        let nfc = Self.precomposed, nfd = Self.decomposed
+        XCTAssertEqual(nfc, nfd, "one String to Swift")
+        XCTAssertNotEqual(Array(nfc.utf8), Array(nfd.utf8), "two paths to the host")
+        XCTAssertNotEqual(RemotePath(nfc), RemotePath(nfd))
+        XCTAssertEqual(Set([RemotePath(nfc), RemotePath(nfd)]).count, 2)
+        let a = uuid(), b = uuid(), c = uuid(), d = uuid()
+        func root(_ path: String) -> RemoteTranscriptRoot { RemoteTranscriptRoot(.set(path), base: nil)! }
+        XCTAssertNotEqual(root(nfc), root(nfd))
+        let echo = Echo()
+        let source = RemoteSessionSource(host: Self.host, provider: PerSession(exec: echo, roots: [
+            a: [.claude: root(nfc)], b: [.claude: root(nfd)], c: [.codex: root(nfc)], d: [.codex: root(nfd)],
+        ]))
+        let hintA = TranscriptLocator(host: Self.host, path: nfc + "/projects/-q/renamed.jsonl")
+        let hintB = TranscriptLocator(host: Self.host, path: nfd + "/projects/-q/renamed.jsonl")
+        let result = try await source.locate([
+            LocateRequest(id: a, agent: .claude, hint: hintA), LocateRequest(id: b, agent: .claude, hint: hintB),
+            LocateRequest(id: c, agent: .codex), LocateRequest(id: d, agent: .codex),
+        ])
+        let args = try XCTUnwrap(echo.calls.first { $0.script == RemoteTranscripts.locateScript }?.args)
+        let values = args.prefix(while: { $0 != "--" }).enumerated().filter { $0.offset % 5 == 2 }.map { Array($0.element.utf8) }
+        XCTAssertEqual(values.count, 4, "four groups: two agents times two roots")
+        XCTAssertEqual(Set(values), [Array(nfc.utf8), Array(nfd.utf8)])
+        let hints = args.drop(while: { $0 != "--" }).dropFirst().map { Array($0.utf8) }
+        XCTAssertEqual(Set(hints), [Array(hintA.path.utf8), Array(hintB.path.utf8)], "both hints stat'ed")
+        func bytes(_ id: String, _ role: CandidateRole) -> [UInt8]? {
+            result.candidates[id]?.first { $0.role == role }.map { Array($0.locator.path.utf8) }
+        }
+        XCTAssertEqual(bytes(a, .alternate).map { $0.starts(with: Array(nfc.utf8)) }, true)
+        XCTAssertEqual(bytes(b, .alternate).map { $0.starts(with: Array(nfd.utf8)) }, true)
+        XCTAssertEqual(bytes(a, .hinted), Array(hintA.path.utf8))
+        XCTAssertEqual(bytes(b, .hinted), Array(hintB.path.utf8))
+        let statA = result.candidates[a]?.first { $0.role == .hinted }?.stat
+        let statB = result.candidates[b]?.first { $0.role == .hinted }?.stat
+        XCTAssertNotNil(statA)
+        XCTAssertNotEqual(statA, statB, "each hint keeps its own stat")
+        // The cache: each rollout's read is sent its own home's bytes.
+        for (id, home) in [(c, nfc), (d, nfd)] {
+            let locator = try XCTUnwrap(result.candidates[id]?.first?.locator)
+            XCTAssertTrue(Array(locator.path.utf8).starts(with: Array(home.utf8)))
+            _ = try? await source.read(locator, agent: .codex, expecting: id, facts: true)
+            let read = try XCTUnwrap(echo.calls.last { $0.script == RemoteTranscripts.readScript }?.args)
+            XCTAssertEqual(Array(read[0].utf8), Array(locator.path.utf8))
+            XCTAssertEqual(Array(read[4].utf8), Array(home.utf8), "the home its listing found it in")
+        }
+    }
+
+    /// Codex identity compares folders and rollout paths by bytes too: a
+    /// header naming the other spelling is not this run's folder, and a
+    /// declined path declines only its own spelling.
+    func testCodexIdentityComparesFoldersAndRolloutPathsByBytes() throws {
+        let id = uuid()
+        let header = Data(#"{"type":"session_meta","payload":{"id":"\#(id)","cwd":"\#(Self.decomposed)","timestamp":"2026-10-01T10:00:00Z"}}"#.utf8)
+        let path = "/h/sessions/2026/10/01/rollout-2026-10-01T10-00-00-\(id).jsonl"
+        XCTAssertNil(CodexIdentityCheck.verify(path: path, header: header, directory: Self.precomposed))
+        XCTAssertEqual(CodexIdentityCheck.verify(path: path, header: header, directory: Self.decomposed), id)
+        let since = Int(ISO8601DateFormatter().date(from: "2026-10-01T09:00:00Z")!.timeIntervalSince1970)
+        let until = ISO8601DateFormatter().date(from: "2026-10-01T11:00:00Z")!
+        let nfcPath = Self.precomposed + "/sessions/2026/10/01/rollout-2026-10-01T10-00-00-\(id).jsonl"
+        let nfdPath = Self.decomposed + "/sessions/2026/10/01/rollout-2026-10-01T10-00-00-\(id).jsonl"
+        let files = [nfcPath, nfdPath].map { CodexSuggestionLookup.Candidate(path: $0, header: header) }
+        let both = CodexSuggestionLookup.eligible(files, directory: Self.decomposed, since: since, until: until,
+                                                  declined: [], held: [])
+        XCTAssertEqual(Set(both.map { Array($0.rolloutPath.utf8) }), [Array(nfcPath.utf8), Array(nfdPath.utf8)], "two files, not one")
+        let one = CodexSuggestionLookup.eligible(files, directory: Self.decomposed, since: since, until: until,
+                                                 declined: [RemotePath(nfcPath)], held: [])
+        XCTAssertEqual(one.map { Array($0.rolloutPath.utf8) }, [Array(nfdPath.utf8)])
+        let store = try RemoteStateStore()
+        try store.insert(RemoteRun(handle: "h", host: Self.host, agent: .codex, mode: .new, directoryIntent: "/w",
+                                   sessionID: nil, recordPath: RecordDirectory.locator(marker: "r-h"), startedAt: Date()))
+        try store.decline("h", rolloutPath: nfcPath)
+        try store.decline("h", rolloutPath: nfdPath)
+        XCTAssertEqual(try store.declined("h"), [RemotePath(nfcPath), RemotePath(nfdPath)])
+        XCTAssertEqual(try store.declined("h").count, 2)
     }
 
     /// A hint hiding `..` behind a combining mark is never stat'ed or offered.
