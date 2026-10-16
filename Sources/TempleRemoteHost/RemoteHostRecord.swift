@@ -101,7 +101,10 @@ public struct RemoteHostList: Equatable, Sendable {
         var seen: Set<String> = []
         for element in array {
             guard let bytes = try? JSONSerialization.data(withJSONObject: element, options: [.sortedKeys, .fragmentsAllowed]) else { continue }
-            if let record = try? JSONDecoder().decode(RemoteHostRecord.self, from: bytes), !record.name.isEmpty {
+            // A hand-edited entry that fails the form's grammar is kept,
+            // never handed to ssh.
+            if let record = try? JSONDecoder().decode(RemoteHostRecord.self, from: bytes), !record.name.isEmpty,
+               HostGrammar.isUsable(record) {
                 // A second entry for a name is the same host: dropped, so a
                 // Remove can never leave a copy behind to come back.
                 if seen.insert(record.name).inserted { list.records.append(record) }
@@ -167,15 +170,16 @@ public struct RemoteHostForm: Equatable, Sendable {
             problems[.name] = "Temple already has a host named \(name)."
         }
 
-        let address = trimmed(self.address)
+        var address = trimmed(self.address)
+        if address.hasPrefix("["), address.hasSuffix("]") { address = String(address.dropFirst().dropLast()) }
         if address.isEmpty {
             problems[.address] = "Enter the host's address."
-        } else if !Self.isPlainWord(address) {
-            problems[.address] = "An address can't contain spaces or start with a dash."
+        } else if !HostGrammar.isAddress(address) {
+            problems[.address] = "Enter a host name, an IPv4 address or an IPv6 address."
         }
         let user = trimmed(self.user)
-        if !user.isEmpty, !Self.isPlainWord(user) {
-            problems[.user] = "A user name can't contain spaces or start with a dash."
+        if !user.isEmpty, !HostGrammar.isUser(user) {
+            problems[.user] = "A user name can use letters, digits, dots, dashes and underscores, and can't start with a dash."
         }
         let portText = trimmed(self.port)
         var port: Int?
@@ -191,8 +195,8 @@ public struct RemoteHostForm: Equatable, Sendable {
             problems[.identityFile] = "Temple can't pass a path with a double quote or a line break to ssh."
         }
         let jump = trimmed(self.proxyJump)
-        if !jump.isEmpty, !Self.isPlainWord(jump, allowComma: true) {
-            problems[.proxyJump] = "A jump host can't contain spaces or start with a dash."
+        if !jump.isEmpty, !HostGrammar.isJumpList(jump) {
+            problems[.proxyJump] = "A jump host is [user@]host[:port], several separated by commas."
         }
         guard problems.isEmpty else { return .failure(Problems(byField: problems)) }
         return .success(RemoteHostRecord(name: name, source: .temple, address: address,
@@ -206,14 +210,105 @@ public struct RemoteHostForm: Equatable, Sendable {
     }
 
     private func trimmed(_ text: String) -> String { text.trimmingCharacters(in: .whitespaces) }
+}
 
-    /// One ssh word: no whitespace, no control characters, no quotes, not an
-    /// option. (`-o` values are tokenized by ssh, so a space would split it.)
-    static func isPlainWord(_ text: String, allowComma: Bool = true) -> Bool {
-        guard !text.hasPrefix("-") else { return false }
-        return text.unicodeScalars.allSatisfy { scalar in
-            !CharacterSet.whitespacesAndNewlines.contains(scalar) && !CharacterSet.controlCharacters.contains(scalar)
-                && scalar != "\"" && scalar != "'" && scalar != "\\" && scalar != "#"
+/// What may reach ssh as a host, user or jump host. Strict on purpose:
+/// ssh substitutes these into shell text when a config, the user's or the
+/// system's, has a `ProxyCommand` with `%h`, `%r` or `%p`. Quoting the `-o`
+/// value protects ssh's own tokenizer, not that shell, so nothing a shell
+/// could read as syntax gets through: a host name (letters, digits, dashes
+/// and underscores in dot-separated labels), an IPv4 address, or an IPv6
+/// address (bare, or in brackets inside a jump host).
+public enum HostGrammar {
+    public static func isAddress(_ text: String) -> Bool {
+        isHostName(text) || isIPv6(text)
+    }
+
+    /// Labels of `[A-Za-z0-9_-]`, none empty or dash-led, 253 bytes at most.
+    /// An IPv4 address is one of these.
+    static func isHostName(_ text: String) -> Bool {
+        guard !text.isEmpty, text.utf8.count <= 253 else { return false }
+        var name = Substring(text)
+        if name.hasSuffix(".") { name = name.dropLast() }
+        let labels = name.split(separator: ".", omittingEmptySubsequences: false)
+        return labels.allSatisfy { label in
+            !label.isEmpty && label.utf8.count <= 63 && !label.hasPrefix("-")
+                && label.utf8.allSatisfy { isAlphanumeric($0) || $0 == 0x2d || $0 == 0x5f }
         }
+    }
+
+    /// An IPv6 address as `inet_pton` reads it (no zone: `%` is ssh's token
+    /// character).
+    static func isIPv6(_ text: String) -> Bool {
+        guard text.contains(":"), text.utf8.allSatisfy({ isHex($0) || $0 == 0x3a || $0 == 0x2e }) else { return false }
+        var address = in6_addr()
+        return inet_pton(AF_INET6, text, &address) == 1
+    }
+
+    /// A login name: `[A-Za-z0-9._-]`, not dash-led.
+    public static func isUser(_ text: String) -> Bool {
+        !text.isEmpty && !text.hasPrefix("-") && text.utf8.count <= 64
+            && text.utf8.allSatisfy { isAlphanumeric($0) || $0 == 0x2e || $0 == 0x5f || $0 == 0x2d }
+    }
+
+    /// `ProxyJump`: `[user@]host[:port]`, comma-separated; an IPv6 host in
+    /// brackets.
+    public static func isJumpList(_ text: String) -> Bool {
+        let hops = text.split(separator: ",", omittingEmptySubsequences: false)
+        return !hops.isEmpty && hops.allSatisfy { isJump(String($0)) }
+    }
+
+    static func isJump(_ hop: String) -> Bool {
+        var rest = Substring(hop)
+        if let at = rest.lastIndex(of: "@") {
+            guard isUser(String(rest[..<at])) else { return false }
+            rest = rest[rest.index(after: at)...]
+        }
+        var host: Substring
+        var port: Substring?
+        if rest.hasPrefix("[") {
+            guard let close = rest.firstIndex(of: "]") else { return false }
+            host = rest[rest.index(after: rest.startIndex)..<close]
+            let after = rest[rest.index(after: close)...]
+            if !after.isEmpty {
+                guard after.hasPrefix(":") else { return false }
+                port = after.dropFirst()
+            }
+            guard isIPv6(String(host)) else { return false }
+        } else {
+            let parts = rest.split(separator: ":", omittingEmptySubsequences: false)
+            guard parts.count <= 2 else { return false }
+            host = parts[0]
+            port = parts.count == 2 ? parts[1] : nil
+            guard isHostName(String(host)) else { return false }
+        }
+        if let port {
+            guard let number = Int(port), (1...65_535).contains(number), port.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 })
+            else { return false }
+        }
+        return true
+    }
+
+    private static func isAlphanumeric(_ byte: UInt8) -> Bool {
+        (byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5a) || (byte >= 0x61 && byte <= 0x7a)
+    }
+
+    private static func isHex(_ byte: UInt8) -> Bool {
+        (byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x46) || (byte >= 0x61 && byte <= 0x66)
+    }
+
+    /// A stored record ssh may be given: a config alias as it is (ssh reads
+    /// the user's own config for it); a host entered in Temple only when
+    /// every field passes the grammar the form enforces.
+    public static func isUsable(_ record: RemoteHostRecord) -> Bool {
+        guard record.source == .temple else { return true }
+        guard RemoteQuoting.isSafeToken(record.name), !record.name.hasPrefix("-"),
+              let address = record.address, isAddress(address) else { return false }
+        if let user = record.user, !isUser(user) { return false }
+        if let port = record.port, !(1...65_535).contains(port) { return false }
+        if let jump = record.proxyJump, !isJumpList(jump) { return false }
+        if let identity = record.identityFile,
+           identity.contains(where: { $0 == "\"" || $0.isNewline || $0.asciiValue.map { $0 < 0x20 } == true }) { return false }
+        return true
     }
 }

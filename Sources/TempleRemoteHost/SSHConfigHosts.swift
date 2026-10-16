@@ -22,10 +22,10 @@ public enum SSHConfigHosts {
             guard let (keyword, rest) = splitKeyword(line) else { continue }
             switch keyword.lowercased() {
             case "host":
-                let names = words(rest).filter(isAlias)
+                let names = (words(rest) ?? []).filter(isAlias)
                 if !names.isEmpty { entries.append(.host(names)) }
             case "include":
-                let paths = words(rest)
+                let paths = words(rest) ?? []
                 if !paths.isEmpty { entries.append(.include(paths)) }
             default:
                 continue
@@ -97,31 +97,45 @@ public enum SSHConfigHosts {
         return (keyword, String(rest))
     }
 
-    /// Whitespace-separated words, double quotes grouping, a `#` outside
-    /// quotes ending the line.
-    static func words(_ text: String) -> [String] {
+    /// A line's arguments as OpenSSH's `argv_split` reads them (misc.c):
+    /// separated by spaces or tabs; single or double quotes group, and do not
+    /// nest; a backslash escapes a quote of either kind, a backslash, or
+    /// (outside quotes) a space, and is kept before anything else; `#` at
+    /// the start of a word ends the line. A quote left open makes the line
+    /// invalid, as ssh says ("invalid quotes"): nil.
+    static func words(_ text: String) -> [String]? {
+        let s = Array(text)
         var words: [String] = []
-        var current = ""
-        var inQuotes = false
-        var hasWord = false
-        for character in text {
-            if inQuotes {
-                if character == "\"" { inQuotes = false } else { current.append(character) }
-                continue
+        var i = 0
+        while i < s.count {
+            if s[i] == " " || s[i] == "\t" { i += 1; continue }
+            if s[i] == "#" { break }
+            var word = ""
+            var quote: Character?
+            while i < s.count {
+                let c = s[i]
+                if c == "\\" {
+                    let next: Character? = i + 1 < s.count ? s[i + 1] : nil
+                    if let next, next == "'" || next == "\"" || next == "\\" || (quote == nil && next == " ") {
+                        i += 1
+                        word.append(next)
+                    } else {
+                        word.append(c)
+                    }
+                } else if quote == nil, c == " " || c == "\t" {
+                    break
+                } else if quote == nil, c == "\"" || c == "'" {
+                    quote = c
+                } else if let open = quote, c == open {
+                    quote = nil
+                } else {
+                    word.append(c)
+                }
+                i += 1
             }
-            switch character {
-            case "\"":
-                inQuotes = true; hasWord = true
-            case " ", "\t":
-                if hasWord { words.append(current); current = ""; hasWord = false }
-            case "#":
-                if hasWord { words.append(current) }
-                return words
-            default:
-                current.append(character); hasWord = true
-            }
+            if quote != nil { return nil }
+            words.append(word)
         }
-        if hasWord { words.append(current) }
         return words
     }
 

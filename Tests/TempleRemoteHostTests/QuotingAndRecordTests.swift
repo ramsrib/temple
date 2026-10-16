@@ -97,6 +97,45 @@ final class RemoteHostRecordTests: XCTestCase {
         XCTAssertEqual(RemoteHostList.decode(Data("garbage".utf8)), RemoteHostList())
     }
 
+    /// A hand-edited entry that would hand ssh shell syntax is kept in the
+    /// store but never becomes a host.
+    func testAStoredEntryFailingTheGrammarIsNeverUsed() {
+        let json = #"[{"name":"evil","source":"temple","address":"$(touch /tmp/x)"},{"name":"ok","source":"temple","address":"box"}]"#
+        let list = RemoteHostList.decode(Data(json.utf8))
+        XCTAssertEqual(list.records.map(\.name), ["ok"])
+        XCTAssertEqual(list.unreadable.count, 1)
+    }
+
+    /// The case the grammar exists for, without a network: a config whose
+    /// `ProxyCommand` puts `%h` and `%r` into shell text. Every address and
+    /// user the form accepts arrives as itself, and nothing else runs.
+    func testAcceptedValuesReachAProxyCommandAsThemselves() throws {
+        let tree = TempTree("proxy")
+        let marker = tree.path + "/seen"
+        let config = tree.write("config", "Host *\n  ProxyCommand /bin/sh -c 'printf \"%%s|%%s\" %h %r > \(marker); exit 1'\n")
+        for (address, user) in [("box.lan", "me"), ("10.0.0.2", "mentes_2"), ("2001:db8::42", "a.b-c")] {
+            var form = RemoteHostForm()
+            form.name = "box"; form.address = address; form.user = user
+            guard case .success(let record) = form.validate(editing: nil, existing: [], configAliases: []) else {
+                return XCTFail("\(address) refused")
+            }
+            let connection = SSHConnection(record: record, stateDirectory: tree.url, sshPath: "/usr/bin/ssh")
+            try? FileManager.default.removeItem(atPath: marker)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            process.arguments = ["-F", config.path] + connection.hostOptions
+                + ["-o", "BatchMode=yes", "-o", "ControlPath=none", "--", record.name, "true"]
+            process.environment = ["HOME": tree.path, "PATH": "/usr/bin:/bin"]
+            process.standardError = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            XCTAssertEqual(try String(contentsOfFile: marker, encoding: .utf8), "\(address)|\(user)")
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: tree.path).sorted(), ["config", "seen"],
+                       "nothing else was written")
+    }
+
     func testAnEntryWithoutSourceIsAConfigAlias() throws {
         let record = try JSONDecoder().decode(RemoteHostRecord.self, from: Data(#"{"name":"jetson"}"#.utf8))
         XCTAssertEqual(record, .config("jetson"))
@@ -131,17 +170,35 @@ final class RemoteHostRecordTests: XCTestCase {
         XCTAssertEqual(problems({ _ in }, existing: ["box"])[.name], "Temple already has a host named box.")
         XCTAssertNil(problems({ _ in }, existing: ["box"], editing: "box")[.name], "editing keeps its own name")
         XCTAssertEqual(problems { $0.address = "" }[.address], "Enter the host's address.")
-        XCTAssertEqual(problems { $0.address = "-oProxyCommand=evil" }[.address],
-                       "An address can't contain spaces or start with a dash.")
-        XCTAssertEqual(problems { $0.address = "a b" }[.address], "An address can't contain spaces or start with a dash.")
-        XCTAssertEqual(problems { $0.user = "a b" }[.user], "A user name can't contain spaces or start with a dash.")
+        let badAddress = "Enter a host name, an IPv4 address or an IPv6 address."
+        for address in ["-oProxyCommand=evil", "a b", "$(id)", "`id`", "a;id", "a|id", "a&id", "a>x", "a'b", "a\"b",
+                        "a\\b", "x$y", "a%h", "fe80::1%en0", "a..b", "-a.b", "a.-b", "[::1", "a\nb", "a*b", "~x"] {
+            XCTAssertEqual(problems { $0.address = address }[.address], badAddress, address)
+        }
+        for address in ["box", "box.lan", "my_box-2.example.com", "10.0.0.2", "::1", "[::1]", "2001:db8::42", "host."] {
+            XCTAssertNil(problems { $0.address = address }[.address], address)
+        }
+        var v6 = RemoteHostForm()
+        v6.name = "v6"; v6.address = "[::1]"
+        if case .success(let record) = v6.validate(editing: nil, existing: Set<String>(), configAliases: Set<String>()) {
+            XCTAssertEqual(record.address, "::1", "brackets are taken off for HostName")
+        } else { XCTFail("[::1] refused") }
+        let badUser = "A user name can use letters, digits, dots, dashes and underscores, and can't start with a dash."
+        for user in ["a b", "$(id)", "-l", "a;b", "a@b"] { XCTAssertEqual(problems { $0.user = user }[.user], badUser, user) }
+        XCTAssertNil(problems { $0.user = "mentes_2.x-y" }[.user])
         for port in ["0", "65536", "x", "-1", "22.5"] {
             XCTAssertEqual(problems { $0.port = port }[.port], "A port is a number from 1 to 65535.", port)
         }
         XCTAssertNil(problems { $0.port = "65535" }[.port])
         XCTAssertEqual(problems { $0.identityFile = "a\"b" }[.identityFile],
                        "Temple can't pass a path with a double quote or a line break to ssh.")
-        XCTAssertEqual(problems { $0.proxyJump = "-J x" }[.proxyJump], "A jump host can't contain spaces or start with a dash.")
+        let badJump = "A jump host is [user@]host[:port], several separated by commas."
+        for jump in ["-J x", "a b", "$(id)", "ssh://x", "a:0", "a:99999", "a,", "u@[::1", "a;b", "x@y@z"] {
+            XCTAssertEqual(problems { $0.proxyJump = jump }[.proxyJump], badJump, jump)
+        }
+        for jump in ["bastion", "me@bastion:2222", "a,b.lan:22", "me@[2001:db8::1]:22", "10.0.0.1"] {
+            XCTAssertNil(problems { $0.proxyJump = jump }[.proxyJump], jump)
+        }
     }
 
     func testCopyAsSSHConfig() {
@@ -178,6 +235,36 @@ final class SSHConfigHostsTests: XCTestCase {
         Host -oops
         """
         XCTAssertEqual(SSHConfigHosts.aliases(in: text), ["box", "jetson-mentes", "lower", "quoted name", "after"])
+    }
+
+    /// OpenSSH's own tokenizer (misc.c argv_split), case by case.
+    func testWordsFollowOpenSSH() {
+        XCTAssertEqual(SSHConfigHosts.words(#"a "b c" 'd e' f"#), ["a", "b c", "d e", "f"])
+        XCTAssertEqual(SSHConfigHosts.words(#"a\ b c"#), ["a b", "c"])
+        XCTAssertEqual(SSHConfigHosts.words(#"'it\'s' "say \"hi\"" back\\slash"#), ["it's", "say \"hi\"", "back\\slash"])
+        XCTAssertEqual(SSHConfigHosts.words(#"un\known \x"#), [#"un\known"#, #"\x"#])
+        XCTAssertEqual(SSHConfigHosts.words(#""a\ b""#), [#"a\ b"#], "an escaped space only outside quotes")
+        XCTAssertEqual(SSHConfigHosts.words("a#b c #comment d"), ["a#b", "c"])
+        XCTAssertEqual(SSHConfigHosts.words(#"x"y z"w"#), ["xy zw"])
+        XCTAssertEqual(SSHConfigHosts.words("\ttab\tsep"), ["tab", "sep"])
+        XCTAssertNil(SSHConfigHosts.words(#"open "quote"#), "invalid quotes")
+        XCTAssertNil(SSHConfigHosts.words("open 'quote"))
+        XCTAssertEqual(SSHConfigHosts.aliases(in: "Host ok\nHost 'broken\nHost after\n"), ["ok", "after"])
+    }
+
+    func testQuotedAndEscapedIncludesAreFollowed() throws {
+        let tree = TempTree("ssh-config-quoted")
+        let ssh = tree.directory(".ssh")
+        tree.write(".ssh/config", #"""
+        Include 'config.d/*'
+        Include config\ extra/hosts
+        Include "with space/more"
+        """#)
+        tree.write(".ssh/config.d/a", "Host from-single-quoted\n")
+        tree.write(".ssh/config extra/hosts", "Host from-escaped\n")
+        tree.write(".ssh/with space/more", "Host from-double-quoted\n")
+        XCTAssertEqual(SSHConfigHosts.load(configURL: ssh.appendingPathComponent("config"), sshDirectory: ssh, home: tree.path),
+                       ["from-single-quoted", "from-escaped", "from-double-quoted"])
     }
 
     func testIncludeIsFollowedOneLevel() throws {
