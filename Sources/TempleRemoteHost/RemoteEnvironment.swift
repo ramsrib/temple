@@ -45,8 +45,12 @@ public struct RemoteEnvironment: Sendable, Equatable {
     /// What the login shell runs, as a script of its own (`sh -c`,
     /// argument: the marker): `$SHELL` asked with `-lic`, then `-l -c`,
     /// then `-c` (csh and tcsh reject the bundled flags), the attempts
-    /// sharing one 5-second budget (through `timeout` where the host has
-    /// it). Each answer is framed by the marker, `printenv` keeping both
+    /// sharing one 5-second budget. The budget is enforced only by
+    /// `temple_bounded`'s watchdog on the whole process group, never by
+    /// `timeout`: GNU `timeout` moves its command into a process group of
+    /// its own, where a hung login shell's children would escape the
+    /// group the watchdog kills (measured on Ubuntu, tmux 3.4 host).
+    /// Each answer is framed by the marker, `printenv` keeping both
     /// values as the shell holds them (any login shell, fish included);
     /// prints the frame and exits 0, or exits 3.
     static let loginScript = #"""
@@ -54,14 +58,12 @@ public struct RemoteEnvironment: Sendable, Equatable {
     _p="echo $_m; printenv PATH; echo $_m.cfg; printenv CLAUDE_CONFIG_DIR; echo $_m"
     _end=$(( $(date +%s) + 5 ))
     for _v in 1 2 3; do
-      _left=$(( _end - $(date +%s) )); [ "$_left" -gt 0 ] || exit 3
-      _t=; command -v timeout >/dev/null 2>&1 && _t="timeout $_left"
+      [ "$(date +%s)" -lt "$_end" ] || exit 3
       case $_v in
-        1) _o=$($_t "$_s" -lic "$_p" </dev/null 2>/dev/null) ;;
-        2) _o=$($_t "$_s" -l -c "$_p" </dev/null 2>/dev/null) ;;
-        *) _o=$($_t "$_s" -c "$_p" </dev/null 2>/dev/null) ;;
+        1) _o=$("$_s" -lic "$_p" </dev/null 2>/dev/null) ;;
+        2) _o=$("$_s" -l -c "$_p" </dev/null 2>/dev/null) ;;
+        *) _o=$("$_s" -c "$_p" </dev/null 2>/dev/null) ;;
       esac
-      [ $? -eq 124 ] && exit 3
       case $_o in *"$_m"*"$_m.cfg"*"$_m"*)
         _o="$_m${_o#*"$_m"}"; _o="${_o%"$_m"*}$_m"
         printf '%s' "$_o"; exit 0 ;;

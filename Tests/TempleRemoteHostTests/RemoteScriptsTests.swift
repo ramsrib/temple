@@ -258,9 +258,11 @@ final class RemoteScriptsTests: XCTestCase {
         XCTAssertTrue(argv.contains("PATH=\(host.bin):/login/only/bin:/usr/bin:/bin"), "\(argv)")
     }
 
-    /// One budget for the whole resolution, with or without `timeout`
-    /// (this Mac has none): a login shell that hangs is abandoned in about
-    /// five seconds, and the launch falls back.
+    /// One budget for the whole resolution, enforced on the resolver's
+    /// process group: a login shell that hangs is abandoned in about six
+    /// seconds, and the launch falls back. (GNU `timeout`, which would move
+    /// the shell into a group of its own, is not used; the Linux acceptance
+    /// repeats this on both boxes.)
     func testAHangingLoginShellIsAbandonedWithinTheBudgetAndLeavesNothing() async throws {
         let host = StandIn()
         let mark = "61.\(Int.random(in: 1000...9999))"
@@ -272,6 +274,7 @@ final class RemoteScriptsTests: XCTestCase {
         let elapsed = Date().timeIntervalSince(started)
         XCTAssertNil(resolved.path)
         XCTAssertLessThan(elapsed, 8.5, "bounded by the budget, not by the outer deadline alone")
+        XCTAssertFalse(RemoteEnvironment.loginScript.contains("timeout"), "the group watchdog is the only bound")
         try await Task.sleep(for: .milliseconds(300))
         let left = try host.tmuxFreeRun("/usr/bin/pgrep", ["-f", "sleep \(mark)"])
         XCTAssertEqual(left.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "", "no login shell or descendant left")
