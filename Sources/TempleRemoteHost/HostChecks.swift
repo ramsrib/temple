@@ -77,7 +77,10 @@ public enum TmuxChain {
         ("prefix None", "set -g prefix None"),
         ("prefix2 None", "set -g prefix2 None"),
         ("set-titles", "set -g set-titles on"),
-        ("set-titles-string", "set -g set-titles-string '#T'"),
+        // The pane's title, as the agent set it, and nothing until it does:
+        // tmux starts every pane titled with the host's name, which would
+        // otherwise reach the tab (and the row) as if the agent had said it.
+        ("set-titles-string", "set -g set-titles-string '\(TmuxChain.agentTitle)'"),
         ("mouse", "set -g mouse on"),
         ("history-limit", "set -g history-limit 50000"),
         ("set-clipboard", "set -g set-clipboard on"),
@@ -86,6 +89,13 @@ public enum TmuxChain {
         ("destroy-unattached", "set -g destroy-unattached off"),
         ("copy-mode Any", "bind -T copy-mode Any send-keys -X cancel"),
     ]
+
+    /// The outer title tmux sets: the pane's title, empty while it is still
+    /// tmux's default, the host's name (`host` or `host_short`). Measured on
+    /// tmux 3.2a, 3.4 and 3.7c: a fresh pane's title is the host name, an
+    /// agent's OSC 0/2 title replaces it.
+    public static let agentTitle =
+        "#{?#{||:#{==:#{pane_title},#{host}},#{==:#{pane_title},#{host_short}}},,#{pane_title}}"
 
     /// `start-server ';' <configure…> ';'`: the chain's head, ready for a
     /// `new-session`. tmux takes a `;` argument as its command separator.

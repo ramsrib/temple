@@ -1052,4 +1052,34 @@ final class RemoteScriptsTests: XCTestCase {
         let clients = try host.tmux(["-L", "temple", "list-clients", "-t", "=temple-h2", "-F", "#{client_termname}"])
         XCTAssertEqual(clients.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "xterm-256color")
     }
+
+    /// The tab's title is the agent's (B1): tmux titles a fresh pane with
+    /// the host's name, and the title Temple's chain hands the outer
+    /// terminal is empty until the agent sets its own (then exactly that).
+    func testRealTmuxTitleIsTheAgentsAndNeverTheHostName() throws {
+        let host = StandIn()
+        try host.installRealTmux()
+        let keepAlive = TmuxKeepAlive()
+        defer { _ = try? host.tmux(["-L", "temple", "kill-server"]) }
+        let out = host.tree.path
+        let client = try launchClient(host, host.staged(keepAlive.createScript(plan(host, handle: "ht", marker: "mt",
+            argv: ["/bin/sh", "-c", "touch \(out)/ready; while [ ! -e \(out)/go ]; do sleep 0.05; done; "
+                   + "printf '\\033]2;Agent, title\\033\\\\'; touch \(out)/set; sleep 30"]))))
+        defer { client.end() }
+        XCTAssertTrue(try waitFor { FileManager.default.fileExists(atPath: out + "/ready") })
+        func outer() throws -> String {
+            try host.tmux(["-L", "temple", "display-message", "-p", "-t", "=temple-ht:", "#{T:set-titles-string}"])
+                .stdout.trimmingCharacters(in: .newlines)
+        }
+        let paneTitle = try host.tmux(["-L", "temple", "display-message", "-p", "-t", "=temple-ht:", "#{pane_title}"])
+            .stdout.trimmingCharacters(in: .newlines)
+        let hostName = try host.tmux(["-L", "temple", "display-message", "-p", "#{host}"]).stdout.trimmingCharacters(in: .newlines)
+        XCTAssertEqual(paneTitle, hostName, "tmux's own default: the host's name")
+        XCTAssertEqual(try outer(), "", "nothing until the agent says")
+        XCTAssertEqual(try host.tmux(["-L", "temple", "show", "-gv", "set-titles"]).stdout.trimmingCharacters(in: .newlines), "on")
+        FileManager.default.createFile(atPath: out + "/go", contents: nil)
+        XCTAssertTrue(try waitFor { FileManager.default.fileExists(atPath: out + "/set") })
+        XCTAssertTrue(try waitFor { try outer() == "Agent, title" })
+    }
+
 }
