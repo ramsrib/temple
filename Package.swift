@@ -50,6 +50,15 @@ let package = Package(
         // backs the catalog's disposable summary cache (ADR-032).
         .target(name: "TempleLocalHost", dependencies: ["TempleCore", .product(name: "GRDB", package: "GRDB.swift")]),
 
+        // Hosts reached over ssh (docs/designs/remote-ssh.md): the host
+        // record, the ~/.ssh/config reader, the one quoting function, the exec
+        // seam (`RemoteExec`, `SSHExec`), the remote environment, the
+        // connection test's checks and an inert `RemoteSessionSource`.
+        // Everything remote-only lives here, so the experiment can be
+        // deleted whole. TempleUI names it in one composition file
+        // (`Hosts/RemoteHost.swift`), like TempleLocalHost.
+        .target(name: "TempleRemoteHost", dependencies: ["TempleCore"]),
+
         // Terminal seam (PLAN.md "Decoupling interfaces"): TerminalSurface
         // protocol + stub. Imports AppKit; free of ghostty and TempleCore.
         .target(name: "TempleTerminalAPI"),
@@ -58,7 +67,7 @@ let package = Package(
         // (executables can't be imported cleanly). Bundles the agent brand icons.
         .target(
             name: "TempleUI",
-            dependencies: ["TempleCore", "TempleLocalHost", "TempleTerminalAPI"],
+            dependencies: ["TempleCore", "TempleLocalHost", "TempleRemoteHost", "TempleTerminalAPI"],
             resources: [.process("Resources")]
         ),
 
@@ -113,7 +122,8 @@ let package = Package(
         .target(name: "TempleTestSupport", dependencies: ["TempleCore"]),
 
         .testTarget(name: "TempleCoreTests", dependencies: ["TempleCore", "TempleLocalHost", "TempleTestSupport"], exclude: ["Fixtures/session-state-v8.json", "Fixtures/session-state-v9.json", "Fixtures/session-state-v11.json", "Fixtures/format-golden.json"]),
-        .testTarget(name: "TempleUITests", dependencies: ["TempleUI", "TempleLocalHost", "TempleTestSupport"]),
+        .testTarget(name: "TempleUITests", dependencies: ["TempleUI", "TempleLocalHost", "TempleRemoteHost", "TempleTestSupport"]),
+        .testTarget(name: "TempleRemoteHostTests", dependencies: ["TempleRemoteHost", "TempleCore"]),
         .testTarget(name: "TempleTerminalTests", dependencies: ["TempleTerminal", "TempleUI"]),
         .testTarget(name: "TempleCLITests", dependencies: ["TempleCLIKit", "TempleUI", "TempleCore"]),
     ]
