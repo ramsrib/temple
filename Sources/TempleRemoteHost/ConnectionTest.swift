@@ -57,13 +57,18 @@ public final class ConnectionTest: ObservableObject, Identifiable {
     private let resolve: () async -> [String: String]
     private var task: Task<Void, Never>?
     private let pollInterval: Duration
+    private let attachTimeout: TimeInterval
+    private let connectTimeout: TimeInterval
 
     /// `makeExec(path)` builds a query exec with that PATH (nil: ssh's
     /// default environment). `resolve` runs `ssh -G`.
     public init(record: RemoteHostRecord, connection: SSHConnection, workDirectory: URL,
                 makeExec: @escaping (String?) -> RemoteExec,
                 resolve: @escaping () async -> [String: String],
-                pollInterval: Duration = .milliseconds(200)) {
+                pollInterval: Duration = .milliseconds(200),
+                attachTimeout: TimeInterval = 30, connectTimeout: TimeInterval = 600) {
+        self.attachTimeout = attachTimeout
+        self.connectTimeout = connectTimeout
         self.record = record
         self.connection = connection
         self.workDirectory = workDirectory
@@ -86,39 +91,73 @@ public final class ConnectionTest: ObservableObject, Identifiable {
 
     /// Records the connect's status and stderr (stderr still reaches the
     /// terminal, through `tee`), then runs the attached step when Temple
-    /// hands it over, then stays, so the terminal keeps what it showed until
-    /// the sheet closes.
+    /// hands it over (`attach.sh`), then stays while the work folder does,
+    /// so the terminal keeps what it showed until the sheet closes. A file
+    /// it cannot write ends it at once, saying so on the terminal.
     static let wrapperScript = #"""
     r=$1; shift
+    fail() { echo "Temple could not record the test in $r: $1" >&2; exit 70; }
+    [ -d "$r" ] && [ -w "$r" ] || fail "the folder is not writable"
     exec 3>&1
     ( "$@" 2>&1 1>&3; echo $? > "$r/connect.code" ) | tee "$r/connect.err" >&2
-    mv "$r/connect.code" "$r/connect.status"
+    [ -s "$r/connect.code" ] || fail "no exit status was written"
+    mv "$r/connect.code" "$r/connect.status" || fail "the exit status could not be saved"
     if [ "$(cat "$r/connect.status")" = 0 ]; then
       i=0
-      while [ ! -f "$r/go" ] && [ "$i" -lt 600 ]; do sleep 0.2; i=$((i+1)); done
+      while [ ! -f "$r/go" ] && [ -d "$r" ] && [ "$i" -lt 600 ]; do sleep 0.2; i=$((i+1)); done
       if [ -s "$r/go" ]; then
-        xargs -0 -o sh -c '"$@"; echo $? > "$0/attach.code"; mv "$0/attach.code" "$0/attach.status"' "$r" < "$r/go"
+        xargs -0 /bin/sh "$r/attach.sh" "$r" < "$r/go" || fail "the attached check could not be run"
       fi
     fi
-    while :; do sleep 3600; done
+    while [ -d "$r" ]; do sleep 1; done
     """#
 
-    /// Clears a stale socket (positive proof only), then watches.
-    public func start() {
-        guard task == nil else { return }
-        try? FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true,
-                                                 attributes: [.posixPermissions: 0o700])
-        try? connection.prepareSocketDirectory()
+    /// The attached step: runs the handed-over argv on the terminal, and
+    /// ends that client (only it: the shared master is another process) when
+    /// Temple writes `stop` or removes the folder, then records its status.
+    static let attachScript = #"""
+    r=$1; shift
+    "$@" </dev/tty & c=$!
+    while kill -0 "$c" 2>/dev/null; do
+      if [ -f "$r/stop" ] || [ ! -d "$r" ]; then
+        kill "$c" 2>/dev/null; sleep 1; kill -9 "$c" 2>/dev/null
+        break
+      fi
+      sleep 0.2
+    done
+    wait "$c"; st=$?
+    [ -d "$r" ] || exit 0
+    echo "$st" > "$r/attach.code" && mv "$r/attach.code" "$r/attach.status"
+    """#
+
+    /// Prepares the work folder and the master's socket directory, clears a
+    /// stale socket (positive proof only), then watches. False, with the
+    /// test failed and saying why, when anything could not be prepared:
+    /// the terminal must then not be started.
+    @discardableResult
+    public func start() -> Bool {
+        guard task == nil, phase == .connecting else { return false }
+        do {
+            try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try Data(Self.attachScript.utf8).write(to: file("attach.sh"))
+            try connection.prepareSocketDirectory()
+        } catch {
+            finish(failure: .localSetup(error.localizedDescription))
+            return false
+        }
         SocketHygiene.removeIfNothingListens(connection.controlPath)
         task = Task { [weak self] in await self?.run() }
+        return true
     }
 
-    /// The sheet closed: stop watching and querying, and remove the work
-    /// files. The terminal's client is the sheet's to terminate; the master
-    /// is left to expire.
+    /// The sheet closed: stop watching and querying, end the attached
+    /// client if one runs, and remove the work files. The terminal is the
+    /// sheet's to terminate; the master is left to expire.
     public func cancel() {
         task?.cancel()
         task = nil
+        FileManager.default.createFile(atPath: file("stop").path, contents: nil)
         try? FileManager.default.removeItem(at: workDirectory)
     }
 
@@ -138,7 +177,12 @@ public final class ConnectionTest: ObservableObject, Identifiable {
     // MARK: The run
 
     private func run() async {
-        guard let status = await waitForStatus("connect.status", timeout: nil) else { return }
+        guard let status = await waitForStatus("connect.status", timeout: connectTimeout) else {
+            if !Task.isCancelled {
+                finish(failure: .other(firstLine: "ssh didn't finish within \(Int(connectTimeout / 60)) minutes"))
+            }
+            return
+        }
         if status != 0 {
             let stderr = (try? String(contentsOf: file("connect.err"), encoding: .utf8)) ?? ""
             finish(failure: SSHFailure.classify(stderr: stderr, status: status))
@@ -166,9 +210,20 @@ public final class ConnectionTest: ObservableObject, Identifiable {
         let attachArgv = ["/usr/bin/env", "TERM=xterm-256color"]
             + connection.argv(.interactive, remoteCommand: RemoteQuoting.shellCommand(
                 script: TmuxCheck.attachedScript, args: [attachedNonce], path: environment.path))
-        writeGo(attachArgv)
-        let attachedStatus = await waitForStatus("attach.status", timeout: 30)
+        guard writeGo(attachArgv) else {
+            finish(failure: .localSetup("Temple couldn't write to \(workDirectory.path)"))
+            return
+        }
+        var attachedStatus = await waitForStatus("attach.status", timeout: attachTimeout)
         if Task.isCancelled { return }
+        if attachedStatus == nil {
+            // Out of time: end that client (never the master), give it a
+            // moment to go, and call the check unconfirmed.
+            FileManager.default.createFile(atPath: file("stop").path, contents: nil)
+            _ = await waitForStatus("attach.status", timeout: 3)
+            if Task.isCancelled { return }
+            attachedStatus = 124
+        }
 
         set(Row(id: "claude", verdict: .running, line: "claude: checking…"))
         let claude = await ToolCheck.run("claude", using: exec)
@@ -183,7 +238,7 @@ public final class ConnectionTest: ObservableObject, Identifiable {
         set(Self.row("codex", codex))
 
         let tmux = await TmuxCheck.run(nonce: RemoteQuoting.nonce(), attachedNonce: attachedNonce,
-                                       attachedStatus: attachedStatus ?? 124, using: exec)
+                                       attachedStatus: attachedStatus, using: exec)
         if Task.isCancelled { return }
         summaryDraft.tmux = tmux
         set(Self.row(tmux))
@@ -221,27 +276,28 @@ public final class ConnectionTest: ObservableObject, Identifiable {
 
     private func file(_ name: String) -> URL { workDirectory.appendingPathComponent(name) }
 
-    /// Polls for a status file; nil when cancelled or out of time.
-    private func waitForStatus(_ name: String, timeout: TimeInterval?) async -> Int32? {
+    /// Polls for a status file; nil when cancelled, out of time, or the
+    /// work folder is gone.
+    private func waitForStatus(_ name: String, timeout: TimeInterval) async -> Int32? {
         let start = Date()
-        while !Task.isCancelled {
+        while !Task.isCancelled, FileManager.default.fileExists(atPath: workDirectory.path) {
             if let text = try? String(contentsOf: file(name), encoding: .utf8),
                let status = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) {
                 return status
             }
-            if let timeout, Date().timeIntervalSince(start) > timeout { return nil }
+            if Date().timeIntervalSince(start) > timeout { return nil }
             try? await Task.sleep(for: pollInterval)
         }
         return nil
     }
 
-    private func writeGo(_ argv: [String]) {
+    private func writeGo(_ argv: [String]) -> Bool {
         var data = Data()
         for word in argv { data.append(Data(word.utf8)); data.append(0) }
         let temporary = file("go.tmp")
-        guard (try? data.write(to: temporary)) != nil else { return }
+        guard (try? data.write(to: temporary)) != nil else { return false }
         // Atomic: the wrapper never reads half an argv.
-        rename(temporary.path, file("go").path)
+        return rename(temporary.path, file("go").path) == 0
     }
 
     // MARK: Rows

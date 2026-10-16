@@ -136,6 +136,35 @@ final class SSHConnectionTests: XCTestCase {
         XCTAssertFalse(SocketHygiene.removeIfNothingListens(tree.path + "/absent"))
     }
 
+    /// The socket directory is never a symlink, never another user's, and
+    /// always 0700; anything else refuses, and a test refuses to start.
+    func testASymlinkedOrForeignSocketDirectoryIsRefused() throws {
+        let tree = TempTree("sockdir-bad")
+        let elsewhere = tree.directory("elsewhere")
+        let state = tree.directory("state")
+        try FileManager.default.createSymbolicLink(atPath: state.path + "/ssh", withDestinationPath: elsewhere.path)
+        let connection = SSHConnection(record: added, stateDirectory: state, sshPath: "/usr/bin/ssh")
+        XCTAssertThrowsError(try connection.prepareSocketDirectory()) { error in
+            XCTAssertEqual((error as? SocketDirectoryError)?.reason, "it is not a directory")
+        }
+        // A real directory someone else owns (simulated by naming another owner).
+        let other = SSHConnection(record: added, stateDirectory: tree.directory("state2"), sshPath: "/usr/bin/ssh")
+        XCTAssertThrowsError(try other.prepareSocketDirectory(owner: getuid() &+ 1)) { error in
+            XCTAssertEqual((error as? SocketDirectoryError)?.reason, "another user owns it")
+            XCTAssertEqual(error.localizedDescription, "Temple won't use \(other.socketDirectory) for ssh's connection: another user owns it.")
+        }
+        // Ours but loose: tightened to 0700.
+        let loose = tree.directory("state3/ssh")
+        chmod(loose.path, 0o755)
+        try SSHConnection(record: added, stateDirectory: tree.url.appendingPathComponent("state3"), sshPath: "/usr/bin/ssh")
+            .prepareSocketDirectory()
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: loose.path)[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+        // A plain file where the directory should be.
+        let file = tree.directory("state4")
+        tree.write("state4/ssh", "not a directory")
+        XCTAssertThrowsError(try SSHConnection(record: added, stateDirectory: file, sshPath: "/usr/bin/ssh").prepareSocketDirectory())
+    }
+
     func testTheSocketDirectoryIsOwnerOnly() throws {
         let tree = TempTree("sockdir")
         let connection = SSHConnection(record: added, stateDirectory: tree.url, sshPath: "/usr/bin/ssh")

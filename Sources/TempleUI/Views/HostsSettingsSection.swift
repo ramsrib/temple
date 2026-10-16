@@ -411,7 +411,8 @@ final class TestTerminal: ObservableObject, TerminalSurfaceDelegate {
         started = true
         self.test = test
         surface.delegate = self
-        test.start()
+        // Nothing could be prepared: the test says why, and no terminal runs.
+        guard test.start() else { return }
         do {
             try surface.start(TerminalCommand(argv: test.surfaceArgv, cwd: test.surfaceDirectory))
             surface.focus()

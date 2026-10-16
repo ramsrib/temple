@@ -118,10 +118,15 @@ public enum RemoteProcessCounter {
     static func increment() { lock.withLock { count += 1 } }
 }
 
-/// Runs a local process, reads both streams to the end, and always comes
-/// back: at the deadline (or on cancellation) the process is sent SIGTERM,
-/// then SIGKILL a second later, and the caller is answered without waiting
-/// for a pipe a grandchild may still hold.
+/// Runs a local process, reads both streams, and always comes back.
+///
+/// - At the deadline (or on cancellation) the process is sent SIGTERM, then
+///   SIGKILL a second later, and the caller is answered at once.
+/// - Once the process has exited, its streams get a short grace to drain;
+///   a descendant still holding one open does not hold the answer.
+/// - Whatever the outcome, both read descriptors are closed and every
+///   handler released: the readers are dispatch sources on the run's own
+///   queue, so a teardown never races a read in flight.
 public enum ProcessRunner {
     public struct Output: Sendable, Equatable {
         public var status: Int32
@@ -131,6 +136,8 @@ public enum ProcessRunner {
 
     /// Each stream is cut at this many bytes.
     static let limit = 1 << 20
+    /// How long the streams may stay open after the process has exited.
+    static let drainGrace: TimeInterval = 0.5
 
     public static func run(_ executable: String, _ arguments: [String], environment: [String: String]? = nil,
                            deadline: TimeInterval) async throws -> Output {
@@ -139,57 +146,52 @@ public enum ProcessRunner {
         process.arguments = arguments
         if let environment { process.environment = environment }
         process.standardInput = FileHandle.nullDevice
-        let outPipe = Pipe(), errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-        let state = RunState()
+        let run = RunState()
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Output, Error>) in
-                state.continuation = continuation
-                state.expect(3) // stdout EOF, stderr EOF, termination
-                read(outPipe.fileHandleForReading, into: \.stdout, state: state)
-                read(errPipe.fileHandleForReading, into: \.stderr, state: state)
-                process.terminationHandler = { finished in
-                    state.terminated(status: finished.terminationStatus)
+                run.continuation = continuation
+                guard let out = Pipes.make() else {
+                    run.finish(throwing: RemoteExecError.launchFailed(String(cString: strerror(errno))))
+                    return
                 }
+                guard let err = Pipes.make() else {
+                    close(out.read); close(out.write)
+                    run.finish(throwing: RemoteExecError.launchFailed(String(cString: strerror(errno))))
+                    return
+                }
+                let outWrite = FileHandle(fileDescriptor: out.write, closeOnDealloc: true)
+                let errWrite = FileHandle(fileDescriptor: err.write, closeOnDealloc: true)
+                process.standardOutput = outWrite
+                process.standardError = errWrite
+                process.terminationHandler = { finished in run.terminated(status: finished.terminationStatus) }
+                run.attach(stdout: out.read, stderr: err.read)
                 do {
                     // Cancelled before the process existed: start nothing.
-                    guard !state.isCancelled else { throw CancellationError() }
+                    guard !run.isCancelled else { throw CancellationError() }
                     RemoteProcessCounter.increment()
                     try process.run()
                 } catch {
-                    outPipe.fileHandleForReading.readabilityHandler = nil
-                    errPipe.fileHandleForReading.readabilityHandler = nil
-                    state.fail(error is CancellationError ? error : RemoteExecError.launchFailed(error.localizedDescription))
+                    try? outWrite.close(); try? errWrite.close()
+                    run.finish(throwing: error is CancellationError ? error : RemoteExecError.launchFailed(error.localizedDescription))
                     return
                 }
-                // Cancelled while it was starting: the handler found no
-                // process to kill, so it is killed here, answered or not.
-                if state.publish(process) {
-                    _ = state.stop(with: CancellationError())
+                // The child has its copies; the parent's write ends must go,
+                // or the streams never end.
+                try? outWrite.close()
+                try? errWrite.close()
+                // Cancelled while it was starting: killed here, answered or not.
+                if run.publish(process) {
+                    run.finish(throwing: CancellationError())
                     kill(process)
                 }
                 DispatchQueue.global().asyncAfter(deadline: .now() + deadline) {
-                    if state.stop(with: RemoteExecError.deadline(seconds: deadline)) { kill(process) }
+                    if run.finish(throwing: RemoteExecError.deadline(seconds: deadline)) { kill(process) }
                 }
             }
         } onCancel: {
-            _ = state.stop(with: CancellationError())
-            if let process = state.cancel() { kill(process) }
-        }
-    }
-
-    private static func read(_ handle: FileHandle, into keyPath: ReferenceWritableKeyPath<RunState, Data>,
-                             state: RunState) {
-        handle.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            if chunk.isEmpty {
-                handle.readabilityHandler = nil
-                state.arrived()
-            } else {
-                state.append(chunk, to: keyPath)
-            }
+            run.finish(throwing: CancellationError())
+            if let process = run.cancel() { kill(process) }
         }
     }
 
@@ -202,71 +204,132 @@ public enum ProcessRunner {
         }
     }
 
-    /// One run's bookkeeping, behind a lock: the streams, what is still
-    /// awaited, and the one answer.
-    private final class RunState: @unchecked Sendable {
+    /// A pipe whose descriptors are close-on-exec, so no other child
+    /// started meanwhile inherits them (the child's own stdout and stderr
+    /// are `dup2` copies, which are not).
+    enum Pipes {
+        static func make() -> (read: Int32, write: Int32)? {
+            var fds: [Int32] = [0, 0]
+            guard pipe(&fds) == 0 else { return nil }
+            for fd in fds { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
+            _ = fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL) | O_NONBLOCK)
+            return (fds[0], fds[1])
+        }
+    }
+
+    /// One run: two readers on a serial queue, the process, the one answer.
+    final class RunState: @unchecked Sendable {
         private let lock = NSLock()
+        private let queue = DispatchQueue(label: "com.sriramb.temple.remote.process")
+        private var _continuation: CheckedContinuation<Output, Error>?
+        private var process: Process?
+        private var cancelled = false
+        private var answered = false
+        private var sources: [DispatchSourceRead] = []
+        private var buffers: [Data] = [Data(), Data()]
+        private var openStreams = 0
+        private var status: Int32?
+
         var continuation: CheckedContinuation<Output, Error>? {
             get { lock.withLock { _continuation } }
             set { lock.withLock { _continuation = newValue } }
         }
-        private var _continuation: CheckedContinuation<Output, Error>?
-        private var process: Process?
-        private var cancelled = false
 
         var isCancelled: Bool { lock.withLock { cancelled } }
 
-        /// Records the started process; true when the run was cancelled
-        /// meanwhile (the caller kills it).
         func publish(_ started: Process) -> Bool {
             lock.withLock { process = started; return cancelled }
         }
 
-        /// Records the cancellation; the process to kill, if it has started.
         func cancel() -> Process? {
             lock.withLock { cancelled = true; return process }
         }
-        var stdout = Data()
-        var stderr = Data()
-        private var pending = 0
-        private var status: Int32 = 0
-        private var answered = false
 
-        func expect(_ count: Int) { lock.withLock { pending = count } }
-
-        func append(_ chunk: Data, to keyPath: ReferenceWritableKeyPath<RunState, Data>) {
-            lock.withLock {
-                let room = ProcessRunner.limit - self[keyPath: keyPath].count
-                if room > 0 { self[keyPath: keyPath].append(chunk.prefix(room)) }
+        /// Starts reading both descriptors; each is closed by its source's
+        /// cancel handler, which runs after any read in flight.
+        func attach(stdout: Int32, stderr: Int32) {
+            lock.withLock { openStreams = 2 }
+            for (index, fd) in [stdout, stderr].enumerated() {
+                let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
+                source.setEventHandler { [weak self, weak source] in
+                    guard let self, let source else { return }
+                    var chunk = [UInt8](repeating: 0, count: 65_536)
+                    let count = Darwin.read(fd, &chunk, chunk.count)
+                    if count > 0 {
+                        self.append(chunk[0..<count], to: index)
+                    } else if count == 0 || (errno != EAGAIN && errno != EINTR) {
+                        source.cancel()
+                        self.streamEnded()
+                    }
+                }
+                source.setCancelHandler { close(fd) }
+                lock.withLock { sources.append(source) }
+                source.resume()
             }
         }
 
-        func arrived() { finishIfDone { pending -= 1 } }
-
-        func terminated(status: Int32) { finishIfDone { self.status = status; pending -= 1 } }
-
-        private func finishIfDone(_ update: () -> Void) {
-            let resume: (CheckedContinuation<Output, Error>, Output)? = lock.withLock {
-                update()
-                guard pending == 0, !answered, let continuation = _continuation else { return nil }
-                answered = true
-                return (continuation, Output(status: status, stdout: String(decoding: stdout, as: UTF8.self),
-                                             stderr: String(decoding: stderr, as: UTF8.self)))
+        private func append(_ chunk: ArraySlice<UInt8>, to index: Int) {
+            lock.withLock {
+                let room = ProcessRunner.limit - buffers[index].count
+                if room > 0 { buffers[index].append(contentsOf: chunk.prefix(room)) }
             }
-            if let (continuation, output) = resume { continuation.resume(returning: output) }
+        }
+
+        private func streamEnded() {
+            let done = lock.withLock { () -> Bool in
+                openStreams -= 1
+                return openStreams == 0 && status != nil
+            }
+            if done { finishNormally() }
+        }
+
+        func terminated(status: Int32) {
+            let done = lock.withLock { () -> Bool in
+                self.status = status
+                return openStreams == 0
+            }
+            if done { finishNormally(); return }
+            // A descendant may hold a stream open: answer after a grace.
+            queue.asyncAfter(deadline: .now() + ProcessRunner.drainGrace) { [weak self] in self?.finishNormally() }
+        }
+
+        private func finishNormally() {
+            let answer: (CheckedContinuation<Output, Error>, Output)? = lock.withLock {
+                guard !answered, let continuation = _continuation, let status else { return nil }
+                answered = true
+                return (continuation, Output(status: status, stdout: String(decoding: buffers[0], as: UTF8.self),
+                                             stderr: String(decoding: buffers[1], as: UTF8.self)))
+            }
+            guard let (continuation, output) = answer else { return }
+            teardown()
+            continuation.resume(returning: output)
         }
 
         /// Answers with `error` unless already answered; true when it did.
-        func stop(with error: Error) -> Bool {
+        @discardableResult
+        func finish(throwing error: Error) -> Bool {
             let continuation: CheckedContinuation<Output, Error>? = lock.withLock {
                 guard !answered, let continuation = _continuation else { return nil }
                 answered = true
                 return continuation
             }
-            continuation?.resume(throwing: error)
-            return continuation != nil
+            guard let continuation else { return false }
+            teardown()
+            continuation.resume(throwing: error)
+            return true
         }
 
-        func fail(_ error: Error) { _ = stop(with: error) }
+        /// Every reader stopped (its descriptor closed by its cancel
+        /// handler), the buffers and the continuation dropped.
+        private func teardown() {
+            let stopping: [DispatchSourceRead] = lock.withLock {
+                defer { sources.removeAll(); buffers = [Data(), Data()]; _continuation = nil }
+                return sources
+            }
+            for source in stopping where !source.isCancelled { source.cancel() }
+        }
+
+        /// Open read descriptors this run still holds (for tests).
+        var openReaders: Int { lock.withLock { sources.filter { !$0.isCancelled }.count } }
     }
 }

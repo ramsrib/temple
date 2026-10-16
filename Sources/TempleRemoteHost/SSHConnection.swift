@@ -143,17 +143,51 @@ public struct SSHConnection: Sendable, Equatable {
         path.replacingOccurrences(of: "%", with: "%%")
     }
 
-    /// Creates the socket directory, owner-only.
-    public func prepareSocketDirectory() throws {
-        try FileManager.default.createDirectory(atPath: socketDirectory, withIntermediateDirectories: true,
-                                                attributes: [.posixPermissions: 0o700])
-        chmod(socketDirectory, 0o700)
+    /// Creates the socket directory, or checks the one there, without
+    /// following a symlink: it must be a real directory, owned by this
+    /// user, mode 0700 (one of ours with looser bits is tightened). Anything
+    /// else throws, and nothing may start ssh with this ControlPath: a
+    /// directory another account made (the `/tmp` fallback is a predictable
+    /// name) would hand it the master.
+    public func prepareSocketDirectory(owner: uid_t = getuid()) throws {
+        let path = socketDirectory
+        let parent = (path as NSString).deletingLastPathComponent
+        if !FileManager.default.fileExists(atPath: parent) {
+            try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
+        }
+        if mkdir(path, 0o700) != 0, errno != EEXIST {
+            throw SocketDirectoryError(path: path, reason: String(cString: strerror(errno)))
+        }
+        let descriptor = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            let reason = errno == ELOOP || errno == ENOTDIR ? "it is not a directory" : String(cString: strerror(errno))
+            throw SocketDirectoryError(path: path, reason: reason)
+        }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0 else {
+            throw SocketDirectoryError(path: path, reason: String(cString: strerror(errno)))
+        }
+        guard (info.st_mode & S_IFMT) == S_IFDIR else { throw SocketDirectoryError(path: path, reason: "it is not a directory") }
+        guard info.st_uid == owner else { throw SocketDirectoryError(path: path, reason: "another user owns it") }
+        if info.st_mode & 0o777 != 0o700 {
+            guard fchmod(descriptor, 0o700) == 0 else {
+                throw SocketDirectoryError(path: path, reason: String(cString: strerror(errno)))
+            }
+        }
         if usesFallbackDirectory, !Self.loggedFallback.swap(true) {
-            RemoteHostLog.ssh.notice("socket path too long under the state directory; using \(self.socketDirectory, privacy: .public)")
+            RemoteHostLog.ssh.notice("socket path too long under the state directory; using \(path, privacy: .public)")
         }
     }
 
     private static let loggedFallback = OnceFlag()
+}
+
+/// Why the master's socket directory can't be used.
+public struct SocketDirectoryError: Error, Equatable, LocalizedError {
+    public let path: String
+    public let reason: String
+    public var errorDescription: String? { "Temple won't use \(path) for ssh's connection: \(reason)." }
 }
 
 /// Stale master sockets: removed only on a positive sign that nothing

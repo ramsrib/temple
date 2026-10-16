@@ -108,6 +108,7 @@ final class ConnectionTestTests: XCTestCase {
     func testTheWrapperRecordsStatusAndRunsTheHandedOverStep() async throws {
         let tree = TempTree("ct-wrapper")
         let work = tree.directory("work")
+        tree.write("work/attach.sh", ConnectionTest.attachScript)
         let script = ConnectionTest.wrapperScript
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
@@ -148,6 +149,85 @@ final class ConnectionTestTests: XCTestCase {
                        "Permission denied (publickey).\n")
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertFalse(FileManager.default.fileExists(atPath: work.appendingPathComponent("attach.status").path))
+    }
+
+    /// The attached check hangs (a stand-in ssh that never returns): at the
+    /// timeout Temple ends that client, and only it, and calls the check
+    /// unconfirmed; the test still finishes.
+    func testAHungAttachedClientIsEndedAtTheTimeout() async throws {
+        let tree = TempTree("ct-hung")
+        let pids = tree.path + "/pids"
+        // Connect (`… true`) succeeds; the attached step hangs.
+        let ssh = tree.write("ssh", """
+        #!/bin/sh
+        for last; do :; done
+        [ "$last" = true ] && exit 0
+        echo $$ >> \(pids)
+        exec sleep 60
+        """, executable: true)
+        let connection = SSHConnection(record: .config("box"), stateDirectory: tree.directory("state"), sshPath: ssh.path)
+        let test = ConnectionTest(record: .config("box"), connection: connection, workDirectory: tree.url.appendingPathComponent("work"),
+            makeExec: { _ in RecordingExec { script, args in
+                if script == RemoteEnvironment.script {
+                    return RemoteOutput(status: 0, stdout: "shell /bin/sh\n\(args[0])\n/usr/bin:/bin\n\(args[0])\n", stderr: "")
+                }
+                if script == TmuxCheck.script { return RemoteOutput(status: 0, stdout: "version\ttmux 3.4\nchain\t0\n", stderr: "") }
+                return RemoteOutput(status: 0, stdout: "missing\n", stderr: "")
+            } },
+            resolve: { [:] }, pollInterval: .milliseconds(20), attachTimeout: 1)
+        XCTAssertTrue(test.start())
+        // The terminal, as libghostty would run it: a pseudo-terminal.
+        let terminal = Process()
+        terminal.executableURL = URL(fileURLWithPath: "/usr/bin/script")
+        terminal.arguments = ["-q", "/dev/null"] + test.surfaceArgv
+        terminal.standardInput = Pipe()
+        terminal.standardOutput = Pipe()
+        try terminal.run()
+        defer { terminal.terminate() }
+        await waitUntil({ test.phase == .finished }, timeout: 15)
+        XCTAssertEqual(test.phase, .finished)
+        XCTAssertEqual(test.summary?.tmux, .attachedUnconfirmed(version: "3.4", reason: "it didn't finish in time"))
+        let hung = try String(contentsOfFile: pids, encoding: .utf8).split(separator: "\n").compactMap { Int32($0) }
+        XCTAssertEqual(hung.count, 1)
+        try await Task.sleep(for: .milliseconds(1500))
+        XCTAssertNotEqual(kill(hung[0], 0), 0, "the attached client was ended")
+        XCTAssertTrue(terminal.isRunning, "the terminal itself stays until the sheet closes")
+        test.cancel()
+    }
+
+    /// Storage Temple can't write: the test fails before any terminal
+    /// starts, saying why.
+    func testUnwritableStorageFailsBeforeTheTerminal() throws {
+        let tree = TempTree("ct-unwritable")
+        let locked = tree.directory("locked")
+        chmod(locked.path, 0o500)
+        defer { chmod(locked.path, 0o700) }
+        let test = makeTest(tree) { _ in RecordingExec { _, _ in RemoteOutput(status: 0, stdout: "", stderr: "") } }
+        let blocked = ConnectionTest(record: test.record, connection: test.connection,
+                                     workDirectory: locked.appendingPathComponent("work"),
+                                     makeExec: { _ in RecordingExec { _, _ in RemoteOutput(status: 0, stdout: "", stderr: "") } },
+                                     resolve: { [:] })
+        var finished: HostTestSummary?
+        blocked.onFinished = { finished = $0 }
+        XCTAssertFalse(blocked.start())
+        XCTAssertEqual(blocked.phase, .failed)
+        guard case .localSetup? = blocked.failure else { return XCTFail("\(String(describing: blocked.failure))") }
+        XCTAssertTrue(blocked.failure?.message.hasPrefix("Temple couldn't prepare the test: ") ?? false)
+        XCTAssertNotNil(finished)
+        XCTAssertFalse(blocked.start(), "a failed test never starts again")
+    }
+
+    /// The wrapper, given a folder it can't write, says so on the terminal
+    /// and exits rather than waiting forever.
+    func testTheWrapperExitsVisiblyWhenItCannotRecord() async throws {
+        let tree = TempTree("ct-wrapper-locked")
+        let locked = tree.directory("locked")
+        chmod(locked.path, 0o500)
+        defer { chmod(locked.path, 0o700) }
+        let output = try await ProcessRunner.run("/bin/sh", ["-c", ConnectionTest.wrapperScript, "temple-test", locked.path, "/usr/bin/true"],
+                                                 deadline: 10)
+        XCTAssertEqual(output.status, 70)
+        XCTAssertEqual(output.stderr, "Temple could not record the test in \(locked.path): the folder is not writable\n")
     }
 
     func testSSHGResolutionParsing() {

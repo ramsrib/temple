@@ -116,7 +116,7 @@ final class HostChecksTests: XCTestCase {
                        .attachedFailed(version: "3.4", line: "open terminal failed: missing or unsuitable terminal: xterm-ghostty"))
         // Temple stopped waiting, or ssh dropped: not tmux's answer, proves nothing.
         let late = TmuxCheck.parse(RemoteOutput(status: 0, stdout: "version\ttmux 3.4\nchain\t0\n", stderr: ""), attachedStatus: 124)
-        XCTAssertEqual(late, .attachedUnconfirmed(version: "3.4", reason: "it didn't finish within 30 seconds"))
+        XCTAssertEqual(late, .attachedUnconfirmed(version: "3.4", reason: "it didn't finish in time"))
         XCTAssertFalse(late.provesUnavailable)
         XCTAssertEqual(HostTestSummary(tmux: late).unavailableReason(for: .claude), nil)
         XCTAssertEqual(TmuxCheck.parse(RemoteOutput(status: 0, stdout: "version\ttmux 3.4\nchain\t0\n", stderr: ""), attachedStatus: 255),
@@ -125,6 +125,19 @@ final class HostChecksTests: XCTestCase {
                        .accepted(version: "3.2a", passthrough: false))
         XCTAssertEqual(TmuxCheck.parse(RemoteOutput(status: 0, stdout: "version\ttmux 3.1c\nchain\t0\n", stderr: ""), attachedStatus: 0),
                        .tooOld(version: "3.1c"))
+    }
+
+    /// Only tmux's own words prove an attached failure: an empty error
+    /// file (made before tmux started) with ssh's 255 is transport.
+    func testAnAttachedFailureNeedsTmuxsWords() {
+        let emptyError = RemoteOutput(status: 0, stdout: "attached-error\t\nversion\ttmux 3.4\nchain\t0\n", stderr: "")
+        let dropped = TmuxCheck.parse(emptyError, attachedStatus: 255)
+        XCTAssertEqual(dropped, .attachedUnconfirmed(version: "3.4", reason: "ssh exited before it finished"))
+        XCTAssertFalse(dropped.provesUnavailable)
+        XCTAssertEqual(TmuxCheck.parse(emptyError, attachedStatus: 1),
+                       .attachedUnconfirmed(version: "3.4", reason: "it ended with status 1 and no word from tmux"))
+        XCTAssertEqual(TmuxCheck.parse(RemoteOutput(status: 0, stdout: "attached-error\tthe pane could not draw (tput failed under tmux-256color)\nversion\ttmux 3.4\nchain\t0\n", stderr: ""), attachedStatus: 3),
+                       .attachedFailed(version: "3.4", line: "the pane could not draw (tput failed under tmux-256color)"))
     }
 
     func testLogind() {

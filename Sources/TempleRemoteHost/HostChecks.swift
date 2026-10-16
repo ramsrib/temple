@@ -242,15 +242,19 @@ public enum TmuxCheck: Sendable, Equatable {
         }
         if let number, number < TmuxChain.floor { return .tooOld(version: shown) }
         if let attachedStatus, attachedStatus != 0 {
-            // 124: Temple stopped waiting; 255: ssh itself failed. Neither
-            // is tmux's answer, so neither proves the host can't run it.
-            if attachedStatus == 124 {
-                return .attachedUnconfirmed(version: shown, reason: "it didn't finish within 30 seconds")
+            // Only tmux's own words (or the pane's, status 3) prove a
+            // failure. Without them the status is ssh's or Temple's: 124,
+            // Temple stopped waiting; 255, ssh dropped; anything else, an
+            // end nothing explained. None proves the host can't run it.
+            if let line = attachedError?.trimmingCharacters(in: .whitespaces), !line.isEmpty {
+                return .attachedFailed(version: shown, line: line)
             }
-            if attachedStatus == 255, attachedError == nil {
-                return .attachedUnconfirmed(version: shown, reason: "ssh exited before it finished")
+            let reason = switch attachedStatus {
+            case 124: "it didn't finish in time"
+            case 255: "ssh exited before it finished"
+            default: "it ended with status \(attachedStatus) and no word from tmux"
             }
-            return .attachedFailed(version: shown, line: attachedError ?? "the attached client exited with status \(attachedStatus)")
+            return .attachedUnconfirmed(version: shown, reason: reason)
         }
         return .accepted(version: shown, passthrough: number.map { $0 >= TmuxChain.passthroughSince } ?? true)
     }
@@ -309,6 +313,8 @@ public enum SSHFailure: Sendable, Equatable {
     /// The changed-key banner; `offending` is ssh's `Offending … key in …:N`.
     case changedHostKey(offending: String?)
     case other(firstLine: String)
+    /// This Mac could not prepare the test (a folder, the socket directory).
+    case localSetup(String)
 
     public static func classify(stderr: String, status: Int32) -> SSHFailure {
         let lines = stderr.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
@@ -333,6 +339,8 @@ public enum SSHFailure: Sendable, Equatable {
                 + (offending.map { " ssh named the line: \($0)." } ?? "")
         case .other(let line):
             "Couldn't connect: \(line.hasSuffix(".") ? String(line.dropLast()) : line)."
+        case .localSetup(let reason):
+            "Temple couldn't prepare the test: \(reason.hasSuffix(".") ? String(reason.dropLast()) : reason)."
         }
     }
 

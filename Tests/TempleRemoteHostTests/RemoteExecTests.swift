@@ -24,6 +24,38 @@ final class RemoteExecTests: XCTestCase {
         XCTAssertNotEqual(kill(pid, 0), 0, "the query's process is gone")
     }
 
+    /// A child that leaves a descendant holding stderr open: the answer
+    /// comes once the child has exited (after a short grace), and every
+    /// descriptor the run opened is closed again.
+    func testADescendantHoldingAStreamDoesNotHoldTheAnswerOrItsDescriptors() async throws {
+        let tree = TempTree("descendant")
+        let pidFile = tree.path + "/pid"
+        let before = openDescriptors()
+        let started = Date()
+        let output = try await ProcessRunner.run("/bin/sh", ["-c", "sleep 30 >&2 & echo $! > \(pidFile); echo out; exit 5"],
+                                                 deadline: 20)
+        XCTAssertEqual(output.status, 5)
+        XCTAssertEqual(output.stdout, "out\n")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(openDescriptors(), before, "both read ends closed")
+        if let pid = Int32(try String(contentsOfFile: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)) {
+            kill(pid, SIGKILL)
+        }
+        // And at a deadline, with the child itself hung.
+        let hung = openDescriptors()
+        do {
+            _ = try await ProcessRunner.run("/bin/sh", ["-c", "sleep 30 >&2 & exec sleep 30"], deadline: 0.3)
+            XCTFail("hung")
+        } catch RemoteExecError.deadline {}
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(openDescriptors(), hung, "torn down at the deadline too")
+    }
+
+    private func openDescriptors() -> Int {
+        (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count) ?? -1
+    }
+
     func testCancellationKillsTheProcess() async throws {
         let tree = TempTree("cancel")
         let pidFile = tree.path + "/pid"
