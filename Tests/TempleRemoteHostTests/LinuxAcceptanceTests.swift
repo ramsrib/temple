@@ -583,6 +583,91 @@ extension LinuxAcceptanceTests {
         }
     }
 
+    /// The walk's ownership rule on each box's real `/proc` and `sh`
+    /// (round 1), with processes this test starts in a tmux server of its
+    /// own and fake rollouts under a temp Codex home: a pane process that
+    /// writes its own rollout is adopted; a child and a grandchild (a nested
+    /// codex, as the agent could run one) writing theirs are never this
+    /// run's. Everything is removed afterwards.
+    @MainActor
+    func testPhase1bOwnershipOnEachHostsProc() async throws {
+        guard !hosts.isEmpty else { throw XCTSkip("set TEMPLE_REMOTE_ACCEPTANCE=<alias>[,<alias>] to run") }
+        for name in hosts {
+            precondition(name.hasSuffix("-mentes"), "acceptance runs only against the -mentes agent accounts")
+            let state = TempTree("acceptance-own")
+            let store = try RemoteStateStore(directory: state.url)
+            let sessions = RemoteSessions(record: .config(name), stateDirectory: state.url, sshPath: "/usr/bin/ssh", store: { store })
+            let exec = try await sessions.queryExec()
+            func sh(_ script: String, _ args: [String] = []) async throws -> String {
+                try await exec.run(script: script, args: args, deadline: 30).stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            let server = "own-\(RemoteQuoting.nonce())"
+            let base = try await sh("mktemp -d /tmp/temple-accept-own-XXXXXX")
+            XCTAssertTrue(base.hasPrefix("/tmp/temple-accept-own-"))
+            defer {
+                let semaphore = DispatchSemaphore(value: 0)
+                Task.detached {
+                    _ = try? await exec.run(script: #"""
+                    TMUX_TMPDIR=$1/tmux tmux -L "$2" kill-server 2>/dev/null
+                    # The panes' backgrounded children outlive the server:
+                    # this test's are those holding its files.
+                    for p in $(pgrep -u "$(id -u)" -f '^sleep 120$'); do
+                      ls -l "/proc/$p/fd" 2>/dev/null | grep -qF "$1/" && kill "$p"
+                    done
+                    case $1 in /tmp/temple-accept-own-*) rm -rf -- "$1" ;; esac
+                    """#, args: [base, server], deadline: 20)
+                    semaphore.signal()
+                }
+                semaphore.wait()
+            }
+            // A Codex home with three rollouts whose headers name the folder,
+            // and the scripts the panes run.
+            let setup = try await sh(#"""
+            b=$1; mkdir -p "$b/tmux" "$b/home/sessions/2026/10/16" "$b/work"; w=$(cd "$b/work" && pwd -P)
+            for k in A B C; do
+              id=$(cat /proc/sys/kernel/random/uuid)
+              f=$b/home/sessions/2026/10/16/rollout-2026-10-16T10-00-00-$id.jsonl
+              printf '{"type":"session_meta","payload":{"id":"%s","cwd":"%s","timestamp":"2026-10-16T17:00:00Z"}}\n' "$id" "$w" > "$f"
+              echo "$f"
+            done
+            printf 'exec 3>>"$1"; exec sleep 120\n' > "$b/own.sh"
+            printf 'sh "$0.child" "$1" "$2" & exec sleep 120\n' > "$b/nested.sh"
+            printf 'exec 3>>"$1"; sh "%s/grand.sh" "$2" & exec sleep 120\n' "$b" > "$b/nested.sh.child"
+            printf 'exec 4>>"$1"; exec sleep 120\n' > "$b/grand.sh"
+            echo "$w"
+            """#, [base])
+            let parts = setup.split(separator: "\n").map(String.init)
+            XCTAssertEqual(parts.count, 4, setup)
+            let (rolloutA, rolloutB, rolloutC, folder) = (parts[0], parts[1], parts[2], parts[3])
+            func pane(_ session: String, _ script: String, _ args: [String]) async throws -> (pid: Int, start: String, socket: String) {
+                let answer = try await sh(#"""
+                export TMUX_TMPDIR=$1/tmux; srv=$2; s=$3; shift 3
+                tmux -L "$srv" -f /dev/null new-session -d -s "$s" "exec sh $*"
+                sleep 1
+                p=$(tmux -L "$srv" display-message -p -t "=$s:" '#{pane_pid}')
+                st=$(cut -d')' -f2- /proc/$p/stat | awk '{print $20}')
+                printf '%s %s %s\n' "$p" "$st" "$(tmux -L "$srv" display-message -p '#{socket_path}')"
+                """#, [base, server, session, script] + args)
+                let fields = answer.split(separator: " ").map(String.init)
+                guard fields.count == 3 else { throw XCTSkip("\(name): no pane: \(answer)") }
+                return (Int(fields[0]) ?? 0, fields[1], fields[2])
+            }
+            let home = (state: "set", value: base + "/home", base: folder)
+            let own = try await pane("temple-own", base + "/own.sh", [rolloutA])
+            let adopted = await CodexIdentityCheck.run(proc: "/proc", panePID: own.pid, paneStart: own.start, socket: own.socket,
+                                                       session: "temple-own", home: home, using: exec)
+            let nested = try await pane("temple-nested", base + "/nested.sh", [rolloutB, rolloutC])
+            let tree = try await sh("ps -o pid,ppid,args --ppid $1; for c in $(pgrep -P $1); do ps -o pid,ppid,args --ppid $c | tail -n +2; done",
+                                    [String(nested.pid)])
+            let refused = await CodexIdentityCheck.run(proc: "/proc", panePID: nested.pid, paneStart: nested.start, socket: nested.socket,
+                                                       session: "temple-nested", home: home, using: exec)
+            print("== \(name) (phase 1b ownership on /proc)\npane writes its own: \(adopted)\nchild and grandchild write theirs: \(refused)\nthe nested pane's tree:\n\(tree)")
+            guard case .found(let path, _) = adopted else { return XCTFail("\(name): the pane's own writer: \(adopted)") }
+            XCTAssertEqual(path, rolloutA)
+            XCTAssertEqual(refused, .inconclusive(.lasting("the session file is held by a process Temple didn't start")), "\(name)")
+        }
+    }
+
     @MainActor
     private func pendingPlan(_ outcome: RemoteSessions.PendingOpenOutcome) throws -> RemoteSessions.OpenPlan {
         guard case .plan(let plan) = outcome else { throw XCTSkip("expected a plan, got \(outcome)") }
