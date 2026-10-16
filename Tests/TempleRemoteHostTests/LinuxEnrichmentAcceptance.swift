@@ -142,6 +142,46 @@ extension LinuxAcceptanceTests {
         log.append("source: \(counters.listings) listing exec(s), \(counters.reads) read exec(s), \(counters.widerReads) wider")
         await engine.shutDown()
         loop.cancel()
+
+        // This box's sh and find on the edges, under roots inside the temp
+        // folder (nothing of the account's own stores is touched): a
+        // transcript that is a link is unreadable in the listing and in a
+        // read; shared lines past the response budget are that session's
+        // `.unreadable`, decided before anything is printed, and charge
+        // nothing to the host.
+        let edgeID = UUID().uuidString.lowercased()
+        let made = try await sh("""
+        f=$1; id=$2
+        mkdir -p "$f/cdx/sessions/2026/10/16" "$f/cfg/projects/-p" || exit 1
+        printf '{"type":"session_meta","payload":{"id":"%s","cwd":"/w","timestamp":"2026-10-16T10:00:00Z"}}\n' "$id" \
+          > "$f/cdx/sessions/2026/10/16/rollout-2026-10-16T10-00-00-$id.jsonl"
+        i=0; while [ $i -lt 300 ]; do
+          printf '{"session_id":"%s","ts":1,"text":"%01000d"}\n' "$id" 0; i=$((i+1)); done > "$f/cdx/history.jsonl"
+        printf '{"type":"user","sessionId":"%s","message":{"content":"x"}}\n' "$id" > "$f/real.jsonl"
+        ln -s "$f/real.jsonl" "$f/cfg/projects/-p/$id.jsonl" && echo made
+        """, [canonical, edgeID])
+        XCTAssertEqual(made, "made", name)
+        struct Fixed: RemoteTranscriptProvider {
+            let exec: RemoteExec
+            let roots: [Agent: RemoteTranscriptRoot]
+            func transcriptContext(sessionIDs: [String], refresh: Bool) async throws -> RemoteTranscriptContext {
+                RemoteTranscriptContext(exec: exec, roots: Dictionary(uniqueKeysWithValues: sessionIDs.map { ($0, roots) }))
+            }
+            func transportFailed() async {}
+        }
+        let edges = RemoteSessionSource(host: host, provider: Fixed(exec: exec, roots: [
+            .claude: try XCTUnwrap(RemoteTranscriptRoot(.set(canonical + "/cfg"), base: nil)),
+            .codex: try XCTUnwrap(RemoteTranscriptRoot(.set(canonical + "/cdx"), base: nil)),
+        ]), now: { Date() }, responseBudget: 128 * 1024)
+        let edge = try await edges.locate([LocateRequest(id: edgeID)])
+        let linkStat = edge.candidates[edgeID]?.first { $0.agent == .claude }?.stat
+        XCTAssertEqual(linkStat, .unreadable, "\(name): a linked transcript")
+        let edgeRollout = try XCTUnwrap(edge.candidates[edgeID]?.first { $0.agent == .codex }?.locator, name)
+        do { _ = try await edges.read(edgeRollout, agent: .codex, expecting: edgeID, facts: true); XCTFail(name) } catch {
+            log.append("edges: link \(linkStat.map { "\($0)" } ?? "nil"); oversized shared lines: \(error)")
+            guard case .unreadable? = error as? TranscriptReadError else { return XCTFail("\(name): \(error)") }
+        }
+        XCTAssertEqual(edges.counters.refused, 0)
     }
 
     /// A host that refuses connections: three transport failures, then the
