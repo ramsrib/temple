@@ -123,20 +123,31 @@ public struct SSHConnection: Sendable, Equatable {
                 "-o", "ControlPersist=600",
                 "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
                 "-o", "ConnectTimeout=10",
-                "-t",
-            ]
+            ] + Self.sessionOptions + ["-t"]
         case .query:
             return hostOptions + socket + [
                 "-o", "ControlMaster=no", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
-                "-T",
-            ]
+            ] + Self.sessionOptions + ["-T"]
         case .overMaster:
             // ssh keeps the first value it is given for an option, and a
             // ProxyJump given before a ProxyCommand wins: the master-only
             // options lead, before any of the host's own.
-            return Self.masterOnly + socket + hostOptions + ["-o", "ClearAllForwardings=yes", "-T"]
+            return Self.masterOnly + socket + hostOptions + ["-o", "ClearAllForwardings=yes"] + Self.sessionOptions + ["-T"]
         }
     }
+
+    /// What every session Temple asks for needs, whatever a config says:
+    /// its stdin (a query's program travels there, a tab's keys do), a
+    /// session that runs the command it is given, in the foreground. So an
+    /// inherited `StdinNull yes` (`-n`, which would hand the bootstrap
+    /// /dev/null and fail every query), `ForkAfterAuthentication yes`
+    /// (`-f`), `SessionType none` or `subsystem` (`-N`, `-s`) and a
+    /// `RemoteCommand` (which ssh refuses beside a command line's) are each
+    /// overridden. Command-line options win over every config file.
+    static let sessionOptions = [
+        "-o", "StdinNull=no", "-o", "ForkAfterAuthentication=no", "-o", "SessionType=default",
+        "-o", "RemoteCommand=none",
+    ]
 
     /// Options that keep ssh on the master's socket and off the network.
     /// They come first on the command line: ssh keeps the first value it is

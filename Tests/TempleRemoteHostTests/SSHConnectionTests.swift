@@ -17,14 +17,50 @@ final class SSHConnectionTests: XCTestCase {
         let key = SSHConnection.socketKey(stateDirectory: state, record: .config("masterblaster-mentes"))
         XCTAssertEqual(connection.argv(.query, remoteCommand: "cmd"), [
             "/usr/bin/ssh", "-o", "ControlPath=/private/tmp/temple-b-env/state/ssh/\(key)",
-            "-o", "ControlMaster=no", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-T",
+            "-o", "ControlMaster=no", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
+            "-o", "StdinNull=no", "-o", "ForkAfterAuthentication=no", "-o", "SessionType=default",
+            "-o", "RemoteCommand=none", "-T",
             "--", "masterblaster-mentes", "cmd",
         ])
         XCTAssertEqual(connection.argv(.interactive, remoteCommand: "true"), [
             "/usr/bin/ssh", "-o", "ControlMaster=auto", "-o", "ControlPath=/private/tmp/temple-b-env/state/ssh/\(key)",
             "-o", "ControlPersist=600", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
-            "-o", "ConnectTimeout=10", "-t", "--", "masterblaster-mentes", "true",
+            "-o", "ConnectTimeout=10",
+            "-o", "StdinNull=no", "-o", "ForkAfterAuthentication=no", "-o", "SessionType=default",
+            "-o", "RemoteCommand=none", "-t", "--", "masterblaster-mentes", "true",
         ])
+        XCTAssertEqual(Array(connection.argv(.overMaster, remoteCommand: "cmd").suffix(12)), [
+            "-o", "StdinNull=no", "-o", "ForkAfterAuthentication=no", "-o", "SessionType=default",
+            "-o", "RemoteCommand=none", "-T", "--", "masterblaster-mentes", "cmd",
+        ])
+    }
+
+    /// A config that would eat a session's stdin or never run its command
+    /// (`StdinNull`, `ForkAfterAuthentication`, `SessionType`,
+    /// `RemoteCommand`) is overridden for every purpose: `ssh -G` with a
+    /// fixture config and Temple's own options resolves to what a session
+    /// needs. (`ssh -G` only; nothing connects.)
+    func testInheritedOptionsThatWouldEatStdinAreOverridden() throws {
+        let tree = TempTree("ssh-stdin")
+        let config = tree.write("config", "Host box\n  StdinNull yes\n  ForkAfterAuthentication yes\n"
+                                + "  SessionType none\n  RemoteCommand echo hijacked\n")
+        let connection = SSHConnection(record: .config("box"), stateDirectory: state, sshPath: "/usr/bin/ssh")
+        for purpose in [SSHConnection.Purpose.query, .overMaster, .interactive] {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            process.arguments = ["-G", "-F", config.path] + connection.arguments(for: purpose) + ["--", "box"]
+            let out = Pipe()
+            process.standardOutput = out
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            process.waitUntilExit()
+            let lines = Set(text.split(separator: "\n").map(String.init))
+            for expected in ["stdinnull no", "forkafterauthentication no", "sessiontype default"] {
+                XCTAssertTrue(lines.contains(expected), "\(purpose): \(expected)")
+            }
+            XCTAssertFalse(text.contains("hijacked"), "\(purpose): the config's RemoteCommand is gone")
+        }
     }
 
     func testAnAddedHostLeadsWithItsOwnOptions() {
