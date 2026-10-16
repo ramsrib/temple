@@ -1516,10 +1516,17 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
    confirmed. Typed input is not evidence (Return at an ssh prompt or
    Claude's trust screen proves nothing; round 2): a session whose last run
    ended unconfirmed is checked on the host when it is reopened, by one
-   bounded query for `<config dir>/projects/*/<id>.jsonl`, the config
-   directory found as the CLI finds it (`CLAUDE_CONFIG_DIR` in the login
-   environment, else `~/.claude`). Present: confirmed, and resumed.
-   Absent after a completed check: the tab offers **Start a new session**
+   bounded query for `<root>/projects/*/<id>.jsonl` under exactly the
+   config root its agent was started with (round 3): the login
+   environment's `CLAUDE_CONFIG_DIR` comes from the same bounded query as
+   the PATH (framed so newlines and relative values survive), the launch
+   hands it to the pane through a file in the record directory (never a
+   tmux argument, so an older server's environment cannot win, set or
+   unset), and the pane records the root it has, which the run row keeps
+   (`r3-config`). Present: confirmed, and resumed. Absent only when that
+   root was checked to the end; an unknown root, an ancestor that can't be
+   searched, or a store that can't be read whole is Unknown. Absent: the
+   tab offers **Start a new session**
    (a fresh agent under the same id) and **Discard** (its runs dismissed;
    its row let go, or archived when the user named, pinned or colored it).
    Unknown: **Resume** too, with copy saying Temple couldn't check. No row
@@ -1556,11 +1563,17 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
    the stop runs `has-session` first in the same command queue.
 9. **Trailing newlines.** `pwd -P` is captured with a sentinel in the pane
    and the folder check, so a folder whose name ends in a newline keeps it.
-10. **One PATH policy.** One resolver is shared by the environment query,
-    the launch and the transcript check. All its attempts share one 5 s
-    budget, enforced by `timeout` where the host has it and by a watchdog
-    that stops waiting (and kills the shell it ran) where it does not, so
-    the interactive launch is bounded too; the query's own deadline bounds
+10. **One PATH policy.** One resolver is shared by the environment query
+    and the launch. All its attempts share one 5 s budget, enforced by
+    `timeout` where the host has it; the resolver runs in a process group of
+    its own (`setsid` on Linux, where dash has no job control without a
+    tty; the shell's job control where `setsid` is missing), and at the
+    budget the whole group is sent TERM, then KILL, and its leader reaped
+    (`kill -SIG -<pgid>`, the spelling dash and bash both take). Where
+    neither containment exists it spawns nothing and falls back. So the
+    interactive launch is bounded too, and nothing is left behind (tested
+    here and on both boxes with a shell that ignores TERM and leaves a
+    child); the query's own deadline bounds
     it from this side. Its state is explicit: unresolved (the launch asks
     the login shell itself, with the same resolver), resolved, or fallback
     (resolution ran and found none: ssh's default environment for checks
@@ -1606,13 +1619,33 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
     `-L temple` only after its record is recovered, and nothing that
     server says proves it gone: Unknown in the probe, the exit check and
     the stop.
-17. **Diagnostics take only the output file.** The pane's and the client's
+17. **Discard is durable work** (round 3): the runs' dismissal and the
+    row's disposition (let go, or archived when the user made the row
+    theirs) finish together in one owned operation, for the membership
+    (incarnation) Discard was chosen for; quit, retirement or a closed
+    window change nothing of it. Only its failure notice is gated.
+18. **Run evidence is mandatory at the gate** for the completions that
+    apply it (record polls, the final collection, the failed-folder header,
+    the exit verdict, diagnostics): each reads the run's persisted
+    attachment after its last await, so another Temple instance attaching
+    meanwhile suppresses it. The settle timer passes the gate too for tabs
+    on hosts; the mechanisms outside the gate (title persistence, the
+    launcher's cache, the Test connection's callbacks, the local launch
+    channel) and why are listed in `RemoteCompletion`'s documentation. The
+    walk proves coverage of that enum, not completeness against the source.
+19. **Startup-evidence deadline.** A remote open that shows no sign of life
+    (no record, no title from tmux) in 20 s says "Still connecting to
+    <host>…" with Cancel; Cancel ends the client, the exit check decides
+    what is known, and nothing is created in its place.
+20. **Diagnostics take only the output file.** The pane's and the client's
     records are acknowledged only after their evidence is written; a
     storage failure is shown, never swallowed.
-18. **An unexplained acceptance stall.** In round 2, two of about eight
+21. **An unexplained acceptance stall.** In round 2, two of about eight
     box runs (once on each box) reached no `ok` record within 20 s: the
     local client was still running, and the host had no wrapper, no tmux
     and no record. It did not recur in four runs after the acceptance
-    began keeping the client's pty output for such a failure. Open: if it
-    returns, that output says whether ssh was waiting on something.
+    began keeping the client's pty output for such a failure. The
+    acceptance now watches the ssh child itself (its pid and exit status)
+    with ssh's own `-v` trace, so a recurrence says where ssh was waiting;
+    the product side is the startup-evidence deadline (note 19).
 
