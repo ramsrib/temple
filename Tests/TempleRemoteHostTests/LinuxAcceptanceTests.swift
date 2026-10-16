@@ -227,7 +227,13 @@ final class LinuxAcceptanceTests: XCTestCase {
             if case .ok = collected { break }
             try await Task.sleep(for: .milliseconds(500))
         }
-        guard case .ok(let directory) = collected else { return XCTFail("\(name): no ok record: \(collected)") }
+        guard case .ok(let directory) = collected else {
+            let state = try await sh("""
+            ls -la "$HOME/.temple/launch" 2>&1; tmux -L temple ls 2>&1; ps -ef | grep -E 'tmux|temple-launch' | grep -v grep
+            """)
+            return XCTFail("\(name): no ok record: \(collected); local client running=\(clients.last?.process.isRunning ?? false); "
+                           + "client showed: \(clients.last?.shown ?? "")\nhost:\n\(state)")
+        }
         XCTAssertEqual(directory, canonicalFolder)
         let run = try XCTUnwrap(store.run(first.handle))
         log.append("ok record: dir=\(directory) pane=\(run.panePID ?? -1) start=\(run.paneStart ?? "-") socket=\(run.socketPath ?? "-") server=\(run.serverPID ?? -1)/\(run.serverStart ?? "-")")
@@ -295,8 +301,10 @@ final class LinuxAcceptanceTests: XCTestCase {
             XCTAssertTrue(answered, "\(name): no reply in the transcript; screen:\n\(screen)")
             guard answered else { return }
             log.append("prompt answered: \(answered)")
-            // What the tab records when it sends the agent something.
-            try await sessions.confirmConversation(first.handle)
+            // The transcript on the host is the evidence (typed input is not).
+            let evidence = await sessions.conversation(sessionID: sessionID)
+            XCTAssertEqual(evidence, .present)
+            log.append("transcript on the host: \(evidence)")
         }
         let recordDirectory = try await sh("""
         d=$HOME/.temple/launch; [ -L "$d" ] && echo link; stat -c '%a %U' "$d" 2>/dev/null || stat -f '%Lp %Su' "$d"
@@ -343,7 +351,7 @@ final class LinuxAcceptanceTests: XCTestCase {
         var resumeRequest = RemoteSessions.OpenRequest(agent: .claude, sessionID: sessionID, mode: .resume, directory: directory)
         if loggedOut {
             let outcome = try await sessions.open(resumeRequest)
-            XCTAssertEqual(outcome, .needsDecision)
+            XCTAssertEqual(outcome, .needsDecision(checked: true), "no transcript on the host for it")
             log.append("unconfirmed conversation, reopened: \(outcome); chose Start a new session")
             resumeRequest.startNew = true
         }
@@ -444,9 +452,15 @@ final class LinuxAcceptanceTests: XCTestCase {
 final class AcceptanceClient {
     let process = Process()
     private let input = Pipe()
+    /// What the client's pty showed (ssh's own words, if any).
+    let transcript = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("temple-accept-\(UUID().uuidString).log")
+    var shown: String {
+        let text = (try? String(contentsOf: transcript, encoding: .utf8)) ?? ""
+        return String(text.suffix(600)).replacingOccurrences(of: "\u{1b}", with: "^[")
+    }
     init(_ argv: [String]) throws {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
-        process.arguments = ["-q", "/dev/null"] + argv
+        process.arguments = ["-q", transcript.path] + argv
         var environment = ProcessInfo.processInfo.environment
         environment["TERM"] = "xterm-256color"
         process.environment = environment
@@ -470,5 +484,6 @@ final class AcceptanceClient {
         deadline = Date().addingTimeInterval(2)
         while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
         try? input.fileHandleForWriting.close()
+        try? FileManager.default.removeItem(at: transcript)
     }
 }

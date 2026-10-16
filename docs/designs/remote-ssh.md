@@ -1512,12 +1512,18 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
    socket. Manual step 7b is gone.
 2. **Unused new Claude sessions** (decision 2). A run records whether its
    conversation is confirmed (`runs.conversation`, migration
-   `r2-conversation`): a new Claude run starts unconfirmed and is confirmed
-   when a Temple tab first sends it something; a resume is confirmed. A
-   session whose last run ended unconfirmed is never resumed blindly: the
-   tab offers **Start a new session** (a fresh agent under the same id)
-   and **Discard** (its runs dismissed; its row let go, or archived when
-   the user named, pinned or colored it). No row is deleted automatically.
+   `r2-conversation`): a new Claude run starts unconfirmed; a resume is
+   confirmed. Typed input is not evidence (Return at an ssh prompt or
+   Claude's trust screen proves nothing; round 2): a session whose last run
+   ended unconfirmed is checked on the host when it is reopened, by one
+   bounded query for `<config dir>/projects/*/<id>.jsonl`, the config
+   directory found as the CLI finds it (`CLAUDE_CONFIG_DIR` in the login
+   environment, else `~/.claude`). Present: confirmed, and resumed.
+   Absent after a completed check: the tab offers **Start a new session**
+   (a fresh agent under the same id) and **Discard** (its runs dismissed;
+   its row let go, or archived when the user named, pinned or colored it).
+   Unknown: **Resume** too, with copy saying Temple couldn't check. No row
+   is deleted automatically.
 3. **An agent that fails at once** (decision 3). No `remain-on-exit`. The
    pane pipes what it shows (its first 64 KiB, `pipe-pane`, started from
    inside the pane before the `exec`) to `<record>.out`; the tail comes
@@ -1550,11 +1556,17 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
    the stop runs `has-session` first in the same command queue.
 9. **Trailing newlines.** `pwd -P` is captured with a sentinel in the pane
    and the folder check, so a folder whose name ends in a newline keeps it.
-10. **One PATH policy.** One resolver (`temple_login_path`, 5 s in all) is
-    shared by the environment query and the launch. Its state is explicit:
-    unresolved (the launch asks the login shell itself, with the same
-    resolver), resolved, or fallback (resolution ran and found none: ssh's
-    default environment for checks and launch alike).
+10. **One PATH policy.** One resolver is shared by the environment query,
+    the launch and the transcript check. All its attempts share one 5 s
+    budget, enforced by `timeout` where the host has it and by a watchdog
+    that stops waiting (and kills the shell it ran) where it does not, so
+    the interactive launch is bounded too; the query's own deadline bounds
+    it from this side. Its state is explicit: unresolved (the launch asks
+    the login shell itself, with the same resolver), resolved, or fallback
+    (resolution ran and found none: ssh's default environment for checks
+    and launch alike), and it is cached only for the connection it was
+    resolved over (an answer for an alias's old target never lands on the
+    new one).
 11. **The alias is resolved again** on every explicit open and contact; a
     changed resolution is a new connection and its PATH is resolved again.
 12. **Ownership.** Every open, record poll, exit check, stop and the writes
@@ -1577,4 +1589,30 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
     evidence is replayed into the row and tab on reopen.
 14. **Copy.** "Temple couldn't check these sessions", "No Temple sessions
     to show", and "another terminal is attached" (not "someone else").
+15. **One gate for late completions** (round 2, after two rounds of
+    findings in the same place). Every asynchronous completion that
+    touches a tab, a row, a sheet or the saved tab set is listed in
+    `RemoteCompletion` and passes `RemoteEffectGate.admit` right before its
+    effect, after its last await: not quitting, not cancelled, the host's
+    launcher still the one the work began with, and for a tab still open
+    with the same open token, handle and attachment (and no newer run
+    attachment), for a sheet still the one on screen. Durable writes of
+    outcomes happen regardless. Every query that can write an outcome (the
+    sheet's checks and the folder check included) is owned by
+    `RemoteOperations`, and a query checks for retirement before each
+    follow-up query. A test walks the list after close, quit and
+    retirement.
+16. **No pin, no absence.** A run with no server on record is asked on
+    `-L temple` only after its record is recovered, and nothing that
+    server says proves it gone: Unknown in the probe, the exit check and
+    the stop.
+17. **Diagnostics take only the output file.** The pane's and the client's
+    records are acknowledged only after their evidence is written; a
+    storage failure is shown, never swallowed.
+18. **An unexplained acceptance stall.** In round 2, two of about eight
+    box runs (once on each box) reached no `ok` record within 20 s: the
+    local client was still running, and the host had no wrapper, no tmux
+    and no record. It did not recur in four runs after the acceptance
+    began keeping the client's pty output for such a failure. Open: if it
+    returns, that output says whether ssh was waiting on something.
 
