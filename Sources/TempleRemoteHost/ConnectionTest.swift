@@ -73,9 +73,11 @@ public final class ConnectionTest: ObservableObject, Identifiable {
     }
 
     /// What the terminal runs. The environment is the surface's own, plus
-    /// nothing: ssh asks on the terminal and nowhere else.
+    /// nothing: ssh asks on the terminal and nowhere else. `/usr/bin/env`
+    /// heads it because the terminal execs its command as a login process,
+    /// and a shell started that way would read profile files first.
     public var surfaceArgv: [String] {
-        ["/bin/sh", "-c", Self.wrapperScript, "temple-test", workDirectory.path]
+        ["/usr/bin/env", "/bin/sh", "-c", Self.wrapperScript, "temple-test", workDirectory.path]
             + connection.argv(.interactive, remoteCommand: "true")
     }
 

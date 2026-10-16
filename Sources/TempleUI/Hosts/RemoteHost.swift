@@ -14,6 +14,8 @@ typealias RemoteHostForm = TempleRemoteHost.RemoteHostForm
 typealias HostTestSummary = TempleRemoteHost.HostTestSummary
 typealias ConnectionTest = TempleRemoteHost.ConnectionTest
 typealias SSHFailure = TempleRemoteHost.SSHFailure
+typealias RemoteHostFormField = TempleRemoteHost.RemoteHostForm.Field
+typealias ConnectionCheckRow = TempleRemoteHost.ConnectionTest.Row
 
 extension HostRegistry.Entry {
     /// An enabled host's entry, registered whether or not it was tested.

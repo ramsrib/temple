@@ -534,6 +534,8 @@ public final class AppModel: ObservableObject {
     private let hostBox: HostRegistryBox
     /// The Hosts connection manager (Settings), dark behind its flag.
     let remoteHosts: RemoteHostsModel
+    /// Makes terminals outside tabs (the Test connection sheet's).
+    let surfaceFactory: TerminalSurfaceFactory
     /// Remote hosts this model registered (never ones a caller passed in).
     private var managedRemoteHosts: Set<HostID> = []
     private let makeEngine: (any HostSessionSource) -> any HostEngine
@@ -571,6 +573,7 @@ public final class AppModel: ObservableObject {
             extraArgs: { settings.extraArgs(for: $0) }, availability: { toolchain.launchAvailability($0) }))
         let hostBox = HostRegistryBox(hosts)
         self.hostBox = hostBox
+        self.surfaceFactory = surfaceFactory
         self.remoteHosts = remoteHosts ?? RemoteHostsModel(defaults: settings.defaults)
         let makeEngine: (any HostSessionSource) -> any HostEngine = { SessionEngine(source: $0, database: database) }
         self.makeEngine = makeEngine

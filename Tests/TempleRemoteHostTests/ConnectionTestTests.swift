@@ -47,7 +47,7 @@ final class ConnectionTestTests: XCTestCase {
         test.onFinished = { finished = $0 }
         test.start()
         XCTAssertEqual(test.phase, .connecting)
-        XCTAssertEqual(test.surfaceArgv.prefix(3), ["/bin/sh", "-c", ConnectionTest.wrapperScript])
+        XCTAssertEqual(test.surfaceArgv.prefix(4), ["/usr/bin/env", "/bin/sh", "-c", ConnectionTest.wrapperScript])
         XCTAssertTrue(test.surfaceArgv.contains("ControlMaster=auto"))
         XCTAssertEqual(test.surfaceArgv.suffix(3), ["--", "box", "true"])
         let work = test.workDirectory

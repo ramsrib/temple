@@ -54,6 +54,10 @@ struct SettingsView: View {
                     agentsSection
                     agentSection(.claude)
                     agentSection(.codex)
+                    // Remote hosts, dark behind temple.feature.remoteHosts.
+                    if model.remoteHosts.isEnabled {
+                        HostsSettingsSection(hosts: model.remoteHosts)
+                    }
                     appearanceSection
                 }
                 .frame(maxWidth: Self.formWidth, alignment: .leading)
@@ -645,7 +649,7 @@ struct SettingsView: View {
 /// "Show output": the CLI's raw output in a popover — selectable and copyable,
 /// which a tooltip never was. Same popover for an override, a skipped install
 /// and an argument complaint.
-private struct ShowOutputLink: View {
+struct ShowOutputLink: View {
     let title: String?
     let output: String
     @State private var presented = false
