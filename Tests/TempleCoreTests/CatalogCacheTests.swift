@@ -179,8 +179,8 @@ final class CatalogCacheTests: XCTestCase {
     }
 
     /// Other parsers use another file: a build with older (or newer) facts
-    /// never reads this one's summaries, and neither deletes the other's,
-    /// even while the other has its file open.
+    /// never reads this one's summaries, and neither deletes the other's
+    /// while the other has its file open.
     func testAnotherVersionUsesItsOwnFileAndLeavesThisOneOpen() async throws {
         try claude(uuid()); try codex(uuid())
         let (first, disk) = source()
@@ -203,6 +203,94 @@ final class CatalogCacheTests: XCTestCase {
         let (second, _) = source()
         _ = try await read(second)
         XCTAssertEqual(parses(second), 0)
+    }
+
+    // MARK: Older versions' files
+
+    /// The files an older version would leave: a database, its journal
+    /// files and its lock file.
+    @discardableResult
+    private func leaveFiles(schema: Int, facts: Int) throws -> [URL] {
+        let base = stateDir.appendingPathComponent(CatalogDiskCache.fileName(schema: schema, facts: facts)).path
+        return try ["", "-wal", "-shm", ".lock"].map { suffix in
+            let url = URL(fileURLWithPath: base + suffix)
+            try Data("old".utf8).write(to: url)
+            return url
+        }
+    }
+
+    private func openCurrent() -> CatalogDiskCache {
+        let disk = CatalogDiskCache(directory: stateDir)
+        let loaded = expectation(description: "loaded")
+        disk.load { _ in loaded.fulfill() }
+        wait(for: [loaded], timeout: 5)
+        XCTAssertFalse(disk.isMemoryOnly)
+        return disk
+    }
+
+    /// Opening its own file sweeps an older version's, every sibling of it,
+    /// when nobody holds that version's lock.
+    func testAnOlderVersionsFilesAreRemovedWhenNobodyHoldsThem() throws {
+        let schema = CatalogDiskCache.schemaVersion, facts = TranscriptFormats.factsVersion
+        let olderLayout = try leaveFiles(schema: schema - 1, facts: facts)
+        let olderFacts = try leaveFiles(schema: schema, facts: facts - 1)
+        let disk = openCurrent()
+        for url in olderLayout + olderFacts {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "\(url.lastPathComponent) removed")
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: disk.url.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: disk.lockURL.path))
+    }
+
+    /// Another Temple using an older version (a shared hold on its lock)
+    /// keeps every file of it; a newer version's files and unrelated names
+    /// are never swept.
+    func testAnOlderVersionInUseANewerOneAndOtherNamesAreKept() throws {
+        let schema = CatalogDiskCache.schemaVersion, facts = TranscriptFormats.factsVersion
+        let held = try leaveFiles(schema: schema - 1, facts: facts)
+        let lock = Darwin.open(held[3].path, O_RDWR)
+        XCTAssertEqual(flock(lock, LOCK_SH), 0)
+        defer { close(lock) }
+        let newer = try leaveFiles(schema: schema, facts: facts + 1)
+        let mixed = try leaveFiles(schema: schema + 1, facts: facts - 1)
+        let other = stateDir.appendingPathComponent("history-catalog-cache.s1-f1.sqlite.bak")
+        let signed = stateDir.appendingPathComponent("history-catalog-cache.s+1-f1.sqlite")
+        try Data().write(to: other); try Data().write(to: signed)
+        _ = openCurrent()
+        for url in held + newer + mixed + [other, signed] {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "\(url.lastPathComponent) kept")
+        }
+        // Released, it goes on the next open.
+        flock(lock, LOCK_UN)
+        _ = openCurrent()
+        for url in held { XCTAssertFalse(FileManager.default.fileExists(atPath: url.path)) }
+    }
+
+    /// The current version's own file, with what it holds, is never swept,
+    /// and neither is it while another user has it open.
+    func testTheCurrentFileIsUntouched() async throws {
+        try claude(uuid()); try codex(uuid())
+        let (first, disk) = source()
+        _ = try await read(first)
+        disk?.sync()
+        try leaveFiles(schema: CatalogDiskCache.schemaVersion - 1, facts: TranscriptFormats.factsVersion)
+        let (second, secondDisk) = source()
+        _ = try await read(second)
+        secondDisk?.sync()
+        XCTAssertEqual(parses(second), 0, "every summary still there")
+        XCTAssertFalse(disk?.isMemoryOnly ?? true, "the first user still has its file")
+        XCTAssertFalse(secondDisk?.isMemoryOnly ?? true)
+    }
+
+    func testVersionsAreReadOnlyFromNamesThisCodeWrites() {
+        XCTAssertTrue(CatalogDiskCache.versions(inFileName: "history-catalog-cache.s2-f1.sqlite")! == (2, 1))
+        XCTAssertTrue(CatalogDiskCache.versions(inFileName: "history-catalog-cache.s12-f30.sqlite-wal")! == (12, 30))
+        XCTAssertTrue(CatalogDiskCache.versions(inFileName: "history-catalog-cache.s2-f1.sqlite.lock")! == (2, 1))
+        for name in ["history-catalog-cache.s2-f1.sqlite.bak", "history-catalog-cache.s02-f1.sqlite",
+                     "history-catalog-cache.s+2-f1.sqlite", "history-catalog-cache.s2-f1.db",
+                     "history-catalog-cache.s2.sqlite", "index-cache.json", "temple.sqlite"] {
+            XCTAssertNil(CatalogDiskCache.versions(inFileName: name), name)
+        }
     }
 
     /// A file whose own record disagrees with its name is not ours: used by
