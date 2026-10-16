@@ -217,7 +217,6 @@ struct SidebarView: View {
                     // ONE displayProjects pass per body: every access refilters and
                     // resorts all sessions, and this body re-runs on every publish.
                     let allProjects = model.displayProjects
-                    let hidden = model.hiddenCount(allProjects)
                     if allProjects.isEmpty && !model.isLoading {
                         Text(model.searchText.isEmpty ? "No sessions yet" : "No matches")
                             .font(.system(size: 12))
@@ -225,21 +224,33 @@ struct SidebarView: View {
                             .padding(.horizontal, 6)
                             .padding(.vertical, 4)
                     }
-                    let shown = showAllProjects ? allProjects : model.capped(allProjects)
+                    let capped = model.capped(allProjects)
+                    let shown = showAllProjects ? allProjects : capped
                     ForEach(shown) { project in
                         ProjectDisclosure(project: project, isFirst: project.id == shown.first?.id)
                     }
-                    if model.searchText.isEmpty && hidden > 0 {
-                        Button(showAllProjects
-                               ? "Show fewer"
-                               : "Show all projects (\(hidden) more)") {
+                    // The number folded away is what the cap left out MINUS the
+                    // active project `capped` appends past it: the old label
+                    // counted that one as hidden while it was on screen.
+                    let hidden = allProjects.count - capped.count
+                    if hidden > 0 {
+                        // The rail has one expander voice (the per-project
+                        // "Show N more"), and the column says which list each
+                        // one continues: that one sits on the session title
+                        // column, this one on the project label column, with
+                        // the gap a group header gets above it so it is not
+                        // read as a second line of the last project's footer.
+                        // The noun is in the copy too; the count is the whole
+                        // label, as in the per-project one. No chevron and no
+                        // rule: those are the voice of a project, and this is
+                        // not one.
+                        sidebarExpander(showAllProjects
+                                        ? "Show fewer projects"
+                                        : "Show \(hidden) more project\(hidden == 1 ? "" : "s")") {
                             showAllProjects.toggle()
                         }
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 8)
-                        .frame(height: 28)
+                        .padding(.leading, ProjectDisclosure.labelInset)
+                        .padding(.top, 12)
                     }
                 }
                 .padding(.horizontal, 6)
@@ -282,7 +293,7 @@ struct SidebarView: View {
                 .foregroundStyle(.secondary)
             Rectangle().fill(Palette.hairline).frame(height: 1)
         }
-        .padding(.leading, 4 + 12 + 6)   // the project label's column
+        .padding(.leading, ProjectDisclosure.labelInset)
         .padding(.trailing, 4)
         .frame(height: 28)
         .padding(.top, 12)
@@ -655,6 +666,18 @@ private struct FooterGearMenu: NSViewRepresentable {
     }
 }
 
+/// The rail's one expander: a quiet text line that continues the list it sits
+/// in, not a control of its own. Both "Show N more" (sessions, on the title
+/// column) and "Show N more projects" (on the project label column) are this,
+/// so they cannot drift apart in size, tone or height.
+private func sidebarExpander(_ title: String, action: @escaping () -> Void) -> some View {
+    Button(title, action: action)
+        .font(.system(size: 12))
+        .foregroundStyle(.secondary)
+        .buttonStyle(.plain)
+        .frame(height: 26)
+}
+
 /// A project as a Codex-style disclosure group (default expanded) with a
 /// per-project "Show more".
 private struct ProjectDisclosure: View {
@@ -688,6 +711,11 @@ private struct ProjectDisclosure: View {
     /// sits one badge width inside the heading. Manual header + rows because
     /// DisclosureGroup's child outline indent is fixed and much deeper.
     static let childInset: CGFloat = 12
+
+    /// The project label's column: the header's 4pt padding, its 12pt chevron
+    /// column and the 6pt gap. The Pinned label and the rail-level "Show N
+    /// more projects" line up on it.
+    static let labelInset: CGFloat = 4 + 12 + 6
 
     /// Where a project dragged over THIS one would land: a line above the
     /// header (before) or under the last visible row (after). Read from the
@@ -748,10 +776,10 @@ private struct ProjectDisclosure: View {
                         // The count is the whole label: it says how deep the
                         // project goes, so a click on a 53-session project is
                         // no surprise. Each click reveals one batch.
-                        expandButton("Show \(hiddenCount) more") { limit += Self.batch }
+                        sidebarExpander("Show \(hiddenCount) more") { limit += Self.batch }
                     }
                     if limit > Self.collapsedLimit {
-                        expandButton("Show fewer") { limit = Self.collapsedLimit }
+                        sidebarExpander("Show fewer") { limit = Self.collapsedLimit }
                     }
                 }
                 // Starts on the session title column, under the row text — a
@@ -822,14 +850,6 @@ private struct ProjectDisclosure: View {
 
     private var hasOpenTabs: Bool {
         model.openSessions.tabs.contains { $0.kind == .session && $0.projectKey == project.key }
-    }
-
-    private func expandButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(title, action: action)
-            .font(.system(size: 12))
-            .foregroundStyle(.secondary)
-            .buttonStyle(.plain)
-            .frame(height: 26)
     }
 
     private var header: some View {
