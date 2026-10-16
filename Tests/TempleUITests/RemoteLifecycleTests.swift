@@ -677,6 +677,25 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertEqual(remote.stops.count, stopsBefore, "quit stops nothing that ran this spawn")
     }
 
+    /// Input other than a plain Return (keypad Enter, a single key, a
+    /// paste, IME or dropped text) bars an early rest on a host too: the
+    /// first prompt may have gone that way.
+    func testAnyInputSinceTheSpawnBarsAnEarlyRest() async throws {
+        model.titleQuietWindow = 0.15
+        let tab = await openRow("s1")
+        let surface = try XCTUnwrap(factory.created.last)
+        surface.simulateInput()
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(tab.activity, .running, "input changes no activity")
+        XCTAssertFalse(model.isAtRestNow(tab))
+        model.requestClose(tabID: tab.id)
+        XCTAssertEqual(model.pendingRemoteCloseTabID, tab.id)
+        model.remoteTabs.cancelClose()
+        // A spawn that starts the agent again (a resume) starts afresh.
+        model.markSpawned(tab)
+        XCTAssertTrue(model.isAtRestNow(tab))
+    }
+
     /// A reattach is no evidence of rest: detached while working, then
     /// reopened (an attach to the run, which still runs), a static title
     /// quiet past the window: ⌘W asks, as before the early rule.

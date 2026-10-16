@@ -140,6 +140,20 @@ final class NotificationStateTests: XCTestCase {
         }
     }
 
+    /// Any input since the spawn (not only Return) bars an early rest on
+    /// this Mac: ⌘W asks and the CLI's close refuses until the timer.
+    func testAnyInputSinceTheSpawnBarsAnEarlyRest() async {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.titleQuietWindow = 0.1
+        model.openSession(Fixture.row("a", project: "/p/a"))
+        let tab = model.activeTab!
+        (tab.surface as? FakeTerminalSurface)?.simulateInput()
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(tab.activity, .running)
+        model.requestClose(tabID: tab.id)
+        XCTAssertEqual(model.pendingCloseTabID, tab.id, "keypad Enter, a key, a paste: no early rest")
+    }
+
     func testTitleMovementPromotesIdleBackToRunning() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.ringGraceSeconds = -1  // out of grace immediately

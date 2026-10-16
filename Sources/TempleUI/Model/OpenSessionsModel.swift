@@ -589,6 +589,12 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// spawned: input submitted, or a title that brought it back from rest.
     /// Only a spawn clears it (a bell does not: the turn it ended was work).
     var activeSinceSpawn: Set<SessionTab.ID> = []
+    /// Tabs whose terminal received any input since the spawn (any key,
+    /// committed or dropped text; `surfaceDidReceiveInput`), apart from the
+    /// Return the activity heuristic reads: a first prompt sent with keypad
+    /// Enter, a key that answers a prompt, a paste. It only bars an early
+    /// close as at rest; it changes no activity.
+    var inputSinceSpawn: Set<SessionTab.ID> = []
     /// Last bell/notification per tab — guards the idle→running promotion.
     private var lastRing: [SessionTab.ID: Date] = [:]
     /// Pending settle timers, keyed by tab, so they can be cancelled/replaced.
@@ -611,9 +617,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Whether a `.running` tab may be closed as at rest now, before the
     /// settle timer has fired: only on positive evidence that the agent has
     /// done nothing this spawn. The spawn started the agent (a launch, a
-    /// reopen's resume; never a reattach to a running remote run), nothing
-    /// was typed into it since, its title did not bring it
-    /// back from rest, and its title has been quiet for `titleQuietWindow`:
+    /// reopen's resume; never a reattach to a running remote run), its
+    /// terminal received no input since (no key at all, no committed or
+    /// dropped text: not only Return), its title did not bring it back from
+    /// rest, and its title has been quiet for `titleQuietWindow`:
     /// an agent booting, resuming or waiting at a trust screen. Anything
     /// else waits for the timer, then the working prompt: a quiet or
     /// unrelated title after a Return is no evidence (a long tool call holds
@@ -624,6 +631,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// host is detached, not stopped).
     public func isAtRestNow(_ tab: SessionTab) -> Bool {
         guard tab.kind == .session, tab.activity == .running, !activeSinceSpawn.contains(tab.id),
+              !inputSinceSpawn.contains(tab.id),
               let changed = lastTitleChange[tab.id] else { return false }
         return Date().timeIntervalSince(changed) >= titleQuietWindow
     }
@@ -641,6 +649,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// from before the detach (it may be mid tool call), so it is never
     /// taken as at rest early.
     func markSpawned(_ tab: SessionTab, startsAgent: Bool = true) {
+        inputSinceSpawn.remove(tab.id)
         if startsAgent { activeSinceSpawn.remove(tab.id) } else { activeSinceSpawn.insert(tab.id) }
     }
 
@@ -872,6 +881,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         awaitingExitDiagnosis.remove(tabID)
         cancelSettle(for: tabID)
         activeSinceSpawn.remove(tabID)
+        inputSinceSpawn.remove(tabID)
         // Nothing a closed tab's launch reports later can reach anyone.
         tab.launchResult?.cancel()
         tab.launchResult = nil
@@ -1236,6 +1246,13 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
 
     public func surface(_ surface: TerminalSurface, didPostNotification title: String, body: String) {
         raiseAttention(surface, title: title, body: body)
+    }
+
+    /// Anything delivered toward the agent's terminal: no early rest for it
+    /// this spawn.
+    public func surfaceDidReceiveInput(_ surface: TerminalSurface) {
+        guard let tab = tab(for: surface) else { return }
+        inputSinceSpawn.insert(tab.id)
     }
 
     /// The user submitted a prompt (Return) → the agent is now working (Item E).

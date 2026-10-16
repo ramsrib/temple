@@ -47,6 +47,10 @@ public final class GhosttyTerminalSurface: TerminalSurface {
             guard let self else { return }
             self.delegate?.surfaceDidSubmitInput(self)
         }
+        ghosttyView.onInput = { [weak self] in
+            guard let self else { return }
+            self.delegate?.surfaceDidReceiveInput(self)
+        }
         ghosttyView.onChildExited = { [weak self] code in
             self?.markExited(status: code)
         }

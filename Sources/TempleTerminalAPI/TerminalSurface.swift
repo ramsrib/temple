@@ -102,6 +102,13 @@ public protocol TerminalSurfaceDelegate: AnyObject {
     /// no-op so existing conformers need not implement it.
     func surfaceDidSubmitInput(_ surface: TerminalSurface)
 
+    /// Something was delivered toward the agent's terminal: any key press
+    /// (keypad Enter, a single key, ⌘V's paste, Esc), committed IME text, a
+    /// drop's text. Coarser than `surfaceDidSubmitInput` and only evidence
+    /// that the agent may have been given something: it changes no
+    /// activity. Default no-op.
+    func surfaceDidReceiveInput(_ surface: TerminalSurface)
+
     // Search, as seen from the terminal's side. All default to no-ops.
     /// The terminal itself asked for a search (a keybind inside it, e.g. ⌘E
     /// "use selection for find"); `needle` is what it wants searched, if any.
@@ -116,6 +123,7 @@ public protocol TerminalSurfaceDelegate: AnyObject {
 
 public extension TerminalSurfaceDelegate {
     func surfaceDidSubmitInput(_ surface: TerminalSurface) {}
+    func surfaceDidReceiveInput(_ surface: TerminalSurface) {}
     func surface(_ surface: TerminalSurface, didStartSearch needle: String?) {}
     func surfaceDidEndSearch(_ surface: TerminalSurface) {}
     func surface(_ surface: TerminalSurface, didUpdateSearchTotal total: Int?) {}

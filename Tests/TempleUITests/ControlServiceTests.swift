@@ -121,6 +121,12 @@ final class ControlServiceTests: XCTestCase {
         XCTAssertEqual(closed.session?.state, .idle, "it closed an agent at rest")
         XCTAssertNil(app.openSessions.openTab(forSessionID: quietID))
 
+        let keyed = app.openSessions.newSession(agent: .claude, project: Fixture.key("/p"))
+        (keyed.surface as? FakeTerminalSurface)?.simulateInput()
+        try await Task.sleep(for: .milliseconds(200))
+        let keyedRefused = await ask(app, ControlRequest(.sessionsClose, id: try XCTUnwrap(keyed.sessionID)))
+        XCTAssertEqual(keyedRefused.error?.code, .refused, "any input since the spawn: no early rest")
+
         let asked = app.openSessions.newSession(agent: .claude, project: Fixture.key("/p"))
         let askedID = try XCTUnwrap(asked.sessionID)
         (asked.surface as? FakeTerminalSurface)?.simulateSubmitInput()

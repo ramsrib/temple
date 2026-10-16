@@ -23,6 +23,10 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
     var onNotification: ((String, String) -> Void)?
     /// The user pressed Return (no modifiers) — a submit signal (Item E).
     var onSubmitInput: (() -> Void)?
+    /// Any input toward the terminal (every key press, committed or
+    /// dropped text). Reported even before a surface exists: over-reporting
+    /// only costs an early close its shortcut.
+    var onInput: (() -> Void)?
     /// Reports the child exit code (once).
     var onChildExited: ((Int32) -> Void)?
     /// libghostty asks the host to close the surface (e.g. process gone).
@@ -396,6 +400,7 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
     // MARK: Keyboard
 
     public override func keyDown(with event: NSEvent) {
+        onInput?()
         guard let surface else { super.keyDown(with: event); return }
 
         // Item E: a plain Return (keyCode 36, no modifiers) is a submit — the
@@ -625,7 +630,11 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         if let surface { ghostty_surface_preedit(surface, nil, 0) }
         if keyTextAccumulator != nil {
             keyTextAccumulator?.append(text)
-        } else if let surface {
+            return
+        }
+        // Outside a key press (an IME commit, a drop's text): input of its own.
+        onInput?()
+        if let surface {
             ghostty_surface_text(surface, text, UInt(text.utf8.count))
         }
     }
