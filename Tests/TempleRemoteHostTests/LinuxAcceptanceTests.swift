@@ -21,7 +21,7 @@ import TempleCore
 /// queries ride it; the test ends that master itself when done (Temple
 /// never does).
 final class LinuxAcceptanceTests: XCTestCase {
-    private var hosts: [String] {
+    var hosts: [String] {
         (ProcessInfo.processInfo.environment["TEMPLE_REMOTE_ACCEPTANCE"] ?? "")
             .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
