@@ -118,6 +118,13 @@ final class HostChecksTests: XCTestCase {
                        "$ tmux -V\ntmux 3.1c\n$ tmux -L temple-check-… -f /dev/null <the launch chain> new-session -d …\n"
                        + "exit status 1\nno such option")
         XCTAssertEqual(ConnectionTest.Row(id: "x", verdict: .ok, line: "x", output: "own").showing("other").output, "own")
+        // A CLI that prints nothing still has its own words: the command and
+        // its status (round 1).
+        XCTAssertEqual(ConnectionTest.row("claude", .runs(path: "/b/claude", version: "", output: "")).output,
+                       "/b/claude --version printed nothing (exit status 0)")
+        XCTAssertEqual(ConnectionTest.row("codex", .fails(path: "/b/codex", status: 3, firstLine: "exit status 3", output: "")).output,
+                       "/b/codex --version printed nothing (exit status 3)")
+        XCTAssertEqual(TmuxCheck.shown(RemoteOutput(status: 0, stdout: "", stderr: "")), "")
     }
 
     func testTmuxVerdictsFromItsOutput() {

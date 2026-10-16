@@ -225,13 +225,13 @@ public final class ConnectionTest: ObservableObject, Identifiable {
         let (tmux, tmuxShown) = await TmuxCheck.runShowing(nonce: RemoteQuoting.nonce(), using: exec)
         if Task.isCancelled { return }
         summaryDraft.tmux = tmux
-        set(Self.row(tmux).showing(tmuxShown))
+        set(Self.row(tmux).showing(tmuxShown.isEmpty ? "the tmux check printed nothing" : tmuxShown))
 
         set(Row(id: "logind", verdict: .running, line: "logind: checking…"))
         let (logind, logindShown) = await LogindCheck.runShowing(using: exec)
         if Task.isCancelled { return }
         summaryDraft.logind = logind
-        set(Self.row(logind).showing(logindShown))
+        set(Self.row(logind).showing(logindShown.isEmpty ? "the logind check printed nothing" : logindShown))
 
         // The identity of the connection the checks ran over: the socket
         // was keyed by this very resolution.
@@ -269,12 +269,14 @@ public final class ConnectionTest: ObservableObject, Identifiable {
         switch check {
         case .runs(let path, let version, let output):
             Row(id: binary, verdict: .ok,
-                line: "\(binary): \(AgentInstall.versionNumber(in: version) ?? version) at \(path)", output: output)
+                line: "\(binary): \(AgentInstall.versionNumber(in: version) ?? version) at \(path)",
+                output: output.isEmpty ? "\(path) --version printed nothing (exit status 0)" : output)
         case .missing:
             Row(id: binary, verdict: .problem, line: "\(binary): not on PATH",
                 output: "command -v \(binary) found nothing on " + (path.map { "this PATH:\n\($0)" } ?? "ssh's default PATH."))
-        case .fails(let path, _, let line, let output):
-            Row(id: binary, verdict: .problem, line: "\(binary): at \(path), didn't run: \(line)", output: output)
+        case .fails(let path, let status, let line, let output):
+            Row(id: binary, verdict: .problem, line: "\(binary): at \(path), didn't run: \(line)",
+                output: output.isEmpty ? "\(path) --version printed nothing (exit status \(status))" : output)
         case .notChecked(let reason):
             Row(id: binary, verdict: .info, line: "\(binary): not checked: \(reason)", output: reason)
         }
