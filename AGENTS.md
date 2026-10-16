@@ -322,7 +322,42 @@ during that refactor:
   the restore. Don't add an automatic archive path
   without a reason column and a person's way back, don't put it on the
   window's undo stack, and don't make the engine watch archived rows.
-- **Schema changes stay additive until remote ships.** Builds before ADR-029
-  have no newer-schema guard, so a dropped or retyped column breaks the
-  installed app running beside a dev build on the same file. `generated_title`
-  is still dual-written for them.
+- **Schema changes stay additive.** Builds before ADR-029 have no
+  newer-schema guard, so a dropped or retyped column breaks the installed
+  app running beside a dev build on the same file. `generated_title` is
+  still dual-written for them. (This rule used to end "until remote ships";
+  remote shipped without touching the core schema, so that is no longer
+  when it ends. Ending it is the owner's call.)
+
+## Sessions on hosts (ADR-036): where remote lives
+
+Remote shipped with **no core schema change**: core migrations still end at
+`v12-archive-provenance`, and `v13-project-host` stays reserved and unused
+(a restored tab's host is its row's host). Everything remote-only is
+deletable without touching core rows; keep it that way
+([docs/designs/remote-ssh.md](docs/designs/remote-ssh.md) section 9,
+"Removing remote").
+
+- **One module, one import.** Remote code is the `TempleRemoteHost` module;
+  `TempleUI` imports it only in `Sources/TempleUI/Hosts/RemoteHost.swift`
+  (`ModuleBoundaryTests` asserts it). The remote tab logic is
+  `RemoteTabController`; `OpenSessionsModel` keeps thin seams into it, so
+  don't grow remote branches back into the model. Remote state lives in
+  `remote-state.sqlite` (its own migrator) and the
+  `temple.settings.remoteHosts` key, never in `session_state`, `open_tabs`
+  or `project_state`.
+- **Two entry points.** The flag `temple.feature.remoteHosts` and the
+  registry are built by `AppStartup`/`AppModel`, which both `TempleApp.swift`
+  files share; anything remote added at launch goes there, not into one
+  `@main`. Before a release, run `Scripts/check-remote-off.sh` on the built
+  `.app`: it proves the shipped binary carries the remote code and that
+  nothing registers a default for the flag.
+- **Flag off means nothing happens.** With the flag off the registry holds
+  this Mac only, no ssh config is read, nothing is spawned and no remote
+  store file is created (`RemoteHostsTests`). A new remote path must keep
+  that true and be tested with the flag off.
+- **Never on a real host from a casual run.** Tests use `LocalShellExec` or
+  stubs (`SSHConnectionTests` runs the local `ssh` against fixtures and a
+  local listener only). The Linux acceptance tests are the only ones that
+  reach a host, opted into with `TEMPLE_REMOTE_ACCEPTANCE=<alias>`, and only
+  `masterblaster-mentes` / `jetson-mentes`.
