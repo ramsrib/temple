@@ -637,20 +637,21 @@ the tab stays "Disconnected" and the next Open attaches. Closing that kept
 tab is a Close as above (Stop now if the host answers, left running if not).
 
 **The Remote sessions sheet** (Hosts card → "Sessions on <host>…", and
-offered by every notice above): per enabled host, the sessions on Temple's
-private server, each with its row's title where a run row maps it,
-attached or not, and Stop / Keep; a session flagged left running shows its
-notice ("Left running: <host> didn't answer when you closed it.") and the
-same Stop button, which runs the one-command kill below. The sheet is
-offered by every left-running notice and opened at launch only when a
-left-running flag exists for a host that just answered (one line in the
-sidebar's notice area, "2 sessions left running on <host>", with Show).
-Sessions on that server
-with no run row (orphans: a store deleted, a dev build's launches, a crash
-before the run row was written, which cannot happen by the write order but
-is listed anyway) are shown as "Not in Temple" with Stop / Keep and are
-**never stopped automatically**. Temple never lists or touches the user's
-own tmux server (a different socket).
+offered by every notice above): per enabled host, the sessions **Temple
+started and still tracks** there (runs not Ended), each with its row's
+title, each asked about on its own pinned server (attached or not), with
+Stop / Keep; a session flagged left running shows its notice ("Left
+running: <host> didn't answer when you closed it.") and the same Stop
+button, which runs the one-command kill below. A run that its pinned
+server says is gone is Ended and leaves the list; one Temple can't check
+stays, and the sheet says "Temple couldn't check these sessions"; an empty
+tracked list reads "No Temple sessions to show". The sheet is offered by
+every left-running notice and opened at launch only when a left-running
+flag exists for a host that just answered (one line in the sidebar's
+notice area, "2 sessions left running on <host>", with Show). **Temple
+never discovers or stops a session it did not start** (owner's decision,
+phase 1a review): there is no listing of the private server and no "Not in
+Temple" row, and it never lists or touches the user's own tmux server.
 
 **Stop**, one non-yielding tmux command sequence in one query client, so
 nothing can attach between the check and the kill:
@@ -709,9 +710,8 @@ with remote work fitted inside it:
    unchanged after the drain; the remote store's pending writes are flushed
    inside that same 2 s, sharing its deadline and never extending it. A
    write that misses the deadline is a left-running row that may lack its
-   flag; the next launch's contact with that host lists the session as
-   "Not in Temple" or by its row, with Stop / Keep, so nothing is lost but
-   the notice.
+   flag; the session stays a tracked, detached run, listed by its row in
+   the sheet with Stop / Keep, so nothing is lost but the notice.
 
 **Durable completion is separate from UI callbacks.** Section 3's rule that
 asynchronous results are dropped during quit applies to tab-side effects
@@ -969,7 +969,8 @@ or as another agent is refused and shown. "Already host-keyed" means
     handles.
 - **Memory only**: environment, test results, `ssh -G` resolution, socket
   paths, breaker state.
-- **On the host**: `${TMPDIR:-/tmp}/temple-launch-<uid>/` records, the
+- **On the host**: `~/.temple/launch/` records (a private directory,
+  checked before every record operation; see the phase 1a notes), the
   `-L temple` tmux socket.
 
 ---
@@ -990,8 +991,7 @@ Deleting the feature, should the experiment end:
 - **Agents left on hosts**: deleting the mappings does not stop anything on
   a host, and must not do so silently. With close meaning stop (section 5),
   what can remain are working agents the user detached from, sessions left
-  running because a host did not answer when they were closed, and
-  orphans. The **Remote sessions
+  running because a host did not answer when they were closed. The **Remote sessions
   sheet** (section 5), a standing part of the Hosts card, is the right thing
   to open before an uninstall: Stop all, or Keep. The manual form for anyone
   reading the release notes later: `tmux -L temple ls` and `tmux -L temple
@@ -1112,8 +1112,9 @@ Deleting the feature, should the experiment end:
   after any left-running flag issues no kill command (counted on the exec
   seam), the flag only lists; Open of a left-running session attaches and
   clears the flag, or on `can't find session` goes Ended and resumes; the
-  sheet's Stop runs the same command with `<n>` = 0; orphans listed, never
-  killed; the user's own server never queried;
+  sheet's Stop runs the same command with `<n>` = 0 and only for a tracked
+  run; nothing untracked is listed or killed; the user's own server never
+  queried;
   `drainAll(graceful:detach:stops:)`: parallel one-command stops inside the
   3 s window with `<n>` = 1, a hung query cancelled at the deadline and its
   session flagged `quit deadline`, a host without a live master not asked
@@ -1200,7 +1201,7 @@ use per the memory rule; no synthetic input):
    `tmux -L temple ls` still lists it; Show → the sheet → Stop: gone, and
    the row resumes from its transcript on the next open. Repeat but attach
    to the session from a terminal on the host first, then press Stop in
-   the sheet: "temple-not-killed", the notice says someone else is
+   the sheet: "temple-not-killed", the notice says another terminal is
    attached, the session survives.
 5c. Stop the only session on the host: the tab closes and the sidebar row
    reopens with `--resume` although the private server has exited; `tmux
@@ -1211,10 +1212,6 @@ use per the memory rule; no synthetic input):
    quit, `tmux -L temple ls` shows only the working one; relaunch: both
    chips under the host project; activate each: the idle one resumes from
    its transcript, the working one attaches.
-7b. Start a session by hand on the host under `tmux -L temple new -s x`
-   and open the Remote sessions sheet: it is listed as "Not in Temple" with
-   Stop / Keep and is still there after every contact; the user's own
-   `tmux` server is not shown.
 8. Codex: new session; either adopted within a minute (process tree) or
    the suggestion question appears after the first prompt; answer Yes; the
    row appears. `tmux ls` shows the handle name unchanged. Quit before
@@ -1502,3 +1499,82 @@ altitude decision in the second):
    international name, add it to ~/.ssh/config or enter its xn-- form.";
    Temple does no IDNA conversion of its own. Every check for shell syntax
    works on Unicode scalars or bytes, not Characters.
+
+## Phase 1a as built (implementation notes)
+
+Recorded after the first sol and astra review of phase 1a. Decisions 1 to
+5 are the owner's constraints as astra applied them.
+
+1. **Unowned sessions** (decision 1). Temple never discovers or stops a
+   session it did not start. "Sessions on <host>" is built from tracked
+   runs only; absence is established only by a check against each run's
+   own pinned socket, never from a `-L temple` listing or a guessed
+   socket. Manual step 7b is gone.
+2. **Unused new Claude sessions** (decision 2). A run records whether its
+   conversation is confirmed (`runs.conversation`, migration
+   `r2-conversation`): a new Claude run starts unconfirmed and is confirmed
+   when a Temple tab first sends it something; a resume is confirmed. A
+   session whose last run ended unconfirmed is never resumed blindly: the
+   tab offers **Start a new session** (a fresh agent under the same id)
+   and **Discard** (its runs dismissed; its row let go, or archived when
+   the user named, pinned or colored it). No row is deleted automatically.
+3. **An agent that fails at once** (decision 3). No `remain-on-exit`. The
+   pane pipes what it shows (its first 64 KiB, `pipe-pane`, started from
+   inside the pane before the `exec`) to `<record>.out`; the tail comes
+   back with the records, and a tab whose agent ended within the early
+   window shows "<agent> exited immediately on <host>." with those lines
+   and the argv. The agent keeps its terminal for stdout and stderr, the
+   pane pid stays the agent's, and liveness is unchanged. Measured on tmux
+   3.2a, 3.4 and 3.7: `pipe-pane`'s command is format-expanded, runs in the
+   server's directory and does not get the session's `-e` environment, so
+   the path is passed inline, shell-quoted, with `#` doubled.
+4. **Socket repair** (decision 4) stays deferred; a missing socket is
+   Unknown.
+5. **jetson-mentes** (decision 5): `claude` there is not logged in (it stops
+   at onboarding), so the conversation and `--resume` check is
+   **incomplete, not passed**, on Ubuntu 22.04 / tmux 3.2a. Required before
+   the flag flips. Everything else in the 1a acceptance passes there.
+6. **Record location.** Records live in `~/.temple/launch/<marker>`, the
+   locator the run row persists (the same for every connection; a
+   `$TMPDIR`-based path differed between connections). Before every record
+   operation the directory is checked: a real directory, this user's, mode
+   0700, `~/.temple` not a link and not group- or world-writable;
+   otherwise no record is written and a fetch reports it unsafe. Records
+   are written beside, with `set -C` (no link followed), then moved.
+7. **`new-session -c /`.** `-c` is format-expanded by tmux, so no user path
+   goes there; the pane enters the folder itself.
+8. **Exact diagnostics.** Only `can't find session: <name>` for the name
+   asked about proves absence, in the liveness check and in the stop.
+   Measured on 3.2a, 3.4 and 3.7: `if-shell -t =<name>:` on a missing
+   session does not fail (it prints `temple-not-killed` with status 0), so
+   the stop runs `has-session` first in the same command queue.
+9. **Trailing newlines.** `pwd -P` is captured with a sentinel in the pane
+   and the folder check, so a folder whose name ends in a newline keeps it.
+10. **One PATH policy.** One resolver (`temple_login_path`, 5 s in all) is
+    shared by the environment query and the launch. Its state is explicit:
+    unresolved (the launch asks the login shell itself, with the same
+    resolver), resolved, or fallback (resolution ran and found none: ssh's
+    default environment for checks and launch alike).
+11. **The alias is resolved again** on every explicit open and contact; a
+    changed resolution is a new connection and its PATH is resolved again.
+12. **Ownership.** Every open, record poll, exit check, stop and the writes
+    that follow them are owned by `RemoteOperations`. An idle close gives
+    up the tab, not its stop; a host removed or edited is retired first
+    (its launcher queries nothing more, its operations are cancelled, a
+    stop so cancelled is recorded left running, its pending opens and
+    results are invalidated and the launcher's identity is checked before
+    any spawn, its connected clients are detached); the quit plans from
+    each tab's run and gate (an idle agent whose client had already ended
+    is stopped too), cancels what only looks, lets stops run inside its
+    window, expires the rest with `quit deadline`, and the engine barrier
+    waits for every owned write within its own 2 s.
+13. **Durability.** Store work runs off the main actor. A write that fails
+    is reported (`.storage`, a notice), never as success, and nothing is
+    acknowledged on the host after a failed write. A stop answer that
+    arrived is written even after its waiter was cancelled. The ordinary
+    find-or-reserve is one immediate transaction across processes; Resume
+    anyway and Start a new session insert explicitly. Persisted creation
+    evidence is replayed into the row and tab on reopen.
+14. **Copy.** "Temple couldn't check these sessions", "No Temple sessions
+    to show", and "another terminal is attached" (not "someone else").
+

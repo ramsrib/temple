@@ -135,6 +135,12 @@ final class LinuxAcceptanceTests: XCTestCase {
     }
 
     @MainActor
+    private func plan(_ outcome: RemoteSessions.OpenOutcome) throws -> RemoteSessions.OpenPlan {
+        guard case .plan(let plan) = outcome else { throw XCTSkip("expected a plan, got \(outcome)") }
+        return plan
+    }
+
+    @MainActor
     private func lifecycle(_ name: String) async throws {
         let state = TempTree("acceptance-1a")
         var log: [String] = ["== \(name) (phase 1a)"]
@@ -164,12 +170,14 @@ final class LinuxAcceptanceTests: XCTestCase {
         }
         log.append("tmux: \(try await sh("tmux -V"))")
         let before = try await sh("tmux -L temple ls -F '#{session_name}' 2>/dev/null || true")
+        let recordsBefore = try await sh("[ -e \"$HOME/.temple\" ] && echo yes || echo no")
         log.append("Temple server before: \(before.isEmpty ? "(none)" : before)")
         let folder = try await sh("mktemp -d /tmp/temple-accept-XXXXXX")
         XCTAssertTrue(folder.hasPrefix("/tmp/temple-accept-"), folder)
         let canonicalFolder = try await sh("cd -- \"$1\" && pwd -P", [folder])
         let sessionID = UUID().uuidString.lowercased()
         var handles: [String] = []
+        var markers: [String] = []
         var clients: [AcceptanceClient] = []
         defer {
             for client in clients { client.end() }
@@ -185,14 +193,21 @@ final class LinuxAcceptanceTests: XCTestCase {
             if [ "$TEMPLE_ACCEPT_NONE_BEFORE" = 1 ] && ! tmux -L temple ls >/dev/null 2>&1; then
               rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/temple"
             fi
+            # Its records, and the record directory when this test made it.
+            for mk in $TEMPLE_ACCEPT_MARKERS; do rm -f "$HOME/.temple/launch/$mk" "$HOME/.temple/launch/$mk".*; done
+            if [ "$TEMPLE_ACCEPT_RECORDS_BEFORE" = no ]; then rmdir "$HOME/.temple/launch" "$HOME/.temple" 2>/dev/null; fi
+            true
             """
             let semaphore = DispatchSemaphore(value: 0)
             let canonical = canonicalFolder
             let all = handles
             let noneBefore = before.isEmpty ? "1" : "0"
+            let markers = markers.joined(separator: " ")
+            let recordsWereThere = recordsBefore
             Task.detached {
-                _ = try? await exec.run(script: "TEMPLE_ACCEPT_NONE_BEFORE=$1; shift\n" + cleanup,
-                                        args: [noneBefore, canonical] + all, deadline: 20)
+                _ = try? await exec.run(script: "TEMPLE_ACCEPT_NONE_BEFORE=$1; TEMPLE_ACCEPT_MARKERS=$2; TEMPLE_ACCEPT_RECORDS_BEFORE=$3; shift 3\n"
+                                            + cleanup,
+                                        args: [noneBefore, markers, recordsWereThere, canonical] + all, deadline: 20)
                 semaphore.signal()
             }
             semaphore.wait()
@@ -200,8 +215,9 @@ final class LinuxAcceptanceTests: XCTestCase {
 
         // Create: the tab's command on a local pty.
         let request = RemoteSessions.OpenRequest(agent: .claude, sessionID: sessionID, mode: .new, directory: folder)
-        let first = try await sessions.open(request)
+        let first = try plan(await sessions.open(request))
         handles.append(first.handle)
+        markers.append(RecordDirectory.marker(from: try XCTUnwrap(store.run(first.handle)).recordPath) ?? "")
         XCTAssertTrue(first.creating)
         XCTAssertEqual(Array(first.argv.prefix(2)), ["/usr/bin/env", "TERM=xterm-256color"])
         clients.append(try AcceptanceClient(first.argv))
@@ -279,7 +295,13 @@ final class LinuxAcceptanceTests: XCTestCase {
             XCTAssertTrue(answered, "\(name): no reply in the transcript; screen:\n\(screen)")
             guard answered else { return }
             log.append("prompt answered: \(answered)")
+            // What the tab records when it sends the agent something.
+            try await sessions.confirmConversation(first.handle)
         }
+        let recordDirectory = try await sh("""
+        d=$HOME/.temple/launch; [ -L "$d" ] && echo link; stat -c '%a %U' "$d" 2>/dev/null || stat -f '%Lp %Su' "$d"
+        """)
+        log.append("record directory ~/.temple/launch: \(recordDirectory)")
 
         // Detach: Temple's client goes; the agent keeps running.
         clients.removeLast().end()
@@ -290,8 +312,9 @@ final class LinuxAcceptanceTests: XCTestCase {
         log.append("detached: \(afterDetach)")
 
         // Reattach: an attach on the pinned socket, no record, no second agent.
-        let second = try await sessions.open(request)
+        let second = try plan(await sessions.open(request))
         XCTAssertFalse(second.creating)
+        XCTAssertEqual(second.evidenceDirectory, directory, "the persisted evidence is replayed on reopen")
         XCTAssertEqual(second.handle, first.handle)
         clients.append(try AcceptanceClient(second.argv))
         var attached = "0"
@@ -303,24 +326,32 @@ final class LinuxAcceptanceTests: XCTestCase {
         XCTAssertEqual(attached, "1")
         let observed4 = try await tmux("display-message -p -t =\(session): '#{pane_pid}'")
         XCTAssertEqual(observed4, String(run.panePID ?? 0))
-        let records = try await sh("ls \"${TMPDIR:-/tmp}/temple-launch-$(id -u)\" 2>/dev/null | grep -c \"^$1\" || true", [run.recordPath])
+        let records = try await sh("ls \"$HOME/.temple/launch\" 2>/dev/null | grep -c \"^$1\\$\" || true", [markers[0]])
         XCTAssertEqual(records, "0", "the attach wrote no record (and the creation's was acknowledged)")
         log.append("reattached: attached=\(attached), same pane")
 
         // Stop: Temple's client first, then the one-command stop.
         clients.removeLast().end()
-        let stopped = await sessions.stop(first.handle, fromAttachedTab: true)
+        let stopped = try await sessions.stop(first.handle, fromAttachedTab: true).outcome
         XCTAssertEqual(stopped, .killed)
         XCTAssertEqual(try store.run(first.handle)?.endEvidence, .killed)
         let afterStop = await sessions.exitCheck(first.handle)
         log.append("stop: \(stopped); a check afterwards reads \(afterStop)")
 
-        // Resume from the transcript, in a new run.
-        let resumed = try await sessions.open(RemoteSessions.OpenRequest(agent: .claude, sessionID: sessionID, mode: .resume,
-                                                                         directory: directory))
+        // Resume from the transcript, in a new run; a conversation Temple
+        // never saw confirmed is not resumed blindly (the decision instead).
+        var resumeRequest = RemoteSessions.OpenRequest(agent: .claude, sessionID: sessionID, mode: .resume, directory: directory)
+        if loggedOut {
+            let outcome = try await sessions.open(resumeRequest)
+            XCTAssertEqual(outcome, .needsDecision)
+            log.append("unconfirmed conversation, reopened: \(outcome); chose Start a new session")
+            resumeRequest.startNew = true
+        }
+        let resumed = try plan(await sessions.open(resumeRequest))
         handles.append(resumed.handle)
+        markers.append(RecordDirectory.marker(from: try XCTUnwrap(store.run(resumed.handle)).recordPath) ?? "")
         XCTAssertTrue(resumed.creating)
-        XCTAssertEqual(resumed.agentArgv.suffix(2), ["--resume", sessionID])
+        XCTAssertEqual(resumed.agentArgv.suffix(2), [loggedOut ? "--session-id" : "--resume", sessionID])
         clients.append(try AcceptanceClient(resumed.argv))
         collected = .nothing
         for _ in 0..<40 {
@@ -336,13 +367,13 @@ final class LinuxAcceptanceTests: XCTestCase {
             // asked for it, in a pane of its own.
             let args = try await sh("tr '\\0' ' ' < /proc/$1/cmdline 2>/dev/null || echo '(ended)'",
                                     [String(try XCTUnwrap(store.run(resumed.handle)?.panePID))])
-            log.append("resume launched: \(args)")
+            log.append("new session launched: \(args)")
             clients.removeLast().end()
             let liveness = await sessions.exitCheck(resumed.handle)
             if liveness == .present {
-                let stoppedAgain = await sessions.stop(resumed.handle, fromAttachedTab: true)
+                let stoppedAgain = try await sessions.stop(resumed.handle, fromAttachedTab: true).outcome
                 XCTAssertEqual(stoppedAgain, .killed)
-                log.append("stop after resume: \(stoppedAgain)")
+                log.append("stop after the new session: \(stoppedAgain)")
             } else {
                 log.append("the resumed claude ended on its own (nothing to resume): \(liveness)")
             }
@@ -356,9 +387,39 @@ final class LinuxAcceptanceTests: XCTestCase {
             XCTAssertTrue(restored, "\(name): the resumed TUI shows the earlier prompt")
             log.append("resumed with --resume: conversation back=\(restored)")
             clients.removeLast().end()
-            let stoppedAgain = await sessions.stop(resumed.handle, fromAttachedTab: true)
+            let stoppedAgain = try await sessions.stop(resumed.handle, fromAttachedTab: true).outcome
             XCTAssertEqual(stoppedAgain, .killed)
             log.append("stop after resume: \(stoppedAgain)")
+        }
+
+        // An agent that fails at once: its own words come back with its
+        // record, and the session is gone (the diagnostics change nothing
+        // about liveness).
+        var failing = RemoteSessions.OpenRequest(agent: .claude, sessionID: UUID().uuidString.lowercased(), mode: .resume,
+                                                 directory: directory)
+        failing.resumeAnyway = true
+        let doomed = try plan(await sessions.open(failing))
+        handles.append(doomed.handle)
+        markers.append(RecordDirectory.marker(from: try XCTUnwrap(store.run(doomed.handle)).recordPath) ?? "")
+        clients.append(try AcceptanceClient(doomed.argv))
+        var ended = Liveness.present
+        for _ in 0..<40 {
+            try await Task.sleep(for: .milliseconds(500))
+            _ = await sessions.collect(doomed.handle)
+            ended = await sessions.exitCheck(doomed.handle)
+            if ended != .present { break }
+        }
+        clients.removeLast().end()
+        let words = await sessions.diagnostics(doomed.handle).map { raw in
+            raw.replacingOccurrences(of: "\u{1b}", with: "^[").split(whereSeparator: \.isNewline)
+                .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.suffix(3).joined(separator: " | ")
+        }
+        log.append("claude --resume <unknown id>: \(ended); diagnostics: \(words ?? "(none)")")
+        if ended == .present {
+            let stoppedDoomed = try await sessions.stop(doomed.handle, fromAttachedTab: false).outcome
+            log.append("it was still running (onboarding); stopped: \(stoppedDoomed)")
+        } else if !loggedOut {
+            XCTAssertTrue(words?.contains("No conversation found") == true, "\(name): \(words ?? "nil")")
         }
 
         // The socket-missing case, as this tmux words it, on a throwaway server.
