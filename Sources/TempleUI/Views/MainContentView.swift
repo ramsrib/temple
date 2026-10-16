@@ -152,9 +152,9 @@ private struct SessionTerminalView: View {
                 .padding(.leading, 20)
             }
             if !remote.identityRefused {
-                Text(RemoteCopy.noDaemonHint)
+                Text(MainContentView.noDaemonHint)
                     .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, 20)
             }
@@ -506,5 +506,17 @@ private struct RemoteConfirmationSheet: View {
         }
         .padding(20)
         .frame(width: 460)
+    }
+}
+
+extension MainContentView {
+    /// The `--no-daemon` hint, the flag set as code (monospaced, same size),
+    /// the rest as it reads.
+    static var noDaemonHint: AttributedString {
+        var text = AttributedString(RemoteCopy.noDaemonHint)
+        if let range = text.range(of: "--no-daemon") {
+            text[range].font = .system(size: 11, design: .monospaced)
+        }
+        return text
     }
 }

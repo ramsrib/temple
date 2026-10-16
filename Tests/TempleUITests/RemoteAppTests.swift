@@ -189,6 +189,14 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertEqual(ProjectHeaderTitle.nameIndent, 18, "the host line starts under the name")
     }
 
+    /// The --no-daemon hint reads as the copy says, the flag set as code.
+    func testTheNoDaemonHintSetsTheFlagAsCode() {
+        let hint = MainContentView.noDaemonHint
+        XCTAssertEqual(String(hint.characters), RemoteCopy.noDaemonHint)
+        let flagged = hint.runs.filter { $0.font != nil }.map { String(hint[$0.range].characters) }
+        XCTAssertEqual(flagged, ["--no-daemon"])
+    }
+
     /// Discard's row disposition acts only on the membership it was chosen
     /// for: a stale incarnation (the row left and joined again) changes nothing.
     func testDiscardDisposesOnlyTheSameMembership() async throws {
