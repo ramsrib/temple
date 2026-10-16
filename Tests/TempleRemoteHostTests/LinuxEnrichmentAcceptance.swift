@@ -74,7 +74,16 @@ extension LinuxAcceptanceTests {
         """, [folder, claudeID], deadline: 180)
         let claudeLines = claudeRun.split(separator: "\n").map(String.init)
         let claudeMade = claudeLines.count > 1
-        log.append("claude -p: \(claudeLines.first ?? "(nothing)"); transcript: \(claudeMade ? claudeLines[1] : "none")")
+        let claudeStatus = claudeLines.first ?? "(nothing)"
+        // The one limitation allowed: a claude that isn't logged in (jetson).
+        // Anything else that leaves no transcript is a failure.
+        let loggedOut = claudeStatus.localizedCaseInsensitiveContains("not logged in")
+            || claudeStatus.localizedCaseInsensitiveContains("/login")
+        log.append("claude -p: \(claudeStatus); transcript: \(claudeMade ? claudeLines[1] : "none")")
+        if !claudeMade {
+            XCTAssertTrue(loggedOut, "\(name): claude left no transcript, and not for want of a login: \(claudeStatus)")
+        }
+        XCTAssertTrue(claudeStatus.hasPrefix("exit=0") || loggedOut, "\(name): \(claudeStatus)")
 
         // A real Codex rollout; its id is in exec's header.
         let codexRun = try await sh("""
@@ -120,7 +129,11 @@ extension LinuxAcceptanceTests {
             XCTAssertNotNil(row.lastActiveAt, "\(name): \(agent) date")
             XCTAssertEqual(row.host, host)
         }
-        if !claudeMade { log.append("Claude enrichment: INCOMPLETE on \(name) (no transcript: claude is not logged in there)") }
+        if loggedOut {
+            log.append("Claude: INCOMPLETE on \(name): claude is not logged in, so no conversation; "
+                       + (claudeMade ? "the transcript it wrote anyway (its login error) filled the row"
+                                     : "it wrote no transcript"))
+        }
         try await Task.sleep(for: .milliseconds(500))
         let absent = engine.latestSnapshot?.resolutions[missing]
         log.append("row with no transcript: \(absent.map { "\($0)" } ?? "nil") (never confirmedAbsent)")

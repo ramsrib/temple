@@ -2118,3 +2118,150 @@ Before any release that turns remote on: local catalog titles for Codex
 app-server rollouts (they lose the first prompt the same way; reuse
 `CodexFormat.firstTypedPrompt`), and the dark-mode contrast comparison of a
 remote tab against a local one.
+
+## Phase 2 as built (implementation notes)
+
+Enrichment: a reopened or imported remote row that lacks a title, folder or
+date fills from its own transcript, through the engine like any host's
+(`SessionEngine` reads, `FactPersister` writes NULL-only under `(id, host,
+incarnation)`). The v1 answers stand: no catalog, no change stream,
+`complete` always empty, `directoryEvidence` unknown, `proveAbsent`
+unproven, `adopt` inconclusive. A remote row is never `confirmedAbsent`,
+dimmed or auto-archived for a missing transcript.
+
+0. **Local Codex titles first** (its own commit, Fable's decision). The
+   local catalog read the first prompt only from `user_message` events,
+   which Codex's shared app server never writes, so those rollouts listed
+   as "(no prompt)". The wider read now uses `CodexFormat.firstTypedPrompt`,
+   which also skips the `# AGENTS.md instructions for <folder>` block Codex
+   injects as a user message item (measured on codex 0.163: 51 such items
+   on masterblaster; before this, the remote question would have offered
+   that block as the "prompt" in a folder with an AGENTS.md). Facts version
+   3, so kept catalog summaries are read again.
+1. **The source is built on `RemoteSessions`** (`RemoteSessionSource(sessions:)`
+   in `RemoteHost.swift`), through a small provider seam
+   (`RemoteTranscriptProvider`): the query exec (the same connection, PATH
+   policy and `.query` purpose as 1a/1b's queries: it rides Temple's master
+   when one is up, otherwise connects on its own with `BatchMode`) and, per
+   requested id and agent, where to look.
+2. **Roots, the 1a/1b way.** A session with runs is looked for under the
+   root its latest relevant run's agent had (not dismissed, not a creation
+   that failed before it ran), as that run's pane recorded it
+   (`effectiveRoot` / `effectiveHome`), and only there: a run that left no
+   evidence makes the root unknown, never an older run's or the login
+   environment's. A session with no run (imported, or from before the
+   store) is looked for under the login environment's `CLAUDE_CONFIG_DIR` /
+   `CODEX_HOME`, from the same bounded query as the PATH. Empty, relative
+   with no folder to resolve against, or unread: unknown, not searched. A
+   store that exists but can't be read makes every root unknown. The host
+   resolves and canonicalizes each root (`pwd -P` with a sentinel, so a
+   trailing newline survives).
+3. **`locate`** is one exec for the whole batch. Arguments are groups of
+   `agent state value base ids`, then `--` and the hint paths. Per group,
+   one `find` narrowed to the requested names (Claude `-mindepth 2
+   -maxdepth 2 \( -name <id>.jsonl -o … \)`, Codex `rollout-*-<id>.jsonl`
+   and `rollout-*-<id>_*.jsonl` for reverts), its records NUL-terminated
+   (`size TAB mtime TAB inode TAB path`, GNU `-printf`, or `stat -f` under
+   BSD), followed by `S<find's status>`, the whole of it hex-encoded on one
+   line. The store folder is followed when it is a link (`find -H`, as the
+   local store resolves its root); files inside it are stat'ed as they are,
+   exactly as a read stats them. Codex names match in any case (`-iname`),
+   as `CodexFormat.name` reads them. A root of `/` joins as `/projects`,
+   the same spelling on both sides. A `find` that failed lists nothing for its group (no partial
+   listing is used). Nothing is listed for an id Temple has no row for
+   (`RemoteSourceTests` asserts the answer never names a session nobody
+   asked for). A hint (the row's recorded path) is stat'ed in the same exec and is
+   a candidate only inside its root's store, as the local source's
+   `acceptsTranscript`. Roles come from `TranscriptCandidates.assign`.
+   Coverage moves on the first listing after a transport failure.
+4. **`read`** is one exec: the opening stat, the first window (64 KiB),
+   when facts are wanted the tail (the last `min(64 KiB, size - 64 KiB)`
+   bytes, as the local store reads it), for Codex the session's own lines
+   of `history.jsonl` and `session_index.jsonl` (`grep -F` on the id, from
+   the rollout's own canonical home), the closing stat, then `done`. Bytes
+   go through a private temp file (`umask 077`, removed on exit), so each
+   frame's length is exactly what follows; the parser is strict (lengths
+   checked by subtraction, `\nend\n` after each body, nothing after
+   `done`). Identity is decided exactly as `StoreIO.identity` decides it,
+   on the head: a Codex header line longer than 64 KiB is unreadable; a
+   Claude identity undecided in the first window and a file that goes on
+   is read again with the scan's full 1 MiB cap (one more exec), as is a
+   Codex `needsWiderHead` (one more exec, counted as the wider read).
+   Opening and closing stats that differ are retried three times, then
+   `.changedDuringRead`. Missing is `.missing` only when the parent folder
+   can be searched; otherwise unreadable.
+5. **Bytes are bytes.** `RemoteOutput` carries stdout's raw bytes
+   (`data`), unframed from the marker at the byte level, and the per-stream
+   cap is 8 MiB (a read is at most a 1 MiB head, a 64 KiB tail and the
+   session's shared lines).
+6. **One actor per host** (`RemoteTranscriptAccess`): two execs at a time;
+   locates arriving within 250 ms of the first are answered by one exec
+   (each caller gets its own ids; a caller that is cancelled is answered at
+   once, and a batch nobody waits for any more is cancelled, its exec
+   killed); the breaker trips after three
+   consecutive transport failures (an exec that threw, didn't reach the
+   host, exited non-zero, or answered with something that isn't an
+   answer; the provider failing counts too) and then answers
+   `.transport("<host> unreachable since <time>; next try at <time>")`
+   without spawning anything for ten minutes. An explicit open
+   (`refresh`) gets through once; a failure there keeps it open, a success
+   closes it. Every transport failure also drops the cached PATH and roots
+   (`RemoteSessions.transportFailed`), so the next query resolves them
+   again. A quit (`shutDown`) cancels the exec in flight, whose ssh process
+   is killed, and a cancellation is not a transport failure.
+7. **Late completions.** Enrichment touches no tab, sheet or tab set: its
+   facts reach rows only through `EngineSet` and `FactPersister`. A host
+   removed or edited takes its engine with it, and a read answered after
+   that touches nothing (`RemoteGateWalkTests.testEnrichmentOfARetiredHostTouchesNoRow`);
+   `RemoteCompletion`'s list of mechanisms outside the gate says so.
+8. **Flag off**: no registry entry, no source, no engine for a host;
+   nothing changes. A host with no rows has no members, so its engine
+   locates nothing and spawns nothing at startup (the existing
+   "registration and startup run nothing" test holds with the real
+   source).
+
+Deviations from section 6, with reasons:
+
+- `session_index.jsonl` travels as the session's own lines, not whole:
+  the facts for one id are the same (both shared readers key by id), the
+  transfer stays proportional to the session, and no other session's
+  title crosses the wire.
+- No shared revision: `sharedRevision` is empty and a read's is nil. Each
+  read takes the shared lines fresh in the same exec as the rollout, so its
+  titles are never older than the read; there is no change stream to
+  announce a newer revision anyway.
+- Hints are honoured (inside the root's store), as the local source does;
+  section 6 lists only the `find`.
+- `directoryEvidence` stays unknown (as built since phase 0) rather than
+  `test -d`: History and the folder sweep ask it per project, and a spawn
+  per question is not worth `.exists`, which no remote decision uses.
+- `adopt` stays inconclusive: identity on a host is `RemoteSessions`'
+  (phase 1b).
+- The source does not conform to `HostSourceDiagnostics` (it monitors
+  nothing); its counters are `RemoteSessionSource.counters`.
+- The engine is unchanged, so every unarchived remote row with a
+  transcript costs one identity read at startup (or open), not only rows
+  that want a field; with two execs at a time and 64 KiB each.
+
+What the boxes showed (`LinuxAcceptanceTests.testPhase2EnrichmentOnEachHost`):
+
+- masterblaster-mentes (Ubuntu 24.04, GNU find): a `claude -p
+  --session-id` transcript and a `codex exec` rollout in a temp folder;
+  their rows (no title, folder or date) filled in 0.8 s from one locate
+  exec and two reads: title "Reply with the single word ok", folder the
+  canonical temp folder, date, transcript path. A row with no transcript
+  stayed `incomplete`.
+- jetson-mentes (Ubuntu 22.04): the Codex row filled the same way (1.2 s).
+  claude there is not logged in: `claude -p` exited 1 with "Not logged in ·
+  Please run /login" but still wrote a transcript, and that row filled from
+  it. Enrichment of a transcript a working Claude wrote stays incomplete
+  on jetson until its claude is logged in.
+- An unreachable host (127.0.0.1 port 1, refused): three locates failed in
+  0.3 s each with ssh's line; the fourth locate and a read answered
+  "unreachable-mentes unreachable since 1:48 PM; next try at 1:58 PM"
+  with no process spawned; an explicit open spawned again (ssh -G, the
+  environment query, the locate).
+- Cleanup: the temp folders, Claude's project folders for them and the
+  rollouts the test made were removed; Codex's history and index lines and
+  the boxes' app servers were left alone; no `temple-read.*` temp file was
+  left behind.

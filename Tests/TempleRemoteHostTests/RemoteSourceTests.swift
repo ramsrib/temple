@@ -70,6 +70,7 @@ final class RemoteSourceTests: XCTestCase {
         var outputs: [Data] { lock.withLock { _outputs } }
         var calls: Int { lock.withLock { _calls } }
         var peak: Int { lock.withLock { _peak } }
+        var running: Int { lock.withLock { _running } }
         func run(script: String, args: [String], input: Data?, deadline: TimeInterval) async throws -> RemoteOutput {
             let broken = lock.withLock { () -> Bool in
                 _calls += 1; _running += 1; _peak = max(_peak, _running)
@@ -208,6 +209,31 @@ final class RemoteSourceTests: XCTestCase {
         box.tree.write("home/elsewhere/\(id).jsonl", claudeLines(id).joined(separator: "\n"))
         let ignored = try await source.locate([LocateRequest(id: id, agent: .claude, hint: outside)])
         XCTAssertEqual(ignored.candidates[id], [])
+    }
+
+    /// A store folder that is a link is followed, as the local store
+    /// resolves its root; a Codex file name in capitals is the same thread,
+    /// as `CodexFormat.name` reads it.
+    func testALinkedStoreIsListedAndCodexNamesMatchInAnyCase() async throws {
+        let box = Box()
+        let id = uuid(), upper = uuid()
+        let elsewhere = box.tree.directory("disk/sessions")
+        try FileManager.default.removeItem(atPath: box.home + "/.codex/sessions")
+        try FileManager.default.createSymbolicLink(atPath: box.home + "/.codex/sessions", withDestinationPath: elsewhere.path)
+        box.tree.write("disk/sessions/2026/10/01/rollout-2026-10-01T10-00-00-\(id).jsonl", codexLines(id).joined(separator: "\n"))
+        box.tree.write("disk/sessions/2026/10/01/rollout-2026-10-01T10-00-00-\(upper.uppercased()).jsonl",
+                       codexLines(upper).joined(separator: "\n"))
+        let source = RemoteSessionSource(host: Self.host, provider: Provider(box.exec))
+        let found = try await source.locate([LocateRequest(id: id, agent: .codex), LocateRequest(id: upper, agent: .codex)])
+        let locator = try XCTUnwrap(found.candidates[id]?.first?.locator)
+        XCTAssertTrue(locator.path.hasPrefix(box.home + "/.codex/sessions/"), locator.path)
+        let read = try await source.read(locator, agent: .codex, expecting: id, facts: true)
+        XCTAssertEqual(read.summary?.firstPrompt, "Codex prompt")
+        let shouting = try XCTUnwrap(found.candidates[upper]?.first)
+        XCTAssertEqual(shouting.role, .selected)
+        XCTAssertTrue(shouting.locator.path.hasSuffix(upper.uppercased() + ".jsonl"))
+        let verified = try await source.read(shouting.locator, agent: .codex, expecting: upper, facts: false)
+        XCTAssertEqual(verified.identity, .verified)
     }
 
     func testRootsAreResolvedOnTheHostAndAnUnknownOneIsNotSearched() async throws {
@@ -360,6 +386,35 @@ final class RemoteSourceTests: XCTestCase {
             guard case .transport? = error as? LocateError else { return XCTFail("\(error)") }
         }
         XCTAssertEqual(watching.calls, 1, "nothing after the quit")
+    }
+
+    /// A caller that goes away is answered at once; a batch nobody waits
+    /// for any more is cancelled, its exec with it.
+    func testACancelledLocateIsAnsweredAndAnAbandonedBatchStops() async throws {
+        let box = Box()
+        let watching = Watching(box.exec)
+        watching.delay = .seconds(10)
+        let provider = Provider(watching)
+        let source = RemoteSessionSource(host: Self.host, provider: provider)
+        let started = Date()
+        let locate = Task { try await source.locate([LocateRequest(id: uuid())]) }
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(watching.calls, 1, "listing")
+        locate.cancel()
+        do { _ = try await locate.value; XCTFail("cancelled") } catch {
+            XCTAssertEqual(error as? LocateError, .transport("the lookup was cancelled"))
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(watching.running, 0, "the abandoned batch's exec was cancelled")
+        XCTAssertEqual(provider.failures, 0, "a cancellation is not a transport failure")
+        // Collecting: cancelled before its listing, nothing runs at all.
+        let early = Task { try await source.locate([LocateRequest(id: uuid())]) }
+        try await Task.sleep(for: .milliseconds(50))
+        early.cancel()
+        _ = try? await early.value
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(watching.calls, 1, "nothing listed for nobody")
     }
 
     // MARK: Framing

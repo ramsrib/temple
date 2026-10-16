@@ -65,7 +65,11 @@ enum RemoteTranscripts {
     """#
 
     /// Arguments: groups of five (`agent state value base ids`, `ids` the
-    /// requested ids separated by spaces), then `--`, then hint paths.
+    /// requested ids separated by spaces), then `--`, then hint paths. The
+    /// store folder is followed when it is a link (`find -H`, as the local
+    /// store resolves its root); files inside it are stat'ed as they are,
+    /// as a read stats them. Codex names match in any case, as
+    /// `CodexFormat.name` reads them.
     /// Per group, in order: `root<TAB><i><TAB>ok<TAB><hex canonical root>`
     /// and `list<TAB><i><TAB><hex>` (the matching files as NUL-terminated
     /// `size<TAB>mtime<TAB>inode<TAB>path` records, then `S<find's
@@ -77,14 +81,14 @@ enum RemoteTranscripts {
       _ag=$1; _p=$2; _ids=$3; set --
       for _n in $_ids; do
         if [ "$_ag" = claude ]; then set -- "$@" -o -name "$_n.jsonl"
-        else set -- "$@" -o -name "rollout-*-$_n.jsonl" -o -name "rollout-*-${_n}_*.jsonl"; fi
+        else set -- "$@" -o -iname "rollout-*-$_n.jsonl" -o -iname "rollout-*-${_n}_*.jsonl"; fi
       done
       [ $# -gt 0 ] || return 0
       shift
       if [ "$_ag" = claude ]; then set -- "$_p" -mindepth 2 -maxdepth 2 \( "$@" \)
       else set -- "$_p" \( "$@" \); fi
-      if [ -n "$gnu" ]; then find "$@" -printf '%s\t%T@\t%i\t%p\0' 2>/dev/null
-      else find "$@" -exec sh -c 'for f; do s=$(stat -f "%z%t%Fm%t%i" -- "$f") || exit 1; printf "%s\t%s\0" "$s" "$f"; done' temple-stat {} + 2>/dev/null
+      if [ -n "$gnu" ]; then find -H "$@" -printf '%s\t%T@\t%i\t%p\0' 2>/dev/null
+      else find -H "$@" -exec sh -c 'for f; do s=$(stat -f "%z%t%Fm%t%i" -- "$f") || exit 1; printf "%s\t%s\0" "$s" "$f"; done' temple-stat {} + 2>/dev/null
       fi
     }
     i=0
@@ -101,7 +105,7 @@ enum RemoteTranscripts {
       elif h=$(cd -- "$d" 2>/dev/null && pwd -P && printf x); then
         h=${h%x}; h=${h%"$NL"}
         printf 'root\t%s\tok\t%s\n' "$i" "$(printf '%s' "$h" | temple_hex)"
-        p=$h/$sub
+        case $h in /) p=/$sub ;; *) p=$h/$sub ;; esac
         if [ ! -e "$p" ] && [ ! -L "$p" ]; then
           printf 'list\t%s\t%s\n' "$i" "$(printf 'S0' | temple_hex)"
         else

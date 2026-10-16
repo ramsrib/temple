@@ -213,14 +213,22 @@ actor RemoteTranscriptAccess {
     // MARK: Locate
 
     static let coalescing: Duration = .milliseconds(250)
-    private struct Pending {
+    typealias Waiter = CheckedContinuation<Result<LocateResult, Error>, Never>
+
+    /// Locates answered by one exec: collecting for 250 ms from the first,
+    /// then listing. Unanswered waiters are resumed exactly once, with the
+    /// listing's result, a cancellation, or the quit.
+    private final class Batch {
+        let id = UUID()
         var requests: [LocateRequest] = []
-        var waiters: [CheckedContinuation<Result<LocateResult, Error>, Never>] = []
+        var waiters: [UUID: Waiter] = [:]
+        var task: Task<Void, Never>?
     }
-    private var pending: Pending?
+    /// The batch still collecting, if any.
+    private var collecting: Batch?
+    /// Every batch not yet answered, collecting or listing.
+    private var batches: [UUID: Batch] = [:]
     private var shut = false
-    /// Each batch's wait and listing, until answered.
-    private var flushTasks: [UUID: Task<Void, Never>] = [:]
     /// Each listed Codex file's canonical home, for the shared inputs a read
     /// of it takes.
     private var codexHomes: [String: String] = [:]
@@ -228,46 +236,81 @@ actor RemoteTranscriptAccess {
     func locate(_ requests: [LocateRequest]) async throws -> LocateResult {
         guard !shut else { throw LocateError.transport("Temple is quitting") }
         let wanted = Set(requests.map(\.id))
-        let result = await withCheckedContinuation { continuation in
-            if pending == nil {
-                pending = Pending()
-                let token = UUID()
-                flushTasks[token] = Task { [weak self] in
-                    try? await Task.sleep(for: Self.coalescing)
-                    await self?.flush(token)
-                }
+        let waiter = UUID()
+        let result = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                enlist(requests, waiter: waiter, continuation)
             }
-            pending?.requests += requests
-            pending?.waiters.append(continuation)
+        } onCancel: {
+            Task { await self.abandon(waiter) }
         }
         let located = try result.get()
         return LocateResult(coverage: located.coverage, candidates: located.candidates.filter { wanted.contains($0.key) },
                             complete: [], sharedRevision: [:])
     }
 
-    /// The batch's one listing. Its task stays the flush task until it is
-    /// answered, so a quit cancels the exec in flight (the ssh process is
-    /// killed) rather than leaving it to run into exit.
-    private func flush(_ token: UUID) async {
-        defer { flushTasks[token] = nil }
-        guard let batch = pending else { return }
-        pending = nil
+    private func enlist(_ requests: [LocateRequest], waiter: UUID, _ continuation: Waiter) {
+        guard !shut else { return continuation.resume(returning: .failure(LocateError.transport("Temple is quitting"))) }
+        guard !Task.isCancelled else { return continuation.resume(returning: .failure(Self.cancelled)) }
+        let batch: Batch
+        if let current = collecting {
+            batch = current
+        } else {
+            batch = Batch()
+            collecting = batch
+            batches[batch.id] = batch
+            batch.task = Task { [weak self] in
+                try? await Task.sleep(for: Self.coalescing)
+                await self?.flush(batch)
+            }
+        }
+        batch.requests += requests
+        batch.waiters[waiter] = continuation
+    }
+
+    static let cancelled = LocateError.transport("the lookup was cancelled")
+
+    /// A caller went away: it is answered now, and a batch nobody waits for
+    /// any more is cancelled (its exec killed if one runs).
+    private func abandon(_ waiter: UUID) {
+        guard let batch = batches.values.first(where: { $0.waiters[waiter] != nil }),
+              let continuation = batch.waiters.removeValue(forKey: waiter) else { return }
+        continuation.resume(returning: .failure(Self.cancelled))
+        if batch.waiters.isEmpty {
+            if collecting === batch { collecting = nil }
+            batch.task?.cancel()
+        }
+    }
+
+    /// The batch's one listing, in the batch's own task, so a quit (or the
+    /// last caller leaving) cancels the exec in flight and its ssh process
+    /// is killed rather than left to run on.
+    private func flush(_ batch: Batch) async {
+        if collecting === batch { collecting = nil }
         let result: Result<LocateResult, Error>
-        if Task.isCancelled || shut {
+        if shut {
             result = .failure(LocateError.transport("Temple is quitting"))
+        } else if Task.isCancelled || batch.waiters.isEmpty {
+            result = .failure(Self.cancelled)
         } else {
             do { result = .success(try await listing(batch.requests)) } catch { result = .failure(error) }
         }
-        for waiter in batch.waiters { waiter.resume(returning: result) }
+        batches[batch.id] = nil
+        let waiters = batch.waiters.values
+        batch.waiters.removeAll()
+        for waiter in waiters { waiter.resume(returning: result) }
     }
 
     func shutDown() {
         shut = true
-        for task in flushTasks.values { task.cancel() }
-        if let batch = pending {
-            pending = nil
-            for waiter in batch.waiters { waiter.resume(returning: .failure(LocateError.transport("Temple is quitting"))) }
+        collecting = nil
+        for batch in batches.values {
+            batch.task?.cancel()
+            let waiters = batch.waiters.values
+            batch.waiters.removeAll()
+            for waiter in waiters { waiter.resume(returning: .failure(LocateError.transport("Temple is quitting"))) }
         }
+        batches.removeAll()
     }
 
     private struct Group: Hashable {
