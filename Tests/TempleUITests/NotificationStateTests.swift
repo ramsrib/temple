@@ -112,6 +112,26 @@ final class NotificationStateTests: XCTestCase {
         XCTAssertEqual(tab.activity, .idle)              // decayed on its own
     }
 
+    /// The same rule for a tab on this Mac: a just-opened agent whose title
+    /// went quiet closes without the "still working" prompt; one that was
+    /// sent a prompt it hasn't titled itself for still asks.
+    func testCloseAsksTheSettleRuleNow() async {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.titleQuietWindow = 0.1
+        model.openSession(Fixture.row("a", project: "/p/a"))
+        let tab = model.activeTab!
+        XCTAssertEqual(tab.activity, .running)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        model.requestClose(tabID: tab.id)
+        XCTAssertNil(model.pendingCloseTabID, "booted and quiet: at rest")
+        model.openSession(Fixture.row("b", project: "/p/b"))
+        let asked = model.activeTab!
+        (asked.surface as? FakeTerminalSurface)?.simulateSubmitInput()
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        model.requestClose(tabID: asked.id)
+        XCTAssertEqual(model.pendingCloseTabID, asked.id, "a prompt not yet answered is working")
+    }
+
     func testTitleMovementPromotesIdleBackToRunning() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.ringGraceSeconds = -1  // out of grace immediately

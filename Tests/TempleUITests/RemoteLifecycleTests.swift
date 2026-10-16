@@ -593,6 +593,64 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertEqual(notices.last, "Left running: another terminal is attached to it. Stop it under Sessions on box.")
     }
 
+    /// B2: "working" at ⌘W is the settle rule asked now, not whether the
+    /// 15 s settle timer has fired. A tab reopened from the sidebar (a
+    /// resume: spawned, its agent booting) whose title went quiet is at
+    /// rest, with or without a title of its own (Claude at its trust screen
+    /// sets none); so is one whose answer came (input, then the agent's
+    /// titles, then quiet). Input the agent has not answered with a title
+    /// yet, or a title still moving, is working.
+    func testCloseDecidesWorkingByTheSettleRuleNotTheTimer() async throws {
+        model.titleQuietWindow = 0.15
+        // Reopened, booting, then quiet: the agent's own titles came first.
+        let resumed = await openRow("s1")
+        XCTAssertEqual(resumed.activity, .running, "a spawn boots into running")
+        let surface = try XCTUnwrap(factory.created.last)
+        surface.simulateTitle("⠙ project")
+        surface.simulateTitle("project")
+        try await Task.sleep(for: .milliseconds(250))
+        model.requestClose(tabID: resumed.id)
+        XCTAssertNil(model.pendingRemoteCloseTabID, "a resumed agent at rest is not working")
+        XCTAssertFalse(model.tabs.contains { $0 === resumed })
+        await settle(self.remote.stops.count == 1)
+
+        // No title at all (a trust screen), quiet: at rest.
+        let trust = await openRow("s2")
+        try await Task.sleep(for: .milliseconds(250))
+        model.requestClose(tabID: trust.id)
+        XCTAssertNil(model.pendingRemoteCloseTabID)
+
+        // Answered: input, the agent's titles, then quiet.
+        let answered = await openRow("s3")
+        let answeredSurface = try XCTUnwrap(factory.created.last)
+        answeredSurface.simulateSubmitInput()
+        answeredSurface.simulateTitle("⠋ project")
+        answeredSurface.simulateTitle("Reply ok | project")
+        try await Task.sleep(for: .milliseconds(250))
+        model.requestClose(tabID: answered.id)
+        XCTAssertNil(model.pendingRemoteCloseTabID, "an answered prompt at rest is not working")
+
+        // Input with no title since: the agent may not have started.
+        let asked = await openRow("s4")
+        let askedSurface = try XCTUnwrap(factory.created.last)
+        askedSurface.simulateTitle("project")
+        try await Task.sleep(for: .milliseconds(50))
+        askedSurface.simulateSubmitInput()
+        try await Task.sleep(for: .milliseconds(250))
+        model.requestClose(tabID: asked.id)
+        XCTAssertEqual(model.pendingRemoteCloseTabID, asked.id)
+        model.remoteTabs.cancelClose()
+
+        // A title still moving: working.
+        let busy = await openRow("s5")
+        let busySurface = try XCTUnwrap(factory.created.last)
+        busySurface.simulateSubmitInput()
+        busySurface.simulateTitle("⠋ project")
+        model.requestClose(tabID: busy.id)
+        XCTAssertEqual(model.pendingRemoteCloseTabID, busy.id)
+        model.remoteTabs.cancelClose()
+    }
+
     func testClosingAWorkingTabAsksDetachOrStop() async throws {
         let tab = await openRow()
         tab.activity = .running

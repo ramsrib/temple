@@ -166,6 +166,7 @@ public final class RemoteTabController {
         tab.launchObservation = SessionTab.LaunchObservation(at: spawnedAt, directory: nil)
         if let sid = tab.sessionID, !isQuitting { model.touchHandler?(sid, tab.host, spawnedAt) }
         tab.activity = .running
+        model.markSpawned(tab)
         model.lastTitleChange[tab.id] = Date()
         model.scheduleSettle(for: tab)
         if plan.creating {

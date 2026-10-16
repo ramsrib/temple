@@ -75,6 +75,7 @@ extension AppModel {
             guard let tab = openSessions.openTab(forSessionID: id) else { return notOpen(id) }
             // ⌘W's guard: only a working agent with a live terminal asks, and
             // the command line cannot ask, so it refuses.
+            openSessions.settleIfQuietNow(tab)
             if tab.remote != nil, tab.hasLiveProcess, tab.activity == .running {
                 // On a host, a working agent is never stopped from here:
                 // refused, or with --force detached (it keeps working).
