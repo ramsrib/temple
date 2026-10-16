@@ -1,6 +1,15 @@
 import Foundation
 
 /// A transcript path on its owning host; only local paths can become file URLs.
+///
+/// Equal and hashed by `String`, so under Unicode canonical equivalence:
+/// two spellings of one path that differ only in normalization are one
+/// locator. That is what the local stores need (APFS folds the two into one
+/// file, and an event's spelling must still find its member), and it is
+/// kept for remote hosts by decision (ADR-036): the remote module compares
+/// its own paths by bytes (`RemotePath`), a locator's `path` keeps the bytes
+/// it was made from, and identity verification decides which file is a
+/// session's. Don't make this byte-exact without reading that decision.
 public struct TranscriptLocator: Hashable, Sendable {
     public let host: HostID
     public let path: String

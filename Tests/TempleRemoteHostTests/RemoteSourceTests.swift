@@ -344,6 +344,51 @@ final class RemoteSourceTests: XCTestCase {
         }
     }
 
+    /// Lists one Claude session's file twice, under two folders whose names
+    /// differ only in normalization (a host keeps them apart), each with a
+    /// size of its own; a read answers `missing`.
+    final class TwoSpellings: RemoteExec, @unchecked Sendable {
+        private let lock = NSLock()
+        private var _reads: [[String]] = []
+        var reads: [[String]] { lock.withLock { _reads } }
+        func run(script: String, args: [String], input: Data?, deadline: TimeInterval) async throws -> RemoteOutput {
+            guard script == RemoteTranscripts.locateScript else {
+                lock.withLock { _reads.append(args) }
+                return RemoteOutput(status: 0, stdout: "missing\n", stderr: "")
+            }
+            let hex = RemoteSourceTests.hex
+            let value = args[2], id = args[4]
+            let records = [("caf\u{E9}", 20, 1), ("cafe\u{301}", 10, 2)].map { folder, size, inode in
+                hex("f\t\(size)\t1.0\t\(inode)\t\(value)/projects/\(folder)/\(id).jsonl") + "00"
+            }.joined()
+            return RemoteOutput(status: 0, stdout: "root\t0\tok\t\(hex(value))\nlist\t0\t\(records)\(hex("S0"))\ndone\n", stderr: "")
+        }
+    }
+
+    /// ADR-036's accepted residue of core's `String` locators: two files of
+    /// one session in one store whose paths differ only in normalization
+    /// (neither agent names a folder that way; Claude's are ASCII) are one
+    /// candidate, the first in byte order, with its own stat, and its read
+    /// is sent its own bytes. Identity verification decides whether it is
+    /// the session's; the other spelling is never mistaken for it.
+    func testTwoSpellingsOfOneSessionsFileInOneStoreAreOneCandidateReadByItsOwnBytes() async throws {
+        let id = uuid(), root = "/r/claude"
+        let exec = TwoSpellings()
+        let source = RemoteSessionSource(host: Self.host, provider: PerSession(exec: exec, roots: [
+            id: [.claude: RemoteTranscriptRoot(.set(root), base: nil)!],
+        ]))
+        let result = try await source.locate([LocateRequest(id: id, agent: .claude)])
+        let candidates = try XCTUnwrap(result.candidates[id])
+        XCTAssertEqual(candidates.count, 1, "one candidate: core's assignment compares Strings")
+        let decomposed = Array("\(root)/projects/cafe\u{301}/\(id).jsonl".utf8)
+        let only = try XCTUnwrap(candidates.first)
+        XCTAssertEqual(Array(only.locator.path.utf8), decomposed, "the first in byte order, its bytes kept")
+        guard case .present(let signature) = only.stat else { return XCTFail("stat'ed: \(only.stat)") }
+        XCTAssertEqual(signature.size, 10, "its own stat, not the other spelling's")
+        _ = try? await source.read(only.locator, agent: .claude, expecting: id, facts: true)
+        XCTAssertEqual(exec.reads.first.map { Array($0[0].utf8) }, decomposed, "the read names the same bytes")
+    }
+
     /// Codex identity compares folders and rollout paths by bytes too: a
     /// header naming the other spelling is not this run's folder, and a
     /// declined path declines only its own spelling.

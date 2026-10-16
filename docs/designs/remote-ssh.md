@@ -2456,3 +2456,59 @@ its own.
   too. tmux 3.2a (jetson) neither asks nor answers (colour reports came in
   3.3), and no option changes that: Codex there gets no answer and uses
   its default palette. Acceptance: `testTerminalColoursAndTitleUnderTemplesChainOnEachHost`.
+
+## Phase 3: the core locator decision
+
+Phase 2's rounds 2 to 4 all landed on how paths compare, and Fable asked
+phase 3 to settle core's part explicitly. **Decision: core's
+`TranscriptLocator` and `TranscriptCandidates.assign` keep comparing
+`String`s.** The remote module stays byte-exact at the type (`RemotePath`);
+nothing in core changes but a doc comment on `TranscriptLocator` that
+points here and to ADR-036.
+
+Why not byte-exact, on the local side:
+
+- **APFS folds the two spellings.** Measured on this Mac's APFS volume:
+  after `mkdir café` (precomposed), `mkdir cafe\u{301}` (decomposed) fails
+  with EEXIST, and both spellings open the one folder. A local store cannot
+  hold two files that differ only in normalization.
+- **Locally the same file reaches core from several producers**: the
+  directory enumeration, FSEvents paths (routed to members through the
+  engine's `byLocator` index), the row's recorded `transcript_path` used as
+  a hint, and the catalog cache's keys. Under `String` equality two
+  spellings of one file are one key. Byte equality would make them two
+  whenever two producers spelled a path differently, so an event could miss
+  its member or one file become two candidates, and every producer would
+  need a normalization step to fold what APFS already folds. That is new
+  risk on the path every user takes, for no local gain. No migration would
+  be needed (the database and caches store strings either way), which is
+  why this is a judgment of risk, not of cost.
+
+What `String` equality can and cannot do on a host that keeps the two
+spellings apart (ext4 does):
+
+- **Where a collision can come from.** One `assign` call sees one session,
+  one agent and one store, whose prefix is byte-identical (one root per id
+  and agent; two roots that differ in normalization are two groups, phase
+  2 round 3). Below the store neither agent writes anything but ASCII:
+  Claude Code names a project folder with `replace(/[^a-zA-Z0-9]/g,"-")`
+  (found in the 2.1.302 binary), so `é` in either spelling becomes ASCII,
+  and the two differ (`-` against `e-`); Codex writes
+  `sessions/YYYY/MM/DD/rollout-<timestamp>-<id>.jsonl`. A collision needs a
+  folder inside the store that some other tool or person made, with a
+  non-ASCII name, holding the session's file in both spellings.
+- **What happens then.** The two are one candidate: the first in byte
+  order (the listing is sorted by `RemotePath`), with its own stat (the
+  remote source keys stats by bytes), and its read is sent its own bytes (a
+  `String` keeps its scalars, and SQLite returns a recorded path as it was
+  written). Identity verification reads the id inside the file. If the
+  kept file is not the session's, the row stays unfilled (`mismatch` or
+  `incomplete`); nothing of the other file, or of another session, reaches
+  the row. A remote row is never `confirmedAbsent`, dimmed or
+  auto-archived, so a missed candidate can cost a fill and nothing else.
+- **The engine's locator index** merges two such locators across members;
+  it only routes change events, and a remote source has no change stream.
+
+Pinned by `RemoteSourceTests.testTwoSpellingsOfOneSessionsFileInOneStoreAreOneCandidateReadByItsOwnBytes`.
+Revisit if an agent starts writing non-ASCII names below its store, or if
+remote gains a change stream.
