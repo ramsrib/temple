@@ -262,6 +262,21 @@ final class LinuxAcceptanceTests: XCTestCase {
         XCTAssertEqual(directory, canonicalFolder)
         let run = try XCTUnwrap(store.run(first.handle))
         log.append("ok record: dir=\(directory) pane=\(run.panePID ?? -1) start=\(run.paneStart ?? "-") socket=\(run.socketPath ?? "-") server=\(run.serverPID ?? -1)/\(run.serverStart ?? "-")")
+        // A config that sets `StdinNull yes` (a throwaway file passed with -F
+        // that includes the usual config for the alias; nothing is edited):
+        // Temple's own options keep the query's stdin, so its program and
+        // input arrive over the master.
+        let throwaway = state.write("stdin-null.conf", "Host *\n  StdinNull yes\n  ForkAfterAuthentication yes\n"
+                                    + "Include ~/.ssh/config\n")
+        let marker = "__temple_\(RemoteQuoting.nonce())__"
+        let query = SSHExec.invocation(script: "printf 'program ran|'; cat", args: [], path: nil,
+                                       input: Data("input arrived".utf8), marker: marker)
+        var nullArgv = connection.argv(.overMaster, remoteCommand: query.command)
+        nullArgv.insert(contentsOf: ["-F", throwaway.path], at: 1)
+        let nulled = SSHExec.unframe(try await ProcessRunner.run(nullArgv[0], Array(nullArgv.dropFirst()), input: query.stdin,
+                                                                 deadline: 20), marker: marker)
+        log.append("query under StdinNull yes: status=\(nulled.status) stdout=\(nulled.stdout)")
+        XCTAssertEqual(nulled.stdout, "program ran|input arrived", "\(name): \(nulled.stderr)")
         // The executor on this host's sh and find: a staged file that is not
         // exactly 0600 is refused and never run; a private one runs once.
         let executor = try await sh("""

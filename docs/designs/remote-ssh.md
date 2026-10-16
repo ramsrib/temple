@@ -1711,9 +1711,13 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
     atomic rename to a fresh name inside that directory (nobody but the
     account can put anything there, so what is checked is what is read),
     checks what it took (a regular file, not a symlink, this account's,
-    exactly 0600), reads it, deletes it, and runs it. Anything else, or a
-    file that never comes, is said in the tab (status 125) and nothing
-    runs; each unsafe case is tested against the executor itself, and the
+    exactly 0600), reads it, deletes it, and runs it. The fresh name is
+    `.run-<stage>-<pid>`, checked absent first, so the rename never lands
+    inside an existing directory (round 6). Anything else, or a file that
+    never comes, is said in the tab (status 125) and nothing runs; what
+    was taken is removed whole (a file, a link without its target, a
+    directory), and a `.run-*` left by an executor killed midway goes with
+    the 24-hour sweep; each unsafe case is tested against the executor itself, and the
     acceptance checks a 0644 file is refused on both boxes. A `mkdir` of
     the directory that loses a race with another Temple operation (EEXIST)
     is accepted after the same checks on what the winner made (this was
@@ -1759,4 +1763,16 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
     cancelled with the readers when the run is answered (an exit, a
     deadline, a cancellation): a 4 MiB upload to a process whose child
     holds stdin without reading leaves no descriptor or worker behind.
+    Round 6: the markers that frame a query's output are printed by `sh`
+    in the bootstrap, not by the login shell (csh's and tcsh's `>&2`
+    writes a file named `2`); the whole invocation is tested under csh
+    and tcsh. The end line is one that appears nowhere in the encoded
+    program, so no argument, PATH or script line can end it early. Every
+    session Temple asks for (queries, over the master or not, and tabs)
+    forces `StdinNull=no`, `ForkAfterAuthentication=no`,
+    `SessionType=default` and `RemoteCommand=none`, so a config that sets
+    `-n`, `-f`, `-N`/`-s` or a remote command cannot eat a query's
+    program or a tab's keys; asserted in the argv, resolved with `ssh -G`
+    against a fixture config, and run on both boxes with a throwaway `-F`
+    config that sets `StdinNull yes`.
 
