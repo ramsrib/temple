@@ -119,7 +119,12 @@ final class RemoteScriptsTests: XCTestCase {
         }
         /// Temple's Detach: the local client goes; the agent stays.
         func end() {
+            // `script` can sit out a SIGTERM; a SIGKILL closes the pty all the
+            // same, and the client on it is hung up.
             if process.isRunning { process.terminate() }
+            let deadline = Date().addingTimeInterval(2)
+            while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
             process.waitUntilExit()
             try? input.fileHandleForWriting.close()
         }

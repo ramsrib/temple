@@ -477,6 +477,7 @@ public final class SessionOverlayStore: ObservableObject {
         do {
             let outcome = try db.restoreSessions(refs, masked: archivedProjectKeys, unmasking: extra, at: now())
             for key in outcome.unmasked { archivedProjectKeys.remove(key) }
+            for key in outcome.unmasked where !key.host.isLocal { remoteProjectState?.setArchived(false, key: key) }
             return RestoreRecord(states: outcome.states, restored: outcome.restored, unmasked: outcome.unmasked)
         } catch {
             TempleUILog.db.error("restore failed: \(String(describing: error), privacy: .public)")
@@ -489,6 +490,7 @@ public final class SessionOverlayStore: ObservableObject {
         do {
             try db.revertArchiveStates(record.states, maskingAgain: record.unmasked)
             for key in record.unmasked { archivedProjectKeys.insert(key) }
+            for key in record.unmasked where !key.host.isLocal { remoteProjectState?.setArchived(true, key: key) }
         } catch {
             TempleUILog.db.error("undoing a restore failed: \(String(describing: error), privacy: .public)")
         }
@@ -497,12 +499,37 @@ public final class SessionOverlayStore: ObservableObject {
     public func isProjectArchived(_ key: ProjectKey) -> Bool { archivedProjectKeys.contains(key) }
     public func setProjectArchived(_ archived: Bool, key: ProjectKey) {
         if archived { archivedProjectKeys.insert(key) } else { archivedProjectKeys.remove(key) }
-        // Project-state host persistence is the explicitly deferred v13 migration.
+        // `project_state` is this Mac's; a host's projects keep their masks
+        // in the remote store, written by the same operation.
         if key.host.isLocal { try? db.setProjectArchived(archived, path: key.path) }
+        else { remoteProjectState?.setArchived(archived, key: key) }
     }
     public func setProjectKeyOrder(_ keys: [ProjectKey]) {
         projectKeyOrder = keys
         try? db.setProjectOrder(keys.filter { $0.host.isLocal }.map(\.path))
+        // A host's part of the order, each at its place in the whole list.
+        remoteProjectState?.setOrder(keys.enumerated().filter { !$0.element.host.isLocal }
+            .map { (key: $0.element, position: $0.offset) })
+    }
+
+    /// Remote projects' archive masks and their part of the manual order
+    /// (`remote_project_state`, docs/designs/remote-ssh.md section 8). Set
+    /// once at launch while sessions on hosts are on; the two files are not
+    /// one transaction, and a mask left out of step by a crash is put right
+    /// by the next Restore or Undo, which rewrite it from the rows.
+    public var remoteProjectState: RemoteProjectStatePersisting? {
+        didSet { loadRemoteProjectState() }
+    }
+
+    private func loadRemoteProjectState() {
+        guard let remoteProjectState else { return }
+        let states = remoteProjectState.projectStates()
+        archivedProjectKeys.formUnion(states.filter(\.archived).map(\.key))
+        var order = projectKeyOrder.filter { $0.host.isLocal }
+        for state in states.compactMap({ state in state.position.map { (state.key, $0) } }).sorted(by: { $0.1 < $1.1 }) {
+            order.insert(state.0, at: min(state.1, order.count))
+        }
+        projectKeyOrder = order
     }
 
     public func customName(for id: String) -> String? { rows[id]?.customName }

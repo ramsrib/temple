@@ -76,6 +76,8 @@ public final class RemoteSessions {
     }
 
     private let storeProvider: () throws -> RemoteStateStore
+    /// Whether the store's file exists; reads never create it.
+    private let storeExists: () -> Bool
     private var openedStore: RemoteStateStore?
     private let keepAlive: KeepAlive
     private let stateDirectory: URL
@@ -92,6 +94,7 @@ public final class RemoteSessions {
 
     public init(record: RemoteHostRecord, stateDirectory: URL, sshPath: String,
                 store: @escaping () throws -> RemoteStateStore,
+                storeExists: @escaping () -> Bool = { true },
                 keepAlive: KeepAlive = TmuxKeepAlive(),
                 resolve: @escaping ([String]) async -> ConnectionTest.Resolution = ConnectionTest.sshResolve,
                 makeExec: @escaping (SSHConnection, String?) -> RemoteExec = { SSHExec(connection: $0, path: $1) },
@@ -103,6 +106,7 @@ public final class RemoteSessions {
         self.stateDirectory = stateDirectory
         self.sshPath = sshPath
         storeProvider = store
+        self.storeExists = storeExists
         self.keepAlive = keepAlive
         self.resolve = resolve
         self.makeExec = makeExec
@@ -122,13 +126,20 @@ public final class RemoteSessions {
         return store
     }
 
-    public func liveRun(sessionID: String) -> RemoteRun? {
-        try? store().liveRun(host: host, sessionID: sessionID)
+    /// The store for a read: nil, rather than a new empty file, when there
+    /// is none yet.
+    private func readableStore() -> RemoteStateStore? {
+        guard openedStore != nil || storeExists() else { return nil }
+        return try? store()
     }
 
-    public func run(_ handle: String) -> RemoteRun? { try? store().run(handle) }
+    public func liveRun(sessionID: String) -> RemoteRun? {
+        try? readableStore()?.liveRun(host: host, sessionID: sessionID)
+    }
 
-    public func runs() -> [RemoteRun] { (try? store().runs(host: host)) ?? [] }
+    public func run(_ handle: String) -> RemoteRun? { try? readableStore()?.run(handle) }
+
+    public func runs() -> [RemoteRun] { (try? readableStore()?.runs(host: host)) ?? [] }
 
     // MARK: Connection
 
@@ -424,14 +435,14 @@ public final class RemoteSessions {
     /// The sidebar's line for these flags was dismissed or acted on.
     public func noticeLeftRunning() {
         let now = now()
-        for run in (try? store().leftRunning(host: host)) ?? [] where run.leftRunningNoticedAt == nil {
+        for run in (try? readableStore()?.leftRunning(host: host)) ?? [] where run.leftRunningNoticedAt == nil {
             _ = try? store().update(run.handle) { $0.leftRunningNoticedAt = now }
         }
     }
 
     /// Runs flagged left running whose flag the sidebar has not shown yet.
     public func unnoticedLeftRunning() -> [RemoteRun] {
-        ((try? store().leftRunning(host: host)) ?? []).filter { $0.leftRunningNoticedAt == nil }
+        ((try? readableStore()?.leftRunning(host: host)) ?? []).filter { $0.leftRunningNoticedAt == nil }
     }
 
     // MARK: Sessions on the host

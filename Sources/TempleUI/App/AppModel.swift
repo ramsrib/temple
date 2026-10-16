@@ -396,6 +396,14 @@ public final class AppModel: ObservableObject {
         autoArchiveNotice = nil
     }
 
+    /// A session on a host was left running (at a close, or found at
+    /// launch): one line at the foot of the rail, with Show.
+    @Published public var remoteNotice: RemoteNotice?
+    /// "Sessions on <host>", when shown.
+    @Published public var remoteSessionsSheet: RemoteSessionsRequest?
+    /// The folder sheet for a new session on a host, when shown.
+    @Published public var remoteFolderSheet: RemoteFolderRequest?
+
     // Sidebar UI state (U1)
     @Published public var searchText = ""
     @Published public var highlightedID: String?
@@ -536,8 +544,9 @@ public final class AppModel: ObservableObject {
     let remoteHosts: RemoteHostsModel
     /// Makes terminals outside tabs (the Test connection sheet's).
     let surfaceFactory: TerminalSurfaceFactory
-    /// Remote hosts this model registered (never ones a caller passed in).
-    private var managedRemoteHosts: Set<HostID> = []
+    /// Remote hosts this model registered (never ones a caller passed in),
+    /// with the record each was registered from.
+    private var managedRemoteHosts: [HostID: RemoteHostRecord] = [:]
     private let makeEngine: (any HostSessionSource) -> any HostEngine
 
     private var cancellables: Set<AnyCancellable> = []
@@ -641,6 +650,11 @@ public final class AppModel: ObservableObject {
         wireHistory(database: database)
         self.remoteHosts.onChange = { [weak self] in self?.rebuildRemoteHosts() }
         rebuildRemoteHosts()
+        // A host's projects keep their masks and order in the remote store;
+        // with the feature off it is never opened (no file is created).
+        if self.remoteHosts.isEnabled {
+            overlay.remoteProjectState = RemoteProjectStateStore(stateDirectory: databaseDirectory ?? TempleState.directory)
+        }
         overlayFocus.focusActiveTerminal = { [weak self] in self?.openSessions.focusActiveTerminal() }
         // NB: detection is NOT started here. It runs real binaries (`claude --version`),
         // and `AppModel` is constructed by tests — which must not shell out to whatever
@@ -684,6 +698,9 @@ public final class AppModel: ObservableObject {
             return result
         }
         openSessions.touchHandler = { [weak self] id, host, at in self?.overlay.touch(id, host: host, at: at) }
+        openSessions.remoteNoticeHandler = { [weak self] host, message in
+            self?.remoteNotice = RemoteNotice(host: host, message: message, kind: .closed)
+        }
         // ⌘T then close without typing: the minted id never got a transcript,
         // and its row would read "New Claude session" forever. The tab's
         // process is gone by now; only a fresh, completed absence from the
@@ -905,22 +922,25 @@ public final class AppModel: ObservableObject {
     /// Registration never waits for, or depends on, a test.
     func rebuildRemoteHosts() {
         let wanted = remoteHosts.registeredHosts
-        let wantedHosts = Set(wanted.map(\.host))
-        for host in managedRemoteHosts.subtracting(wantedHosts) {
+        let wantedByHost = Dictionary(wanted.map { ($0.host, $0) }, uniquingKeysWith: { first, _ in first })
+        // Removed, or edited (a new address is a new connection): the old
+        // entry and engine go. Their sessions keep running on the host.
+        for (host, record) in managedRemoteHosts where wantedByHost[host] != record {
             hostBox.value = hostBox.value.removing(host)
             engineSet.remove(host: host)
-            managedRemoteHosts.remove(host)
+            managedRemoteHosts.removeValue(forKey: host)
         }
-        for record in wanted where !managedRemoteHosts.contains(record.host) {
+        for record in wanted where managedRemoteHosts[record.host] == nil {
             // A host the caller registered itself (tests) is theirs.
             guard hostBox.value.entry(for: record.host) == nil else { continue }
             let name = record.name
-            let entry = HostRegistry.Entry.remote(record) { [weak remoteHosts] agent in
+            let entry = HostRegistry.Entry.remote(record, availability: { [weak remoteHosts] agent in
                 remoteHosts?.availability(of: name, agent: agent) ?? .available
-            }
+            }, extraArgs: { [weak settings] agent in settings?.extraArgs(for: agent) ?? [] },
+               stateDirectory: databaseDirectory ?? TempleState.directory)
             hostBox.value = hostBox.value.adding(entry)
             engineSet.add(makeEngine(entry.source))
-            managedRemoteHosts.insert(record.host)
+            managedRemoteHosts[record.host] = record
         }
     }
 
@@ -931,6 +951,7 @@ public final class AppModel: ObservableObject {
         applyAppearance()
         openSessions.restore()
         retireIndexCacheOnce()
+        contactHostsWithSessionsLeftRunning()
         engineSet.start { [weak self] snapshot in
             // Every snapshot lands here; republishing an unchanged flag
             // re-renders everything that observes the model.
@@ -989,7 +1010,12 @@ public final class AppModel: ObservableObject {
         // can't be mistaken for "the agent finished" and close the tabs we are
         // meant to reopen next launch.
         openSessions.prepareForQuit()
-        SessionRuntimeController().drainAll(openSessions.allSurfaces) { [self] in
+        // Local agents drain gracefully; agents on hosts detach or are
+        // stopped inside the same window (docs/designs/remote-ssh.md
+        // section 5). The engine barrier below is unchanged; the remote
+        // store's writes happen as each stop completes, so none waits on it.
+        let plan = openSessions.quitDrainPlan()
+        SessionRuntimeController().drainAll(graceful: plan.graceful, detach: plan.detach, stops: plan.stops) { [self] in
             // Final barrier for writes queued while the processes drained.
             overlay.flushPendingTitles()
             overlay.flushPendingTouches()

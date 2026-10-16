@@ -82,7 +82,7 @@ final class RemoteStateStoreTests: XCTestCase {
         try store.setProjectArchived(true, host: host, path: "/a")
         try store.setProjectArchived(true, host: HostID(rawValue: "other"), path: "/a")
         try store.setProjectArchived(false, host: host, path: "/a")
-        try store.setProjectOrder([(host, "/b"), (host, "/a")])
+        try store.setProjectOrder([(host, "/b", 0), (host, "/a", 1)])
         XCTAssertEqual(try store.projectStates(), [
             RemoteStateStore.ProjectState(host: host, path: "/a", archived: false, position: 1),
             RemoteStateStore.ProjectState(host: host, path: "/b", archived: false, position: 0),

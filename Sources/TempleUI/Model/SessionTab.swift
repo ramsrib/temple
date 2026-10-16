@@ -92,6 +92,8 @@ public final class SessionTab: ObservableObject, Identifiable {
         missingWorkingDirectory.map { "The folder \($0) no longer exists." }
     }
     @Published public var isProvisional: Bool
+    /// A tab on a host: its side of the run (nil for this Mac's tabs).
+    @Published public var remote: RemoteTabState?
     /// The user has sent this tab's agent something (Return). A new tab
     /// closed before that started no conversation.
     var inputSubmitted = false
@@ -174,6 +176,27 @@ public final class SessionTab: ObservableObject, Identifiable {
 
     public var isUtility: Bool { kind != .session }
     public var hasSurface: Bool { surface != nil }
+    /// A surface whose process is running now.
+    public var hasLiveProcess: Bool {
+        if case .running? = surface?.processState { return true }
+        return false
+    }
+
+    /// The canonical folder a launch reported (`applyLaunchDirectory`).
+    func setProjectPath(_ path: String) { projectPath = path }
+
+    /// Lets go of a surface whose process has ended, so the tab can open
+    /// again in place (a remote tab reconnecting, or resuming).
+    func dropSurface() {
+        guard let old = surface, !hasLiveProcess else { return }
+        surface = nil
+        spawnedAt = nil
+        find.surface = nil
+        launchResult?.cancel()
+        launchResult = nil
+        launchFailure = nil
+        old.release()
+    }
 
     /// When the surface's process was spawned; drives the early-exit grace
     /// window (a process dying right after launch keeps its tab so the error

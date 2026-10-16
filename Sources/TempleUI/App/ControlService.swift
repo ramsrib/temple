@@ -75,11 +75,23 @@ extension AppModel {
             guard let tab = openSessions.openTab(forSessionID: id) else { return notOpen(id) }
             // ⌘W's guard: only a working agent with a live terminal asks, and
             // the command line cannot ask, so it refuses.
+            if tab.remote != nil, tab.hasLiveProcess, tab.activity == .running {
+                // On a host, a working agent is never stopped from here:
+                // refused, or with --force detached (it keeps working).
+                guard request.force == true else {
+                    return .failure(.refused, RemoteCopy.workingCLIRefusal(tab.host.rawValue))
+                }
+                let closed = controlSession(tab)
+                guard commit.commit() else { return Self.expired }
+                openSessions.detachRemote(tab.id)
+                return ControlResponse(session: closed)
+            }
             if tab.hasSurface, tab.activity == .running, request.force != true {
                 return .failure(.refused, "Its agent is working. Pass --force to close it anyway.")
             }
             let closed = controlSession(tab)
             guard commit.commit() else { return Self.expired }
+            // An idle agent on a host is stopped now, as ⌘W stops it.
             openSessions.closeTab(tab.id)
             return ControlResponse(session: closed)
         }

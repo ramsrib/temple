@@ -13,6 +13,19 @@ public final class TempleAppDelegate: NSObject, NSApplicationDelegate {
     var confirmQuitWhileWorking: ((_ workingCount: Int) -> Bool)?
 
 
+    /// The quit prompt's words last asked (tests read them).
+    private(set) var lastQuitPrompt: (title: String, message: String)?
+
+    /// Counts this Mac's working agents; agents working on hosts keep
+    /// running, and the prompt says so in one line.
+    static func quitPrompt(workingCount: Int, remoteHosts: [String]) -> (title: String, message: String) {
+        let title = workingCount == 1 ? "An agent is still working." : "\(workingCount) agents are still working."
+        var message = "Quitting interrupts them. Their sessions reopen next launch, "
+            + "but whatever they are doing right now stops here."
+        if !remoteHosts.isEmpty { message += "\n\n" + RemoteCopy.quitLine(remoteHosts) }
+        return (title, message)
+    }
+
     /// Retains the close interceptors (`NSWindow.delegate` is weak), one per
     /// window, pruned when that window closes. Doubles as the record of which
     /// windows still exist — see `hasCancellableWindow`.
@@ -108,9 +121,11 @@ public final class TempleAppDelegate: NSObject, NSApplicationDelegate {
     /// so the drain below does not ask the same question a second time.
     func approveCloseForQuit(_ window: NSWindow? = nil) -> Bool {
         guard let model else { return true }
-        let working = model.openSessions.workingTabs.count
+        // Only this Mac's agents are interrupted by a quit: one working on a
+        // host keeps running there (docs/designs/remote-ssh.md section 5).
+        let working = model.openSessions.localWorkingTabs.count
         guard working > 0 else { return true }
-        guard confirmQuit(workingCount: working) else { return false }
+        guard confirmQuit(workingCount: working, remoteHosts: model.openSessions.remoteWorkingHosts) else { return false }
         approvedCloseWindow = window.map(ObjectIdentifier.init) ?? ObjectIdentifier(self)
         // If this close does not turn into the last-window termination, the
         // approval must not survive to be spent by some later quit.
@@ -166,9 +181,10 @@ public final class TempleAppDelegate: NSObject, NSApplicationDelegate {
         // predicate that used to sit here ("is a window still visible?") skipped
         // the prompt for a minimized or ⌘H-hidden app — states the user can
         // return to perfectly well — and killed the agent without a word.
-        let working = model.openSessions.workingTabs.count
+        let working = model.openSessions.localWorkingTabs.count
         let asked = consumeCloseApproval()
-        if working > 0, !asked, hasCancellableWindow(), !confirmQuit(workingCount: working) {
+        if working > 0, !asked, hasCancellableWindow(),
+           !confirmQuit(workingCount: working, remoteHosts: model.openSessions.remoteWorkingHosts) {
             return .terminateCancel
         }
         model.drainForQuit { [self] in
@@ -177,14 +193,12 @@ public final class TempleAppDelegate: NSObject, NSApplicationDelegate {
         return .terminateLater
     }
 
-    private func confirmQuit(workingCount: Int) -> Bool {
+    private func confirmQuit(workingCount: Int, remoteHosts: [String]) -> Bool {
+        lastQuitPrompt = Self.quitPrompt(workingCount: workingCount, remoteHosts: remoteHosts)
         if let confirmQuitWhileWorking { return confirmQuitWhileWorking(workingCount) }
         let alert = NSAlert()
-        alert.messageText = workingCount == 1
-            ? "An agent is still working."
-            : "\(workingCount) agents are still working."
-        alert.informativeText = "Quitting interrupts them. Their sessions reopen next launch, "
-            + "but whatever they are doing right now stops here."
+        alert.messageText = lastQuitPrompt?.title ?? ""
+        alert.informativeText = lastQuitPrompt?.message ?? ""
         alert.addButton(withTitle: "Quit")
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn

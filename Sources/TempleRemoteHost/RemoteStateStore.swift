@@ -305,16 +305,17 @@ public final class RemoteStateStore: @unchecked Sendable {
         }
     }
 
-    /// The remote part of the manual project order: these keys, in order,
-    /// get positions; every other remote project loses its position.
-    public func setProjectOrder(_ keys: [(host: HostID, path: String)]) throws {
+    /// The remote part of the manual project order: each key at its place
+    /// in the whole sidebar order; every other remote project loses its
+    /// position.
+    public func setProjectOrder(_ entries: [(host: HostID, path: String, position: Int)]) throws {
         try queue.write { database in
             try database.execute(sql: "UPDATE remote_project_state SET position = NULL")
-            for (index, key) in keys.enumerated() {
+            for entry in entries {
                 try database.execute(sql: """
                     INSERT INTO remote_project_state (host, path, position) VALUES (?, ?, ?)
                     ON CONFLICT (host, path) DO UPDATE SET position = excluded.position
-                    """, arguments: [key.host.rawValue, key.path, index])
+                    """, arguments: [entry.host.rawValue, entry.path, entry.position])
             }
         }
     }
