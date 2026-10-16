@@ -1461,7 +1461,9 @@ altitude decision in the second):
    - **The probe and the checks stay on the master.** `-O check` and every
      Test query carry `ControlMaster=no`, `ControlPersist=no`,
      `BatchMode=yes`, `ConnectTimeout=1` and `ProxyCommand=/usr/bin/false`
-     on the command line (which wins over any config): an inherited
+     on the command line, ahead of any of the host's own options (ssh
+     keeps the first value it is given, so a Temple-added `ProxyJump`
+     after them is ignored, and they win over any config): an inherited
      `ControlMaster yes` or `ask` cannot make ssh skip the socket, and a
      failed mux handshake has no transport to fall back to (the config's
      `ProxyJump` is displaced too). Tested with the real ssh against a
@@ -1470,7 +1472,11 @@ altitude decision in the second):
    - **A master is not a connection.** `-O check` proves a local process.
      The first query over the master (the environment) must run on the
      host; if it doesn't, the test reads "Couldn't confirm the connection:
-     <ssh's first line>." and is never "Connected".
+     <ssh's first line>." and is never "Connected". Until it has, the
+     sheet reads "Checking the connection…".
+   - **Closing the sheet cancels everything it started**, the `ssh -G`
+     resolution included; a test closed during resolution prepares no
+     socket storage and starts no terminal.
    - **The socket follows where ssh resolves the host.** The test runs
      `ssh -G` first; hostname, user, port, proxyjump and proxycommand join
      the socket key, so an alias retargeted in `~/.ssh/config` gets a new

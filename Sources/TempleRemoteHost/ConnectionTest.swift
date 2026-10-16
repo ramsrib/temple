@@ -52,6 +52,9 @@ public final class ConnectionTest: ObservableObject, Identifiable {
     @Published public private(set) var rows: [Row] = []
     @Published public private(set) var failure: SSHFailure?
     @Published public private(set) var summary: HostTestSummary?
+    /// Whether a query has run on the host over the master. Until it has,
+    /// nothing may say "connected": a master alone is a local process.
+    @Published public private(set) var connectionConfirmed = false
     /// `ssh -G`'s view of the host, for the details line: the same answer
     /// the connection's socket was keyed by.
     @Published public private(set) var resolution: [String: String] = [:]
@@ -71,6 +74,7 @@ public final class ConnectionTest: ObservableObject, Identifiable {
     private let resolve: ([String]) async -> Resolution
     private var task: Task<Void, Never>?
     private var started = false
+    private var cancelled = false
 
     /// `makeExec(connection, path)` builds an exec over that connection's
     /// master with that PATH (nil: ssh's default environment). `resolve`
@@ -120,7 +124,8 @@ public final class ConnectionTest: ObservableObject, Identifiable {
         started = true
         let provisional = SSHConnection(record: record, stateDirectory: stateDirectory, sshPath: sshPath)
         let answer = await resolve(provisional.resolutionArgv)
-        guard phase == .connecting else { return false }
+        // Closed while ssh -G ran: nothing is prepared, nothing starts.
+        guard !Task.isCancelled, !cancelled, phase == .connecting else { return false }
         guard case .resolved(let values) = answer else {
             if case .failed(let line) = answer {
                 finish(failure: .localSetup("ssh couldn't read its configuration for \(record.name): \(line)"))
@@ -166,6 +171,7 @@ public final class ConnectionTest: ObservableObject, Identifiable {
     /// own ssh client). The terminal's client is the sheet's to terminate;
     /// the master is left to expire.
     public func cancel() {
+        cancelled = true
         task?.cancel()
         task = nil
         if phase == .connecting || phase == .checking { onFinished = nil }
@@ -184,6 +190,7 @@ public final class ConnectionTest: ObservableObject, Identifiable {
             finish(failure: .unconfirmed(environment.problem ?? "no answer"))
             return
         }
+        connectionConfirmed = true
         summaryDraft.environment = environment
         if let path = environment.path {
             set(Row(id: "shell", verdict: .ok, line: "Login shell: \(environment.shell.isEmpty ? "unknown" : environment.shell), PATH read.",

@@ -246,6 +246,75 @@ final class ConnectionTestTests: XCTestCase {
         XCTAssertTrue(test.rows.isEmpty)
     }
 
+    /// While the first query over the master is out, nothing says
+    /// connected; once it has run on the host, it is confirmed.
+    func testTheConnectionIsUnconfirmedUntilAQueryReachesTheHost() async throws {
+        let tree = TempTree("ct-pending")
+        let ssh = standInSSH(tree)
+        try "master".write(toFile: tree.path + "/mode", atomically: true, encoding: .utf8)
+        let gate = PathLog()
+        let answer = Self.host(PathLog())
+        let test = makeTest(tree, sshPath: ssh.path) { path in
+            let inner = answer(path)
+            return RecordingExec { script, args in
+                if script == RemoteEnvironment.script {
+                    while gate.values.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+                }
+                return try await inner.run(script: script, args: args, deadline: 5)
+            }
+        }
+        let started = await test.start()
+        XCTAssertTrue(started)
+        try await runTerminal(test)
+        test.terminalExited()
+        await waitUntil { test.phase == .checking }
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(test.phase, .checking)
+        XCTAssertFalse(test.connectionConfirmed, "a live master alone confirms nothing")
+        XCTAssertNil(test.summary)
+        gate.append("go")
+        await waitUntil { test.connectionConfirmed }
+        XCTAssertTrue(test.connectionConfirmed)
+        await waitUntil { test.phase == .finished }
+        XCTAssertEqual(test.summary?.statusLine.hasPrefix("Connected as"), true)
+    }
+
+    /// Closing the sheet while ssh -G runs cancels it; nothing is prepared.
+    func testCancellingDuringResolutionPreparesNothing() async throws {
+        let tree = TempTree("ct-resolve-cancel")
+        let state = tree.url.appendingPathComponent("state")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        let seen = PathLog()
+        func make(resolving seconds: Double) -> ConnectionTest {
+            ConnectionTest(record: .config("box"), stateDirectory: state, sshPath: "/usr/bin/ssh",
+                           makeExec: { _, _ in RecordingExec { _, _ in RemoteOutput(status: 0, stdout: "", stderr: "") } },
+                           resolve: { _ in
+                               do { try await Task.sleep(for: .seconds(seconds)) } catch { seen.append("cancelled") }
+                               return .resolved(["hostname": "h"])
+                           })
+        }
+        // The task running start() is cancelled (the sheet's own task).
+        let byTask = make(resolving: 30)
+        let running = Task { await byTask.start() }
+        try await Task.sleep(for: .milliseconds(100))
+        running.cancel()
+        let startedByTask = await running.value
+        XCTAssertFalse(startedByTask)
+        XCTAssertEqual(seen.values, ["cancelled"], "ssh -G was cancelled")
+        // The test alone is cancelled while resolution runs; the answer
+        // that arrives afterwards prepares nothing.
+        let byTest = make(resolving: 0.3)
+        let other = Task { await byTest.start() }
+        try await Task.sleep(for: .milliseconds(100))
+        byTest.cancel()
+        let startedByTest = await other.value
+        XCTAssertFalse(startedByTest)
+        XCTAssertNil(byTask.connection)
+        XCTAssertNil(byTest.connection)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: state.appendingPathComponent("ssh").path),
+                       "no socket storage prepared")
+    }
+
     /// Retargeting an alias in the config gives it a new socket at once:
     /// the old destination's master is never asked, and the identity shown
     /// is the one the socket was keyed by. Resolved by the real `ssh -G`

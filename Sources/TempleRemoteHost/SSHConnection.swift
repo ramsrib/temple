@@ -131,12 +131,17 @@ public struct SSHConnection: Sendable, Equatable {
                 "-T",
             ]
         case .overMaster:
-            return hostOptions + socket + Self.masterOnly + ["-o", "ClearAllForwardings=yes", "-T"]
+            // ssh keeps the first value it is given for an option, and a
+            // ProxyJump given before a ProxyCommand wins: the master-only
+            // options lead, before any of the host's own.
+            return Self.masterOnly + socket + hostOptions + ["-o", "ClearAllForwardings=yes", "-T"]
         }
     }
 
     /// Options that keep ssh on the master's socket and off the network.
-    /// Command-line options win over every config, so an inherited
+    /// They come first on the command line: ssh keeps the first value it is
+    /// given, so they win over the host's own options (a Temple-added
+    /// `ProxyJump` included) and over every config. An inherited
     /// `ControlMaster yes` or `ask` (which makes ssh skip the socket) is
     /// overridden, and a fallback after a failed mux handshake has nowhere
     /// to go: its transport is `/usr/bin/false`, which also displaces any

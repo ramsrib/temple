@@ -402,6 +402,7 @@ final class TestTerminal: ObservableObject, TerminalSurfaceDelegate {
     private weak var test: ConnectionTest?
     private var started = false
     private var stopped = false
+    private var startTask: Task<Void, Never>?
 
     init(surfaceFactory: TerminalSurfaceFactory, appearance: TerminalAppearance) {
         surface = surfaceFactory.makeSurface(appearance: appearance)
@@ -412,9 +413,11 @@ final class TestTerminal: ObservableObject, TerminalSurfaceDelegate {
         started = true
         self.test = test
         surface.delegate = self
-        Task { @MainActor [weak self] in
-            // Nothing could be prepared: the test says why, and no terminal runs.
-            guard await test.start(), let self, !self.stopped else { return }
+        // Kept, so closing the sheet cancels it (and the ssh -G it runs).
+        startTask = Task { @MainActor [weak self] in
+            // Nothing could be prepared, or the sheet closed meanwhile: the
+            // test says why (or is gone), and no terminal runs.
+            guard await test.start(), let self, !self.stopped, !Task.isCancelled else { return }
             do {
                 try self.surface.start(TerminalCommand(argv: test.surfaceArgv, cwd: test.surfaceDirectory))
                 self.surface.focus()
@@ -426,6 +429,8 @@ final class TestTerminal: ObservableObject, TerminalSurfaceDelegate {
 
     func stop() {
         stopped = true
+        startTask?.cancel()
+        startTask = nil
         surface.delegate = nil
         surface.terminate()
         surface.release()
@@ -519,7 +524,7 @@ struct ConnectionTestSheet: View {
         case .connecting:
             progress("Connecting with your ssh…")
         case .checking:
-            progress("Connected. Checking the host…")
+            progress(Self.checkingLine(confirmed: test.connectionConfirmed))
         case .failed:
             Text(test.failure?.message ?? "")
                 .font(.system(size: 12))
@@ -532,6 +537,12 @@ struct ConnectionTestSheet: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// While checking: neutral until a query has run on the host over the
+    /// master, "Connected" only after.
+    static func checkingLine(confirmed: Bool) -> String {
+        confirmed ? "Connected. Checking the host…" : "Checking the connection…"
     }
 
     private func progress(_ text: String) -> some View {

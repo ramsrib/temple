@@ -136,6 +136,44 @@ final class HostsSettingsViewTests: XCTestCase {
         window.close()
     }
 
+    func testTheCheckingLineSaysConnectedOnlyOnceConfirmed() {
+        XCTAssertEqual(ConnectionTestSheet.checkingLine(confirmed: false), "Checking the connection…")
+        XCTAssertEqual(ConnectionTestSheet.checkingLine(confirmed: true), "Connected. Checking the host…")
+    }
+
+    /// Closing the sheet while ssh -G still runs: the start is cancelled,
+    /// ssh -G with it, and no terminal or socket storage appears.
+    func testClosingTheSheetDuringResolutionCancelsIt() throws {
+        let tree = "/private/tmp/temple-hosts-resolve-\(UUID().uuidString.prefix(8))"
+        try FileManager.default.createDirectory(atPath: tree + "/state", withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: tree) }
+        let ssh = tree + "/ssh"
+        try "#!/bin/sh\nfor a; do [ \"$a\" = -G ] && { echo $$ > \(tree)/pid; exec sleep 30; }; done\nexit 0\n"
+            .write(toFile: ssh, atomically: true, encoding: .utf8)
+        chmod(ssh, 0o755)
+        let defaults = Fixture.uniqueDefaults()
+        defaults.set(true, forKey: RemoteHostsModel.featureKey)
+        defaults.set(RemoteHostList(records: [.config("box")]).encode(), forKey: RemoteHostsModel.hostsKey)
+        let hosts = RemoteHostsModel(defaults: defaults, readConfigAliases: { [] },
+                                     stateDirectory: { URL(fileURLWithPath: tree + "/state") },
+                                     makeTest: { RemoteHostComposition.connectionTest(for: $0, stateDirectory: $1, sshPath: ssh) })
+        let test = try XCTUnwrap(hosts.startTest(for: "box"))
+        let factory = FakeTerminalSurfaceFactory()
+        let window = render(ConnectionTestSheet(test: test, surfaceFactory: factory, appearance: .default,
+                                                onTestAgain: {}, onClose: {}), size: NSSize(width: 680, height: 520))
+        let deadline = Date().addingTimeInterval(10)
+        while !FileManager.default.fileExists(atPath: tree + "/pid"), Date() < deadline { spin(0.05) }
+        let pid = try XCTUnwrap(Int32(try String(contentsOfFile: tree + "/pid", encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)))
+        window.contentView = nil
+        window.close()
+        hosts.endTest(test)
+        spin(1.5)
+        XCTAssertNotEqual(kill(pid, 0), 0, "ssh -G was ended with the sheet")
+        XCTAssertNil(factory.created.last?.startedCommand, "no terminal started")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tree + "/state/ssh"), "no socket storage prepared")
+    }
+
     func testTheFormSheetRenders() {
         let sheet = HostFormSheet(request: HostFormRequest(editing: RemoteHostRecord(name: "added", source: .temple, address: "a")),
                                   existing: ["added"], configAliases: []) { _, _ in }

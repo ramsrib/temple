@@ -169,6 +169,30 @@ final class SSHConnectionTests: XCTestCase {
                 }
             }
         }
+        // A host added in Temple with its own ProxyJump, pointed at the trap:
+        // the jump never runs, socket missing or broken.
+        let jumpConfig = tree.write("config-jump", "Host *\n  ControlMaster yes\n")
+        let jumping = SSHConnection(record: RemoteHostRecord(name: "jumpy", source: .temple, address: "localhost",
+                                                             port: Int(trap.port), proxyJump: "127.0.0.1:\(trap.port)"),
+                                    stateDirectory: state, sshPath: "/usr/bin/ssh")
+        try jumping.prepareSocketDirectory()
+        for broken in [false, true] {
+            let listener = broken ? try HandshakeBreaker(path: jumping.controlPath) : nil
+            defer { listener?.close() }
+            let argv = jumping.argv(.overMaster, remoteCommand: "true")
+            XCTAssertLessThan(argv.firstIndex(of: "ProxyCommand=/usr/bin/false")!, argv.firstIndex(of: "ProxyJump=127.0.0.1:\(trap.port)")!,
+                              "the master-only options lead")
+            let withConfig = [argv[0], "-F", jumpConfig.path] + argv.dropFirst()
+            let output = try await ProcessRunner.run(withConfig[0], Array(withConfig.dropFirst()), deadline: 10)
+            XCTAssertNotEqual(output.status, 0)
+            XCTAssertFalse(trap.sawConnection(), "jump broken=\(broken): ssh opened a connection\n\(output.stderr)")
+        }
+        // Control for the jump: the host's options first, as before.
+        let hostFirst = ["/usr/bin/ssh", "-F", jumpConfig.path] + jumping.hostOptions
+            + ["-o", "ControlPath=\(jumping.controlPath)"] + SSHConnection.masterOnly + ["-T", "--", "jumpy", "true"]
+        _ = try? await ProcessRunner.run(hostFirst[0], Array(hostFirst.dropFirst()), deadline: 3)
+        XCTAssertTrue(trap.sawConnection(), "with the host's ProxyJump first, the jump does connect: the order matters")
+
         // Control: the probe as it was (no overrides) under ControlMaster yes.
         let config = tree.write("config-control", "Host box\n  HostName 127.0.0.1\n  Port \(trap.port)\n  ControlMaster yes\n")
         let connection = SSHConnection(record: .config("box"), stateDirectory: state, sshPath: "/usr/bin/ssh")
