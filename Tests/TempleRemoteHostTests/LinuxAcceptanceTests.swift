@@ -169,6 +169,19 @@ final class LinuxAcceptanceTests: XCTestCase {
             return out.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         log.append("tmux: \(try await sh("tmux -V"))")
+        // Commands whose mux request ends just below a multiple of 8 KiB:
+        // unpadded, this master refuses their descriptors at once
+        // (`send fds failed`); through Temple's argv every one reaches the host.
+        var muxFailures: [Int] = []
+        for length in [8060, 8080, 8100, 16_260, 16_280] {
+            let probe = connection.argv(.query, remoteCommand: "exit 0 #" + String(repeating: "x", count: length - 8))
+            for _ in 0..<3 {
+                let out = try await ProcessRunner.run(probe[0], Array(probe.dropFirst()), deadline: 20)
+                if out.status != 0 { muxFailures.append(length) }
+            }
+        }
+        log.append("band-sized commands through the master: \(muxFailures.isEmpty ? "all reached the host" : "failed at \(muxFailures)")")
+        XCTAssertEqual(muxFailures, [], "\(name)")
         let before = try await sh("tmux -L temple ls -F '#{session_name}' 2>/dev/null || true")
         let recordsBefore = try await sh("[ -e \"$HOME/.temple\" ] && echo yes || echo no")
         log.append("Temple server before: \(before.isEmpty ? "(none)" : before)")
@@ -227,11 +240,16 @@ final class LinuxAcceptanceTests: XCTestCase {
             if case .ok = collected { break }
             try await Task.sleep(for: .milliseconds(500))
         }
+        // A launch that stalls: the client's ssh child, its -v trace and pty,
+        // and what the host has, for every launch below.
+        func stalled() async -> String {
+            let state = (try? await sh("""
+            ls -la "$HOME/.temple/launch" 2>&1; tmux -L temple ls 2>&1; ps -ef | grep -E 'tmux|temple-launch|sshd: mentes' | grep -v grep
+            """)) ?? "(host unreachable)"
+            return "\(clients.last?.diagnosis ?? "")\nhost:\n\(state)"
+        }
         guard case .ok(let directory) = collected else {
-            let state = try await sh("""
-            ls -la "$HOME/.temple/launch" 2>&1; tmux -L temple ls 2>&1; ps -ef | grep -E 'tmux|temple-launch' | grep -v grep
-            """)
-            return XCTFail("\(name): no ok record: \(collected)\n\(clients.last?.diagnosis ?? "")\nhost:\n\(state)")
+            return XCTFail("\(name): no ok record: \(collected)\n\(await stalled())")
         }
         XCTAssertEqual(directory, canonicalFolder)
         let run = try XCTUnwrap(store.run(first.handle))
@@ -366,7 +384,9 @@ final class LinuxAcceptanceTests: XCTestCase {
             if case .ok = collected { break }
             try await Task.sleep(for: .milliseconds(500))
         }
-        guard case .ok = collected else { return XCTFail("\(name): no ok record for the resume: \(collected)") }
+        guard case .ok = collected else {
+            return XCTFail("\(name): no ok record for the resume: \(collected)\n\(await stalled())")
+        }
         let resumedSession = "temple-\(resumed.handle)"
         let resumedSocket = try XCTUnwrap(store.run(resumed.handle)?.socketPath)
         if loggedOut {
@@ -436,6 +456,7 @@ final class LinuxAcceptanceTests: XCTestCase {
         f=$1/hangshell; n=$2
         printf '#!/bin/sh\\ntrap "" TERM\\nsleep %s &\\nsleep %s\\n' "$n" "$n" > "$f"; chmod +x "$f"
         SHELL=$f; export SHELL
+
         """ + RemoteEnvironment.resolverFunction + """
 
         t0=$(date +%s); temple_login_path __temple_m__ >/dev/null; r=$?; t1=$(date +%s)
@@ -444,6 +465,10 @@ final class LinuxAcceptanceTests: XCTestCase {
         """, [folder, "61.\(Int.random(in: 1000...9999))"])
         log.append("hanging login shell: \(containment)")
         XCTAssertTrue(containment.contains("left=0"), "\(name): \(containment)")
+        // The hang really ran: abandoned at the budget, not refused at once.
+        let elapsed = containment.split(separator: " ").first { $0.hasPrefix("elapsed=") }
+            .flatMap { Int($0.dropFirst(8).dropLast()) } ?? 0
+        XCTAssertTrue((4...8).contains(elapsed), "\(name): \(containment)")
 
         // The socket-missing case, as this tmux words it, on a throwaway server.
         let missing = try await sh("""
