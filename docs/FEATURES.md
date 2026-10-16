@@ -33,6 +33,8 @@ truth; Temple supplies the index, navigation, lifecycle, and attention layer.
   worktrees, or edits project files; those operations belong to the agent in its
   terminal ([ADR-012](./DECISIONS.md#adr-012--scope-boundary-agent-sessions-only--not-git-not-the-filesystem)).
 - Temple has no cloud account, sync, or multi-machine service. It is local-first.
+  A session on another machine runs over your own ssh, from this Mac to that
+  host and nothing in between ([Sessions on a host](#sessions-on-a-host)).
 - Windows is out of scope while libghostty supports macOS and Linux only
   ([ADR-004](./DECISIONS.md#adr-004--platforms-macos-first-linux-later-not-windows)).
 
@@ -126,6 +128,21 @@ open tabs; any other session returns the next time it is opened
   **Undo**; it stays until Undo, the dismiss or the end of the run.
   It is not on `⌘Z`: the user did not do it. A session brought back by Undo or
   Restore is not archived again until it has seen new activity.
+- A session on another machine ([Sessions on a host](#sessions-on-a-host))
+  belongs to the project of its folder on that host. That project's heading
+  is a local heading with a second line under the name: a globe and the
+  host's name. A session's missing title, folder or date fills from its
+  transcript on the host, looked up by its id when Temple starts and when you
+  open it. Temple never dims, tags or archives a session on a host because
+  its transcript seems to be gone: over ssh it cannot prove that, so only
+  you archive one. History lists a host's sessions under In Temple and
+  nothing more: Temple does not list a host's other sessions and cannot
+  import them. A session Temple is tracking on a host adds **Stop on
+  <host>** to its context menu.
+- When sessions on a host were left running (see
+  [Sessions on a host](#sessions-on-a-host)), the foot of the sidebar says so
+  once when that host next answers, "2 sessions left running on <host>",
+  with **Show** (Sessions on <host>) and a dismiss.
 - The sidebar's actions live in the title bar, at the trailing edge of its
   section: search and the sidebar toggle — Temple's own button, in place of
   the system one, so the two behave as one group. When
@@ -248,11 +265,16 @@ Settings tab is the one agent-less exception.
   persists on disk and remains in the sidebar.
 - Closing a tab asks for confirmation only while its agent is running. Return
   confirms; Esc cancels. Idle, attention, exited, inert, and Settings tabs close
-  immediately.
+  immediately. A tab whose agent has just started (a new session or a resume)
+  and has received nothing from you since closes without asking once its
+  title has been quiet for a few seconds, without waiting for the settle
+  timer. Any key, paste, or click the agent takes in since it started means
+  the usual rule, so `⌘W` soon after an answer still asks.
 - A non-user-initiated exit within roughly five seconds of launch keeps the tab
   visible with a red exited dot so the failure output can be read.
-- Quitting Temple gracefully shuts down all live agent processes; Temple does
-  not detach or orphan them.
+- Quitting Temple gracefully shuts down all live agent processes on this Mac;
+  Temple does not detach or orphan them. Agents working on another machine
+  are the exception: they keep running ([Sessions on a host](#sessions-on-a-host)).
 - `Ctrl+D` passes through unchanged. If the agent exits on EOF, Temple handles it
   as an ordinary process exit.
 
@@ -267,6 +289,74 @@ directory that is not yet indexed. Claude
 sessions receive a Temple-generated session ID; Codex creates its own ID, which
 Temple adopts when the new rollout file appears
 ([ADR-008](./DECISIONS.md#adr-008--session-identity-id--cli-id-asymmetric-minting)).
+A Codex session's title, until Codex or you give it one, is its first typed
+prompt, including for sessions Codex's shared app server writes; the
+instructions block Codex injects for a folder's `AGENTS.md` is never taken
+for a prompt.
+
+### Sessions on a host
+
+Temple runs Claude Code and Codex on another machine you reach with ssh, in a
+tab that works like a local one
+([ADR-036](./DECISIONS.md#adr-036--sessions-on-another-machine-through-the-users-own-ssh)).
+Hosts are set up in Settings ▸ Hosts. For now this is off by default:
+`defaults write com.sriramb.temple temple.feature.remoteHosts -bool true`,
+then relaunch, turns it on.
+
+- **Starting one.** `⌘N` lists **Folder on <host>…** under **Choose
+  folder…** for each host, the launcher has **New session on <host>…**, and a
+  host project's `+` and `⌘T` start there. The folder sheet takes a path on
+  the host (`~/…` works), checks it there and shows where it resolved; when
+  the host does not answer, it offers **Start anyway** and **Test
+  connection**.
+- **It keeps running.** The agent runs inside a hidden tmux server of
+  Temple's own on the host (`tmux -L temple`, tmux 3.2 or newer), so it
+  survives a dropped connection, a sleeping Mac and a Temple quit while it
+  works. A tab that loses its connection says "Disconnected from <host>.
+  Open the session again to reconnect."; opening it attaches to the same
+  agent.
+- **Closing a tab** means what it means locally. An idle agent is stopped,
+  at once and without asking, and opening the session later resumes it from
+  its transcript. A working one asks "Claude Code is still working on
+  <host>." with **Detach** (the default: it keeps working, and you can open
+  it again), **Stop** and **Cancel**.
+- **Left running.** When the host does not answer as you close a tab, or
+  another terminal is attached to the session, Temple leaves it running and
+  says so once. It never stops anything later on its own. **Sessions on
+  <host>** (in Settings ▸ Hosts, and offered by every such notice) lists every
+  session Temple started on that host and still tracks, with its state and
+  **Stop** and **Keep**. Temple never lists or stops a session it did not
+  start, and never touches your own tmux sessions.
+- **Quitting.** The quit prompt asks about local working agents only and
+  adds "Sessions working on <host> keep running; Temple will reconnect to
+  them." Working agents on hosts are detached. Idle ones are stopped when
+  their host answers within the quit's few seconds, and otherwise left
+  running and listed. After relaunch a chip for a stopped session resumes it
+  from its transcript, and one for a running session attaches to it.
+- **When Temple can't tell.** If Temple cannot tell whether a session is
+  still running on its host, opening it only tries to attach. **Resume
+  anyway** starts it again from its transcript; the sheet says that the
+  original, if it is running, keeps running, and gives the tmux command that
+  stops it on the host.
+- **New Codex sessions.** Codex picks its own session ID, so a new Codex
+  session on a host reads "New Codex session" until Temple learns the ID;
+  it reopens and restores like any tab meanwhile. Temple identifies it on
+  its own only when the Codex process it started holds the session's file
+  open. By default Codex's shared app server writes that file, so the tab
+  asks instead: "Is this the session?" with the first prompt, the time and
+  the folder, and **Yes, that's it** or **Not this one**. With `--no-daemon`
+  in Codex's arguments (Settings), Temple identifies the session on its own.
+  A Codex session that ended before Temple learned its ID says so and offers
+  the question, **Start a new session** and **Discard**.
+- **Scrolling and find.** tmux keeps a session's history. The wheel scrolls
+  it, and the first key you type returns to the prompt. A drag selects and
+  copies (to the Mac clipboard with tmux 3.3 or newer); `⇧`-drag selects in
+  Temple's own terminal. `⌘F` searches what the tab has shown since it
+  connected, and its bar says so.
+- **What stays on this Mac.** The usage meter, Reveal in Finder and
+  `temple sessions new`. The command line lists, opens and closes sessions on
+  hosts; `temple sessions close` refuses one that is working, and `--force`
+  detaches it rather than stopping it.
 
 ## Launcher / home page
 
@@ -471,7 +561,24 @@ Changes apply live where applicable.
   arguments are `--dangerously-bypass-approvals-and-sandbox`.
 - **Appearance:** System, Light, or Dark theme.
 
-Agent arguments apply to both new and resumed sessions. Command paths are
+- **Hosts:** the machines you can start sessions on
+  ([Sessions on a host](#sessions-on-a-host)). **Added in Temple** hosts have
+  a name (fixed once saved), an address, and optionally a user, port,
+  identity file and jump host, with **Edit**, **Remove** and, in the form,
+  **Copy as ssh config**. **From ~/.ssh/config** lists the config's aliases
+  (`Host` entries, one level of `Include`; patterns and `Match` blocks are
+  skipped), each with a switch to use it in Temple, and **Edit in
+  ~/.ssh/config**. Every host in use has **Test connection** and **Sessions
+  on <host>…**. Test connection opens a small terminal where your own ssh
+  connects and asks what it needs (a host key, a password, a second factor),
+  then checks the login shell's PATH, `claude`, `codex`, tmux (by running
+  the exact commands a launch sends) and whether the host ends your
+  processes when you log out (`KillUserProcesses`), each with **Show
+  output**. A host that was never tested can still start sessions; only a
+  test that ran and found a CLI or tmux unusable rules it out.
+
+Agent arguments apply to both new and resumed sessions, on hosts too
+(`--dangerously-skip-permissions` included, as the Hosts card says). Command paths are
 auto-detected and overridable; argument fields are clearable to launch without
 extra flags.
 
@@ -544,14 +651,14 @@ of truth.
 | Shortcut | Action |
 |---|---|
 | **⌘T** | New empty session in the current project with the default agent. |
-| **⌘W** | Close the current tab; asks first only when its agent is running. |
+| **⌘W** | Close the current tab; asks first only when its agent is running. On a host, an idle agent is stopped and a working one asks Detach, Stop or Cancel. |
 | **⌘⇧T** | Reopen the last closed tab (user-initiated closes only). |
 | **⌘N** | New session in a project you pick (default agent); `⌘⇧N` uses the other agent. |
 | **⌘⇧H** | Show the launcher/home page; existing tabs stay open. |
 | **⌘1–9** | Switch to tab *N* in the active project. |
 | **⌃⇥ / ⌃⇧⇥** | Tab switcher: last visited tab (hold ⌃ to walk the MRU list, ⇧ reverses mid-walk, release to land). |
 | **⌘⇧[ / ⌘⇧]** | Previous / next project; returns to the session last used there. |
-| **⌘Q** | Quit, draining every agent first; closing the window does the same. Asks first if an agent is mid-task. |
+| **⌘Q** | Quit, draining every agent first; closing the window does the same. Asks first if an agent is mid-task. Agents working on a host keep running. |
 | **⌘P** | Project switcher (hold ⌘, tap P to walk, release to land). |
 | **⌘F** | Find in the active terminal (bar over the top-right corner); on the History tab, its search. |
 | **⌘G / ⌘⇧G** | Next / previous match while the find bar is open. |
@@ -564,6 +671,10 @@ of truth.
 | **⌘B** | Toggle the sidebar. |
 | **⌘,** | Open Settings as a tab. |
 | **Esc** | Dismiss the palette or shortcuts overlay from anywhere; close the find bar from its field; cancel busy-close confirmation. On the History tab: clear the search, then the "Archived just now" chip, then the selection, then go back. |
+
+With sessions on hosts turned on, the shortcuts card adds: "In a session on a
+host, scrolling up shows history; the first key you type returns to the
+prompt."
 
 ## Command line
 
@@ -601,6 +712,37 @@ temple history ls [--project DIR] [--cli NAME] | search <term> | get <id>
   answer, such as an older version, is reported rather than started twice.
 - Every read verb takes `--json`. Exit status is 0 on success, 1 when the
   command failed or Temple refused, 2 for a usage error.
+
+## Security
+
+What Temple does, and never does, with the machines you reach over ssh
+([ADR-036](./DECISIONS.md#adr-036--sessions-on-another-machine-through-the-users-own-ssh)).
+
+- **No credentials.** Temple runs your own `ssh`, found on your login
+  shell's PATH; keys, agents, passphrases, second factors and jump hosts are
+  ssh's business. A host added in Temple is a name, an address and
+  optionally a user, a port, an identity file's path and a jump host, passed
+  to ssh as `-o` options. Temple never passes a password, `-i`,
+  `StrictHostKeyChecking`, `UserKnownHostsFile` or `IdentitiesOnly`, never
+  writes `~/.ssh/config` or `known_hosts`, and keeps nothing secret in its
+  settings, databases or logs.
+- **ssh asks only where you can see it**: in the Test connection sheet and in
+  a session's tab. Every background question to a host is non-interactive and
+  rides a connection one of those opened. When ssh says a host's key has
+  changed, Temple says so and stops; it never changes `known_hosts`.
+- **Only the hosts you chose.** Temple talks to a host only while it is in
+  use in Settings, and only for something you did or for a session that
+  names that host. Disabling or removing a host stops every query to it at
+  once. Temple never ends an ssh connection it shares with you
+  (`ssh -O exit`); a connection it opened ends on its own ten minutes after
+  its last use.
+- **What Temple leaves on a host**: `~/.temple/launch/` (private to your
+  account, checked before every use) and its own tmux server's socket
+  (`tmux -L temple`). Every command is a fixed script with its values passed
+  as arguments, never spliced into shell text. Temple stops only sessions it
+  started, only when you close or stop one, and never your own tmux server.
+- **Arguments travel.** Settings' Claude and Codex arguments apply on hosts,
+  so `--dangerously-skip-permissions` runs there as it does here.
 
 ## Platform & packaging
 
