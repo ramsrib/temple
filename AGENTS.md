@@ -19,8 +19,11 @@ Three traps, each hit for real:
 
 - **`open dist/Temple.app` may not launch what you built.** LaunchServices resolves
   the bundle id and will happily activate the copy in `/Applications` instead — you
-  screenshot the old UI and conclude your change didn't work. Launch the binary
-  directly (`dist/Temple.app/Contents/MacOS/Temple`), or `make demo`. To confirm
+  screenshot the old UI and conclude your change didn't work. Launch a binary
+  directly, and for a demo never `dist/Temple.app` itself (its frames land in
+  his preferences, see below): `make demo`, or the copy `Scripts/demo-app.sh`
+  makes, launched by the isolated recipe in
+  [docs/UI-SCENARIOS.md](docs/UI-SCENARIOS.md#fresh-fixture-and-launch). To confirm
   which build is on screen: `strings <binary> | grep '<a string you just added>'`.
 
 - **Sri's own Temple is usually already running from `/Applications`.** Check
@@ -53,7 +56,7 @@ Three traps, each hit for real:
   without touching the persisted theme setting — **check both**: a fill that
   reads fine in light mode was a shade off the selection wash in dark.
   Drive the UI with AppleScript (`tell application "System Events" to tell
-  process "TempleDemo" …` — the *bundled* demo copy below, not the bare
+  process "TempleDemo" …`: the *bundled* demo copy below, not the bare
   SwiftPM binary, which has no windows System Events can see). The shot is a real
   pixel capture of the window's screen rect: sidebar, terminal, panels and
   context menus all appear as on screen; other apps' windows do not. For clicks,

@@ -528,16 +528,16 @@ Fixture variants must be described in the run log with titles, IDs, membership, 
 
 #### HIS-006: Arrow and day navigation
 - **Priority:** P1. **Safety:** Safe in demo, no Return.
-- **Preconditions:** All with History search focused.
-- **Steps:** Use Up/Down, Shift+Up/Down, Option+Up/Down, Command+Up/Down and shifted variants. Hover an unselected row.
-- **Expected:** Arrows move, Shift extends, Option jumps day and Command reaches ends. Selection scrolls into view below sticky headers. Hover does not move selection. Empty results handle keys harmlessly.
+- **Preconditions:** All with History search focused and a query typed.
+- **Steps:** With the search focused, use Up/Down, Option+Up/Down and Command+Up/Down, then Shift+Up/Down. Press Tab (the list takes the keyboard) and repeat Shift+Up/Down and the shifted Option and Command variants. Hover an unselected row.
+- **Expected:** From the search, unshifted arrows move the row cursor, Option jumps a day and Command reaches the ends, while Shift+arrows select the query's text and leave the rows alone. After Tab, Shift extends the row selection. Selection scrolls into view below sticky headers. Hover does not move selection. Empty results handle keys harmlessly.
 - **Notes:** Verify modifier delivery; do not substitute plain arrows for day/end coverage.
 
 #### HIS-007: Mouse selection and select all
 - **Priority:** P1. **Safety:** Safe in demo, single-click only.
 - **Preconditions:** All; no sheet.
-- **Steps:** Single-click a row; Shift-click another; Command-click a discontiguous row where supported. Filter to acme-api, click a row (the list takes the keyboard from the search field) and press `⌘A`; use Deselect. Then click the search field, press `⌘A` and type: the query is replaced and the row selection is unchanged.
-- **Expected:** Native single/range/toggle selection. `⌘A` selects nine currently visible matching rows, not all 25. Bar says **9 selected · all in Temple** and offers applicable actions. Deselect removes bulk selection.
+- **Steps:** Single-click a row; Shift-click another; Command-click a discontiguous row where supported. Filter to acme-api, click a row (the list takes the keyboard from the search field) and press `⌘A`; use Deselect. Then click the search field and press `⌘A`; check the bar before typing anything. Then type a new query.
+- **Expected:** Native single/range/toggle selection. `⌘A` from the list selects nine currently visible matching rows, not all 25. Bar says **9 selected · all in Temple** and offers applicable actions. Deselect removes bulk selection. `⌘A` in the search field selects the query's text and leaves the row selection as it was (check immediately). Typing then replaces the query, and once the new results land the selection resets to the first matching row, as for any query change.
 - **Notes:** Click plus Shift+Down is the first-pass fallback, not proof of modifier-click support.
 
 #### HIS-008: Escape ladder
@@ -792,8 +792,8 @@ Retired 2026-10-05. Outside the owner-defined Temple app UI scope. No executable
 | ⌘A | Select History view rows when no field has focus; in any field, its text | HIS-007/013 |
 | ⌘C | History resume commands when no field has focus; in a field, its text | HIS-014 |
 | ⌘⌫ | Archive eligible History selection when no field has focus; in a field, edits text | HIS-012 |
-| ↑ / ↓, ⇧↑ / ⇧↓ | Move/extend History selection; sidebar arrows only browse | HIS-006, SID-003 |
-| ⌥↑ / ⌥↓, ⌘↑ / ⌘↓ | Jump History day/ends; Shift extends | HIS-006 |
+| ↑ / ↓, ⇧↑ / ⇧↓ | Move History selection (from the search too); ⇧ extends only from the list, and selects text in a focused field; sidebar arrows only browse | HIS-006, SID-003 |
+| ⌥↑ / ⌥↓, ⌘↑ / ⌘↓ | Jump History day/ends; Shift extends from the list only (Tab from the search first) | HIS-006 |
 | Return / double-click | Open History row; nonresumable archive restores; all-archive multi-selection restores | HIS-011, restricted |
 | ⌘Z / ⌘⇧Z | Undo/redo current applicable action; text editor can own these | HIS-009/010, ARC; fixed focus regression |
 | ⌘B | Toggle sidebar | WIN-004 |
