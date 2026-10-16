@@ -35,11 +35,15 @@ final class TitleBandHeightTests: XCTestCase {
         // Five projects with a session each fill the launcher's Recent list,
         // as on any machine that has been used: that is what makes the
         // launcher taller than a 600 pt pane.
+        // Four sessions in each make the sidebar taller than a 652 pt window,
+        // so it can be scrolled.
         for index in 1...5 {
-            try database.join(sessionID: "s\(index)", via: .opened, agent: .claude,
-                              core: SessionCore(directory: "/private/tmp/project-\(index)",
-                                                directorySource: .tab, title: "Session \(index)",
-                                                lastActiveAt: Date(timeIntervalSince1970: Double(index))))
+            for older in 0..<4 {
+                try database.join(sessionID: "s\(index)-\(older)", via: .opened, agent: .claude,
+                                  core: SessionCore(directory: "/private/tmp/project-\(index)",
+                                                    directorySource: .tab, title: "Session \(index).\(older)",
+                                                    lastActiveAt: Date(timeIntervalSince1970: Double(index * 10 - older))))
+            }
         }
         model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
                          engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
@@ -187,7 +191,17 @@ final class TitleBandHeightTests: XCTestCase {
 
     /// A mouse-wheel scroll of `lines` (negative: towards the end) at a
     /// window point, delivered as AppKit delivers one: to the view under it.
-    private func scrollWheel(at point: NSPoint, lines: Int32) throws {
+    /// Returns once `scroll` has moved, or after a second if it does not.
+    ///
+    /// AppKit does not apply a wheel scroll in the call: measured, the clip
+    /// view moves in one step about 20 ms later, on the display's refresh,
+    /// for line and pixel scrolls alike, with or without scroll animation.
+    /// With the screen locked or the display asleep that refresh never
+    /// comes and nothing moves, so a wheel test cannot tell "does not
+    /// scroll" from "cannot be observed here": see `requireLiveDisplay`.
+    @discardableResult
+    private func scrollWheel(at point: NSPoint, lines: Int32, watching scroll: NSScrollView) throws -> Bool {
+        let before = scroll.contentView.bounds.origin
         let screen = window.convertPoint(toScreen: point)
         let primary = NSScreen.screens.first?.frame.height ?? 0
         let event = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .line,
@@ -197,6 +211,41 @@ final class TitleBandHeightTests: XCTestCase {
         let target = try XCTUnwrap(frameView.hitTest(frameView.convert(point, from: nil)),
                                    "something is under the scroll point")
         target.scrollWheel(with: nsEvent)
+        let deadline = Date().addingTimeInterval(1)
+        while scroll.contentView.bounds.origin == before, Date() < deadline { pump(0.02) }
+        pump(0.1)
+        return scroll.contentView.bounds.origin != before
+    }
+
+    /// Whether this login session can show anything: the screen not locked,
+    /// the session on the console, the main display awake.
+    static var displayIsLive: Bool {
+        let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+        if (session?["CGSSessionScreenIsLocked"] as? Bool) == true { return false }
+        if (session?[kCGSessionOnConsoleKey as String] as? Bool) == false { return false }
+        return CGDisplayIsAsleep(CGMainDisplayID()) == 0
+    }
+
+    /// Skips, saying why, when the display cannot refresh: a wheel scroll is
+    /// applied on the refresh (see `scrollWheel`), so with the screen locked
+    /// or the display asleep a wheel test proves nothing either way.
+    private func requireLiveDisplay() throws {
+        guard Self.displayIsLive else {
+            throw XCTSkip("AppKit applies a wheel scroll on the display's next refresh, which never comes "
+                          + "while the screen is locked or the display asleep; run with the screen unlocked")
+        }
+    }
+
+    /// Scrolls `scroll` straight to its end (or its top), as far as its clip
+    /// view allows: the page state a wheel would reach, without waiting on
+    /// the display (so it holds with the screen locked too).
+    private func scroll(_ scroll: NSScrollView, toEnd: Bool) {
+        let clip = scroll.contentView
+        var target = clip.bounds
+        // SwiftUI's clip view is flipped: a larger y is further down.
+        target.origin.y = (clip.isFlipped == toEnd) ? 1_000_000 : -1_000_000
+        clip.scroll(to: clip.constrainBoundsRect(target).origin)
+        scroll.reflectScrolledClipView(clip)
         pump(0.3)
     }
 
@@ -228,10 +277,11 @@ final class TitleBandHeightTests: XCTestCase {
         if overflows {
             XCTAssertLessThan(try marked(LauncherView.recentMarker).minY, viewport.minY,
                               "the last Recent row starts out below the viewport at \(tag)", file: file, line: line)
-            // An empty point on the page, right of the rows' column.
-            try scrollWheel(at: NSPoint(x: viewport.maxX - 20, y: viewport.midY), lines: -40)
+            // What the wheel reaches (testTheWheelScrollsTheLauncherOnlyWhenItOverflows
+            // checks the wheel itself).
+            self.scroll(scroll, toEnd: true)
             XCTAssertNotEqual(scroll.contentView.bounds.origin.y, clipBefore,
-                              "the wheel scrolls the launcher at \(tag)", file: file, line: line)
+                              "the launcher scrolls at \(tag)", file: file, line: line)
         }
         // Scrolled or not, nothing of the launcher shows in the band. The
         // scroll view itself runs under the band (SwiftUI extends it into
@@ -284,8 +334,12 @@ final class TitleBandHeightTests: XCTestCase {
         XCTAssertEqual(window.drags, drags + 1, "a drag on empty launcher page moves the window at \(tag)",
                        file: file, line: line)
 
+        // Scrolled to the end, the band still answers as band: the chips
+        // are controls, and the page under the band is not.
+        if overflows { assertTheOwnerClassifiesTheBand("\(tag), launcher scrolled to its end", file: file, line: line) }
+
         // Back to the top for the next state.
-        if overflows { try scrollWheel(at: point, lines: 40) }
+        if overflows { self.scroll(scroll, toEnd: false) }
     }
 
     /// TitleBandDoubleClick's classification with the launcher pinned to
@@ -348,8 +402,7 @@ final class TitleBandHeightTests: XCTestCase {
         let document = try XCTUnwrap(scroll.documentView, file: file, line: line)
         XCTAssertTrue(scroll.verticalScroller is ThinScroller, "\(page) keeps its thin scrollers at \(tag)",
                       file: file, line: line)
-        let point = NSPoint(x: window.frame.width - 30, y: bandBottom / 2)
-        try scrollWheel(at: point, lines: -80)
+        self.scroll(scroll, toEnd: true)
         let frame = document.convert(document.bounds, to: nil)
         XCTAssertGreaterThan(frame.maxY, bandBottom + 20,
                              "\(page) scrolled to its end has moved up past the band's edge at \(tag): \(frame)",
@@ -358,7 +411,53 @@ final class TitleBandHeightTests: XCTestCase {
         XCTAssertLessThanOrEqual(shown.maxY, bandBottom + 0.5,
                                  "nothing of \(page) shows in the band at \(tag): page \(frame) shows as \(shown)",
                                  file: file, line: line)
-        try scrollWheel(at: point, lines: 80)
+        assertTheOwnerClassifiesTheBand("\(tag), \(page) scrolled to its end", file: file, line: line)
+        self.scroll(scroll, toEnd: false)
+    }
+
+    // MARK: The sidebar
+
+    /// The sidebar's scroll view: the one that ends at the divider.
+    private func sidebarScrollView() throws -> NSScrollView {
+        let split = try XCTUnwrap(descendants(of: frameView).compactMap { $0 as? NSSplitView }
+            .first { $0.arrangedSubviews.count >= 2 })
+        let divider = split.convert(NSPoint(x: split.arrangedSubviews[0].frame.maxX, y: 0), to: nil).x
+        let rails = descendants(of: frameView).compactMap { $0 as? NSScrollView }.filter { scroll in
+            !scroll.isHidden && scroll.documentView != nil
+                && scroll.convert(scroll.bounds, to: nil).maxX <= divider + 0.5
+        }
+        XCTAssertEqual(rails.count, 1, "one scroll view in the sidebar: \(rails)")
+        return try XCTUnwrap(rails.first)
+    }
+
+    /// AGENTS.md's split-view trap: a layout change in the detail pane can
+    /// cost the sidebar its title-bar inset, and its rows then scroll up
+    /// under the band and the traffic lights. In this detail state, the
+    /// sidebar scrolled to its end shows none of its rows above the band's
+    /// bottom; at a size where it overflows, it really did scroll.
+    private func assertTheSidebarStaysBelowTheBand(_ state: String, _ tag: String, overflows: Bool,
+                                                   file: StaticString = #filePath, line: UInt = #line) throws {
+        let bandBottom = window.contentLayoutRect.maxY
+        let lights = try XCTUnwrap(window.standardWindowButton(.closeButton), file: file, line: line)
+        let lightsBottom = lights.convert(lights.bounds, to: nil).minY
+        let scroll = try sidebarScrollView()
+        let document = try XCTUnwrap(scroll.documentView, file: file, line: line)
+        let before = scroll.contentView.bounds.origin.y
+        self.scroll(scroll, toEnd: true)
+        if overflows {
+            XCTAssertNotEqual(scroll.contentView.bounds.origin.y, before,
+                              "the sidebar scrolls in \(state) at \(tag)", file: file, line: line)
+            XCTAssertGreaterThan(document.convert(document.bounds, to: nil).maxY, bandBottom,
+                                 "scrolled, the rail's rows have moved up past the band's edge in \(state) at \(tag)",
+                                 file: file, line: line)
+        }
+        let shown = shownRect(of: document)
+        XCTAssertLessThanOrEqual(shown.maxY, bandBottom + 0.5,
+                                 "no sidebar row shows in the band in \(state) at \(tag): shows as \(shown)",
+                                 file: file, line: line)
+        XCTAssertLessThan(shown.maxY, lightsBottom,
+                          "no sidebar row reaches the traffic lights in \(state) at \(tag)", file: file, line: line)
+        self.scroll(scroll, toEnd: false)
     }
 
     func testTheBandIsOneHeightAndTheDividerBelowTheChipsInEveryState() throws {
@@ -374,22 +473,70 @@ final class TitleBandHeightTests: XCTestCase {
             // drew the divider through the chips at 900 x 652.
             model.openSessions.showHome()
             settle()
+            let small = size.height < 700
             heights["home+tabs \(tag)"] = try assertBand("Home, History and Settings inactive")
-            try assertTheLauncher(tag, overflows: size.height < 700)
+            try assertTheLauncher(tag, overflows: small)
             assertTheOwnerClassifiesTheBand(tag)
+            try assertTheSidebarStaysBelowTheBand("Home", tag, overflows: small)
 
             model.openSessions.openHistory()
             settle()
             heights["history \(tag)"] = try assertBand("History active")
+            try assertTheSidebarStaysBelowTheBand("History", tag, overflows: small)
 
             model.openSessions.openSettings()
             settle()
             heights["settings \(tag)"] = try assertBand("Settings active")
-            if size.height < 700 { try assertAScrolledPageStaysOutOfTheBand("Settings", tag) }
+            if small { try assertAScrolledPageStaysOutOfTheBand("Settings", tag) }
+            try assertTheSidebarStaysBelowTheBand("Settings", tag, overflows: small)
         }
 
         let distinct = Set(heights.values.map { ($0 * 2).rounded() / 2 })
         XCTAssertEqual(distinct.count, 1, "one band height in every state and size: \(heights)")
+    }
+
+    /// The wheel itself, delivered to whatever is under the pointer: over
+    /// empty launcher page it scrolls the launcher when the page overflows
+    /// (900 x 652), and Settings likewise; at a size where the launcher fits
+    /// (1300 x 800) it leaves the offset exactly where it was. The first two
+    /// are the proof the wheel path is live in this session, so the last is
+    /// not vacuous. Skipped, saying why, when the display cannot refresh.
+    func testTheWheelScrollsTheLauncherOnlyWhenItOverflows() throws {
+        try requireLiveDisplay()
+        model.openSessions.openHistory()
+        model.openSessions.openSettings()
+
+        setContentSize(NSSize(width: 900, height: 652))
+        model.openSessions.showHome()
+        settle()
+        var launcher = try launcherScrollView()
+        var viewport = try launcherViewport()
+        let moved = try scrollWheel(at: NSPoint(x: viewport.maxX - 20, y: viewport.midY), lines: -40, watching: launcher)
+        try requireLiveDisplay()
+        XCTAssertTrue(moved, "the wheel scrolls the overflowing launcher")
+        scroll(launcher, toEnd: false)
+
+        model.openSessions.openSettings()
+        settle()
+        let settings = try detailScrollView()
+        XCTAssertTrue(try scrollWheel(at: NSPoint(x: window.frame.width - 30, y: window.contentLayoutRect.maxY / 2),
+                                      lines: -80, watching: settings),
+                      "the wheel scrolls Settings")
+        scroll(settings, toEnd: false)
+
+        setContentSize(NSSize(width: 1300, height: 800))
+        model.openSessions.showHome()
+        settle()
+        launcher = try launcherScrollView()
+        viewport = try launcherViewport()
+        let page = try XCTUnwrap(launcher.documentView)
+        XCTAssertLessThanOrEqual(page.frame.height, viewport.height + 0.5, "the launcher fits at 1300 x 800")
+        let offset = launcher.contentView.bounds.origin
+        let point = NSPoint(x: viewport.maxX - 20, y: viewport.midY)
+        XCTAssertFalse(try scrollWheel(at: point, lines: -40, watching: launcher), "towards the end: nothing to scroll")
+        XCTAssertFalse(try scrollWheel(at: point, lines: 40, watching: launcher), "towards the top: nothing to scroll")
+        XCTAssertEqual(launcher.contentView.bounds.origin, offset, "the fitting launcher's offset is unchanged")
+        try requireLiveDisplay()
     }
 
     /// The fixture fills the Recent list; that is what makes the launcher
