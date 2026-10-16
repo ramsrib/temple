@@ -2320,3 +2320,16 @@ locale short times stay, with a date when the time is on another day.
 7. **Each coalesced caller gets its own answer**, built from its own
    requests (agents, hints) out of the shared listing.
 8. **The breaker's times carry the date** when they fall on another day.
+
+### Phase 2 round 2
+
+1. **Paths are judged on bytes.** The normal-path check, the store
+   containment and the agent's shape (hints and listed files, both
+   agents), a Codex home from a path's shape, and whether a root is
+   absolute all work on UTF-8 bytes, as the host's kernel reads a path:
+   Characters let `/../\u{0301}outside/` (a combining mark joined to the
+   slash) hide a real `..`, and treat precomposed and decomposed spellings,
+   which the host keeps apart, as one.
+2. A well-framed answer whose `find` failed is a transport that worked: it
+   lists nothing, charges nothing, and resets the breaker's count like any
+   answer (the test now says so and asserts it).
