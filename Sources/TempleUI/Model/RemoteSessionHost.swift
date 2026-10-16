@@ -37,9 +37,10 @@ public struct RemoteOpenPlan: Equatable {
 
 public enum RemoteOpenResult: Equatable {
     case plan(RemoteOpenPlan)
-    /// The session was stopped with its conversation unconfirmed: nothing is
-    /// resumed blindly; the tab offers Start a new session and Discard.
-    case needsDecision
+    /// The session was stopped with its conversation unconfirmed and no
+    /// transcript found for it (`checked`), or none Temple could check: the
+    /// tab offers Start a new session and Discard (and Resume, unchecked).
+    case needsDecision(checked: Bool)
 }
 
 /// What a creation's records said, once persisted.
@@ -107,14 +108,13 @@ public protocol RemoteSessionHost: HostLauncher {
     /// record first, and writes the run before returning. Throws (refusing
     /// the open) when the run store cannot be read or written.
     func open(agent: Agent, sessionID: String, resume: Bool, directory: String, resumeAnyway: Bool,
-              startNew: Bool) async throws -> RemoteOpenResult
+              startNew: Bool, resumeUnconfirmed: Bool) async throws -> RemoteOpenResult
     /// An open that was planned but never spawned.
     func abandon(_ handle: String) async
     func collect(_ handle: String) async -> RemoteLaunchOutcome
     /// What the pane showed (ANSI and all), for an agent that ended at once.
     func diagnostics(_ handle: String) async -> String?
     func markCreationUnproven(_ handle: String) async
-    func confirmConversation(_ handle: String) async
     /// Discard: the session's runs are never attached to or resumed again.
     func discard(sessionID: String) async throws
     func exitCheck(_ handle: String) async -> RemoteLiveness
@@ -165,9 +165,10 @@ public struct RemoteTabState: Equatable {
         case stopping
         /// Stop was chosen and could not be confirmed.
         case stopFailed(String)
-        /// The session was stopped before Temple saw anything sent to it:
-        /// Start a new session or Discard, never a blind resume.
-        case needsDecision
+        /// The session was stopped with no transcript found for it on the
+        /// host (`checked`), or Temple couldn't check: Start a new session or
+        /// Discard (and Resume, unchecked); never a blind resume.
+        case needsDecision(checked: Bool)
     }
     public var phase: Phase
     public var handle: String?
@@ -178,8 +179,6 @@ public struct RemoteTabState: Equatable {
     /// Whether the agent was working when its client ended (the quit stops
     /// only an agent last seen idle).
     public var lastSeenWorking = false
-    /// A Temple tab sent this run's agent something (recorded once).
-    public var conversationConfirmed = false
     /// What the pane showed, for an agent that ended at once: the last
     /// lines, plain text.
     public var diagnostics: [String] = []
@@ -279,7 +278,10 @@ public enum RemoteCopy {
     }
 
     public static let unconfirmedConversation =
-        "This session was stopped before Temple saw anything sent to it, so it may have no conversation to resume."
+        "This session was stopped before it had a conversation on its host, so there is nothing to resume."
+
+    public static let uncheckedConversation =
+        "Temple couldn't check whether this session has a conversation to resume on its host."
 
     public static func exitedImmediately(_ host: String, agent: Agent) -> String {
         "\(agent.displayName) exited immediately on \(host)."

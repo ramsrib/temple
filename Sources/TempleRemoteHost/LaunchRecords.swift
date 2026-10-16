@@ -94,7 +94,27 @@ public enum LaunchRecords {
     exit 0
     """
 
+    /// Argument: the marker. Prints the last 4 KiB of the pane's output,
+    /// then deletes that file and nothing else: the pane's and the client's
+    /// records are acknowledged only once their evidence is written here.
+    static let outputScript = RecordDirectory.functions + "\n" + """
+    m=$1
+    rd=$(temple_record_dir) || exit 0
+    p=$rd/$m.out
+    [ -f "$p" ] && [ ! -L "$p" ] && tail -c 4096 "$p"
+    rm -f "$p"
+    exit 0
+    """
+
     public static let deadline: TimeInterval = 5
+
+    /// The pane's diagnostics, fetched once and removed; nothing else.
+    public static func takeOutput(marker: String, using exec: RemoteExec) async -> String? {
+        precondition(RemoteQuoting.isSafeToken(marker))
+        guard let output = try? await exec.run(script: outputScript, args: [marker], deadline: deadline),
+              output.reachedCommand, output.status == 0, !output.stdout.isEmpty else { return nil }
+        return output.stdout
+    }
 
     public enum FetchError: Error, Equatable, LocalizedError {
         case transport(String)
@@ -241,5 +261,52 @@ public enum FolderCheck: Sendable, Equatable {
         if text.hasPrefix("ok\t") { return .exists(resolved: String(text.dropFirst(3))) }
         if text.hasPrefix("denied\t") { return .cannotEnter(RemoteOutput.firstLine(String(text.dropFirst(7))) ?? "cd failed") }
         return .transport("the folder check printed something Temple didn't expect")
+    }
+}
+
+/// Whether a Claude session has a transcript on the host: the evidence
+/// that its conversation exists (typed input is not: Return at an ssh
+/// prompt or Claude's trust screen proves nothing). The config directory
+/// is found the way the CLI finds it: `CLAUDE_CONFIG_DIR` in the login
+/// environment, else `~/.claude`.
+public enum ConversationCheck: Sendable, Equatable {
+    case present
+    /// The check completed and found no transcript for the id.
+    case absent
+    case unknown(String)
+
+    static let script = RemoteEnvironment.resolverFunction + """
+
+    id=$1
+    d=$(temple_bounded "__temple_cfg_$$__" 'printenv CLAUDE_CONFIG_DIR') || { echo unknown; echo "the login shell didn't answer"; exit 0; }
+    d=$(printf '%s\\n' "$d" | grep / | head -n 1)
+    [ -n "$d" ] || d=$HOME/.claude
+    case $d in "~") d=$HOME;; "~/"*) d=$HOME/${d#"~/"};; esac
+    [ -d "$d/projects" ] || { echo absent; exit 0; }
+    if f=$(find "$d/projects" -mindepth 2 -maxdepth 2 -name "$id.jsonl" -print 2>/dev/null); then
+      if [ -n "$f" ]; then echo present; else echo absent; fi
+    elif [ -n "$f" ]; then echo present
+    else echo unknown; echo "the projects folder couldn't be read whole"
+    fi
+    """
+
+    public static let deadline: TimeInterval = 15
+
+    public static func run(sessionID: String, using exec: RemoteExec) async -> ConversationCheck {
+        precondition(RemoteQuoting.isSafeToken(sessionID))
+        do {
+            let output = try await exec.run(script: script, args: [sessionID], deadline: deadline)
+            guard output.reachedCommand, output.status == 0 else {
+                return .unknown(output.firstErrorLine ?? "ssh exited with status \(output.status)")
+            }
+            let lines = output.stdout.split(whereSeparator: \.isNewline).map(String.init)
+            switch lines.first {
+            case "present": return .present
+            case "absent": return .absent
+            default: return .unknown(lines.dropFirst().first ?? "the check printed nothing Temple expected")
+            }
+        } catch {
+            return .unknown(error.localizedDescription)
+        }
     }
 }

@@ -37,16 +37,19 @@ final class FakeRemoteHost: RemoteSessionHost {
     var exitGate: (() async -> Void)?
     var diagnosticsText: String?
     var decision = false
+    var decisionChecked = true
+    var diagnosticsGate: (() async -> Void)?
+    var collectGate: (() async -> Void)?
     private(set) var retired = false
 
-    private(set) var opens: [(sessionID: String, resume: Bool, directory: String, resumeAnyway: Bool, startNew: Bool)] = []
+    private(set) var opens: [(sessionID: String, resume: Bool, directory: String, resumeAnyway: Bool, startNew: Bool,
+                              resumeUnconfirmed: Bool)] = []
     private(set) var collects: [String] = []
     private(set) var stops: [(handle: String, fromAttachedTab: Bool)] = []
     private(set) var leftRunningCalls: [(handle: String, reason: RemoteLeftRunningReason)] = []
     private(set) var abandoned: [String] = []
     private(set) var unproven: [String] = []
     private(set) var kept: [String] = []
-    private(set) var confirmations: [String] = []
     private(set) var discarded: [String] = []
 
     init(_ name: String) { hostName = name }
@@ -57,8 +60,8 @@ final class FakeRemoteHost: RemoteSessionHost {
     func live(_ sessionID: String) -> Int? { runs.lastIndex { $0.sessionID == sessionID && !$0.ended && !$0.dismissed } }
 
     func open(agent: Agent, sessionID: String, resume: Bool, directory: String, resumeAnyway: Bool,
-              startNew: Bool) async throws -> RemoteOpenResult {
-        opens.append((sessionID, resume, directory, resumeAnyway, startNew))
+              startNew: Bool, resumeUnconfirmed: Bool) async throws -> RemoteOpenResult {
+        opens.append((sessionID, resume, directory, resumeAnyway, startNew, resumeUnconfirmed))
         if let openGate { await openGate() }
         if let openError { throw openError }
         if let index = live(sessionID), !resumeAnyway, !startNew {
@@ -69,7 +72,7 @@ final class FakeRemoteHost: RemoteSessionHost {
                                         displayArgv: ["claude", "--resume", sessionID],
                                         evidenceDirectory: "/home/u/evidence"))
         }
-        if decision, resume, !startNew, !resumeAnyway { return .needsDecision }
+        if decision, resume, !startNew, !resumeAnyway, !resumeUnconfirmed { return .needsDecision(checked: decisionChecked) }
         counter += 1
         let run = Run(handle: "h\(counter)", sessionID: sessionID, resume: resume && !startNew)
         runs.append(run)
@@ -79,13 +82,21 @@ final class FakeRemoteHost: RemoteSessionHost {
     }
 
     func abandon(_ handle: String) async { abandoned.append(handle) }
-    func collect(_ handle: String) async -> RemoteLaunchOutcome { collects.append(handle); return collectResult }
-    func diagnostics(_ handle: String) async -> String? { diagnosticsText }
+    func collect(_ handle: String) async -> RemoteLaunchOutcome {
+        collects.append(handle)
+        if let collectGate { await collectGate() }
+        return collectResult
+    }
+    func diagnostics(_ handle: String) async -> String? {
+        if let diagnosticsGate { await diagnosticsGate() }
+        return diagnosticsText
+    }
     func markCreationUnproven(_ handle: String) async { unproven.append(handle) }
-    func confirmConversation(_ handle: String) async { confirmations.append(handle) }
 
+    var discardGate: (() async -> Void)?
     func discard(sessionID: String) async throws {
         discarded.append(sessionID)
+        if let discardGate { await discardGate() }
         for index in runs.indices where runs[index].sessionID == sessionID { runs[index].dismissed = true }
     }
 
@@ -100,7 +111,8 @@ final class FakeRemoteHost: RemoteSessionHost {
     func stop(_ handle: String, fromAttachedTab: Bool) async throws -> RemoteStopResult {
         stops.append((handle, fromAttachedTab))
         if let stopGate { await stopGate(handle) }
-        if Task.isCancelled { throw CancellationError() }
+        // An answer that arrives after a cancellation is still an answer
+        // (the real stop writes it); the caller's gate decides what shows.
         guard let index = runs.firstIndex(where: { $0.handle == handle }) else { return stopResult }
         switch stopResult {
         case .stopped: runs[index].ended = true
@@ -120,11 +132,19 @@ final class FakeRemoteHost: RemoteSessionHost {
     func hasLiveMaster() async -> Bool { master }
     func manualStopCommand(handle: String) -> String { "tmux -L temple kill-session -t temple-\(handle)" }
     var tracked: (sessions: [RemoteTrackedSession], checked: Bool) = ([], true)
-    func trackedSessions() async -> (sessions: [RemoteTrackedSession], checked: Bool) { tracked }
+    var trackedGate: (() async -> Void)?
+    func trackedSessions() async -> (sessions: [RemoteTrackedSession], checked: Bool) {
+        if let trackedGate { await trackedGate() }
+        return tracked
+    }
     func keep(_ handle: String) async { kept.append(handle) }
     var unnoticed = 0
     var hostAnswers = true
-    func contactLeftRunning() async -> Int? { hostAnswers ? unnoticed : nil }
+    var contactGate: (() async -> Void)?
+    func contactLeftRunning() async -> Int? {
+        if let contactGate { await contactGate() }
+        return hostAnswers ? unnoticed : nil
+    }
     func noticeLeftRunning() async { unnoticed = 0 }
     var folder: RemoteFolderCheck = .missing
     var folderGate: (() async -> Void)?
@@ -585,7 +605,7 @@ final class RemoteLifecycleTests: XCTestCase {
         rows["u"] = row
         model.openSession(row)
         let tab = try XCTUnwrap(model.activeTab)
-        await settle(tab.remote?.phase == .needsDecision)
+        await settle(tab.remote?.phase == .needsDecision(checked: true))
         XCTAssertTrue(factory.created.isEmpty, "never resumed blindly")
         model.startNewRemoteSession(tab)
         await settle(tab.hasLiveProcess)
@@ -596,20 +616,33 @@ final class RemoteLifecycleTests: XCTestCase {
         rows["v"] = other
         model.openSession(other)
         let second = try XCTUnwrap(model.activeTab)
-        await settle(second.remote?.phase == .needsDecision)
+        await settle(second.remote?.phase == .needsDecision(checked: true))
         model.discardRemoteSession(second)
         XCTAssertFalse(model.tabs.contains { $0 === second })
         await settle(discardedRows == ["v"])
         XCTAssertEqual(remote.discarded, ["v"])
     }
 
-    func testTheFirstInputConfirmsTheConversation() async throws {
+    func testTypedInputConfirmsNothing() async throws {
         let tab = await openRow()
         let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
         model.surfaceDidSubmitInput(surface)
-        model.surfaceDidSubmitInput(surface)
-        await settle(self.remote.confirmations == ["h1"])
-        XCTAssertEqual(remote.confirmations, ["h1"], "once")
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(remote.runs.allSatisfy { !$0.confirmed }, "Return at an ssh or trust prompt proves nothing")
+    }
+
+    func testCouldNotCheckOffersResumeToo() async throws {
+        remote.decision = true
+        remote.decisionChecked = false
+        let row = Fixture.row("u", project: "/p", host: hostID)
+        rows["u"] = row
+        model.openSession(row)
+        let tab = try XCTUnwrap(model.activeTab)
+        await settle(tab.remote?.phase == .needsDecision(checked: false))
+        model.resumeUnconfirmedRemoteSession(tab)
+        await settle(tab.hasLiveProcess)
+        XCTAssertEqual(remote.opens.last?.resumeUnconfirmed, true)
+        XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["ssh", "create", "h1"])
     }
 
     func testAnAgentThatFailsAtOnceShowsWhatItPrinted() async throws {

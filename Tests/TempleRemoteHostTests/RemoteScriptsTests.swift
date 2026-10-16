@@ -245,6 +245,21 @@ final class RemoteScriptsTests: XCTestCase {
         XCTAssertTrue(argv.contains("PATH=\(host.bin):/login/only/bin:/usr/bin:/bin"), "\(argv)")
     }
 
+    /// One budget for the whole resolution, with or without `timeout`
+    /// (this Mac has none): a login shell that hangs is abandoned in about
+    /// five seconds, and the launch falls back.
+    func testAHangingLoginShellIsAbandonedWithinTheBudget() async throws {
+        let host = StandIn()
+        host.tree.write("bin/hangshell", "#!/bin/sh\ntrap '' TERM\nsleep 60\n", executable: true)
+        host.extra = ["SHELL": host.bin + "/hangshell"]
+        let started = Date()
+        let resolved = await RemoteEnvironment.resolve(using: LocalShellExec(path: nil, environment: host.environment))
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertNil(resolved.path)
+        XCTAssertLessThan(elapsed, 7.5, "bounded by the budget, not by the outer deadline alone")
+        XCTAssertGreaterThan(elapsed, 3)
+    }
+
     func testStaleRecordsAreSweptByTheNextLaunch() throws {
         let host = StandIn()
         host.installStub()
@@ -554,10 +569,17 @@ final class RemoteScriptsTests: XCTestCase {
         _ = try host.tmux(["-L", "temple", "-f", "/dev/null", "new-session", "-d", "-s", "temple-keep", "sleep 30"])
         // `if-shell -t =name:` on a missing session would print the refusal
         // with status 0; has-session in the same queue answers first.
-        let outcome = try await keepAlive.stop(session: "temple-gone", socket: nil, waitTenths: 0, using: host.exec)
+        let pinned = host.tmuxDir + "/tmux-\(getuid())/temple"
+        let outcome = try await keepAlive.stop(session: "temple-gone", socket: pinned, waitTenths: 0, using: host.exec)
         XCTAssertEqual(outcome, .absent)
-        let probe = await keepAlive.probe(session: "temple-gone", socket: nil, using: host.exec)
+        let probe = await keepAlive.probe(session: "temple-gone", socket: pinned, using: host.exec)
         XCTAssertEqual(probe, .absent)
+        // Without a pinned socket, the same words prove nothing.
+        guard case .unconfirmed = try await keepAlive.stop(session: "temple-gone", socket: nil, waitTenths: 0, using: host.exec),
+              case .unknown = await keepAlive.probe(session: "temple-gone", socket: nil, using: host.exec),
+              case .unknown = await keepAlive.liveness(session: "temple-gone", socket: nil, using: host.exec) else {
+            return XCTFail("unpinned absence must stay unknown")
+        }
     }
 
     /// A home whose path tmux would read as a format, and a quote: `-c /`

@@ -38,10 +38,14 @@ public final class RemoteSessions {
         /// conversation was never confirmed: a new run with the same id,
         /// started fresh, never resumed.
         public var startNew: Bool
+        /// The user chose Resume although Temple couldn't check whether the
+        /// conversation exists.
+        public var resumeUnconfirmed: Bool
         public init(agent: Agent, sessionID: String, mode: Mode, directory: String, extraArguments: [String] = [],
-                    resumeAnyway: Bool = false, startNew: Bool = false) {
+                    resumeAnyway: Bool = false, startNew: Bool = false, resumeUnconfirmed: Bool = false) {
             self.agent = agent; self.sessionID = sessionID; self.mode = mode; self.directory = directory
             self.extraArguments = extraArguments; self.resumeAnyway = resumeAnyway; self.startNew = startNew
+            self.resumeUnconfirmed = resumeUnconfirmed
         }
     }
 
@@ -63,9 +67,10 @@ public final class RemoteSessions {
 
     public enum OpenOutcome: Sendable, Equatable {
         case plan(OpenPlan)
-        /// The session's last run ended with its conversation unconfirmed:
-        /// the user chooses Start a new session or Discard.
-        case needsDecision
+        /// The session's last run ended with its conversation unconfirmed,
+        /// and the host has no transcript for it (`checked`), or Temple
+        /// couldn't check (then Resume is offered too).
+        case needsDecision(checked: Bool)
     }
 
     /// What the launch records said, once persisted.
@@ -136,6 +141,9 @@ public final class RemoteSessions {
 
     private var connection: SSHConnection?
     public private(set) var pathState: PathState = .unresolved
+    /// The connection `pathState` was resolved over: an answer for another
+    /// is never cached.
+    private var pathConnection: SSHConnection?
     /// The host was removed or edited: nothing here runs again.
     public private(set) var retired = false
 
@@ -229,7 +237,7 @@ public final class RemoteSessions {
         if let connection, connection == resolved { return connection }
         try resolved.prepareSocketDirectory()
         SocketHygiene.removeIfNothingListens(resolved.controlPath)
-        if connection != nil { pathState = .unresolved }
+        if connection != nil { pathState = .unresolved; pathConnection = nil }
         connection = resolved
         return resolved
     }
@@ -238,25 +246,30 @@ public final class RemoteSessions {
     /// no query has reached the host yet.
     func queryExec(refresh: Bool = false) async throws -> RemoteExec {
         let connection = try await resolvedConnection(refresh: refresh)
+        if pathConnection != connection { pathState = .unresolved }
         if case .unresolved = pathState {
             let resolved = await RemoteEnvironment.resolve(using: makeExec(connection, nil))
             guard !retired else { throw Retired() }
-            if resolved.reachedHost {
+            // Cached only for the connection it was resolved over.
+            if resolved.reachedHost, self.connection == connection {
                 pathState = resolved.path.map(PathState.resolved) ?? .fallback(resolved.problem ?? "no PATH")
+                pathConnection = connection
             }
         }
-        if case .resolved(let path) = pathState { return makeExec(connection, path) }
+        guard !retired else { throw Retired() }
+        if pathConnection == connection, case .resolved(let path) = pathState { return makeExec(connection, path) }
         return makeExec(connection, nil)
     }
 
     /// A transport failure: the next query resolves the PATH again.
-    func transportFailed() { pathState = .unresolved }
+    func transportFailed() { pathState = .unresolved; pathConnection = nil }
 
     var launchPath: RemoteLaunchPlan.Path {
+        guard pathConnection == connection else { return .unresolved }
         switch pathState {
-        case .unresolved: .unresolved
-        case .resolved(let path): .resolved(path)
-        case .fallback: .fallback
+        case .unresolved: return .unresolved
+        case .resolved(let path): return .resolved(path)
+        case .fallback: return .fallback
         }
     }
 
@@ -294,14 +307,24 @@ public final class RemoteSessions {
     }
 
     private func reserveAndPlan(_ request: OpenRequest, candidate: RemoteRun, connection: SSHConnection,
-                                recovering: Bool) async throws -> OpenOutcome {
+                                recovering: Bool, allowUnconfirmed: Bool = false) async throws -> OpenOutcome {
         let reservation: RemoteStateStore.Reservation
-        do { reservation = try await write { try $0.reserve(candidate, allowUnconfirmed: false) } } catch {
+        let allow = allowUnconfirmed || request.resumeUnconfirmed
+        do { reservation = try await write { try $0.reserve(candidate, allowUnconfirmed: allow) } } catch {
             throw OpenError.store(error.localizedDescription)
         }
         switch reservation {
         case .needsDecision:
-            return .needsDecision
+            // Typed input is not evidence; the transcript on the host is.
+            switch await conversation(sessionID: request.sessionID) {
+            case .present:
+                return try await reserveAndPlan(request, candidate: candidate, connection: connection,
+                                                recovering: recovering, allowUnconfirmed: true)
+            case .absent:
+                return .needsDecision(checked: true)
+            case .unknown:
+                return .needsDecision(checked: false)
+            }
         case .created(let run):
             return .plan(createPlan(run, request: request, connection: connection))
         case .existing(var run):
@@ -426,7 +449,7 @@ public final class RemoteSessions {
             } catch {
                 return .storage(error.localizedDescription)
             }
-            await LaunchRecords.acknowledge(marker: marker, using: exec)
+            if !retired { await LaunchRecords.acknowledge(marker: marker, using: exec) }
             return .ok(directory: evidence.directory)
         case .failedCD?:
             do {
@@ -440,7 +463,7 @@ public final class RemoteSessions {
             } catch {
                 return .storage(error.localizedDescription)
             }
-            await LaunchRecords.acknowledge(marker: marker, all: true, using: exec)
+            if !retired { await LaunchRecords.acknowledge(marker: marker, all: true, using: exec) }
             return .failedCD(directory: run.directoryIntent)
         case .unreadable(let line)?:
             return .transport("the launch record could not be read: \(line)")
@@ -464,12 +487,38 @@ public final class RemoteSessions {
     }
 
     /// What the pane showed, for an agent that ended at once: the end of
-    /// its first 64 KiB, raw. Fetched once, then removed from the host.
+    /// its first 64 KiB, raw. Fetched once, then removed from the host; the
+    /// pane's and the client's records are not touched (they are
+    /// acknowledged only once their evidence is written).
     public func diagnostics(_ handle: String) async -> String? {
-        guard let run = await run(handle), let exec = try? await queryExec(),
-              let records = try? await LaunchRecords.fetch(marker: marker(run), using: exec) else { return nil }
-        await LaunchRecords.acknowledge(marker: marker(run), all: true, using: exec)
-        return records.output
+        guard let run = await run(handle), let exec = try? await queryExec(), !retired else { return nil }
+        return await LaunchRecords.takeOutput(marker: marker(run), using: exec)
+    }
+
+    /// Whether the session's transcript exists on the host. Present: the
+    /// conversation is recorded as confirmed for its runs.
+    public func conversation(sessionID: String) async -> ConversationCheck {
+        guard RemoteQuoting.isSafeToken(sessionID), let exec = try? await queryExec(), !retired else {
+            return .unknown("Temple couldn't reach the host")
+        }
+        let answer = await ConversationCheck.run(sessionID: sessionID, using: exec)
+        if answer == .present {
+            let host = host
+            _ = try? await write { store in
+                for run in try store.runs(host: host, sessionID: sessionID) where run.conversation != .confirmed {
+                    try store.update(run.handle) { $0.conversation = .confirmed }
+                }
+            }
+        }
+        return answer
+    }
+
+    /// A run with no server on record: its record is recovered first, so
+    /// every later question goes to the server it was created on.
+    private func pinned(_ run: RemoteRun) async -> RemoteRun {
+        guard run.socketPath == nil, run.creation == nil || run.creation == .unproven, !retired else { return run }
+        _ = await collect(run.handle)
+        return await self.run(run.handle) ?? run
     }
 
     /// A creation whose tab ended with nothing collected: unproven, so
@@ -495,7 +544,8 @@ public final class RemoteSessions {
     /// run, and only once that is written; the caller drops the answer if
     /// the attachment moved on.
     public func exitCheck(_ handle: String) async -> Liveness {
-        guard let run = await run(handle) else { return .unknown(reason: "Temple has no record of this session", socketMissing: false) }
+        guard let found = await run(handle) else { return .unknown(reason: "Temple has no record of this session", socketMissing: false) }
+        let run = await pinned(found)
         let exec: RemoteExec
         do { exec = try await queryExec() } catch {
             return .unknown(reason: error.localizedDescription, socketMissing: false)
@@ -537,9 +587,10 @@ public final class RemoteSessions {
     /// cancelled before any answer throws `CancellationError`, and its
     /// owner records why.
     public func stop(_ handle: String, fromAttachedTab: Bool) async throws -> StopRecord {
-        guard let run = await run(handle) else {
+        guard let found = await run(handle) else {
             return StopRecord(outcome: .unconfirmed(reason: "Temple has no record of this session", reachedHost: false))
         }
+        let run = await pinned(found)
         let outcome: StopOutcome
         do {
             let exec = try await queryExec()
@@ -626,7 +677,16 @@ public final class RemoteSessions {
         }
         var tracked: [Tracked] = []
         var reached = false
-        for run in live {
+        for found in live {
+            guard !retired, !Task.isCancelled else {
+                tracked.append(Tracked(run: found, state: .unknown(Retired().localizedDescription)))
+                continue
+            }
+            let run = await pinned(found)
+            guard !retired, !Task.isCancelled else {
+                tracked.append(Tracked(run: run, state: .unknown(Retired().localizedDescription)))
+                continue
+            }
             switch await keepAlive.probe(session: run.sessionName, socket: run.socketPath, using: exec) {
             case .present(let attached):
                 reached = true
@@ -652,7 +712,10 @@ public final class RemoteSessions {
         let flagged = await unnoticedLeftRunning()
         guard !flagged.isEmpty, let exec = try? await queryExec(refresh: true) else { return nil }
         var reached = false
-        for run in flagged {
+        for found in flagged {
+            guard !retired, !Task.isCancelled else { return nil }
+            let run = await pinned(found)
+            guard !retired, !Task.isCancelled else { return nil }
             switch await keepAlive.probe(session: run.sessionName, socket: run.socketPath, using: exec) {
             case .present: reached = true
             case .absent:

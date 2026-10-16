@@ -71,13 +71,29 @@ extension AppModel {
         guard remoteHosts.isEnabled else { return }
         for host in remoteHosts.registeredHosts.map(\.host) {
             guard let launcher = remoteHost(host) else { continue }
-            openSessions.remoteOperations.run(host: host, .exitCheck) { [weak self] in
-                guard let count = await launcher.contactLeftRunning(), count > 0, !Task.isCancelled,
-                      let self, self.remoteNotice == nil else { return }
+            let ticket = openSessions.remoteGate.ticket(host: host)
+            openSessions.remoteOperations.run(host: host, .query) { [weak self] in
+                let count = await launcher.contactLeftRunning()
+                guard let self, self.openSessions.remoteGate.admit(.contactNotice, ticket),
+                      let count, count > 0, self.remoteNotice == nil else { return }
                 self.remoteNotice = RemoteNotice(host: host, message: RemoteCopy.leftRunningCount(count, host: host.rawValue),
                                                  kind: .count(count))
             }
         }
+    }
+
+    func sessionsSheetModel(_ request: RemoteSessionsRequest) -> RemoteSessionsSheetModel {
+        RemoteSessionsSheetModel(request: request, openSessions: openSessions,
+                                 launcher: { [weak self] in self?.remoteHost(request.host) })
+    }
+
+    func folderSheetModel(_ request: RemoteFolderRequest) -> RemoteFolderSheetModel {
+        RemoteFolderSheetModel(request: request, openSessions: openSessions,
+                               launcher: { [weak self] in self?.remoteHost(request.host) },
+                               start: { [weak self] folder in
+                                   guard let self, self.remoteFolderSheet?.id == request.id else { return }
+                                   self.startRemoteSession(host: request.host, agent: request.agent, folder: folder)
+                               })
     }
 
     /// ⌘N's and the launcher's "Folder on <host>…".

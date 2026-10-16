@@ -102,7 +102,7 @@ private struct SessionTerminalView: View {
         case stopFailed(String)
         case failure
         case exitedEarly
-        case decision
+        case decision(checked: Bool)
 
         static func make(_ phase: RemoteTabState.Phase) -> RemoteHeader? {
             switch phase {
@@ -112,7 +112,7 @@ private struct SessionTerminalView: View {
             case .stopFailed(let message): .stopFailed(message)
             case .failedToStart: .failure
             case .exitedEarly: .exitedEarly
-            case .needsDecision: .decision
+            case .needsDecision(let checked): .decision(checked: checked)
             }
         }
     }
@@ -125,9 +125,13 @@ private struct SessionTerminalView: View {
             if case .exited(let status) = tab.activity { launchFailure(status: status) }
         case .exitedEarly:
             exitedEarly(host)
-        case .decision:
-            notice(symbol: "questionmark.circle", text: RemoteCopy.unconfirmedConversation) {
+        case .decision(let checked):
+            notice(symbol: "questionmark.circle",
+                   text: checked ? RemoteCopy.unconfirmedConversation : RemoteCopy.uncheckedConversation) {
                 HStack(spacing: 12) {
+                    if !checked {
+                        Button("Resume") { model.openSessions.resumeUnconfirmedRemoteSession(tab) }
+                    }
                     Button("Start a new session") { model.openSessions.startNewRemoteSession(tab) }
                     Button("Discard") { model.openSessions.discardRemoteSession(tab) }
                 }

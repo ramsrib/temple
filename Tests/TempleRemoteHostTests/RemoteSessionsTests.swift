@@ -352,22 +352,113 @@ final class RemoteSessionsTests: XCTestCase {
     }
 
     /// A stopped new session whose conversation was never confirmed is not
-    /// resumed blindly; Start a new session reuses the id afresh.
-    func testAnUnconfirmedConversationNeedsADecision() async throws {
+    /// resumed blindly: the host is asked for its transcript (in the config
+    /// directory the CLI would use). Absent: Start a new session (the id
+    /// afresh) or Discard. Present: resumed, and confirmed.
+    func testAnUnconfirmedConversationIsCheckedOnTheHost() async throws {
         let host = StandIn()
         let store = try RemoteStateStore()
         try insertRun(store) { $0.conversation = .unconfirmed; $0.endedAt = Date(); $0.endEvidence = .killed }
         let sessions = controller(host, store: store)
         let outcome = try await sessions.open(request(.resume))
-        XCTAssertEqual(outcome, .needsDecision)
+        XCTAssertEqual(outcome, .needsDecision(checked: true))
         XCTAssertEqual(try store.runs(host: record.host).count, 1, "nothing reserved")
         let fresh = try plan(await sessions.open(request(.resume, startNew: true)))
         XCTAssertTrue(fresh.creating)
         XCTAssertEqual(fresh.agentArgv.suffix(2), ["--session-id", "sess-1"])
+        try await sessions.abandon(fresh.handle, reason: "test")
+
+        // The login shell names another config directory; the transcript is there.
+        host.tree.write("home/.profile", "CLAUDE_CONFIG_DIR=$HOME/cfg; export CLAUDE_CONFIG_DIR\n")
+        host.tree.write("home/cfg/projects/-p/sess-1.jsonl", "{}\n")
+        let present = await sessions.conversation(sessionID: "sess-1")
+        XCTAssertEqual(present, .present)
+        let resumed = try plan(await sessions.open(request(.resume)))
+        XCTAssertTrue(resumed.creating)
+        XCTAssertEqual(resumed.agentArgv.suffix(2), ["--resume", "sess-1"])
+        XCTAssertEqual(try store.run("h1")?.conversation, .confirmed)
+
         // Discard: no run of the session is attached to or resumed again.
         try await sessions.dismiss(sessionID: "sess-1")
         let live = await sessions.liveRun(sessionID: "sess-1")
         XCTAssertNil(live)
+    }
+
+    func testAConversationTemplCantCheckIsUnknown() async throws {
+        let host = StandIn()
+        let store = try RemoteStateStore()
+        try insertRun(store) { $0.conversation = .unconfirmed; $0.endedAt = Date(); $0.endEvidence = .killed }
+        let outcome = try await controller(host, store: store, failing: true).open(request(.resume))
+        XCTAssertEqual(outcome, .needsDecision(checked: false))
+        // Resume, chosen by the user knowing Temple couldn't check.
+        var unchecked = request(.resume)
+        unchecked.resumeUnconfirmed = true
+        let resumed = try plan(await controller(host, store: store).open(unchecked))
+        XCTAssertEqual(resumed.agentArgv.suffix(2), ["--resume", "sess-1"])
+    }
+
+    /// No server on record: `-L temple`'s "can't find session" is not
+    /// proof, in the exit check, the probe or the stop.
+    func testWithoutAPinnedSocketNothingIsProvenAbsent() async throws {
+        let host = StandIn()
+        host.installStub()
+        host.extra = ["STUB_STATUS": "1", "STUB_ERR": "can't find session: temple-h1"]
+        let store = try RemoteStateStore()
+        try insertRun(store, creation: nil)
+        let sessions = controller(host, store: store)
+        guard case .unknown = await sessions.exitCheck("h1") else { return XCTFail() }
+        let tracked = await sessions.trackedSessions()
+        guard case .unknown = tracked.sessions.first?.state else { return XCTFail("\(tracked)") }
+        let stop = try await sessions.stop("h1", fromAttachedTab: false)
+        guard case .unconfirmed = stop.outcome else { return XCTFail("\(stop)") }
+        XCTAssertNil(try store.run("h1")?.endedAt, "never Ended without its own server's word")
+    }
+
+    /// Diagnostics take the pane's output and nothing else: an `ok` whose
+    /// write failed stays on the host for the next Open.
+    func testDiagnosticsNeverAcknowledgeRecords() async throws {
+        let host = StandIn()
+        try host.makeRecordDirectory()
+        let store = try RemoteStateStore()
+        try insertRun(store, creation: nil)
+        let ok = "ok\nepoch\t1\npane\t2\t\nserver\t3\t\nsocket\t/tmp/s\ndir\t/x\n"
+        try ok.write(toFile: host.recordDirectory + "/r-h1", atomically: true, encoding: .utf8)
+        try "boom\n".write(toFile: host.recordDirectory + "/r-h1.out", atomically: true, encoding: .utf8)
+        let sessions = controller(host, store: store)
+        let words = await sessions.diagnostics("h1")
+        XCTAssertEqual(words, "boom\n")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: host.recordDirectory + "/r-h1"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: host.recordDirectory + "/r-h1.out"))
+    }
+
+    /// A PATH resolved over connection A that answers after the alias moved
+    /// to B is not cached for B.
+    func testAPathResolvedForAnOldConnectionIsNotCached() async throws {
+        let host = StandIn()
+        let store = try RemoteStateStore()
+        var target = "a.example"
+        let gate = HeldEnvironmentExec()
+        let sessions = RemoteSessions(record: record, stateDirectory: host.tree.url, sshPath: "/usr/bin/ssh",
+                                      store: { store },
+                                      resolve: { _ in .resolved(["hostname": target, "user": "u", "port": "22"]) },
+                                      makeExec: { _, _ in gate })
+        let first = Task { try await sessions.queryExec() }
+        try await Task.sleep(for: .milliseconds(50))
+        target = "b.example"
+        _ = try await sessions.resolvedConnection(refresh: true)
+        gate.release()
+        _ = try await first.value
+        XCTAssertEqual(sessions.pathState, .unresolved)
+    }
+
+    final class HeldEnvironmentExec: RemoteExec, @unchecked Sendable {
+        private let lock = NSLock()
+        private var released = false
+        func release() { lock.withLock { released = true } }
+        func run(script: String, args: [String], deadline: TimeInterval) async throws -> RemoteOutput {
+            while !lock.withLock({ released }) { try await Task.sleep(nanoseconds: 10_000_000) }
+            return RemoteOutput(status: 0, stdout: "shell /bin/sh\n\(args[0])\n/A/bin:/usr/bin\n\(args[0])\n", stderr: "")
+        }
     }
 
     func testAnAliasRetargetedWhileRunningGetsANewConnectionOnTheNextExplicitOpen() async throws {

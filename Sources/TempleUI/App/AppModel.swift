@@ -539,7 +539,7 @@ public final class AppModel: ObservableObject {
     /// The registry as it stands: this Mac, plus every enabled remote host
     /// while `temple.feature.remoteHosts` is on (`rebuildRemoteHosts`).
     public var hostRegistry: HostRegistry { hostBox.value }
-    private let hostBox: HostRegistryBox
+    let hostBox: HostRegistryBox
     /// The Hosts connection manager (Settings), dark behind its flag.
     let remoteHosts: RemoteHostsModel
     /// Makes terminals outside tabs (the Test connection sheet's).
@@ -700,6 +700,9 @@ public final class AppModel: ObservableObject {
         openSessions.touchHandler = { [weak self] id, host, at in self?.overlay.touch(id, host: host, at: at) }
         openSessions.remoteNoticeHandler = { [weak self] host, message in
             self?.remoteNotice = RemoteNotice(host: host, message: message, kind: .closed)
+        }
+        openSessions.remoteGate.sheetIsActive = { [weak self] id in
+            self?.remoteSessionsSheet?.id == id || self?.remoteFolderSheet?.id == id
         }
         openSessions.discardHandler = { [weak self] id, host in
             guard let self, self.overlay.rows[id]?.host == host else { return }

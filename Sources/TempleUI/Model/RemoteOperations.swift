@@ -15,7 +15,7 @@ import TempleCore
 ///   within its own bound, never past it.
 @MainActor
 public final class RemoteOperations {
-    public enum Kind: Equatable { case open, collect, exitCheck, stop, write }
+    public enum Kind: Equatable { case open, collect, exitCheck, query, stop, write }
 
     final class Operation {
         let id = UUID()
@@ -61,6 +61,13 @@ public final class RemoteOperations {
         for operation in operations.values where operation.host == host && operation.kind != .write && !operation.expired {
             expire(operation, reason: .stopNotAcknowledged)
         }
+    }
+
+    /// One operation is no longer wanted (its sheet closed): cancelled,
+    /// and owned until it has unwound.
+    public func cancel(id: UUID) {
+        guard let operation = operations[id], !operation.expired, operation.kind != .write else { return }
+        expire(operation, reason: .stopNotAcknowledged)
     }
 
     /// The quit began: what only looks is cancelled (and stays owned until

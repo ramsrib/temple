@@ -350,11 +350,18 @@ public struct TmuxKeepAlive: KeepAlive {
     public static let queryDeadline: TimeInterval = 5
     public static let stopDeadline: TimeInterval = 10
 
+    /// Without a pinned socket (no record collected yet) the run is asked
+    /// about on `-L temple`, but nothing that server says proves absence:
+    /// the session may live on a server elsewhere.
+    static let unpinned = "Temple has no record of the server this session was started on"
+
     public func liveness(session: String, socket: String?, using exec: RemoteExec) async -> Liveness {
         precondition(RemoteQuoting.isSafeToken(session))
         do {
-            return Liveness.classify(try await exec.run(script: Self.hasSessionScript, args: [socket ?? "", session],
-                                                        deadline: Self.queryDeadline), session: session)
+            let liveness = Liveness.classify(try await exec.run(script: Self.hasSessionScript, args: [socket ?? "", session],
+                                                                deadline: Self.queryDeadline), session: session)
+            if socket == nil, liveness == .absent { return .unknown(reason: Self.unpinned, socketMissing: false) }
+            return liveness
         } catch {
             return .unknown(reason: error.localizedDescription, socketMissing: false)
         }
@@ -369,7 +376,7 @@ public struct TmuxKeepAlive: KeepAlive {
                 return .present(attached: count)
             }
             switch Liveness.classify(output, session: session) {
-            case .absent: return .absent
+            case .absent: return socket == nil ? .unknown(reason: Self.unpinned, reachedHost: true) : .absent
             case .present: return .unknown(reason: "tmux answered without a count", reachedHost: true)
             case .unknown(let reason, _): return .unknown(reason: reason, reachedHost: output.reachedCommand)
             }
@@ -383,9 +390,11 @@ public struct TmuxKeepAlive: KeepAlive {
     public func stop(session: String, socket: String?, waitTenths: Int, using exec: RemoteExec) async throws -> StopOutcome {
         precondition(RemoteQuoting.isSafeToken(session))
         do {
-            return StopOutcome.decode(try await exec.run(script: Self.stopScript,
-                                                         args: [socket ?? "", session, String(max(0, waitTenths))],
-                                                         deadline: Self.stopDeadline), session: session)
+            let outcome = StopOutcome.decode(try await exec.run(script: Self.stopScript,
+                                                                args: [socket ?? "", session, String(max(0, waitTenths))],
+                                                                deadline: Self.stopDeadline), session: session)
+            if socket == nil, outcome == .absent { return .unconfirmed(reason: Self.unpinned, reachedHost: true) }
+            return outcome
         } catch is CancellationError {
             throw CancellationError()
         } catch {

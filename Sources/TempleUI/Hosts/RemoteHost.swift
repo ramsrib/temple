@@ -74,14 +74,15 @@ final class RemoteHostLauncher: RemoteSessionHost {
     }
 
     func open(agent: Agent, sessionID: String, resume: Bool, directory: String, resumeAnyway: Bool,
-              startNew: Bool) async throws -> RemoteOpenResult {
+              startNew: Bool, resumeUnconfirmed: Bool) async throws -> RemoteOpenResult {
         let outcome = try await sessions.open(.init(agent: agent, sessionID: sessionID, mode: resume ? .resume : .new,
                                                     directory: directory, extraArguments: extraArgs(agent),
-                                                    resumeAnyway: resumeAnyway, startNew: startNew))
+                                                    resumeAnyway: resumeAnyway, startNew: startNew,
+                                                    resumeUnconfirmed: resumeUnconfirmed))
         await refreshLiveSessions()
         switch outcome {
-        case .needsDecision:
-            return .needsDecision
+        case .needsDecision(let checked):
+            return .needsDecision(checked: checked)
         case .plan(let plan):
             // The terminal's working directory is this Mac's home: a remote
             // path never becomes a local cwd.
@@ -114,12 +115,6 @@ final class RemoteHostLauncher: RemoteSessionHost {
     func markCreationUnproven(_ handle: String) async {
         do { try await sessions.markCreationUnproven(handle) } catch {
             TempleUILog.db.error("remote run not marked unproven: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    func confirmConversation(_ handle: String) async {
-        do { try await sessions.confirmConversation(handle) } catch {
-            TempleUILog.db.error("remote conversation not confirmed: \(error.localizedDescription, privacy: .public)")
         }
     }
 

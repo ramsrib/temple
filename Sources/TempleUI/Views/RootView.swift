@@ -146,11 +146,11 @@ public struct RootView: View {
             Button("Cancel", role: .cancel) { model.openSessions.cancelRemoteClose() }
         }
         .sheet(item: $model.remoteSessionsSheet) { request in
-            RemoteSessionsSheet(request: request)
+            RemoteSessionsSheet(sheet: model.sessionsSheetModel(request))
                 .environmentObject(model)
         }
         .sheet(item: $model.remoteFolderSheet) { request in
-            RemoteFolderSheet(request: request)
+            RemoteFolderSheet(sheet: model.folderSheetModel(request))
                 .environmentObject(model)
         }
     }
