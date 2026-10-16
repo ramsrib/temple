@@ -803,6 +803,9 @@ public final class RemoteTabController {
         let hostID: HostID
         let hostName: String
         let tabID: SessionTab.ID
+        /// The model's acknowledged saves when it was owed: a later one
+        /// wrote the tab set with this tab in it.
+        let savesBefore: Int
         var inFlight = false
         var said = false
     }
@@ -1038,23 +1041,31 @@ public final class RemoteTabController {
             TempleUILog.db.error("no run store to hand a run over with; it stays restorable by its run")
             return
         }
-        handOvers[handle] = HandOver(ledger: ledger, hostID: tab.host, hostName: host.hostName, tabID: tab.id)
+        handOvers[handle] = HandOver(ledger: ledger, hostID: tab.host, hostName: host.hostName, tabID: tab.id,
+                                     savesBefore: model.acknowledgedSaves)
+        // The tab set's ordinary save: its acknowledgement settles this.
+        model.persist()
         settleHandOvers()
     }
+
+    /// The model's own save of the tab set was written (round 5: no save
+    /// is made for a hand-over; it waits on the ones that happen anyway).
+    func tabSetSaved() { settleHandOvers() }
 
     /// A tab went (closed, detached, discarded, on any host): every hand-over
     /// whose tab is gone is finished, and every one that failed is tried
     /// again.
     func tabRemoved(_ tab: SessionTab) { settleHandOvers() }
 
-    /// Finishes each hand-over whose tab is gone, or whose tab set is
-    /// written now; one already being written is left to finish.
+    /// Finishes each hand-over whose tab is gone, or whose tab set has been
+    /// written since it was owed (an acknowledged save the model made
+    /// anyway); one already being written is left to finish. Never saves.
     func settleHandOvers() {
         guard handOvers.values.contains(where: { !$0.inFlight }) else { return }
         let open = Set(model.tabs.map(\.id))
-        let waitingOnSave = handOvers.values.contains { !$0.inFlight && open.contains($0.tabID) }
-        let saved = waitingOnSave && model.persistAcknowledged()
-        for (handle, obligation) in handOvers where !obligation.inFlight && (saved || !open.contains(obligation.tabID)) {
+        let saves = model.acknowledgedSaves
+        for (handle, obligation) in handOvers where !obligation.inFlight
+            && (saves > obligation.savesBefore || !open.contains(obligation.tabID)) {
             finishHandOver(handle)
         }
     }
@@ -1064,6 +1075,8 @@ public final class RemoteTabController {
         obligation.inFlight = true
         handOvers[handle] = obligation
         let retries = handOverRetries
+        // Taken before the write: a host replaced meanwhile refuses it.
+        let ticket = gate.ticket(host: obligation.hostID)
         operations.run(host: obligation.hostID, .write) { [weak self] in
             var failure: Error?
             for delay in [0] + retries {
@@ -1081,11 +1094,13 @@ public final class RemoteTabController {
                 self.handOvers[handle] = nil
                 return
             }
-            // Kept for the next close, quit or launch; said once.
+            // Kept for the next close, quit or launch; said once, and logged
+            // first, so a suppressed notice still leaves a diagnostic.
             self.handOvers[handle]?.inFlight = false
             guard self.handOvers[handle]?.said == false else { return }
             self.handOvers[handle]?.said = true
-            if self.gate.admit(.pendingWriteNotice, self.gate.ticket(host: obligation.hostID)) {
+            TempleUILog.remote.notice("hand-over of \(handle, privacy: .public) not written: \(failure.localizedDescription, privacy: .public)")
+            if self.gate.admit(.pendingWriteNotice, ticket) {
                 self.noticeHandler?(obligation.hostID, RemoteCopy.unrecorded(obligation.hostName, detail: failure.localizedDescription))
             }
         }

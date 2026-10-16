@@ -12,4 +12,6 @@ enum TempleUILog {
     static let control = Logger(subsystem: "com.sriramb.temple.app", category: "control")
     /// Dev-only title-band diagnostics (`TEMPLE_DEBUG_TITLEBAR=1`).
     static let titlebar = Logger(subsystem: "com.sriramb.temple.app", category: "titlebar")
+    /// Sessions on hosts: what a suppressed notice would have said, at least.
+    static let remote = Logger(subsystem: "com.sriramb.temple.app", category: "remote")
 }

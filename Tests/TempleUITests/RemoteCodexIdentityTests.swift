@@ -30,6 +30,8 @@ final class RemoteCodexIdentityTests: XCTestCase {
 
     /// Whether the host is in the registry (removed: no launcher for it).
     var hostEnabled = true
+    /// The host's launcher after an edit (a new connection context).
+    var replacement: FakeRemoteHost?
 
     func makeModel(persistence override: TabPersistence? = nil) {
         let remote = self.remote!
@@ -37,7 +39,10 @@ final class RemoteCodexIdentityTests: XCTestCase {
         model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
             runtime: SessionRuntimeController(gracefulTimeout: 0.3), registry: InMemoryProcessRegistry(),
             persistence: override ?? persistence,
-            launcherForHost: { [weak self] in $0 == host && self?.hostEnabled != false ? remote : nil })
+            launcherForHost: { [weak self] in
+                guard $0 == host, self?.hostEnabled != false else { return nil }
+                return self?.replacement ?? remote
+            })
         model.earlyExitGraceSeconds = 0.3
         model.remoteTabs.recordPollDelays = [0.01]
         model.remoteTabs.identitySchedule = [0.02, 0.04]
@@ -156,6 +161,8 @@ final class RemoteCodexIdentityTests: XCTestCase {
         // A yes that turns out taken says the same, and drops that candidate.
         remote.confirmResult = .taken
         await settle(tab.remote?.suggestions.count == 1)
+        // The host leaves a held id out of its suggestions from then on.
+        remote.suggestionsResult = .candidates([])
         model.remoteTabs.confirm(try XCTUnwrap(tab.remote?.suggestions.first), in: tab)
         await settle(tab.remote?.confirming == nil && tab.remote?.suggestions.isEmpty == true)
         XCTAssertNil(tab.sessionID)
@@ -447,6 +454,54 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(notices.count, 1, "said once")
     }
 
+    /// A hand-over never saves the tab set itself (round 5): it waits on
+    /// the saves the model makes anyway, so a close costs the one save it
+    /// always did.
+    func testAHandOverAddsNoSave() async throws {
+        let store = FailingTabPersistence()
+        store.failing = false
+        makeModel(persistence: store)
+        remote.identityResult = .inconclusive("no session file is open right now", lasting: false, ended: false)
+        let tab = await newCodex()
+        let other = await newCodex()
+        remote.identityResult = .adopted("c9", directory: "/home/u/project")
+        model.remoteTabs.activationRecheck = 0
+        model.activate(tab)
+        await settle(tab.sessionID == "c9")
+        await settle(self.remote.closedPending == ["p1"], "finished by the tab set's own save")
+        // An owed hand-over: settling, and a tab's removal, never save.
+        store.failing = true
+        remote.identityResult = .adopted("c8", directory: "/home/u/project")
+        model.activate(other)
+        await settle(other.sessionID == "c8")
+        XCTAssertTrue(model.remoteTabs.owesHandOver("p2"))
+        let owed = store.saves
+        model.remoteTabs.settleHandOvers()
+        model.remoteTabs.tabRemoved(tab)
+        model.remoteTabs.quitBegan()
+        XCTAssertEqual(store.saves, owed, "a hand-over waits on saves; it never makes one")
+    }
+
+    /// The notice's ticket is taken before the write: a host edited while
+    /// the write was held (its launcher replaced) refuses the notice, and
+    /// the run store still has its diagnostic in the log (round 5).
+    func testAHeldHandOverFailureForAReplacedHostIsNotSaid() async throws {
+        model.remoteTabs.handOverRetries = []
+        let hold = Gate()
+        remote.ledgerFailures = 1
+        remote.ledgerGate = { await hold.wait() }
+        remote.identityResult = .adopted("c9", directory: "/home/u/project")
+        let tab = await newCodex()
+        await settle(tab.sessionID == "c9")
+        await settle(!self.remote.ledgerWrites.isEmpty)
+        // The host is edited meanwhile: a new launcher for the same name.
+        replacement = FakeRemoteHost("box")
+        await hold.open()
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(notices.isEmpty, "a completion begun for the old host never speaks for the new one")
+        XCTAssertTrue(model.remoteTabs.owesHandOver("p1"), "still owed, and tried again later")
+    }
+
     /// The quit finishes what the frozen tab set hands over.
     func testTheQuitFinishesAnOwedHandOver() async throws {
         let store = FailingTabPersistence()
@@ -699,9 +754,11 @@ final class RemoteCodexIdentityTests: XCTestCase {
 final class FailingTabPersistence: TabPersistence {
     var failing = true
     private(set) var saved: [PersistedTab] = []
+    private(set) var saves = 0
     func load() -> [PersistedTab] { saved }
     func save(_ tabs: [PersistedTab]) { _ = saveAcknowledged(tabs) }
     func saveAcknowledged(_ tabs: [PersistedTab]) -> Bool {
+        saves += 1
         guard !failing else { return false }
         saved = tabs
         return true

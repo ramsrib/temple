@@ -247,6 +247,7 @@ final class FakeRemoteHost: RemoteSessionHost {
     /// written) whatever becomes of this host's registry entry. Fails as
     /// many times as `ledgerFailures` says.
     var ledgerFailures = 0
+    var ledgerGate: (() async -> Void)?
     private(set) var ledgerWrites: [String] = []
     final class Ledger: RemoteRunLedger {
         weak var host: FakeRemoteHost?
@@ -254,6 +255,7 @@ final class FakeRemoteHost: RemoteSessionHost {
         func markTabClosed(_ handle: String) async throws {
             guard let host else { return }
             host.ledgerWrites.append(handle)
+            if let gate = host.ledgerGate { await gate() }
             if host.ledgerFailures > 0 {
                 host.ledgerFailures -= 1
                 throw CocoaError(.fileWriteUnknown)

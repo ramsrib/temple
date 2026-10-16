@@ -1021,13 +1021,16 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     }
 
     func persist() {
-        persistence.save(restorableTabs())
+        // The same single save as ever; whether it was written is kept, so
+        // a hand-over waiting on it never needs a save of its own.
+        if persistence.saveAcknowledged(restorableTabs()) {
+            acknowledgedSaves += 1
+            remoteTabs.tabSetSaved()
+        }
     }
 
-    /// The same save, saying whether the tab set was written.
-    func persistAcknowledged() -> Bool {
-        persistence.saveAcknowledged(restorableTabs())
-    }
+    /// How many saves of the tab set were acknowledged as written.
+    private(set) var acknowledgedSaves = 0
 
     private func restorableTabs() -> [PersistedTab] {
         var restorable = tabs

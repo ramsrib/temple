@@ -2080,3 +2080,17 @@ Two rounds in the same place, so the mechanism moved up a level:
 - The retargeted-alias test, which resolves with the real `ssh -G`, moved
   into `SSHConnectionTests` with the other ssh-invoking tests.
 
+## Phase 1b round 5
+
+- **A hand-over never saves.** It waits on the acknowledged saves the
+  model makes anyway (`persist()` keeps whether each was written, the one
+  save it always made): it is finished once a save written after it was
+  owed, or its tab's removal, says so. Settling makes no save, so neither
+  a local tab's close nor the quit gains one, and the quit adds nothing
+  outside its 3 s drain and 2 s barrier (the write itself runs off the
+  main actor as an owned operation, bounded by that barrier).
+- **The notice's ticket is taken before the write**, so a host edited
+  while the write was held (its launcher replaced) refuses it.
+- **A failure is logged first** (`remote` category, at notice), so a notice
+  the gate suppresses still leaves a diagnostic.
+
