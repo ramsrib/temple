@@ -308,9 +308,42 @@ final class RemoteScriptsTests: XCTestCase {
                 XCTAssertEqual(result.status, 125, "\(setup): \(result.stderr)")
                 XCTAssertTrue(result.stderr.contains("Temple couldn't find a safely stored launch"), "\(setup)")
                 XCTAssertFalse(FileManager.default.fileExists(atPath: ran), "\(setup): nothing ran")
+                switch setup {
+                case .fileWritableByOthers, .fileNot0600, .fileIsALink, .fileIsADirectory:
+                    // Taken from a private directory, refused, and removed
+                    // whole (a link without its target); nothing retained.
+                    XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: launch), [], "\(setup): nothing retained")
+                    if setup == .fileIsALink {
+                        XCTAssertTrue(FileManager.default.fileExists(atPath: elsewhere + "/real"), "the link's target is untouched")
+                    }
+                default:
+                    // An unsafe directory is not acted in at all.
+                    break
+                }
             }
             chmod(temple, 0o700)
         }
+    }
+
+    /// What an executor killed midway left (`.run-*`, a file or a
+    /// directory) goes with the launch's 24-hour sweep; a fresh one stays.
+    func testTheSweepRemovesStaleTakes() throws {
+        let host = StandIn()
+        host.installStub()
+        try host.makeRecordDirectory()
+        let staleFile = host.recordDirectory + "/.run-r-a.s-cx-41", staleDirectory = host.recordDirectory + "/.run-r-b.s-cx-42"
+        let fresh = host.recordDirectory + "/.run-r-c.s-cx-43"
+        FileManager.default.createFile(atPath: staleFile, contents: Data("x".utf8))
+        try FileManager.default.createDirectory(atPath: staleDirectory + "/inner", withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: fresh, contents: Data("x".utf8))
+        let old = Date().addingTimeInterval(-90_000)
+        for path in [staleFile, staleDirectory, staleDirectory + "/inner"] {
+            try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: path)
+        }
+        try host.runLaunch(host.staged(TmuxKeepAlive().createScript(plan(host))))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staleFile))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staleDirectory))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fresh))
     }
 
     /// Two Temple operations creating the record directory at once: the one

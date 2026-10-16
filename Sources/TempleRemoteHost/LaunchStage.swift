@@ -44,18 +44,22 @@ public enum LaunchStage {
     /// included) passes it to `sh` whole. Before reading anything it checks
     /// the private chain as the writer does (`~/.temple` a real directory of
     /// this account's, not group- or world-writable; `launch` a real
-    /// directory of this account's, exactly 0700), then takes the file by
-    /// renaming it to a fresh name inside that directory (an atomic
-    /// rename; nobody but the account can put anything there) and checks
-    /// what it took: a regular file (not a symlink) of this account's,
-    /// exactly 0600. Only then is it read and run; anything else is
-    /// removed, said in the tab, and nothing runs.
+    /// directory of this account's, exactly 0700), then takes whatever is
+    /// at the stage's name by renaming it to a fresh name inside that
+    /// directory (`.run-<stage>-<pid>`, checked absent first, so the rename
+    /// never lands inside an existing directory; an atomic rename, and
+    /// nobody but the account can put anything there) and checks what it
+    /// took: a regular file (not a symlink, not a directory) of this
+    /// account's, exactly 0600. Only then is it read and run. Anything else
+    /// is removed whole (a file, a link without its target, a directory),
+    /// said in the tab, and nothing runs; a `.run-*` left by an executor
+    /// that was killed midway is removed by the launch's 24-hour sweep.
     static let runner = [
-        #"u=$(id -u); t=$HOME/.temple; d=$t/launch; f=$d/$1; r=$d/.run-$1; e=$(( $(date +%s) + $2 ))"#,
+        #"u=$(id -u); t=$HOME/.temple; d=$t/launch; f=$d/$1; r=$d/.run-$1-$$; e=$(( $(date +%s) + $2 ))"#,
         #"k() { p=$1; shift; [ -n "$(find "$p" -maxdepth 0 -user "$u" "$@" 2>/dev/null)" ]; }"#,
         #"while [ ! -e "$f" ] && [ ! -L "$f" ] && [ "$(date +%s)" -lt "$e" ]; do sleep 0.2 2>/dev/null || sleep 1; done"#,
-        #"if k "$t" -type d ! -perm -020 ! -perm -002 && k "$d" -type d -perm 700 && mv -f "$f" "$r" 2>/dev/null; then"#
-            + #" if k "$r" -type f -perm 600 && s=$(cat "$r"); then rm -f "$r"; exec sh -c "$s" temple-launch; fi; rm -f "$r"; fi"#,
+        #"if k "$t" -type d ! -perm -020 ! -perm -002 && k "$d" -type d -perm 700 && [ ! -e "$r" ] && [ ! -L "$r" ] && mv "$f" "$r" 2>/dev/null; then"#
+            + #" if k "$r" -type f -perm 600 && s=$(cat "$r"); then rm -f "$r"; exec sh -c "$s" temple-launch; fi; rm -rf "$r"; fi"#,
         #"echo "Temple couldn't find a safely stored launch for this session on this host." >&2; exit 125"#,
     ].joined(separator: "; ")
 

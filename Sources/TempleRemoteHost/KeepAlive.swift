@@ -264,7 +264,10 @@ public struct TmuxKeepAlive: KeepAlive {
         fi
         rd=
         if [ -n "$m" ]; then rd=$(temple_record_dir) || rd=; fi
-        [ -n "$rd" ] && find "$rd" -type f -mmin +1440 -delete 2>/dev/null
+        if [ -n "$rd" ]; then
+          find "$rd" -type f -mmin +1440 -delete 2>/dev/null
+          find "$rd" -mindepth 1 -maxdepth 1 -name '.run-*' -mmin +1440 -exec rm -rf {} + 2>/dev/null
+        fi
         case $mode in
         attach)
           if [ -n "$sock" ]; then exec tmux -S "$sock" attach-session -t "=$s"; fi
