@@ -31,14 +31,18 @@ public enum CodexHomeRoot {
     }
 
     /// Shell: resolves the home from `$hs $hv $base` into `$h` (canonical,
-    /// `pwd -P`), or calls `nohome <reason>`.
+    /// `pwd -P`, captured with a sentinel so a name ending in a newline
+    /// keeps it), or calls `nohome <reason>`.
     static let resolve = #"""
+    CODEX_NL='
+    '
     case $hs in
       set) case $hv in /*) d=$hv ;; *) d=$base/$hv ;; esac ;;
       unset) d=$HOME/.codex ;;
       *) nohome "Temple doesn't know which Codex home this session used" ;;
     esac
-    h=$(cd -- "$d" 2>/dev/null && pwd -P) || nohome "the Codex home $d can't be entered"
+    h=$(cd -- "$d" 2>/dev/null && pwd -P && printf x) || nohome "the Codex home $d can't be entered"
+    h=${h%x}; h=${h%"$CODEX_NL"}
     """#
 }
 
@@ -73,25 +77,37 @@ public enum CodexIdentityCheck {
     /// pane pid is alive with its recorded start time and that tmux names
     /// it as the session's pane; walks the processes whose parent chain
     /// leads to it (descendants only, each started no earlier than its
-    /// parent, to a depth of 4); collects every descriptor in that tree
-    /// that links to `<home>/sessions/**/rollout-*.jsonl` and is open for
-    /// writing (`fdinfo` flags, access mode 1 or 2); re-reads each
+    /// parent, to a depth of 4); collects every descriptor in that tree that
+    /// links to `<home>/sessions/**/rollout-*.jsonl` and is open for writing
+    /// (`fdinfo` flags, octal, access mode exactly 1 or 2); re-reads each
     /// process's start time after its descriptors, so a process that
-    /// vanished or whose pid was reused makes the walk inconclusive. A
-    /// shared Codex app server (`codex app-server`, which writes every
-    /// session of the account) holding a rollout is not this run's process:
-    /// inconclusive. Prints `inconclusive<TAB><kind><TAB><reason>`, or
-    /// `found<TAB><hex path>`, then `header`, then the rollout's first line.
-    /// `stat` is read with `read` (no process per entry) and past its last
-    /// `)`.
+    /// vanished or whose pid was reused makes the walk inconclusive. Any
+    /// read that fails (a `stat`, a descriptor's link, its `fdinfo`, a
+    /// `cmdline` or an `exe`) is inconclusive, never skipped.
+    ///
+    /// Only the run's own process counts as a writer (round 1): the pane's
+    /// process itself, or, when the pane is a launcher shim (an interpreter
+    /// running a script named `codex` or `codex.js`, as Codex's npm package
+    /// installs), its direct child that is the launched CLI: an executable
+    /// whose name begins with `codex`, given exactly the arguments the pane
+    /// was given after the script. A rollout held by anything else in the
+    /// tree (another child, any deeper descendant, Codex's shared app
+    /// server) proves nothing about this run: when only such processes hold
+    /// one, the walk is inconclusive for good and the question takes over.
+    ///
+    /// Prints `inconclusive<TAB><kind><TAB><reason>`, or `found<TAB><hex
+    /// path>`, then `header`, then the rollout's first line. `stat` is read
+    /// with `read` (no process per entry) and past its last `)`.
     static let script = #"""
     P=$1; pid=$2; start=$3; sock=$4; s=$5; hs=$6; hv=$7; base=$8
     NL='
     '
+    SEP=$(printf '\001')
     no() { printf 'inconclusive\t%s\t%s\n' "$1" "$2"; exit 0; }
     nohome() { no lasting "$1"; }
     st() { _s=; IFS= read -r _s < "$P/$1/stat" 2>/dev/null || return 1; _s=${_s##*)}; set -- $_s; [ $# -ge 20 ] || return 1; ppid=$2; begin=${20}; return 0; }
     t() { if [ -n "$sock" ]; then tmux -S "$sock" "$@"; else tmux -L temple "$@"; fi; }
+    args() { tr '\0' "$SEP" < "$P/$1/cmdline" 2>/dev/null; }
     [ -d "$P" ] || no lasting "this host has no /proc"
     \#(CodexHomeRoot.resolve)
     sess=$h/sessions
@@ -107,40 +123,63 @@ public enum CodexIdentityCheck {
       elif [ -e "$d/stat" ]; then no retry "a process's stat couldn't be read"
       fi
     done
-    tree="$pid:$start"; frontier=$tree; depth=0
+    tree="$pid:$start:0"; frontier=$tree; depth=0
     while [ -n "$frontier" ] && [ "$depth" -lt 4 ]; do
       next=
       for f in $frontier; do
-        fp=${f%%:*}; fb=${f#*:}
+        fp=${f%%:*}; rest=${f#*:}; fb=${rest%%:*}
         while read -r cp cpp cb; do
-          [ "$cpp" = "$fp" ] && [ "$cb" -ge "$fb" ] && next="$next $cp:$cb"
+          [ "$cpp" = "$fp" ] && [ "$cb" -ge "$fb" ] && next="$next $cp:$cb:$((depth + 1))"
         done <<EOF
     $list
     EOF
       done
       tree="$tree$next"; frontier=$next; depth=$((depth + 1))
     done
-    found=; n=0
+    # The pane as a launcher shim: the script it runs, and the arguments
+    # after it, which the launched CLI must have been given.
+    pa=$(args "$pid") || no retry "the session's process couldn't be read"
+    pexe=$(readlink "$P/$pid/exe" 2>/dev/null) || no retry "the session's process couldn't be read"
+    shim=; tail=
+    case ${pexe##*/} in codex*) ;; *)
+      rest=${pa#*"$SEP"}
+      while [ -n "$rest" ]; do
+        case $rest in *"$SEP"*) ;; *) break ;; esac
+        a=${rest%%"$SEP"*}; rest=${rest#*"$SEP"}
+        case ${a##*/} in codex|codex.js) shim=yes; tail=$rest; break ;; esac
+      done ;;
+    esac
+    found=; n=0; foreign=
     for m in $tree; do
-      p=${m%%:*}; b=${m#*:}
+      p=${m%%:*}; rest=${m#*:}; b=${rest%%:*}; dp=${rest#*:}
       [ -d "$P/$p/fd" ] || no retry "a process ended during the check"
       { [ -r "$P/$p/fd" ] && [ -x "$P/$p/fd" ]; } || no retry "a process's open files couldn't be read"
       for fd in "$P/$p/fd"/*; do
         [ -e "$fd" ] || [ -L "$fd" ] || continue
-        l=$(readlink "$fd" 2>/dev/null) || continue
+        l=$(readlink "$fd" 2>/dev/null) || no retry "a process's open file couldn't be read"
         case $l in "$sess"/*rollout-*.jsonl) ;; *) continue ;; esac
         fl=
         while IFS= read -r line; do case $line in flags:*) fl=${line#flags:}; break ;; esac; done < "$P/$p/fdinfo/${fd##*/}" 2>/dev/null
         fl=${fl#"${fl%%[!	 ]*}"}
-        [ -n "$fl" ] || no retry "a session file's flags couldn't be read"
-        case ${fl#"${fl%?}"} in 1|2|3|5|6|7) ;; *) continue ;; esac
-        c=$(tr '\0' ' ' < "$P/$p/cmdline" 2>/dev/null)
-        case " $c " in *" app-server "*) no lasting "a shared Codex app server writes this session's transcript" ;; esac
+        case $fl in ''|*[!0-7]*) no retry "a session file's flags couldn't be read" ;; esac
+        am=$(( 0$fl % 4 ))
+        [ "$am" -eq 1 ] || [ "$am" -eq 2 ] || continue
+        own=
+        if [ "$dp" -eq 0 ]; then own=yes
+        elif [ "$dp" -eq 1 ] && [ -n "$shim" ]; then
+          ca=$(args "$p") || no retry "a process's arguments couldn't be read"
+          ce=$(readlink "$P/$p/exe" 2>/dev/null) || no retry "a process's executable couldn't be read"
+          case ${ce##*/} in codex*) [ "${ca#*"$SEP"}" = "$tail" ] && own=yes ;; esac
+        fi
+        if [ -z "$own" ]; then foreign=yes; continue; fi
         case "$NL$found" in *"$NL$l$NL"*) ;; *) found="$found$l$NL"; n=$((n + 1)) ;; esac
       done
       st "$p" && [ "$begin" = "$b" ] || no retry "a process ended during the check"
     done
-    [ "$n" -eq 0 ] && no retry "no session file is open right now"
+    if [ "$n" -eq 0 ]; then
+      [ -n "$foreign" ] && no lasting "the session file is held by a process Temple didn't start"
+      no retry "no session file is open right now"
+    fi
     [ "$n" -gt 1 ] && no retry "more than one session file is open"
     r=${found%"$NL"}
     printf 'found\t%s\n' "$(printf '%s' "$r" | od -An -tx1 | tr -d ' \n')"

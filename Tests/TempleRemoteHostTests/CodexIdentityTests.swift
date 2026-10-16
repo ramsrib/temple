@@ -32,10 +32,11 @@ final class CodexIdentityTests: XCTestCase {
         /// One process: its stat (start time past the last `)`, field 22),
         /// its argv and its open files (`target`, fdinfo `flags`).
         func process(_ pid: Int, parent: Int, start: Int, name: String = "codex", argv: [String] = ["codex"],
-                     files: [(target: String, flags: String)] = []) {
+                     exe: String = "/home/u/.local/bin/codex", files: [(target: String, flags: String)] = []) {
             let base = "proc/\(pid)"
             host.tree.write("\(base)/stat", "\(pid) (\(name) (x)) S \(parent) 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 \(start) 0 0\n")
             host.tree.write("\(base)/cmdline", argv.joined(separator: "\0") + "\0")
+            try? FileManager.default.createSymbolicLink(atPath: "\(proc)/\(pid)/exe", withDestinationPath: exe)
             _ = host.tree.directory("\(base)/fd")
             _ = host.tree.directory("\(base)/fdinfo")
             for (index, file) in files.enumerated() {
@@ -85,17 +86,141 @@ final class CodexIdentityTests: XCTestCase {
 
     // MARK: The walk
 
-    /// Codex's npm launcher is the pane's process; the native binary under
-    /// it writes the rollout: found at depth 1, and its header verifies.
-    func testTheWriterUnderTheLauncherIsFound() async throws {
+    /// Codex's npm launcher is the pane's process (an interpreter running
+    /// `codex.js`); the native binary under it, given the same arguments,
+    /// is the launched CLI and writes the rollout: found at depth 1, and its
+    /// header verifies.
+    func testTheLaunchedCLIUnderTheLauncherIsFound() async throws {
         let f = Fixture()
         let rollout = f.rollout()
-        f.process(100, parent: 1, start: 1000, name: "node", argv: ["node", "/usr/lib/codex.js"])
-        f.process(101, parent: 100, start: 1001, files: [(rollout.path, Self.writing), ("/dev/null", Self.writing)])
-        f.process(102, parent: 101, start: 1005, name: "bash", argv: ["bash"])
+        f.process(100, parent: 1, start: 1000, name: "node", argv: ["node", "/usr/lib/node_modules/@openai/codex/bin/codex.js", "--no-daemon"],
+                  exe: "/usr/bin/node")
+        f.process(101, parent: 100, start: 1001, argv: ["/usr/lib/codex/codex-x86_64-unknown-linux-musl", "--no-daemon"],
+                  exe: "/usr/lib/codex/codex-x86_64-unknown-linux-musl",
+                  files: [(rollout.path, Self.writing), ("/dev/null", Self.writing)])
+        f.process(102, parent: 101, start: 1005, name: "bash", argv: ["bash"], exe: "/usr/bin/bash")
         guard case .found(let path, let header) = await f.check() else { return XCTFail("not found") }
         XCTAssertEqual(path, rollout.path)
         XCTAssertEqual(CodexIdentityCheck.verify(path: path, header: header, directory: f.folder), rollout.id)
+    }
+
+    /// Only the run's own process counts (round 1): a child of a pane that
+    /// is not a launcher shim, a child given other arguments than the pane,
+    /// a child that is not a codex executable, and every deeper descendant
+    /// (a codex the agent ran, say) prove nothing about this run. When
+    /// only such processes hold a rollout, the question takes over.
+    func testAWriterThatIsNotTheRunsOwnProcessIsNeverAdopted() async throws {
+        let foreign = CodexIdentityCheck.Inconclusive.lasting("the session file is held by a process Temple didn't start")
+        // The pane is codex itself; a nested `codex --no-daemon` under it
+        // (as the agent's tool would run it) writes the only rollout.
+        var f = Fixture()
+        var rollout = f.rollout()
+        f.process(100, parent: 1, start: 1000)
+        f.process(101, parent: 100, start: 1001, name: "bash", argv: ["bash", "-lc", "codex --no-daemon"], exe: "/usr/bin/bash")
+        f.process(102, parent: 101, start: 1002, argv: ["codex", "--no-daemon"], files: [(rollout.path, Self.writing)])
+        var answer = await f.check()
+        XCTAssertEqual(inconclusive(answer), foreign, "a nested codex is never this run's")
+        // The same at depth 1, under a pane that is codex (not a shim).
+        f = Fixture()
+        rollout = f.rollout()
+        f.process(100, parent: 1, start: 1000)
+        f.process(101, parent: 100, start: 1001, argv: ["codex", "exec", "hi"], files: [(rollout.path, Self.writing)])
+        answer = await f.check()
+        XCTAssertEqual(inconclusive(answer), foreign)
+        // Under a shim, a child given other arguments is not the launched CLI.
+        f = Fixture()
+        rollout = f.rollout()
+        f.process(100, parent: 1, start: 1000, name: "node", argv: ["node", "/x/bin/codex.js"], exe: "/usr/bin/node")
+        f.process(101, parent: 100, start: 1001, argv: ["codex", "exec", "hi"], files: [(rollout.path, Self.writing)])
+        answer = await f.check()
+        XCTAssertEqual(inconclusive(answer), foreign)
+        // Under a shim, a child whose executable is not codex's.
+        f = Fixture()
+        rollout = f.rollout()
+        f.process(100, parent: 1, start: 1000, name: "node", argv: ["node", "/x/bin/codex.js"], exe: "/usr/bin/node")
+        f.process(101, parent: 100, start: 1001, argv: ["python3"], exe: "/usr/bin/python3", files: [(rollout.path, Self.writing)])
+        answer = await f.check()
+        XCTAssertEqual(inconclusive(answer), foreign)
+        // The pane's own writer is adopted even with a foreign one beside it.
+        f = Fixture()
+        let mine = f.rollout(), theirs = f.rollout()
+        f.process(100, parent: 1, start: 1000, files: [(mine.path, Self.writing)])
+        f.process(101, parent: 100, start: 1001, name: "bash", argv: ["bash"], exe: "/usr/bin/bash")
+        f.process(102, parent: 101, start: 1002, files: [(theirs.path, Self.writing)])
+        guard case .found(let path, _) = await f.check() else { return XCTFail() }
+        XCTAssertEqual(path, mine.path)
+    }
+
+    /// A read that fails anywhere in the walk is inconclusive, never
+    /// skipped, even with another rollout readable beside it (round 1): a
+    /// descriptor whose link can't be read, a `fdinfo` that can't be read
+    /// or is malformed, an argument list or executable that can't be read.
+    func testAFailedReadIsNeverSkipped() async throws {
+        // A descriptor link that can't be read, beside the pane's rollout.
+        var f = Fixture()
+        var rollout = f.rollout()
+        f.process(100, parent: 1, start: 1000, files: [(rollout.path, Self.writing)])
+        f.host.tree.write("proc/100/fd/9", "not a link")
+        chmod(f.proc + "/100/fd/9", 0)
+        var answer = await f.check()
+        // A regular file in fd/ is not a link: readlink fails.
+        XCTAssertEqual(inconclusive(answer), .retry("a process's open file couldn't be read"))
+
+        // A rollout's fdinfo that can't be read.
+        f = Fixture()
+        rollout = f.rollout()
+        f.process(100, parent: 1, start: 1000, files: [(rollout.path, Self.writing)])
+        chmod(f.proc + "/100/fdinfo/3", 0)
+        answer = await f.check()
+        XCTAssertEqual(inconclusive(answer), .retry("a session file's flags couldn't be read"))
+
+        // Malformed flags, and access mode 3 (not a write mode).
+        for flags in ["0210200x", "", "0100003", "0100007"] {
+            f = Fixture()
+            rollout = f.rollout()
+            f.process(100, parent: 1, start: 1000, files: [(rollout.path, flags)])
+            answer = await f.check()
+            if flags.hasSuffix("3") || flags.hasSuffix("7") {
+                XCTAssertEqual(inconclusive(answer), .retry("no session file is open right now"), "mode 3 is not writing: \(flags)")
+            } else {
+                XCTAssertEqual(inconclusive(answer), .retry("a session file's flags couldn't be read"), flags)
+            }
+        }
+
+        // The pane's arguments can't be read.
+        f = Fixture()
+        rollout = f.rollout()
+        f.process(100, parent: 1, start: 1000, files: [(rollout.path, Self.writing)])
+        chmod(f.proc + "/100/cmdline", 0)
+        answer = await f.check()
+        XCTAssertEqual(inconclusive(answer), .retry("the session's process couldn't be read"))
+
+        // A launched child's arguments can't be read.
+        f = Fixture()
+        rollout = f.rollout()
+        f.process(100, parent: 1, start: 1000, name: "node", argv: ["node", "/x/bin/codex.js"], exe: "/usr/bin/node")
+        f.process(101, parent: 100, start: 1001, argv: ["codex"], files: [(rollout.path, Self.writing)])
+        chmod(f.proc + "/101/cmdline", 0)
+        answer = await f.check()
+        XCTAssertEqual(inconclusive(answer), .retry("a process's arguments couldn't be read"))
+    }
+
+    /// A Codex home whose name ends in a newline is that folder, not its
+    /// namesake without one.
+    func testAHomeEndingInANewlineIsKept() async throws {
+        let f = Fixture()
+        let plain = f.host.tree.directory("codexhome").path
+        let odd = plain + "\n"
+        try FileManager.default.createDirectory(atPath: odd + "/sessions/2026/10/16", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: plain + "/sessions/2026/10/16", withIntermediateDirectories: true)
+        let id = UUID().uuidString.lowercased()
+        let path = odd + "/sessions/2026/10/16/rollout-2026-10-16T10-18-52-\(id).jsonl"
+        FileManager.default.createFile(atPath: path, contents: Data("{}\n".utf8))
+        f.process(100, parent: 1, start: 1000, files: [(path, Self.writing)])
+        guard case .found(let found, _) = await f.check(home: ("set", odd, f.folder)) else { return XCTFail("the odd home") }
+        XCTAssertEqual(found, path)
+        let other = await f.check(home: ("set", plain, f.folder))
+        XCTAssertEqual(inconclusive(other), .retry("no session file is open right now"), "a different folder")
     }
 
     /// The pane itself writes (a standalone codex, or `--no-daemon`), and
@@ -116,11 +241,10 @@ final class CodexIdentityTests: XCTestCase {
         let answer1 = await f.check()
         XCTAssertEqual(inconclusive(answer1), .retry("no session file is open right now"))
 
-        // Two rollouts in the tree.
+        // Two rollouts held by the run's own process.
         f = Fixture()
         let a = f.rollout(), b = f.rollout()
-        f.process(100, parent: 1, start: 1000, files: [(a.path, Self.writing)])
-        f.process(101, parent: 100, start: 1002, files: [(b.path, Self.writing)])
+        f.process(100, parent: 1, start: 1000, files: [(a.path, Self.writing), (b.path, Self.writing)])
         let answer2 = await f.check()
         XCTAssertEqual(inconclusive(answer2), .retry("more than one session file is open"))
 
@@ -134,9 +258,9 @@ final class CodexIdentityTests: XCTestCase {
                                                          "--listen", "unix://", "--managed-daemon"],
                   files: [(rollout.path, Self.writing)])
         let answer3 = await f.check()
-        XCTAssertEqual(inconclusive(answer3), .lasting("a shared Codex app server writes this session's transcript"))
+        XCTAssertEqual(inconclusive(answer3), .lasting("the session file is held by a process Temple didn't start"))
 
-        // A writer that is not a descendant (the daemon outside the tree).
+        // A writer that is not a descendant (the server outside the tree).
         f = Fixture()
         rollout = f.rollout()
         f.process(100, parent: 1, start: 1000)
@@ -162,6 +286,8 @@ final class CodexIdentityTests: XCTestCase {
     }
 
     /// The walk stops at a depth of 4.
+    /// The walk reaches a depth of 4 (a writer there is in the tree, and
+    /// not the run's own) and no further.
     func testTheDepthLimit() async throws {
         for depth in [4, 5] {
             let f = Fixture()
@@ -173,7 +299,8 @@ final class CodexIdentityTests: XCTestCase {
             }
             let answer = await f.check()
             if depth == 4 {
-                guard case .found = answer else { return XCTFail("depth 4 is in the tree: \(answer)") }
+                XCTAssertEqual(inconclusive(answer), .lasting("the session file is held by a process Temple didn't start"),
+                               "depth 4 is in the tree, and not the run's own process")
             } else {
                 XCTAssertEqual(inconclusive(answer), .retry("no session file is open right now"), "depth 5 is not")
             }
