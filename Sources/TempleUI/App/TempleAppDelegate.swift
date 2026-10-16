@@ -145,15 +145,15 @@ public final class TempleAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let model, !model.openSessions.allSurfaces.isEmpty else {
-            // No agents to drain, but a just-retitled session may still be
-            // inside the title-coalescing window — drainForQuit (which also
-            // flushes) never runs on this path.
-            model?.openSessions.prepareForQuit()
-            model?.overlay.flushPendingTitles()
-            model?.overlay.flushPendingTouches()
-            return .terminateNow
-        }
+        // Without a model (a startup-failure window) there is nothing to
+        // drain, stop or flush.
+        guard let model else { return .terminateNow }
+        // Every quit with a model goes through `drainForQuit`, agents or not:
+        // it also stops the control server, the pending archive sweep and the
+        // engines (their FSEvents streams and proofs), which a quit with no
+        // tabs used to leave running into `exit()`. Its completion comes a
+        // turn later even with nothing to drain, so the reply always follows
+        // `.terminateLater` (AGENTS.md, "Quitting").
         // Quitting ends every agent, and the window's close button quits too —
         // one stray click must not silently bin work in progress. Only agents
         // actually mid-task are worth interrupting for; idle sessions resume

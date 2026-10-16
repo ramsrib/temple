@@ -30,8 +30,10 @@ final class AppLifecycleTests: XCTestCase {
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()), overlay: overlay)
         let delegate = TempleAppDelegate()
         delegate.model = model
+        delegate.replyToTermination = { _ in }
         XCTAssertNil(try db.sessionState("a")?.lastActiveAt)
-        XCTAssertEqual(delegate.applicationShouldTerminate(NSApplication.shared), .terminateNow)
+        // No agents, still drained: the flushes are in the call itself.
+        XCTAssertEqual(delegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
         XCTAssertEqual(try db.sessionState("a")?.lastActiveAt, at)
         XCTAssertEqual(try db.sessionState("a")?.title, "Pending")
         XCTAssertTrue(cancelled)
@@ -256,12 +258,48 @@ final class AppLifecycleTests: XCTestCase {
 
     func testQuitWithNoAgentsDoesNotAsk() {
         let delegate = TempleAppDelegate()
-        delegate.model = makeModel()
+        let model = makeModel()   // the delegate holds it weakly
+        delegate.model = model
+        delegate.replyToTermination = { _ in }
         var asked = false
         delegate.confirmQuitWhileWorking = { _ in asked = true; return true }
 
-        XCTAssertEqual(delegate.applicationShouldTerminate(NSApplication.shared), .terminateNow)
+        XCTAssertEqual(delegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
         XCTAssertFalse(asked)
+        withExtendedLifetime(model) {}
+    }
+
+    /// A quit with no tabs open still goes through the drain: the engines
+    /// (their FSEvents streams and proofs) are stopped before the reply, so
+    /// nothing of theirs is running into `exit()`. And the reply comes after
+    /// `.terminateLater` has been returned, never inside the call: replied
+    /// first, AppKit would wait forever for a reply that already came.
+    func testAQuitWithNoTabsStopsTheEnginesAndRepliesAfterReturning() async throws {
+        let engine = FakeEngine(CatalogFixtureIndex(projects: []))
+        let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [engine],
+                             database: try TempleDB.inMemory(),
+                             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+                             hostRegistry: Fixture.hostsWithoutFolderEvidence())
+        let delegate = TempleAppDelegate()
+        delegate.model = model
+        var replies: [Bool] = []
+        delegate.replyToTermination = { replies.append($0) }
+        XCTAssertTrue(model.openSessions.allSurfaces.isEmpty)
+
+        XCTAssertEqual(delegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)
+        XCTAssertEqual(replies, [], "no reply inside the call")
+        let deadline = Date().addingTimeInterval(3)
+        while (replies.isEmpty || engine.stopCount == 0), Date() < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(replies, [true])
+        XCTAssertEqual(engine.stopCount, 1, "the engines were stopped")
+        XCTAssertTrue(model.openSessions.isQuitting)
+    }
+
+    /// Only a delegate with no model (a startup-failure window) quits at once.
+    func testWithoutAModelTheQuitIsImmediate() {
+        XCTAssertEqual(TempleAppDelegate().applicationShouldTerminate(NSApplication.shared), .terminateNow)
     }
 
     func testQuitAsksWhileAnAgentIsWorkingAndCancelStopsIt() {

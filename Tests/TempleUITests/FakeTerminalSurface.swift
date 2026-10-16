@@ -159,7 +159,10 @@ final class FakeEngine: HostEngine, @unchecked Sendable {
     }
 
     func start() async { if let initial { publish(initial) } }
-    func stop() async {}
+    private var stops = 0
+    /// How many times the engine was stopped.
+    var stopCount: Int { lock.lock(); defer { lock.unlock() }; return stops }
+    func stop() async { lock.lock(); stops += 1; lock.unlock() }
     func requestResolution(_ id: String, awaitingCreation: Bool) async { lock.lock(); requests.append(id); lock.unlock() }
     func reconcileMembership(_ id: String) async { lock.lock(); reconciles.append(id); lock.unlock() }
     func confirmAbsence(_ id: String) async -> Bool { absent }
