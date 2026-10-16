@@ -28,11 +28,29 @@ public struct RemoteOpenPlan: Equatable {
     /// An attach to a run whose creation evidence is persisted: its folder,
     /// replayed into the row and tab (`applyLaunchDirectory`).
     public let evidenceDirectory: String?
+    /// The staged launch the tab's command waits for, when it could not be
+    /// staged before the spawn (no master yet): staged once the tab's own
+    /// ssh has authenticated (`RemoteSessionHost.stage`). Nil when it is
+    /// already in place.
+    public let stage: String?
     public init(handle: String, attachment: Int, creating: Bool, command: TerminalCommand, displayArgv: [String],
-                evidenceDirectory: String? = nil) {
+                evidenceDirectory: String? = nil, stage: String? = nil) {
         self.handle = handle; self.attachment = attachment; self.creating = creating
         self.command = command; self.displayArgv = displayArgv; self.evidenceDirectory = evidenceDirectory
+        self.stage = stage
     }
+}
+
+/// What staging a connecting tab's launch came to.
+public enum RemoteStageResult: Equatable {
+    case staged
+    /// Nothing was put in place, so nothing ran (a creation is recorded as
+    /// failed); why.
+    case failed(String)
+    /// No answer; the tab's own exit decides.
+    case unknown(String)
+    /// Nothing to stage.
+    case none
 }
 
 public enum RemoteOpenResult: Equatable {
@@ -47,6 +65,9 @@ public enum RemoteOpenResult: Equatable {
 public enum RemoteLaunchOutcome: Equatable {
     case ok(directory: String)
     case failedCD(directory: String)
+    /// No agent ran (the launch couldn't be prepared, or the pane wasn't
+    /// told its config root); why.
+    case failedLaunch(String)
     case clientFailed(String)
     case nothing
     case transport(String)
@@ -114,7 +135,11 @@ public protocol RemoteSessionHost: HostLauncher {
     func collect(_ handle: String) async -> RemoteLaunchOutcome
     /// What the pane showed (ANSI and all), for an agent that ended at once.
     func diagnostics(_ handle: String) async -> String?
-    func markCreationUnproven(_ handle: String) async
+    /// Nil, or why the creation was recorded as failed instead (its launch
+    /// never reached the host).
+    func markCreationUnproven(_ handle: String) async -> String?
+    /// Stages a connecting tab's launch once the master answers.
+    func stage(_ name: String) async -> RemoteStageResult
     /// Discard: the session's runs are never attached to or resumed again.
     func discard(sessionID: String) async throws
     func exitCheck(_ handle: String) async -> RemoteLiveness
@@ -184,6 +209,8 @@ public struct RemoteTabState: Equatable {
     public var diagnostics: [String] = []
     /// A sign of life arrived for this open (the pane's record, a title).
     public var evidenceSeen = false
+    /// The owned operation staging this open's launch after the spawn.
+    public var stageOperation: UUID?
     /// No sign of life within the startup deadline: the header says so.
     public var stillConnecting = false
     /// Identifies one open, so a late answer for an earlier one is dropped.
@@ -212,6 +239,14 @@ public enum RemoteCopy {
 
     public static func failedToStart(_ host: String, agent: Agent) -> String {
         "\(agent.displayName) failed to start on \(host)."
+    }
+
+    public static func launchFailed(_ host: String, reason: String) -> String {
+        "Temple couldn't start this session on \(host): \(sentence(reason))"
+    }
+
+    public static func couldNotPrepare(_ host: String, reason: String) -> String {
+        "Temple couldn't reconnect to \(host): \(sentence(reason))"
     }
 
     public static func cannotEnter(_ directory: String, host: String) -> String {

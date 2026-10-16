@@ -149,10 +149,10 @@ final class LinuxAcceptanceTests: XCTestCase {
         let store = try RemoteStateStore(directory: state.url)
         let sessions = RemoteSessions(record: record, stateDirectory: state.url, sshPath: "/usr/bin/ssh", store: { store })
         let connection = try await sessions.resolvedConnection()
-        // The tab's interactive connect creates the master, as it would.
-        let connect = connection.argv(.interactive, remoteCommand: "true").map { $0 == "-t" ? "-T" : $0 }
-        let connected = try await ProcessRunner.run(connect[0], Array(connect.dropFirst()), deadline: 30)
-        XCTAssertEqual(connected.status, 0, "\(name): \(connected.stderr)")
+        // No master yet: the first launch is a first contact, whose own ssh
+        // becomes the master (the queries before it connect on their own).
+        let masterBefore = await sessions.hasLiveMaster()
+        XCTAssertFalse(masterBefore, "\(name): a fresh socket directory")
         defer {
             let check = connection.masterCheckArgv
             let exit = [check[0], check[1], check[2], "-O", "exit", "--", name]
@@ -169,19 +169,21 @@ final class LinuxAcceptanceTests: XCTestCase {
             return out.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         log.append("tmux: \(try await sh("tmux -V"))")
-        // Commands whose mux request ends just below a multiple of 8 KiB:
-        // unpadded, this master refuses their descriptors at once
-        // (`send fds failed`); through Temple's argv every one reaches the host.
-        var muxFailures: [Int] = []
-        for length in [8060, 8080, 8100, 16_260, 16_280] {
-            let probe = connection.argv(.query, remoteCommand: "exit 0 #" + String(repeating: "x", count: length - 8))
-            for _ in 0..<3 {
-                let out = try await ProcessRunner.run(probe[0], Array(probe.dropFirst()), deadline: 20)
-                if out.status != 0 { muxFailures.append(length) }
-            }
-        }
-        log.append("band-sized commands through the master: \(muxFailures.isEmpty ? "all reached the host" : "failed at \(muxFailures)")")
-        XCTAssertEqual(muxFailures, [], "\(name)")
+        // tmux passes `-e` values verbatim (no format expansion), which the
+        // config root's handoff to the pane relies on.
+        // (The pane writes what it got: `show-environment` escapes `$` in
+        // its own output on 3.4, which says nothing about the value.)
+        let verbatim = try await sh("""
+        s=temple-accept-e-$1; o=$(mktemp /tmp/temple-accept-e.XXXXXX); v='a#{session_name}b$HOME
+        c'"'"'d'
+        tmux -L "$s" -f /dev/null new-session -d -s x -e "TV=$v" -e "TO=$o" 'printf %s "$TV" > "$TO"; sleep 30'
+        i=0; while [ ! -s "$o" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+        got=$(cat "$o"; printf x); got=${got%x}
+        tmux -L "$s" kill-server 2>/dev/null; rm -f "$o" "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$s"
+        [ "$got" = "$v" ] && echo verbatim || printf 'changed: %s' "$got"
+        """, [RemoteQuoting.nonce()])
+        log.append("tmux -e values: \(verbatim)")
+        XCTAssertEqual(verbatim, "verbatim", "\(name)")
         let before = try await sh("tmux -L temple ls -F '#{session_name}' 2>/dev/null || true")
         let recordsBefore = try await sh("[ -e \"$HOME/.temple\" ] && echo yes || echo no")
         log.append("Temple server before: \(before.isEmpty ? "(none)" : before)")
@@ -189,6 +191,7 @@ final class LinuxAcceptanceTests: XCTestCase {
         XCTAssertTrue(folder.hasPrefix("/tmp/temple-accept-"), folder)
         let canonicalFolder = try await sh("cd -- \"$1\" && pwd -P", [folder])
         let sessionID = UUID().uuidString.lowercased()
+        var commandSizes: [Int] = []
         var handles: [String] = []
         var markers: [String] = []
         var clients: [AcceptanceClient] = []
@@ -233,7 +236,12 @@ final class LinuxAcceptanceTests: XCTestCase {
         markers.append(RecordDirectory.marker(from: try XCTUnwrap(store.run(first.handle)).recordPath) ?? "")
         XCTAssertTrue(first.creating)
         XCTAssertEqual(Array(first.argv.prefix(2)), ["/usr/bin/env", "TERM=xterm-256color"])
+        XCTAssertFalse(first.staged, "first contact: nothing staged before the tab's ssh connects")
+        commandSizes.append(try XCTUnwrap(first.argv.last).utf8.count)
         clients.append(try AcceptanceClient(first.argv))
+        let staged = await sessions.stage(first.stage)
+        log.append("first contact: the tab's ssh became the master; staging over it: \(staged)")
+        XCTAssertEqual(staged, .staged, "\(name)")
         var collected = RemoteSessions.Collected.nothing
         for _ in 0..<40 {
             collected = await sessions.collect(first.handle)
@@ -341,6 +349,8 @@ final class LinuxAcceptanceTests: XCTestCase {
         XCTAssertFalse(second.creating)
         XCTAssertEqual(second.evidenceDirectory, directory, "the persisted evidence is replayed on reopen")
         XCTAssertEqual(second.handle, first.handle)
+        XCTAssertTrue(second.staged, "\(name): the master is up, so the launch is staged before the spawn")
+        commandSizes.append(try XCTUnwrap(second.argv.last).utf8.count)
         clients.append(try AcceptanceClient(second.argv))
         var attached = "0"
         for _ in 0..<40 {
@@ -377,6 +387,8 @@ final class LinuxAcceptanceTests: XCTestCase {
         markers.append(RecordDirectory.marker(from: try XCTUnwrap(store.run(resumed.handle)).recordPath) ?? "")
         XCTAssertTrue(resumed.creating)
         XCTAssertEqual(resumed.agentArgv.suffix(2), [loggedOut ? "--session-id" : "--resume", sessionID])
+        XCTAssertTrue(resumed.staged, "\(name): the master is up, so the launch is staged before the spawn")
+        commandSizes.append(try XCTUnwrap(resumed.argv.last).utf8.count)
         clients.append(try AcceptanceClient(resumed.argv))
         collected = .nothing
         for _ in 0..<40 {
@@ -428,6 +440,8 @@ final class LinuxAcceptanceTests: XCTestCase {
         let doomed = try plan(await sessions.open(failing))
         handles.append(doomed.handle)
         markers.append(RecordDirectory.marker(from: try XCTUnwrap(store.run(doomed.handle)).recordPath) ?? "")
+        XCTAssertTrue(doomed.staged, "\(name): the master is up, so the launch is staged before the spawn")
+        commandSizes.append(try XCTUnwrap(doomed.argv.last).utf8.count)
         clients.append(try AcceptanceClient(doomed.argv))
         var ended = Liveness.present
         for _ in 0..<40 {
@@ -464,6 +478,19 @@ final class LinuxAcceptanceTests: XCTestCase {
         echo "status=$r elapsed=$((t1 - t0))s left=$(pgrep -f "sleep $n" | wc -l | tr -d ' ') containment=$(command -v setsid >/dev/null 2>&1 && echo setsid || echo monitor)"
         """, [folder, "61.\(Int.random(in: 1000...9999))"])
         log.append("hanging login shell: \(containment)")
+
+        // Every interactive command stayed short; the band where macOS's ssh
+        // can't hand a session to its master is still there for a command
+        // that isn't (informational: how often it bites varies).
+        log.append("interactive command sizes: \(commandSizes) bytes (at most \(LaunchStage.maximumCommandBytes))")
+        XCTAssertTrue(commandSizes.allSatisfy { $0 <= LaunchStage.maximumCommandBytes }, "\(name): \(commandSizes)")
+        var refused = 0
+        for length in [8060, 8080, 8100] {
+            let probe = connection.argv(.query, remoteCommand: "exit 0 #" + String(repeating: "x", count: length - 8))
+            let out = try await ProcessRunner.run(probe[0], Array(probe.dropFirst()), deadline: 20)
+            if out.stderr.contains("send fds failed") { refused += 1 }
+        }
+        log.append("band-sized raw commands refused by this master: \(refused) of 3")
         XCTAssertTrue(containment.contains("left=0"), "\(name): \(containment)")
         // The hang really ran: abandoned at the budget, not refused at once.
         let elapsed = containment.split(separator: " ").first { $0.hasPrefix("elapsed=") }

@@ -31,8 +31,15 @@ public enum PaneRecord: Sendable, Equatable {
     case ok(LaunchEvidence)
     /// The pane could not enter the folder: no agent ran.
     case failedCD(status: Int32)
+    /// The pane refused to start the agent (it was not told which Claude
+    /// config folder to use): no agent ran. Why, in words.
+    case failedLaunch(String)
     /// A record Temple cannot read: proves nothing.
     case unreadable(String)
+}
+
+extension PaneRecord {
+    static let configRefusal = "the launch didn't say which Claude config folder to use"
 }
 
 /// The tmux client's record (`<marker>.client`), kept apart from the pane's
@@ -86,15 +93,16 @@ public enum LaunchRecords {
     """
 
     /// Arguments: the marker, then `all` to drop the pane's diagnostics too.
-    /// Deletes the records once their evidence is written on this side, and
-    /// the creating client's stderr file, which a client hung up while
-    /// attached never got to remove. The diagnostics stay until the run's
-    /// exit has been handled.
+    /// Deletes the records once their evidence is written on this side, the
+    /// creating client's stderr file, which a client hung up while attached
+    /// never got to remove, and the creation's staged script if nothing
+    /// read it. With `all` (the run's exit has been handled) the
+    /// diagnostics go too, and any attach's staged script.
     static let acknowledgeScript = RecordDirectory.functions + "\n" + """
     m=$1
     rd=$(temple_record_dir) || exit 0
-    rm -f "$rd/$m" "$rd/$m.client" "$rd/$m.tmp" "$rd/$m.client.tmp" "$rd/$m.err"
-    [ "$2" = all ] && rm -f "$rd/$m.out"
+    rm -f "$rd/$m" "$rd/$m.client" "$rd/$m.tmp" "$rd/$m.client.tmp" "$rd/$m.err" "$rd/$m".s-c*
+    [ "$2" = all ] && rm -f "$rd/$m.out" "$rd/$m".s-*
     exit 0
     """
 
@@ -185,6 +193,7 @@ public enum LaunchRecords {
     static func parsePane(_ text: String) -> PaneRecord {
         var body = text
         if body.hasSuffix("\n") { body.removeLast() }
+        if body == "failed\tcfg" { return .failedLaunch(PaneRecord.configRefusal) }
         if body.hasPrefix("failed\tcd") {
             let fields = body.split(separator: "\t", omittingEmptySubsequences: false)
             return .failedCD(status: fields.count > 2 ? Int32(fields[2].trimmingCharacters(in: .whitespaces)) ?? 1 : 1)
@@ -204,10 +213,13 @@ public enum LaunchRecords {
         else { return .unreadable(String(body.prefix(80))) }
         let server = values["server"] ?? []
         func nonEmpty(_ value: String?) -> String? { value.flatMap { $0.isEmpty ? nil : $0 } }
+        // Strict: `unset`, or `set` and exactly one field of hex that is
+        // valid UTF-8 (empty is a valid, encoded empty value). Anything
+        // else is no evidence (nil), never a guess at a root.
         var config: RemoteEnvironment.ClaudeConfig?
-        switch values["cfg"]?.first {
-        case "unset": config = .unset
-        case "set": config = (values["cfg"]?.dropFirst().first).flatMap(Self.hex).map { .set($0) } ?? .set("")
+        switch values["cfg"] {
+        case ["unset"]?: config = .unset
+        case let fields? where fields.count == 2 && fields[0] == "set": config = Self.hex(fields[1]).map { .set($0) }
         default: config = nil
         }
         return .ok(LaunchEvidence(epoch: epoch, directory: directory, panePID: pid,
@@ -216,18 +228,28 @@ public enum LaunchRecords {
                                   serverStart: nonEmpty(server.count > 1 ? server[1] : nil), claudeConfig: config))
     }
 
-    /// Hex as `od -An -tx1` prints it, spaces and newlines removed.
+    /// Hex as `od -An -tx1` prints it, spaces and newlines removed: only
+    /// hex digits, in pairs, decoding to valid UTF-8; nil for anything else
+    /// (no repair).
     static func hex(_ text: String) -> String? {
+        func nibble(_ digit: UInt8) -> UInt8? {
+            switch digit {
+            case 0x30...0x39: digit - 0x30
+            case 0x61...0x66: digit - 0x61 + 10
+            case 0x41...0x46: digit - 0x41 + 10
+            default: nil
+            }
+        }
         let digits = Array(text.utf8)
         guard digits.count % 2 == 0 else { return nil }
         var bytes: [UInt8] = []
         var index = 0
         while index < digits.count {
-            guard let byte = UInt8(String(decoding: digits[index..<index + 2], as: UTF8.self), radix: 16) else { return nil }
-            bytes.append(byte)
+            guard let high = nibble(digits[index]), let low = nibble(digits[index + 1]) else { return nil }
+            bytes.append(high << 4 | low)
             index += 2
         }
-        return String(decoding: bytes, as: UTF8.self)
+        return String(bytes: bytes, encoding: .utf8)
     }
 
     /// `failed<TAB>tmux<TAB><status><TAB><tmux's first line>`.

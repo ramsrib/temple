@@ -14,12 +14,13 @@ import TempleCore
 /// It never lists or discovers sessions: Temple only ever asks about the
 /// sessions it started, each on the server it was created on.
 public protocol KeepAlive: Sendable {
-    /// The remote command (for `ssh -t … -- <host> <command>`) that creates
-    /// the session and runs the pane command in it.
-    func createCommand(_ launch: RemoteLaunchPlan) -> String
-    /// The remote command that attaches to an existing session and creates
+    /// The launch script, staged on the host (`LaunchStage`), that creates
+    /// the session and runs the pane command in it. Every variable-length
+    /// value lives here, never in the tab's command line.
+    func createScript(_ launch: RemoteLaunchPlan) -> String
+    /// The staged script that attaches to an existing session and creates
     /// nothing.
-    func attachCommand(_ launch: RemoteLaunchPlan) -> String
+    func attachScript(_ launch: RemoteLaunchPlan) -> String
     func liveness(session: String, socket: String?, using exec: RemoteExec) async -> Liveness
     /// Liveness with the attached count, for "Sessions on <host>".
     func probe(session: String, socket: String?, using exec: RemoteExec) async -> Probe
@@ -59,11 +60,14 @@ public struct RemoteLaunchPlan: Sendable, Equatable {
     public var claudeConfig: RemoteEnvironment.ClaudeConfig?
     /// The pinned server's socket, for an attach (nil: `-L temple`).
     public var socket: String?
+    /// The staged script's name in the record directory (`LaunchStage`).
+    public var stage: String
 
     public init(handle: String, marker: String, directory: String, agentArgv: [String], path: Path,
-                claudeConfig: RemoteEnvironment.ClaudeConfig? = nil, socket: String?) {
+                claudeConfig: RemoteEnvironment.ClaudeConfig? = nil, socket: String?, stage: String = "") {
         self.handle = handle; self.marker = marker; self.directory = directory
         self.agentArgv = agentArgv; self.path = path; self.claudeConfig = claudeConfig; self.socket = socket
+        self.stage = stage
     }
 }
 
@@ -193,40 +197,67 @@ public struct TmuxKeepAlive: KeepAlive {
 
     // MARK: Launch
 
-    /// The wrapper the user's ssh runs on the host, arguments
-    /// `mode marker socket pane`; the handle comes in `TEMPLE_HANDLE`.
+    /// The launch script, staged on the host and run by the tab's short
+    /// command (`LaunchStage.command`): a header of assignments holding
+    /// every value of this launch (single-quoted), then one fixed body.
     ///
     /// - `create`: one client invocation, one command queue on one server:
     ///   configure, then `new-session` (no `-A`: a duplicate name is a loud
     ///   failure, never an attach to something Temple did not start), in `/`
     ///   (the pane enters the folder itself; `-c` is format-expanded by tmux,
     ///   so no user path goes there). The pane learns where to write its
-    ///   record from `-e TEMPLE_RECORD`. The client's own failure goes to
-    ///   `<marker>.client`, apart from the pane's `<marker>` (note 3): a tmux
-    ///   client can fail after the session exists.
+    ///   record from `-e TEMPLE_RECORD`, and Claude's config root from
+    ///   `-e TEMPLE_CFG` / `-e TEMPLE_CFG_VALUE` (`-e` values are not
+    ///   format-expanded; measured on 3.2a, 3.4 and 3.7): always explicit,
+    ///   set or unset, so an older server's environment never decides it.
+    ///   The client's own failure goes to `<marker>.client`, apart from the
+    ///   pane's `<marker>` (note 3): a tmux client can fail after the
+    ///   session exists.
     /// - `attach`: `attach-session` on the pinned socket (`-S`), or on
     ///   `-L temple` when the run has no pin yet. It runs no pane command
     ///   and writes no record.
     ///
     /// PATH follows the plan: the resolved PATH, ssh's default environment,
     /// or (not resolved yet) the login shell asked here by the same bounded
-    /// resolver the environment query uses.
-    public static var wrapperScript: String {
-        RemoteEnvironment.resolverFunction + "\n" + RecordDirectory.functions + "\n" + """
-        mode=$1; m=$2; sock=$3; pane=$4
-        s=temple-$TEMPLE_HANDLE
+    /// resolver the environment query uses, which also gives the config
+    /// root when the plan has none. With neither, the config root is this
+    /// environment's own, passed on explicitly.
+    static func launchScript(mode: String, launch: RemoteLaunchPlan, pane: String) -> String {
+        precondition(RemoteQuoting.isSafeToken(launch.handle) && RemoteQuoting.isSafeToken(launch.marker))
+        let q = RemoteQuoting.quote
+        var header = ["mode=\(mode)", "m=\(q(launch.marker))", "sock=\(q(launch.socket ?? ""))",
+                      "s=\(q("temple-" + launch.handle))"]
+        switch launch.path {
+        case .resolved(let path): header += ["pm=resolved", "lp=\(q(path))"]
+        case .fallback: header += ["pm=fallback", "lp="]
+        case .unresolved: header += ["pm=resolve", "lp="]
+        }
+        switch launch.claudeConfig {
+        case .set(let value)?: header += ["cs=set", "cv=\(q(value))"]
+        case .unset?: header += ["cs=unset", "cv="]
+        case nil: header += ["cs=", "cv="]
+        }
+        header.append("pane=\(q(pane))")
+        let resolver = launch.path == .unresolved ? RemoteEnvironment.resolverFunction + "\n" : ""
+        return header.joined(separator: "\n") + "\n" + resolver + RecordDirectory.functions + "\n" + launchBody
+    }
+
+    static var launchBody: String {
+        """
         T=$(printf '\\t')
-        unset TMUX TEMPLE_HANDLE
-        if [ -n "$TEMPLE_RESOLVE_PATH" ]; then
-          unset TEMPLE_RESOLVE_PATH
-          mk="__temple_env_$$__"
-          if e=$(temple_bounded "$mk") && temple_parse_env "$e" "$mk"; then
-            [ -n "$TEMPLE_ENV_PATH" ] && { PATH=$TEMPLE_ENV_PATH; export PATH; }
-            TEMPLE_CFG=$TEMPLE_ENV_CFG; TEMPLE_CFG_VALUE=$TEMPLE_ENV_CFG_VALUE
-          fi
+        unset TMUX
+        case $pm in
+          resolved) PATH=$lp; export PATH ;;
+          resolve)
+            mk="__temple_env_$$__"
+            if e=$(temple_bounded "$mk") && temple_parse_env "$e" "$mk"; then
+              [ -n "$TEMPLE_ENV_PATH" ] && { PATH=$TEMPLE_ENV_PATH; export PATH; }
+              [ -n "$cs" ] || { cs=$TEMPLE_ENV_CFG; cv=$TEMPLE_ENV_CFG_VALUE; }
+            fi ;;
+        esac
+        if [ -z "$cs" ]; then
+          if [ -n "${CLAUDE_CONFIG_DIR+x}" ]; then cs=set; cv=$CLAUDE_CONFIG_DIR; else cs=unset; cv=; fi
         fi
-        cs=$TEMPLE_CFG; cv=$TEMPLE_CFG_VALUE
-        unset TEMPLE_CFG TEMPLE_CFG_VALUE
         rd=
         if [ -n "$m" ]; then rd=$(temple_record_dir) || rd=; fi
         [ -n "$rd" ] && find "$rd" -type f -mmin +1440 -delete 2>/dev/null
@@ -236,16 +267,9 @@ public struct TmuxKeepAlive: KeepAlive {
           exec tmux -L temple attach-session -t "=$s" ;;
         create)
           r=; e=/dev/null
-          if [ -n "$rd" ]; then
-            r=$rd/$m; e=$rd/$m.err; rm -f "$e"
-            # Claude's config root for the pane, as the login environment
-            # sets it: a file here, never a tmux argument (formats), so an
-            # older server's environment cannot win.
-            if [ -n "$cs" ]; then
-              rm -f "$rd/$m.cfgin"; ( set -C; printf '%s\n%s' "$cs" "$cv" > "$rd/$m.cfgin" ) 2>/dev/null
-            fi
-          fi
-          tmux -L temple -f /dev/null \(TmuxChain.head) new-session -s "$s" -c / -e PATH="$PATH" -e TEMPLE_RECORD="$r" "$pane" 2>"$e"
+          if [ -n "$rd" ]; then r=$rd/$m; e=$rd/$m.err; rm -f "$e"; fi
+          tmux -L temple -f /dev/null \(TmuxChain.head) new-session -s "$s" -c / -e PATH="$PATH" -e TEMPLE_RECORD="$r" \\
+            -e TEMPLE_CFG="$cs" -e TEMPLE_CFG_VALUE="$cv" "$pane" 2>"$e"
           st=$?
           if [ "$st" -ne 0 ] && [ -n "$rd" ]; then
             temple_write "$rd/$m.client" "failed${T}tmux${T}${st}${T}$(head -n 1 "$e" 2>/dev/null)"
@@ -268,9 +292,11 @@ public struct TmuxKeepAlive: KeepAlive {
     /// agent's, and the diagnostics change nothing about liveness.
     /// `/proc/<pid>/stat` is read past the last `)` (note 2). The record
     /// directory is checked before it is written. Claude's config root is
-    /// applied from the launch's own file (set, or unset so an older tmux
-    /// server's value cannot win) and recorded as the agent will have it,
-    /// hex-encoded: the transcript check inspects exactly that root.
+    /// applied from the launch's `TEMPLE_CFG` (set, or unset so an older
+    /// tmux server's value cannot win; anything else fails the launch with
+    /// a `failed<TAB>cfg` record, never a silent fallback) and recorded as
+    /// the agent will have it, hex-encoded: the transcript check inspects
+    /// exactly that root.
     public static var paneScript: String {
         RecordDirectory.functions + "\n" + #"""
         d=$1; shift
@@ -280,17 +306,19 @@ public struct TmuxKeepAlive: KeepAlive {
         '
         m=
         if [ -n "$r" ]; then rd=$(temple_record_dir) && [ "${r%/*}" = "$rd" ] && m=$r; fi
-        if [ -n "$m" ] && [ -f "$m.cfgin" ] && [ ! -L "$m.cfgin" ]; then
-          cs=$(head -n 1 "$m.cfgin"); cv=$(tail -n +2 "$m.cfgin"; printf x); cv=${cv%x}
-          rm -f "$m.cfgin"
-          case $cs in set) CLAUDE_CONFIG_DIR=$cv; export CLAUDE_CONFIG_DIR ;; unset) unset CLAUDE_CONFIG_DIR ;; esac
-        fi
+        rec() { [ -n "$m" ] || return 0; temple_write "$m" "$1"; }
+        cs=$TEMPLE_CFG; cv=$TEMPLE_CFG_VALUE
+        unset TEMPLE_CFG TEMPLE_CFG_VALUE
+        case $cs in
+          set) CLAUDE_CONFIG_DIR=$cv; export CLAUDE_CONFIG_DIR ;;
+          unset) unset CLAUDE_CONFIG_DIR ;;
+          *) rec "failed${T}cfg"; echo "Temple couldn't tell the agent which Claude config folder to use." >&2; exit 1 ;;
+        esac
         if [ -n "${CLAUDE_CONFIG_DIR+x}" ]; then
           cfg="set${T}$(printf '%s' "$CLAUDE_CONFIG_DIR" | od -An -tx1 | tr -d ' \n')"
         else
           cfg=unset
         fi
-        rec() { [ -n "$m" ] || return 0; temple_write "$m" "$1"; }
         pst() { [ -r "/proc/$1/stat" ] || return 0; x=$(cat "/proc/$1/stat" 2>/dev/null) || return 0; x=${x##*)}; set -- $x; [ $# -ge 20 ] || return 0; shift 19; printf '%s' "$1"; }
         case $d in "~") d=$HOME;; "~/"*) d=$HOME/${d#"~/"};; esac
         cd -- "$d" || { rec "failed${T}cd${T}$?"; exit 1; }
@@ -311,35 +339,13 @@ public struct TmuxKeepAlive: KeepAlive {
         "exec " + RemoteQuoting.command(["sh", "-c", paneScript, "temple-pane", directory] + agentArgv)
     }
 
-    public func createCommand(_ launch: RemoteLaunchPlan) -> String {
-        Self.remoteCommand(mode: "create", launch: launch,
-                           pane: Self.paneCommand(directory: launch.directory, agentArgv: launch.agentArgv))
+    public func createScript(_ launch: RemoteLaunchPlan) -> String {
+        Self.launchScript(mode: "create", launch: launch,
+                          pane: Self.paneCommand(directory: launch.directory, agentArgv: launch.agentArgv))
     }
 
-    public func attachCommand(_ launch: RemoteLaunchPlan) -> String {
-        Self.remoteCommand(mode: "attach", launch: launch, pane: "")
-    }
-
-    /// `env [PATH=…|TEMPLE_RESOLVE_PATH=1] TEMPLE_HANDLE=… sh -c '<wrapper>'
-    /// temple-launch <mode> <marker> <socket> <pane>`: every word
-    /// single-quoted; the handle in an environment assignment, never a shell
-    /// word of its own.
-    static func remoteCommand(mode: String, launch: RemoteLaunchPlan, pane: String) -> String {
-        precondition(RemoteQuoting.isSafeToken(launch.handle) && RemoteQuoting.isSafeToken(launch.marker))
-        var words = ["env"]
-        switch launch.path {
-        case .resolved(let path): words.append("PATH=\(path)")
-        case .fallback: break
-        case .unresolved: words.append("TEMPLE_RESOLVE_PATH=1")
-        }
-        switch launch.claudeConfig {
-        case .set(let value)?: words += ["TEMPLE_CFG=set", "TEMPLE_CFG_VALUE=\(value)"]
-        case .unset?: words.append("TEMPLE_CFG=unset")
-        case nil: break
-        }
-        words += ["TEMPLE_HANDLE=\(launch.handle)", "sh", "-c", wrapperScript, "temple-launch", mode, launch.marker,
-                  launch.socket ?? "", pane]
-        return RemoteQuoting.command(words)
+    public func attachScript(_ launch: RemoteLaunchPlan) -> String {
+        Self.launchScript(mode: "attach", launch: launch, pane: "")
     }
 
     // MARK: Queries

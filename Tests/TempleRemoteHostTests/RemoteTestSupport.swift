@@ -38,7 +38,7 @@ final class RecordingExec: RemoteExec, @unchecked Sendable {
     let answer: @Sendable (String, [String]) async throws -> RemoteOutput
     init(answer: @escaping @Sendable (String, [String]) async throws -> RemoteOutput) { self.answer = answer }
     var calls: [(script: String, args: [String])] { lock.withLock { _calls } }
-    func run(script: String, args: [String], deadline: TimeInterval) async throws -> RemoteOutput {
+    func run(script: String, args: [String], input: Data?, deadline: TimeInterval) async throws -> RemoteOutput {
         lock.withLock { _calls.append((script, args)) }
         return try await answer(script, args)
     }

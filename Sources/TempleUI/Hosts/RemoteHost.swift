@@ -88,7 +88,8 @@ final class RemoteHostLauncher: RemoteSessionHost {
             // path never becomes a local cwd.
             return .plan(RemoteOpenPlan(handle: plan.handle, attachment: plan.attachment, creating: plan.creating,
                                         command: TerminalCommand(argv: plan.argv, cwd: NSHomeDirectory()),
-                                        displayArgv: plan.agentArgv, evidenceDirectory: plan.evidenceDirectory))
+                                        displayArgv: plan.agentArgv, evidenceDirectory: plan.evidenceDirectory,
+                                        stage: plan.staged ? nil : plan.stage))
         }
     }
 
@@ -103,6 +104,7 @@ final class RemoteHostLauncher: RemoteSessionHost {
         switch await sessions.collect(handle) {
         case .ok(let directory): .ok(directory: directory)
         case .failedCD(let directory): .failedCD(directory: directory)
+        case .failedLaunch(let reason): .failedLaunch(reason)
         case .clientFailed(let line): .clientFailed(line)
         case .nothing: .nothing
         case .transport(let line): .transport(line)
@@ -112,9 +114,19 @@ final class RemoteHostLauncher: RemoteSessionHost {
 
     func diagnostics(_ handle: String) async -> String? { await sessions.diagnostics(handle) }
 
-    func markCreationUnproven(_ handle: String) async {
-        do { try await sessions.markCreationUnproven(handle) } catch {
+    func stage(_ name: String) async -> RemoteStageResult {
+        switch await sessions.stage(name) {
+        case .staged: .staged
+        case .failed(let reason): .failed(reason)
+        case .unknown(let reason): .unknown(reason)
+        case .none: .none
+        }
+    }
+
+    func markCreationUnproven(_ handle: String) async -> String? {
+        do { return try await sessions.markCreationUnproven(handle) } catch {
             TempleUILog.db.error("remote run not marked unproven: \(error.localizedDescription, privacy: .public)")
+            return nil
         }
     }
 

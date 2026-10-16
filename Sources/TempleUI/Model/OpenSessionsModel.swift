@@ -1373,7 +1373,26 @@ extension OpenSessionsModel {
             recordRemoteDirectory(tab, directory)
             tab.remote?.evidenceSeen = false
         }
+        if let stage = plan.stage { stageAfterSpawn(tab, host: host, stage: stage, creating: plan.creating) }
         watchStartup(tab)
+    }
+
+    /// First contact: no master answered when the open was planned, so the
+    /// tab's own ssh authenticates (the person may be asked) and becomes
+    /// it; the launch is staged once it answers, over that master, never
+    /// through the terminal. Cancelled when the tab's client ends. A
+    /// refusal (nothing put in place) ends the client now, rather than let
+    /// it wait out its own deadline; a creation's failure is already
+    /// recorded, and the exit shows it.
+    private func stageAfterSpawn(_ tab: SessionTab, host: RemoteSessionHost, stage: String, creating: Bool) {
+        let ticket = remoteGate.ticket(for: tab)
+        tab.remote?.stageOperation = remoteOperations.run(host: tab.host, .open) { [weak self] in
+            let outcome = await host.stage(stage)
+            guard case .failed(let reason) = outcome else { return }
+            guard let self, self.remoteGate.admit(.stageFailure, ticket), let tab = ticket.tab else { return }
+            if !creating { self.remoteNoticeHandler?(ticket.host, RemoteCopy.couldNotPrepare(host.hostName, reason: reason)) }
+            if tab.hasLiveProcess { tab.surface?.terminate() }
+        }
     }
 
     /// A remote open that shows no sign of life (no record, no title from
@@ -1412,7 +1431,7 @@ extension OpenSessionsModel {
                     guard let self, self.remoteGate.admit(.storageNotice, ticket) else { return }
                     self.remoteNoticeHandler?(ticket.host, RemoteCopy.unrecorded(host.hostName, detail: detail))
                     return
-                case .failedCD, .clientFailed:
+                case .failedCD, .failedLaunch, .clientFailed:
                     return
                 case .nothing, .transport:
                     continue
@@ -1471,6 +1490,11 @@ extension OpenSessionsModel {
     /// effect on the tab passes the gate after its last await.
     func handleRemoteExit(_ tab: SessionTab, surface: TerminalSurface, status: Int32) {
         if let sid = tab.sessionID { touchHandler?(sid, tab.host, nil) }
+        // The client is gone: a launch not yet staged never will be.
+        if let staging = tab.remote?.stageOperation {
+            remoteOperations.cancel(id: staging)
+            tab.remote?.stageOperation = nil
+        }
         if hostRetiredTabs.remove(tab.id) != nil {
             // The host was removed or edited: nothing is asked of the old one.
             tab.remote?.phase = .disconnected
@@ -1509,12 +1533,12 @@ extension OpenSessionsModel {
                         self.recordRemoteDirectory(tab, directory)
                     }
                 case .nothing, .transport, .clientFailed:
-                    await host.markCreationUnproven(handle)
+                    if let reason = await host.markCreationUnproven(handle) { outcome = .failedLaunch(reason) }
                 case .storage(let detail):
                     if let self, self.remoteGate.admit(.storageNotice, ticket) {
                         self.remoteNoticeHandler?(ticket.host, RemoteCopy.unrecorded(host.hostName, detail: detail))
                     }
-                case .failedCD:
+                case .failedCD, .failedLaunch:
                     break
                 }
             }
@@ -1525,6 +1549,15 @@ extension OpenSessionsModel {
                 tab.remote?.phase = .failedToStart(directory: directory)
                 tab.launchFailure = LaunchFailure(category: .cdFailed,
                                                   message: RemoteCopy.cannotEnter(directory, host: host.hostName))
+                return
+            }
+            if case .failedLaunch(let reason) = outcome {
+                let runAttachment = await host.attachment(of: handle)
+                guard let self, self.remoteGate.admit(.exitFailedToStart, ticket, runAttachment: runAttachment),
+                      let tab = ticket.tab else { return }
+                tab.remote?.phase = .failedToStart(directory: tab.projectPath)
+                tab.launchFailure = LaunchFailure(category: .transport,
+                                                  message: RemoteCopy.launchFailed(host.hostName, reason: reason))
                 return
             }
             let liveness = await host.exitCheck(handle)

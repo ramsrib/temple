@@ -216,6 +216,14 @@ final class RemoteGateWalkTests: XCTestCase {
                 _ = await self.connectedTab(h, creating: false)
             }, effect: { $0.tab?.remote?.stillConnecting == true }),
 
+            Scenario(completion: .stageFailure, disruptions: tabDisruptions, arm: { h in
+                h.remote.stageAfterSpawn = true
+                h.remote.stageResult = .failed("the record directory isn't private")
+                h.remote.stageGate = { await h.hold.wait() }
+                _ = await self.connectedTab(h, creating: false)
+                await self.settle { !h.remote.stages.isEmpty }
+            }, effect: { $0.app.remoteNotice != nil }),
+
             Scenario(completion: .contactNotice, disruptions: noClose, arm: { h in
                 h.remote.unnoticed = 2
                 h.remote.contactGate = { await h.hold.wait() }

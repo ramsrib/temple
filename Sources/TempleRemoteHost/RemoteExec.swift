@@ -42,7 +42,16 @@ public enum RemoteExecError: Error, Equatable, LocalizedError {
 /// deadline. Production is `SSHExec`; tests run the same scripts under the
 /// local `/bin/sh` (`LocalShellExec`).
 public protocol RemoteExec: Sendable {
-    func run(script: String, args: [String], deadline: TimeInterval) async throws -> RemoteOutput
+    /// `input`: bytes for the script's stdin (then end of file); nil for
+    /// none. The staging query's payload travels this way, never in a
+    /// command line.
+    func run(script: String, args: [String], input: Data?, deadline: TimeInterval) async throws -> RemoteOutput
+}
+
+extension RemoteExec {
+    public func run(script: String, args: [String], deadline: TimeInterval) async throws -> RemoteOutput {
+        try await run(script: script, args: args, input: nil, deadline: deadline)
+    }
 }
 
 /// A query to one host over the user's ssh: `BatchMode`, riding the master
@@ -66,11 +75,11 @@ public struct SSHExec: RemoteExec {
         self.connection = connection; self.path = path; self.purpose = purpose
     }
 
-    public func run(script: String, args: [String], deadline: TimeInterval) async throws -> RemoteOutput {
+    public func run(script: String, args: [String], input: Data?, deadline: TimeInterval) async throws -> RemoteOutput {
         let marker = "__temple_\(RemoteQuoting.nonce())__"
         let remote = Self.remoteCommand(script: script, args: args, path: path, marker: marker)
         let argv = connection.argv(purpose, remoteCommand: remote)
-        let raw = try await ProcessRunner.run(argv[0], Array(argv.dropFirst()), deadline: deadline)
+        let raw = try await ProcessRunner.run(argv[0], Array(argv.dropFirst()), input: input, deadline: deadline)
         return Self.unframe(raw, marker: marker)
     }
 
@@ -109,10 +118,11 @@ public struct LocalShellExec: RemoteExec {
         self.path = path; self.environment = environment
     }
 
-    public func run(script: String, args: [String], deadline: TimeInterval) async throws -> RemoteOutput {
+    public func run(script: String, args: [String], input: Data?, deadline: TimeInterval) async throws -> RemoteOutput {
         let marker = "__temple_\(RemoteQuoting.nonce())__"
         let remote = SSHExec.remoteCommand(script: script, args: args, path: path, marker: marker)
-        let raw = try await ProcessRunner.run("/bin/sh", ["-c", remote], environment: environment, deadline: deadline)
+        let raw = try await ProcessRunner.run("/bin/sh", ["-c", remote], environment: environment, input: input,
+                                              deadline: deadline)
         return SSHExec.unframe(raw, marker: marker)
     }
 }
@@ -152,13 +162,44 @@ public enum ProcessRunner {
     /// Called at each setup stage; tests only.
     nonisolated(unsafe) static var setupHook: (@Sendable (SetupStage) -> Void)?
 
+    /// `input`: written to the process's stdin off the caller's thread,
+    /// then closed; a process that exits without reading it costs a
+    /// failed write, never a SIGPIPE.
     public static func run(_ executable: String, _ arguments: [String], environment: [String: String]? = nil,
-                           deadline: TimeInterval) async throws -> Output {
+                           input: Data? = nil, deadline: TimeInterval) async throws -> Output {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         if let environment { process.environment = environment }
-        process.standardInput = FileHandle.nullDevice
+        var stdinWrite: Int32?
+        if input != nil {
+            var fds: [Int32] = [0, 0]
+            guard pipe(&fds) == 0 else { throw RemoteExecError.launchFailed(String(cString: strerror(errno))) }
+            for fd in fds { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
+            _ = fcntl(fds[1], F_SETNOSIGPIPE, 1)
+            process.standardInput = FileHandle(fileDescriptor: fds[0], closeOnDealloc: true)
+            stdinWrite = fds[1]
+        } else {
+            process.standardInput = FileHandle.nullDevice
+        }
+        defer {
+            // The child has its copy of the read end (or never started).
+            if input != nil { try? (process.standardInput as? FileHandle)?.close() }
+        }
+        if let stdinWrite, let input {
+            // Written once the process exists; on any failure the pipe is
+            // closed and the child reads end of file.
+            DispatchQueue.global().async {
+                input.withUnsafeBytes { buffer in
+                    var offset = 0
+                    while offset < buffer.count {
+                        let written = Darwin.write(stdinWrite, buffer.baseAddress! + offset, buffer.count - offset)
+                        if written > 0 { offset += written } else if written < 0, errno == EINTR { continue } else { break }
+                    }
+                }
+                close(stdinWrite)
+            }
+        }
         let run = RunState()
 
         return try await withTaskCancellationHandler {

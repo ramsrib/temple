@@ -53,12 +53,13 @@ final class RemoteScriptsTests: XCTestCase {
             tree.write("bin/tmux", #"""
             #!/bin/sh
             { printf 'call'; for a in "$@"; do printf '\t%s' "$(printf '%s' "$a" | tr '\n' '\036')"; done; printf '\n'; } >> "$STUB_LOG"
-            rec=; pane=; prev=; ppath=$PATH
+            rec=; pane=; prev=; ppath=$PATH; cfg=; cfgv=
             for a in "$@"; do
-              case $prev in -e) case $a in TEMPLE_RECORD=*) rec=${a#TEMPLE_RECORD=};; PATH=*) ppath=${a#PATH=};; esac;; esac
+              case $prev in -e) case $a in TEMPLE_RECORD=*) rec=${a#TEMPLE_RECORD=};; PATH=*) ppath=${a#PATH=};;
+                TEMPLE_CFG=*) cfg=${a#TEMPLE_CFG=};; TEMPLE_CFG_VALUE=*) cfgv=${a#TEMPLE_CFG_VALUE=};; esac;; esac
               prev=$a; pane=$a
             done
-            case " $* " in *" new-session "*) [ -n "$STUB_RUN_PANE" ] && TEMPLE_RECORD=$rec TMUX="$STUB_SOCKET,4242,0" PATH=$ppath /bin/sh -c "$pane" ;; esac
+            case " $* " in *" new-session "*) [ -n "$STUB_RUN_PANE" ] && TEMPLE_RECORD=$rec TEMPLE_CFG=$cfg TEMPLE_CFG_VALUE=$cfgv TMUX="$STUB_SOCKET,4242,0" PATH=$ppath /bin/sh -c "$pane" ;; esac
             [ -n "$STUB_ERR" ] && printf '%s\n' "$STUB_ERR" >&2
             exit ${STUB_STATUS:-0}
             """#, executable: true)
@@ -67,6 +68,23 @@ final class RemoteScriptsTests: XCTestCase {
         func installRealTmux() throws {
             guard let tmux = installedTmux() else { throw XCTSkip("no tmux installed on this Mac") }
             try FileManager.default.createSymbolicLink(atPath: bin + "/tmux", withDestinationPath: tmux)
+        }
+
+        /// A launch script staged as Temple leaves it (`~/.temple/launch/
+        /// <name>`, 0600; the directory made private only when missing, so a
+        /// test's unsafe one stays unsafe), and the tab's short command
+        /// that runs it. `LaunchStage.write` itself is tested on its own.
+        func staged(_ script: String) -> String {
+            let name = "st-" + RemoteQuoting.nonce()
+            let directory = (environment["HOME"] ?? home) + "/.temple/launch"
+            if !FileManager.default.fileExists(atPath: directory) {
+                try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true,
+                                                         attributes: [.posixPermissions: 0o700])
+                chmod((environment["HOME"] ?? home) + "/.temple", 0o700)
+            }
+            let file = directory + "/" + name
+            FileManager.default.createFile(atPath: file, contents: Data(script.utf8), attributes: [.posixPermissions: 0o600])
+            return LaunchStage.command(stage: name)
         }
 
         /// Runs a remote command the way the host's login shell would.
@@ -182,13 +200,74 @@ final class RemoteScriptsTests: XCTestCase {
         return try condition()
     }
 
+    // MARK: Staging (LaunchStage)
+
+    /// The staging query takes the script on stdin, puts it in the private
+    /// record directory whole (0600), never over an existing name, and
+    /// refuses a short payload or an unsafe directory with nothing left
+    /// behind.
+    func testALaunchIsStagedWholeFromStdinOrRefused() async throws {
+        let host = StandIn()
+        let script = "echo staged\n# " + String(repeating: "é'\"$x\\", count: 4000) + "\n"
+        let name = "r-abc.s-c" + RemoteQuoting.nonce()
+        let staged = await LaunchStage.write(stage: name, script: script, using: host.exec)
+        XCTAssertEqual(staged, .staged)
+        let file = host.recordDirectory + "/" + name
+        XCTAssertEqual(try String(contentsOfFile: file, encoding: .utf8), script)
+        let mode = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: file)[.posixPermissions] as? Int)
+        XCTAssertEqual(mode & 0o777, 0o600)
+        guard case .refused(let again) = await LaunchStage.write(stage: name, script: "other", using: host.exec) else {
+            return XCTFail("never over an existing name")
+        }
+        XCTAssertTrue(again.contains("already exists"), again)
+        XCTAssertEqual(try String(contentsOfFile: file, encoding: .utf8), script)
+        // A payload cut short in transit is refused, and nothing is left.
+        let short = try await host.exec.run(script: LaunchStage.writeScript, args: ["r-abc.s-cshort", "99999"],
+                                            input: Data("partial".utf8), deadline: 5)
+        XCTAssertTrue(short.stdout.contains("temple-stage-refused only 7 of 99999 bytes arrived"), short.stdout)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: host.recordDirectory).sorted(), [name])
+        // A directory others can write to is no place for a launch.
+        chmod(host.home + "/.temple", 0o777)
+        defer { chmod(host.home + "/.temple", 0o700) }
+        guard case .refused = await LaunchStage.write(stage: "r-abc.s-cunsafe", script: script, using: host.exec) else {
+            return XCTFail("an unsafe directory refuses")
+        }
+    }
+
+    /// The tab's command finds its staged launch, deletes it, and runs it;
+    /// one that never comes is said in the tab, with nothing run.
+    func testTheTabsCommandRunsItsStagedLaunchOnceOrSaysItIsMissing() async throws {
+        let host = StandIn()
+        let out = host.tree.path + "/ran"
+        let name = "r-abc.s-c" + RemoteQuoting.nonce()
+        _ = await LaunchStage.write(stage: name, script: "printf '%s' \"$0 ran\" > \(RemoteQuoting.quote(out))\n",
+                                    using: host.exec)
+        let run = try host.runLaunch(LaunchStage.command(stage: name, wait: 2))
+        XCTAssertEqual(run.status, 0, run.stderr)
+        XCTAssertEqual(try String(contentsOfFile: out, encoding: .utf8), "temple-launch ran")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: host.recordDirectory + "/" + name), "read once, then gone")
+        let missing = try host.runLaunch(LaunchStage.command(stage: "r-abc.s-cnever", wait: 1))
+        XCTAssertEqual(missing.status, 125)
+        XCTAssertTrue(missing.stderr.contains("Temple couldn't find the launch it prepared"), missing.stderr)
+    }
+
+    /// Every interactive command Temple builds stays far below the sizes
+    /// where macOS's ssh can't hand a session to its master (design note
+    /// 21): a payload inlined into one again fails here.
+    func testInteractiveCommandsStayShort() {
+        let longest = LaunchStage.attachName(marker: "r-" + String(repeating: "f", count: 16),
+                                             nonce: String(repeating: "f", count: 16))
+        XCTAssertLessThanOrEqual(LaunchStage.command(stage: longest).utf8.count, LaunchStage.maximumCommandBytes)
+        XCTAssertLessThanOrEqual(LaunchStage.maximumCommandBytes, 1024, "about 7 KiB left for the forwarded environment")
+    }
+
     // MARK: The wrapper (stub tmux)
 
     func testCreationIsOneClientInvocationConfiguringThenCreating() throws {
         let host = StandIn()
         host.installStub()
         let keepAlive = TmuxKeepAlive()
-        try host.runLaunch(keepAlive.createCommand(plan(host)))
+        try host.runLaunch(host.staged(keepAlive.createScript(plan(host))))
         let calls = host.calls
         XCTAssertEqual(calls.count, 1, "one command queue, one client")
         let argv = Array(calls[0].dropFirst())
@@ -214,8 +293,8 @@ final class RemoteScriptsTests: XCTestCase {
         let host = StandIn()
         host.installStub()
         let keepAlive = TmuxKeepAlive()
-        try host.runLaunch(keepAlive.attachCommand(plan(host, socket: "/tmp/tmux-1000/temple")))
-        try host.runLaunch(keepAlive.attachCommand(plan(host, socket: nil)))
+        try host.runLaunch(host.staged(keepAlive.attachScript(plan(host, socket: "/tmp/tmux-1000/temple"))))
+        try host.runLaunch(host.staged(keepAlive.attachScript(plan(host, socket: nil))))
         XCTAssertEqual(host.calls.map { Array($0.dropFirst()) }, [
             ["-S", "/tmp/tmux-1000/temple", "attach-session", "-t", "=temple-h1"],
             ["-L", "temple", "attach-session", "-t", "=temple-h1"],
@@ -230,7 +309,7 @@ final class RemoteScriptsTests: XCTestCase {
         // The session and pane exist, then the client fails.
         host.extra = ["STUB_RUN_PANE": "1", "STUB_SOCKET": "/tmp/tmux-1000/temple", "STUB_STATUS": "1",
                       "STUB_ERR": "open terminal failed: missing or unsuitable terminal: xterm-ghostty"]
-        let result = try host.runLaunch(TmuxKeepAlive().createCommand(plan(host, argv: ["/bin/sh", "-c", "exit 0"])))
+        let result = try host.runLaunch(host.staged(TmuxKeepAlive().createScript(plan(host, argv: ["/bin/sh", "-c", "exit 0"]))))
         XCTAssertEqual(result.status, 1)
         let pane = try XCTUnwrap(host.record("m1"))
         XCTAssertTrue(pane.hasPrefix("ok\n"), pane)
@@ -253,7 +332,7 @@ final class RemoteScriptsTests: XCTestCase {
         eval "$1"
         """, executable: true)
         host.extra = ["SHELL": host.bin + "/fakeshell"]
-        try host.runLaunch(TmuxKeepAlive().createCommand(plan(host, path: .unresolved)))
+        try host.runLaunch(host.staged(TmuxKeepAlive().createScript(plan(host, path: .unresolved))))
         let argv = try XCTUnwrap(host.calls.first)
         XCTAssertTrue(argv.contains("PATH=\(host.bin):/login/only/bin:/usr/bin:/bin"), "\(argv)")
     }
@@ -298,33 +377,61 @@ final class RemoteScriptsTests: XCTestCase {
     }
 
     /// The pane applies the launch's config root (so an older tmux server's
-    /// value can't win) and records the root the agent has.
+    /// value can't win) and records the root the agent has; told nothing,
+    /// it refuses to start the agent, visibly, and records why.
     func testThePaneAppliesAndRecordsTheConfigRoot() throws {
         let host = StandIn()
         try host.makeRecordDirectory()
         let record = host.recordDirectory + "/rec"
-        try "set\n/cfg/with\nnewline".write(toFile: record + ".cfgin", atomically: true, encoding: .utf8)
         let seen = host.tree.path + "/seen"
         var environment = host.environment
         environment["CLAUDE_CONFIG_DIR"] = "/stale/server/value"
         XCTAssertEqual(try runPane(host, directory: host.home,
                                    argv: ["/bin/sh", "-c", "printf '%s' \"$CLAUDE_CONFIG_DIR\" > \"$0\"", seen],
-                                   record: record, environment: environment), 0)
+                                   record: record, environment: environment, config: ("set", "/cfg/with\nnewline")), 0)
         XCTAssertEqual(try String(contentsOfFile: seen, encoding: .utf8), "/cfg/with\nnewline")
         guard case .ok(let evidence) = LaunchRecords.parsePane(try String(contentsOfFile: record, encoding: .utf8)) else {
             return XCTFail()
         }
         XCTAssertEqual(evidence.claudeConfig, .set("/cfg/with\nnewline"))
         // Unset: the stale value is removed, and recorded as unset.
-        try "unset\n".write(toFile: record + ".cfgin", atomically: true, encoding: .utf8)
         XCTAssertEqual(try runPane(host, directory: host.home,
                                    argv: ["/bin/sh", "-c", "printf '%s' \"${CLAUDE_CONFIG_DIR-none}\" > \"$0\"", seen],
-                                   record: record, environment: environment), 0)
+                                   record: record, environment: environment, config: ("unset", "")), 0)
         XCTAssertEqual(try String(contentsOfFile: seen, encoding: .utf8), "none")
         guard case .ok(let unset) = LaunchRecords.parsePane(try String(contentsOfFile: record, encoding: .utf8)) else {
             return XCTFail()
         }
         XCTAssertEqual(unset.claudeConfig, .unset)
+        // Told nothing (or nonsense): no agent, a record that says why, and
+        // never the server's stale value.
+        for config in [nil, ("maybe", "/x")] as [(state: String, value: String)?] {
+            try? FileManager.default.removeItem(atPath: seen)
+            XCTAssertNotEqual(try runPane(host, directory: host.home, argv: ["/bin/sh", "-c", "echo ran > \"$0\"", seen],
+                                          record: record, environment: environment, config: config), 0)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: seen), "no agent ran")
+            XCTAssertEqual(LaunchRecords.parsePane(try String(contentsOfFile: record, encoding: .utf8)),
+                           .failedLaunch(PaneRecord.configRefusal))
+        }
+    }
+
+    /// The pane's recorded root is decoded strictly: malformed hex, odd
+    /// digits, signs, extra fields or invalid UTF-8 are no evidence (nil);
+    /// a valid encoded empty value is `.set("")`.
+    func testRecordedConfigIsDecodedStrictly() {
+        func config(_ line: String) -> RemoteEnvironment.ClaudeConfig?? {
+            guard case .ok(let evidence) = LaunchRecords.parsePane(
+                "ok\nepoch\t1\npane\t2\t3\nserver\t4\t5\nsocket\t/s\n\(line)\ndir\t/d\n") else { return .none }
+            return .some(evidence.claudeConfig)
+        }
+        XCTAssertEqual(config("cfg\tunset"), .some(.unset))
+        XCTAssertEqual(config("cfg\tset\t2f78"), .some(.set("/x")))
+        XCTAssertEqual(config("cfg\tset\t2F78"), .some(.set("/x")))
+        XCTAssertEqual(config("cfg\tset\t"), .some(.set("")), "a valid, encoded empty value")
+        for malformed in ["cfg\tset", "cfg\tset\t2f7", "cfg\tset\t+f", "cfg\tset\tzz", "cfg\tset\t2f\textra",
+                          "cfg\tset\tff", "cfg\tset\tc328", "cfg\tmaybe", "cfg\tunset\tx", "cfg"] {
+            XCTAssertEqual(config(malformed), .some(nil), malformed)
+        }
     }
 
     func testStaleRecordsAreSweptByTheNextLaunch() throws {
@@ -335,7 +442,7 @@ final class RemoteScriptsTests: XCTestCase {
         FileManager.default.createFile(atPath: old, contents: Data("ok\n".utf8))
         FileManager.default.createFile(atPath: fresh, contents: Data("ok\n".utf8))
         try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-90_000)], ofItemAtPath: old)
-        try host.runLaunch(TmuxKeepAlive().createCommand(plan(host)))
+        try host.runLaunch(host.staged(TmuxKeepAlive().createScript(plan(host))))
         XCTAssertFalse(FileManager.default.fileExists(atPath: old))
         XCTAssertTrue(FileManager.default.fileExists(atPath: fresh))
     }
@@ -343,7 +450,7 @@ final class RemoteScriptsTests: XCTestCase {
     func testTheRecordDirectoryIsPrivate() throws {
         let host = StandIn()
         host.installStub()
-        try host.runLaunch(TmuxKeepAlive().createCommand(plan(host)))
+        try host.runLaunch(host.staged(TmuxKeepAlive().createScript(plan(host))))
         var info = stat()
         XCTAssertEqual(stat(host.recordDirectory, &info), 0)
         XCTAssertEqual(info.st_mode & 0o777, 0o700)
@@ -362,7 +469,7 @@ final class RemoteScriptsTests: XCTestCase {
                 try FileManager.default.createDirectory(atPath: host.recordDirectory, withIntermediateDirectories: true)
                 chmod(host.recordDirectory, 0o755)
             }
-            try host.runLaunch(TmuxKeepAlive().createCommand(plan(host)))
+            try host.runLaunch(host.staged(TmuxKeepAlive().createScript(plan(host))))
             let argv = try XCTUnwrap(host.calls.first)
             XCTAssertTrue(argv.contains("TEMPLE_RECORD="), "\(setup): no record path is handed to the pane")
             do {
@@ -375,14 +482,21 @@ final class RemoteScriptsTests: XCTestCase {
 
     // MARK: The pane
 
+    /// `config`: the `-e TEMPLE_CFG` / `TEMPLE_CFG_VALUE` the launch hands
+    /// the pane; nil hands it none.
     private func runPane(_ host: StandIn, directory: String, argv: [String], record: String,
-                         tmux: String = "/tmp/tmux-1000/te,mp le,77,3", environment base: [String: String]? = nil) throws -> Int32 {
+                         tmux: String = "/tmp/tmux-1000/te,mp le,77,3", environment base: [String: String]? = nil,
+                         config: (state: String, value: String)? = ("unset", "")) throws -> Int32 {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         // As tmux would run it: the server's /bin/sh -c '<pane command>'.
         process.arguments = ["-c", TmuxKeepAlive.paneCommand(directory: directory, agentArgv: argv)]
         var environment = base ?? host.environment
         environment["TEMPLE_RECORD"] = record
+        if let config {
+            environment["TEMPLE_CFG"] = config.state
+            environment["TEMPLE_CFG_VALUE"] = config.value
+        }
         environment["TMUX"] = tmux
         process.environment = environment
         process.standardOutput = FileHandle.nullDevice
@@ -465,7 +579,7 @@ final class RemoteScriptsTests: XCTestCase {
         let folder = host.tree.directory("home/" + odd)
         let out = host.tree.path + "/argv"
         let args = ["/bin/sh", "-c", "for a in \"$@\"; do printf '%s|' \"$a\"; done > \"$0\"", out, "a'b", "c\\d", "$HOME", "e f"]
-        try host.runLaunch(TmuxKeepAlive().createCommand(plan(host, directory: folder.path, argv: args)))
+        try host.runLaunch(host.staged(TmuxKeepAlive().createScript(plan(host, directory: folder.path, argv: args))))
         XCTAssertEqual(try String(contentsOfFile: out, encoding: .utf8), "a'b|c\\d|$HOME|e f|")
         guard case .ok(let evidence)? = host.record("m1").map(LaunchRecords.parsePane) else { return XCTFail() }
         XCTAssertEqual(evidence.directory, canonical(folder.path))
@@ -565,7 +679,7 @@ final class RemoteScriptsTests: XCTestCase {
         defer { _ = try? host.tmux(["-L", "temple", "kill-server"]) }
 
         // First launch: no server yet.
-        let a = try launchClient(host, keepAlive.createCommand(plan(host, handle: "ha", marker: "ma")))
+        let a = try launchClient(host, host.staged(keepAlive.createScript(plan(host, handle: "ha", marker: "ma"))))
         XCTAssertTrue(try waitFor { host.record("ma") != nil })
         guard case .ok(let evidence)? = host.record("ma").map(LaunchRecords.parsePane) else { return XCTFail() }
         XCTAssertEqual(evidence.socketPath, host.tmuxDir + "/tmux-\(getuid())/temple")
@@ -575,13 +689,13 @@ final class RemoteScriptsTests: XCTestCase {
         XCTAssertEqual(try host.tmux(["-L", "temple", "show", "-gv", "prefix"]).stdout.trimmingCharacters(in: .whitespacesAndNewlines), "None")
 
         // A second launch against the running server, in the same folder.
-        let b = try launchClient(host, keepAlive.createCommand(plan(host, handle: "hb", marker: "mb")))
+        let b = try launchClient(host, host.staged(keepAlive.createScript(plan(host, handle: "hb", marker: "mb"))))
         XCTAssertTrue(try waitFor { host.record("mb") != nil })
 
         // An attach, on the pinned socket, writes no record.
         let pinned = evidence.socketPath
         let records = try FileManager.default.contentsOfDirectory(atPath: host.recordDirectory).sorted()
-        let second = try launchClient(host, keepAlive.attachCommand(plan(host, handle: "ha", marker: "mz", socket: pinned)))
+        let second = try launchClient(host, host.staged(keepAlive.attachScript(plan(host, handle: "ha", marker: "mz", socket: pinned))))
         XCTAssertTrue(try waitFor { try self.attachedCount(host, "temple-ha") == 2 })
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: host.recordDirectory).sorted(), records)
 
@@ -659,8 +773,8 @@ final class RemoteScriptsTests: XCTestCase {
         host.extra = ["HOME": oddHome]
         let keepAlive = TmuxKeepAlive()
         defer { _ = try? host.tmux(["-L", "temple", "kill-server"]) }
-        let client = try PTYClient(keepAlive.createCommand(plan(host, directory: "~",
-            argv: ["/bin/sh", "-c", "echo \"agent $$\"; echo 'No conversation found with session ID: x' >&2; sleep 1; exit 3"])),
+        let client = try PTYClient(host.staged(keepAlive.createScript(plan(host, directory: "~",
+            argv: ["/bin/sh", "-c", "echo \"agent $$\"; echo 'No conversation found with session ID: x' >&2; sleep 1; exit 3"]))),
                                    environment: host.environment)
         defer { client.end() }
         let records = oddHome + "/.temple/launch"
@@ -682,7 +796,7 @@ final class RemoteScriptsTests: XCTestCase {
         try host.installRealTmux()
         let keepAlive = TmuxKeepAlive()
         defer { _ = try? host.tmux(["-L", "temple", "kill-server"]) }
-        let ours = try launchClient(host, keepAlive.createCommand(plan(host, handle: "hr", marker: "mr")))
+        let ours = try launchClient(host, host.staged(keepAlive.createScript(plan(host, handle: "hr", marker: "mr"))))
         XCTAssertTrue(try waitFor { host.record("mr") != nil })
         // Temple detaches its own client, and before the stop runs, someone
         // else attaches: the count is 1 again, but it is not Temple's.
@@ -704,20 +818,20 @@ final class RemoteScriptsTests: XCTestCase {
         defer { _ = try? host.tmux(["-L", "temple", "kill-server"]) }
         let out = host.tree.path
         // A session whose agent exits at once: the server goes with it.
-        let first = try launchClient(host, keepAlive.createCommand(plan(host, handle: "h1", marker: "m1",
-                                                                        argv: ["/bin/sh", "-c", "exit 0"])))
+        let first = try launchClient(host, host.staged(keepAlive.createScript(plan(host, handle: "h1", marker: "m1",
+                                                                        argv: ["/bin/sh", "-c", "exit 0"]))))
         XCTAssertTrue(try waitFor { !first.process.isRunning })
         // The next launch configures a fresh server in the same queue.
-        let second = try launchClient(host, keepAlive.createCommand(plan(host, handle: "h2", marker: "m2",
+        let second = try launchClient(host, host.staged(keepAlive.createScript(plan(host, handle: "h2", marker: "m2",
             argv: ["/bin/sh", "-c", "printf '%s\\n' \"$PATH\" > \(out)/p2; printf '%s\\n' \"$TERM\" > \(out)/t2; sleep 30"],
-            path: .resolved("\(host.bin):/first/path:/usr/bin:/bin"))))
+            path: .resolved("\(host.bin):/first/path:/usr/bin:/bin")))))
         defer { second.end() }
         XCTAssertTrue(try waitFor { FileManager.default.fileExists(atPath: out + "/t2") })
         XCTAssertEqual(try host.tmux(["-L", "temple", "show", "-gv", "status"]).stdout.trimmingCharacters(in: .whitespacesAndNewlines), "off")
         // A server started with one PATH: -e hands the next pane its own.
-        let third = try launchClient(host, keepAlive.createCommand(plan(host, handle: "h3", marker: "m3",
+        let third = try launchClient(host, host.staged(keepAlive.createScript(plan(host, handle: "h3", marker: "m3",
             argv: ["/bin/sh", "-c", "printf '%s\\n' \"$PATH\" > \(out)/p3; sleep 30"],
-            path: .resolved("\(host.bin):/third/path:/usr/bin:/bin"))))
+            path: .resolved("\(host.bin):/third/path:/usr/bin:/bin")))))
         defer { third.end() }
         XCTAssertTrue(try waitFor { FileManager.default.fileExists(atPath: out + "/p3") })
         XCTAssertEqual(try String(contentsOfFile: out + "/p2", encoding: .utf8), "\(host.bin):/first/path:/usr/bin:/bin\n")

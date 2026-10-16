@@ -63,6 +63,27 @@ public final class RemoteSessions {
         /// An attach to a run whose creation evidence was persisted: the
         /// folder its pane reported, replayed into the row and tab.
         public var evidenceDirectory: String?
+        /// The staged launch's name (`LaunchStage`): the tab's command waits
+        /// for it on the host.
+        public var stage: String
+        /// Already in place when the plan was made (a master was up). When
+        /// false, the caller spawns the tab, whose ssh authenticates and
+        /// becomes the master, then calls `stage(_:)`.
+        public var staged: Bool
+        /// What the staged script carries, for checks.
+        public var launch: RemoteLaunchPlan
+    }
+
+    /// What staging after the tab connected came to.
+    public enum StageOutcome: Sendable, Equatable {
+        case staged
+        /// Nothing was put in place, so nothing ran: a creation is recorded
+        /// as failed, with why.
+        case failed(String)
+        /// No answer: it may be in place; the tab's own exit decides.
+        case unknown(String)
+        /// Nothing to stage (already sent, or the open was abandoned).
+        case none
     }
 
     public enum OpenOutcome: Sendable, Equatable {
@@ -79,6 +100,9 @@ public final class RemoteSessions {
         case ok(directory: String)
         /// The pane could not enter the folder; no agent ran. Recorded.
         case failedCD(directory: String)
+        /// The launch failed before any agent ran (it couldn't be staged,
+        /// or the pane wasn't told its config root). Recorded; why.
+        case failedLaunch(String)
         /// The tmux client failed; creation is unproven, not disproven.
         case clientFailed(String)
         /// Nothing there (yet).
@@ -148,6 +172,9 @@ public final class RemoteSessions {
     private var claudeConfig: RemoteEnvironment.ClaudeConfig?
     /// The host was removed or edited: nothing here runs again.
     public private(set) var retired = false
+    /// Launch scripts planned but not yet staged, by stage name. `sent`:
+    /// a write was attempted (it may have landed).
+    private var pendingStages: [String: (handle: String, creating: Bool, script: String, sent: Bool)] = [:]
 
     public init(record: RemoteHostRecord, stateDirectory: URL, sshPath: @autoclosure @escaping () -> String,
                 store: @escaping () throws -> RemoteStateStore,
@@ -310,13 +337,14 @@ public final class RemoteSessions {
         if request.resumeAnyway || request.startNew {
             // Explicit choices, never the ordinary reservation.
             do { try await write { try $0.insert(candidate) } } catch { throw OpenError.store(error.localizedDescription) }
-            return .plan(createPlan(candidate, request: request, connection: connection))
+            return .plan(try await createPlan(candidate, request: request, connection: connection))
         }
         return try await reserveAndPlan(request, candidate: candidate, connection: connection, recovering: true)
     }
 
     private func reserveAndPlan(_ request: OpenRequest, candidate: RemoteRun, connection: SSHConnection,
-                                recovering: Bool, allowUnconfirmed: Bool = false) async throws -> OpenOutcome {
+                                recovering: Bool, allowUnconfirmed: Bool = false,
+                                verifiedRoot: RemoteEnvironment.ClaudeConfig? = nil) async throws -> OpenOutcome {
         let reservation: RemoteStateStore.Reservation
         let allow = allowUnconfirmed || request.resumeUnconfirmed
         do { reservation = try await write { try $0.reserve(candidate, allowUnconfirmed: allow) } } catch {
@@ -325,17 +353,19 @@ public final class RemoteSessions {
         switch reservation {
         case .needsDecision:
             // Typed input is not evidence; the transcript on the host is.
-            switch await conversation(sessionID: request.sessionID) {
+            let verified = await verifyConversation(sessionID: request.sessionID)
+            switch verified.check {
             case .present:
+                // Resumed against the root the transcript was found in.
                 return try await reserveAndPlan(request, candidate: candidate, connection: connection,
-                                                recovering: recovering, allowUnconfirmed: true)
+                                                recovering: recovering, allowUnconfirmed: true, verifiedRoot: verified.root)
             case .absent:
                 return .needsDecision(checked: true)
             case .unknown:
                 return .needsDecision(checked: false)
             }
         case .created(let run):
-            return .plan(createPlan(run, request: request, connection: connection))
+            return .plan(try await createPlan(run, request: request, connection: connection, verifiedRoot: verifiedRoot))
         case .existing(var run):
             // An `ok` written but never collected is recovered before the attach.
             if recovering, run.creation == nil || run.creation == .unproven {
@@ -350,14 +380,19 @@ public final class RemoteSessions {
                     run = await self.run(run.handle) ?? run
                 }
             }
-            let plan = RemoteLaunchPlan(handle: run.handle, marker: marker(run), directory: run.directoryIntent,
-                                        agentArgv: [], path: launchPath, claudeConfig: launchConfig, socket: run.socketPath)
+            let marker = marker(run)
+            let plan = RemoteLaunchPlan(handle: run.handle, marker: marker, directory: run.directoryIntent,
+                                        agentArgv: [], path: launchPath, claudeConfig: launchConfig, socket: run.socketPath,
+                                        stage: LaunchStage.attachName(marker: marker, nonce: token()))
+            let staged = try await stageBeforeSpawn(plan.stage, handle: run.handle, creating: false,
+                                                    script: keepAlive.attachScript(plan), connection: connection)
             return .plan(OpenPlan(handle: run.handle, attachment: run.attachment, creating: false,
-                                  argv: localArgv(connection, keepAlive.attachCommand(plan)),
+                                  argv: localArgv(connection, LaunchStage.command(stage: plan.stage)),
                                   agentArgv: agentArgv(run.agent, sessionID: request.sessionID, resume: run.mode == .resume,
                                                        extra: request.extraArguments),
                                   directoryIntent: run.directoryIntent,
-                                  evidenceDirectory: run.creation == .proven ? run.directory : nil))
+                                  evidenceDirectory: run.creation == .proven ? run.directory : nil,
+                                  stage: plan.stage, staged: staged, launch: plan))
         }
     }
 
@@ -370,15 +405,112 @@ public final class RemoteSessions {
         return run
     }
 
-    private func createPlan(_ run: RemoteRun, request: OpenRequest, connection: SSHConnection) -> OpenPlan {
+    /// A creation's plan. A resume is started against the config root its
+    /// conversation lives in: the one the transcript check just found it
+    /// in (`verifiedRoot`), else the root the session's latest run had,
+    /// else the login environment's.
+    private func createPlan(_ run: RemoteRun, request: OpenRequest, connection: SSHConnection,
+                            verifiedRoot: RemoteEnvironment.ClaudeConfig? = nil) async throws -> OpenPlan {
         let argv = agentArgv(run.agent, sessionID: request.sessionID, resume: run.mode == .resume,
                              extra: request.extraArguments)
-        let plan = RemoteLaunchPlan(handle: run.handle, marker: marker(run), directory: run.directoryIntent,
-                                    agentArgv: argv, path: launchPath, claudeConfig: launchConfig, socket: nil)
+        var config = launchConfig
+        if run.mode == .resume {
+            if let verifiedRoot {
+                config = verifiedRoot
+            } else if let latest = await latestRelevantRun(sessionID: request.sessionID, excluding: run.handle),
+                      let root = Self.effectiveRoot(of: latest) {
+                config = root
+            }
+        }
+        let marker = marker(run)
+        let plan = RemoteLaunchPlan(handle: run.handle, marker: marker, directory: run.directoryIntent,
+                                    agentArgv: argv, path: launchPath, claudeConfig: config, socket: nil,
+                                    stage: LaunchStage.creationName(marker: marker, nonce: token()))
+        let staged = try await stageBeforeSpawn(plan.stage, handle: run.handle, creating: true,
+                                                script: keepAlive.createScript(plan), connection: connection)
         return OpenPlan(handle: run.handle, attachment: run.attachment, creating: true,
-                        argv: localArgv(connection, keepAlive.createCommand(plan)), agentArgv: argv,
-                        directoryIntent: run.directoryIntent, evidenceDirectory: nil)
+                        argv: localArgv(connection, LaunchStage.command(stage: plan.stage)), agentArgv: argv,
+                        directoryIntent: run.directoryIntent, evidenceDirectory: nil,
+                        stage: plan.stage, staged: staged, launch: plan)
     }
+
+    /// Stages the launch now when Temple's master is up, so the tab's
+    /// command finds it at once. Anything but a clean write refuses the
+    /// open (a creation is recorded as failed first): nothing is spawned
+    /// on a launch Temple couldn't put in place. Without a master the
+    /// launch waits for `stage(_:)`, after the tab has connected.
+    private func stageBeforeSpawn(_ name: String, handle: String, creating: Bool, script: String,
+                                  connection: SSHConnection) async throws -> Bool {
+        pendingStages[name] = (handle, creating, script, false)
+        guard await masterCheck(connection.masterCheckArgv), !retired else { return false }
+        switch await send(name, removeIfUnanswered: true) {
+        case .staged:
+            return true
+        case .failed(let reason), .unknown(let reason):
+            if creating { try? await abandon(handle, reason: "the launch couldn't be prepared: \(reason)") }
+            throw OpenError.refused(Self.stagingRefusal(host: record.name, reason: reason))
+        case .none:
+            throw OpenError.refused(Self.stagingRefusal(host: record.name, reason: "the open was abandoned"))
+        }
+    }
+
+    static func stagingRefusal(host: String, reason: String) -> String {
+        "Temple couldn't prepare the session on \(host): \(reason)"
+    }
+
+    /// The staged write, once. A creation refused before anything was put
+    /// in place is recorded as failed (nothing can have run). An
+    /// unanswered write is removed when no tab will run it
+    /// (`removeIfUnanswered`, before the spawn); otherwise it is left for
+    /// the tab, whose exit decides.
+    private func send(_ name: String, removeIfUnanswered: Bool = false) async -> StageOutcome {
+        guard var pending = pendingStages[name], !pending.sent else { return .none }
+        pending.sent = true
+        pendingStages[name] = pending
+        let exec: RemoteExec
+        do { exec = try await queryExec() } catch {
+            // Nothing left this Mac.
+            pendingStages[name]?.sent = false
+            return .unknown(error.localizedDescription)
+        }
+        switch await LaunchStage.write(stage: name, script: pending.script, using: exec) {
+        case .staged:
+            pendingStages[name] = nil
+            return .staged
+        case .refused(let reason):
+            pendingStages[name] = nil
+            if pending.creating {
+                try? await abandon(pending.handle, reason: "the launch couldn't be prepared: \(reason)")
+            }
+            return .failed(reason)
+        case .unknown(let reason):
+            pendingStages[name] = nil
+            if removeIfUnanswered { await LaunchStage.discard(stage: name, using: exec) }
+            return .unknown(reason)
+        }
+    }
+
+    /// Stages a launch whose tab is connecting: waits for Temple's master
+    /// (at first contact the tab's own ssh authenticates and becomes it),
+    /// then writes the launch, once. The caller cancels it when the tab
+    /// goes; it gives up on its own after `stageWaitSeconds`.
+    public func stage(_ name: String) async -> StageOutcome {
+        guard pendingStages[name] != nil else { return .none }
+        let deadline = now().addingTimeInterval(Self.stageWaitSeconds)
+        while !Task.isCancelled, !retired, pendingStages[name]?.sent == false {
+            if let connection = try? await resolvedConnection(), await masterCheck(connection.masterCheckArgv),
+               !Task.isCancelled, !retired {
+                return await send(name)
+            }
+            guard now() < deadline else { break }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        return .none
+    }
+
+    /// How long a connecting tab's launch waits for Temple's master: long
+    /// enough for a person to authenticate.
+    public static let stageWaitSeconds: TimeInterval = 600
 
     /// The marker the run's persisted locator names.
     private func marker(_ run: RemoteRun) -> String {
@@ -409,6 +541,7 @@ public final class RemoteSessions {
     /// An open that was planned but never spawned (the tab closed, the
     /// spawn failed, the host changed): no session was created.
     public func abandon(_ handle: String, reason: String) async throws {
+        for (name, pending) in pendingStages where pending.handle == handle && !pending.sent { pendingStages[name] = nil }
         let now = now()
         try await write {
             try $0.update(handle) { run in
@@ -429,6 +562,7 @@ public final class RemoteSessions {
         guard let run = await run(handle) else { return .nothing }
         if run.creation == .proven, let directory = run.directory { return .ok(directory: directory) }
         if run.creation == .failed, run.failure == "cd" { return .failedCD(directory: run.directoryIntent) }
+        if run.creation == .failed { return .failedLaunch(run.failure ?? "the launch failed") }
         let marker = marker(run)
         let records: CollectedRecords
         let exec: RemoteExec
@@ -475,6 +609,20 @@ public final class RemoteSessions {
             }
             if !retired { await LaunchRecords.acknowledge(marker: marker, all: true, using: exec) }
             return .failedCD(directory: run.directoryIntent)
+        case .failedLaunch(let reason)?:
+            do {
+                try await write {
+                    try $0.update(handle) { row in
+                        row.creation = .failed
+                        row.failure = reason
+                        row.endedAt = now
+                    }
+                }
+            } catch {
+                return .storage(error.localizedDescription)
+            }
+            if !retired { await LaunchRecords.acknowledge(marker: marker, all: true, using: exec) }
+            return .failedLaunch(reason)
         case .unreadable(let line)?:
             return .transport("the launch record could not be read: \(line)")
         case nil:
@@ -508,16 +656,43 @@ public final class RemoteSessions {
     /// Whether the session's transcript exists on the host. Present: the
     /// conversation is recorded as confirmed for its runs.
     public func conversation(sessionID: String) async -> ConversationCheck {
-        guard RemoteQuoting.isSafeToken(sessionID) else { return .unknown("this session id can't be sent to a host") }
-        // The root its agent was started with, as its pane recorded it.
+        await verifyConversation(sessionID: sessionID).check
+    }
+
+    /// The latest run of the session that may have run its agent: not
+    /// dismissed, and not a creation that failed before anything ran.
+    /// `excluding`: the run being planned right now.
+    private func latestRelevantRun(sessionID: String, excluding handle: String? = nil) async -> RemoteRun? {
         let host = host
-        let recorded = await read { try $0.runs(host: host, sessionID: sessionID) }?
-            .last { $0.claudeConfig != nil && $0.directory != nil }
-        guard let recorded, let base = recorded.directory else {
-            return .unknown("Temple doesn't know which config folder this session used")
+        return await read { try $0.runs(host: host, sessionID: sessionID) }?
+            .last { $0.dismissedAt == nil && $0.creation != .failed && $0.handle != handle }
+    }
+
+    /// The config root the session's latest run started its agent with, as
+    /// that agent resolved it: a relative value made absolute against the
+    /// folder the pane ran in. Nil when that run left no evidence of either,
+    /// or set it to the empty string (how Claude reads that is not known):
+    /// never an older run's root instead.
+    static func effectiveRoot(of run: RemoteRun) -> RemoteEnvironment.ClaudeConfig? {
+        guard let config = run.claudeConfig, let base = run.directory else { return nil }
+        switch config {
+        case .unset: return .unset
+        case .set(let value) where value.isEmpty: return nil
+        case .set(let value) where value.hasPrefix("/"): return .set(value)
+        case .set(let value): return .set((base.hasSuffix("/") ? base : base + "/") + value)
         }
-        guard let exec = try? await queryExec(), !retired else { return .unknown("Temple couldn't reach the host") }
-        let answer = await ConversationCheck.run(sessionID: sessionID, config: recorded.claudeConfig, base: base, using: exec)
+    }
+
+    /// The transcript check, on the root of the session's latest relevant
+    /// run, and that root (the one a resume after a present answer must use).
+    private func verifyConversation(sessionID: String) async -> (check: ConversationCheck, root: RemoteEnvironment.ClaudeConfig?) {
+        guard RemoteQuoting.isSafeToken(sessionID) else { return (.unknown("this session id can't be sent to a host"), nil) }
+        guard let latest = await latestRelevantRun(sessionID: sessionID), let root = Self.effectiveRoot(of: latest),
+              let base = latest.directory else {
+            return (.unknown("Temple doesn't know which config folder this session used"), nil)
+        }
+        guard let exec = try? await queryExec(), !retired else { return (.unknown("Temple couldn't reach the host"), nil) }
+        let answer = await ConversationCheck.run(sessionID: sessionID, config: root, base: base, using: exec)
         if answer == .present {
             let host = host
             _ = try? await write { store in
@@ -526,7 +701,7 @@ public final class RemoteSessions {
                 }
             }
         }
-        return answer
+        return (answer, root)
     }
 
     /// A run with no server on record: its record is recovered first, so
@@ -539,8 +714,26 @@ public final class RemoteSessions {
 
     /// A creation whose tab ended with nothing collected: unproven, so
     /// every later Open is attach-only.
-    public func markCreationUnproven(_ handle: String) async throws {
+    ///
+    /// A creation whose launch was never sent to the host cannot have run:
+    /// it is recorded as failed instead (later Opens create again), and
+    /// why is returned.
+    @discardableResult
+    public func markCreationUnproven(_ handle: String) async throws -> String? {
+        if try await abandonUnsent(handle) { return Self.unsentReason }
         try await write { try $0.update(handle) { row in if row.creation == nil { row.creation = .unproven } } }
+        return nil
+    }
+
+    static let unsentReason = "the connection ended before Temple could prepare the launch"
+
+    /// A creation whose staged launch was never sent: recorded as failed.
+    private func abandonUnsent(_ handle: String) async throws -> Bool {
+        let unsent = pendingStages.filter { $0.value.handle == handle && $0.value.creating && !$0.value.sent }
+        guard !unsent.isEmpty else { return false }
+        for name in unsent.keys { pendingStages[name] = nil }
+        try await abandon(handle, reason: Self.unsentReason)
+        return true
     }
 
     /// A Temple tab sent this run's agent something: the conversation exists.
@@ -572,6 +765,7 @@ public final class RemoteSessions {
             do { try await markEnded(handle, evidence: .absent) } catch {
                 return .unknown(reason: "Temple couldn't record that it ended: \(error.localizedDescription)", socketMissing: false)
             }
+            if !retired { await LaunchStage.discardAll(marker: marker(run), using: exec) }
         case .unknown(_, false):
             transportFailed()
         default:
@@ -606,10 +800,18 @@ public final class RemoteSessions {
         guard let found = await run(handle) else {
             return StopRecord(outcome: .unconfirmed(reason: "Temple has no record of this session", reachedHost: false))
         }
+        // A creation whose launch never left this Mac: nothing runs there.
+        do {
+            if try await abandonUnsent(handle) { return StopRecord(outcome: .absent) }
+        } catch {
+            return StopRecord(outcome: .absent, storageError: error.localizedDescription)
+        }
         let run = await pinned(found)
         let outcome: StopOutcome
+        var stopExec: RemoteExec?
         do {
             let exec = try await queryExec()
+            stopExec = exec
             outcome = try await keepAlive.stop(session: run.sessionName, socket: run.socketPath,
                                                waitTenths: fromAttachedTab ? 30 : 0, using: exec)
         } catch is CancellationError {
@@ -619,10 +821,15 @@ public final class RemoteSessions {
         }
         do {
             try await record(outcome, for: handle)
-            return StopRecord(outcome: outcome)
         } catch {
             return StopRecord(outcome: outcome, storageError: error.localizedDescription)
         }
+        // The run ended: what was staged for it and never read goes too
+        // (best effort, after the outcome is written).
+        if outcome == .killed || outcome == .absent, let stopExec, !retired, !Task.isCancelled {
+            await LaunchStage.discardAll(marker: marker(run), using: stopExec)
+        }
+        return StopRecord(outcome: outcome)
     }
 
     /// The durable completion of a stop.

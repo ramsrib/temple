@@ -70,7 +70,8 @@ final class FakeRemoteHost: RemoteSessionHost {
             return .plan(RemoteOpenPlan(handle: runs[index].handle, attachment: runs[index].attachment, creating: false,
                                         command: TerminalCommand(argv: ["ssh", "attach", runs[index].handle], cwd: "/Users/me"),
                                         displayArgv: ["claude", "--resume", sessionID],
-                                        evidenceDirectory: "/home/u/evidence"))
+                                        evidenceDirectory: "/home/u/evidence",
+                                        stage: stageAfterSpawn ? "stage-\(runs[index].handle)" : nil))
         }
         if decision, resume, !startNew, !resumeAnyway, !resumeUnconfirmed { return .needsDecision(checked: decisionChecked) }
         counter += 1
@@ -78,7 +79,8 @@ final class FakeRemoteHost: RemoteSessionHost {
         runs.append(run)
         return .plan(RemoteOpenPlan(handle: run.handle, attachment: 1, creating: true,
                                     command: TerminalCommand(argv: ["ssh", "create", run.handle], cwd: "/Users/me"),
-                                    displayArgv: ["claude", run.resume ? "--resume" : "--session-id", sessionID]))
+                                    displayArgv: ["claude", run.resume ? "--resume" : "--session-id", sessionID],
+                                    stage: stageAfterSpawn ? "stage-\(run.handle)" : nil))
     }
 
     func abandon(_ handle: String) async { abandoned.append(handle) }
@@ -91,7 +93,25 @@ final class FakeRemoteHost: RemoteSessionHost {
         if let diagnosticsGate { await diagnosticsGate() }
         return diagnosticsText
     }
-    func markCreationUnproven(_ handle: String) async { unproven.append(handle) }
+    /// What `markCreationUnproven` answers: nil, or why the creation was
+    /// recorded failed instead (its launch never reached the host).
+    var unsentReason: String?
+    func markCreationUnproven(_ handle: String) async -> String? {
+        unproven.append(handle)
+        return unsentReason
+    }
+
+    /// Staging after the spawn: plans carry a stage when `stageAfterSpawn`.
+    var stageAfterSpawn = false
+    var stageResult: RemoteStageResult = .staged
+    var stageGate: (() async -> Void)?
+    private(set) var stages: [String] = []
+    func stage(_ name: String) async -> RemoteStageResult {
+        stages.append(name)
+        if let stageGate { await stageGate() }
+        // An answer that had already arrived: the gate decides what shows.
+        return stageResult
+    }
 
     var discardGate: (() async -> Void)?
     var discardError: Error?
@@ -595,6 +615,42 @@ final class RemoteLifecycleTests: XCTestCase {
         await gate.open()
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertFalse(recordedDirectories.contains { $0.2 == "/home/u/late" })
+    }
+
+    // MARK: Staging after the spawn (first contact)
+
+    /// The launch is staged after the tab connects; a refusal ends the
+    /// client at once, and the exit says why (the creation was recorded
+    /// failed by the host side, so the collection says so).
+    func testALaunchThatCouldNotBeStagedEndsItsClientAndSaysWhy() async throws {
+        remote.stageAfterSpawn = true
+        remote.stageResult = .failed("~/.temple/launch isn't a private folder of this account's")
+        // What the host side's collection says once it recorded the failure.
+        remote.collectResult = .failedLaunch("the launch couldn't be prepared: ~/.temple/launch isn't a private folder of this account's")
+        let row = Fixture.row("s1", project: "/home/u/project", host: hostID)
+        rows["s1"] = row
+        model.openSession(row)
+        let tab = try XCTUnwrap(model.activeTab)
+        await settle(factory.created.last?.didTerminate == true, "the client ends rather than wait out its own deadline")
+        XCTAssertEqual(remote.stages, ["stage-h1"])
+        await settle(tab.remote?.phase == .failedToStart(directory: tab.projectPath))
+        XCTAssertTrue(tab.launchFailure?.message.hasPrefix("Temple couldn't start this session on box:") == true,
+                      tab.launchFailure?.message ?? "")
+    }
+
+    /// A tab that ends before its launch was ever staged ran nothing there:
+    /// the host side records the creation failed, and the tab says so.
+    func testATabThatEndsBeforeItsLaunchWasStagedSaysNothingStarted() async throws {
+        remote.stageAfterSpawn = true
+        remote.stageGate = { try? await Task.sleep(for: .seconds(30)) }
+        remote.collectResult = .nothing
+        remote.unsentReason = "the connection ended before Temple could prepare the launch"
+        let tab = await openRow()
+        (tab.surface as? FakeTerminalSurface)?.simulateExit(status: 255)
+        await settle(tab.remote?.phase == .failedToStart(directory: tab.projectPath))
+        XCTAssertEqual(remote.unproven, ["h1"])
+        XCTAssertTrue(tab.launchFailure?.message.contains("the connection ended before Temple could prepare the launch") == true)
+        XCTAssertNil(tab.remote?.stageOperation, "the staging was cancelled with the client")
     }
 
     // MARK: Unconfirmed conversations, diagnostics

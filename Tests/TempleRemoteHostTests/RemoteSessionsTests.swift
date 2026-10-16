@@ -14,8 +14,11 @@ final class RemoteSessionsTests: XCTestCase {
 
     private let record = RemoteHostRecord.config("box")
 
+    /// Whether Temple's master answers, changeable mid-test.
+    final class Flag { var value: Bool; init(_ value: Bool) { self.value = value } }
+
     private func controller(_ host: StandIn, store: @escaping () throws -> RemoteStateStore, failing: Bool = false,
-                            master: Bool = true,
+                            master: Bool = true, masterFlag: Flag? = nil,
                             resolved: @escaping () -> [String: String] = { ["hostname": "box.example", "user": "u", "port": "22"] })
         -> RemoteSessions {
         let environment = host.environment
@@ -25,15 +28,16 @@ final class RemoteSessionsTests: XCTestCase {
                               makeExec: { _, path in
                                   failing ? FailingExec() as RemoteExec : LocalShellExec(path: path, environment: environment)
                               },
-                              masterCheck: { _ in master })
+                              masterCheck: { _ in masterFlag?.value ?? master })
     }
 
-    private func controller(_ host: StandIn, store: RemoteStateStore, failing: Bool = false) -> RemoteSessions {
-        controller(host, store: { store }, failing: failing)
+    private func controller(_ host: StandIn, store: RemoteStateStore, failing: Bool = false,
+                            masterFlag: Flag? = nil) -> RemoteSessions {
+        controller(host, store: { store }, failing: failing, masterFlag: masterFlag)
     }
 
     struct FailingExec: RemoteExec {
-        func run(script: String, args: [String], deadline: TimeInterval) async throws -> RemoteOutput {
+        func run(script: String, args: [String], input: Data?, deadline: TimeInterval) async throws -> RemoteOutput {
             RemoteOutput(status: 255, stdout: "", stderr: "ssh: connect to host box port 22: Operation timed out\n",
                          reachedCommand: false)
         }
@@ -56,6 +60,12 @@ final class RemoteSessionsTests: XCTestCase {
             throw XCTSkip("no plan")
         }
         return plan
+    }
+
+    private func canonical(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     private func until(_ timeout: TimeInterval = 5, _ condition: () async -> Bool) async -> Bool {
@@ -130,8 +140,9 @@ final class RemoteSessionsTests: XCTestCase {
         XCTAssertEqual(second.handle, first.handle)
         XCTAssertEqual(second.attachment, 2)
         XCTAssertEqual(second.evidenceDirectory, proven.directory)
-        XCTAssertTrue(second.argv.last?.contains("'attach'") == true)
-        XCTAssertTrue(second.argv.last?.contains(proven.socketPath ?? "?") == true)
+        XCTAssertNil(second.launch.agentArgv.first, "an attach runs no pane")
+        XCTAssertEqual(second.launch.socket, proven.socketPath)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(second.argv.last).utf8.count, LaunchStage.maximumCommandBytes)
         XCTAssertEqual(try store.runs(host: record.host).count, 1)
         client = try tab(host, second)
         let attached = await until {
@@ -180,7 +191,7 @@ final class RemoteSessionsTests: XCTestCase {
         let run = try XCTUnwrap(store.run(first.handle))
         XCTAssertEqual(run.creation, .proven)
         XCTAssertEqual(attach.evidenceDirectory, run.directory, "recovered evidence is replayed into the row and tab")
-        XCTAssertTrue(attach.argv.last?.contains(run.socketPath ?? "?") == true, "attaches on the pinned socket")
+        XCTAssertEqual(attach.launch.socket, run.socketPath, "attaches on the pinned socket")
     }
 
     func testAFailedClientAfterCreationIsUnprovenAndTheNextOpenAttaches() async throws {
@@ -268,7 +279,7 @@ final class RemoteSessionsTests: XCTestCase {
         private let lock = NSLock()
         private var count = 0
         var stops: Int { lock.withLock { count } }
-        func run(script: String, args: [String], deadline: TimeInterval) async throws -> RemoteOutput {
+        func run(script: String, args: [String], input: Data?, deadline: TimeInterval) async throws -> RemoteOutput {
             if script.contains("kill-session") { lock.withLock { count += 1 } }
             return RemoteOutput(status: 255, stdout: "", stderr: "ssh: Could not resolve hostname box\n", reachedCommand: false)
         }
@@ -301,7 +312,7 @@ final class RemoteSessionsTests: XCTestCase {
 
     final class SlowExec: RemoteExec, @unchecked Sendable {
         var cancelNext = false
-        func run(script: String, args: [String], deadline: TimeInterval) async throws -> RemoteOutput {
+        func run(script: String, args: [String], input: Data?, deadline: TimeInterval) async throws -> RemoteOutput {
             if script.contains("temple_login_path") {
                 return RemoteOutput(status: 3, stdout: "shell /bin/sh\n", stderr: "")
             }
@@ -394,6 +405,133 @@ final class RemoteSessionsTests: XCTestCase {
         XCTAssertNil(live)
     }
 
+    /// The latest relevant run decides the root: one that left no config
+    /// evidence makes the check unknown, never an older run's root.
+    func testTheLatestRunDecidesTheConversationRootNeverAnOlderOne() async throws {
+        let host = StandIn()
+        let store = try RemoteStateStore()
+        let old = Date().addingTimeInterval(-60)
+        try insertRun(store, handle: "h1") {
+            $0.conversation = .unconfirmed; $0.endedAt = old; $0.endEvidence = .killed; $0.startedAt = old
+            $0.claudeConfig = .unset; $0.directory = host.home
+        }
+        try insertRun(store, handle: "h2") {
+            $0.conversation = .unconfirmed; $0.endedAt = Date(); $0.endEvidence = .killed
+            $0.claudeConfig = nil; $0.directory = host.home
+        }
+        // The older root has a transcript; the newer run's root is unknown.
+        host.tree.write("home/.claude/projects/-p/sess-1.jsonl", "{}\n")
+        let sessions = controller(host, store: store)
+        let check = await sessions.conversation(sessionID: "sess-1")
+        guard case .unknown = check else { return XCTFail("never an older run's root: \(check)") }
+        let outcome = try await sessions.open(request(.resume))
+        XCTAssertEqual(outcome, .needsDecision(checked: false))
+        // A creation that failed before anything ran is not the latest relevant run.
+        try store.update("h2") { $0.creation = .failed }
+        let older = await sessions.conversation(sessionID: "sess-1")
+        XCTAssertEqual(older, .present)
+    }
+
+    /// A resume starts against the root its transcript was verified in
+    /// (made absolute against the folder its run was in), not the login
+    /// environment's current one.
+    func testAResumeStartsAgainstTheRootItsTranscriptWasFoundIn() async throws {
+        let host = StandIn()
+        host.extra = ["CLAUDE_CONFIG_DIR": "/current/root"]
+        let store = try RemoteStateStore()
+        try insertRun(store) {
+            $0.conversation = .unconfirmed; $0.endedAt = Date(); $0.endEvidence = .killed
+            $0.claudeConfig = .set("old root"); $0.directory = host.home
+        }
+        host.tree.write("home/old root/projects/-p/sess-1.jsonl", "{}\n")
+        let sessions = controller(host, store: store)
+        let resumed = try plan(await sessions.open(request(.resume)))
+        XCTAssertTrue(resumed.creating)
+        XCTAssertEqual(resumed.agentArgv.suffix(2), ["--resume", "sess-1"])
+        XCTAssertEqual(resumed.launch.claudeConfig, .set(host.home + "/old root"))
+        XCTAssertTrue(TmuxKeepAlive().createScript(resumed.launch).contains("cv='\(host.home)/old root'"))
+        // A new session still takes the login environment's root.
+        try await sessions.abandon(resumed.handle, reason: "test")
+        let fresh = try plan(await sessions.open(request(.new)))
+        XCTAssertEqual(fresh.launch.claudeConfig, .set("/current/root"))
+        try await sessions.abandon(fresh.handle, reason: "test")
+    }
+
+    /// First contact: no master when the open is planned, so the tab
+    /// connects first (its ssh would authenticate and become the master),
+    /// and the launch is staged once the master answers, never through the
+    /// terminal. The tab's command is short whatever the launch carries.
+    func testFirstContactStagesTheLaunchOnceTheMasterAnswers() async throws {
+        let host = StandIn()
+        try host.installRealTmux()
+        installAgent(host)
+        defer { _ = try? host.tmux(["-L", "temple", "kill-server"]) }
+        let store = try RemoteStateStore()
+        let master = Flag(false)
+        let sessions = controller(host, store: store, masterFlag: master)
+        let folder = host.tree.directory(String(repeating: "deep folder ", count: 20)).path
+        var big = request(directory: folder)
+        big.extraArguments = ["--append-system-prompt", String(repeating: "x", count: 5_000)]
+        let first = try plan(await sessions.open(big))
+        XCTAssertFalse(first.staged)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(first.argv.last).utf8.count, LaunchStage.maximumCommandBytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: host.recordDirectory + "/" + first.stage))
+        let client = try tab(host, first)
+        defer { client.end() }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(host.record(RecordDirectory.marker(from: try XCTUnwrap(store.run(first.handle)).recordPath)!),
+                     "nothing runs before the launch is staged")
+        master.value = true
+        let staged = await sessions.stage(first.stage)
+        XCTAssertEqual(staged, .staged)
+        let again = await sessions.stage(first.stage)
+        XCTAssertEqual(again, .none, "staged once")
+        let collected = await until(15) { if case .ok = await sessions.collect(first.handle) { return true }; return false }
+        XCTAssertTrue(collected)
+        XCTAssertEqual(try store.run(first.handle)?.directory, canonical(folder))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: host.recordDirectory + "/" + first.stage), "read, then gone")
+    }
+
+    /// A creation whose launch never left this Mac cannot have run: when
+    /// its tab ends, or is closed, it is failed (the next Open creates),
+    /// never unproven or left running.
+    func testACreationWhoseLaunchNeverLeftThisMacIsFailed() async throws {
+        let host = StandIn()
+        host.installStub()
+        let store = try RemoteStateStore()
+        let sessions = controller(host, store: store, masterFlag: Flag(false))
+        let first = try plan(await sessions.open(request()))
+        let reason = try await sessions.markCreationUnproven(first.handle)
+        XCTAssertNotNil(reason)
+        XCTAssertEqual(try store.run(first.handle)?.creation, .failed)
+        let next = try plan(await sessions.open(request()))
+        XCTAssertTrue(next.creating, "the next Open creates")
+        XCTAssertNotEqual(next.handle, first.handle)
+        let stopped = try await sessions.stop(next.handle, fromAttachedTab: true)
+        XCTAssertEqual(stopped.outcome, .absent)
+        XCTAssertEqual(try store.run(next.handle)?.creation, .failed)
+        XCTAssertNil(try store.run(next.handle)?.leftRunningAt)
+        XCTAssertTrue(host.calls.isEmpty, "nothing was asked of tmux")
+    }
+
+    /// A launch the host refuses to stage is never spawned: the open is
+    /// refused, with why, and its creation recorded failed.
+    func testALaunchThatCannotBeStagedRefusesTheOpen() async throws {
+        let host = StandIn()
+        try host.makeRecordDirectory()
+        chmod(host.home + "/.temple", 0o777)
+        defer { chmod(host.home + "/.temple", 0o700) }
+        let store = try RemoteStateStore()
+        let sessions = controller(host, store: store)
+        do {
+            _ = try await sessions.open(request())
+            XCTFail("refused")
+        } catch let error as RemoteSessions.OpenError {
+            XCTAssertTrue(error.localizedDescription.hasPrefix("Temple couldn't prepare the session on box:"), error.localizedDescription)
+        }
+        XCTAssertEqual(try store.runs(host: record.host).map(\.creation), [.failed])
+    }
+
     /// Absent only when the right root was checked to the end: a root Temple
     /// doesn't know, or an ancestor it can't search, is unknown.
     func testAConversationCheckThatCannotSeeTheRootIsUnknown() async throws {
@@ -484,7 +622,7 @@ final class RemoteSessionsTests: XCTestCase {
         private let lock = NSLock()
         private var released = false
         func release() { lock.withLock { released = true } }
-        func run(script: String, args: [String], deadline: TimeInterval) async throws -> RemoteOutput {
+        func run(script: String, args: [String], input: Data?, deadline: TimeInterval) async throws -> RemoteOutput {
             while !lock.withLock({ released }) { try await Task.sleep(nanoseconds: 10_000_000) }
             return RemoteOutput(status: 0, stdout: "shell /bin/sh\n\(args[0])\n/A/bin:/usr/bin\n\(args[0]).cfg\n\(args[0])\n", stderr: "")
         }

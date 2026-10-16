@@ -58,6 +58,9 @@ public enum RemoteCompletion: String, CaseIterable, Sendable {
     case settle
     /// The startup-evidence deadline: "Still connecting to <host>…".
     case startupDeadline
+    /// Staging after the spawn was refused: the tab's client goes (and an
+    /// attach says why in a notice). The run's record is durable work.
+    case stageFailure
     /// The launch-time contact: the sidebar's left-running line.
     case contactNotice
     /// "Sessions on <host>" received its list.
