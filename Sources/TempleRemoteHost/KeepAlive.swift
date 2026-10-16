@@ -58,16 +58,20 @@ public struct RemoteLaunchPlan: Sendable, Equatable {
     /// nil when Temple has none (the launch resolves it with the PATH, or
     /// the agent keeps whatever its environment gives).
     public var claudeConfig: RemoteEnvironment.ClaudeConfig?
+    /// Codex's home, the same way: from the login environment, or for a
+    /// resume the home its conversation lives in.
+    public var codexHome: RemoteEnvironment.CodexHome?
     /// The pinned server's socket, for an attach (nil: `-L temple`).
     public var socket: String?
     /// The staged script's name in the record directory (`LaunchStage`).
     public var stage: String
 
     public init(handle: String, marker: String, directory: String, agentArgv: [String], path: Path,
-                claudeConfig: RemoteEnvironment.ClaudeConfig? = nil, socket: String?, stage: String = "") {
+                claudeConfig: RemoteEnvironment.ClaudeConfig? = nil, codexHome: RemoteEnvironment.CodexHome? = nil,
+                socket: String?, stage: String = "") {
         self.handle = handle; self.marker = marker; self.directory = directory
-        self.agentArgv = agentArgv; self.path = path; self.claudeConfig = claudeConfig; self.socket = socket
-        self.stage = stage
+        self.agentArgv = agentArgv; self.path = path; self.claudeConfig = claudeConfig; self.codexHome = codexHome
+        self.socket = socket; self.stage = stage
     }
 }
 
@@ -241,6 +245,11 @@ public struct TmuxKeepAlive: KeepAlive {
         case .unset?: header += ["cs=unset", "cv="]
         case nil: header += ["cs=", "cv="]
         }
+        switch launch.codexHome {
+        case .set(let value)?: header += ["xs=set", "xv=\(q(value))"]
+        case .unset?: header += ["xs=unset", "xv="]
+        case nil: header += ["xs=", "xv="]
+        }
         header.append("pane=\(q(pane))")
         let resolver = launch.path == .unresolved ? RemoteEnvironment.resolverFunction + "\n" : ""
         return header.joined(separator: "\n") + "\n" + resolver + RecordDirectory.functions + "\n" + launchBody
@@ -257,10 +266,14 @@ public struct TmuxKeepAlive: KeepAlive {
             if e=$(temple_bounded "$mk") && temple_parse_env "$e" "$mk"; then
               [ -n "$TEMPLE_ENV_PATH" ] && { PATH=$TEMPLE_ENV_PATH; export PATH; }
               [ -n "$cs" ] || { cs=$TEMPLE_ENV_CFG; cv=$TEMPLE_ENV_CFG_VALUE; }
+              [ -n "$xs" ] || { xs=$TEMPLE_ENV_CDX; xv=$TEMPLE_ENV_CDX_VALUE; }
             fi ;;
         esac
         if [ -z "$cs" ]; then
           if [ -n "${CLAUDE_CONFIG_DIR+x}" ]; then cs=set; cv=$CLAUDE_CONFIG_DIR; else cs=unset; cv=; fi
+        fi
+        if [ -z "$xs" ]; then
+          if [ -n "${CODEX_HOME+x}" ]; then xs=set; xv=$CODEX_HOME; else xs=unset; xv=; fi
         fi
         rd=
         if [ -n "$m" ]; then rd=$(temple_record_dir) || rd=; fi
@@ -276,7 +289,7 @@ public struct TmuxKeepAlive: KeepAlive {
           r=; e=/dev/null
           if [ -n "$rd" ]; then r=$rd/$m; e=$rd/$m.err; rm -f "$e"; fi
           tmux -L temple -f /dev/null \(TmuxChain.head) new-session -s "$s" -c / -e PATH="$PATH" -e TEMPLE_RECORD="$r" \\
-            -e TEMPLE_CFG="$cs" -e TEMPLE_CFG_VALUE="$cv" "$pane" 2>"$e"
+            -e TEMPLE_CFG="$cs" -e TEMPLE_CFG_VALUE="$cv" -e TEMPLE_CDX="$xs" -e TEMPLE_CDX_VALUE="$xv" "$pane" 2>"$e"
           st=$?
           if [ "$st" -ne 0 ] && [ -n "$rd" ]; then
             temple_write "$rd/$m.client" "failed${T}tmux${T}${st}${T}$(head -n 1 "$e" 2>/dev/null)"
@@ -303,7 +316,9 @@ public struct TmuxKeepAlive: KeepAlive {
     /// tmux server's value cannot win; anything else fails the launch with
     /// a `failed<TAB>cfg` record, never a silent fallback) and recorded as
     /// the agent will have it, hex-encoded: the transcript check inspects
-    /// exactly that root.
+    /// exactly that root. Codex's home is handed over and recorded the same
+    /// way (`TEMPLE_CDX`, `cdx`, `failed<TAB>cdx`): the identity check and
+    /// the suggestions look exactly there.
     public static var paneScript: String {
         RecordDirectory.functions + "\n" + #"""
         d=$1; shift
@@ -326,6 +341,18 @@ public struct TmuxKeepAlive: KeepAlive {
         else
           cfg=unset
         fi
+        xs=$TEMPLE_CDX; xv=$TEMPLE_CDX_VALUE
+        unset TEMPLE_CDX TEMPLE_CDX_VALUE
+        case $xs in
+          set) CODEX_HOME=$xv; export CODEX_HOME ;;
+          unset) unset CODEX_HOME ;;
+          *) rec "failed${T}cdx"; echo "Temple couldn't tell the agent which Codex home to use." >&2; exit 1 ;;
+        esac
+        if [ -n "${CODEX_HOME+x}" ]; then
+          cdx="set${T}$(printf '%s' "$CODEX_HOME" | od -An -tx1 | tr -d ' \n')"
+        else
+          cdx=unset
+        fi
         pst() { [ -r "/proc/$1/stat" ] || return 0; x=$(cat "/proc/$1/stat" 2>/dev/null) || return 0; x=${x##*)}; set -- $x; [ $# -ge 20 ] || return 0; shift 19; printf '%s' "$1"; }
         case $d in "~") d=$HOME;; "~/"*) d=$HOME/${d#"~/"};; esac
         cd -- "$d" || { rec "failed${T}cd${T}$?"; exit 1; }
@@ -335,7 +362,7 @@ public struct TmuxKeepAlive: KeepAlive {
         fi
         w=$(pwd -P; printf x); w=${w%x}; w=${w%"$NL"}
         t=${TMUX%,*}; sp=${t##*,}; so=${t%,*}
-        rec "ok${NL}epoch${T}$(date +%s)${NL}pane${T}$$${T}$(pst $$)${NL}server${T}${sp}${T}$(pst "$sp")${NL}socket${T}${so}${NL}cfg${T}${cfg}${NL}dir${T}${w}"
+        rec "ok${NL}epoch${T}$(date +%s)${NL}pane${T}$$${T}$(pst $$)${NL}server${T}${sp}${T}$(pst "$sp")${NL}socket${T}${so}${NL}cfg${T}${cfg}${NL}cdx${T}${cdx}${NL}dir${T}${w}"
         exec "$@"
         """#
     }

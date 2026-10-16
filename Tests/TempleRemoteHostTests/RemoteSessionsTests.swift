@@ -790,7 +790,9 @@ final class RemoteSessionsTests: XCTestCase {
         } catch RemoteSessions.OpenError.store {}
     }
 
-    func testNewCodexLaunchesWaitForPhase1bButCodexRowsWithAnIDResume() async throws {
+    /// A Codex id is never Temple's to choose: a new Codex session is a
+    /// pending run (`openPending`); a Codex row with an id resumes.
+    func testCodexNeverStartsUnderAnIDTempleChoseButARowWithOneResumes() async throws {
         let host = StandIn()
         let store = try RemoteStateStore()
         let sessions = controller(host, store: store)
@@ -800,5 +802,158 @@ final class RemoteSessionsTests: XCTestCase {
         codex.mode = .resume
         let resumed = try plan(await sessions.open(codex))
         XCTAssertEqual(resumed.agentArgv, ["codex", "--model", "x", "resume", "sess-1"])
+    }
+
+    /// A stand-in `codex` that just waits.
+    private func installCodex(_ host: StandIn) {
+        host.tree.write("bin/codex", "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/codex-argv\"\nexec sleep 60\n", executable: true)
+    }
+
+    private func pendingPlan(_ outcome: RemoteSessions.PendingOpenOutcome, file: StaticString = #filePath, line: UInt = #line) throws
+        -> RemoteSessions.OpenPlan {
+        guard case .plan(let plan) = outcome else {
+            XCTFail("expected a plan, got \(outcome)", file: file, line: line)
+            throw XCTSkip("no plan")
+        }
+        return plan
+    }
+
+    /// A new Codex session on a host (phase 1b): a pending run, written
+    /// before the spawn, running `codex` with the extra arguments and no id;
+    /// its pane records the Codex home it was given. On a host without
+    /// `/proc` (this Mac) the automatic check is lasting-inconclusive and the
+    /// suggestions take over: the run's own rollout is offered, a declined
+    /// one never again, and a yes claims it before anything else hears of
+    /// it. Reopened by its handle it is then that session's run.
+    func testANewCodexSessionIsPendingUntilItsIDIsVerifiedOrConfirmed() async throws {
+        let host = StandIn()
+        try host.installRealTmux()
+        installCodex(host)
+        defer { _ = try? host.tmux(["-L", "temple", "kill-server"]) }
+        let store = try RemoteStateStore()
+        let sessions = controller(host, store: store)
+        let first = try pendingPlan(await sessions.openPending(handle: nil, directory: "~", extraArguments: ["--no-daemon"]))
+        XCTAssertTrue(first.creating)
+        XCTAssertEqual(first.agentArgv, ["codex", "--no-daemon"])
+        let row = try XCTUnwrap(store.run(first.handle))
+        XCTAssertTrue(row.isPending)
+        XCTAssertEqual(try store.pendingRuns(host: record.host).map(\.handle), [first.handle])
+        let client = try tab(host, first)
+        defer { client.end() }
+        let collected = await until(15) { if case .ok = await sessions.collect(first.handle) { return true }; return false }
+        XCTAssertTrue(collected)
+        let proven = try XCTUnwrap(store.run(first.handle))
+        XCTAssertEqual(proven.codexHome, .unset, "the pane records the home it was given, explicitly")
+        let argvPath = host.home + "/codex-argv"
+        let argvWritten = await until { (try? String(contentsOfFile: argvPath, encoding: .utf8)) == "--no-daemon\n" }
+        XCTAssertTrue(argvWritten, "codex mints its own id: no id on its argv")
+
+        // No /proc here: suggest-only.
+        let identity = await sessions.identify(first.handle)
+        guard case .inconclusive(.lasting) = identity else { return XCTFail("\(identity)") }
+
+        // Rollouts: the run's own, an older one, another folder's.
+        let directory = try XCTUnwrap(proven.directory)
+        let codexSessions = host.home + "/.codex/sessions/2026/10/16"
+        try FileManager.default.createDirectory(atPath: codexSessions, withIntermediateDirectories: true)
+        func rollout(_ id: String, cwd: String, created: Date, prompt: String) throws -> String {
+            let stamp = ISO8601DateFormatter.string(from: created, timeZone: .gmt, formatOptions: [.withInternetDateTime])
+            let path = "\(codexSessions)/rollout-2026-10-16T10-18-52-\(id).jsonl"
+            let header: [String: Any] = ["timestamp": stamp, "type": "session_meta",
+                                         "payload": ["id": id, "timestamp": stamp, "cwd": cwd, "originator": "codex-tui"]]
+            let message: [String: Any] = ["timestamp": stamp, "type": "event_msg", "payload": ["type": "user_message", "message": prompt]]
+            let lines = [header, message].map {
+                String(decoding: try! JSONSerialization.data(withJSONObject: $0, options: [.withoutEscapingSlashes]), as: UTF8.self)
+            }
+            try (lines.joined(separator: "\n") + "\n").write(toFile: path, atomically: true, encoding: .utf8)
+            return path
+        }
+        let mineID = UUID().uuidString.lowercased(), otherID = UUID().uuidString.lowercased()
+        let mine = try rollout(mineID, cwd: directory, created: Date().addingTimeInterval(1), prompt: "reply with the word ok")
+        let other = try rollout(otherID, cwd: directory, created: Date().addingTimeInterval(2), prompt: "something else")
+        _ = try rollout(UUID().uuidString.lowercased(), cwd: directory, created: Date().addingTimeInterval(-3600), prompt: "old")
+        _ = try rollout(UUID().uuidString.lowercased(), cwd: "/elsewhere", created: Date(), prompt: "theirs")
+        guard case .candidates(let offered) = await sessions.suggestions(first.handle) else { return XCTFail() }
+        XCTAssertEqual(offered.map(\.sessionID), [otherID, mineID])
+        XCTAssertEqual(offered.last?.firstPrompt, "reply with the word ok")
+
+        try await sessions.decline(first.handle, rolloutPath: other)
+        guard case .candidates(let after) = await sessions.suggestions(first.handle) else { return XCTFail() }
+        XCTAssertEqual(after.map(\.rolloutPath), [mine], "a declined candidate is not offered again for this run")
+
+        // A second pending run in the same folder may be shown the same
+        // candidate; the first yes claims it, and it is unavailable to the
+        // other from then on.
+        try store.insert({
+            var run = RemoteRun(handle: "twin", host: record.host, agent: .codex, mode: .new, directoryIntent: "~",
+                                sessionID: nil, recordPath: RecordDirectory.locator(marker: "r-twin"), startedAt: Date())
+            run.creation = .proven; run.okAt = proven.okAt; run.directory = directory; run.codexHome = .unset
+            return run
+        }())
+        guard case .candidates(let twinOffered) = await sessions.suggestions("twin") else { return XCTFail() }
+        XCTAssertTrue(twinOffered.contains { $0.sessionID == mineID })
+        let suggestion = try XCTUnwrap(after.first)
+        let yes = await sessions.confirm(first.handle, suggestion: suggestion)
+        XCTAssertEqual(yes, .adopted(mineID))
+        let twinYes = await sessions.confirm("twin", suggestion: suggestion)
+        XCTAssertEqual(twinYes, .taken)
+        guard case .candidates(let twinAfter) = await sessions.suggestions("twin") else { return XCTFail() }
+        XCTAssertFalse(twinAfter.contains { $0.sessionID == mineID }, "claimed by another run: never offered")
+        let claimed = try XCTUnwrap(store.run(first.handle))
+        XCTAssertEqual(claimed.sessionID, mineID)
+        XCTAssertEqual(claimed.claim, .confirmed)
+        let known = await sessions.identify(first.handle)
+        XCTAssertEqual(known, .known(mineID))
+        let unjoined = await sessions.unjoinedClaims().map(\.handle)
+        XCTAssertEqual(unjoined, [first.handle])
+        try await sessions.markJoined(first.handle)
+        let joined = await sessions.unjoinedClaims()
+        XCTAssertEqual(joined, [])
+
+        // Reopened by its handle, it is that session's run now.
+        guard case .identified(let handle, let id) = try await sessions.openPending(handle: first.handle, directory: "~",
+                                                                                      extraArguments: []) else { return XCTFail() }
+        XCTAssertEqual(handle, first.handle)
+        XCTAssertEqual(id, mineID)
+        // And the session's ordinary Open attaches to it.
+        var codex = request(.resume)
+        codex.agent = .codex
+        codex.sessionID = mineID
+        let attach = try plan(await sessions.open(codex))
+        XCTAssertFalse(attach.creating)
+        XCTAssertEqual(attach.handle, first.handle)
+    }
+
+    /// A pending run reopened while it runs attaches (never a second
+    /// codex); once it ended, Temple says so and creates nothing.
+    func testAPendingRunReopensByItsHandle() async throws {
+        let host = StandIn()
+        try host.installRealTmux()
+        installCodex(host)
+        defer { _ = try? host.tmux(["-L", "temple", "kill-server"]) }
+        let store = try RemoteStateStore()
+        let sessions = controller(host, store: store)
+        let first = try pendingPlan(await sessions.openPending(handle: nil, directory: "~", extraArguments: []))
+        var client = try tab(host, first)
+        let collected = await until(15) { if case .ok = await sessions.collect(first.handle) { return true }; return false }
+        XCTAssertTrue(collected)
+        client.end()
+        try await sessions.closePendingTab(first.handle)
+        XCTAssertEqual(try store.pendingRuns(host: record.host), [], "a closed tab is not restored as a chip")
+        let again = try pendingPlan(await sessions.openPending(handle: first.handle, directory: "~", extraArguments: []))
+        XCTAssertFalse(again.creating)
+        XCTAssertEqual(again.handle, first.handle)
+        XCTAssertEqual(again.attachment, 2)
+        XCTAssertNil(try store.run(first.handle)?.tabClosedAt, "reopening restores it")
+        client = try tab(host, again)
+        client.end()
+        _ = try await sessions.stop(first.handle, fromAttachedTab: true)
+        guard case .ended(let handle) = try await sessions.openPending(handle: first.handle, directory: "~", extraArguments: []) else {
+            return XCTFail()
+        }
+        XCTAssertEqual(handle, first.handle)
+        try await sessions.dismissRun(first.handle)
+        do { _ = try await sessions.openPending(handle: first.handle, directory: "~", extraArguments: []); XCTFail() }
+        catch RemoteSessions.OpenError.refused {}
     }
 }

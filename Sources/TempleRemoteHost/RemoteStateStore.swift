@@ -84,8 +84,32 @@ public struct RemoteRun: Equatable, Sendable {
     /// Claude's config root the agent was started with, from its pane's
     /// record: where its transcript is looked for.
     public var claudeConfig: RemoteEnvironment.ClaudeConfig?
+    /// Codex's home the agent was started with, from its pane's record:
+    /// where the identity check and the suggestions look.
+    public var codexHome: RemoteEnvironment.CodexHome?
+    /// How a Codex run that started without an id came to have one. Only
+    /// a claimed run counts against the uniqueness of claims: two runs can
+    /// never both claim one id on a host (`runs_claim`).
+    public var claim: Claim?
+    /// The claim reached the core row (its join was written or refused):
+    /// a claim without it is joined again at the next launch.
+    public var joinedAt: Date?
+    /// The tab of a pending Codex run was closed: it is not restored as a
+    /// chip (it is still listed, and opened, from Sessions on <host>).
+    public var tabClosedAt: Date?
     /// A launch failure's words (`failed cd`, `failed tmux`).
     public var failure: String?
+
+    /// How a pending Codex run's id was learned (section 3).
+    public enum Claim: String, Sendable {
+        /// The pane's own process tree held exactly that rollout open.
+        case verified
+        /// The user said yes to a suggestion.
+        case confirmed
+    }
+
+    /// A Codex run Temple started that has no id yet.
+    public var isPending: Bool { agent == .codex && sessionID == nil }
 
     public init(handle: String, host: HostID, agent: Agent, mode: Mode, directoryIntent: String,
                 sessionID: String?, recordPath: String, startedAt: Date) {
@@ -179,6 +203,24 @@ public final class RemoteStateStore: @unchecked Sendable {
             try database.execute(sql: "ALTER TABLE runs ADD COLUMN config_state TEXT")
             try database.execute(sql: "ALTER TABLE runs ADD COLUMN config_dir TEXT")
         }
+        // Codex identity (phase 1b). Several runs may serve one session
+        // (resumes); only claims are unique: a pending run that learns an
+        // id claims it, and no other run on the host may hold that claim.
+        migrator.registerMigration("r4-codex-identity") { database in
+            try database.execute(sql: """
+                ALTER TABLE runs ADD COLUMN codex_home_state TEXT;
+                ALTER TABLE runs ADD COLUMN codex_home_dir TEXT;
+                ALTER TABLE runs ADD COLUMN claim TEXT;
+                ALTER TABLE runs ADD COLUMN joined_at DOUBLE;
+                ALTER TABLE runs ADD COLUMN tab_closed_at DOUBLE;
+                CREATE UNIQUE INDEX runs_claim ON runs (host, session_id) WHERE claim IS NOT NULL;
+                CREATE TABLE declined_candidates (
+                    handle TEXT NOT NULL,
+                    rollout_path TEXT NOT NULL,
+                    PRIMARY KEY (handle, rollout_path)
+                );
+                """)
+        }
         return migrator
     }
 
@@ -197,8 +239,9 @@ public final class RemoteStateStore: @unchecked Sendable {
                 INSERT INTO runs (handle, host, agent, mode, session_name, directory_intent, directory, session_id,
                     attachment, record_path, started_at, ok_at, pane_pid, pane_start, socket_path, server_pid,
                     server_start, creation, ended_at, end_evidence, left_running_at, left_running_reason,
-                    left_running_noticed_at, dismissed_at, failure, conversation, config_state, config_dir)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    left_running_noticed_at, dismissed_at, failure, conversation, config_state, config_dir,
+                    codex_home_state, codex_home_dir, claim, joined_at, tab_closed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, arguments: StatementArguments(Self.values(run)))
     }
 
@@ -263,7 +306,8 @@ public final class RemoteStateStore: @unchecked Sendable {
                     session_id = ?, attachment = ?, record_path = ?, started_at = ?, ok_at = ?, pane_pid = ?,
                     pane_start = ?, socket_path = ?, server_pid = ?, server_start = ?, creation = ?, ended_at = ?,
                     end_evidence = ?, left_running_at = ?, left_running_reason = ?, left_running_noticed_at = ?,
-                    dismissed_at = ?, failure = ?, conversation = ?, config_state = ?, config_dir = ?
+                    dismissed_at = ?, failure = ?, conversation = ?, config_state = ?, config_dir = ?,
+                    codex_home_state = ?, codex_home_dir = ?, claim = ?, joined_at = ?, tab_closed_at = ?
                 WHERE handle = ?
                 """, arguments: StatementArguments(Array(Self.values(run).dropFirst()) + [handle]))
             return run
@@ -282,7 +326,9 @@ public final class RemoteStateStore: @unchecked Sendable {
          run.creation?.rawValue, run.endedAt?.timeIntervalSince1970, run.endEvidence?.rawValue,
          run.leftRunningAt?.timeIntervalSince1970, run.leftRunningReason?.rawValue,
          run.leftRunningNoticedAt?.timeIntervalSince1970, run.dismissedAt?.timeIntervalSince1970, run.failure,
-         run.conversation?.rawValue, Self.configState(run.claudeConfig), Self.configDir(run.claudeConfig)]
+         run.conversation?.rawValue, Self.configState(run.claudeConfig), Self.configDir(run.claudeConfig),
+         Self.configState(run.codexHome), Self.configDir(run.codexHome), run.claim?.rawValue,
+         run.joinedAt?.timeIntervalSince1970, run.tabClosedAt?.timeIntervalSince1970]
     }
 
     private static func configState(_ config: RemoteEnvironment.ClaudeConfig?) -> String? {
@@ -328,6 +374,14 @@ public final class RemoteStateStore: @unchecked Sendable {
         case "unset": run.claudeConfig = .unset
         default: run.claudeConfig = nil
         }
+        switch row["codex_home_state"] as String? {
+        case "set": run.codexHome = .set(row["codex_home_dir"] ?? "")
+        case "unset": run.codexHome = .unset
+        default: run.codexHome = nil
+        }
+        run.claim = (row["claim"] as String?).flatMap(RemoteRun.Claim.init(rawValue:))
+        run.joinedAt = date("joined_at")
+        run.tabClosedAt = date("tab_closed_at")
         return run
     }
 
@@ -372,6 +426,160 @@ public final class RemoteStateStore: @unchecked Sendable {
                 } else {
                     try Self.insert(candidate, in: database)
                     result = .created(candidate)
+                }
+                return .commit
+            }
+            return result
+        }
+    }
+
+    // MARK: Codex identity
+
+    /// What claiming an id for a pending run came to.
+    public enum ClaimOutcome: Sendable, Equatable {
+        /// Written: the run now serves that session.
+        case claimed
+        /// The run already has an id (another Temple learned it first).
+        case alreadyKnown(String)
+        /// Another run on this host already serves that id: refused, the
+        /// run stays pending.
+        case taken
+        /// The run is gone or was discarded.
+        case gone
+    }
+
+    /// Claims `sessionID` for the pending run `handle`, in one immediate
+    /// transaction across processes: refused when any other run on the
+    /// host already holds that id (a claim, or a run of that session).
+    /// Written before the core join; a claimed conversation exists.
+    public func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim) throws -> ClaimOutcome {
+        try queue.writeWithoutTransaction { database in
+            var outcome = ClaimOutcome.gone
+            try database.inTransaction(.immediate) {
+                guard let run = try Row.fetchOne(database, sql: "SELECT * FROM runs WHERE handle = ?",
+                                                 arguments: [handle]).map(Self.run), run.dismissedAt == nil else {
+                    return .commit
+                }
+                if let known = run.sessionID {
+                    outcome = .alreadyKnown(known)
+                    return .commit
+                }
+                let held = try Int.fetchOne(database, sql: """
+                    SELECT COUNT(*) FROM runs WHERE host = ? AND session_id = ? AND handle != ?
+                    """, arguments: [run.host.rawValue, sessionID, handle]) ?? 0
+                guard held == 0 else {
+                    outcome = .taken
+                    return .commit
+                }
+                try database.execute(sql: """
+                    UPDATE runs SET session_id = ?, claim = ?, conversation = ?, joined_at = NULL WHERE handle = ?
+                    """, arguments: [sessionID, how.rawValue, RemoteRun.Conversation.confirmed.rawValue, handle])
+                outcome = .claimed
+                return .commit
+            }
+            return outcome
+        }
+    }
+
+    /// The core join was refused (the id is another host's, or another
+    /// agent's): the claim goes, and the run is pending again.
+    public func releaseClaim(_ handle: String, sessionID: String) throws {
+        try queue.write { database in
+            try database.execute(sql: """
+                UPDATE runs SET session_id = NULL, claim = NULL, joined_at = NULL
+                WHERE handle = ? AND session_id = ? AND claim IS NOT NULL
+                """, arguments: [handle, sessionID])
+        }
+    }
+
+    /// The claim reached core (joined, or found joined).
+    public func markJoined(_ handle: String, at date: Date) throws {
+        try queue.write { database in
+            try database.execute(sql: "UPDATE runs SET joined_at = ? WHERE handle = ? AND claim IS NOT NULL",
+                                 arguments: [date.timeIntervalSince1970, handle])
+        }
+    }
+
+    /// Claims whose join never happened (a quit or crash between the two
+    /// writes): the next launch joins them again.
+    public func unjoinedClaims(host: HostID) throws -> [RemoteRun] {
+        try runs(host: host).filter { $0.claim != nil && $0.joinedAt == nil && $0.dismissedAt == nil }
+    }
+
+    /// Every session id a run on the host holds: a suggestion naming one
+    /// of them belongs to another run and is never offered.
+    public func sessionIDs(host: HostID) throws -> Set<String> {
+        try queue.read { database in
+            Set(try String.fetchAll(database, sql: "SELECT DISTINCT session_id FROM runs WHERE host = ? AND session_id IS NOT NULL",
+                                    arguments: [host.rawValue]))
+        }
+    }
+
+    /// The user said "Not this one": never offered again for this run.
+    public func decline(_ handle: String, rolloutPath: String) throws {
+        try queue.write { database in
+            try database.execute(sql: "INSERT OR IGNORE INTO declined_candidates (handle, rollout_path) VALUES (?, ?)",
+                                 arguments: [handle, rolloutPath])
+        }
+    }
+
+    public func declined(_ handle: String) throws -> Set<String> {
+        try queue.read { database in
+            Set(try String.fetchAll(database, sql: "SELECT rollout_path FROM declined_candidates WHERE handle = ?",
+                                    arguments: [handle]))
+        }
+    }
+
+    /// Pending Codex runs restored as chips at launch: not discarded, not a
+    /// creation that never ran, and their tab not closed.
+    public func pendingRuns(host: HostID) throws -> [RemoteRun] {
+        try runs(host: host).filter {
+            $0.isPending && $0.dismissedAt == nil && $0.tabClosedAt == nil && $0.creation != .failed
+        }
+    }
+
+    /// One run's Discard (a pending run has no session to dismiss by id).
+    public func dismissRun(_ handle: String, at date: Date) throws {
+        try queue.write { database in
+            try database.execute(sql: "UPDATE runs SET dismissed_at = ? WHERE handle = ? AND dismissed_at IS NULL",
+                                 arguments: [date.timeIntervalSince1970, handle])
+        }
+    }
+
+    /// What reopening a pending run found, decided in one transaction.
+    public enum PendingReservation: Sendable, Equatable {
+        /// Not Ended: attach (attachment incremented, flags cleared).
+        case existing(RemoteRun)
+        /// Ended without an id.
+        case ended(RemoteRun)
+        /// It has an id now: it is that session's run.
+        case identified(String)
+        case gone
+    }
+
+    public func reservePending(_ handle: String) throws -> PendingReservation {
+        try queue.writeWithoutTransaction { database in
+            var result = PendingReservation.gone
+            try database.inTransaction(.immediate) {
+                guard var run = try Row.fetchOne(database, sql: "SELECT * FROM runs WHERE handle = ?",
+                                                 arguments: [handle]).map(Self.run), run.dismissedAt == nil else {
+                    return .commit
+                }
+                if let id = run.sessionID {
+                    result = .identified(id)
+                } else if run.isEnded {
+                    result = .ended(run)
+                } else {
+                    run.attachment += 1
+                    run.leftRunningAt = nil
+                    run.leftRunningReason = nil
+                    run.leftRunningNoticedAt = nil
+                    run.tabClosedAt = nil
+                    try database.execute(sql: """
+                        UPDATE runs SET attachment = ?, left_running_at = NULL, left_running_reason = NULL,
+                            left_running_noticed_at = NULL, tab_closed_at = NULL WHERE handle = ?
+                        """, arguments: [run.attachment, handle])
+                    result = .existing(run)
                 }
                 return .commit
             }

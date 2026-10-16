@@ -53,13 +53,14 @@ final class RemoteScriptsTests: XCTestCase {
             tree.write("bin/tmux", #"""
             #!/bin/sh
             { printf 'call'; for a in "$@"; do printf '\t%s' "$(printf '%s' "$a" | tr '\n' '\036')"; done; printf '\n'; } >> "$STUB_LOG"
-            rec=; pane=; prev=; ppath=$PATH; cfg=; cfgv=
+            rec=; pane=; prev=; ppath=$PATH; cfg=; cfgv=; cdx=; cdxv=
             for a in "$@"; do
               case $prev in -e) case $a in TEMPLE_RECORD=*) rec=${a#TEMPLE_RECORD=};; PATH=*) ppath=${a#PATH=};;
-                TEMPLE_CFG=*) cfg=${a#TEMPLE_CFG=};; TEMPLE_CFG_VALUE=*) cfgv=${a#TEMPLE_CFG_VALUE=};; esac;; esac
+                TEMPLE_CFG=*) cfg=${a#TEMPLE_CFG=};; TEMPLE_CFG_VALUE=*) cfgv=${a#TEMPLE_CFG_VALUE=};;
+                TEMPLE_CDX=*) cdx=${a#TEMPLE_CDX=};; TEMPLE_CDX_VALUE=*) cdxv=${a#TEMPLE_CDX_VALUE=};; esac;; esac
               prev=$a; pane=$a
             done
-            case " $* " in *" new-session "*) [ -n "$STUB_RUN_PANE" ] && TEMPLE_RECORD=$rec TEMPLE_CFG=$cfg TEMPLE_CFG_VALUE=$cfgv TMUX="$STUB_SOCKET,4242,0" PATH=$ppath /bin/sh -c "$pane" ;; esac
+            case " $* " in *" new-session "*) [ -n "$STUB_RUN_PANE" ] && TEMPLE_RECORD=$rec TEMPLE_CFG=$cfg TEMPLE_CFG_VALUE=$cfgv TEMPLE_CDX=$cdx TEMPLE_CDX_VALUE=$cdxv TMUX="$STUB_SOCKET,4242,0" PATH=$ppath /bin/sh -c "$pane" ;; esac
             [ -n "$STUB_ERR" ] && printf '%s\n' "$STUB_ERR" >&2
             exit ${STUB_STATUS:-0}
             """#, executable: true)
@@ -539,6 +540,76 @@ final class RemoteScriptsTests: XCTestCase {
         }
     }
 
+    /// Codex's home the same way: applied over a stale server value,
+    /// recorded as the agent has it, and a launch that says nothing starts
+    /// no agent and records why.
+    func testThePaneAppliesAndRecordsTheCodexHome() throws {
+        let host = StandIn()
+        try host.makeRecordDirectory()
+        let record = host.recordDirectory + "/rec"
+        let seen = host.tree.path + "/seen"
+        var environment = host.environment
+        environment["CODEX_HOME"] = "/stale/server/value"
+        XCTAssertEqual(try runPane(host, directory: host.home,
+                                   argv: ["/bin/sh", "-c", "printf '%s' \"$CODEX_HOME\" > \"$0\"", seen],
+                                   record: record, environment: environment, codexHome: ("set", "rel home")), 0)
+        XCTAssertEqual(try String(contentsOfFile: seen, encoding: .utf8), "rel home")
+        guard case .ok(let evidence) = LaunchRecords.parsePane(try String(contentsOfFile: record, encoding: .utf8)) else {
+            return XCTFail()
+        }
+        XCTAssertEqual(evidence.codexHome, .set("rel home"))
+        XCTAssertEqual(try runPane(host, directory: host.home,
+                                   argv: ["/bin/sh", "-c", "printf '%s' \"${CODEX_HOME-none}\" > \"$0\"", seen],
+                                   record: record, environment: environment), 0)
+        XCTAssertEqual(try String(contentsOfFile: seen, encoding: .utf8), "none")
+        guard case .ok(let unset) = LaunchRecords.parsePane(try String(contentsOfFile: record, encoding: .utf8)) else {
+            return XCTFail()
+        }
+        XCTAssertEqual(unset.codexHome, .unset)
+        for home in [nil, ("maybe", "/x")] as [(state: String, value: String)?] {
+            try? FileManager.default.removeItem(atPath: seen)
+            XCTAssertNotEqual(try runPane(host, directory: host.home, argv: ["/bin/sh", "-c", "echo ran > \"$0\"", seen],
+                                          record: record, environment: environment, codexHome: home), 0)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: seen), "no agent ran")
+            XCTAssertEqual(LaunchRecords.parsePane(try String(contentsOfFile: record, encoding: .utf8)),
+                           .failedLaunch(PaneRecord.codexHomeRefusal))
+        }
+    }
+
+    /// The login query gives Codex's home beside Claude's root, set (even
+    /// to the empty string) or unset; the launch resolver reads it the same
+    /// way, and hands it to the pane explicitly.
+    func testTheLoginEnvironmentKeepsTheCodexHomeExactly() async throws {
+        let host = StandIn()
+        host.tree.write("bin/cdxshell", "#!/bin/sh\nwhile [ $# -gt 1 ]; do shift; done\nPATH=/login/bin:/usr/bin:/bin; export PATH\n"
+                        + "unset CLAUDE_CONFIG_DIR; CODEX_HOME='/codex\nhome'; export CODEX_HOME\neval \"$1\"\n", executable: true)
+        host.extra = ["SHELL": host.bin + "/cdxshell"]
+        let resolved = await RemoteEnvironment.resolve(using: LocalShellExec(path: nil, environment: host.environment))
+        XCTAssertEqual(resolved.path, "/login/bin:/usr/bin:/bin")
+        XCTAssertEqual(resolved.claudeConfig, .unset)
+        XCTAssertEqual(resolved.codexHome, .set("/codex\nhome"))
+        host.tree.write("bin/emptyshell", "#!/bin/sh\nwhile [ $# -gt 1 ]; do shift; done\n"
+                        + "CLAUDE_CONFIG_DIR=; export CLAUDE_CONFIG_DIR; CODEX_HOME=; export CODEX_HOME\neval \"$1\"\n", executable: true)
+        host.extra = ["SHELL": host.bin + "/emptyshell"]
+        let empty = await RemoteEnvironment.resolve(using: LocalShellExec(path: nil, environment: host.environment))
+        XCTAssertEqual(empty.claudeConfig, .set(""))
+        XCTAssertEqual(empty.codexHome, .set(""))
+        host.tree.write("bin/plainshell", "#!/bin/sh\nwhile [ $# -gt 1 ]; do shift; done\nunset CODEX_HOME CLAUDE_CONFIG_DIR\neval \"$1\"\n",
+                        executable: true)
+        host.extra = ["SHELL": host.bin + "/plainshell"]
+        let plain = await RemoteEnvironment.resolve(using: LocalShellExec(path: nil, environment: host.environment))
+        XCTAssertEqual(plain.codexHome, .unset)
+        // The launch's own resolver (unresolved PATH) sets the same values.
+        let probe = host.tree.write("probe.sh", RemoteEnvironment.resolverFunction + "\n"
+            + #"e=$(temple_bounded m1) && temple_parse_env "$e" m1 && printf '%s|%s|%s|%s' "$TEMPLE_ENV_CFG" "$TEMPLE_ENV_CFG_VALUE" "$TEMPLE_ENV_CDX" "$TEMPLE_ENV_CDX_VALUE""#)
+        for (shell, expected) in [("cdxshell", "unset||set|/codex\nhome"), ("emptyshell", "set||set|"), ("plainshell", "unset||unset|")] {
+            host.extra = ["SHELL": host.bin + "/" + shell]
+            let out = try await LocalShellExec(path: nil, environment: host.environment)
+                .run(script: "sh \"$1\"", args: [probe.path], deadline: 10)
+            XCTAssertEqual(out.stdout, expected, shell)
+        }
+    }
+
     /// The pane's recorded root is decoded strictly: malformed hex, odd
     /// digits, signs, extra fields or invalid UTF-8 are no evidence (nil);
     /// a valid encoded empty value is `.set("")`.
@@ -612,7 +683,8 @@ final class RemoteScriptsTests: XCTestCase {
     /// the pane; nil hands it none.
     private func runPane(_ host: StandIn, directory: String, argv: [String], record: String,
                          tmux: String = "/tmp/tmux-1000/te,mp le,77,3", environment base: [String: String]? = nil,
-                         config: (state: String, value: String)? = ("unset", "")) throws -> Int32 {
+                         config: (state: String, value: String)? = ("unset", ""),
+                         codexHome: (state: String, value: String)? = ("unset", "")) throws -> Int32 {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         // As tmux would run it: the server's /bin/sh -c '<pane command>'.
@@ -622,6 +694,10 @@ final class RemoteScriptsTests: XCTestCase {
         if let config {
             environment["TEMPLE_CFG"] = config.state
             environment["TEMPLE_CFG_VALUE"] = config.value
+        }
+        if let codexHome {
+            environment["TEMPLE_CDX"] = codexHome.state
+            environment["TEMPLE_CDX_VALUE"] = codexHome.value
         }
         environment["TMUX"] = tmux
         process.environment = environment

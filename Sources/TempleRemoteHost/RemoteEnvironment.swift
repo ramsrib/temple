@@ -4,22 +4,29 @@ import TempleCore
 /// The remote login environment, resolved the way `LoginShellEnvironment`
 /// resolves this Mac's PATH: ask the account's login shell, login and
 /// interactive, because a non-interactive ssh command often has not read the
-/// rc file that builds the real environment. One query gives the two values
+/// rc file that builds the real environment. One query gives the values
 /// Temple uses: PATH (for everything run on the host: probe, launch, tmux,
-/// reads, the agent) and Claude's config root (`CLAUDE_CONFIG_DIR`, where
-/// the agent keeps its transcripts, handed to the agent at launch and the
-/// root the transcript check inspects). When resolution fails, everything
-/// uses ssh's default environment instead, and says so.
+/// reads, the agent), Claude's config root (`CLAUDE_CONFIG_DIR`, where the
+/// agent keeps its transcripts, handed to the agent at launch and the root
+/// the transcript check inspects) and Codex's home (`CODEX_HOME`, the same
+/// for Codex: handed to the pane, and where the identity check and the
+/// suggestions look). When resolution fails, everything uses ssh's default
+/// environment instead, and says so.
 ///
 /// Memory only, never persisted.
 public struct RemoteEnvironment: Sendable, Equatable {
-    /// Claude's config root as the login environment sets it.
-    public enum ClaudeConfig: Sendable, Equatable {
-        /// `CLAUDE_CONFIG_DIR` is not set: Claude uses `~/.claude`.
+    /// An environment variable as the login environment holds it.
+    public enum Variable: Sendable, Equatable {
+        /// Not set: the agent uses its default (`~/.claude`, `~/.codex`).
         case unset
         /// Set, to exactly this (newlines and relative values kept).
         case set(String)
     }
+
+    /// Claude's config root (`CLAUDE_CONFIG_DIR`).
+    public typealias ClaudeConfig = Variable
+    /// Codex's home (`CODEX_HOME`).
+    public typealias CodexHome = Variable
 
     /// The login shell asked (`$SHELL` on the host).
     public let shell: String
@@ -27,15 +34,18 @@ public struct RemoteEnvironment: Sendable, Equatable {
     public let path: String?
     /// Claude's config root; nil when the environment could not be read.
     public let claudeConfig: ClaudeConfig?
+    /// Codex's home; nil when the environment could not be read.
+    public let codexHome: CodexHome?
     /// Why there is no PATH, in words for the user.
     public let problem: String?
     /// Whether the query ran on the host at all: false when ssh, the master
     /// or the network failed first (then `problem` is ssh's line).
     public let reachedHost: Bool
 
-    public init(shell: String, path: String?, claudeConfig: ClaudeConfig? = nil, problem: String?, reachedHost: Bool = true) {
-        self.shell = shell; self.path = path; self.claudeConfig = claudeConfig; self.problem = problem
-        self.reachedHost = reachedHost
+    public init(shell: String, path: String?, claudeConfig: ClaudeConfig? = nil, codexHome: CodexHome? = nil,
+                problem: String?, reachedHost: Bool = true) {
+        self.shell = shell; self.path = path; self.claudeConfig = claudeConfig; self.codexHome = codexHome
+        self.problem = problem; self.reachedHost = reachedHost
     }
 
     /// The resolution query's deadline: past the script's own 5-second
@@ -55,7 +65,7 @@ public struct RemoteEnvironment: Sendable, Equatable {
     /// prints the frame and exits 0, or exits 3.
     static let loginScript = #"""
     _m=$1; _s=${SHELL:-/bin/sh}
-    _p="echo $_m; printenv PATH; echo $_m.cfg; printenv CLAUDE_CONFIG_DIR; echo $_m"
+    _p="echo $_m; printenv PATH; echo $_m.cfg; printenv CLAUDE_CONFIG_DIR; echo $_m.cdx; printenv CODEX_HOME; echo $_m"
     _end=$(( $(date +%s) + 5 ))
     for _v in 1 2 3; do
       [ "$(date +%s)" -lt "$_end" ] || exit 3
@@ -64,7 +74,7 @@ public struct RemoteEnvironment: Sendable, Equatable {
         2) _o=$("$_s" -l -c "$_p" </dev/null 2>/dev/null) ;;
         *) _o=$("$_s" -c "$_p" </dev/null 2>/dev/null) ;;
       esac
-      case $_o in *"$_m"*"$_m.cfg"*"$_m"*)
+      case $_o in *"$_m"*"$_m.cfg"*"$_m.cdx"*"$_m"*)
         _o="$_m${_o#*"$_m"}"; _o="${_o%"$_m"*}$_m"
         printf '%s' "$_o"; exit 0 ;;
       esac
@@ -83,7 +93,9 @@ public struct RemoteEnvironment: Sendable, Equatable {
     ///   login shell or descendant is left behind. Where neither containment
     ///   is available it spawns nothing and answers "no answer" at once.
     /// - `temple_parse_env <frame> <marker>` sets `TEMPLE_ENV_PATH`,
-    ///   `TEMPLE_ENV_CFG` (`set` or `unset`) and `TEMPLE_ENV_CFG_VALUE`.
+    ///   `TEMPLE_ENV_CFG` (`set` or `unset`) and `TEMPLE_ENV_CFG_VALUE`, and
+    ///   `TEMPLE_ENV_CDX` and `TEMPLE_ENV_CDX_VALUE` the same way for
+    ///   `CODEX_HOME`. A value set to the empty string is a value.
     /// - `temple_login_path <marker>` prints the PATH, or returns 3.
     public static var resolverFunction: String {
         "TEMPLE_LOGIN_SCRIPT=" + RemoteQuoting.quote(loginScript) + "\n" + #"""
@@ -117,15 +129,23 @@ public struct RemoteEnvironment: Sendable, Equatable {
           _NL='
         '
           _t=$1; _m=$2
-          TEMPLE_ENV_PATH=; TEMPLE_ENV_CFG=; TEMPLE_ENV_CFG_VALUE=
+          TEMPLE_ENV_PATH=; TEMPLE_ENV_CFG=; TEMPLE_ENV_CFG_VALUE=; TEMPLE_ENV_CDX=; TEMPLE_ENV_CDX_VALUE=
           case $_t in "$_m$_NL"*) _t=${_t#"$_m$_NL"} ;; *) return 3 ;; esac
           case $_t in
             "$_m.cfg$_NL"*) _c=${_t#"$_m.cfg$_NL"} ;;
             *"$_NL$_m.cfg$_NL"*) TEMPLE_ENV_PATH=${_t%%"$_NL$_m.cfg$_NL"*}; _c=${_t#*"$_NL$_m.cfg$_NL"} ;;
             *) return 3 ;;
           esac
-          _c=${_c%"$_m"}
-          if [ -n "$_c" ]; then TEMPLE_ENV_CFG=set; TEMPLE_ENV_CFG_VALUE=${_c%"$_NL"}; else TEMPLE_ENV_CFG=unset; fi
+          case $_c in
+            "$_m.cdx$_NL"*) TEMPLE_ENV_CFG=unset; _x=${_c#"$_m.cdx$_NL"} ;;
+            *"$_NL$_m.cdx$_NL"*) TEMPLE_ENV_CFG=set; TEMPLE_ENV_CFG_VALUE=${_c%%"$_NL$_m.cdx$_NL"*}; _x=${_c#*"$_NL$_m.cdx$_NL"} ;;
+            *) return 3 ;;
+          esac
+          case $_x in
+            "$_m") TEMPLE_ENV_CDX=unset ;;
+            *"$_NL$_m") TEMPLE_ENV_CDX=set; TEMPLE_ENV_CDX_VALUE=${_x%"$_NL$_m"} ;;
+            *) return 3 ;;
+          esac
           case $TEMPLE_ENV_PATH in */*) ;; *) TEMPLE_ENV_PATH= ;; esac
         }
         temple_login_path() {
@@ -178,12 +198,13 @@ public struct RemoteEnvironment: Sendable, Equatable {
             return RemoteEnvironment(shell: shell, path: nil, problem: "\(name) printed no PATH")
         }
         let path = frame.path.contains("/") ? frame.path : nil
-        return RemoteEnvironment(shell: shell, path: path, claudeConfig: frame.config,
+        return RemoteEnvironment(shell: shell, path: path, claudeConfig: frame.config, codexHome: frame.codexHome,
                                  problem: path == nil ? "\(name) printed no PATH" : nil)
     }
 
-    /// The frame's two values, as the shell held them.
-    static func frame(_ text: String, marker: String) -> (path: String, config: ClaudeConfig)? {
+    /// The frame's values, as the shell held them. A frame without the
+    /// Codex part (an older resolver) has no Codex home: nil, never a guess.
+    static func frame(_ text: String, marker: String) -> (path: String, config: ClaudeConfig, codexHome: CodexHome?)? {
         guard let start = text.range(of: marker + "\n") else { return nil }
         let rest = text[start.upperBound...]
         let cfgMarker = marker + ".cfg\n"
@@ -199,10 +220,29 @@ public struct RemoteEnvironment: Sendable, Equatable {
             return nil
         }
         guard let end = afterPath.range(of: marker, options: .backwards) else { return nil }
-        let config = afterPath[..<end.lowerBound]
-        if config.isEmpty { return (String(path), .unset) }
-        var value = String(config)
+        let values = afterPath[..<end.lowerBound]
+        // `<cfg>\n` (or nothing, unset), then `<marker>.cdx\n`, then `<cdx>\n` (or nothing).
+        let cdxMarker = marker + ".cdx\n"
+        let configText: Substring
+        var codexHome: CodexHome?
+        if values.hasPrefix(cdxMarker) {
+            configText = ""
+            codexHome = Self.variable(values.dropFirst(cdxMarker.count))
+        } else if let cdx = values.range(of: "\n" + cdxMarker) {
+            configText = values[..<values.index(after: cdx.lowerBound)]
+            codexHome = Self.variable(values[cdx.upperBound...])
+        } else {
+            configText = values
+        }
+        return (String(path), Self.variable(configText), codexHome)
+    }
+
+    /// What `printenv NAME` printed: nothing for unset, else the value and
+    /// its newline (an empty value is a value).
+    private static func variable(_ printed: Substring) -> Variable {
+        if printed.isEmpty { return .unset }
+        var value = String(printed)
         if value.hasSuffix("\n") { value.removeLast() }
-        return (String(path), .set(value))
+        return .set(value)
     }
 }

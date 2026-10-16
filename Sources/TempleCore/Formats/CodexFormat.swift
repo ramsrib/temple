@@ -200,7 +200,9 @@ public struct CodexFormat: TranscriptFormat {
         summary.sharing(title: shared.titles[summary.id], prompt: shared.prompts[summary.id])
     }
 
-    private static func firstUserMessage(in head: Data) -> String? {
+    /// The first prompt typed into a rollout, cleaned as a title; nil when
+    /// the head holds none.
+    public static func firstUserMessage(in head: Data) -> String? {
         for line in TranscriptText.lineData(head) {
             guard let obj = TranscriptText.jsonObject(line),
                   let item = obj["payload"] as? [String: Any],

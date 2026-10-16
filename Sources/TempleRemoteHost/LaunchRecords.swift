@@ -17,12 +17,16 @@ public struct LaunchEvidence: Sendable, Equatable {
     /// Claude's config root as the agent was started with it; nil when the
     /// record did not say (an older pane).
     public var claudeConfig: RemoteEnvironment.ClaudeConfig?
+    /// Codex's home as the agent was started with it; nil when the record
+    /// did not say.
+    public var codexHome: RemoteEnvironment.CodexHome?
 
     public init(epoch: Int, directory: String, panePID: Int, paneStart: String?, socketPath: String,
-                serverPID: Int?, serverStart: String?, claudeConfig: RemoteEnvironment.ClaudeConfig? = nil) {
+                serverPID: Int?, serverStart: String?, claudeConfig: RemoteEnvironment.ClaudeConfig? = nil,
+                codexHome: RemoteEnvironment.CodexHome? = nil) {
         self.epoch = epoch; self.directory = directory; self.panePID = panePID; self.paneStart = paneStart
         self.socketPath = socketPath; self.serverPID = serverPID; self.serverStart = serverStart
-        self.claudeConfig = claudeConfig
+        self.claudeConfig = claudeConfig; self.codexHome = codexHome
     }
 }
 
@@ -40,6 +44,7 @@ public enum PaneRecord: Sendable, Equatable {
 
 extension PaneRecord {
     static let configRefusal = "the launch didn't say which Claude config folder to use"
+    static let codexHomeRefusal = "the launch didn't say which Codex home to use"
 }
 
 /// The tmux client's record (`<marker>.client`), kept apart from the pane's
@@ -194,6 +199,7 @@ public enum LaunchRecords {
         var body = text
         if body.hasSuffix("\n") { body.removeLast() }
         if body == "failed\tcfg" { return .failedLaunch(PaneRecord.configRefusal) }
+        if body == "failed\tcdx" { return .failedLaunch(PaneRecord.codexHomeRefusal) }
         if body.hasPrefix("failed\tcd") {
             let fields = body.split(separator: "\t", omittingEmptySubsequences: false)
             return .failedCD(status: fields.count > 2 ? Int32(fields[2].trimmingCharacters(in: .whitespaces)) ?? 1 : 1)
@@ -216,16 +222,18 @@ public enum LaunchRecords {
         // Strict: `unset`, or `set` and exactly one field of hex that is
         // valid UTF-8 (empty is a valid, encoded empty value). Anything
         // else is no evidence (nil), never a guess at a root.
-        var config: RemoteEnvironment.ClaudeConfig?
-        switch values["cfg"] {
-        case ["unset"]?: config = .unset
-        case let fields? where fields.count == 2 && fields[0] == "set": config = Self.hex(fields[1]).map { .set($0) }
-        default: config = nil
+        func variable(_ fields: [String]?) -> RemoteEnvironment.Variable? {
+            switch fields {
+            case ["unset"]?: .unset
+            case let fields? where fields.count == 2 && fields[0] == "set": Self.hex(fields[1]).map { .set($0) }
+            default: nil
+            }
         }
         return .ok(LaunchEvidence(epoch: epoch, directory: directory, panePID: pid,
                                   paneStart: nonEmpty(pane.count > 1 ? pane[1] : nil),
                                   socketPath: socket, serverPID: server.first.flatMap { Int($0) },
-                                  serverStart: nonEmpty(server.count > 1 ? server[1] : nil), claudeConfig: config))
+                                  serverStart: nonEmpty(server.count > 1 ? server[1] : nil),
+                                  claudeConfig: variable(values["cfg"]), codexHome: variable(values["cdx"])))
     }
 
     /// Hex as `od -An -tx1` prints it, spaces and newlines removed: only

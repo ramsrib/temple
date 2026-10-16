@@ -173,6 +173,8 @@ public final class RemoteSessions {
     private var pathConnection: SSHConnection?
     /// Claude's config root from the same login environment as the PATH.
     private var claudeConfig: RemoteEnvironment.ClaudeConfig?
+    /// Codex's home from the same login environment.
+    private var codexHome: RemoteEnvironment.CodexHome?
     /// The host was removed or edited: nothing here runs again.
     public private(set) var retired = false
     /// What an ended run's pane showed, taken when its end was proven (the
@@ -314,6 +316,7 @@ public final class RemoteSessions {
             if resolved.reachedHost, self.connection == connection {
                 pathState = resolved.path.map(PathState.resolved) ?? .fallback(resolved.problem ?? "no PATH")
                 claudeConfig = resolved.claudeConfig
+                codexHome = resolved.codexHome
                 pathConnection = connection
             }
         }
@@ -323,12 +326,17 @@ public final class RemoteSessions {
     }
 
     /// A transport failure: the next query resolves the PATH again.
-    func transportFailed() { pathState = .unresolved; pathConnection = nil; claudeConfig = nil }
+    func transportFailed() { pathState = .unresolved; pathConnection = nil; claudeConfig = nil; codexHome = nil }
 
     /// The config root to hand a launch: only one resolved over this
     /// connection (otherwise the launch resolves it with the PATH).
     var launchConfig: RemoteEnvironment.ClaudeConfig? {
         pathConnection == connection ? claudeConfig : nil
+    }
+
+    /// Codex's home to hand a launch, the same way.
+    var launchCodexHome: RemoteEnvironment.CodexHome? {
+        pathConnection == connection ? codexHome : nil
     }
 
     var launchPath: RemoteLaunchPlan.Path {
@@ -359,8 +367,10 @@ public final class RemoteSessions {
     /// Temple never creates from a state where the original may be running.
     public func open(_ request: OpenRequest) async throws -> OpenOutcome {
         guard RemoteQuoting.isSafeToken(request.sessionID) else { throw OpenError.refused("This session id can't be sent to a host.") }
+        // Codex mints its own ids: a new Codex session is a pending run
+        // (`openPending`), never one started under an id Temple chose.
         if request.agent == .codex, request.mode == .new || request.startNew {
-            throw OpenError.refused("Temple can't start new Codex sessions on \(record.name) yet.")
+            throw OpenError.refused("A new Codex session starts without an id (Temple learns it later).")
         }
         let connection = try await resolvedConnection(refresh: true)
         let resume = request.mode == .resume && !request.startNew
@@ -411,20 +421,26 @@ public final class RemoteSessions {
                     run = await self.run(run.handle) ?? run
                 }
             }
-            let marker = marker(run)
-            let plan = RemoteLaunchPlan(handle: run.handle, marker: marker, directory: run.directoryIntent,
-                                        agentArgv: [], path: launchPath, claudeConfig: launchConfig, socket: run.socketPath,
-                                        stage: LaunchStage.attachName(marker: marker, nonce: token()))
-            let staged = try await stageBeforeSpawn(plan.stage, handle: run.handle, creating: false,
-                                                    script: keepAlive.attachScript(plan), connection: connection)
-            return .plan(OpenPlan(handle: run.handle, attachment: run.attachment, creating: false,
-                                  argv: localArgv(connection, LaunchStage.command(stage: plan.stage)),
-                                  agentArgv: agentArgv(run.agent, sessionID: request.sessionID, resume: run.mode == .resume,
-                                                       extra: request.extraArguments),
-                                  directoryIntent: run.directoryIntent,
-                                  evidenceDirectory: run.creation == .proven ? run.directory : nil,
-                                  stage: plan.stage, staged: staged, launch: plan))
+            return .plan(try await attachPlan(run, connection: connection,
+                                              agentArgv: agentArgv(run.agent, sessionID: request.sessionID,
+                                                                   resume: run.mode == .resume, extra: request.extraArguments)))
         }
+    }
+
+    /// An attach to a run that is not Ended: creates nothing, replays the
+    /// persisted creation evidence.
+    private func attachPlan(_ run: RemoteRun, connection: SSHConnection, agentArgv: [String]) async throws -> OpenPlan {
+        let marker = marker(run)
+        let plan = RemoteLaunchPlan(handle: run.handle, marker: marker, directory: run.directoryIntent,
+                                    agentArgv: [], path: launchPath, claudeConfig: launchConfig, socket: run.socketPath,
+                                    stage: LaunchStage.attachName(marker: marker, nonce: token()))
+        let staged = try await stageBeforeSpawn(plan.stage, handle: run.handle, creating: false,
+                                                script: keepAlive.attachScript(plan), connection: connection)
+        return OpenPlan(handle: run.handle, attachment: run.attachment, creating: false,
+                        argv: localArgv(connection, LaunchStage.command(stage: plan.stage)), agentArgv: agentArgv,
+                        directoryIntent: run.directoryIntent,
+                        evidenceDirectory: run.creation == .proven ? run.directory : nil,
+                        stage: plan.stage, staged: staged, launch: plan)
     }
 
     private func newRun(_ request: OpenRequest, resume: Bool) -> RemoteRun {
@@ -442,20 +458,29 @@ public final class RemoteSessions {
     /// else the login environment's.
     private func createPlan(_ run: RemoteRun, request: OpenRequest, connection: SSHConnection,
                             verifiedRoot: RemoteEnvironment.ClaudeConfig? = nil) async throws -> OpenPlan {
-        let argv = agentArgv(run.agent, sessionID: request.sessionID, resume: run.mode == .resume,
-                             extra: request.extraArguments)
+        try await createPlan(run, sessionID: request.sessionID, extra: request.extraArguments, connection: connection,
+                             verifiedRoot: verifiedRoot)
+    }
+
+    /// `sessionID` nil: a new Codex session, which mints its own.
+    private func createPlan(_ run: RemoteRun, sessionID: String?, extra: [String], connection: SSHConnection,
+                            verifiedRoot: RemoteEnvironment.ClaudeConfig? = nil) async throws -> OpenPlan {
+        let argv = agentArgv(run.agent, sessionID: sessionID, resume: run.mode == .resume, extra: extra)
         var config = launchConfig
-        if run.mode == .resume {
+        var home = launchCodexHome
+        if run.mode == .resume, let sessionID {
+            let latest = await latestRelevantRun(sessionID: sessionID, excluding: run.handle)
             if let verifiedRoot {
                 config = verifiedRoot
-            } else if let latest = await latestRelevantRun(sessionID: request.sessionID, excluding: run.handle),
-                      let root = Self.effectiveRoot(of: latest) {
+            } else if let latest, let root = Self.effectiveRoot(of: latest) {
                 config = root
             }
+            // A Codex conversation is resumed from the home it lives in.
+            if run.agent == .codex, let latest, let root = Self.effectiveHome(of: latest) { home = root }
         }
         let marker = marker(run)
         let plan = RemoteLaunchPlan(handle: run.handle, marker: marker, directory: run.directoryIntent,
-                                    agentArgv: argv, path: launchPath, claudeConfig: config, socket: nil,
+                                    agentArgv: argv, path: launchPath, claudeConfig: config, codexHome: home, socket: nil,
                                     stage: LaunchStage.creationName(marker: marker, nonce: token()))
         let staged = try await stageBeforeSpawn(plan.stage, handle: run.handle, creating: true,
                                                 script: keepAlive.createScript(plan), connection: connection)
@@ -591,12 +616,13 @@ public final class RemoteSessions {
     /// The agent's argv, `exec`ed by the pane: the binary by name on the
     /// resolved PATH (this Mac's detected path never reaches a host), the
     /// extra arguments, then the session.
-    func agentArgv(_ agent: Agent, sessionID: String, resume: Bool, extra: [String]) -> [String] {
+    func agentArgv(_ agent: Agent, sessionID: String?, resume: Bool, extra: [String]) -> [String] {
         let tail: [String]
-        switch (agent, resume) {
-        case (.claude, false): tail = ["--session-id", sessionID]
-        case (.claude, true): tail = ["--resume", sessionID]
-        case (.codex, _): tail = ["resume", sessionID]
+        switch (agent, sessionID, resume) {
+        case (_, nil, _): tail = []
+        case (.claude, let id?, false): tail = ["--session-id", id]
+        case (.claude, let id?, true): tail = ["--resume", id]
+        case (.codex, let id?, _): tail = ["resume", id]
         }
         return [agent.binaryName] + extra + tail
     }
@@ -654,6 +680,7 @@ public final class RemoteSessions {
                         row.serverPID = evidence.serverPID
                         row.serverStart = evidence.serverStart
                         row.claudeConfig = evidence.claudeConfig
+                        row.codexHome = evidence.codexHome
                         row.creation = .proven
                     }
                 }
@@ -749,6 +776,21 @@ public final class RemoteSessions {
         case .set(let value) where value.isEmpty: return nil
         case .set(let value) where value.hasPrefix("/"): return .set(value)
         case .set(let value): return .set((base.hasSuffix("/") ? base : base + "/") + value)
+        }
+    }
+
+    /// Codex's home the run's agent was started with, as Codex read it: a
+    /// relative value made absolute against the folder the pane ran in.
+    /// Nil when that run left no evidence, or set it empty.
+    static func effectiveHome(of run: RemoteRun) -> RemoteEnvironment.CodexHome? {
+        guard let home = run.codexHome else { return nil }
+        switch home {
+        case .unset: return .unset
+        case .set(let value) where value.isEmpty: return nil
+        case .set(let value) where value.hasPrefix("/"): return .set(value)
+        case .set(let value):
+            guard let base = run.directory else { return nil }
+            return .set((base.hasSuffix("/") ? base : base + "/") + value)
         }
     }
 
@@ -1040,5 +1082,229 @@ public final class RemoteSessions {
     /// The command that stops a session from the host itself, for copy.
     public nonisolated static func manualStopCommand(handle: String) -> String {
         "tmux -L temple kill-session -t temple-\(handle)"
+    }
+
+    // MARK: Codex identity (phase 1b)
+
+    /// What opening a pending Codex run (or starting one) decided.
+    public enum PendingOpenOutcome: Sendable, Equatable {
+        case plan(OpenPlan)
+        /// The run ended before Temple learned its id; nothing is created
+        /// in its place.
+        case ended(handle: String)
+        /// The run has an id now (another Temple learned it): it is that
+        /// session's run, opened as any session is.
+        case identified(handle: String, sessionID: String)
+    }
+
+    /// Starts a new Codex session (`handle` nil): a pending run, written
+    /// before anything spawns, its agent `codex` with the extra arguments
+    /// and nothing else, so Codex mints the id. Or reopens a pending run by
+    /// its handle: attach-only while it is not Ended, as for any run.
+    public func openPending(handle: String?, directory: String, extraArguments: [String]) async throws -> PendingOpenOutcome {
+        let connection = try await resolvedConnection(refresh: true)
+        guard let handle else {
+            var run = RemoteRun(handle: token(), host: host, agent: .codex, mode: .new, directoryIntent: directory,
+                                sessionID: nil, recordPath: RecordDirectory.locator(marker: "r-" + token()), startedAt: now())
+            run.conversation = .unconfirmed
+            let candidate = run
+            do { try await write { try $0.insert(candidate) } } catch { throw OpenError.store(error.localizedDescription) }
+            return .plan(try await createPlan(candidate, sessionID: nil, extra: extraArguments, connection: connection))
+        }
+        let reservation: RemoteStateStore.PendingReservation
+        do { reservation = try await write { try $0.reservePending(handle) } } catch {
+            throw OpenError.store(error.localizedDescription)
+        }
+        switch reservation {
+        case .gone:
+            throw OpenError.refused("Temple no longer tracks this session on \(record.name).")
+        case .identified(let id):
+            return .identified(handle: handle, sessionID: id)
+        case .ended:
+            return .ended(handle: handle)
+        case .existing(var run):
+            if run.creation == nil || run.creation == .unproven {
+                switch await collect(run.handle) {
+                case .failedCD, .failedLaunch:
+                    // Never ran: nothing to attach to, nothing to identify.
+                    return .ended(handle: handle)
+                case .storage(let reason):
+                    throw OpenError.store(reason)
+                default:
+                    run = await self.run(run.handle) ?? run
+                }
+            }
+            return .plan(try await attachPlan(run, connection: connection,
+                                              agentArgv: agentArgv(.codex, sessionID: nil, resume: false, extra: extraArguments)))
+        }
+    }
+
+    /// What one identity check came to.
+    public enum Identity: Sendable, Equatable {
+        /// Verified by the pane's own process tree, and claimed (written
+        /// before anything else hears of it).
+        case adopted(String)
+        /// The run already has this id (claimed earlier, or by another Temple).
+        case known(String)
+        /// Another run on this host holds the id that was found: refused,
+        /// the run stays pending.
+        case taken
+        case inconclusive(CodexIdentityCheck.Inconclusive)
+        /// The claim could not be written: nothing was adopted.
+        case storage(String)
+    }
+
+    /// Where the identity check reads processes. Tests (and acceptance, to
+    /// prove the suggestion path) point it elsewhere: a host without
+    /// `/proc` is suggest-only.
+    public var procRoot = "/proc"
+
+    /// Identity checks for one host run one at a time.
+    private var identityTail: Task<Void, Never>?
+
+    private func serially<T: Sendable>(_ body: @escaping @MainActor () async -> T) async -> T {
+        let previous = identityTail
+        let task = Task { @MainActor () -> T in
+            await previous?.value
+            return await body()
+        }
+        identityTail = Task { _ = await task.value }
+        return await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+    }
+
+    /// The automatic check (section 3): adopts only on the run's own
+    /// process tree holding exactly one rollout open for writing, whose
+    /// header names its file's id and the run's folder; claims it before
+    /// returning. Everything else is inconclusive and claims nothing.
+    public func identify(_ handle: String) async -> Identity {
+        await serially { [weak self] in
+            guard let self else { return .inconclusive(.retry("cancelled")) }
+            return await self.identifyNow(handle)
+        }
+    }
+
+    private func identifyNow(_ handle: String) async -> Identity {
+        guard !retired, !Task.isCancelled else { return .inconclusive(.retry(Retired().localizedDescription)) }
+        guard let run = await run(handle), run.agent == .codex else { return .inconclusive(.ended("Temple has no record of this session")) }
+        if let id = run.sessionID { return .known(id) }
+        if run.isEnded { return .inconclusive(.ended("the session has ended")) }
+        guard run.creation == .proven, let pid = run.panePID, let directory = run.directory else {
+            return .inconclusive(.retry("Temple hasn't seen this session start yet"))
+        }
+        guard let start = run.paneStart else { return .inconclusive(.lasting("this host has no /proc")) }
+        guard let home = CodexHomeRoot.arguments(run.codexHome, base: directory) else {
+            return .inconclusive(.lasting("Temple doesn't know which Codex home this session used"))
+        }
+        let exec: RemoteExec
+        do { exec = try await queryExec() } catch { return .inconclusive(.retry(error.localizedDescription)) }
+        let answer = await CodexIdentityCheck.run(proc: procRoot, panePID: pid, paneStart: start, socket: run.socketPath,
+                                                  session: run.sessionName, home: home, using: exec)
+        switch answer {
+        case .inconclusive(let why):
+            return .inconclusive(why)
+        case .found(let path, let header):
+            guard let id = CodexIdentityCheck.verify(path: path, header: header, directory: directory) else {
+                return .inconclusive(.retry("the open session file doesn't name this session's folder or its own id"))
+            }
+            return await claim(handle, sessionID: id, how: .verified)
+        }
+    }
+
+    private func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim) async -> Identity {
+        do {
+            switch try await write({ try $0.claim(handle, sessionID: sessionID, how: how) }) {
+            case .claimed: return .adopted(sessionID)
+            case .alreadyKnown(let id): return .known(id)
+            case .taken: return .taken
+            case .gone: return .inconclusive(.ended("Temple no longer tracks this session"))
+            }
+        } catch {
+            return .storage(error.localizedDescription)
+        }
+    }
+
+    /// What the suggestion lookup came to.
+    public enum Suggestions: Sendable, Equatable {
+        case candidates([CodexSuggestion])
+        case unavailable(String)
+    }
+
+    /// Rollouts that may be this pending run's session: in its folder (as
+    /// its pane spelled it), begun between its `ok` and its end (or now) on
+    /// the host's clock, not declined for this run, not an id another run
+    /// holds. Asks; never adopts. Only for a run Temple started.
+    public func suggestions(_ handle: String) async -> Suggestions {
+        guard !retired else { return .unavailable(Retired().localizedDescription) }
+        guard let run = await run(handle), run.isPending, run.dismissedAt == nil else { return .candidates([]) }
+        guard let okAt = run.okAt, let directory = run.directory else {
+            return .unavailable("Temple hasn't seen this session start yet")
+        }
+        guard let home = CodexHomeRoot.arguments(run.codexHome, base: directory) else {
+            return .unavailable("Temple doesn't know which Codex home this session used")
+        }
+        let exec: RemoteExec
+        do { exec = try await queryExec() } catch { return .unavailable(error.localizedDescription) }
+        let asked = now()
+        let answer = await CodexSuggestionLookup.run(home: home, since: okAt, directory: directory, using: exec)
+        guard case .files(let remoteNow, let files) = answer else {
+            if case .unavailable(let reason) = answer { return .unavailable(reason) }
+            return .unavailable("no answer")
+        }
+        // The end on the host's clock: its end as this Mac saw it, moved by
+        // the clocks' offset measured just now, with room for the lag.
+        let offset = TimeInterval(remoteNow) - asked.timeIntervalSince1970
+        let until = run.endedAt.map { $0.addingTimeInterval(offset + 30) }
+            ?? Date(timeIntervalSince1970: TimeInterval(remoteNow + 5))
+        let host = host
+        let declined = await read { try $0.declined(handle) } ?? []
+        let held = await read { try $0.sessionIDs(host: host) } ?? []
+        return .candidates(CodexSuggestionLookup.candidates(files, directory: directory, since: okAt, until: until,
+                                                            declined: declined, held: held))
+    }
+
+    /// The user said "Yes, that's it": the id is claimed for the run, under
+    /// the same uniqueness as a verified one.
+    public func confirm(_ handle: String, suggestion: CodexSuggestion) async -> Identity {
+        await claim(handle, sessionID: suggestion.sessionID, how: .confirmed)
+    }
+
+    /// "Not this one": never offered again for this run.
+    public func decline(_ handle: String, rolloutPath: String) async throws {
+        try await write { try $0.decline(handle, rolloutPath: rolloutPath) }
+    }
+
+    /// The core join refused the id (another host's, or another agent's).
+    public func releaseClaim(_ handle: String, sessionID: String) async throws {
+        try await write { try $0.releaseClaim(handle, sessionID: sessionID) }
+    }
+
+    public func markJoined(_ handle: String) async throws {
+        let now = now()
+        try await write { try $0.markJoined(handle, at: now) }
+    }
+
+    /// Claims whose core join never happened, for the launch's reconciliation.
+    public func unjoinedClaims() async -> [RemoteRun] {
+        let host = host
+        return await read { try $0.unjoinedClaims(host: host) } ?? []
+    }
+
+    /// Pending runs to restore as chips.
+    public func pendingRuns() async -> [RemoteRun] {
+        let host = host
+        return await read { try $0.pendingRuns(host: host) } ?? []
+    }
+
+    /// A pending run's tab was closed: it is not restored as a chip.
+    public func closePendingTab(_ handle: String) async throws {
+        let now = now()
+        try await write { try $0.update(handle) { $0.tabClosedAt = now } }
+    }
+
+    /// Discard of a pending run: Temple stops tracking it (its transcript,
+    /// if any, stays on the host).
+    public func dismissRun(_ handle: String) async throws {
+        let now = now()
+        try await write { try $0.dismissRun(handle, at: now) }
     }
 }
