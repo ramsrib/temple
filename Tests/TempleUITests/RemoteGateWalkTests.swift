@@ -47,6 +47,8 @@ final class RemoteGateWalkTests: XCTestCase {
             app.start()
             app.openSessions.earlyExitGraceSeconds = 0.5
             app.openSessions.remoteTabs.recordPollDelays = [0.01]
+            app.openSessions.remoteTabs.identitySchedule = [0.01]
+            app.openSessions.remoteTabs.identityInterval = 0.05
             app.openSessions.settleDelaySeconds = 60
             let original = app.openSessions.launchDirectoryHandler
             app.openSessions.launchDirectoryHandler = { [weak self] id, host, directory in
@@ -84,6 +86,17 @@ final class RemoteGateWalkTests: XCTestCase {
         h.tab = tab
         return tab
     }
+
+    /// A new Codex session on the host, connected and pending.
+    private func pendingTab(_ h: Harness) async -> SessionTab {
+        let tab = h.app.openSessions.newSession(agent: .codex, project: ProjectKey(host: h.host, path: "/home/u/p"))
+        await settle { tab.hasLiveProcess }
+        h.tab = tab
+        return tab
+    }
+
+    private static let candidate = RemoteSuggestion(rolloutPath: "/home/u/.codex/sessions/rollout-x-c7.jsonl", sessionID: "c7",
+                                                     firstPrompt: "hi", startedAt: Date(), directory: "/home/u/project")
 
     private var scenarios: [Scenario] {
         let tabDisruptions: [Disruption] = [.none, .close, .quit, .retire]
@@ -250,6 +263,77 @@ final class RemoteGateWalkTests: XCTestCase {
                                                 state: .present(attached: false), leftRunning: nil))
                 await self.settle { !h.remote.stops.isEmpty }
             }, effect: { $0.sessionsSheet?.stopping.isEmpty == true }),
+
+            // Codex identity (phase 1b)
+            Scenario(completion: .pendingOpenResult, disruptions: tabDisruptions, arm: { h in
+                h.remote.pendingOpenGate = { await h.hold.wait() }
+                h.tab = h.app.openSessions.newSession(agent: .codex, project: ProjectKey(host: h.host, path: "/home/u/p"))
+                await self.settle { !h.remote.pendingOpens.isEmpty }
+            }, effect: { $0.factory.created.count > 0 }),
+
+            // Closing a pending tab checks its identity once more on purpose
+            // (testClosingAPendingTabChecksOnceMoreThenStops), so the close
+            // disruption would admit that check's own answer.
+            Scenario(completion: .identityResult, disruptions: noClose, arm: { h in
+                h.remote.identityResult = .adopted("c9", directory: "/home/u/project")
+                h.remote.identityGate = { await h.hold.wait() }
+                _ = await self.pendingTab(h)
+                await self.settle { !h.remote.identifies.isEmpty }
+            }, effect: { $0.tab?.sessionID == "c9" }),
+
+            Scenario(completion: .suggestionsLoaded, disruptions: tabDisruptions, arm: { h in
+                h.remote.identityResult = .inconclusive("this host has no /proc", lasting: true, ended: false)
+                h.remote.suggestionsResult = .candidates([Self.candidate])
+                h.remote.suggestionsGate = { await h.hold.wait() }
+                _ = await self.pendingTab(h)
+                await self.settle { !h.remote.suggestionLookups.isEmpty }
+            }, effect: { $0.tab?.remote?.suggestions.isEmpty == false }),
+
+            Scenario(completion: .confirmResult, disruptions: tabDisruptions, arm: { h in
+                h.app.openSessions.remoteTabs.identitySchedule = [60]
+                h.remote.confirmResult = .taken
+                h.remote.confirmGate = { await h.hold.wait() }
+                let tab = await self.pendingTab(h)
+                h.app.openSessions.remoteTabs.confirm(Self.candidate, in: tab)
+                await self.settle { !h.remote.confirms.isEmpty }
+            }, effect: { $0.tab?.remote?.identityNote == RemoteCopy.couldNotTell }),
+
+            Scenario(completion: .pendingStopOutcome, disruptions: noClose, arm: { h in
+                h.app.openSessions.remoteTabs.identitySchedule = [60]
+                h.remote.stopGate = { _ in await h.hold.wait() }
+                let tab = await self.pendingTab(h)
+                tab.inputSubmitted = true
+                tab.activity = .idle
+                h.app.openSessions.closeTab(tab.id)
+                await self.settle { !h.remote.stops.isEmpty }
+            }, effect: { $0.tab?.remote?.phase == .endedPending }),
+
+            Scenario(completion: .pendingRestore, disruptions: noClose, arm: { h in
+                h.remote.pending = [.init(handle: "p7", directory: "/home/u/project")]
+                h.remote.pendingRunsGate = { await h.hold.wait() }
+                h.app.openSessions.remoteTabs.restorePending(hosts: [h.host])
+                try await Task.sleep(for: .milliseconds(50))
+            }, effect: { h in h.app.openSessions.tabs.contains { $0.remote?.handle == "p7" } }),
+
+            Scenario(completion: .pendingDiscardNotice, disruptions: noClose, arm: { h in
+                h.remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true)]
+                h.app.openSessions.remoteTabs.restorePending(hosts: [h.host])
+                await self.settle { h.app.openSessions.tabs.contains { $0.remote?.handle == "p7" } }
+                let tab = try XCTUnwrap(h.app.openSessions.tabs.first { $0.remote?.handle == "p7" })
+                h.remote.dismissRunError = CocoaError(.fileWriteUnknown)
+                h.remote.dismissRunGate = { await h.hold.wait() }
+                h.app.openSessions.remoteTabs.discardPending(tab)
+                await self.settle { !h.remote.dismissedRuns.isEmpty }
+            }, effect: { $0.app.remoteNotice != nil }),
+
+            Scenario(completion: .identityNotice, disruptions: noClose, arm: { h in
+                h.app.openSessions.remoteTabs.identitySchedule = [60]
+                h.remote.declineError = CocoaError(.fileWriteUnknown)
+                h.remote.declineGate = { await h.hold.wait() }
+                let tab = await self.pendingTab(h)
+                h.app.openSessions.remoteTabs.decline(Self.candidate, in: tab)
+                await self.settle { !h.remote.declines.isEmpty }
+            }, effect: { $0.app.remoteNotice != nil }),
 
             Scenario(completion: .folderCheckResult, disruptions: tabDisruptions, arm: { h in
                 h.remote.folder = .exists(resolved: "/home/u/new")

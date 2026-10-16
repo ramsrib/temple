@@ -15,7 +15,7 @@ import TempleCore
 ///   within its own bound, never past it.
 @MainActor
 public final class RemoteOperations {
-    public enum Kind: Equatable { case open, collect, exitCheck, query, stop, write }
+    public enum Kind: Equatable { case open, collect, exitCheck, query, stop, write, identity }
 
     final class Operation {
         let id = UUID()

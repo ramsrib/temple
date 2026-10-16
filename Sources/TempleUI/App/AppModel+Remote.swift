@@ -38,6 +38,21 @@ extension AppModel {
         hostRegistry.entry(for: host)?.launcher as? RemoteSessionHost
     }
 
+    /// Every registered host with sessions on it (no files are read or
+    /// created for a host with none, nor with the feature off).
+    var remoteHostIDs: [HostID] {
+        hostRegistry.entries.compactMap { $0.launcher is RemoteSessionHost ? $0.source.host : nil }
+    }
+
+    /// What Discard does to this session's row: archived (the user named,
+    /// pinned or colored it, or it has a transcript or was imported), or
+    /// removed. Said in Discard's help tag.
+    public func discardArchives(_ sessionID: String) -> Bool {
+        guard let row = overlay.rows[sessionID] else { return false }
+        return row.pinned || row.archived || row.customName != nil || row.color != nil
+            || row.transcriptPath != nil || row.joinedVia != .created
+    }
+
     /// Hosts a new session can start on: every enabled host whose last
     /// test did not prove tmux missing, in the order they were added.
     public var remoteLaunchHosts: [HostID] {

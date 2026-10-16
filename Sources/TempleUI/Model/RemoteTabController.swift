@@ -87,9 +87,9 @@ public final class RemoteTabController {
         // would race it for the same run.
         if tab.remote?.phase == .opening { return }
         guard let sid = tab.sessionID else {
-            // A new Codex session on a host waits for its identity step (1b).
-            tab.launchPreparationError = RemoteCopy.newCodexWaits(host.hostName)
-            tab.activity = .exited(status: -1)
+            // A new Codex session: Codex mints the id, so the run starts
+            // pending and is identified later (phase 1b).
+            ensurePending(tab, on: host, startNew: false)
             return
         }
         // A session Temple already has on another host is not run here.
@@ -173,6 +173,9 @@ public final class RemoteTabController {
             recordDirectory(tab, directory)
             tab.remote?.evidenceSeen = false
         }
+        // A pending Codex run reattached: its `ok` is known, so the identity
+        // schedule starts now (a creation's starts when its `ok` arrives).
+        if isPending(tab), !plan.creating { startIdentity(tab, host: host, handle: plan.handle) }
         if let stage = plan.stage { stageAfterSpawn(tab, host: host, stage: stage, creating: plan.creating) }
         watchStartup(tab)
     }
@@ -234,6 +237,7 @@ public final class RemoteTabController {
                     guard let self, self.gate.admit(.pollDirectory, ticket, runAttachment: runAttachment),
                           let tab = ticket.tab else { return }
                     self.recordDirectory(tab, directory)
+                    if self.isPending(tab) { self.startIdentity(tab, host: host, handle: handle) }
                     return
                 case .storage(let detail):
                     guard let self, self.gate.admit(.storageNotice, ticket) else { return }
@@ -292,6 +296,8 @@ public final class RemoteTabController {
             return
         }
         let creating = state.creating
+        let pending = isPending(tab)
+        if let identity = state.identityOperation { operations.cancel(id: identity) }
         let age = tab.spawnedAt.map { Date().timeIntervalSince($0) } ?? .infinity
         tab.remote?.lastSeenWorking = tab.activity == .running
         model.cancelSettle(for: tab.id)
@@ -339,6 +345,16 @@ public final class RemoteTabController {
                                                   message: RemoteCopy.launchFailed(host.hostName, reason: reason))
                 return
             }
+            // A pending Codex run is checked once more at its exit: its agent
+            // may still be running there (a dropped connection).
+            if pending, let self {
+                let identity = await host.identify(handle)
+                if case .adopted(let id, let directory) = identity {
+                    await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
+                } else if case .known(let id, let directory) = identity {
+                    await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
+                }
+            }
             let liveness = await host.exitCheck(handle)
             let runAttachment = await host.attachment(of: handle)
             guard let self, self.gate.admit(.exitVerdict, ticket, runAttachment: runAttachment),
@@ -365,6 +381,17 @@ public final class RemoteTabController {
                     // printed when that can be had.
                     tab.remote?.phase = .exitedEarly
                     wantDiagnostics = true
+                } else if self.isPending(tab) {
+                    // Codex finished before Temple learned its id: what was
+                    // typed into it may be a conversation to identify; if
+                    // nothing was, there is nothing to keep.
+                    if tab.inputSubmitted {
+                        tab.remote?.phase = .endedPending
+                        self.loadSuggestions(tab, host: host, handle: handle)
+                    } else {
+                        self.model.removeTab(tab.id)
+                        self.operations.run(host: tab.host, .write) { try? await host.dismissRun(handle) }
+                    }
                 } else {
                     // The agent finished: the tab closes, as a local one does.
                     self.model.removeTab(tab.id)
@@ -403,10 +430,11 @@ public final class RemoteTabController {
         ensureSurface(for: tab, on: host, resumeAnyway: true)
     }
 
-    /// The copy for Resume anyway's confirmation, with the stop command.
-    public func resumeAnywayMessage(_ tab: SessionTab) -> String? {
+    /// The command that stops this tab's run from the host itself, for the
+    /// Resume anyway and Start a new session confirmations.
+    public func stopCommand(_ tab: SessionTab) -> String? {
         guard let host = remoteHost(for: tab), let handle = tab.remote?.handle else { return nil }
-        return RemoteCopy.resumeAnyway(host.hostName, stopCommand: host.manualStopCommand(handle: handle))
+        return host.manualStopCommand(handle: handle)
     }
 
     private func decisionPending(_ tab: SessionTab) -> Bool {
@@ -510,6 +538,10 @@ public final class RemoteTabController {
     }
 
     func close(_ tab: SessionTab, _ how: Close) {
+        if isPending(tab), tab.remote?.handle != nil {
+            closePending(tab, how)
+            return
+        }
         let host = remoteHost(for: tab)
         let handle = tab.remote?.handle
         let live = tab.hasLiveProcess
@@ -686,6 +718,13 @@ public final class RemoteTabController {
     /// window closes first. No completion touches a tab from here on: the
     /// gate refuses everything while quitting.
     func quitPlan(for tab: SessionTab, state: RemoteTabState) -> TerminalSurface? {
+        // A pending Codex run is never stopped by a quit: without its id it
+        // could not be resumed. Its client is detached; the next launch
+        // restores it as a chip and attaches.
+        if isPending(tab) {
+            if let surface = tab.surface, tab.hasLiveProcess { return surface }
+            return nil
+        }
         guard let host = remoteHost(for: tab), let handle = state.handle else {
             if let surface = tab.surface, tab.hasLiveProcess { return surface }
             return nil
@@ -717,5 +756,407 @@ public final class RemoteTabController {
             surface?.terminate()
             _ = try? await host.stop(handle, fromAttachedTab: surface != nil)
         }
+    }
+
+    // MARK: Codex identity (docs/designs/remote-ssh.md section 3, phase 1b)
+
+    /// A new Codex session on a host whose id Temple has not learned yet.
+    func isPending(_ tab: SessionTab) -> Bool { tab.kind == .session && tab.sessionID == nil && tab.agent == .codex }
+
+    /// The identity schedule, in seconds after the run's `ok` (then each
+    /// minute while attached).
+    var identitySchedule: [TimeInterval] = [2, 5, 15, 60]
+    var identityInterval: TimeInterval = 60
+    /// An activation checks again only when the last check is older.
+    var activationRecheck: TimeInterval = 5
+    private var lastIdentityCheck: [SessionTab.ID: Date] = [:]
+
+    /// Opens a pending Codex session: a new run (no handle, or Start a new
+    /// session), or the tab's own run by its handle (attach-only while it
+    /// runs). Owned, and gated like every open.
+    func ensurePending(_ tab: SessionTab, on host: RemoteSessionHost, startNew: Bool) {
+        if tab.remote?.phase == .opening { return }
+        let handle = startNew ? nil : tab.remote?.handle
+        var state = RemoteTabState(phase: .opening)
+        state.handle = handle
+        state.suggestions = startNew ? [] : (tab.remote?.suggestions ?? [])
+        tab.remote = state
+        let ticket = gate.ticket(for: tab)
+        let directory = tab.projectPath
+        operations.run(host: tab.host, .open) { [weak self] in
+            let result: Result<RemotePendingOpenResult, Error>
+            do { result = .success(try await host.openPending(handle: handle, directory: directory)) } catch {
+                result = .failure(error)
+            }
+            guard let self, self.gate.admit(.pendingOpenResult, ticket), let tab = ticket.tab else {
+                if case .success(.plan(let plan)) = result, plan.creating { await host.abandon(plan.handle) }
+                return
+            }
+            switch result {
+            case .failure(let error):
+                guard !(error is CancellationError) else { return }
+                TempleUILog.launch.error("remote pending open refused: \(error.localizedDescription, privacy: .public)")
+                tab.remote = nil
+                tab.launchPreparationError = error.localizedDescription
+                tab.activity = .exited(status: -1)
+            case .success(.ended):
+                tab.remote?.phase = .endedPending
+                tab.activity = .exited(status: 0)
+                if let handle { self.loadSuggestions(tab, host: host, handle: handle) }
+            case .success(.identified(let id)):
+                // Another Temple learned its id meanwhile: this tab is that
+                // session now, opened as any session is.
+                self.becomeSession(tab, id: id)
+                self.model.ensureSurface(for: tab)
+            case .success(.plan(let plan)):
+                guard tab.surface == nil else {
+                    if plan.creating { self.operations.run(host: tab.host, .write) { await host.abandon(plan.handle) } }
+                    return
+                }
+                self.spawn(tab, plan: plan, host: host)
+            }
+        }
+    }
+
+    /// The bounded schedule (2, 5, 15 and 60 s after `ok`, then each minute
+    /// while attached): each check owned, one host's checks serial (the
+    /// host's own queue). Ends when the tab has its id, closes or detaches.
+    private func startIdentity(_ tab: SessionTab, host: RemoteSessionHost, handle: String) {
+        if let running = tab.remote?.identityOperation { operations.cancel(id: running) }
+        let ticket = gate.ticket(for: tab)
+        var delays: [TimeInterval] = []
+        var previous: TimeInterval = 0
+        for at in identitySchedule {
+            delays.append(max(0, at - previous))
+            previous = at
+        }
+        let interval = identityInterval
+        tab.remote?.identityOperation = operations.run(host: tab.host, .identity) { [weak self] in
+            var index = 0
+            while !Task.isCancelled {
+                let delay = index < delays.count ? delays[index] : interval
+                index += 1
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard !Task.isCancelled, let tab = ticket.tab, tab.remote?.phase == .connected,
+                      self?.isPending(tab) == true else { return }
+                guard let self, await self.checkIdentity(ticket, host: host, handle: handle) else { continue }
+                return
+            }
+        }
+    }
+
+    /// One check; true when the tab's identity is settled (it has its id).
+    @discardableResult
+    private func checkIdentity(_ ticket: RemoteTicket, host: RemoteSessionHost, handle: String) async -> Bool {
+        if let id = ticket.tab?.id { lastIdentityCheck[id] = Date() }
+        let identity = await host.identify(handle)
+        switch identity {
+        case .adopted(let id, let directory), .known(let id, let directory):
+            await adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
+            return true
+        case .taken:
+            guard gate.admit(.identityResult, ticket), let tab = ticket.tab else { return false }
+            tab.remote?.identityNote = RemoteCopy.couldNotTell
+            await loadSuggestions(ticket, host: host, handle: handle)
+            return false
+        case .storage(let detail):
+            guard gate.admit(.identityNotice, ticket) else { return false }
+            noticeHandler?(ticket.host, RemoteCopy.unrecorded(host.hostName, detail: detail))
+            return false
+        case .inconclusive(_, let lasting, let ended):
+            // The question is asked once the automatic check can't answer:
+            // for good (no /proc, a shared Codex server), when the agent
+            // ended, or once something was typed (Codex writes its session
+            // file from the first prompt).
+            if lasting || ended || ticket.tab?.inputSubmitted == true {
+                await loadSuggestions(ticket, host: host, handle: handle)
+            }
+            return false
+        }
+    }
+
+    /// Activating a connected pending tab checks again (not more than once
+    /// in a few seconds).
+    func activated(_ tab: SessionTab) {
+        guard isPending(tab), tab.remote?.phase == .connected, let handle = tab.remote?.handle,
+              let host = remoteHost(for: tab) else { return }
+        if let last = lastIdentityCheck[tab.id], Date().timeIntervalSince(last) < activationRecheck { return }
+        lastIdentityCheck[tab.id] = Date()
+        let ticket = gate.ticket(for: tab)
+        operations.run(host: tab.host, .identity) { [weak self] in
+            await self?.checkIdentity(ticket, host: host, handle: handle)
+        }
+    }
+
+    /// A claimed id (verified, or the user's yes). The claim is written;
+    /// the core join and the row's folder are durable work too (only the
+    /// quit defers them, to the next launch's reconciliation). A join core
+    /// refuses releases the claim and the tab says why. The tab becomes the
+    /// session through the gate.
+    private func adopted(_ id: String, directory: String?, handle: String, host: RemoteSessionHost,
+                         ticket: RemoteTicket) async {
+        let hostID = ticket.host
+        // While quitting the join waits for the next launch (the claim
+        // stays unjoined); the gate below refuses the tab's part.
+        if !isQuitting {
+            let open = SessionOpen(id: id, host: hostID, via: .created, agent: .codex, locator: nil)
+            if let conflict = model.openedHandler?(open).conflict {
+                TempleUILog.launch.notice("remote Codex id refused by core: \(conflict.message, privacy: .public)")
+                operations.run(host: hostID, .write) { try? await host.releaseClaim(handle, sessionID: id) }
+                guard gate.admit(.identityResult, ticket), let tab = ticket.tab else { return }
+                tab.remote?.identityNote = conflict.message
+                tab.remote?.confirming = nil
+                return
+            }
+            if let directory { model.launchDirectoryHandler?(id, hostID, directory) }
+            operations.run(host: hostID, .write) { try? await host.markJoined(handle) }
+        }
+        guard gate.admit(.identityResult, ticket), let tab = ticket.tab, isPending(tab) else { return }
+        becomeSession(tab, id: id)
+        if let at = tab.launchObservation?.at { model.touchHandler?(id, hostID, at) }
+        if !tab.title.isEmpty, tab.title != tab.agent.newSessionTitle { model.titleHandler?(id, hostID, tab.title) }
+        if tab.remote?.phase == .endedPending {
+            // Its run ended: the tab is an inert chip of that session, and
+            // opening it resumes the conversation (it exists: it has a file).
+            tab.remote = nil
+            tab.activity = .idle
+            if model.activeTabID == tab.id { model.ensureSurface(for: tab) }
+        }
+    }
+
+    /// The tab is that session from here on.
+    private func becomeSession(_ tab: SessionTab, id: String) {
+        tab.sessionID = id
+        tab.isProvisional = false
+        // A claimed id has a conversation (a session file): a later open
+        // resumes it, never starts it again.
+        tab.inputSubmitted = true
+        tab.remote?.suggestions = []
+        tab.remote?.identityNote = nil
+        tab.remote?.confirming = nil
+        if let operation = tab.remote?.identityOperation { operations.cancel(id: operation) }
+        tab.remote?.identityOperation = nil
+        model.persist()
+    }
+
+    private func loadSuggestions(_ tab: SessionTab, host: RemoteSessionHost, handle: String) {
+        let ticket = gate.ticket(for: tab)
+        operations.run(host: tab.host, .query) { [weak self] in
+            await self?.loadSuggestions(ticket, host: host, handle: handle)
+        }
+    }
+
+    private func loadSuggestions(_ ticket: RemoteTicket, host: RemoteSessionHost, handle: String) async {
+        let answer = await host.suggestions(handle)
+        guard gate.admit(.suggestionsLoaded, ticket), let tab = ticket.tab, isPending(tab) else { return }
+        if case .candidates(let found) = answer { tab.remote?.suggestions = found }
+    }
+
+    /// "Yes, that's it": the claim is durable work (owned through close and
+    /// quit); what the tab shows passes the gate.
+    public func confirm(_ suggestion: RemoteSuggestion, in tab: SessionTab) {
+        guard isPending(tab), let handle = tab.remote?.handle, let host = remoteHost(for: tab),
+              tab.remote?.confirming == nil, !isQuitting else { return }
+        tab.remote?.confirming = suggestion.id
+        let ticket = gate.ticket(for: tab)
+        operations.run(host: tab.host, .write) { [weak self] in
+            let identity = await host.confirm(handle, suggestion: suggestion)
+            guard let self else { return }
+            switch identity {
+            case .adopted(let id, let directory), .known(let id, let directory):
+                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
+            case .taken, .inconclusive:
+                guard self.gate.admit(.confirmResult, ticket), let tab = ticket.tab else { return }
+                tab.remote?.confirming = nil
+                tab.remote?.suggestions.removeAll { $0.id == suggestion.id }
+                tab.remote?.identityNote = RemoteCopy.couldNotTell
+            case .storage(let detail):
+                guard self.gate.admit(.confirmResult, ticket), let tab = ticket.tab else { return }
+                tab.remote?.confirming = nil
+                tab.remote?.identityNote = RemoteCopy.unrecorded(host.hostName, detail: detail)
+            }
+        }
+    }
+
+    /// "Not this one": gone from the tab at once, and never offered again
+    /// for this run (durable).
+    public func decline(_ suggestion: RemoteSuggestion, in tab: SessionTab) {
+        guard isPending(tab), let handle = tab.remote?.handle, let host = remoteHost(for: tab) else { return }
+        tab.remote?.suggestions.removeAll { $0.id == suggestion.id }
+        let ticket = gate.ticket(host: tab.host)
+        operations.run(host: tab.host, .write) { [weak self] in
+            do { try await host.decline(handle, rolloutPath: suggestion.rolloutPath) } catch {
+                guard let self, self.gate.admit(.identityNotice, ticket) else { return }
+                self.noticeHandler?(ticket.host, RemoteCopy.unrecorded(host.hostName, detail: error.localizedDescription))
+            }
+        }
+    }
+
+    /// Start a new session, for a pending Codex session that ended
+    /// unidentified (its run is dismissed) or that Temple can't reach (its
+    /// run is kept, listed under Sessions on <host> for Stop, its tab
+    /// closed): a new run under a new handle, a new Codex session.
+    public func startNewPending(_ tab: SessionTab) {
+        guard isPending(tab), let host = remoteHost(for: tab), !tab.hasLiveProcess, !isQuitting else { return }
+        if let old = tab.remote?.handle {
+            let ended = tab.remote?.phase == .endedPending
+            operations.run(host: tab.host, .write) {
+                if ended { try? await host.dismissRun(old) } else { try? await host.closePendingTab(old) }
+            }
+        }
+        tab.dropSurface()
+        tab.launchPreparationError = nil
+        tab.activity = .idle
+        tab.inputSubmitted = false
+        ensurePending(tab, on: host, startNew: true)
+    }
+
+    /// Discard of a pending Codex session: Temple stops tracking it (its
+    /// transcript stays on the host). Durable work; only the failure
+    /// notice passes the gate.
+    public func discardPending(_ tab: SessionTab) {
+        guard isPending(tab), let host = remoteHost(for: tab) else { return }
+        let handle = tab.remote?.handle
+        let ticket = gate.ticket(host: tab.host)
+        model.removeTab(tab.id)
+        guard let handle else { return }
+        operations.run(host: tab.host, .write) { [weak self] in
+            do { try await host.dismissRun(handle) } catch {
+                guard let self, self.gate.admit(.pendingDiscardNotice, ticket) else { return }
+                self.noticeHandler?(ticket.host, RemoteCopy.unrecorded(host.hostName, detail: error.localizedDescription))
+            }
+        }
+    }
+
+    /// Closing a pending Codex tab. Detach keeps it running (listed under
+    /// Sessions on <host>, where it can be opened again). A stop (an idle
+    /// close, or the prompt's Stop) checks its identity one last time while
+    /// its agent still runs, then stops it: identified, the tab closes as
+    /// any does; unidentified with something typed, the tab stays with the
+    /// question (Codex ended before Temple learned its id); with nothing
+    /// typed, there is nothing to keep and Temple stops tracking it.
+    private func closePending(_ tab: SessionTab, _ how: Close) {
+        guard let host = remoteHost(for: tab), let handle = tab.remote?.handle else {
+            model.removeTab(tab.id)
+            return
+        }
+        let hostID = tab.host, live = tab.hasLiveProcess, typed = tab.inputSubmitted
+        if let identity = tab.remote?.identityOperation { operations.cancel(id: identity) }
+        func detachClient() {
+            guard live, let surface = tab.surface else { return }
+            model.closingTabIDs.insert(tab.id)
+            surface.terminate()
+        }
+        let phase = tab.remote?.phase
+        if how == .detach {
+            detachClient()
+            model.removeTab(tab.id)
+            operations.run(host: hostID, .write) { try? await host.closePendingTab(handle) }
+            return
+        }
+        if case .stopFailed? = phase {
+            model.removeTab(tab.id)
+            operations.run(host: hostID, .write) { try? await host.closePendingTab(handle) }
+            return
+        }
+        guard tab.remote?.mayBeRunning == true else {
+            // Nothing runs (it ended, never started, or failed at once):
+            // closing it is being done with it.
+            model.removeTab(tab.id)
+            operations.run(host: hostID, .write) { try? await host.dismissRun(handle) }
+            return
+        }
+        tab.remote?.phase = .stopping
+        let ticket = gate.ticket(for: tab)
+        let noticeTicket = gate.ticket(host: hostID)
+        let agent = tab.agent
+        detachClient()
+        operations.run(host: hostID, .stop, onCancel: { reason in
+            await host.leaveRunning(handle, reason: reason)
+        }) { [weak self] in
+            // The last chance to learn its id: its agent still runs.
+            let identity = await host.identify(handle)
+            var identified = false
+            if case .adopted(let id, let directory) = identity, let self {
+                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
+                identified = true
+            } else if case .known(let id, let directory) = identity, let self {
+                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
+                identified = true
+            }
+            guard let result = try? await host.stop(handle, fromAttachedTab: live) else { return }
+            // Durable: nothing typed and nothing learned, and it stopped:
+            // there is nothing to keep.
+            if result == .stopped, !identified, !typed { try? await host.dismissRun(handle) }
+            if case .leftRunning = result { try? await host.closePendingTab(handle) }
+            guard let self else { return }
+            guard self.gate.admit(.pendingStopOutcome, ticket), let tab = ticket.tab else {
+                if self.gate.admit(.closeStopNotice, noticeTicket) { self.notice(result, host: host, hostID: hostID, agent: agent) }
+                return
+            }
+            switch result {
+            case .stopped:
+                if !self.isPending(tab) || !typed {
+                    self.model.removeTab(tab.id)
+                } else {
+                    tab.remote?.phase = .endedPending
+                    self.loadSuggestions(tab, host: host, handle: handle)
+                }
+            case .leftRunning:
+                self.model.removeTab(tab.id)
+                self.notice(result, host: host, hostID: hostID, agent: agent)
+            case .unrecorded(let detail):
+                tab.remote?.phase = .stopFailed(RemoteCopy.unrecorded(host.hostName, detail: detail))
+            }
+        }
+    }
+
+    /// At launch: the pending Codex runs of each host come back as chips
+    /// (inert until activated, which attaches; an ended one asks).
+    public func restorePending(hosts: [HostID]) {
+        for hostID in hosts {
+            guard let host = model.launcherForHost(hostID) as? RemoteSessionHost else { continue }
+            let ticket = gate.ticket(host: hostID)
+            operations.run(host: hostID, .query) { [weak self] in
+                let runs = await host.pendingRuns()
+                guard let self, !runs.isEmpty, self.gate.admit(.pendingRestore, ticket) else { return }
+                for run in runs where !self.model.tabs.contains(where: { $0.host == hostID && $0.remote?.handle == run.handle }) {
+                    self.model.appendPendingChip(host: hostID, handle: run.handle, directory: run.directory, ended: run.ended)
+                }
+            }
+        }
+    }
+
+    /// At launch: a claim whose core join never happened (a quit or crash
+    /// between the two writes) is joined again; core's refusal releases it.
+    /// Durable work, outside the gate (see `RemoteCompletion`).
+    public func reconcileClaims(hosts: [HostID]) {
+        for hostID in hosts {
+            guard let host = model.launcherForHost(hostID) as? RemoteSessionHost else { continue }
+            operations.run(host: hostID, .query) { [weak self] in
+                let claims = await host.unjoinedClaims()
+                for claim in claims {
+                    guard let self, !self.isQuitting, !Task.isCancelled else { return }
+                    let open = SessionOpen(id: claim.sessionID, host: hostID, via: .created, agent: .codex, locator: nil)
+                    if self.model.openedHandler?(open).conflict != nil {
+                        try? await host.releaseClaim(claim.handle, sessionID: claim.sessionID)
+                        continue
+                    }
+                    if let directory = claim.directory { self.model.launchDirectoryHandler?(claim.sessionID, hostID, directory) }
+                    try? await host.markJoined(claim.handle)
+                }
+            }
+        }
+    }
+
+    /// "Open" on a pending Codex session in Sessions on <host>: its tab, or
+    /// a chip for it, activated (which attaches).
+    public func openPendingRun(handle: String, host hostID: HostID, directory: String) {
+        if let tab = model.tabs.first(where: { $0.host == hostID && $0.remote?.handle == handle }) {
+            model.activate(tab)
+            return
+        }
+        let tab = model.appendPendingChip(host: hostID, handle: handle, directory: directory, ended: false)
+        model.activate(tab)
     }
 }

@@ -39,7 +39,8 @@ extension HostRegistry.Entry {
 /// A host's launcher: every open, exit, close and stop of a session there,
 /// through the host's `RemoteSessions`. `availability` is the last test's
 /// proof (`.unavailable` only when a test connected and a CLI or tmux did
-/// not run); new Codex sessions wait for phase 1b.
+/// not run). A new Codex session starts pending and is identified by its
+/// process tree or by the user's yes (phase 1b).
 @MainActor
 final class RemoteHostLauncher: RemoteSessionHost {
     let sessions: RemoteSessions
@@ -58,10 +59,7 @@ final class RemoteHostLauncher: RemoteSessionHost {
     var host: HostID { sessions.host }
     var hostName: String { sessions.record.name }
 
-    func availability(_ agent: Agent) -> LaunchAvailability {
-        if agent == .codex { return .unavailable(reason: RemoteCopy.newCodexWaits(hostName)) }
-        return check(agent)
-    }
+    func availability(_ agent: Agent) -> LaunchAvailability { check(agent) }
 
     /// Remote tabs open asynchronously (`open`); this synchronous path is
     /// never taken for them.
@@ -193,7 +191,8 @@ final class RemoteHostLauncher: RemoteSessionHost {
                                         state: state,
                                         leftRunning: tracked.run.isLeftRunning
                                             ? tracked.run.leftRunningReason.flatMap { RemoteLeftRunningReason(rawValue: $0.rawValue) }
-                                            : nil)
+                                            : nil,
+                                        directory: tracked.run.directory ?? tracked.run.directoryIntent)
         }, answer.reachedHost)
     }
 
@@ -217,6 +216,92 @@ final class RemoteHostLauncher: RemoteSessionHost {
     }
 
     func retire() { sessions.retire() }
+
+    // MARK: Codex identity
+
+    func openPending(handle: String?, directory: String) async throws -> RemotePendingOpenResult {
+        let outcome = try await sessions.openPending(handle: handle, directory: directory, extraArguments: extraArgs(.codex))
+        await refreshLiveSessions()
+        switch outcome {
+        case .ended: return .ended
+        case .identified(_, let id): return .identified(id)
+        case .plan(let plan):
+            return .plan(RemoteOpenPlan(handle: plan.handle, attachment: plan.attachment, creating: plan.creating,
+                                        command: TerminalCommand(argv: plan.argv, cwd: NSHomeDirectory()),
+                                        displayArgv: plan.agentArgv, evidenceDirectory: plan.evidenceDirectory,
+                                        stage: plan.staged ? nil : plan.stage))
+        }
+    }
+
+    func identify(_ handle: String) async -> RemoteIdentity {
+        await identity(await sessions.identify(handle), handle: handle)
+    }
+
+    private func identity(_ answer: RemoteSessions.Identity, handle: String) async -> RemoteIdentity {
+        switch answer {
+        case .adopted(let id):
+            await refreshLiveSessions()
+            return .adopted(id, directory: await sessions.run(handle)?.directory)
+        case .known(let id):
+            return .known(id, directory: await sessions.run(handle)?.directory)
+        case .taken:
+            return .taken
+        case .storage(let detail):
+            return .storage(detail)
+        case .inconclusive(let why):
+            switch why {
+            case .retry(let reason): return .inconclusive(reason, lasting: false, ended: false)
+            case .lasting(let reason): return .inconclusive(reason, lasting: true, ended: false)
+            case .ended(let reason): return .inconclusive(reason, lasting: false, ended: true)
+            }
+        }
+    }
+
+    func suggestions(_ handle: String) async -> RemoteSuggestions {
+        switch await sessions.suggestions(handle) {
+        case .unavailable(let reason): .unavailable(reason)
+        case .candidates(let found):
+            .candidates(found.map {
+                RemoteSuggestion(rolloutPath: $0.rolloutPath, sessionID: $0.sessionID, firstPrompt: $0.firstPrompt,
+                                 startedAt: $0.startedAt, directory: $0.directory)
+            })
+        }
+    }
+
+    func confirm(_ handle: String, suggestion: RemoteSuggestion) async -> RemoteIdentity {
+        let candidate = CodexSuggestion(rolloutPath: suggestion.rolloutPath, sessionID: suggestion.sessionID,
+                                        firstPrompt: suggestion.firstPrompt, startedAt: suggestion.startedAt,
+                                        directory: suggestion.directory)
+        return await identity(await sessions.confirm(handle, suggestion: candidate), handle: handle)
+    }
+
+    func decline(_ handle: String, rolloutPath: String) async throws {
+        try await sessions.decline(handle, rolloutPath: rolloutPath)
+    }
+
+    func releaseClaim(_ handle: String, sessionID: String) async throws {
+        try await sessions.releaseClaim(handle, sessionID: sessionID)
+        await refreshLiveSessions()
+    }
+
+    func markJoined(_ handle: String) async throws { try await sessions.markJoined(handle) }
+
+    func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)] {
+        await sessions.unjoinedClaims().compactMap { run in run.sessionID.map { (run.handle, $0, run.directory) } }
+    }
+
+    func pendingRuns() async -> [RemotePendingRun] {
+        await sessions.pendingRuns().map {
+            RemotePendingRun(handle: $0.handle, directory: $0.directory ?? $0.directoryIntent, ended: $0.isEnded)
+        }
+    }
+
+    func closePendingTab(_ handle: String) async throws { try await sessions.closePendingTab(handle) }
+
+    func dismissRun(_ handle: String) async throws {
+        try await sessions.dismissRun(handle)
+        await refreshLiveSessions()
+    }
 }
 
 /// Remote project masks and order in `remote-state.sqlite`.

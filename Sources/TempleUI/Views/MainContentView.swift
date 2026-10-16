@@ -59,7 +59,9 @@ private struct SessionTerminalView: View {
     @ObservedObject var tab: SessionTab
     @Environment(\.undoManager) private var undoManager
 
-    @State private var confirmingResumeAnyway = false
+    /// Resume anyway, or Start a new session for a pending Codex session:
+    /// asked in a sheet that names the command to stop the original.
+    @State private var confirmation: RemoteConfirmation?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -71,6 +73,13 @@ private struct SessionTerminalView: View {
                         Button("Cancel") { model.openSessions.remoteTabs.cancelConnect(tab) }
                     }
                 } else if let header = RemoteHeader.make(remote.phase) { remoteHeader(header) }
+                // A new Codex session Temple has not identified yet asks,
+                // while it runs, whether one of its candidates is it.
+                if remote.phase == .connected, tab.sessionID == nil,
+                   !remote.suggestions.isEmpty || remote.identityNote != nil {
+                    question(remote).background(Palette.surfaceFill)
+                        .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairline).frame(height: 1) }
+                }
             } else if case .exited(let status) = tab.activity {
                 launchFailure(status: status)
             }
@@ -90,13 +99,55 @@ private struct SessionTerminalView: View {
                 }
             }
         }
-        .alert("Resume anyway?", isPresented: $confirmingResumeAnyway) {
-            Button("Cancel", role: .cancel) {}
-            Button("Resume anyway") { model.openSessions.remoteTabs.resumeAnyway(tab) }
-                .keyboardShortcut(.defaultAction)
-        } message: {
-            Text(model.openSessions.remoteTabs.resumeAnywayMessage(tab) ?? "")
+        .sheet(item: $confirmation) { confirmation in
+            RemoteConfirmationSheet(confirmation: confirmation, host: tab.host.rawValue,
+                                    stopCommand: model.openSessions.remoteTabs.stopCommand(tab)) {
+                switch confirmation {
+                case .resumeAnyway: model.openSessions.remoteTabs.resumeAnyway(tab)
+                case .startNewPending: model.openSessions.remoteTabs.startNewPending(tab)
+                }
+            }
         }
+    }
+
+    /// The candidates for a pending Codex session, each a question (never
+    /// a fact), and why Temple couldn't tell when it couldn't.
+    private func question(_ remote: RemoteTabState) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(remote.suggestions) { suggestion in
+                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                    Image(systemName: "questionmark.circle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Text(RemoteCopy.suggestionQuestion(suggestion))
+                        .font(.system(size: 12))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if remote.confirming == suggestion.id {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        HStack(spacing: 12) {
+                            Button(RemoteCopy.suggestionYes) { model.openSessions.remoteTabs.confirm(suggestion, in: tab) }
+                                .disabled(remote.confirming != nil)
+                            Button(RemoteCopy.suggestionNo) { model.openSessions.remoteTabs.decline(suggestion, in: tab) }
+                                .disabled(remote.confirming != nil)
+                        }
+                        .buttonStyle(.link)
+                        .font(.system(size: 12))
+                    }
+                }
+            }
+            if let note = remote.identityNote {
+                Text(note)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 20)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// What a remote tab's header says, by phase; nil for none.
@@ -107,6 +158,7 @@ private struct SessionTerminalView: View {
         case failure
         case exitedEarly
         case decision(checked: Bool)
+        case endedPending
 
         static func make(_ phase: RemoteTabState.Phase) -> RemoteHeader? {
             switch phase {
@@ -117,6 +169,7 @@ private struct SessionTerminalView: View {
             case .failedToStart: .failure
             case .exitedEarly: .exitedEarly
             case .needsDecision(let checked): .decision(checked: checked)
+            case .endedPending: .endedPending
             }
         }
     }
@@ -138,6 +191,21 @@ private struct SessionTerminalView: View {
                     }
                     Button("Start a new session") { model.openSessions.remoteTabs.startNewSession(tab) }
                     Button("Discard") { model.openSessions.remoteTabs.discard(tab) }
+                        .help(RemoteCopy.discardHelp(archives: tab.sessionID.map(model.discardArchives) ?? false))
+                }
+            }
+        case .endedPending:
+            VStack(spacing: 0) {
+                notice(symbol: "questionmark.circle", text: RemoteCopy.codexEndedPending(host)) {
+                    HStack(spacing: 12) {
+                        Button("Start a new session") { model.openSessions.remoteTabs.startNewPending(tab) }
+                        Button("Discard") { model.openSessions.remoteTabs.discardPending(tab) }
+                            .help(RemoteCopy.discardPendingHelp(host))
+                    }
+                }
+                if let remote = tab.remote, !remote.suggestions.isEmpty || remote.identityNote != nil {
+                    question(remote).background(Palette.surfaceFill)
+                        .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairline).frame(height: 1) }
                 }
             }
         case .disconnected:
@@ -150,7 +218,9 @@ private struct SessionTerminalView: View {
                     HStack(spacing: 12) {
                         Button("Reconnect") { model.openSessions.remoteTabs.reconnect(tab) }
                         if tab.sessionID != nil {
-                            Button("Resume anyway") { confirmingResumeAnyway = true }
+                            Button("Resume anyway") { confirmation = .resumeAnyway }
+                        } else if tab.agent == .codex {
+                            Button("Start a new session") { confirmation = .startNewPending }
                         }
                     }
                 }
@@ -354,5 +424,65 @@ private struct SessionTerminalView: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(Palette.hairline).frame(height: 1)
         }
+    }
+}
+
+/// The two ways out of a session Temple can't reach that start another
+/// agent while the original may still run.
+enum RemoteConfirmation: String, Identifiable {
+    case resumeAnyway, startNewPending
+    var id: String { rawValue }
+}
+
+/// Resume anyway, or Start a new session: a short question, why, and the
+/// command that stops the original on the host, apart and selectable.
+private struct RemoteConfirmationSheet: View {
+    let confirmation: RemoteConfirmation
+    let host: String
+    let stopCommand: String?
+    let action: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private var title: String {
+        confirmation == .resumeAnyway ? RemoteCopy.resumeAnywayTitle : RemoteCopy.startNewPendingTitle
+    }
+
+    private var message: String {
+        confirmation == .resumeAnyway ? RemoteCopy.resumeAnyway(host) : RemoteCopy.startNewPending(host)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title).font(.system(size: 15, weight: .semibold))
+            Text(message)
+                .font(.system(size: 12))
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let stopCommand {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(RemoteCopy.stopHint(host))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Text(stopCommand)
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Palette.surfaceFill, in: RoundedRectangle(cornerRadius: 5))
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(confirmation == .resumeAnyway ? "Resume anyway" : "Start a new session") {
+                    dismiss()
+                    action()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
     }
 }

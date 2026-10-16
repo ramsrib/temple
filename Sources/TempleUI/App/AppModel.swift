@@ -969,6 +969,10 @@ public final class AppModel: ObservableObject {
         openSessions.restore()
         retireIndexCacheOnce()
         contactHostsWithSessionsLeftRunning()
+        // Pending Codex sessions on hosts come back as chips from their runs;
+        // a claim whose core join never happened is joined (phase 1b).
+        openSessions.remoteTabs.restorePending(hosts: remoteHostIDs)
+        openSessions.remoteTabs.reconcileClaims(hosts: remoteHostIDs)
         engineSet.start { [weak self] snapshot in
             // Every snapshot lands here; republishing an unchanged flag
             // re-renders everything that observes the model.

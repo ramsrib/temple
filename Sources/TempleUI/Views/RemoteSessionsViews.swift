@@ -100,6 +100,15 @@ struct RemoteSessionsSheet: View {
                 } else if sheet.kept.contains(session.handle) {
                     Text("Kept").font(.system(size: 12)).foregroundStyle(.secondary)
                 } else {
+                    // A new Codex session Temple has not identified: no row
+                    // to open it from, so it opens here (it attaches).
+                    if session.sessionID == nil, session.agent == .codex, let directory = session.directory {
+                        Button("Open") {
+                            model.openSessions.remoteTabs.openPendingRun(handle: session.handle, host: sheet.request.host,
+                                                                         directory: directory)
+                            dismiss()
+                        }
+                    }
                     Button("Stop") { sheet.stop(session) }
                     Button("Keep") { sheet.keep(session) }
                 }

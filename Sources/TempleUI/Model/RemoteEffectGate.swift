@@ -25,6 +25,11 @@ import TempleCore
 ///   memory-only summary (`RemoteHostsModel.recordSummary`, which drops a
 ///   test that is no longer the host's current one).
 /// - **The local launch result channel** is this Mac's, not a host's.
+/// - **The core join of a claimed Codex id** (phase 1b), at adoption and in
+///   the launch's reconciliation, is durable work, like the claim it
+///   follows: it happens whatever the tab is doing, and only the quit
+///   defers it (to the next launch's reconciliation, which finds the claim
+///   unjoined). What the tab shows of it is `.identityResult`.
 ///
 /// The settle timer is not exempt: for a tab on a host it is `.settle`.
 public enum RemoteCompletion: String, CaseIterable, Sendable {
@@ -69,6 +74,26 @@ public enum RemoteCompletion: String, CaseIterable, Sendable {
     case sheetStopOutcome
     /// The folder sheet received its check (and may start a session).
     case folderCheckResult
+    // Codex identity (phase 1b)
+    /// A new or pending Codex open's answer: spawn, the ended question, or
+    /// the session it turned out to be.
+    case pendingOpenResult
+    /// An identity check's (or a yes's) outcome reached the tab: it becomes
+    /// the session, or says why it couldn't.
+    case identityResult
+    /// The suggestions to ask about reached the tab.
+    case suggestionsLoaded
+    /// The user's yes could not be claimed: the tab says why.
+    case confirmResult
+    /// Closing a pending Codex tab: the stop's outcome, and the question
+    /// when Codex ended unidentified.
+    case pendingStopOutcome
+    /// The launch's pending Codex chips, restored from the runs.
+    case pendingRestore
+    /// Discard of a pending Codex session could not be written: one notice.
+    case pendingDiscardNotice
+    /// A decline, or a claim's storage, could not be written: one notice.
+    case identityNotice
 }
 
 /// The right to apply one completion's effect, taken before its await:

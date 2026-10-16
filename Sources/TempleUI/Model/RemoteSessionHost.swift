@@ -97,6 +97,63 @@ public enum RemoteStopResult: Equatable {
     case unrecorded(detail: String)
 }
 
+/// What opening (or starting) a new Codex session on a host decided: its
+/// id is Codex's to mint, so the run starts pending (phase 1b).
+public enum RemotePendingOpenResult: Equatable {
+    case plan(RemoteOpenPlan)
+    /// The run ended before Temple learned its id.
+    case ended
+    /// The run has an id now (another Temple learned it): that session.
+    case identified(String)
+}
+
+/// One identity check (or a confirmed suggestion), as the app needs it.
+public enum RemoteIdentity: Equatable {
+    /// Claimed for the run (verified by its process tree, or the user's
+    /// yes): the id, and the folder its pane ran in.
+    case adopted(String, directory: String?)
+    /// The run already has this id.
+    case known(String, directory: String?)
+    /// Another session started from Temple on this host holds that id.
+    case taken
+    /// Nothing proven. `lasting`: it never will be for this run (no
+    /// `/proc`, a shared Codex server writes the transcript); `ended`: its
+    /// process is gone. Either way the suggestions take over.
+    case inconclusive(String, lasting: Bool, ended: Bool)
+    /// The claim could not be written: nothing adopted.
+    case storage(String)
+}
+
+/// A rollout that may be a pending run's session, offered as a question.
+public struct RemoteSuggestion: Equatable, Identifiable {
+    public var id: String { rolloutPath }
+    public let rolloutPath: String
+    public let sessionID: String
+    public let firstPrompt: String?
+    public let startedAt: Date
+    public let directory: String
+    public init(rolloutPath: String, sessionID: String, firstPrompt: String?, startedAt: Date, directory: String) {
+        self.rolloutPath = rolloutPath; self.sessionID = sessionID; self.firstPrompt = firstPrompt
+        self.startedAt = startedAt; self.directory = directory
+    }
+}
+
+public enum RemoteSuggestions: Equatable {
+    case candidates([RemoteSuggestion])
+    case unavailable(String)
+}
+
+/// A pending Codex run restored as a chip at launch.
+public struct RemotePendingRun: Equatable {
+    public let handle: String
+    /// Its folder: the pane's, or the one asked for.
+    public let directory: String
+    public let ended: Bool
+    public init(handle: String, directory: String, ended: Bool) {
+        self.handle = handle; self.directory = directory; self.ended = ended
+    }
+}
+
 /// A session Temple started on a host, as "Sessions on <host>" lists it.
 /// Only tracked runs are ever listed; nothing is discovered.
 public struct RemoteTrackedSession: Equatable, Identifiable {
@@ -111,9 +168,12 @@ public struct RemoteTrackedSession: Equatable, Identifiable {
     public let agent: Agent
     public let state: State
     public let leftRunning: RemoteLeftRunningReason?
-    public init(handle: String, sessionID: String?, agent: Agent, state: State, leftRunning: RemoteLeftRunningReason?) {
+    /// Its folder, for opening a pending Codex session from the sheet.
+    public let directory: String?
+    public init(handle: String, sessionID: String?, agent: Agent, state: State, leftRunning: RemoteLeftRunningReason?,
+                directory: String? = nil) {
         self.handle = handle; self.sessionID = sessionID; self.agent = agent; self.state = state
-        self.leftRunning = leftRunning
+        self.leftRunning = leftRunning; self.directory = directory
     }
 }
 
@@ -169,6 +229,30 @@ public protocol RemoteSessionHost: HostLauncher {
     func checkFolder(_ path: String) async -> RemoteFolderCheck
     /// The host was removed or edited: nothing queries it again.
     func retire()
+
+    // Codex identity (phase 1b)
+
+    /// A new Codex session (`handle` nil), written before anything spawns,
+    /// or a pending one reopened by its handle (attach-only while it runs).
+    func openPending(handle: String?, directory: String) async throws -> RemotePendingOpenResult
+    /// The automatic check; claims before it answers `.adopted`.
+    func identify(_ handle: String) async -> RemoteIdentity
+    /// The candidates to ask about; never adopts.
+    func suggestions(_ handle: String) async -> RemoteSuggestions
+    /// The user's yes: claimed under the same uniqueness as a verified id.
+    func confirm(_ handle: String, suggestion: RemoteSuggestion) async -> RemoteIdentity
+    /// "Not this one": never offered again for this run.
+    func decline(_ handle: String, rolloutPath: String) async throws
+    /// The core join refused the id: the run is pending again.
+    func releaseClaim(_ handle: String, sessionID: String) async throws
+    func markJoined(_ handle: String) async throws
+    /// Claims whose core join never happened, with their folders.
+    func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)]
+    func pendingRuns() async -> [RemotePendingRun]
+    /// A pending run's tab closed: no chip at the next launch.
+    func closePendingTab(_ handle: String) async throws
+    /// Discard of a pending run.
+    func dismissRun(_ handle: String) async throws
 }
 
 /// A remote tab's side of its run (memory only; the run row is durable).
@@ -197,6 +281,9 @@ public struct RemoteTabState: Equatable {
         /// host (`checked`), or Temple couldn't check: Start a new session or
         /// Discard (and Resume, unchecked); never a blind resume.
         case needsDecision(checked: Bool)
+        /// A new Codex session ended before Temple learned its id: the
+        /// suggestions (if any), Start a new session and Discard.
+        case endedPending
     }
     public var phase: Phase
     public var handle: String?
@@ -218,6 +305,15 @@ public struct RemoteTabState: Equatable {
     public var stillConnecting = false
     /// Identifies one open, so a late answer for an earlier one is dropped.
     var openToken = UUID()
+    /// A pending Codex run's candidates, asked about in the tab.
+    public var suggestions: [RemoteSuggestion] = []
+    /// A line under the question: why Temple couldn't tell, or core's
+    /// reason for refusing the id.
+    public var identityNote: String?
+    /// The suggestion whose yes is being written.
+    public var confirming: String?
+    /// The owned identity schedule of this open.
+    var identityOperation: UUID?
 
     public init(phase: Phase) { self.phase = phase }
 
@@ -225,7 +321,7 @@ public struct RemoteTabState: Equatable {
     var mayBeRunning: Bool {
         switch phase {
         case .connected, .checking, .disconnected, .unknown, .stopping, .stopFailed: handle != nil
-        case .opening, .failedToStart, .exitedEarly, .needsDecision: false
+        case .opening, .failedToStart, .exitedEarly, .needsDecision, .endedPending: false
         }
     }
 }
@@ -260,9 +356,23 @@ public enum RemoteCopy {
         "\(agent.displayName) is still working on \(host)."
     }
 
-    public static func resumeAnyway(_ host: String, stopCommand: String) -> String {
-        "Temple can't reach this session on \(host) and can't tell whether it is still running. Resume anyway? "
-            + "If the original is still running, it keeps running; you can stop it from \(host) with `\(stopCommand)`."
+    /// Resume anyway's confirmation (a sheet): a short title, why, and the
+    /// command that stops the original on the host, apart, to copy.
+    public static let resumeAnywayTitle = "Resume anyway?"
+
+    public static func resumeAnyway(_ host: String) -> String {
+        "Temple can't reach this session on \(host) and can't tell whether it is still running. "
+            + "If the original is still running, it keeps running."
+    }
+
+    /// The hint under either confirmation: how to stop the original there.
+    public static func stopHint(_ host: String) -> String { "To stop the original on \(host), run:" }
+
+    /// Start a new session for a new Codex session Temple can't reach.
+    public static let startNewPendingTitle = "Start a new session?"
+
+    public static func startNewPending(_ host: String) -> String {
+        "Temple can't tell whether Codex is still running on \(host). If the original is still running, it keeps running."
     }
 
     public static func notSetUp(_ host: String) -> String {
@@ -273,13 +383,12 @@ public enum RemoteCopy {
         "Temple couldn't stop \(agent.displayName) on \(host): \(trimmed(reason)). It may still be running; see Sessions on \(host)."
     }
 
-    /// The notice when a close left a session running.
+    /// The notice when a close left a session running: the sheet's line
+    /// for the same reason, and where to stop it.
     public static func leftRunning(_ host: String, agent: Agent, reason: RemoteLeftRunningReason, detail: String?) -> String {
         switch reason {
-        case .hostDidNotAnswer:
-            "Left running: \(host) didn't answer when you closed it. Stop it under Sessions on \(host)."
-        case .anotherClientAttached:
-            "Left running: another terminal is attached to it. Stop it under Sessions on \(host)."
+        case .hostDidNotAnswer, .anotherClientAttached:
+            leftRunningLine(host, reason: reason) + " Stop it under Sessions on \(host)."
         case .stopNotAcknowledged, .quitDeadline:
             couldNotStop(host, agent: agent, reason: detail ?? "the host didn't confirm the stop")
         }
@@ -313,7 +422,7 @@ public enum RemoteCopy {
         "Temple couldn't check these sessions: \(sentence(reason))"
     }
 
-    public static let noTrackedSessions = "No Temple sessions to show."
+    public static let noTrackedSessions = "No sessions started from Temple."
 
     public static func unrecorded(_ host: String, detail: String) -> String {
         "Temple couldn't save what happened to this session on \(host): \(sentence(detail))"
@@ -360,8 +469,47 @@ public enum RemoteCopy {
         return Array(lines.suffix(limit))
     }
 
-    public static func newCodexWaits(_ host: String) -> String {
-        "Temple can't start new Codex sessions on \(host) yet."
+    // Codex identity (phase 1b)
+
+    public static func codexEndedPending(_ host: String) -> String {
+        "Codex ended before Temple learned its session id. Its transcript is still on \(host)."
+    }
+
+    /// The question about one candidate: never a fact.
+    public static func suggestionQuestion(_ suggestion: RemoteSuggestion, now: Date = Date()) -> String {
+        let prompt = suggestion.firstPrompt.map { "\u{201C}\($0)\u{201D}" } ?? "(no prompt)"
+        let folder = URL(fileURLWithPath: suggestion.directory).lastPathComponent
+        return "Is this the session? \(prompt), started \(startTime(suggestion.startedAt, now: now)) in \(folder)."
+    }
+
+    static func startTime(_ date: Date, now: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        if Calendar.current.isDate(date, inSameDayAs: now) {
+            formatter.dateStyle = .none
+            formatter.timeStyle = .short
+            return "at " + formatter.string(from: date)
+        }
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return "on " + formatter.string(from: date)
+    }
+
+    public static let suggestionYes = "Yes, that's it"
+    public static let suggestionNo = "Not this one"
+
+    /// A run whose id another session started from Temple already holds.
+    public static let couldNotTell = "Temple couldn't tell which Codex session this is."
+
+    /// What Discard does, for its help tag.
+    public static func discardHelp(archives: Bool) -> String {
+        archives
+            ? "Archives this session, since you named, pinned or colored it. You can restore it from History."
+            : "Removes this session from Temple."
+    }
+
+    public static func discardPendingHelp(_ host: String) -> String {
+        "Temple stops tracking this session. Its transcript, if it has one, stays on \(host)."
     }
 
     public static func findNote(_ host: String) -> String {

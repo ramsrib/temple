@@ -315,8 +315,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         if let sid = spec.sessionID {
             _ = openedHandler?(SessionOpen(id: sid, host: project.host, via: .created, agent: spec.agent, locator: nil))
         }
-        if spec.isProvisional {
+        if spec.isProvisional, !(launcherForHost(project.host) is RemoteSessionHost) {
             // Codex: adopt the real id once its rollout file appears (ADR-008).
+            // On an ssh host the run is identified by `RemoteTabController`.
             reconciler.reconcile(host: tab.host, projectPath: projectPath, startedAt: Date()) { [weak self, weak tab] id, locator in
                 guard let self, let tab else { return }
                 self.adopt(sessionID: id, for: tab.id, locator: locator)
@@ -369,6 +370,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             lastActiveTabByProject[tab.projectKey] = tab.id
             touchProject(tab.projectKey)
             if openable { ensureSurface(for: tab) }
+            if tab.remote != nil, tab.hasLiveProcess { remoteTabs.activated(tab) }
             // Keep the persisted active-project ordering current even when the
             // switch happens by focusing an already-open tab (no open/close).
             if projectChanged { persist() }
@@ -1262,6 +1264,22 @@ extension OpenSessionsModel {
             touchProject(new)
         }
         persist()
+    }
+
+    /// A pending Codex session on a host, restored from its run (it has no
+    /// id, so no `open_tabs` row): an inert chip that attaches by its
+    /// handle when activated, or asks about an ended one.
+    @discardableResult
+    func appendPendingChip(host: HostID, handle: String, directory: String, ended: Bool) -> SessionTab {
+        let tab = SessionTab(kind: .session, sessionID: nil, agent: .codex, projectPath: directory,
+                             title: Agent.codex.newSessionTitle, isProvisional: true, host: host)
+        var state = RemoteTabState(phase: ended ? .endedPending : .disconnected)
+        state.handle = handle
+        tab.remote = state
+        tab.inputSubmitted = ended
+        if ended { tab.activity = .exited(status: 0) }
+        tabs.append(tab)
+        return tab
     }
 
     /// A tab the user closed, for ⌘⇧T.

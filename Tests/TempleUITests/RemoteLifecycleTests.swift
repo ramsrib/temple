@@ -54,7 +54,7 @@ final class FakeRemoteHost: RemoteSessionHost {
 
     init(_ name: String) { hostName = name }
 
-    func availability(_ agent: Agent) -> LaunchAvailability { agent == .codex ? .unavailable(reason: "1b") : .available }
+    func availability(_ agent: Agent) -> LaunchAvailability { .available }
     func prepare(_ spec: AgentLaunchSpec) throws -> AgentLaunch { throw HostLaunchError.preparation("async only") }
 
     func live(_ sessionID: String) -> Int? { runs.lastIndex { $0.sessionID == sessionID && !$0.ended && !$0.dismissed } }
@@ -125,16 +125,20 @@ final class FakeRemoteHost: RemoteSessionHost {
     func exitCheck(_ handle: String) async -> RemoteLiveness {
         if let exitGate { await exitGate() }
         if liveness == .absent, let index = runs.firstIndex(where: { $0.handle == handle }) { runs[index].ended = true }
+        if liveness == .absent, let index = pending.firstIndex(where: { $0.handle == handle }) { pending[index].ended = true }
         return liveness
     }
 
-    func attachment(of handle: String) async -> Int? { runs.first { $0.handle == handle }?.attachment }
+    func attachment(of handle: String) async -> Int? {
+        runs.first { $0.handle == handle }?.attachment ?? pending.first { $0.handle == handle }?.attachment
+    }
 
     func stop(_ handle: String, fromAttachedTab: Bool) async throws -> RemoteStopResult {
         stops.append((handle, fromAttachedTab))
         if let stopGate { await stopGate(handle) }
         // An answer that arrives after a cancellation is still an answer
         // (the real stop writes it); the caller's gate decides what shows.
+        if stopResult == .stopped, let index = pending.firstIndex(where: { $0.handle == handle }) { pending[index].ended = true }
         guard let index = runs.firstIndex(where: { $0.handle == handle }) else { return stopResult }
         switch stopResult {
         case .stopped: runs[index].ended = true
@@ -175,6 +179,129 @@ final class FakeRemoteHost: RemoteSessionHost {
         return folder
     }
     func retire() { retired = true }
+
+    // MARK: Codex identity
+
+    /// A pending Codex run as the fake keeps it.
+    struct Pending: Equatable {
+        var handle: String
+        var directory: String
+        var sessionID: String?
+        var attachment = 1
+        var ended = false
+        var dismissed = false
+        var tabClosed = false
+    }
+    var pending: [Pending] = []
+    private var pendingCounter = 0
+    var pendingOpenGate: (() async -> Void)?
+    private(set) var pendingOpens: [(handle: String?, directory: String)] = []
+    func openPending(handle: String?, directory: String) async throws -> RemotePendingOpenResult {
+        pendingOpens.append((handle, directory))
+        if let pendingOpenGate { await pendingOpenGate() }
+        if let openError { throw openError }
+        guard let handle else {
+            pendingCounter += 1
+            let run = Pending(handle: "p\(pendingCounter)", directory: directory)
+            pending.append(run)
+            return .plan(RemoteOpenPlan(handle: run.handle, attachment: 1, creating: true,
+                                        command: TerminalCommand(argv: ["ssh", "create", run.handle], cwd: "/Users/me"),
+                                        displayArgv: ["codex"]))
+        }
+        guard let index = pending.firstIndex(where: { $0.handle == handle && !$0.dismissed }) else {
+            throw HostLaunchError.preparation("Temple no longer tracks this session on \(hostName).")
+        }
+        if let id = pending[index].sessionID { return .identified(id) }
+        if pending[index].ended { return .ended }
+        pending[index].attachment += 1
+        pending[index].tabClosed = false
+        return .plan(RemoteOpenPlan(handle: handle, attachment: pending[index].attachment, creating: false,
+                                    command: TerminalCommand(argv: ["ssh", "attach", handle], cwd: "/Users/me"),
+                                    displayArgv: ["codex"], evidenceDirectory: "/home/u/evidence"))
+    }
+
+    /// What the next identity checks answer (then `identityResult`).
+    var identityAnswers: [RemoteIdentity] = []
+    var identityResult: RemoteIdentity = .inconclusive("no session file is open right now", lasting: false, ended: false)
+    var identityGate: (() async -> Void)?
+    private(set) var identifies: [String] = []
+    func identify(_ handle: String) async -> RemoteIdentity {
+        identifies.append(handle)
+        if let identityGate { await identityGate() }
+        let answer = identityAnswers.isEmpty ? identityResult : identityAnswers.removeFirst()
+        claim(answer, handle)
+        return answer
+    }
+
+    private func claim(_ answer: RemoteIdentity, _ handle: String) {
+        if case .adopted(let id, _) = answer, let index = pending.firstIndex(where: { $0.handle == handle }) {
+            pending[index].sessionID = id
+        }
+    }
+
+    var suggestionsResult: RemoteSuggestions = .candidates([])
+    var suggestionsGate: (() async -> Void)?
+    private(set) var suggestionLookups: [String] = []
+    func suggestions(_ handle: String) async -> RemoteSuggestions {
+        suggestionLookups.append(handle)
+        if let suggestionsGate { await suggestionsGate() }
+        return suggestionsResult
+    }
+
+    var confirmResult: RemoteIdentity?
+    var confirmGate: (() async -> Void)?
+    private(set) var confirms: [(handle: String, sessionID: String)] = []
+    func confirm(_ handle: String, suggestion: RemoteSuggestion) async -> RemoteIdentity {
+        confirms.append((handle, suggestion.sessionID))
+        if let confirmGate { await confirmGate() }
+        let answer = confirmResult ?? .adopted(suggestion.sessionID, directory: suggestion.directory)
+        claim(answer, handle)
+        return answer
+    }
+
+    var declineError: Error?
+    var declineGate: (() async -> Void)?
+    private(set) var declines: [(handle: String, path: String)] = []
+    func decline(_ handle: String, rolloutPath: String) async throws {
+        declines.append((handle, rolloutPath))
+        if let declineGate { await declineGate() }
+        if let declineError { throw declineError }
+    }
+
+    private(set) var released: [(handle: String, sessionID: String)] = []
+    func releaseClaim(_ handle: String, sessionID: String) async throws {
+        released.append((handle, sessionID))
+        if let index = pending.firstIndex(where: { $0.handle == handle }) { pending[index].sessionID = nil }
+    }
+
+    private(set) var joinedMarks: [String] = []
+    func markJoined(_ handle: String) async throws { joinedMarks.append(handle) }
+
+    var unjoined: [(handle: String, sessionID: String, directory: String?)] = []
+    func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)] { unjoined }
+
+    var pendingRunsGate: (() async -> Void)?
+    func pendingRuns() async -> [RemotePendingRun] {
+        if let pendingRunsGate { await pendingRunsGate() }
+        return pending.filter { $0.sessionID == nil && !$0.dismissed && !$0.tabClosed }
+            .map { RemotePendingRun(handle: $0.handle, directory: $0.directory, ended: $0.ended) }
+    }
+
+    private(set) var closedPending: [String] = []
+    func closePendingTab(_ handle: String) async throws {
+        closedPending.append(handle)
+        if let index = pending.firstIndex(where: { $0.handle == handle }) { pending[index].tabClosed = true }
+    }
+
+    var dismissRunError: Error?
+    var dismissRunGate: (() async -> Void)?
+    private(set) var dismissedRuns: [String] = []
+    func dismissRun(_ handle: String) async throws {
+        dismissedRuns.append(handle)
+        if let dismissRunGate { await dismissRunGate() }
+        if let dismissRunError { throw dismissRunError }
+        if let index = pending.firstIndex(where: { $0.handle == handle }) { pending[index].dismissed = true }
+    }
 }
 
 @MainActor
@@ -312,10 +439,12 @@ final class RemoteLifecycleTests: XCTestCase {
         remote.liveness = .unknown(reason: "no server running on /tmp/tmux-1000/temple")
         factory.created.last?.simulateExit(status: 0)
         await settle(tab.remote?.phase == .unknown(reason: "no server running on /tmp/tmux-1000/temple"))
-        XCTAssertEqual(model.remoteTabs.resumeAnywayMessage(tab),
-                       "Temple can't reach this session on box and can't tell whether it is still running. Resume anyway? "
-                       + "If the original is still running, it keeps running; you can stop it from box with "
-                       + "`tmux -L temple kill-session -t temple-h1`.")
+        // The confirmation is short; the command that stops the original
+        // stands apart in its sheet.
+        XCTAssertEqual(RemoteCopy.resumeAnyway("box"),
+                       "Temple can't reach this session on box and can't tell whether it is still running. "
+                       + "If the original is still running, it keeps running.")
+        XCTAssertEqual(model.remoteTabs.stopCommand(tab), "tmux -L temple kill-session -t temple-h1")
         // Opening again is attach-only.
         model.remoteTabs.reconnect(tab)
         await settle(tab.hasLiveProcess)
@@ -787,10 +916,7 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertEqual(factory.created.last?.startedCommand?.argv.prefix(2), ["ssh", "create"])
     }
 
-    func testNewCodexSessionsOnAHostWaitButAnIDResumes() async throws {
-        let tab = model.newSession(agent: .codex, project: Fixture.key("/p", host: hostID))
-        XCTAssertEqual(tab.launchPreparationError, "Temple can't start new Codex sessions on box yet.")
-        XCTAssertTrue(factory.created.isEmpty)
+    func testACodexRowWithAnIDResumes() async throws {
         let row = Fixture.row("c1", agent: .codex, project: "/p", host: hostID)
         rows["c1"] = row
         model.openSession(row)
