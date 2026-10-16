@@ -191,6 +191,8 @@ final class FakeRemoteHost: RemoteSessionHost {
         var ended = false
         var dismissed = false
         var tabClosed = false
+        var typed = false
+        var claimed = false
     }
     var pending: [Pending] = []
     private var pendingCounter = 0
@@ -211,7 +213,7 @@ final class FakeRemoteHost: RemoteSessionHost {
         guard let index = pending.firstIndex(where: { $0.handle == handle && !$0.dismissed }) else {
             throw HostLaunchError.preparation("Temple no longer tracks this session on \(hostName).")
         }
-        if let id = pending[index].sessionID { return .identified(id) }
+        if let id = pending[index].sessionID { return .identified(id, directory: pending[index].directory) }
         if pending[index].ended { return .ended }
         pending[index].attachment += 1
         pending[index].tabClosed = false
@@ -236,7 +238,14 @@ final class FakeRemoteHost: RemoteSessionHost {
     private func claim(_ answer: RemoteIdentity, _ handle: String) {
         if case .adopted(let id, _) = answer, let index = pending.firstIndex(where: { $0.handle == handle }) {
             pending[index].sessionID = id
+            pending[index].claimed = true
         }
+    }
+
+    private(set) var inputs: [String] = []
+    func recordInput(_ handle: String) async throws {
+        inputs.append(handle)
+        if let index = pending.firstIndex(where: { $0.handle == handle }) { pending[index].typed = true }
     }
 
     var suggestionsResult: RemoteSuggestions = .candidates([])
@@ -283,13 +292,16 @@ final class FakeRemoteHost: RemoteSessionHost {
     var pendingRunsGate: (() async -> Void)?
     func pendingRuns() async -> [RemotePendingRun] {
         if let pendingRunsGate { await pendingRunsGate() }
-        return pending.filter { $0.sessionID == nil && !$0.dismissed && !$0.tabClosed }
-            .map { RemotePendingRun(handle: $0.handle, directory: $0.directory, ended: $0.ended) }
+        return pending.filter { ($0.sessionID == nil || $0.claimed) && !$0.dismissed && !$0.tabClosed }
+            .map { RemotePendingRun(handle: $0.handle, directory: $0.directory, ended: $0.ended,
+                                    sessionID: $0.claimed ? $0.sessionID : nil, typed: $0.typed) }
     }
 
     private(set) var closedPending: [String] = []
+    var closePendingError: Error?
     func closePendingTab(_ handle: String) async throws {
         closedPending.append(handle)
+        if let closePendingError { throw closePendingError }
         if let index = pending.firstIndex(where: { $0.handle == handle }) { pending[index].tabClosed = true }
     }
 

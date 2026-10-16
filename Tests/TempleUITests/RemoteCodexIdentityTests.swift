@@ -237,16 +237,151 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertNil(reopened.sessionID)
     }
 
-    /// A quit never stops a pending run (it could not be resumed without its
-    /// id): idle or working, its client is detached.
-    func testAQuitDetachesAPendingCodexAndNeverStopsIt() async throws {
-        let tab = await newCodex()
-        tab.activity = .idle
+    /// A quit treats a pending run as any (round 1): a working agent is
+    /// detached, an idle one stopped. Stopped, one that was typed into keeps
+    /// its ended run for the next launch's question; one never typed into
+    /// is no longer tracked.
+    func testAQuitDetachesWorkingAndStopsIdlePendingRuns() async throws {
+        let working = await newCodex()
+        let typed = await newCodex()
+        let untouched = await newCodex()
+        working.activity = .running
+        model.surfaceDidSubmitInput(try XCTUnwrap(typed.surface))
+        typed.activity = .idle
+        untouched.activity = .idle
         model.prepareForQuit()
         let plan = model.quitDrainPlan()
-        XCTAssertEqual(plan.detach.count, 1)
+        XCTAssertEqual(plan.detach.count, 1, "the working one is detached")
+        await settle(Set(self.remote.stops.map(\.handle)) == ["p2", "p3"], "the idle ones are stopped")
+        await settle(self.remote.dismissedRuns == ["p3"], "only the one never typed into is let go")
+        XCTAssertEqual(remote.inputs, ["p2"])
+    }
+
+    /// A stop at the quit that fails leaves it running, as any, and is never
+    /// tried again.
+    func testAFailedQuitStopIsNotRetried() async throws {
+        let tab = await newCodex()
+        tab.activity = .idle
+        remote.stopResult = .leftRunning(.hostDidNotAnswer, detail: nil)
+        model.prepareForQuit()
+        _ = model.quitDrainPlan()
+        await settle(self.remote.stops.count == 1)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(remote.stops.count, 1)
+        XCTAssertTrue(remote.dismissedRuns.isEmpty)
+    }
+
+    // MARK: Round 1 fixes
+
+    /// Input is kept with the run, once; a restored chip of a run typed into
+    /// knows it (its question still comes, and a close keeps it).
+    func testInputEvidenceSurvivesARelaunch() async throws {
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(self.remote.inputs == ["p1"])
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(remote.inputs, ["p1"], "kept once")
+        // A relaunch: the chip of that run knows it was typed into.
+        makeModel()
+        model.remoteTabs.restorePending(hosts: [hostID])
+        await settle(self.model.tabs.count == 1)
+        let restored = try XCTUnwrap(model.tabs.first)
+        XCTAssertTrue(restored.inputSubmitted)
+        remote.identityResult = .inconclusive("no session file is open right now", lasting: false, ended: false)
+        remote.suggestionsResult = .candidates([suggestion()])
+        model.activate(restored)
+        await settle(restored.hasLiveProcess)
+        await settle(restored.remote?.suggestions.count == 1, "typed before the relaunch: asked")
+    }
+
+    /// Confirming an ended session records who it was and nothing else: an
+    /// inert tab of that session; Resume (the user's) resumes it.
+    func testAYesForAnEndedSessionNeverResumesByItself() async throws {
+        remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
+        remote.suggestionsResult = .candidates([suggestion("c7")])
+        model.remoteTabs.restorePending(hosts: [hostID])
+        await settle(self.model.tabs.count == 1)
+        let tab = try XCTUnwrap(model.tabs.first)
+        model.activate(tab)
+        await settle(tab.remote?.suggestions.count == 1)
+        let created = factory.created.count
+        model.remoteTabs.confirm(try XCTUnwrap(tab.remote?.suggestions.first), in: tab)
+        await settle(tab.sessionID == "c7")
+        XCTAssertEqual(tab.remote?.phase, .endedIdentified)
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertTrue(remote.stops.isEmpty)
+        XCTAssertEqual(factory.created.count, created, "nothing started")
+        XCTAssertTrue(remote.opens.isEmpty)
+        model.remoteTabs.reconnect(tab)
+        await settle(tab.hasLiveProcess)
+        XCTAssertEqual(remote.opens.last?.sessionID, "c7")
+        XCTAssertEqual(remote.opens.last?.resume, true)
+    }
+
+    /// A pending run another Temple identified meanwhile opens as that
+    /// session (joined, then attached), never stuck opening.
+    func testAPendingRunIdentifiedElsewhereOpensAsThatSession() async throws {
+        remote.pending = [.init(handle: "p7", directory: "/home/u/project", sessionID: "c3")]
+        model.remoteTabs.openPendingRun(handle: "p7", host: hostID, directory: "/home/u/project")
+        let tab = try XCTUnwrap(model.activeTab)
+        await settle(tab.hasLiveProcess, "opened as the session")
+        XCTAssertEqual(tab.sessionID, "c3")
+        XCTAssertEqual(joins.first?.id, "c3")
+        XCTAssertEqual(joins.first?.via, .created, "joined as the claim it is, then opened")
+        XCTAssertEqual(remote.opens.last?.sessionID, "c3")
+    }
+
+    /// A core join that fails is not a join: the claim stays unjoined, the
+    /// tab stays pending and says so, and the next check joins it.
+    func testAFailedCoreJoinIsNotAJoin() async throws {
+        joinAnswer = .failed(CocoaError(.fileWriteUnknown))
+        remote.identityResult = .adopted("c9", directory: "/home/u/project")
+        let tab = await newCodex()
+        await settle(tab.remote?.identityNote != nil)
+        XCTAssertNil(tab.sessionID)
+        XCTAssertTrue(remote.joinedMarks.isEmpty)
+        XCTAssertTrue(remote.released.isEmpty, "not a refusal: the claim stands")
+        joinAnswer = .joined
+        remote.identityResult = .known("c9", directory: "/home/u/project")
+        await settle(tab.sessionID == "c9")
+        await settle(self.remote.joinedMarks == ["p1"])
+        // Reconciliation: a failed join leaves the claim for the next launch.
+        remote.unjoined = [("p5", "c5", nil)]
+        joinAnswer = .failed(CocoaError(.fileWriteUnknown))
+        model.remoteTabs.reconcileClaims(hosts: [hostID])
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(remote.joinedMarks, ["p1"])
+        XCTAssertFalse(remote.released.contains { $0.sessionID == "c5" })
+    }
+
+    /// A tab that becomes its session hands its run over to open_tabs; a
+    /// claim that landed after the quit froze the tab set comes back as
+    /// that session's chip and is handed over then.
+    func testAClaimedRunIsHandedOverOrRestored() async throws {
+        remote.identityResult = .adopted("c9", directory: "/home/u/project")
+        let tab = await newCodex()
+        await settle(tab.sessionID == "c9")
+        await settle(self.remote.closedPending == ["p1"], "handed over")
+        makeModel()
+        remote.pending = [.init(handle: "p5", directory: "/home/u/late", sessionID: "c5", claimed: true)]
+        model.remoteTabs.restorePending(hosts: [hostID])
+        await settle(self.model.tabs.contains { $0.sessionID == "c5" })
+        let chip = try XCTUnwrap(model.tabs.first { $0.sessionID == "c5" })
+        XCTAssertTrue(chip.isResume)
+        XCTAssertEqual(chip.projectKey, Fixture.key("/home/u/late", host: hostID))
+        XCTAssertTrue(persistence.load().contains { $0.sessionID == "c5" })
+        await settle(self.remote.closedPending.contains("p5"))
+    }
+
+    /// A pending run's own write that fails is said once, never swallowed.
+    func testAFailedPendingWriteIsSaid() async throws {
+        remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true)]
+        model.remoteTabs.restorePending(hosts: [hostID])
+        await settle(self.model.tabs.count == 1)
+        remote.dismissRunError = CocoaError(.fileWriteUnknown)
+        model.closeTab(try XCTUnwrap(model.tabs.first).id)
+        await settle(self.notices.count == 1)
+        XCTAssertTrue(notices.first?.hasPrefix("Temple couldn't save what happened") == true)
     }
 
     // MARK: Restore, Start a new session, Discard, reconciliation
@@ -324,7 +459,8 @@ final class RemoteCodexIdentityTests: XCTestCase {
                 .hasPrefix(RemoteCopy.leftRunningLine("box", reason: reason)))
         }
         XCTAssertEqual(RemoteCopy.noTrackedSessions, "No sessions started from Temple.")
-        let copy = [RemoteCopy.codexEndedPending("box"), RemoteCopy.couldNotTell, RemoteCopy.resumeAnyway("box"),
+        let copy = [RemoteCopy.codexEndedPending("box"), RemoteCopy.couldNotTell, RemoteCopy.noDaemonHint,
+                    RemoteCopy.endedIdentified("box"), RemoteCopy.resumeAnyway("box"),
                     RemoteCopy.startNewPending("box"), RemoteCopy.stopHint("box"), RemoteCopy.discardHelp(archives: true),
                     RemoteCopy.discardHelp(archives: false), RemoteCopy.discardPendingHelp("box"),
                     RemoteCopy.suggestionQuestion(suggestion()), RemoteCopy.noTrackedSessions,

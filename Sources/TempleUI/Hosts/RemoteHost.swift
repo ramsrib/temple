@@ -224,7 +224,7 @@ final class RemoteHostLauncher: RemoteSessionHost {
         await refreshLiveSessions()
         switch outcome {
         case .ended: return .ended
-        case .identified(_, let id): return .identified(id)
+        case .identified(let handle, let id): return .identified(id, directory: await sessions.run(handle)?.directory)
         case .plan(let plan):
             return .plan(RemoteOpenPlan(handle: plan.handle, attachment: plan.attachment, creating: plan.creating,
                                         command: TerminalCommand(argv: plan.argv, cwd: NSHomeDirectory()),
@@ -292,7 +292,8 @@ final class RemoteHostLauncher: RemoteSessionHost {
 
     func pendingRuns() async -> [RemotePendingRun] {
         await sessions.pendingRuns().map {
-            RemotePendingRun(handle: $0.handle, directory: $0.directory ?? $0.directoryIntent, ended: $0.isEnded)
+            RemotePendingRun(handle: $0.handle, directory: $0.directory ?? $0.directoryIntent, ended: $0.isEnded,
+                             sessionID: $0.sessionID, typed: $0.inputSeenAt != nil)
         }
     }
 
@@ -302,6 +303,8 @@ final class RemoteHostLauncher: RemoteSessionHost {
         try await sessions.dismissRun(handle)
         await refreshLiveSessions()
     }
+
+    func recordInput(_ handle: String) async throws { try await sessions.recordInput(handle) }
 }
 
 /// Remote project masks and order in `remote-state.sqlite`.

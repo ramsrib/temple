@@ -326,6 +326,17 @@ final class RemoteGateWalkTests: XCTestCase {
                 await self.settle { !h.remote.dismissedRuns.isEmpty }
             }, effect: { $0.app.remoteNotice != nil }),
 
+            Scenario(completion: .pendingWriteNotice, disruptions: noClose, arm: { h in
+                h.remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true)]
+                h.app.openSessions.remoteTabs.restorePending(hosts: [h.host])
+                await self.settle { h.app.openSessions.tabs.contains { $0.remote?.handle == "p7" } }
+                let tab = try XCTUnwrap(h.app.openSessions.tabs.first { $0.remote?.handle == "p7" })
+                h.remote.dismissRunError = CocoaError(.fileWriteUnknown)
+                h.remote.dismissRunGate = { await h.hold.wait() }
+                h.app.openSessions.closeTab(tab.id)
+                await self.settle { !h.remote.dismissedRuns.isEmpty }
+            }, effect: { $0.app.remoteNotice != nil }),
+
             Scenario(completion: .identityNotice, disruptions: noClose, arm: { h in
                 h.app.openSessions.remoteTabs.identitySchedule = [60]
                 h.remote.declineError = CocoaError(.fileWriteUnknown)

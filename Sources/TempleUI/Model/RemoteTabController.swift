@@ -390,7 +390,7 @@ public final class RemoteTabController {
                         self.loadSuggestions(tab, host: host, handle: handle)
                     } else {
                         self.model.removeTab(tab.id)
-                        self.operations.run(host: tab.host, .write) { try? await host.dismissRun(handle) }
+                        self.pendingWrite(host, tab.host) { try await host.dismissRun(handle) }
                     }
                 } else {
                     // The agent finished: the tab closes, as a local one does.
@@ -718,32 +718,34 @@ public final class RemoteTabController {
     /// window closes first. No completion touches a tab from here on: the
     /// gate refuses everything while quitting.
     func quitPlan(for tab: SessionTab, state: RemoteTabState) -> TerminalSurface? {
-        // A pending Codex run is never stopped by a quit: without its id it
-        // could not be resumed. Its client is detached; the next launch
-        // restores it as a chip and attaches.
-        if isPending(tab) {
-            if let surface = tab.surface, tab.hasLiveProcess { return surface }
-            return nil
-        }
+        // A pending Codex run follows the same policy (round 1): a working
+        // agent is detached, an idle one stopped. Stopped, one that was typed
+        // into keeps its ended run, so the next launch asks about it; one
+        // that never was is no longer tracked. A stop that fails is left
+        // running, as any, and never retried.
+        let dismissIfStopped = isPending(tab) && !tab.inputSubmitted
         guard let host = remoteHost(for: tab), let handle = state.handle else {
             if let surface = tab.surface, tab.hasLiveProcess { return surface }
             return nil
         }
         if let surface = tab.surface, tab.hasLiveProcess {
             if tab.activity == .running { return surface }
-            startQuitStop(host: host, hostID: tab.host, handle: handle, surface: surface)
+            startQuitStop(host: host, hostID: tab.host, handle: handle, surface: surface, dismissIfStopped: dismissIfStopped)
             return nil
         }
         switch state.phase {
         case .disconnected, .unknown, .checking:
-            if !state.lastSeenWorking { startQuitStop(host: host, hostID: tab.host, handle: handle, surface: nil) }
+            if !state.lastSeenWorking {
+                startQuitStop(host: host, hostID: tab.host, handle: handle, surface: nil, dismissIfStopped: dismissIfStopped)
+            }
         default:
             break
         }
         return nil
     }
 
-    private func startQuitStop(host: RemoteSessionHost, hostID: HostID, handle: String, surface: TerminalSurface?) {
+    private func startQuitStop(host: RemoteSessionHost, hostID: HostID, handle: String, surface: TerminalSurface?,
+                               dismissIfStopped: Bool = false) {
         operations.run(host: hostID, .stop, onCancel: { reason in
             surface?.terminate()
             await host.leaveRunning(handle, reason: reason)
@@ -754,7 +756,12 @@ public final class RemoteTabController {
                 return
             }
             surface?.terminate()
-            _ = try? await host.stop(handle, fromAttachedTab: surface != nil)
+            let result = try? await host.stop(handle, fromAttachedTab: surface != nil)
+            if dismissIfStopped, result == .stopped {
+                do { try await host.dismissRun(handle) } catch {
+                    TempleUILog.db.error("an unused pending run not dismissed at quit: \(error.localizedDescription, privacy: .public)")
+                }
+            }
         }
     }
 
@@ -803,10 +810,15 @@ public final class RemoteTabController {
                 tab.remote?.phase = .endedPending
                 tab.activity = .exited(status: 0)
                 if let handle { self.loadSuggestions(tab, host: host, handle: handle) }
-            case .success(.identified(let id)):
+            case .success(.identified(let id, let directory)):
                 // Another Temple learned its id meanwhile: this tab is that
-                // session now, opened as any session is.
-                self.becomeSession(tab, id: id)
+                // session now (joined like any claim), then opened as any
+                // session is. The open this answered is over.
+                tab.remote?.phase = .disconnected
+                guard let handle else { return }
+                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
+                guard tab.sessionID == id, self.model.tabs.contains(where: { $0 === tab }) else { return }
+                tab.remote = nil
                 self.model.ensureSurface(for: tab)
             case .success(.plan(let plan)):
                 guard tab.surface == nil else {
@@ -853,7 +865,10 @@ public final class RemoteTabController {
         switch identity {
         case .adopted(let id, let directory), .known(let id, let directory):
             await adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
-            return true
+            // Settled only once the tab is that session: a join that core
+            // refused or failed to write is tried again on schedule.
+            guard let tab = ticket.tab else { return true }
+            return !isPending(tab)
         case .taken:
             guard gate.admit(.identityResult, ticket), let tab = ticket.tab else { return false }
             tab.remote?.identityNote = RemoteCopy.couldNotTell
@@ -900,32 +915,50 @@ public final class RemoteTabController {
         // stays unjoined); the gate below refuses the tab's part.
         if !isQuitting {
             let open = SessionOpen(id: id, host: hostID, via: .created, agent: .codex, locator: nil)
-            if let conflict = model.openedHandler?(open).conflict {
+            switch model.openedHandler?(open) ?? .joined {
+            case .joined:
+                if let directory { model.launchDirectoryHandler?(id, hostID, directory) }
+                operations.run(host: hostID, .write) {
+                    do { try await host.markJoined(handle) } catch {
+                        // Unmarked, the next launch joins it again (idempotent).
+                        TempleUILog.db.error("claim not marked joined: \(error.localizedDescription, privacy: .public)")
+                    }
+                }
+            case .refused(let conflict):
                 TempleUILog.launch.notice("remote Codex id refused by core: \(conflict.message, privacy: .public)")
-                operations.run(host: hostID, .write) { try? await host.releaseClaim(handle, sessionID: id) }
+                pendingWrite(host, hostID) { try await host.releaseClaim(handle, sessionID: id) }
                 guard gate.admit(.identityResult, ticket), let tab = ticket.tab else { return }
                 tab.remote?.identityNote = conflict.message
                 tab.remote?.confirming = nil
                 return
+            case .failed(let error):
+                // Core's row was not written: the claim stays unjoined, and
+                // the next check (or the next launch) joins it again. The
+                // tab stays pending and says so.
+                TempleUILog.db.error("core join of a claimed Codex id failed: \(error.localizedDescription, privacy: .public)")
+                guard gate.admit(.identityResult, ticket), let tab = ticket.tab else { return }
+                tab.remote?.identityNote = RemoteCopy.unrecorded(host.hostName, detail: error.localizedDescription)
+                tab.remote?.confirming = nil
+                return
             }
-            if let directory { model.launchDirectoryHandler?(id, hostID, directory) }
-            operations.run(host: hostID, .write) { try? await host.markJoined(handle) }
         }
         guard gate.admit(.identityResult, ticket), let tab = ticket.tab, isPending(tab) else { return }
-        becomeSession(tab, id: id)
+        let ended = tab.remote?.phase == .endedPending
+        becomeSession(tab, id: id, host: host)
         if let at = tab.launchObservation?.at { model.touchHandler?(id, hostID, at) }
         if !tab.title.isEmpty, tab.title != tab.agent.newSessionTitle { model.titleHandler?(id, hostID, tab.title) }
-        if tab.remote?.phase == .endedPending {
-            // Its run ended: the tab is an inert chip of that session, and
-            // opening it resumes the conversation (it exists: it has a file).
-            tab.remote = nil
+        if ended {
+            // Its run ended: the yes records who it was, nothing more. The
+            // tab is that session's, at rest; resuming it is the user's
+            // Resume (or opening its chip), never this answer's (round 1).
+            tab.remote?.phase = .endedIdentified
             tab.activity = .idle
-            if model.activeTabID == tab.id { model.ensureSurface(for: tab) }
         }
     }
 
-    /// The tab is that session from here on.
-    private func becomeSession(_ tab: SessionTab, id: String) {
+    /// The tab is that session from here on: in `open_tabs`, so its run is
+    /// no longer restored from the runs (handed over, durably).
+    private func becomeSession(_ tab: SessionTab, id: String, host: RemoteSessionHost) {
         tab.sessionID = id
         tab.isProvisional = false
         // A claimed id has a conversation (a session file): a later open
@@ -937,6 +970,40 @@ public final class RemoteTabController {
         if let operation = tab.remote?.identityOperation { operations.cancel(id: operation) }
         tab.remote?.identityOperation = nil
         model.persist()
+        if let handle = tab.remote?.handle {
+            pendingWrite(host, tab.host) { try await host.closePendingTab(handle) }
+        }
+    }
+
+    /// A pending run's durable write, owned through close and quit; one
+    /// that fails is said once (never swallowed).
+    private func pendingWrite(_ host: RemoteSessionHost, _ hostID: HostID,
+                              _ body: @escaping @MainActor () async throws -> Void) {
+        let ticket = gate.ticket(host: hostID)
+        operations.run(host: hostID, .write) { [weak self] in
+            do { try await body() } catch {
+                guard let self, self.gate.admit(.pendingWriteNotice, ticket) else { return }
+                self.noticeHandler?(hostID, RemoteCopy.unrecorded(host.hostName, detail: error.localizedDescription))
+            }
+        }
+    }
+
+    /// The same, inside an operation already owned.
+    private func reportWrite(_ host: RemoteSessionHost, _ ticket: RemoteTicket,
+                             _ body: @MainActor () async throws -> Void) async {
+        do { try await body() } catch {
+            guard gate.admit(.pendingWriteNotice, ticket) else { return }
+            noticeHandler?(ticket.host, RemoteCopy.unrecorded(host.hostName, detail: error.localizedDescription))
+        }
+    }
+
+    /// Something was typed into a pending tab: kept with its run, so a
+    /// relaunch still knows the conversation may exist.
+    func inputSubmitted(_ tab: SessionTab) {
+        guard isPending(tab), let handle = tab.remote?.handle, tab.remote?.inputRecorded == false,
+              let host = remoteHost(for: tab) else { return }
+        tab.remote?.inputRecorded = true
+        pendingWrite(host, tab.host) { try await host.recordInput(handle) }
     }
 
     private func loadSuggestions(_ tab: SessionTab, host: RemoteSessionHost, handle: String) {
@@ -1000,8 +1067,8 @@ public final class RemoteTabController {
         guard isPending(tab), let host = remoteHost(for: tab), !tab.hasLiveProcess, !isQuitting else { return }
         if let old = tab.remote?.handle {
             let ended = tab.remote?.phase == .endedPending
-            operations.run(host: tab.host, .write) {
-                if ended { try? await host.dismissRun(old) } else { try? await host.closePendingTab(old) }
+            pendingWrite(host, tab.host) {
+                if ended { try await host.dismissRun(old) } else { try await host.closePendingTab(old) }
             }
         }
         tab.dropSurface()
@@ -1051,19 +1118,19 @@ public final class RemoteTabController {
         if how == .detach {
             detachClient()
             model.removeTab(tab.id)
-            operations.run(host: hostID, .write) { try? await host.closePendingTab(handle) }
+            pendingWrite(host, hostID) { try await host.closePendingTab(handle) }
             return
         }
         if case .stopFailed? = phase {
             model.removeTab(tab.id)
-            operations.run(host: hostID, .write) { try? await host.closePendingTab(handle) }
+            pendingWrite(host, hostID) { try await host.closePendingTab(handle) }
             return
         }
         guard tab.remote?.mayBeRunning == true else {
             // Nothing runs (it ended, never started, or failed at once):
             // closing it is being done with it.
             model.removeTab(tab.id)
-            operations.run(host: hostID, .write) { try? await host.dismissRun(handle) }
+            pendingWrite(host, hostID) { try await host.dismissRun(handle) }
             return
         }
         tab.remote?.phase = .stopping
@@ -1087,9 +1154,13 @@ public final class RemoteTabController {
             guard let result = try? await host.stop(handle, fromAttachedTab: live) else { return }
             // Durable: nothing typed and nothing learned, and it stopped:
             // there is nothing to keep.
-            if result == .stopped, !identified, !typed { try? await host.dismissRun(handle) }
-            if case .leftRunning = result { try? await host.closePendingTab(handle) }
             guard let self else { return }
+            if result == .stopped, !identified, !typed {
+                await self.reportWrite(host, noticeTicket) { try await host.dismissRun(handle) }
+            }
+            if case .leftRunning = result {
+                await self.reportWrite(host, noticeTicket) { try await host.closePendingTab(handle) }
+            }
             guard self.gate.admit(.pendingStopOutcome, ticket), let tab = ticket.tab else {
                 if self.gate.admit(.closeStopNotice, noticeTicket) { self.notice(result, host: host, hostID: hostID, agent: agent) }
                 return
@@ -1121,7 +1192,19 @@ public final class RemoteTabController {
                 let runs = await host.pendingRuns()
                 guard let self, !runs.isEmpty, self.gate.admit(.pendingRestore, ticket) else { return }
                 for run in runs where !self.model.tabs.contains(where: { $0.host == hostID && $0.remote?.handle == run.handle }) {
-                    self.model.appendPendingChip(host: hostID, handle: run.handle, directory: run.directory, ended: run.ended)
+                    if let id = run.sessionID {
+                        // Claimed after its tab set was saved: restored as
+                        // that session's chip, then handed over to open_tabs.
+                        if !self.model.tabs.contains(where: { $0.sessionID == id }) {
+                            self.model.appendClaimedChip(host: hostID, sessionID: id, directory: run.directory)
+                            self.model.persist()
+                        }
+                        let handle = run.handle
+                        self.pendingWrite(host, hostID) { try await host.closePendingTab(handle) }
+                        continue
+                    }
+                    self.model.appendPendingChip(host: hostID, handle: run.handle, directory: run.directory,
+                                                 ended: run.ended, typed: run.typed)
                 }
             }
         }
@@ -1138,12 +1221,20 @@ public final class RemoteTabController {
                 for claim in claims {
                     guard let self, !self.isQuitting, !Task.isCancelled else { return }
                     let open = SessionOpen(id: claim.sessionID, host: hostID, via: .created, agent: .codex, locator: nil)
-                    if self.model.openedHandler?(open).conflict != nil {
-                        try? await host.releaseClaim(claim.handle, sessionID: claim.sessionID)
-                        continue
+                    switch self.model.openedHandler?(open) ?? .joined {
+                    case .joined:
+                        if let directory = claim.directory { self.model.launchDirectoryHandler?(claim.sessionID, hostID, directory) }
+                        do { try await host.markJoined(claim.handle) } catch {
+                            TempleUILog.db.error("claim not marked joined: \(error.localizedDescription, privacy: .public)")
+                        }
+                    case .refused:
+                        do { try await host.releaseClaim(claim.handle, sessionID: claim.sessionID) } catch {
+                            TempleUILog.db.error("refused claim not released: \(error.localizedDescription, privacy: .public)")
+                        }
+                    case .failed(let error):
+                        // Not written: left unjoined for the next launch.
+                        TempleUILog.db.error("reconciliation join failed: \(error.localizedDescription, privacy: .public)")
                     }
-                    if let directory = claim.directory { self.model.launchDirectoryHandler?(claim.sessionID, hostID, directory) }
-                    try? await host.markJoined(claim.handle)
                 }
             }
         }

@@ -144,6 +144,11 @@ private struct SessionTerminalView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, 20)
             }
+            Text(RemoteCopy.noDaemonHint)
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 20)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -159,6 +164,7 @@ private struct SessionTerminalView: View {
         case exitedEarly
         case decision(checked: Bool)
         case endedPending
+        case endedIdentified
 
         static func make(_ phase: RemoteTabState.Phase) -> RemoteHeader? {
             switch phase {
@@ -170,6 +176,7 @@ private struct SessionTerminalView: View {
             case .exitedEarly: .exitedEarly
             case .needsDecision(let checked): .decision(checked: checked)
             case .endedPending: .endedPending
+            case .endedIdentified: .endedIdentified
             }
         }
     }
@@ -203,10 +210,16 @@ private struct SessionTerminalView: View {
                             .help(RemoteCopy.discardPendingHelp(host))
                     }
                 }
-                if let remote = tab.remote, !remote.suggestions.isEmpty || remote.identityNote != nil {
+                // Asked even with no candidate yet: the hint says how Temple
+                // could tell by itself next time.
+                if let remote = tab.remote {
                     question(remote).background(Palette.surfaceFill)
                         .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairline).frame(height: 1) }
                 }
+            }
+        case .endedIdentified:
+            notice(symbol: "checkmark.circle", text: RemoteCopy.endedIdentified(host)) {
+                Button("Resume") { model.openSessions.remoteTabs.reconnect(tab) }
             }
         case .disconnected:
             notice(symbol: "bolt.horizontal.circle", text: RemoteCopy.disconnected(host)) {

@@ -94,6 +94,10 @@ public enum RemoteCompletion: String, CaseIterable, Sendable {
     case pendingDiscardNotice
     /// A decline, or a claim's storage, could not be written: one notice.
     case identityNotice
+    /// A pending run's own write (its tab closed or handed over, its run
+    /// dismissed, its input kept, a refused claim released) failed: one
+    /// notice.
+    case pendingWriteNotice
 }
 
 /// The right to apply one completion's effect, taken before its await:

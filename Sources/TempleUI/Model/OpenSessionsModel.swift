@@ -1181,6 +1181,7 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
     public func surfaceDidSubmitInput(_ surface: TerminalSurface) {
         guard !isQuitting, let tab = tab(for: surface), tab.kind == .session else { return }
         tab.inputSubmitted = true
+        if tab.remote != nil { remoteTabs.inputSubmitted(tab) }
         if let sid = tab.sessionID { touchHandler?(sid, tab.host, nil) }
         tab.activity = .running
         // Restart the settle clock so it can decay again once work finishes.
@@ -1270,14 +1271,26 @@ extension OpenSessionsModel {
     /// id, so no `open_tabs` row): an inert chip that attaches by its
     /// handle when activated, or asks about an ended one.
     @discardableResult
-    func appendPendingChip(host: HostID, handle: String, directory: String, ended: Bool) -> SessionTab {
+    func appendPendingChip(host: HostID, handle: String, directory: String, ended: Bool, typed: Bool = false) -> SessionTab {
         let tab = SessionTab(kind: .session, sessionID: nil, agent: .codex, projectPath: directory,
                              title: Agent.codex.newSessionTitle, isProvisional: true, host: host)
         var state = RemoteTabState(phase: ended ? .endedPending : .disconnected)
         state.handle = handle
+        state.inputRecorded = typed
         tab.remote = state
-        tab.inputSubmitted = ended
+        // What was typed before the relaunch is kept with the run.
+        tab.inputSubmitted = typed
         if ended { tab.activity = .exited(status: 0) }
+        tabs.append(tab)
+        return tab
+    }
+
+    /// A Codex session whose id was claimed after its pending tab was saved
+    /// (the quit froze the tab set first): a resume chip of that session.
+    @discardableResult
+    func appendClaimedChip(host: HostID, sessionID: String, directory: String) -> SessionTab {
+        let tab = SessionTab(kind: .session, sessionID: sessionID, agent: .codex, projectPath: directory,
+                             title: Agent.codex.newSessionTitle, isResume: true, host: host)
         tabs.append(tab)
         return tab
     }

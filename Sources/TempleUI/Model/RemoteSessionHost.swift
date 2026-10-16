@@ -103,8 +103,9 @@ public enum RemotePendingOpenResult: Equatable {
     case plan(RemoteOpenPlan)
     /// The run ended before Temple learned its id.
     case ended
-    /// The run has an id now (another Temple learned it): that session.
-    case identified(String)
+    /// The run has an id now (another Temple learned it): that session,
+    /// and the folder its pane ran in.
+    case identified(String, directory: String?)
 }
 
 /// One identity check (or a confirmed suggestion), as the app needs it.
@@ -149,8 +150,13 @@ public struct RemotePendingRun: Equatable {
     /// Its folder: the pane's, or the one asked for.
     public let directory: String
     public let ended: Bool
-    public init(handle: String, directory: String, ended: Bool) {
+    /// Its id, for a run claimed after its tab set was saved.
+    public let sessionID: String?
+    /// Something was typed into its tab.
+    public let typed: Bool
+    public init(handle: String, directory: String, ended: Bool, sessionID: String? = nil, typed: Bool = false) {
         self.handle = handle; self.directory = directory; self.ended = ended
+        self.sessionID = sessionID; self.typed = typed
     }
 }
 
@@ -253,6 +259,8 @@ public protocol RemoteSessionHost: HostLauncher {
     func closePendingTab(_ handle: String) async throws
     /// Discard of a pending run.
     func dismissRun(_ handle: String) async throws
+    /// Something was typed into the run's tab.
+    func recordInput(_ handle: String) async throws
 }
 
 /// A remote tab's side of its run (memory only; the run row is durable).
@@ -284,6 +292,9 @@ public struct RemoteTabState: Equatable {
         /// A new Codex session ended before Temple learned its id: the
         /// suggestions (if any), Start a new session and Discard.
         case endedPending
+        /// It ended, and the user's yes said which session it was: at rest,
+        /// resumed only when the user asks.
+        case endedIdentified
     }
     public var phase: Phase
     public var handle: String?
@@ -314,6 +325,8 @@ public struct RemoteTabState: Equatable {
     public var confirming: String?
     /// The owned identity schedule of this open.
     var identityOperation: UUID?
+    /// That something was typed is already kept with the run.
+    var inputRecorded = false
 
     public init(phase: Phase) { self.phase = phase }
 
@@ -321,7 +334,7 @@ public struct RemoteTabState: Equatable {
     var mayBeRunning: Bool {
         switch phase {
         case .connected, .checking, .disconnected, .unknown, .stopping, .stopFailed: handle != nil
-        case .opening, .failedToStart, .exitedEarly, .needsDecision, .endedPending: false
+        case .opening, .failedToStart, .exitedEarly, .needsDecision, .endedPending, .endedIdentified: false
         }
     }
 }
@@ -500,6 +513,13 @@ public enum RemoteCopy {
 
     /// A run whose id another session started from Temple already holds.
     public static let couldNotTell = "Temple couldn't tell which Codex session this is."
+
+    /// Under the question: how Temple can tell by itself (Fable, round 1).
+    public static let noDaemonHint = "With --no-daemon in Codex's arguments (Settings), Temple identifies the session itself."
+
+    public static func endedIdentified(_ host: String) -> String {
+        "This Codex session ended on \(host). Resume it to continue the conversation."
+    }
 
     /// What Discard does, for its help tag.
     public static func discardHelp(archives: Bool) -> String {
