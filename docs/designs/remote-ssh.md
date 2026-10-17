@@ -412,8 +412,13 @@ running and listed, nothing discarded. An automatic yes that can't be
 written says why and asks; it is not tried again on its own. "Asked" is the question shown
 this launch (memory, per handle) or any declined candidate for the run,
 which the claim's own transaction checks: the only durable decline is a
-decline. An ended tab, two or more candidates, an untyped run, or a run
-already asked about: the question; with the last candidate declined, the
+decline. Nor while another new Codex session Temple started on the host
+in the same folder is still unidentified, not ended and not dismissed (the
+computer-use pass on dd60e31: two tabs typed into within seconds each saw
+one candidate, perhaps the other's); the tab's gate checks this Temple's
+tabs, and the claim's transaction checks every run on the host
+(`ClaimOutcome.contended`), so both ask. An ended tab, two or more
+candidates, an untyped run, or a run already asked about: the question; with the last candidate declined, the
 tab says Temple couldn't tell.
 
 **Uniqueness after the fact.** As built (astra's implementation note 1,

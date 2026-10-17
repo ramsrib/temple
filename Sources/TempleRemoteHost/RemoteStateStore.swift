@@ -467,6 +467,10 @@ public final class RemoteStateStore: @unchecked Sendable {
         case declined
         /// The run is gone or was discarded.
         case gone
+        /// An automatic claim while another new Codex session Temple started
+        /// in the same folder on the host is still unidentified and running:
+        /// the lone candidate may be the other's; the user is asked.
+        case contended
     }
 
     /// Claims `sessionID` for the pending run `handle`, in one immediate
@@ -497,6 +501,20 @@ public final class RemoteStateStore: @unchecked Sendable {
                     SELECT EXISTS (SELECT 1 FROM declined_candidates WHERE handle = ?)
                     """, arguments: [handle]) ?? false {
                     outcome = .declined
+                    return .commit
+                }
+                // Nor while another run Temple started on this host in the
+                // same folder is a new Codex session still unidentified and
+                // not ended: its window overlaps this one's, and the lone
+                // candidate either sees may be the other's.
+                if how == .automatic, try Bool.fetchOne(database, sql: """
+                    SELECT EXISTS (SELECT 1 FROM runs WHERE host = ? AND handle != ? AND agent = ?
+                        AND session_id IS NULL AND ended_at IS NULL AND dismissed_at IS NULL
+                        AND (creation IS NULL OR creation != ?)
+                        AND COALESCE(directory, directory_intent) = ?)
+                    """, arguments: [run.host.rawValue, handle, Agent.codex.rawValue, RemoteRun.Creation.failed.rawValue,
+                                     run.directory ?? run.directoryIntent]) ?? false {
+                    outcome = .contended
                     return .commit
                 }
                 let held = try Int.fetchOne(database, sql: """

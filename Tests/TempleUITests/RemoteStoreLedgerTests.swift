@@ -36,8 +36,10 @@ final class RemoteStoreLedgerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try RemoteStateStore(directory: directory)
         for handle in ["p1", "p2"] {
-            var run = RemoteRun(handle: handle, host: HostID(rawValue: "box"), agent: .codex, mode: .new, directoryIntent: "~",
-                                sessionID: nil, recordPath: RecordDirectory.locator(marker: "r-\(handle)"), startedAt: Date())
+            // Two folders: neighbours in one folder are contended (below).
+            var run = RemoteRun(handle: handle, host: HostID(rawValue: "box"), agent: .codex, mode: .new,
+                                directoryIntent: "~/\(handle)", sessionID: nil,
+                                recordPath: RecordDirectory.locator(marker: "r-\(handle)"), startedAt: Date())
             run.creation = .proven
             try store.insert(run)
         }
@@ -75,5 +77,35 @@ final class RemoteStoreLedgerTests: XCTestCase {
         XCTAssertTrue(try store.dismissStoppedRun("p1", sessionID: "c7", at: Date()))
         XCTAssertNotNil(try store.run("p1")?.dismissedAt)
         XCTAssertNil(try store.run("old")?.dismissedAt, "only the stopped run")
+    }
+
+    /// The claim's own transaction refuses Temple's yes while another new
+    /// Codex session Temple started in the same folder on the host is still
+    /// unidentified and running; once that one is identified or ended, or
+    /// for another folder, it claims.
+    func testAnAutomaticClaimIsRefusedWhileANeighbourIsUnidentified() throws {
+        let directory = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("temple-neighbour-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let box = HostID(rawValue: "box")
+        let store = try RemoteStateStore(directory: directory)
+        func insert(_ handle: String, folder: String) throws {
+            var run = RemoteRun(handle: handle, host: box, agent: .codex, mode: .new, directoryIntent: "~/p",
+                                sessionID: nil, recordPath: RecordDirectory.locator(marker: "r-\(handle)"), startedAt: Date())
+            run.creation = .proven
+            run.directory = folder
+            try store.insert(run)
+        }
+        try insert("p1", folder: "/home/u/p")
+        try insert("p2", folder: "/home/u/p")
+        try insert("p3", folder: "/home/u/other")
+        XCTAssertEqual(try store.claim("p1", sessionID: "c7", how: .automatic, rolloutPath: "/r/c7.jsonl"), .contended)
+        XCTAssertEqual(try store.claim("p3", sessionID: "c9", how: .automatic, rolloutPath: "/r/c9.jsonl"), .claimed,
+                       "another folder is no neighbour")
+        XCTAssertEqual(try store.claim("p1", sessionID: "c7", how: .confirmed, rolloutPath: "/r/c7.jsonl"), .claimed,
+                       "the user's own yes still claims")
+        XCTAssertEqual(try store.claim("p2", sessionID: "c8", how: .automatic, rolloutPath: "/r/c8.jsonl"), .claimed,
+                       "its neighbour identified: no longer contended")
     }
 }

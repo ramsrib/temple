@@ -357,7 +357,9 @@ it. What follows appears for an enabled host only.
   open. By default Codex's shared app server writes that file, so Temple
   looks for sessions begun in the folder since it started. When exactly one
   matches, you have typed into the tab, and Temple has not asked about it
-  (nor have you declined a candidate for it, even before a relaunch),
+  (nor have you declined a candidate for it, even before a relaunch), and
+  no other new Codex session Temple started in that folder is still
+  unidentified,
   Temple says yes on its own, exactly as you would, and the tab says so
   in one line: "Linked to “<first prompt>”, the only Codex session started
   in this folder since this tab opened. If that’s wrong, Discard stops it and removes it from

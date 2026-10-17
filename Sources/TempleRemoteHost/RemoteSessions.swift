@@ -1285,6 +1285,7 @@ public final class RemoteSessions {
             case .taken: return .taken
             case .declined: return .inconclusive(.retry("that session was declined for this one"))
             case .gone: return .inconclusive(.ended("Temple no longer tracks this session"))
+            case .contended: return .inconclusive(.retry("another new Codex session in this folder is not identified yet"))
             }
         } catch {
             return .storage(error.localizedDescription)

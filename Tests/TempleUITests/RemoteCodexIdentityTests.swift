@@ -226,6 +226,28 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(persistence.load().map(\.sessionID), ["c7"])
     }
 
+    /// Two new Codex tabs in one folder, typed into within seconds (the
+    /// computer-use pass on dd60e31): each saw one candidate, which may be
+    /// the other's. While another of Temple's new sessions there is still
+    /// unidentified, neither says yes on its own: both ask.
+    func testTwoNewSessionsInOneFolderBothAsk() async throws {
+        remote.identityResult = .inconclusive("shared server", lasting: true, ended: false)
+        remote.suggestionsResult = .candidates([suggestion()])
+        let first = await newCodex()
+        let second = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(first.surface))
+        model.surfaceDidSubmitInput(try XCTUnwrap(second.surface))
+        await settle(first.remote?.suggestions.count == 1 && second.remote?.suggestions.count == 1, "both ask")
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(remote.automaticConfirms.isEmpty)
+        XCTAssertNil(first.sessionID)
+        XCTAssertNil(second.sessionID)
+        // A new session in another folder is no neighbour.
+        let elsewhere = model.newSession(agent: .codex, project: Fixture.key("~/other", host: hostID))
+        await settle(elsewhere.hasLiveProcess)
+        XCTAssertNil(first.sessionID)
+    }
+
     /// Two or more candidates: the question; nothing claimed.
     func testTwoCandidatesAsk() async throws {
         remote.suggestionsResult = .candidates([suggestion(), suggestion("c8")])

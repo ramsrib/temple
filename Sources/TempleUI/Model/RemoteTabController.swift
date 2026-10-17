@@ -1253,7 +1253,8 @@ public final class RemoteTabController {
         // the yes's own path (owner, round 2; Fable's decision). Two or
         // more, an ended tab, or once asked: the question.
         if offered.count == 1, tab.remote?.phase == .connected, tab.inputSubmitted, !isQuitting,
-           refusedClaims[handle] == nil, tab.remote?.confirming == nil, !asked.contains(handle) {
+           refusedClaims[handle] == nil, tab.remote?.confirming == nil, !asked.contains(handle),
+           !hasUnidentifiedNeighbour(tab) {
             claim(offered[0], in: tab, automatic: true)
             return
         }
@@ -1263,6 +1264,19 @@ public final class RemoteTabController {
         // last one declined), it says Temple couldn't tell.
         if offered.isEmpty, asked.contains(handle), tab.remote?.identityNote == nil {
             tab.remote?.identityNote = RemoteCopy.couldNotTell
+        }
+    }
+
+    /// Another new Codex session this Temple started on the same host in the
+    /// same folder that is still unidentified and not ended: its window
+    /// overlaps this one's, so the lone candidate may be the other's, and
+    /// both ask. (The claim's own transaction checks every run on the host,
+    /// detached ones and another Temple's included.)
+    private func hasUnidentifiedNeighbour(_ tab: SessionTab) -> Bool {
+        model.tabs.contains { other in
+            other !== tab && isPending(other) && other.host == tab.host
+                && Array(other.projectPath.utf8) == Array(tab.projectPath.utf8)
+                && other.remote != nil && other.remote?.phase != .endedPending
         }
     }
 
