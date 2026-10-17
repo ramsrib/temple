@@ -816,6 +816,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
                 .hasPrefix(RemoteCopy.leftRunningLine("box", reason: reason)))
         }
         XCTAssertEqual(RemoteCopy.noTrackedSessions, "No sessions started from Temple.")
+        XCTAssertEqual(RemoteCopy.stillWorkingMessage("box"), "Detach keeps it working on box; Stop ends it.")
         let unread = RemoteSuggestion(rolloutPath: "/r", sessionID: "x", firstPrompt: nil, startedAt: Date(),
                                       directory: "/w", promptKnown: false)
         XCTAssertTrue(RemoteCopy.suggestionQuestion(unread).hasPrefix("Is this the session? First prompt unreadable, started "))
@@ -823,6 +824,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         let copy = [RemoteCopy.codexEndedPending("box"), RemoteCopy.couldNotTell, RemoteCopy.noDaemonHint,
                     RemoteCopy.codexEndedQuestion("box", suggestion: suggestion()),
                     RemoteCopy.endedOutputUnavailable("box", agent: .codex), RemoteCopy.sessionsOn("box"),
+                    RemoteCopy.stillWorking("box", agent: .codex), RemoteCopy.stillWorkingMessage("box"),
                     RemoteCopy.resumeAnyway("box"),
                     RemoteCopy.startNewPending("box"), RemoteCopy.stopHint("box"), RemoteCopy.discardHelp(archives: true),
                     RemoteCopy.discardHelp(archives: false), RemoteCopy.discardPendingHelp("box"),

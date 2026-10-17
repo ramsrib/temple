@@ -144,6 +144,10 @@ public struct RootView: View {
                 .keyboardShortcut(.defaultAction)
             Button("Stop") { model.openSessions.remoteTabs.confirmStop() }
             Button("Cancel", role: .cancel) { model.openSessions.remoteTabs.cancelClose() }
+        } message: {
+            if let tab = model.openSessions.pendingRemoteCloseTab {
+                Text(RemoteCopy.stillWorkingMessage(tab.host.rawValue))
+            }
         }
         .sheet(item: $model.remoteSessionsSheet) { request in
             RemoteSessionsSheet(sheet: model.sessionsSheetModel(request))

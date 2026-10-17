@@ -318,8 +318,9 @@ then relaunch, turns it on.
 - **Closing a tab** means what it means locally. An idle agent is stopped,
   at once and without asking, and opening the session later resumes it from
   its transcript. A working one asks "Claude Code is still working on
-  <host>." with **Detach** (the default: it keeps working, and you can open
-  it again), **Stop** and **Cancel**.
+  <host>." ("Detach keeps it working on <host>; Stop ends it.") with
+  **Detach** (the default: it keeps working, and you can open it again),
+  **Stop** and **Cancel**.
 - **Left running.** When the host does not answer as you close a tab, or
   another terminal is attached to the session, Temple leaves it running and
   says so once. It never stops anything later on its own. **Sessions on

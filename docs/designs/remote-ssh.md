@@ -659,7 +659,9 @@ and the launch-failure header apply as today when a `failed` record exists.
   Temple stops tracking it. The decision is made from what
   Temple observed on the connected tab; nothing on the host is asked to
   judge idleness.
-- Agent working → "Claude Code is still working on <host>." [Detach]
+- Agent working → "Claude Code is still working on <host>." with the
+  message "Detach keeps it working on <host>; Stop ends it." (remote UX
+  round 1, the same alert shape as local's) [Detach]
   (default) [Stop] [Cancel], decided synchronously in the tab's own prompt.
   Detach is `terminate()` on the local ssh client; the agent keeps working
   and the session becomes Detached (a chip, or nothing visible beyond the
@@ -2682,4 +2684,7 @@ changed, by finding:
   actions (Discard, Cancel), as links. Icons: a question mark for a
   session whose state or identity is unknown, the bolt for a dropped
   connection, the triangle for a stop that failed.
+- **The working prompt explains itself** (UX 4). The remote "still working"
+  alert gains local's message line: "Detach keeps it working on <host>;
+  Stop ends it." Buttons unchanged.
 

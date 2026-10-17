@@ -402,6 +402,11 @@ public enum RemoteCopy {
         "\(agent.displayName) is still working on \(host)."
     }
 
+    /// The working prompt's message line, as local's has one.
+    public static func stillWorkingMessage(_ host: String) -> String {
+        "Detach keeps it working on \(host); Stop ends it."
+    }
+
     /// "Sessions on <host>": the sheet's title and the button that opens it.
     public static func sessionsOn(_ host: String) -> String { "Sessions on \(host)" }
 
