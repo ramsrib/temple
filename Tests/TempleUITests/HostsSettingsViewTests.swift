@@ -112,6 +112,28 @@ final class HostsSettingsViewTests: XCTestCase {
         XCTAssertGreaterThan(surface.releaseCount, 0)
     }
 
+    /// The sheet's terminal is given the app's appearance and applies it
+    /// (the terminal runtime's theme follows only an apply, and with no tab
+    /// open nothing else had applied it: a white terminal in a dark sheet).
+    /// The terminal is 160 pt; the card's links do not repeat the host and
+    /// its status line is a tertiary caption until a test proves a fault.
+    func testTheTestSheetsTerminalAppliesTheAppsAppearance() throws {
+        let (app, factory) = try app(enabled: true, records: [.config("box")]) { [] }
+        let test = try XCTUnwrap(app.remoteHosts.startTest(for: "box"))
+        let light = TerminalAppearance(fontSize: 13, colorScheme: .light)
+        let window = render(ConnectionTestSheet(test: test, surfaceFactory: factory, appearance: light,
+                                                onTestAgain: {}, onClose: {}), size: NSSize(width: 680, height: 520))
+        let surface = try XCTUnwrap(factory.created.last)
+        XCTAssertEqual(surface.appliedAppearances.first, light)
+        XCTAssertEqual(ConnectionTestSheet.terminalHeight, 160)
+        XCTAssertEqual(HostsSettingsSection.sessionsLink, "Sessions\u{2026}")
+        XCTAssertEqual(HostStatusLine(text: "Not tested yet.", summary: nil).tone, .caption)
+        window.contentView = nil
+        window.close()
+        app.remoteHosts.endTest(test)
+        spin()
+    }
+
     /// A socket directory Temple won't use: the sheet starts no terminal.
     func testNoTerminalStartsWhenTheTestCannotBePrepared() throws {
         let defaults = Fixture.uniqueDefaults()

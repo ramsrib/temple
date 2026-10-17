@@ -2715,4 +2715,18 @@ changed, by finding:
   `temple-<handle>` moved from a line to the title's tooltip. A host
   project heading's context menu has "Sessions on <host>…". Folding the
   manual stop command into the sheet's header (UX 9) is later.
+- **Hosts card and Test connection** (visuals 1 and 6). The Test
+  connection terminal applies the app's appearance when it is made (the
+  terminal runtime's theme is rebuilt only by an apply, and with no tab
+  open nothing had applied it: white in a dark sheet) and again when the
+  sheet's colour scheme changes; it is 160 pt tall. An enabled host's links
+  read "Test connection" and "Sessions…" (the row names the host) in one
+  trailing group, its status line is an 11 pt tertiary caption (orange and
+  red still mark a proven fault), and the config switches use the system
+  tint, so on and off read apart in dark.
+- **One error colour, one field** (visual 3). The folder sheet's field is
+  the Add host form's (plain, on the control fill, no heavy ring), and its
+  "No folder …" and unreachable lines use the form's red.
+- **History fits "name @host"** (visual 4). The wide tier of the meta
+  column is 240 pt (was 180).
 

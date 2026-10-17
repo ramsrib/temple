@@ -48,6 +48,8 @@ struct HostsSettingsSection: View {
                 }
             Color.clear
                 .sheet(item: $test) { test in
+                    // The app's effective appearance, read again whenever the
+                    // sheet's colour scheme changes: dark in dark.
                     ConnectionTestSheet(test: test, surfaceFactory: model.surfaceFactory,
                                         appearance: model.currentAppearance(),
                                         onTestAgain: { startTest(test.record.name) },
@@ -80,10 +82,12 @@ struct HostsSettingsSection: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer(minLength: 8)
-                        HostLink("Test connection") { startTest(record.name) }
-                        HostLink("Sessions on \(record.name)…") { model.showRemoteSessions(record.host) }
-                        HostLink("Edit") { form = HostFormRequest(editing: record) }
-                        HostLink("Remove") { hosts.remove(record.name) }
+                        HStack(spacing: 14) {
+                            HostLink("Test connection") { startTest(record.name) }
+                            HostLink(Self.sessionsLink) { model.showRemoteSessions(record.host) }
+                            HostLink("Edit") { form = HostFormRequest(editing: record) }
+                            HostLink("Remove") { hosts.remove(record.name) }
+                        }
                     }
                     HostStatusLine(text: hosts.statusLine(for: record.name), summary: hosts.summaries[record.name])
                 }
@@ -119,6 +123,10 @@ struct HostsSettingsSection: View {
                                                  set: { hosts.setConfigHost(alias, enabled: $0) }))
                             .toggleStyle(.switch)
                             .controlSize(.mini)
+                            // The system's tint, not the app's neutral
+                            // accent: on and off must read apart, in dark
+                            // as in light.
+                            .tint(.accentColor)
                             .labelsHidden()
                             .accessibilityLabel("Use \(alias) in Temple")
                             .disabled(hosts.record(named: alias)?.source == .temple)
@@ -133,8 +141,10 @@ struct HostsSettingsSection: View {
                         }
                         Spacer(minLength: 8)
                         if enabled {
-                            HostLink("Test connection") { startTest(alias) }
-                            HostLink("Sessions on \(alias)…") { model.showRemoteSessions(HostID(rawValue: alias)) }
+                            HStack(spacing: 14) {
+                                HostLink("Test connection") { startTest(alias) }
+                                HostLink(Self.sessionsLink) { model.showRemoteSessions(HostID(rawValue: alias)) }
+                            }
                         }
                     }
                     if enabled {
@@ -176,6 +186,10 @@ struct HostsSettingsSection: View {
     private var hairline: some View {
         Rectangle().fill(Palette.hairline).frame(height: 1)
     }
+
+    /// The row already names the host: its link need not repeat it (a
+    /// long alias overflowed the column).
+    static let sessionsLink = "Sessions\u{2026}"
 }
 
 /// What the Add host / Edit sheet is for.
@@ -237,23 +251,27 @@ struct HostLink: View {
     }
 }
 
-/// A host's one status line: secondary when it is news, orange when a test
-/// proved something wrong, red when it could not connect.
+/// A host's one status line, the row's caption: 11 pt tertiary when it is
+/// news, orange when a test proved something wrong, red when it could not
+/// connect.
 struct HostStatusLine: View {
     let text: String
     let summary: HostTestSummary?
 
-    private var color: Color {
-        guard let summary else { return .secondary }
-        if summary.failure != nil { return .red }
+    enum Tone: Equatable { case caption, advisory, failure }
+
+    var tone: Tone {
+        guard let summary else { return .caption }
+        if summary.failure != nil { return .failure }
         let proven = [Agent.claude, .codex].contains { summary.unavailableReason(for: $0) != nil }
-        return proven || summary.environment?.path == nil ? .orange : .secondary
+        return proven || summary.environment?.path == nil ? .advisory : .caption
     }
 
     var body: some View {
         Text(text)
             .font(.system(size: 11))
-            .foregroundStyle(color)
+            .foregroundStyle(tone == .failure ? AnyShapeStyle(Color.red)
+                             : tone == .advisory ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.tertiary))
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -408,6 +426,11 @@ final class TestTerminal: ObservableObject, TerminalSurfaceDelegate {
 
     init(surfaceFactory: TerminalSurfaceFactory, appearance: TerminalAppearance) {
         surface = surfaceFactory.makeSurface(appearance: appearance)
+        // Applied, not only seeded: the terminal runtime's theme is built
+        // once and rebuilt only by an apply, and with no tab open nothing
+        // had applied the app's current one (a white terminal in a dark
+        // sheet).
+        surface.apply(appearance)
     }
 
     func start(_ test: ConnectionTest) {
@@ -453,14 +476,23 @@ struct ConnectionTestSheet: View {
     @ObservedObject var test: ConnectionTest
     let onTestAgain: () -> Void
     let onClose: () -> Void
+    /// The app's terminal appearance now (its theme resolved against the
+    /// effective appearance).
+    let appearance: () -> TerminalAppearance
     @StateObject private var terminal: TestTerminal
+    @Environment(\.colorScheme) private var colorScheme
 
-    init(test: ConnectionTest, surfaceFactory: TerminalSurfaceFactory, appearance: TerminalAppearance,
+    /// The terminal's height: room for a host-key prompt, not a page.
+    static let terminalHeight: CGFloat = 160
+
+    init(test: ConnectionTest, surfaceFactory: TerminalSurfaceFactory,
+         appearance: @autoclosure @escaping () -> TerminalAppearance,
          onTestAgain: @escaping () -> Void, onClose: @escaping () -> Void) {
         self.test = test
         self.onTestAgain = onTestAgain
         self.onClose = onClose
-        _terminal = StateObject(wrappedValue: TestTerminal(surfaceFactory: surfaceFactory, appearance: appearance))
+        self.appearance = appearance
+        _terminal = StateObject(wrappedValue: TestTerminal(surfaceFactory: surfaceFactory, appearance: appearance()))
     }
 
     private var isDone: Bool { test.phase == .finished || test.phase == .failed }
@@ -481,7 +513,7 @@ struct ConnectionTestSheet: View {
                 .padding(.top, 4)
 
             TerminalSurfaceHost(surface: terminal.surface)
-                .frame(height: 230)
+                .frame(height: Self.terminalHeight)
                 .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Palette.hairline))
                 .padding(.top, 12)
@@ -518,6 +550,8 @@ struct ConnectionTestSheet: View {
         .frame(width: 680)
         .onAppear { terminal.start(test) }
         .onDisappear { terminal.stop() }
+        // Follows the appearance while open, as every tab's terminal does.
+        .onChange(of: colorScheme) { terminal.surface.apply(appearance()) }
     }
 
     @ViewBuilder

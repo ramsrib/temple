@@ -583,8 +583,9 @@ Changes apply live where applicable.
   **Copy as ssh config**. **From ~/.ssh/config** lists the config's aliases
   (`Host` entries, one level of `Include`; patterns and `Match` blocks are
   skipped), each with a switch to use it in Temple, and **Edit in
-  ~/.ssh/config**. Every host in use has **Test connection** and **Sessions
-  on <host>…**. Test connection opens a small terminal where your own ssh
+  ~/.ssh/config**. Every host in use has **Test connection** and
+  **Sessions…**, with its status line under it. Test connection opens a
+  small terminal, in the app's light or dark, where your own ssh
   connects and asks what it needs (a host key, a password, a second factor),
   then checks the login shell's PATH, `claude`, `codex`, tmux (by running
   the exact commands a launch sends) and whether the host ends your
