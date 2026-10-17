@@ -247,6 +247,36 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertNotNil(app.overlay.rows["c7"])
     }
 
+    /// The selection made again after the close's activation (sol round
+    /// 1) replaces only the follower's write of the neighbour's row: a row
+    /// the user selected meanwhile stays selected.
+    func testAYesForAnEndedCodexSessionNeverTakesANewerSelection() async throws {
+        let remote = FakeRemoteHost("box")
+        let db = try TempleDB.inMemory()
+        Fixture.join([Fixture.row("a", project: "/home/u/p", host: hostID),
+                      Fixture.row("b", project: "/home/u/p", host: hostID)], to: db)
+        let app = try app(remote, db: db)
+        await settle { app.sessions.count == 2 }
+        app.openSessions.openSession(try XCTUnwrap(app.sessions.first { $0.id == "a" }))
+        let hold = Gate()
+        var reached = false
+        app.rowSelectionTurn = { reached = true; await hold.wait() }
+        remote.pending = [.init(handle: "p7", directory: "/home/u/p", ended: true, typed: true)]
+        remote.suggestionsResult = .candidates([RemoteSuggestion(rolloutPath: "/r/c7.jsonl", sessionID: "c7",
+                                                                 firstPrompt: "hi", startedAt: Date(), directory: "/home/u/p")])
+        app.openSessions.remoteTabs.restorePending(hosts: [hostID])
+        await settle { app.openSessions.tabs.contains { $0.remote?.handle == "p7" } }
+        let chip = try XCTUnwrap(app.openSessions.tabs.first { $0.remote?.handle == "p7" })
+        app.openSessions.activate(chip)
+        await settle { chip.remote?.suggestions.count == 1 }
+        app.openSessions.remoteTabs.confirm(try XCTUnwrap(chip.remote?.suggestions.first), in: chip)
+        await settle { reached && app.highlightedID == "a" }
+        app.highlightedID = "b"
+        await hold.open()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(app.highlightedID, "b", "the user's selection stands")
+    }
+
     /// A session started on a host shows its project heading at once, from
     /// the folder typed, before the pane reports where it went: display
     /// only. Nothing is written for it; the reported folder is what the row

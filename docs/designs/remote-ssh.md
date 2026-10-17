@@ -2671,7 +2671,8 @@ changed, by finding:
   session that ended before Temple learned its id records the claim (and
   the core join) as before, then closes the tab exactly as a local exit
   does and selects the now-identified row (`selectRowHandler`, set again
-  after the activation the close caused). The tab never becomes the
+  after the activation the close caused, as the gated completion
+  `.endedRowSelection`). The tab never becomes the
   session's tab, so no save of the tab set holds it; the run's own
   restoration is retired once the pending tab is gone (fix round). The `endedIdentified` phase, its banner and its
   Resume are gone; opening the row resumes, nothing resumes on its own.
@@ -2757,3 +2758,9 @@ changed, by finding:
   until the tab is gone, then written with the hand-over's retries; one
   that keeps failing is written at a later close, the quit or the next
   launch, and at worst comes back as an inert chip, never an active one.
+- **The row selection after a yes is a gated completion** (sol 2). Set at
+  once, then again a run-loop turn later over the active-tab follower's
+  write of the neighbour the close activated. That second write is
+  `.endedRowSelection`: it passes the gate (nothing after the quit or the
+  host's retirement), and it replaces only the follower's own write, so a
+  row selected meanwhile stays selected.

@@ -94,6 +94,11 @@ public enum RemoteCompletion: String, CaseIterable, Sendable {
     /// shows it in place of its terminal. No run evidence: the run has
     /// ended, so no other client can attach to it.
     case endedOutput
+    /// A yes for an ended session closed its tab and selected its row; the
+    /// close's activation of a neighbour wrote that tab's row a turn later,
+    /// and the row is selected again over it (never over a selection made
+    /// since).
+    case endedRowSelection
     /// The user's yes could not be claimed: the tab says why.
     case confirmResult
     /// Closing a pending Codex tab: the stop's outcome, and the question

@@ -407,6 +407,14 @@ public final class AppModel: ObservableObject {
     // Sidebar UI state (U1)
     @Published public var searchText = ""
     @Published public var highlightedID: String?
+    /// One turn of the main run loop, the scheduler the active-tab
+    /// follower delivers on: what a selection that must land after the
+    /// follower's waits for (tests hold it).
+    var rowSelectionTurn: @MainActor () async -> Void = {
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            RunLoop.main.schedule { done.resume() }
+        }
+    }
 
     /// Restored from `UIStateStore` in `init` (property observers don't fire
     /// there, so the restore doesn't write itself straight back). Every later
@@ -733,13 +741,29 @@ public final class AppModel: ObservableObject {
         openSessions.launchDirectoryHandler = { [weak self] id, host, cwd in
             self?.overlay.observeLaunchDirectory(id, host: host, cwd)
         }
-        // The row becomes the selection with no tab of it active. Set again
-        // on the scheduler the active-tab follower below delivers on, after
-        // it: the tab's close activated a neighbour, whose row would
-        // otherwise take the selection a turn later.
-        openSessions.selectRowHandler = { [weak self] id, _ in
-            self?.highlightedID = id
-            RunLoop.main.schedule { [weak self] in self?.highlightedID = id }
+        // The row becomes the selection with no tab of it active. The tab's
+        // close activated a neighbour, whose row the active-tab follower
+        // below writes a run-loop turn later; so the selection is set again
+        // after that turn, as a remote completion (`.endedRowSelection`):
+        // through the gate (nothing after the quit or the host's
+        // retirement), and only over the follower's own write, never over
+        // a selection made since.
+        openSessions.selectRowHandler = { [weak self] id, host in
+            guard let self else { return }
+            self.highlightedID = id
+            let remote = self.openSessions.remoteTabs
+            let ticket = remote.gate.ticket(host: host)
+            // What the follower is about to write: the active session tab's
+            // id (nil when it has none); nothing for a utility tab or none.
+            var follower: String?? = nil
+            if let active = self.openSessions.activeTab, active.kind == .session { follower = .some(active.sessionID) }
+            let turn = self.rowSelectionTurn
+            Task { @MainActor [weak self] in
+                await turn()
+                guard let self, remote.gate.admit(.endedRowSelection, ticket),
+                      case .some(let written) = follower, written != id, self.highlightedID == written else { return }
+                self.highlightedID = id
+            }
         }
         // A resume failure uses this member's completed resolution. A newly
         // launched or unreadable transcript never acquires a missing verdict.
