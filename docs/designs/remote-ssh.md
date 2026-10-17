@@ -1,6 +1,14 @@
 # Remote (SSH) sessions for Temple: design
 
-Status: proposal for ADR-036, revision 9 (two review rounds clustered in
+> **Decided in [ADR-036](../DECISIONS.md#adr-036--sessions-on-another-machine-through-the-users-own-ssh); built in phases 0 to 2, documented in phase 3.**
+> Sections 1 to 12 describe what is built: where the original design and the
+> implementation differed, the text there was corrected in place and says
+> "As built". Everything from "Review changes" on is history, kept as it was
+> written; a note that later work overrode is marked **Superseded** with a
+> pointer to what replaced it. The as-built notes for each phase are the
+> detail behind sections 1 to 12.
+
+Status (history): proposal for ADR-036, revision 9 (two review rounds clustered in
 the deferred-stop mechanism, so it is removed rather than patched: Temple
 never kills anything without a live user action; a stop it could not carry
 out and confirm at that moment is recorded as "left running" and listed
@@ -77,8 +85,9 @@ without touching core rows (section 9, "Removing remote").
   starts sessions locally only).
 - Per-host agent arguments or command overrides.
 - Non-Linux remotes: the listing uses GNU `find -printf` (a BSD fallback is
-  tested, not an acceptance target); Codex identity by process uses `/proc`
-  with a slower fallback elsewhere.
+  tested, not an acceptance target); Codex identity by process uses `/proc`,
+  and a host without it is identified by the question only (as built, phase
+  1b decision 2: there is no non-`/proc` walk).
 
 ---
 
@@ -137,7 +146,12 @@ master):
 ```
 
 Queries: the same `ControlPath` with `-o ControlMaster=no -o BatchMode=yes
--o ClearAllForwardings=yes -T` and a wall-clock deadline (5 s has-session and
+-o ClearAllForwardings=yes -T` and a wall-clock deadline. As built there are
+two kinds: `.query` rides the master when one is up and otherwise connects
+on its own, non-interactively; `.overMaster` (the Test connection's checks,
+and staging a pending launch over the connection its tab was planned on)
+rides that master or fails, never connecting by itself (phase 0 note 1,
+phase 1a note 22). Deadlines (5 s has-session and
 record, 10 s evidence and probe, 20 s locate, read and adopt). On the
 deadline Temple kills the query's ssh process, a client of the master, never
 the master.
@@ -148,8 +162,10 @@ the master.
   from sharing a master even in the fallback dir; the connection parameters
   in the hash mean an Edit yields a new socket path at once, so a changed
   port is tested against the new address, and the old master expires on its
-  own. Socket dir `<state dir>/ssh/` (0700); when the path would exceed 90
-  bytes (`sun_path` is 104), `$TMPDIR/temple-ssh-<uid>/`, logged once.
+  own. Socket dir `<state dir>/ssh/` (0700); when the path would exceed 86
+  bytes (as built, phase 0 note 3: ssh binds at `<ControlPath>.<16 random
+  characters>` and `sun_path` is 104 with its NUL), `$TMPDIR/temple-ssh-<uid>/`,
+  and `/tmp/temple-ssh-<uid>/` when that is still too long.
 - **Shared masters are never killed by Temple.** Two Temple processes with
   one state dir share sockets (user-owned, the user's ssh). Quit, Remove,
   Disable and Edit all do the same thing: cancel this instance's queries to
@@ -195,7 +211,7 @@ in a small terminal sheet, and every place a query fails with an
 authentication or host-key error offers the same button.
 
 1. **Connect, interactively.** A libghostty surface in the sheet runs
-   `ssh -t <arguments> -- <name> true` (creating the master) as its own
+   `ssh <arguments> -- <name> true` (creating the master) as its own
    process, nothing wrapped around it; the user answers ssh there; the
    surface stays visible for the whole test, so the fingerprint ssh showed
    is still on screen with the result.
@@ -289,7 +305,7 @@ is attached. The user-visible states and every transition:
 | **Attaching** (every later Open) | known or pending | last established | ssh running `attach-session` | attachment incremented; nothing else | client connected (tmux draws) → Running; tmux `can't find session` / `no server running` → exit check; other failure → Unknown |
 | **Running** | known or pending | present | attached | `ok` evidence (remote epoch, canonical dir, pane pid and start time, the server's socket path from `$TMUX`) written before the record is acknowledged; row directory `tab`-sourced (Claude, or Codex once verified); an `open_tabs` row as for any tab (id known; its host comes from the `session_state` row on restore) or nothing in core (pending) | ssh exits → exit check; Close idle → Stop now: one attached-checked kill, acknowledged → Ended, not acknowledged → **left running** (Detached or Unknown with the flag); Close working → Detach (Detached) or Stop; verified id → id known (same state) |
 | **Detached** | known or pending | present (last established) | none; a chip, or a kept tab with the "Disconnected" header | run row; `open_tabs` (id known) or the run row alone (pending, restored as a chip) | Open → Attaching; Stop → kill then exit check; closing the kept "Disconnected" tab → Stop now if the host answers, otherwise **left running** (flag set, listed); Discard (pending) → run row `dismissed_at` |
-| **Left running** (a flag on Detached or Unknown: `left_running_at`, `left_running_reason`) | known or pending | last established | none | run row: when and why (`host did not answer`, `stop not acknowledged`, `another client attached`, `quit deadline`) | nothing automatic, ever: listed in "Sessions on <host>" with the notice and a **Stop** button; Open → Attaching (attaches if it survived; a positive `can't find session` → Ended → new run with `resume`), which clears the flag; the user's Stop → the same one-command kill → acknowledged → Ended |
+| **Left running** (a flag on Detached or Unknown: `left_running_at`, `left_running_reason`) | known or pending | last established | none | run row: when and why (`host did not answer`, `stop not acknowledged`, `another client attached`, `quit deadline`) | nothing automatic, ever: listed in "Sessions on <host>" with the notice, **Stop** and **Keep** (Keep clears the flag: an ordinary Detached session); Open → Attaching (attaches if it survived; a positive `can't find session` → Ended → new run with `resume`), which clears the flag; the user's Stop → the same one-command kill → acknowledged → Ended |
 | **Ended** | known or pending | absent, **proven** by either: the pinned server answered `can't find session`, or Temple's own targeted `kill-session` for this run was **acknowledged** (exit 0) | closed (id known) or a chip saying it ended (pending) | run row `ended_at` and `end_evidence` (`absent` or `killed`); row untouched | Open with id → a new run (Creating with `resume`), automatic because the end was proven; pending: **Start a new session** (new handle, a new Codex session) or Discard |
 | **Unknown** | known or pending | unknown, or `creation unproven` | kept tab with the uncertainty header, or a chip | run row unchanged | Open → Attaching only, never a creation; **Resume anyway** (id known) or **Start a new session** (pending) are explicit buttons whose copy says the original may still be running (section 5); Stop → exit check |
 | **Failed** | known or pending | absent (never created: the pane's own `cd` failed, which only a created pane can report) | kept tab with the launch-failure header | run row with the failure record, `ended_at` | Open → a new run (Creating); close → gone (pending: Discard) |
@@ -331,26 +347,33 @@ ownership: two pending runs in one folder can both match one rollout, and an
 unrelated `codex` can be the sole match, so no directory or time heuristic
 ever adopts on its own.
 
-**Automatic, by the pane's process tree.** The pane script records `$$` and
-its `/proc/$$/stat` start time in the `ok` record and `exec`s the agent
-command, so the pane pid is the first process of the run. Codex's npm
-launcher (`codex.js`) spawns the native binary as a child, so the writer may
-be a descendant, not the pane pid. The identity query, on a bounded
-schedule (2, 5, 15, 60 s after `ok`, then each minute while attached, at the
-exit check, and on each activation):
+**Automatic, by the pane's own process** (as built: phase 1b round 2
+ruling 1 replaced the descendant walk designed here). The pane script
+records `$$` and its `/proc/$$/stat` start time in the `ok` record and
+`exec`s the agent command, so the pane pid is the run's agent. The identity
+query, on a bounded schedule (2, 5, 15, 60 s after `ok`, then each minute
+while attached, at the exit check, and on each activation, not twice in
+5 s):
 
 1. verifies the pane pid is alive with the recorded start time (pid reuse
    defeated), and that tmux's `#{pane_pid}` for the run's session agrees;
-2. walks **descendants only** (`/proc/*/stat` ppid chain from the pane pid,
-   each link's start time later than its parent's, to a depth of 4);
-3. in that tree, collects every `/proc/<pid>/fd/*` link under the remote
-   `.codex/sessions/` named `rollout-*.jsonl` whose `fdinfo` flags show it
-   open for writing;
-4. adopts only when exactly one distinct rollout is found, its header's id
-   equals its filename's id (`CodexFormat.header`), and the tree was fully
-   readable. Anything else (none open at that instant, more than one, an
-   unreadable `fd` or `stat`, a process that vanished mid-walk, no `/proc`)
-   is **inconclusive**: no claim, try again on schedule.
+2. collects every `/proc/<pane pid>/fd/*` link under the run's Codex home's
+   `sessions/` named `rollout-*.jsonl` whose `fdinfo` access mode is write
+   or read-write, and re-reads the start time after;
+3. adopts only when the pane's own process holds exactly one such rollout,
+   its header's id equals its filename's id, its `cwd` is the run's folder
+   and it is not a subagent's thread. A rollout held only by another process
+   (a child, a launcher's native binary, Codex's shared app server, which
+   writes every rollout by default) proves nothing: lastingly inconclusive,
+   and the question takes over. Anything unclear (none open at that instant,
+   more than one, an unreadable `fd`, `fdinfo` or `stat`, a process gone
+   mid-check) is **inconclusive**: no claim, try again on schedule. A host
+   with no `/proc` is lastingly inconclusive.
+
+With Codex's default app server the question identifies the session; with
+`--no-daemon` in the user's Codex arguments the pane's process holds its
+own rollout and is adopted at the first check. Temple passes no flag of its
+own.
 
 **Suggested, by launch evidence, confirmed by the user.** When the automatic
 check stays inconclusive (the file is not held open between writes, the
@@ -363,9 +386,12 @@ session? <first prompt or "(no prompt)">, started <time> in <folder>."
 declines; a declined candidate is not offered again for that run. Nothing is
 adopted until the user says so.
 
-**Uniqueness after the fact.** `runs.session_id` is `UNIQUE(host,
-session_id)`; a verified or confirmed id is written there before the core
-join. A second run that arrives at an id already claimed is refused and
+**Uniqueness after the fact.** As built (astra's implementation note 1,
+phase 1b note 10): a verified or confirmed id is a **claim**, written in
+one immediate transaction before the core join, and a partial unique index
+(`runs_claim`, `(host, session_id) WHERE claim IS NOT NULL`) makes two
+claims of one id impossible, while a session's later runs (its resumes) may
+share its id. A second run that arrives at an id already claimed is refused and
 stays pending ("Temple couldn't tell which Codex session this is."). A join
 refused by core (`hostConflict`, `agentConflict`) clears the claim and shows
 core's reason. Identity checks for one host run serially.
@@ -376,7 +402,7 @@ all Ended or missing → the next Open creates a new run with `resume`, which
 is the "Ended with id" path.
 
 A pending run that is **Ended** without an id shows "Codex ended before
-Temple learned its session id. Its transcript is still on <host>." with the
+Temple learned its session ID. Its transcript is still on <host>." with the
 suggestion question above when there are candidates, and **Start a new
 session** and **Discard** always. Temple never fabricates a row from a handle.
 
@@ -439,7 +465,12 @@ never in a shell word; ids and handles pass a `[A-Za-z0-9._-]` allowlist.
 first and the remote string is a short runner naming the staged file;
 see phase 1a note 22. The script below is the design's first form.)
 
-**Fixed launch script**, arguments `mode dir marker [pane-command]`:
+**Fixed launch script**, arguments `mode dir marker [pane-command]`, in
+the design's first form. As built, records live in `~/.temple/launch/<marker>`
+(checked private before every use; phase 1a note 6), not under `$TMPDIR`;
+the pane is told its config root and Codex home explicitly; the session is
+created with `-c /` and the pane enters the folder itself (note 7); and the
+script is staged on the host and run by a short executor (notes 22, 23).
 
 ```sh
 mode=$1; d=$2; m=$3; pane=$4
@@ -513,8 +544,9 @@ What this guarantees:
 - **Records are atomic** (`mv` over a temp file in the same directory).
 
 The Hosts test executes **this exact chain** detached (phase 0); the
-attached run below is phase 1a's acceptance, not the Test sheet's (see
-the end notes). Detached, on a throwaway socket, from the sheet's query
+attached run below is the Linux acceptance's, not the Test sheet's (as
+built, phase 0 note 2: the sheet's terminal runs the user's ssh and nothing
+else). Detached, on a throwaway socket, from the sheet's query
 phase: `tmux -L
 temple-check-<nonce> -f /dev/null <the same configure commands> \;
 new-session -d -s check -c "$HOME" -e PATH="$PATH" 'exit 0' \;
@@ -609,9 +641,12 @@ and the launch-failure header apply as today when a `failed` record exists.
   → **Stop**: the kill-session query below; its acknowledgement (exit 0) is
   the end evidence, the client exits, `ended_at` is set, the tab goes. No
   prompt, exactly as an idle local tab closes. Reopening later is a new run
-  with `resume` from the transcript. A pending Codex launch that is idle is
-  stopped the same way and its run row is marked ended; its chip offers the
-  suggestion question (if any) or Discard. The decision is made from what
+  with `resume` from the transcript. A pending Codex launch that is idle
+  (as built, phase 1b note 12) gets one more identity check, then the same
+  stop: identified, its tab closes like any; unidentified and typed into,
+  the tab stays with "Codex ended before Temple learned its session ID. Its
+  transcript is still on <host>.", the question, Start a new session and
+  Discard; never typed into, Temple stops tracking it. The decision is made from what
   Temple observed on the connected tab; nothing on the host is asked to
   judge idleness.
 - Agent working → "Claude Code is still working on <host>." [Detach]
@@ -643,9 +678,10 @@ tab is a Close as above (Stop now if the host answers, left running if not).
 offered by every notice above): per enabled host, the sessions **Temple
 started and still tracks** there (runs not Ended), each with its row's
 title, each asked about on its own pinned server (attached or not), with
-Stop / Keep; a session flagged left running shows its notice ("Left
-running: <host> didn't answer when you closed it.") and the same Stop
-button, which runs the one-command kill below. A run that its pinned
+Stop / Keep (Keep clears a left-running flag, Fable's must-fix 6; a
+pending Codex session also has Open); a session flagged left running shows
+its notice ("Left running: <host> didn't answer when you closed it.") and
+the same Stop button, which runs the one-command kill below. A run that its pinned
 server says is gone is Ended and leaves the list; one Temple can't check
 stays, and the sheet says "Temple couldn't check these sessions"; an empty
 tracked list reads "No Temple sessions to show". The sheet is offered by
@@ -656,29 +692,34 @@ never discovers or stops a session it did not start** (owner's decision,
 phase 1a review): there is no listing of the private server and no "Not in
 Temple" row, and it never lists or touches the user's own tmux server.
 
-**Stop**, one non-yielding tmux command sequence in one query client, so
-nothing can attach between the check and the kill:
+**Stop**, as built (astra's implementation notes 4 and 5, phase 1a note
+8). Temple first ends its own client on this Mac (the tab's ssh), then one
+query waits up to a moment for the session's attached count to reach zero,
+and runs one non-yielding tmux command queue in one client, so nothing can
+attach between the check and the kill:
 
 ```
-tmux -S <pinned socket> if-shell -F -t "=temple-<handle>" \
-  '#{==:#{session_attached},<n>}' \
-  'kill-session -t "=temple-<handle>"' \
+tmux -S <pinned socket> has-session -t "=temple-<handle>" \; \
+  if-shell -F -t "=temple-<handle>:" '#{==:#{session_attached},0}' \
+  'kill-session -t =temple-<handle>' \
   'display-message -p temple-not-killed'
 ```
 
-`<n>` is the number of clients Temple itself has attached at that moment:
-1 when the Stop comes from the attached tab (its own ssh client), 0 from
-the sheet, the sidebar or a Disconnected tab. `if-shell -F` evaluates the
-format inside the server and runs the chosen command in the same queue;
-no shell runs and no second client is involved. **Its acknowledgement is
-the end evidence**: exit 0 with no `temple-not-killed` output sets
+The condition is always zero attached clients: an attachment count is not
+a client's identity, so Temple never counts its own client as allowed.
+`has-session` comes first because `if-shell` on a missing session does not
+fail. `if-shell -F` evaluates the format inside the server and runs the
+chosen command in the same queue. **Its acknowledgement is the end
+evidence**: a successful query with no `temple-not-killed` output sets
 `ended_at` with `end_evidence: killed`, whatever a follow-up check would
 say. That matters in the ordinary case: stopping the last session makes the
 private server exit, and a later check reads "no server running", which is
-Unknown in v1 (section 5's liveness table). `temple-not-killed` means
-another client is attached: the session is left running with that reason
-and the notice says so. A lost acknowledgement (deadline, ssh dropped
-mid-query) also leaves it running: the tab's header, or the notice, reads
+Unknown in v1 (section 5's liveness table). Never "exit 0" alone: the
+false branch exits 0 too. `temple-not-killed` means another client is
+attached: the session is left running with that reason and the notice says
+so. A lost acknowledgement (deadline, ssh dropped mid-query) also leaves it
+running, and it is never retried automatically (a cancelled query may
+already have taken effect): the tab's header, or the notice, reads
 "Temple couldn't stop <agent> on <host>: <reason>. It may still be running;
 see Sessions on <host>." No fencing follows: a later Open simply attaches
 if the session survived, or resumes if the pinned server says it is gone.
@@ -700,8 +741,12 @@ with remote work fitted inside it:
    terminate; detach surfaces (remote, working by the tab's gate) get
    `terminate()` at once and no graceful-exit input (that input would reach
    the agent through tmux); `stops` are **remote stop operations** for the
-   remote tabs whose gate is idle and whose host has a live master: each is
-   the one-command Stop above with `<n>` = 1, dispatched in parallel, one
+   remote tabs whose gate is idle and whose host has a live master, and that
+   this launch attached to (a chip restored and never opened is never
+   stopped, phase 1b round 2 ruling 2). Pending Codex runs follow the same
+   policy (round 1 ruling 5); a stopped one that was typed into keeps its
+   ended record so the next launch still asks, and an unused one is
+   dismissed. Each stop is the one-command Stop above, dispatched in parallel, one
    query per run, inside the same window, and its tab's client is
    terminated once the acknowledgement arrives or the window closes. At the
    window's deadline every outstanding query client is cancelled (killed),
@@ -789,26 +834,29 @@ Primitives:
   projects" -mindepth 2 -maxdepth 2 -name "<id>.jsonl"`, Codex `find
   "$HOME/.codex/sessions" -name "rollout-*-<id>.jsonl"`, both `-printf
   '%s\t%T@\t%i\t%p\n'` (size, seconds with nanoseconds, inode, path; GNU),
-  BSD fallback `stat -f '%z %Fm %i %N'`. Roots are the remote `$HOME`'s.
+  BSD fallback `stat -f '%z %Fm %i %N'`. As built (phase 2 note 3) the
+  roots are the ones the session's latest run recorded (or the login
+  environment's for a row with no run), Codex also matches reverts
+  (`rollout-*-<id>_*.jsonl`), links are unreadable, and the row's recorded
+  path is stat'ed as a hint inside its store. Paths compare by bytes
+  (`RemotePath`).
   Candidates get roles from `TranscriptCandidates.assign`; `coverage` bumps
   on the first locate after a transport failure; a thrown exec is
   `LocateError.transport(<first stderr line>)`.
 - **`read`**: one exec printing a framed record, each part length-prefixed:
   opening stat, identity bytes, when `facts` the head and tail windows and
-  the agent's shared inputs (Codex: `session_index.jsonl` whole, and every
-  line of `history.jsonl` that contains the id, `grep -F`, unbounded but
-  proportional to that session), closing stat. Formats stay pure; a
+  the agent's shared inputs (Codex: the lines of `session_index.jsonl` and
+  of `history.jsonl` that contain the id, `grep -F`; as built, phase 2),
+  closing stat, under a 6 MiB response budget checked on the host. Formats stay pure; a
   `needsWiderHead` is one more exec; stats that differ are retried three
   times then `.changedDuringRead`. `identity` is the inode.
 - **`changes()`**: yields nothing; ends only with the consumer.
-- **`adopt`**: section 3's verified check (process tree ownership) returns
-  `.adopted` only on full verification, otherwise `.incomplete`; a second
-  method, `suggest`, returns candidates by directory and time for the user
-  to confirm, and never adopts. `AdoptionRequest` gains optional `handle`,
-  `panePID`, `paneStart`, `socketPath`, `remoteStartedAt` and the canonical
-  directory; the local source ignores them.
-- **`directoryEvidence`**: `test -d`; exit 0 → `.exists`; anything else →
-  `.unknown`, never `.missing`.
+- **`adopt`**: as built, always inconclusive. Codex identity on a host is
+  the run store's (`RemoteSessions`: section 3's check by the pane's own
+  process, and the suggestions the user confirms), not the source's.
+- **`directoryEvidence`**: as built, always `.unknown`, never `.missing`
+  (phase 2: History and the folder sweep ask it per project, and no remote
+  decision uses `.exists`).
 - **`proveAbsent`**: `.unproven`, always.
 - **`catalog`**: not offered; yields one `.storeFailed` and ends if called.
 
@@ -953,8 +1001,11 @@ or as another agent is refused and shown. "Already host-keyed" means
     server_start, creation ('proven' | 'unproven' | 'failed'), ended_at,
     end_evidence ('absent' | 'killed'), left_running_at,
     left_running_reason ('host did not answer' | 'stop not acknowledged' |
-    'another client attached' | 'quit deadline'), dismissed_at, failure,
-    UNIQUE (host, session_id))`.
+    'another client attached' | 'quit deadline'), dismissed_at, failure)`.
+    As built, migrations `r2-conversation` to `r5-input` add the
+    conversation flag, the config root and Codex home the pane ran with,
+    `claim`, `joined_at`, `tab_closed_at` and `input_seen_at`; uniqueness is
+    on claims (`runs_claim`, section 3), not on every row.
   - `declined_candidates(handle, rollout_path, PRIMARY KEY (handle,
     rollout_path))`: suggestions the user said no to.
   - `remote_project_state(host, path, archived, position, PRIMARY KEY
@@ -972,9 +1023,14 @@ or as another agent is refused and shown. "Already host-keyed" means
     handles.
 - **Memory only**: environment, test results, `ssh -G` resolution, socket
   paths, breaker state.
-- **On the host**: `~/.temple/launch/` records (a private directory,
-  checked before every record operation; see the phase 1a notes), the
-  `-L temple` tmux socket.
+- **On this Mac**: the masters' socket files in `<state dir>/ssh/` (or the
+  short fallbacks, section 2).
+- **On the host**: `~/.temple/launch/` records and staged launches (a
+  private directory, checked before every record operation; see the phase
+  1a notes), the `-L temple` tmux socket, and short-lived `umask 077`
+  temporary files under `$TMPDIR` for the environment query and transcript
+  reads (`temple-env.*`, `temple-read.*`, removed on exit). Test
+  connection's tmux check uses a throwaway socket it kills.
 
 ---
 
@@ -991,14 +1047,16 @@ Deleting the feature, should the experiment end:
   feature flag.
 - **Storage**: `remote-state.sqlite` (deleted), `UserDefaults`
   `temple.settings.remoteHosts` (removed), `<state dir>/ssh/` and the
-  fallback `$TMPDIR/temple-ssh-<uid>/` (socket files removed; masters are
-  never terminated, they expire through `ControlPersist`).
+  fallbacks `$TMPDIR/temple-ssh-<uid>/` and `/tmp/temple-ssh-<uid>/`
+  (socket files removed; masters are never terminated, they expire through
+  `ControlPersist`).
 - **Agents left on hosts**: deleting the mappings does not stop anything on
   a host, and must not do so silently. With close meaning stop (section 5),
   what can remain are working agents the user detached from, sessions left
   running because a host did not answer when they were closed. The **Remote sessions
   sheet** (section 5), a standing part of the Hosts card, is the right thing
-  to open before an uninstall: Stop all, or Keep. The manual form for anyone
+  to open before an uninstall: Stop or Keep, per session (as built; there is
+  no Stop all). The manual form for anyone
   reading the release notes later: `tmux -L temple ls` and `tmux -L temple
   kill-session -t temple-<handle>` on the host, or `tmux -L temple attach -t
   temple-<handle>` to pick one up in any terminal. Keep is the default: a
@@ -1117,11 +1175,11 @@ Deleting the feature, should the experiment end:
   after any left-running flag issues no kill command (counted on the exec
   seam), the flag only lists; Open of a left-running session attaches and
   clears the flag, or on `can't find session` goes Ended and resumes; the
-  sheet's Stop runs the same command with `<n>` = 0 and only for a tracked
-  run; nothing untracked is listed or killed; the user's own server never
+  sheet's Stop runs the same zero-attached command and only for a
+  tracked run; nothing untracked is listed or killed; the user's own server never
   queried;
   `drainAll(graceful:detach:stops:)`: parallel one-command stops inside the
-  3 s window with `<n>` = 1, a hung query cancelled at the deadline and its
+  3 s window, each after Temple's own client is ended, a hung query cancelled at the deadline and its
   session flagged `quit deadline`, a host without a live master not asked
   and flagged `host did not answer`, a late acknowledgement inside the
   barrier written and one after it not, the remote store flush bounded by
@@ -1178,6 +1236,16 @@ logged as it presents on each tmux version (`rm` the socket, run
 `has-session`, record the message; this is the evidence that decides whether
 the deferred repair path is ever needed); `KillUserProcesses` detection.
 
+**Acceptance status per box** (as of phase 3; update when it changes):
+
+- [x] `masterblaster-mentes`: phases 0, 1a, 1b and 2 pass, a logged-in
+  Claude conversation and `--resume` included.
+- [ ] `jetson-mentes`: everything passes except the Claude conversation and
+  `--resume` check, which is **incomplete**: `claude` there is not logged in
+  (it stops at onboarding; `claude -p` says "Not logged in"). Log Claude in
+  on jetson and rerun phase 1a's acceptance before the flag ships on (phase
+  1a note 5). Codex and enrichment pass there.
+
 **Manual plan on `masterblaster-mentes`** (screen unlocked, Codex computer
 use per the memory rule; no synthetic input):
 
@@ -1199,7 +1267,9 @@ use per the memory rule; no synthetic input):
 4b. Close while working, Detach: `tmux -L temple ls` still lists it; reopen:
    attached, no second `claude`, no new folder record.
 5. Close while working, Stop: session gone, tab closed. Repeat with Wi-Fi
-   off during Stop: tab kept with the uncertainty line.
+   off during Stop: the tab closes with the notice that the session was
+   left running ("Temple couldn't stop … It may still be running; see
+   Sessions on <host>."), and the sheet lists it.
 5b. Wi-Fi off, then close the "Disconnected" tab of an idle session: the
    notice says it was left running; Wi-Fi on; open a tab to that host: the
    sidebar notice says "1 session left running on masterblaster-mentes",
@@ -1216,7 +1286,8 @@ use per the memory rule; no synthetic input):
    agent: the prompt names the host whose session keeps running; after
    quit, `tmux -L temple ls` shows only the working one; relaunch: both
    chips under the host project; activate each: the idle one resumes from
-   its transcript, the working one attaches.
+   its transcript, the working one attaches. Quit again without activating
+   them: neither is stopped (a chip never opened is never stopped).
 8. Codex (phase 1b as built): new session from ⌘N on the host; no row
    yet, the chip reads "New Codex session". With Settings' Codex extra
    arguments set to `--no-daemon`: after the first prompt the row appears
@@ -1225,9 +1296,11 @@ use per the memory rule; no synthetic input):
    the session? “<prompt>”, started at <time> in <folder>." with Yes,
    that's it and Not this one; Yes: the row appears; Not this one: that
    candidate never comes back for this tab. `tmux -L temple ls` shows the
-   handle name unchanged. Quit before adoption: nothing is stopped;
-   relaunch: the "New Codex session" chip under the host project;
-   activate: attached, then adopted or asked. Close an idle pending tab
+   handle name unchanged. Quit before adoption with the agent working: it
+   is detached; relaunch: the "New Codex session" chip under the host
+   project; activate: attached, then adopted or asked. (Quit with an idle
+   pending tab that was typed into stops it and keeps the question for the
+   next launch; one never typed into is let go.) Close an idle pending tab
    after typing: it stays with "Codex ended before Temple learned its
    session id…", the question, Start a new session and Discard (hover
    Discard: its help tag). Detach a working pending tab: Sessions on
@@ -1305,7 +1378,9 @@ inputs, the breaker, `LocalShellExec`, `RemoteSourceContractTests`, the
 per-host actor, `ModuleBoundaryTests`. You get: a reopened or imported
 remote row that lacked a title, folder or date fills from its transcript.
 
-**Phase 3: ship.** Flag on by default, ADR-036 (this document cut to
+**Phase 3: ship.** Flag on by default (as built: prepared as its own
+commit on the local branch `remote-flag-on`, for the owner to decide; main
+keeps it off), ADR-036 (this document cut to
 decisions, including the ADR-010 amendment and "Removing remote"),
 FEATURES.md (Sidebar, Session lifecycle, Settings, Shortcuts, Security), a
 note in AGENTS.md that remote shipped with no core schema change and
@@ -1354,14 +1429,14 @@ validation; phase 0 and manual step 1 updated. All carried into revision 4.
 | astra P1 §3/§6 | 3.2 fails `allow-passthrough`; Check did not exercise the launch | Floor 3.2 with `set -gq allow-passthrough` (explicitly optional, reported); the test executes the exact launch chain with `-e` on a throwaway socket, stderr preserved (sections 4, 7). |
 | astra P1 §3 | `ok` preceded the pane's own directory; attach could report `ok` | The pane command does the `cd`, the timestamp, `pwd -P`, the pid record and the `exec`; attach runs no pane command and yields no record; no `has-session` pre-check (section 4). |
 | astra P1 §3/§7 | pending launches had no reopening route; `PersistedTab.sessionID` non-optional | Launches are the tracked unit in `remote-state.sqlite`; a pending Codex launch is a tab or a chip restored from its launch row, reopenable by handle, never a fabricated row; `open_tabs` holds only tabs with an id (sections 3, 8). |
-| astra P1 §3 | `/proc` adoption not a complete protocol | Pid and start time recorded by the pane itself (no tree walk, pid reuse defeated), writable-fd check, header equals filename, inconclusive on anything unclear, fallback after exit, `UNIQUE(host, session_id)` so a lone candidate is never claimed twice, serial adoption per host (section 3). |
+| astra P1 §3 | `/proc` adoption not a complete protocol | Pid and start time recorded by the pane itself (no tree walk, pid reuse defeated), writable-fd check, header equals filename, inconclusive on anything unclear, fallback after exit, `UNIQUE(host, session_id)` (**superseded** by astra's implementation note 1: uniqueness is on claims) so a lone candidate is never claimed twice, serial adoption per host (section 3). |
 | astra P1 §3/§7 | canonical dir updated the row only | `applyLaunchDirectory` updates row, tab, project bookkeeping, launch row and the next save in one operation; grouping derives from `session_state` (section 5). |
 | astra P1 §7 | whole-array ledger; adoption without mapping; remote masks outside transactions | Per-row SQLite in the remote store; id written there before the join with uniqueness; startup reconciliation; `remote_project_state` written by the same archive/restore/undo operations; failing pre-spawn writes refuse the open; read failures refuse rather than mint (sections 3, 8). |
 | astra P1 §4 | `has-session` had no negative-proof contract | Three-valued contract by exit code and stderr pattern, stderr kept, bound to launch generation, rechecked against user close and quit; only a positive absence closes or marks Ended (section 5). |
 | astra P2 §2 | Remove killed a shared master; fallback dir collided; `-O check` unlinked live sockets | No `-O exit` anywhere; socket key includes state dir and parameters; removal only on `ECONNREFUSED` (section 2). |
 | astra P2 §5 | enrichment scheduling misdescribed; 64 KiB claim | Honest description of the engine's startup locate and backoff, a circuit breaker in the source, `complete` always empty with its consequence stated, shared inputs fetched whole (section 6). |
 | astra P2 §6/§10 | registration depended on Check | Enabled hosts are registered regardless; the registry is rebuilt on list change; tests are diagnostics (section 7). |
-| owner | additive `host` on `open_tabs`/`project_state`, v13, accepted window | `open_tabs.host` additive with backfill and per-path positions; `project_state` left alone because remote project state is remote-only data (next row); the window accepted and documented (section 8). |
+| owner | additive `host` on `open_tabs`/`project_state`, v13, accepted window | **Superseded** by revision 6 (no core schema change). `open_tabs.host` additive with backfill and per-path positions; `project_state` left alone because remote project state is remote-only data (next row); the window accepted and documented (section 8). |
 | owner | remote-only data in remote-owned storage; "Removing remote" | `remote-state.sqlite` (launches, remote project state), `UserDefaults` hosts, `<state dir>/ssh/`; nothing remote-specific in `session_state`; section 9 lists exactly what deletion removes and what rows a user keeps. |
 | owner | keep-alive on merit, not only tmux | Section 4's evaluation: tmux hidden chosen; shpool the runner-up behind a `KeepAlive` protocol; dtach/abduco rejected on reattach; helper rejected for an experiment. |
 | owner | scrolling and ⌘F under hidden tmux | `mouse on`, 50k history, wheel-to-copy-mode with `-e`, `Any` cancels, drag copies via OSC 52, ⇧-drag native, ⌘F stays libghostty's over what the tab received, with the find-bar note (section 4). |
@@ -1370,12 +1445,12 @@ validation; phase 0 and manual step 1 updated. All carried into revision 4.
 
 | source | finding | what changed |
 |---|---|---|
-| blocker §3 | uniqueness mistaken for ownership; two pending runs or an unrelated `codex` can match one rollout | No automatic heuristic adoption. Automatic only on launch-specific evidence: the pane's own process tree (descendants walked with start-time ordering, because Codex's npm launcher spawns the native child) holding the rollout open for writing, header equal to filename, tree fully readable; anything else inconclusive. Directory and time matches are suggestions the user confirms in the tab or chip; declined candidates are remembered; ambiguous runs stay pending and reopenable by handle (section 3; `adopt` / `suggest` in section 6; tests in section 11). |
-| blocker §§3,5 | socket reachability became permission to restart; 3.2a's `error connecting … (No such file or directory)` missing | Attach-only from Unknown and for every previously started handle; creation and attachment are different commands (`new-session` without `-A` on first Open, `attach-session` after); automatic `resume` only when absence is proven against the **pinned server** (socket path, server pid and start time recorded by the pane's `$TMUX`); the lost-socket case checks the pinned pid, repairs with `SIGUSR1` and retries, and is absence only when the pid is gone or reused; otherwise an explicit **Start a new run** whose copy says the original may still be running and how to stop it from the host (sections 3, 4, 5). |
+| blocker §3 | uniqueness mistaken for ownership; two pending runs or an unrelated `codex` can match one rollout | (The descendant walk is **superseded** by phase 1b round 2: only the pane's own process is adopted.) No automatic heuristic adoption. Automatic only on launch-specific evidence: the pane's own process tree (descendants walked with start-time ordering, because Codex's npm launcher spawns the native child) holding the rollout open for writing, header equal to filename, tree fully readable; anything else inconclusive. Directory and time matches are suggestions the user confirms in the tab or chip; declined candidates are remembered; ambiguous runs stay pending and reopenable by handle (section 3; `adopt` / `suggest` in section 6; tests in section 11). |
+| blocker §§3,5 | socket reachability became permission to restart; 3.2a's `error connecting … (No such file or directory)` missing | (The `SIGUSR1` repair here is **superseded** by revision 6: deferred, a missing socket is unknown.) Attach-only from Unknown and for every previously started handle; creation and attachment are different commands (`new-session` without `-A` on first Open, `attach-session` after); automatic `resume` only when absence is proven against the **pinned server** (socket path, server pid and start time recorded by the pane's `$TMUX`); the lost-socket case checks the pinned pid, repairs with `SIGUSR1` and retries, and is absence only when the pid is gone or reused; otherwise an explicit **Start a new run** whose copy says the original may still be running and how to stop it from the host (sections 3, 4, 5). |
 | nit §§3-5,8 | run identity vs attachment generation; record recovery; `failed tmux` semantics | Run (durable handle) separated from attachment (per Open, what async results bind to); `record_path` persisted at spawn and recovered on the next Open before attaching; `failed tmux` is `creation unproven` → Unknown → attach-only; the state table rewritten with Creating / Attaching rows and these transitions, each a listed test (sections 3, 8, 11). |
 | nit §§3,4,11 | executable and terminal boundaries: npm wrapper, `TERM=xterm-ghostty`, tilde only in the outer wrapper | Process-tree walk (above); local `TERM=xterm-256color` for the ssh process, `tmux-256color` inside, an attached-client test in the sheet's own surface; tilde expansion moved into the pane script and tested through the complete pane command; acceptance on the installed CLIs at `~/.local/bin` on both boxes as they are (24.04/x86_64/tmux 3.4 and 22.04/aarch64/tmux 3.2a) with the result per box recorded (sections 4, 11). |
 | nit §8 | cross-store archive repair asserted without a mechanism | Stated plainly: no remote sweep; recovery of a mask out of step with its rows is another user Restore or Undo, which rewrites the mask from the rows; tested with a simulated crash (sections 8, 11). |
-| nit §§8,9,12 | removal left detached agents and fallback sockets unaccounted; isolation claim stale; phase-1 restoration untested before v13 | "Removing remote" gains the hosts sheet (list runs per host, Stop all or Keep, and the manual tmux commands for later) and the fallback socket dir, with masters never terminated; the hosts setting goes through `TempleState.settingsDefaults` so a demo follows `TEMPLE_DEFAULTS_SUITE`; phase-1 restoration with the host taken from the `session_state` row is tested on the v12 schema before the v13 migration exists (sections 8, 9, 11, 12). |
+| nit §§8,9,12 | removal left detached agents and fallback sockets unaccounted; isolation claim stale; phase-1 restoration untested before v13 | "Removing remote" gains the hosts sheet (list runs per host, Stop all or Keep (**superseded**: as built, Stop or Keep per session), and the manual tmux commands for later) and the fallback socket dir, with masters never terminated; the hosts setting goes through `TempleState.settingsDefaults` so a demo follows `TEMPLE_DEFAULTS_SUITE`; phase-1 restoration with the host taken from the `session_state` row is tested on the v12 schema before the v13 migration exists (sections 8, 9, 11, 12). |
 
 ## Approval (astra, round 4) and implementation notes
 
@@ -1405,9 +1480,9 @@ branch, and the wrapper's `failed tmux` recorded apart from the pane's `ok`.
 | # | owner's point | what changed |
 |---|---|---|
 | 1 | close an idle tab, host reachable | Close means stop, as locally (ADR-010): kill-session on the pinned socket, confirmed by the exit check, `ended_at`; reopening later resumes from the transcript. Working: Detach/Stop/Cancel unchanged (section 5; state table rows Running and Detached). |
-| 2 | close when the host is unreachable | `stop_requested_at` on the run row; the tab goes with a notice; carried out at the next contact. (Revision 7 judged idleness from 120 s of silence; revision 8 replaces that: the request records the tab's last observed gate, silence never confirms, and the sweep stops only an idle-when-last-seen session that nobody has attached to since.) New **Stop requested** row in the state table (sections 3, 5, 8). |
-| 3 | quit | `drainAll(graceful:detach:stops:)`: working remote agents detach; idle ones on reachable hosts are stopped in parallel inside the existing bounded drain, request written first and cleared on acknowledgement; unreachable ones keep the request. Quit is never delayed by a host. Prompt copy: "Sessions working on <host> keep running; Temple will reconnect to them." (section 5; the policy for deferred stops is corrected in revision 8). |
-| 4 | orphans | On each contact, sessions on Temple's private server with no run row are listed in the Remote sessions sheet (now a standing part of the Hosts card) as "Not in Temple" with Stop / Keep, never stopped automatically; the user's own tmux server is never queried (sections 5, 9). |
+| 2 | close when the host is unreachable | **Superseded** by revision 9 (no deferred stops; left running instead). `stop_requested_at` on the run row; the tab goes with a notice; carried out at the next contact. (Revision 7 judged idleness from 120 s of silence; revision 8 replaces that: the request records the tab's last observed gate, silence never confirms, and the sweep stops only an idle-when-last-seen session that nobody has attached to since.) New **Stop requested** row in the state table (sections 3, 5, 8). |
+| 3 | quit | (The requests here are **superseded** by revision 9: unacknowledged stops are left running.) `drainAll(graceful:detach:stops:)`: working remote agents detach; idle ones on reachable hosts are stopped in parallel inside the existing bounded drain, request written first and cleared on acknowledgement; unreachable ones keep the request. Quit is never delayed by a host. Prompt copy: "Sessions working on <host> keep running; Temple will reconnect to them." (section 5; the policy for deferred stops is corrected in revision 8). |
+| 4 | orphans | **Superseded** by phase 1a note 1 (the owner's decision: Temple never discovers or stops a session it did not start; no "Not in Temple" rows). On each contact, sessions on Temple's private server with no run row are listed in the Remote sessions sheet (now a standing part of the Hosts card) as "Not in Temple" with Stop / Keep, never stopped automatically; the user's own tmux server is never queried (sections 5, 9). |
 | 5 | disconnect without close | Nothing changes on the host; the tab stays "Disconnected" and reconnects; closing that tab is a Close as in 1 or 2 (section 5). |
 | | tests and acceptance | Lifecycle tests for every branch above and the contact sweep; manual steps 4, 4b, 5, 5b, 7, 7b rewritten (sections 11). |
 
@@ -1442,7 +1517,7 @@ Approved 2026-10-16 (fable final read of the lifecycle changes). Must-fix for ph
 
 6. **Keep clears the flag.** In "Sessions on <host>", Keep on a left-running session clears `left_running_at`/`left_running_reason` (it becomes an ordinary Detached session), so the state table's Left running row exits by Open, Stop **or Keep**. The sidebar line "N sessions left running on <host>" shows once per flag (dismissed or acted on, it does not return on the next contact), so a session the user chose to keep never nags.
 
-Adopt astra's note 4 (detach Temple's own client, require zero attached) before 1a lands. Not in v1: growing the "Not in Temple" rows; a "still running" nudge for sessions detached while working (the v1.1 lever if acceptance shows they get forgotten).
+Adopt astra's note 4 (detach Temple's own client, require zero attached) before 1a lands. Not in v1: growing the "Not in Temple" rows (**superseded**: phase 1a note 1 removed those rows altogether); a "still running" nudge for sessions detached while working (the v1.1 lever if acceptance shows they get forgotten).
 
 ## Phase 0 as built (implementation notes)
 
@@ -1843,7 +1918,9 @@ What the boxes showed, which shaped the build:
    account. On masterblaster that server runs from before (ppid 1), so the
    pane's tree holds no rollout and the check reads "no session file is
    open right now". On jetson the first TUI started it as its own child,
-   inside the tree, where it could have held another TUI's rollout: a
+   inside the tree, where it could have held another TUI's rollout (the
+   tree walk here is **superseded** by round 2 ruling 1: only the pane's own
+   process counts, so any other writer is inconclusive): a
    process whose argv names `app-server` holding a rollout makes the walk
    inconclusive (`lasting`, "a shared Codex app server writes this
    session's transcript"), never a claim. With `codex --no-daemon` the
@@ -1858,7 +1935,9 @@ What the boxes showed, which shaped the build:
    injected blocks (no `user_message` event): the question names it
    through `CodexFormat.firstTypedPrompt`, which skips items that begin
    with `<`. The local catalog's titles are unchanged.
-8. **The walk** reads every `/proc/<pid>/stat` with the shell's `read`
+8. **The walk** (**superseded** in part by round 2 ruling 1: descendants
+   are no longer candidates; the pane's own process is the only writer that
+   counts) reads every `/proc/<pid>/stat` with the shell's `read`
    (no process per entry) past the last `)`, walks descendants of the
    pane pid whose start time is no earlier than their parent's, to a
    depth of 4, verifies the pane pid's start time and tmux's
@@ -1910,7 +1989,8 @@ What the boxes showed, which shaped the build:
     Detach keeps it running, closes its tab (`tab_closed_at`) and lists it
     under Sessions on <host>, which gains Open for a pending session. A
     quit never stops a pending run (it could not be resumed without its
-    id): it detaches. Pending runs not discarded, never failed and whose
+    id): it detaches. (**Superseded** by round 1 ruling 5: pending runs
+    follow the quit policy of any run.) Pending runs not discarded, never failed and whose
     tab was not closed restore at launch as chips from the runs alone.
     Discard of a pending session dismisses its run; no row is ever made
     from a handle.
@@ -1932,7 +2012,8 @@ apart from the name; every Test connection row has Show output.
 
 ## Phase 1b round 1 (sol and astra review; Fable's decisions; the coordinator's rulings)
 
-1. **Ownership, not descendance.** A rollout is adopted only when the
+1. **Ownership, not descendance.** (The launcher exception here is
+   **superseded** by round 2 ruling 1.) A rollout is adopted only when the
    pane's own process holds it, or, when the pane is a launcher shim (an
    interpreter whose arguments name a script `codex` or `codex.js`, as
    Codex's npm package installs), its direct child that is the launched
