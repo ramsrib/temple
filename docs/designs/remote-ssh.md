@@ -660,7 +660,7 @@ and the launch-failure header apply as today when a `failed` record exists.
   Temple observed on the connected tab; nothing on the host is asked to
   judge idleness.
 - Agent working → "Claude Code is still working on <host>." with the
-  message "Detach keeps it working on <host>; Stop ends it." (remote UX
+  message "Detach leaves it running; Stop ends it." (remote UX
   round 1, the same alert shape as local's) [Detach]
   (default) [Stop] [Cancel], decided synchronously in the tab's own prompt.
   Detach is `terminate()` on the local ssh client; the agent keeps working
@@ -2698,8 +2698,9 @@ changed, by finding:
   session whose state or identity is unknown, the bolt for a dropped
   connection, the triangle for a stop that failed.
 - **The working prompt explains itself** (UX 4). The remote "still working"
-  alert gains local's message line: "Detach keeps it working on <host>;
-  Stop ends it." Buttons unchanged.
+  alert gains local's message line: "Detach leaves it running; Stop ends
+  it." (shortened in the fix round: the title names the host, and the
+  longer line orphaned "it."). Buttons unchanged.
 - **The selection follows the active tab** (visual 7). The sidebar's
   highlight was set only when the newly active tab had an id, so a pending
   Codex tab left the previous tab's row selected, and one identified while

@@ -907,7 +907,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
                 .hasPrefix(RemoteCopy.leftRunningLine("box", reason: reason)))
         }
         XCTAssertEqual(RemoteCopy.noTrackedSessions, "No sessions started from Temple.")
-        XCTAssertEqual(RemoteCopy.stillWorkingMessage("box"), "Detach keeps it working on box; Stop ends it.")
+        XCTAssertEqual(RemoteCopy.stillWorkingMessage, "Detach leaves it running; Stop ends it.")
         // Sessions on <host> in the app's words; the tmux name is a tooltip.
         XCTAssertEqual(RemoteCopy.trackedState(.present(attached: true), openHere: true), "Open in Temple")
         XCTAssertEqual(RemoteCopy.trackedState(.present(attached: true), openHere: false), "Running",
@@ -924,7 +924,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         let copy = [RemoteCopy.codexEndedPending("box"), RemoteCopy.couldNotTell, RemoteCopy.noDaemonHint,
                     RemoteCopy.codexEndedQuestion("box", suggestion: suggestion()),
                     RemoteCopy.endedOutputUnavailable("box", agent: .codex), RemoteCopy.sessionsOn("box"),
-                    RemoteCopy.stillWorking("box", agent: .codex), RemoteCopy.stillWorkingMessage("box"),
+                    RemoteCopy.stillWorking("box", agent: .codex), RemoteCopy.stillWorkingMessage,
                     RemoteCopy.resumeAnyway("box"),
                     RemoteCopy.startNewPending("box"), RemoteCopy.stopHint("box"), RemoteCopy.discardHelp(archives: true),
                     RemoteCopy.discardHelp(archives: false), RemoteCopy.discardPendingHelp("box"),

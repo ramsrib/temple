@@ -322,7 +322,7 @@ then relaunch, turns it on.
 - **Closing a tab** means what it means locally. An idle agent is stopped,
   at once and without asking, and opening the session later resumes it from
   its transcript. A working one asks "Claude Code is still working on
-  <host>." ("Detach keeps it working on <host>; Stop ends it.") with
+  <host>." ("Detach leaves it running; Stop ends it.") with
   **Detach** (the default: it keeps working, and you can open it again),
   **Stop** and **Cancel**.
 - **Left running.** When the host does not answer as you close a tab, or

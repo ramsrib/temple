@@ -146,7 +146,7 @@ public struct RootView: View {
             Button("Cancel", role: .cancel) { model.openSessions.remoteTabs.cancelClose() }
         } message: {
             if let tab = model.openSessions.pendingRemoteCloseTab {
-                Text(RemoteCopy.stillWorkingMessage(tab.host.rawValue))
+                Text(RemoteCopy.stillWorkingMessage)
             }
         }
         .sheet(item: $model.remoteSessionsSheet) { request in
