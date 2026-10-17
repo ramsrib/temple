@@ -2832,7 +2832,10 @@ patch, and two were removed rather than fixed again.
   first prompt, so `AppModel.titleHints` holds it by session id and
   `displayTitle` shows it while the row has no name and no title fact, so
   the sidebar never flashes "New Codex session". Display only, never
-  written; dropped once the fill writes the title. The ended tab's terminal
+  written; dropped once the fill writes the title. It is seeded only as
+  the tab's part of `.identityResult` (nothing after the tab's close, the
+  quit or the host's retirement), and only when the claim answers with the
+  candidate's own id, compared by bytes (sol round 4). The ended tab's terminal
   title (for example "Reply ok | temple-ux3") is no longer pushed as the
   session's generated title, since the fill titles the row.
 - **The ended band fits a narrow window.** `ViewThatFits` on the band row:
