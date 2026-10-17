@@ -69,7 +69,7 @@ private struct SessionTerminalView: View {
                 // A tab on a host shows its own headers only: its ssh ending
                 // is not its agent ending (checking, stopping: nothing yet).
                 if remote.phase == .connected, remote.stillConnecting {
-                    notice(symbol: "hourglass", text: RemoteCopy.stillConnecting(tab.host.rawValue)) {
+                    notice(symbol: "hourglass", text: RemoteCopy.stillConnecting(displayHost)) {
                         EmptyView()
                     } dismiss: {
                         Button("Cancel") { model.openSessions.remoteTabs.cancelConnect(tab) }
@@ -96,7 +96,7 @@ private struct SessionTerminalView: View {
                     // the bottom, stays clear of it.
                     .overlay(alignment: .topTrailing) {
                         TerminalFindOverlay(find: tab.find,
-                                            note: tab.host.isLocal ? nil : RemoteCopy.findNote(tab.host.rawValue))
+                                            note: tab.host.isLocal ? nil : RemoteCopy.findNote(displayHost))
                     }
             } else {
                 Color.clear.onAppear {
@@ -187,39 +187,62 @@ private struct SessionTerminalView: View {
     /// band, the question first ("Codex ended on <host> before Temple
     /// learned which session this was. Is it …?"), its answers and Start a
     /// new session after it, Discard at the trailing edge. One candidate at
-    /// a time: "Not this one" brings the next.
+    /// a time: "Not this one" brings the next. Where the sentence and its
+    /// answers don't fit on one line, the sentence takes the band's width
+    /// and the answers sit on a row beneath it, Discard still trailing.
     private func endedBand(_ host: String, _ remote: RemoteTabState) -> some View {
         let candidate = remote.suggestions.first
         return VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 9) {
-                Image(systemName: "questionmark.circle")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Text(candidate.map { RemoteCopy.codexEndedQuestion(host, suggestion: $0) }
-                     ?? RemoteCopy.codexEndedPending(host))
-                    .font(.system(size: 12))
-                    .textSelection(.enabled)
-                if let candidate { answers(to: candidate, remote) }
-                Button("Start a new session") { model.openSessions.remoteTabs.startNewPending(tab) }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(remote.confirming != nil)
-                Spacer(minLength: 8)
-                Button("Discard") { model.openSessions.remoteTabs.discardPending(tab) }
-                    .help(RemoteCopy.discardPendingHelp(host))
-                    .buttonStyle(.neutralLink)
-                    .font(.system(size: 12))
-                    .disabled(remote.confirming != nil)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                    endedSentence(host, candidate)
+                    endedAnswers(host, candidate, remote)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    endedSentence(host, candidate)
+                    endedAnswers(host, candidate, remote)
+                        .padding(.leading, 20)
+                }
             }
             identityCaptions(remote)
         }
         .band()
     }
 
+    /// The ended band's question (or the fact alone, with no candidate).
+    private func endedSentence(_ host: String, _ candidate: RemoteSuggestion?) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 9) {
+            Image(systemName: "questionmark.circle")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Text(candidate.map { RemoteCopy.codexEndedQuestion(host, suggestion: $0) }
+                 ?? RemoteCopy.codexEndedPending(host))
+                .font(.system(size: 12))
+                .textSelection(.enabled)
+        }
+    }
+
+    /// The ended band's answers, leading, and Discard at the trailing edge.
+    private func endedAnswers(_ host: String, _ candidate: RemoteSuggestion?, _ remote: RemoteTabState) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            if let candidate { answers(to: candidate, remote) }
+            Button("Start a new session") { model.openSessions.remoteTabs.startNewPending(tab) }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(remote.confirming != nil)
+            Spacer(minLength: 8)
+            Button("Discard") { model.openSessions.remoteTabs.discardPending(tab) }
+                .help(RemoteCopy.discardPendingHelp(host))
+                .buttonStyle(.neutralLink)
+                .font(.system(size: 12))
+                .disabled(remote.confirming != nil)
+        }
+    }
+
     /// Where an ended session's terminal was: the pane's last screen is not
     /// kept, and one line says so, at once (nothing is fetched).
     private var endedScreen: some View {
-        Text(RemoteCopy.endedScreenNotKept(tab.host.rawValue, agent: tab.agent))
+        Text(RemoteCopy.endedScreenNotKept(displayHost, agent: tab.agent))
             .font(.system(size: 12))
             .foregroundStyle(.tertiary)
             .textSelection(.enabled)
@@ -227,6 +250,10 @@ private struct SessionTerminalView: View {
             .padding(.vertical, 14)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
+
+    /// The tab's host as its bands name it: display only, with non-breaking
+    /// hyphens, so a name like masterblaster-mentes wraps whole.
+    private var displayHost: String { RemoteCopy.displayHost(tab.host.rawValue) }
 
     /// What a remote tab's header says, by phase; nil for none.
     private enum RemoteHeader {
@@ -258,7 +285,7 @@ private struct SessionTerminalView: View {
     /// state or identity unknown), a connection, a failure.
     @ViewBuilder
     private func remoteHeader(_ header: RemoteHeader) -> some View {
-        let host = tab.host.rawValue
+        let host = displayHost
         switch header {
         case .failure:
             if case .exited(let status) = tab.activity { launchFailure(status: status) }

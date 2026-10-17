@@ -403,6 +403,13 @@ public enum RemoteCopy {
     /// names the host).
     public static let stillWorkingMessage = "Detach leaves it running; Stop ends it."
 
+    /// A host's name as a sentence shows it: each hyphen non-breaking
+    /// (U+2011), so the name wraps whole, never at "-". Display only: never
+    /// a name Temple connects to, stores or compares.
+    public static func displayHost(_ host: String) -> String {
+        host.replacingOccurrences(of: "-", with: "\u{2011}")
+    }
+
     /// "Sessions on <host>": the sheet's title and the button that opens it.
     public static func sessionsOn(_ host: String) -> String { "Sessions on \(host)" }
 
