@@ -132,7 +132,7 @@ open tabs; any other session returns the next time it is opened
   belongs to the project of its folder on that host. That project's heading
   is one line, like a local one, with the host after the name:
   `› TEMPLE-DEMO  @masterblaster-mentes ───`, the host lowercase as it is
-  spelled and quieter than the name, giving way first on a narrow sidebar;
+  spelled and quieter than the name, giving way before the name on a narrow sidebar;
   hover it for `host:/path`. A session's missing title, folder or date fills from its
   transcript on the host, looked up by its id when Temple starts and when you
   open it. Temple never dims, tags or archives a session on a host because
