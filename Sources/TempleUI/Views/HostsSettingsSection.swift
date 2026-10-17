@@ -46,6 +46,7 @@ struct HostsSettingsSection: View {
                         hosts.save(record, editing: request.editing?.name)
                         testAfterForm = thenTest ? record.name : nil
                     }
+                    .remoteSheet(model)
                 }
             Color.clear
                 .sheet(item: $test) { test in
@@ -56,6 +57,7 @@ struct HostsSettingsSection: View {
                                         onTestAgain: { startTest(test.record.name) },
                                         onClose: { self.test = nil })
                         .onDisappear { hosts.endTest(test) }
+                        .remoteSheet(model)
                 }
         }
     }

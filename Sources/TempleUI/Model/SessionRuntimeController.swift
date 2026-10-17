@@ -76,10 +76,16 @@ public final class SessionRuntimeController {
         for surface in running { surface.requestGracefulExit() }
         let timeout = gracefulTimeout
         Task { @MainActor in
-            let deadline = Date().addingTimeInterval(timeout)
-            while Date() < deadline {
-                if !running.contains(where: Self.isRunning), (remote?.stopsOutstanding ?? 0) == 0 { break }
-                try? await Task.sleep(nanoseconds: 50_000_000)
+            if running.isEmpty {
+                // Only stops on hosts to wait for: done when they are.
+                let deadline = Date().addingTimeInterval(timeout)
+                while Date() < deadline, (remote?.stopsOutstanding ?? 0) > 0 {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+            } else {
+                // This Mac's agents get the whole window, exactly as before
+                // remote; stops on hosts run inside it.
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
             }
             for surface in running where Self.isRunning(surface) { surface.terminate() }
             remote?.expireStops()

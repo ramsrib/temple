@@ -1092,8 +1092,9 @@ private struct ProjectDisclosure: View {
             if let line = title.hostLine { hostLine(line) }
         }
         .frame(height: title.rowHeight, alignment: .top)
-        // A project on a host says where it is: `host:/absolute/path`.
-        .help(ProjectHeaderTitle.help(project.key))
+        // A project on a host says where it is: `host:/absolute/path`. A
+        // project on this Mac has no tooltip, as before remote.
+        .helpIfAny(ProjectHeaderTitle.help(project.key))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(project.name)
         .accessibilityAddTraits(.isHeader)
@@ -1216,4 +1217,13 @@ struct ProjectHeaderTitle: Equatable {
 
     /// The tooltip: `host:/path` on a host, nothing here.
     static func help(_ key: ProjectKey) -> String { key.host.isLocal ? "" : "\(key.host.rawValue):\(key.path)" }
+}
+
+private extension View {
+    /// A tooltip only when there is something to say: none at all (not an
+    /// empty one) otherwise.
+    @ViewBuilder
+    func helpIfAny(_ text: String) -> some View {
+        if text.isEmpty { self } else { help(text) }
+    }
 }

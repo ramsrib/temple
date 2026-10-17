@@ -71,7 +71,8 @@ final class GhosttyRuntimeTests: XCTestCase {
         GhosttyApp.shared.update(appearance: TerminalAppearance(fontSize: 17, colorScheme: .dark))
         let written = try String(contentsOf: state.appendingPathComponent("ghostty.conf"), encoding: .utf8)
         XCTAssertTrue(written.contains("font-size = 17"))
-        XCTAssertTrue(written.contains("cursor-click-to-move = false"), "no input path from an ordinary click")
+        XCTAssertFalse(written.contains("cursor-click-to-move"),
+                       "libghostty's own prompt-click behaviour, app-wide, as before remote")
     }
 
     // T6: argv → shell command line quoting.

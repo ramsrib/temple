@@ -620,8 +620,11 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         }
     }
 
-    /// Whether a `.running` tab may be closed as at rest now, before the
-    /// settle timer has fired: only on positive evidence that the agent has
+    /// Whether a `.running` tab **on a host** may be closed as at rest now,
+    /// before the settle timer has fired. A tab on this Mac never is: its
+    /// close keeps the timer's reading, exactly as before remote (the rule
+    /// exists for a host, where a reopen boots into running and a close
+    /// asks Detach or Stop). Only on positive evidence that the agent has
     /// done nothing this spawn. The spawn started the agent (a launch, a
     /// reopen's resume; never a reattach to a running remote run), its
     /// terminal received no input since (no key at all, no committed or
@@ -636,7 +639,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// not ask: it keeps the timer's reading (there a working agent on a
     /// host is detached, not stopped).
     public func isAtRestNow(_ tab: SessionTab) -> Bool {
-        guard tab.kind == .session, tab.activity == .running, !activeSinceSpawn.contains(tab.id),
+        guard tab.kind == .session, tab.remote != nil, tab.activity == .running, !activeSinceSpawn.contains(tab.id),
               !inputSinceSpawn.contains(tab.id),
               let changed = lastTitleChange[tab.id] else { return false }
         return Date().timeIntervalSince(changed) >= titleQuietWindow
@@ -756,8 +759,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// exited / inert chip / Settings) closes immediately.
     public func requestClose(tabID: SessionTab.ID) {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
-        // An agent that has done nothing since it spawned is at rest once
-        // its title is quiet, whether or not the settle timer has fired.
+        // On a host, an agent that has done nothing since it spawned is at
+        // rest once its title is quiet, whether or not the settle timer has
+        // fired. Never on this Mac (`isAtRestNow`).
         if isAtRestNow(tab) { settleNow(tab) }
         // A working agent on a host: Detach (it keeps working) or Stop.
         if tab.kind == .session, tab.remote != nil, tab.hasLiveProcess, tab.activity == .running {
@@ -1220,12 +1224,14 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
     }
 
     /// libghostty's pwd stand-in for a title (the program set an empty one,
-    /// or reported a pwd before any): a title change for every activity
-    /// signal, exactly as before, but never shown on the tab or kept on the
-    /// row (for a tab on a host it is this Mac's home).
+    /// or reported a pwd before any). On this Mac it is a title like any
+    /// other, shown and kept, exactly as before remote (it is the tab's own
+    /// folder). On a host it is this Mac's home, never the agent's: a title
+    /// change for every activity signal, but not shown on the tab or kept
+    /// on the row.
     public func surface(_ surface: TerminalSurface, didUpdateStandInTitle title: String) {
         guard !isQuitting, let tab = tab(for: surface) else { return }
-        titleChanged(tab, raw: title, shown: false)
+        titleChanged(tab, raw: title, shown: tab.host.isLocal)
     }
 
     private func titleChanged(_ tab: SessionTab, raw title: String, shown: Bool) {

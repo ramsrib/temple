@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import TempleCore
 
 /// A line at the foot of the rail about sessions left running on a host.
@@ -130,4 +131,23 @@ extension AppModel {
         remoteFolderSheet = nil
         openSessions.newSession(agent: agent, project: ProjectKey(host: host, path: folder))
     }
+}
+
+/// Marks a sheet as remote's while it is up (`AppModel.openRemoteSheets`),
+/// so the key catcher leaves every key to it. Remote's sheets only: the
+/// catcher treats every other window exactly as it did before remote.
+private struct RemoteSheetMarker: ViewModifier {
+    let model: AppModel
+    @State private var token = UUID()
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { model.openRemoteSheets.insert(token) }
+            .onDisappear { model.openRemoteSheets.remove(token) }
+    }
+}
+
+extension View {
+    /// This sheet is remote's: keys are its own while it is up.
+    func remoteSheet(_ model: AppModel) -> some View { modifier(RemoteSheetMarker(model: model)) }
 }

@@ -170,6 +170,17 @@ final class RemoteAppTests: XCTestCase {
         app.remoteFolderSheet = nil
         app.showRemoteSessions(hostID)
         XCTAssertFalse(catcher.handle(returnKey(), app), "the Sessions sheet owns Return too")
+        app.remoteSessionsSheet = nil
+        // Any other remote sheet (the Hosts card's, a tab's confirmation)
+        // is marked while it is up; nothing else changes the catcher.
+        app.openSessions.showHome()
+        XCTAssertTrue(catcher.handle(returnKey(), app), "no remote sheet: as before")
+        let marker = UUID()
+        app.openRemoteSheets.insert(marker)
+        XCTAssertFalse(catcher.handle(returnKey(), app), "a marked remote sheet owns Return")
+        app.openRemoteSheets.remove(marker)
+        app.openSessions.showHome()
+        XCTAssertTrue(catcher.handle(returnKey(), app))
     }
 
     /// A host's project heading: its first line is exactly a local one (the

@@ -12,7 +12,11 @@ struct TerminalFindOverlay: View {
     var note: String? = nil
 
     var body: some View {
-        if find.isPresented {
+        if find.isPresented, note == nil {
+            // This Mac's tabs: exactly the bar, as before remote.
+            TerminalFindBar(find: find)
+                .padding(10)
+        } else if find.isPresented {
             VStack(alignment: .trailing, spacing: 4) {
                 TerminalFindBar(find: find)
                 if let note {

@@ -147,13 +147,6 @@ public final class GhosttyApp {
             // (docs/designs/remote-ssh.md section 4). libghostty's default,
             // pinned so it cannot drift; reads still ask.
             "clipboard-write = allow",
-            // A click at a prompt moves the cursor by sending arrow keys, for
-            // a program that declares prompt clicks (OSC 133 click_events):
-            // bytes to the pty from an ordinary click, which nothing on
-            // Temple's side could see. Neither agent declares it (measured on
-            // claude 2.1.301 and codex 0.163), and tmux does not pass it on,
-            // so the path is closed rather than watched.
-            "cursor-click-to-move = false",
         ]
         if let family = appearance.fontFamily, !family.isEmpty {
             lines.append("font-family = \(family)")

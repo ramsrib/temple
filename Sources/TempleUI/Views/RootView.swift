@@ -152,10 +152,12 @@ public struct RootView: View {
         .sheet(item: $model.remoteSessionsSheet) { request in
             RemoteSessionsSheet(sheet: model.sessionsSheetModel(request))
                 .environmentObject(model)
+                .remoteSheet(model)
         }
         .sheet(item: $model.remoteFolderSheet) { request in
             RemoteFolderSheet(sheet: model.folderSheetModel(request))
                 .environmentObject(model)
+                .remoteSheet(model)
         }
     }
 
@@ -532,12 +534,14 @@ struct KeyCatcher: NSViewRepresentable {
             // so Return/Esc reach the alert instead of our shortcuts.
             if model.openSessions.pendingCloseTabID != nil { return false }
             if model.openSessions.pendingRemoteCloseTabID != nil { return false }
-            // A sheet owns every key: Return in the folder sheet's field is
-            // the field's (its Start), never the sidebar's "open the
-            // highlighted row" beneath it, which takes Return while no tab
-            // is active. Shortcuts do not act on the window behind a sheet.
+            // A remote sheet owns every key: Return in the folder sheet's
+            // field is the field's (its Start), never the sidebar's "open
+            // the highlighted row" beneath it, which takes Return while no
+            // tab is active. Shortcuts do not act on the window behind it.
+            // Only remote's sheets (each marked `remoteSheet`): every other
+            // key path is as it was before remote.
             if model.remoteFolderSheet != nil || model.remoteSessionsSheet != nil
-                || event.window?.sheetParent != nil || event.window?.attachedSheet != nil { return false }
+                || !model.openRemoteSheets.isEmpty { return false }
 
             // History's import sheet and its failure alert own the keyboard
             // the same way. Asked first, so no binding below (⌘W, ⌘Y, ⌘K…)

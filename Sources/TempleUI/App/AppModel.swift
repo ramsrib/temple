@@ -406,6 +406,10 @@ public final class AppModel: ObservableObject {
     @Published public var remoteSessionsSheet: RemoteSessionsRequest?
     /// The folder sheet for a new session on a host, when shown.
     @Published public var remoteFolderSheet: RemoteFolderRequest?
+    /// Remote's sheets that are up (the Hosts card's form and Test
+    /// connection, a tab's confirmation, the two above): the key catcher
+    /// leaves every key to them (`remoteSheet`).
+    var openRemoteSheets: Set<UUID> = []
 
     // Sidebar UI state (U1)
     @Published public var searchText = ""

@@ -59,10 +59,11 @@ struct HistoryTabView: View {
 
     /// The project and branch column of a row, by the pane's width: hidden
     /// under 600 pt, a fixed width otherwise, so it truncates before the
-    /// title does and never pushes the status column out. Wide, it fits
-    /// "name @host": a host-bearing project is the normal case now.
-    static func metaWidth(paneWidth: CGFloat) -> CGFloat? {
-        paneWidth < 600 ? nil : paneWidth < 1000 ? 120 : 240
+    /// title does and never pushes the status column out. Wide, it is 180
+    /// pt, as it always was, and 240 pt only while a project on a host is
+    /// listed (`hostListed`), so "name @host" fits.
+    static func metaWidth(paneWidth: CGFloat, hostListed: Bool = false) -> CGFloat? {
+        paneWidth < 600 ? nil : paneWidth < 1000 ? 120 : hostListed ? 240 : 180
     }
 
     private var paneWidth: CGFloat { width ?? PageChrome.pageWidth }
@@ -431,7 +432,8 @@ struct HistoryTabView: View {
 
     private var list: some View {
         let actions = HistoryRowActions(history: history)
-        let metaWidth = Self.metaWidth(paneWidth: paneWidth)
+        let metaWidth = Self.metaWidth(paneWidth: paneWidth,
+                                       hostListed: history.visibleRows.contains { !$0.host.isLocal })
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {

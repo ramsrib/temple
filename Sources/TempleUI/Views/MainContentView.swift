@@ -113,6 +113,7 @@ private struct SessionTerminalView: View {
                 case .startNewPending: model.openSessions.remoteTabs.startNewPending(tab)
                 }
             }
+            .remoteSheet(model)
         }
     }
 
