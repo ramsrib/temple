@@ -173,9 +173,14 @@ struct RemoteFolderSheet: View {
                 .font(.system(size: 15, weight: .semibold))
             VStack(alignment: .leading, spacing: 4) {
                 Text(RemoteCopy.folderFieldLabel).font(.system(size: 12))
-                TextField(placeholder, text: $sheet.path)
-                    .textFieldStyle(.roundedBorder)
+                // The Add host form's field: plain, on the control fill.
+                TextField("", text: $sheet.path, prompt: Text(placeholder))
+                    .accessibilityLabel(RemoteCopy.folderFieldLabel)
+                    .textFieldStyle(.plain)
                     .font(.system(size: 13, design: .monospaced))
+                    .padding(.horizontal, 9)
+                    .frame(height: 28)
+                    .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                     .focused($focused)
                     .onSubmit { sheet.confirm() }
                     .onChange(of: sheet.path) { sheet.edited() }
@@ -233,9 +238,10 @@ struct RemoteFolderSheet: View {
         case .resolved(let resolved):
             Text(resolved).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
         case .problem(let line), .unreachable(let line):
+            // The one error colour of the remote sheets (the Add host form's).
             Text(line)
                 .font(.system(size: 11))
-                .foregroundStyle(.orange)
+                .foregroundStyle(.red)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }

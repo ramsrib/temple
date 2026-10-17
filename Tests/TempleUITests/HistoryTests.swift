@@ -903,7 +903,7 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(HistoryTabView.tier(paneWidth: 700), .compact)
         XCTAssertEqual(HistoryTabView.tier(paneWidth: 692), .compact)
         XCTAssertEqual(HistoryTabView.tier(paneWidth: 691), .narrow)
-        XCTAssertEqual(HistoryTabView.metaWidth(paneWidth: 1100), 180)
+        XCTAssertEqual(HistoryTabView.metaWidth(paneWidth: 1100), 240)
         XCTAssertEqual(HistoryTabView.metaWidth(paneWidth: 700), 120)
         XCTAssertNil(HistoryTabView.metaWidth(paneWidth: 599))
         XCTAssertEqual(HistoryTabView.filterLabel(agent: nil, project: nil), "Filter")

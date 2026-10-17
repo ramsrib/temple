@@ -59,9 +59,10 @@ struct HistoryTabView: View {
 
     /// The project and branch column of a row, by the pane's width: hidden
     /// under 600 pt, a fixed width otherwise, so it truncates before the
-    /// title does and never pushes the status column out.
+    /// title does and never pushes the status column out. Wide, it fits
+    /// "name @host": a host-bearing project is the normal case now.
     static func metaWidth(paneWidth: CGFloat) -> CGFloat? {
-        paneWidth < 600 ? nil : paneWidth < 1000 ? 120 : 180
+        paneWidth < 600 ? nil : paneWidth < 1000 ? 120 : 240
     }
 
     private var paneWidth: CGFloat { width ?? PageChrome.pageWidth }
