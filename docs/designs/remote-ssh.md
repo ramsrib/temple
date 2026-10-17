@@ -555,10 +555,11 @@ phase: `tmux -L
 temple-check-<nonce> -f /dev/null <the same configure commands> \;
 new-session -d -s check -c "$HOME" -e PATH="$PATH" 'exit 0' \;
 kill-server`, stderr captured. Attached (as built, the Linux acceptance's,
-not the sheet's; phase 0 note 2): the same chain with `new-session -s check
-'tput colors >/dev/null && tput cup 0 0 && exit 0'` so an attached client
-under `TERM=xterm-256color` outside and `tmux-256color` inside is proven on
-that host, then `kill-server` on the throwaway socket. The detached check passes only when
+not the sheet's; phase 0 note 2): the acceptance launches and attaches a
+real session through Temple's own chain and checks, inside the pane, `TERM`
+and `tput -T "$TERM" colors`, so an attached client under
+`TERM=xterm-256color` outside and `tmux-256color` inside is proven on that
+host; it then stops the session. The detached check passes only when
 every command the launcher will send is accepted; the row shows tmux's own
 line when one is not (including "allow-passthrough: not on this version,
 clipboard passthrough off" when `-q` had to swallow it, detected by
