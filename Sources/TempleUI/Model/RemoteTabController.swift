@@ -1266,9 +1266,12 @@ public final class RemoteTabController {
     /// a later empty answer never replaces it. Dropped when no tab holds
     /// the run any more.
     private var endedOutputs: [RunKey: [String]] = [:]
-    /// Fetches in flight, by run, with every tab presentation waiting on
-    /// each: one fetch per run, however many times its tab reopens.
-    private var endedOutputWaiters: [RunKey: [RemoteTicket]] = [:]
+    /// A fetch in flight: its run, over one launcher (a host removed or
+    /// edited gets a new one, whose reopen never joins the old fetch).
+    struct FetchKey: Hashable { let run: RunKey; let launcher: ObjectIdentifier }
+    /// Fetches in flight, with every tab presentation waiting on each: one
+    /// fetch per run and launcher, however many times its tab reopens.
+    private var endedOutputWaiters: [FetchKey: [RemoteTicket]] = [:]
 
     /// What an ended pending run's pane printed (its record's output, as
     /// the early-exit header has it), shown where its terminal was: tmux's
@@ -1283,20 +1286,22 @@ public final class RemoteTabController {
             return
         }
         let ticket = gate.ticket(for: tab)
-        if endedOutputWaiters[key] != nil {
-            endedOutputWaiters[key]?.append(ticket)
+        let fetch = FetchKey(run: key, launcher: ObjectIdentifier(host))
+        if endedOutputWaiters[fetch] != nil {
+            endedOutputWaiters[fetch]?.append(ticket)
             return
         }
-        endedOutputWaiters[key] = [ticket]
+        endedOutputWaiters[fetch] = [ticket]
         operations.run(host: tab.host, .query) { [weak self] in
             let raw = await host.diagnostics(handle)
             guard let self else { return }
             let lines = raw.map { RemoteCopy.diagnosticLines($0, limit: Self.endedOutputLines) } ?? []
-            if !lines.isEmpty, self.model.tabs.contains(where: { $0.host == key.host && $0.remote?.handle == handle }) {
+            if !lines.isEmpty, self.endedOutputs[key] == nil,
+               self.model.tabs.contains(where: { $0.host == key.host && $0.remote?.handle == handle }) {
                 self.endedOutputs[key] = lines
             }
             let shown = self.endedOutputs[key] ?? lines
-            for ticket in self.endedOutputWaiters.removeValue(forKey: key) ?? [] {
+            for ticket in self.endedOutputWaiters.removeValue(forKey: fetch) ?? [] {
                 guard self.gate.admit(.endedOutput, ticket), let tab = ticket.tab,
                       tab.remote?.phase == .endedPending else { continue }
                 if !shown.isEmpty { tab.remote?.diagnostics = shown }
@@ -1355,6 +1360,11 @@ public final class RemoteTabController {
     public func startNewPending(_ tab: SessionTab) {
         guard isPending(tab), let host = remoteHost(for: tab), !tab.hasLiveProcess, !isQuitting else { return }
         if let old = tab.remote?.handle {
+            // The tab leaves that run: so does its copy of what it printed,
+            // unless another tab still holds the run.
+            if !model.tabs.contains(where: { $0 !== tab && $0.host == tab.host && $0.remote?.handle == old }) {
+                endedOutputs[RunKey(host: tab.host, handle: old)] = nil
+            }
             let ended = tab.remote?.phase == .endedPending
             pendingWrite(host, tab.host) {
                 if ended { try await host.dismissRun(old) } else { try await host.closePendingTab(old) }

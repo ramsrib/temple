@@ -405,6 +405,52 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertFalse(model.remoteTabs.keepsEndedOutput(host: hostID, handle: "p7"))
     }
 
+    /// A reopen after the host was replaced never joins the retired host's
+    /// fetch (sol round 2): that fetch was cancelled, so its completion
+    /// passes no gate, and the reopened tab would wait on it forever. The
+    /// new host's fetch answers it, and the old one, released later,
+    /// changes nothing.
+    func testAReopenAfterTheHostIsReplacedFetchesTheOutputAnew() async throws {
+        remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
+        remote.diagnosticsText = "old host's words\r\n"
+        let hold = Gate()
+        remote.diagnosticsGate = { await hold.wait() }
+        model.remoteTabs.restorePending(hosts: [hostID])
+        await settle(self.model.tabs.count == 1)
+        let tab = try XCTUnwrap(model.tabs.first)
+        model.activate(tab)
+        await settle(self.remote.diagnosticsCalls.count == 1, "the old host's fetch is held")
+        // The host is edited: a new connection context.
+        model.remoteTabs.retireHost(hostID)
+        let edited = FakeRemoteHost("box")
+        edited.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
+        edited.diagnosticsText = "new host's words\r\n"
+        replacement = edited
+        model.remoteTabs.ensurePending(tab, on: edited, startNew: false)
+        await settle(tab.remote?.outputChecked == true, "answered by the new host's own fetch")
+        XCTAssertEqual(edited.diagnosticsCalls.count, 1)
+        XCTAssertEqual(tab.remote?.diagnostics, ["new host's words"])
+        await hold.open()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(tab.remote?.diagnostics, ["new host's words"], "the old fetch changes nothing")
+    }
+
+    /// Start a new session leaves the ended run: its copy of what the pane
+    /// printed goes with it (sol round 2).
+    func testStartingANewSessionReleasesTheEndedRunsOutput() async throws {
+        remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
+        remote.diagnosticsText = "what codex said\r\n"
+        model.remoteTabs.restorePending(hosts: [hostID])
+        await settle(self.model.tabs.count == 1)
+        let tab = try XCTUnwrap(model.tabs.first)
+        model.activate(tab)
+        await settle(tab.remote?.outputChecked == true)
+        XCTAssertTrue(model.remoteTabs.keepsEndedOutput(host: hostID, handle: "p7"))
+        model.remoteTabs.startNewPending(tab)
+        XCTAssertFalse(model.remoteTabs.keepsEndedOutput(host: hostID, handle: "p7"))
+        await settle(tab.hasLiveProcess, "the new run starts")
+    }
+
     /// Nothing the pane printed could be had: the pane says so, never blank.
     func testAnEndedSessionWithNoOutputSaysSo() async throws {
         remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
