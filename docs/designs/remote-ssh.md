@@ -2687,4 +2687,10 @@ changed, by finding:
 - **The working prompt explains itself** (UX 4). The remote "still working"
   alert gains local's message line: "Detach keeps it working on <host>;
   Stop ends it." Buttons unchanged.
+- **The selection follows the active tab** (visual 7). The sidebar's
+  highlight was set only when the newly active tab had an id, so a pending
+  Codex tab left the previous tab's row selected, and one identified while
+  active never moved it. It now follows the active session tab's id as it
+  changes (nil: no row selected), resolved when the activation is emitted;
+  a utility tab leaves it.
 

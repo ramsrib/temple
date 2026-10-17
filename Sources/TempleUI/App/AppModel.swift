@@ -755,7 +755,26 @@ public final class AppModel: ObservableObject {
             self?.presentedByID[id]
         }
 
-        // Sidebar highlight follows the active tab (UX "Select vs. open").
+        // Sidebar highlight follows the active session tab (UX "Select vs.
+        // open"), and that tab's id as it changes: a new Codex session has
+        // none until it is identified, so no row is selected meanwhile (the
+        // last tab's row stayed selected), and its row is the moment it
+        // has one. A utility tab (Settings, History) leaves it as it was.
+        // The tab is resolved when the id is EMITTED, not a run-loop turn
+        // later (see below).
+        openSessions.$activeTabID
+            .map { [weak self] tabID -> AnyPublisher<String??, Never> in
+                guard let tabID, let tab = self?.openSessions.tabs.first(where: { $0.id == tabID }),
+                      tab.kind == .session else { return Just(String??.none).eraseToAnyPublisher() }
+                return tab.$sessionID.map { String??.some($0) }.eraseToAnyPublisher()
+            }
+            .switchToLatest()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] selection in
+                guard case .some(let sid) = selection else { return }
+                self?.highlightedID = sid
+            }
+            .store(in: &cancellables)
         openSessions.$activeTabID
             .receive(on: RunLoop.main)
             .sink { [weak self] tabID in
@@ -774,7 +793,6 @@ public final class AppModel: ObservableObject {
                 // Not on the undo stack: undo would re-archive a row whose
                 // tab is open.
                 let sid = tab.sessionID
-                if let sid { self.highlightedID = sid }
                 let masked = self.overlay.isProjectArchived(tab.projectKey)
                 if let sid, self.overlay.isArchived(sid) || masked {
                     _ = self.overlay.restoreSessions([sid], unmasking: masked ? [tab.projectKey] : [])

@@ -159,7 +159,9 @@ Opening a session starts a real agent process, so browsing and opening are
 separate actions. Arrow keys move the sidebar highlight without spawning
 anything. Enter, double-click, or click opens the highlighted session; if it is
 already open, Temple focuses its existing tab instead of creating a duplicate.
-The sidebar highlight follows the active tab.
+The sidebar highlight follows the active tab, and that tab's session as it
+changes: a new Codex session highlights no row until Temple learns its ID, then
+its own; Settings and History leave the highlight where it was.
 
 ## Terminal tabs & the working surface
 

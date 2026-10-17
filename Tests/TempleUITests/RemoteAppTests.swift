@@ -189,6 +189,64 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertEqual(ProjectHeaderTitle.nameIndent, 18, "the host line starts under the name")
     }
 
+    /// The sidebar's selection follows the active tab: a new Codex session
+    /// on a host has no row until it is identified, so nothing is selected
+    /// while it is active (the last tab's row stayed selected), and its row
+    /// is the moment it has one.
+    func testTheSelectionFollowsAPendingCodexTabAndItsIdentity() async throws {
+        let remote = FakeRemoteHost("box")
+        let db = try TempleDB.inMemory()
+        Fixture.join([Fixture.row("a", project: "/home/u/p", host: hostID)], to: db)
+        let app = try app(remote, db: db)
+        await settle { app.sessions.count == 1 }
+        app.openSessions.remoteTabs.recordPollDelays = [0.01]
+        app.openSessions.remoteTabs.identitySchedule = [60]
+        app.openSessions.openSession(try XCTUnwrap(app.sessions.first))
+        await settle { app.highlightedID == "a" }
+        XCTAssertEqual(app.highlightedID, "a")
+
+        let codex = app.openSessions.newSession(agent: .codex, project: ProjectKey(host: hostID, path: "/home/u/p"))
+        await settle { codex.hasLiveProcess && app.highlightedID == nil }
+        XCTAssertNil(app.highlightedID, "the Codex tab is active; no row is it yet")
+
+        remote.identityResult = .adopted("c9", directory: "/home/u/p")
+        app.openSessions.remoteTabs.retryIdentity(codex)
+        await settle { codex.sessionID == "c9" }
+        await settle { app.highlightedID == "c9" }
+        XCTAssertEqual(app.highlightedID, "c9", "identified while active: its row is selected")
+
+        app.openSessions.activate(try XCTUnwrap(app.openSessions.openTab(forSessionID: "a")))
+        await settle { app.highlightedID == "a" }
+        app.openSessions.openSettings()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(app.highlightedID, "a", "a utility tab leaves the selection as it was")
+    }
+
+    /// A yes for a Codex session that ended unidentified closes its tab and
+    /// selects its row, though the close activated another tab.
+    func testAYesForAnEndedCodexSessionSelectsItsRow() async throws {
+        let remote = FakeRemoteHost("box")
+        let db = try TempleDB.inMemory()
+        Fixture.join([Fixture.row("a", project: "/home/u/p", host: hostID)], to: db)
+        let app = try app(remote, db: db)
+        await settle { app.sessions.count == 1 }
+        app.openSessions.openSession(try XCTUnwrap(app.sessions.first))
+        remote.pending = [.init(handle: "p7", directory: "/home/u/p", ended: true, typed: true)]
+        remote.suggestionsResult = .candidates([RemoteSuggestion(rolloutPath: "/r/c7.jsonl", sessionID: "c7",
+                                                                 firstPrompt: "hi", startedAt: Date(), directory: "/home/u/p")])
+        app.openSessions.remoteTabs.restorePending(hosts: [hostID])
+        await settle { app.openSessions.tabs.contains { $0.remote?.handle == "p7" } }
+        let chip = try XCTUnwrap(app.openSessions.tabs.first { $0.remote?.handle == "p7" })
+        app.openSessions.activate(chip)
+        await settle { chip.remote?.suggestions.count == 1 }
+        app.openSessions.remoteTabs.confirm(try XCTUnwrap(chip.remote?.suggestions.first), in: chip)
+        await settle { !app.openSessions.tabs.contains { $0 === chip } }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(app.openSessions.activeTab?.sessionID, "a", "the close activated the other tab")
+        XCTAssertEqual(app.highlightedID, "c7", "the now-identified row is selected")
+        XCTAssertNotNil(app.overlay.rows["c7"])
+    }
+
     /// The --no-daemon hint reads as the copy says, the flag set as code.
     func testTheNoDaemonHintSetsTheFlagAsCode() {
         let hint = MainContentView.noDaemonHint
