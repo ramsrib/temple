@@ -2734,3 +2734,18 @@ changed, by finding:
 - **History fits "name @host"** (visual 4). The wide tier of the meta
   column is 240 pt (was 180).
 
+
+### Fix round (sol's review, the on-screen check, Fable's visual re-check)
+
+- **The ended output is the run's** (sol 3). The host hands a pane's
+  output over once, so the fetch is kept by run (host and handle) in
+  `RemoteTabController`, apart from any tab's ticket: a reopen while it is
+  in flight waits on the same fetch, an empty later answer never replaces
+  a good one, and only the presentation passes `.endedOutput`. The copy
+  goes when no tab holds the run.
+- **The output outlives the stop** (the on-screen check). The stop that
+  proves a run's end removed its `.out` and threw away what it held, so
+  closing an ended-unidentified Codex tab always showed the fallback line.
+  A new Codex session that was typed into and never identified now keeps
+  its output on the host (0600) until its question takes it or the run is
+  dismissed; every other run still leaves nothing behind.

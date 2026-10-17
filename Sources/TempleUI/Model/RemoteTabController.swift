@@ -832,8 +832,8 @@ public final class RemoteTabController {
         var state = RemoteTabState(phase: .opening)
         state.handle = handle
         state.suggestions = startNew ? [] : (tab.remote?.suggestions ?? [])
-        // What an ended run's pane printed is fetched once (the host hands
-        // it over a single time): kept while the tab reopens.
+        // What an ended run's pane printed stays on screen while the tab
+        // reopens (the run's copy is kept by `loadEndedOutput`).
         if !startNew, let previous = tab.remote, previous.outputChecked {
             state.diagnostics = previous.diagnostics
             state.outputChecked = true
@@ -1067,7 +1067,13 @@ public final class RemoteTabController {
     /// A tab went (closed, detached, discarded, on any host): every hand-over
     /// whose tab is gone is finished, and every one that failed is tried
     /// again.
-    func tabRemoved(_ tab: SessionTab) { settleHandOvers() }
+    func tabRemoved(_ tab: SessionTab) {
+        if let handle = tab.remote?.handle,
+           !model.tabs.contains(where: { $0.host == tab.host && $0.remote?.handle == handle }) {
+            endedOutputs[RunKey(host: tab.host, handle: handle)] = nil
+        }
+        settleHandOvers()
+    }
 
     /// Finishes each hand-over whose tab is gone, or whose tab set has been
     /// written since it was owed (an acknowledged save the model made
@@ -1219,20 +1225,54 @@ public final class RemoteTabController {
     /// terminal.
     static let endedOutputLines = 40
 
+    /// A run, by its host and handle.
+    struct RunKey: Hashable { let host: HostID; let handle: String }
+    /// What each ended pending run's pane printed, by run: the host hands
+    /// it over once, so it is kept here, apart from any tab's ticket, and
+    /// a later empty answer never replaces it. Dropped when no tab holds
+    /// the run any more.
+    private var endedOutputs: [RunKey: [String]] = [:]
+    /// Fetches in flight, by run, with every tab presentation waiting on
+    /// each: one fetch per run, however many times its tab reopens.
+    private var endedOutputWaiters: [RunKey: [RemoteTicket]] = [:]
+
     /// What an ended pending run's pane printed (its record's output, as
     /// the early-exit header has it), shown where its terminal was: tmux's
-    /// exit leaves the client's screen blank.
+    /// exit leaves the client's screen blank. The fetch is the run's, not
+    /// the tab's: its answer is kept whatever the gate says, and only the
+    /// presentation passes it.
     private func loadEndedOutput(_ tab: SessionTab, host: RemoteSessionHost, handle: String) {
-        if tab.remote?.outputChecked == true, tab.remote?.diagnostics.isEmpty == false { return }
+        let key = RunKey(host: tab.host, handle: handle)
+        if let kept = endedOutputs[key] {
+            tab.remote?.diagnostics = kept
+            tab.remote?.outputChecked = true
+            return
+        }
         let ticket = gate.ticket(for: tab)
+        if endedOutputWaiters[key] != nil {
+            endedOutputWaiters[key]?.append(ticket)
+            return
+        }
+        endedOutputWaiters[key] = [ticket]
         operations.run(host: tab.host, .query) { [weak self] in
             let raw = await host.diagnostics(handle)
-            guard let self, self.gate.admit(.endedOutput, ticket), let tab = ticket.tab,
-                  tab.remote?.phase == .endedPending else { return }
-            tab.remote?.diagnostics = raw.map { RemoteCopy.diagnosticLines($0, limit: Self.endedOutputLines) } ?? []
-            tab.remote?.outputChecked = true
+            guard let self else { return }
+            let lines = raw.map { RemoteCopy.diagnosticLines($0, limit: Self.endedOutputLines) } ?? []
+            if !lines.isEmpty, self.model.tabs.contains(where: { $0.host == key.host && $0.remote?.handle == handle }) {
+                self.endedOutputs[key] = lines
+            }
+            let shown = self.endedOutputs[key] ?? lines
+            for ticket in self.endedOutputWaiters.removeValue(forKey: key) ?? [] {
+                guard self.gate.admit(.endedOutput, ticket), let tab = ticket.tab,
+                      tab.remote?.phase == .endedPending else { continue }
+                if !shown.isEmpty { tab.remote?.diagnostics = shown }
+                tab.remote?.outputChecked = true
+            }
         }
     }
+
+    /// Whether a run's ended output is kept (tests).
+    func keepsEndedOutput(host: HostID, handle: String) -> Bool { endedOutputs[RunKey(host: host, handle: handle)] != nil }
 
     /// "Yes, that's it": the claim is durable work (owned through close and
     /// quit); what the tab shows passes the gate.

@@ -369,6 +369,42 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(tab.remote?.diagnostics.count, 3)
     }
 
+    /// The ended output is the run's, not the tab's (sol round 1): a
+    /// reopen while it is being fetched waits on the same fetch (the host
+    /// hands the output over once, so a second fetch would find nothing),
+    /// the answer reaches the reopened tab though the first open's ticket
+    /// is gone, and a later reopen shows it again without asking.
+    func testAReopenDuringTheEndedOutputFetchKeepsTheOutput() async throws {
+        remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
+        remote.diagnosticsText = "what codex said\r\n"
+        remote.diagnosticsHandOverOnce = true
+        let hold = Gate()
+        remote.diagnosticsGate = { await hold.wait() }
+        model.remoteTabs.restorePending(hosts: [hostID])
+        await settle(self.model.tabs.count == 1)
+        let tab = try XCTUnwrap(model.tabs.first)
+        model.activate(tab)
+        await settle(self.remote.diagnosticsCalls.count == 1, "the fetch is held")
+        // Reopened while it is held: a new open, the first one's ticket void.
+        model.remoteTabs.ensurePending(tab, on: remote, startNew: false)
+        await settle(tab.remote?.phase == .endedPending)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(remote.diagnosticsCalls.count, 1, "one fetch per run")
+        await hold.open()
+        await settle(tab.remote?.outputChecked == true)
+        XCTAssertEqual(tab.remote?.diagnostics, ["what codex said"])
+        XCTAssertTrue(model.remoteTabs.keepsEndedOutput(host: hostID, handle: "p7"))
+        // Once more: shown from the run's copy, nothing asked.
+        model.remoteTabs.ensurePending(tab, on: remote, startNew: false)
+        await settle(tab.remote?.phase == .endedPending)
+        await settle(tab.remote?.outputChecked == true)
+        XCTAssertEqual(tab.remote?.diagnostics, ["what codex said"])
+        XCTAssertEqual(remote.diagnosticsCalls.count, 1)
+        // The tab goes: so does the run's copy.
+        model.remoteTabs.discardPending(tab)
+        XCTAssertFalse(model.remoteTabs.keepsEndedOutput(host: hostID, handle: "p7"))
+    }
+
     /// Nothing the pane printed could be had: the pane says so, never blank.
     func testAnEndedSessionWithNoOutputSaysSo() async throws {
         remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]

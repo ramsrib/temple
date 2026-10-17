@@ -89,8 +89,13 @@ final class FakeRemoteHost: RemoteSessionHost {
         if let collectGate { await collectGate() }
         return collectResult
     }
+    private(set) var diagnosticsCalls: [String] = []
+    /// The host hands the output over once, as the real one does.
+    var diagnosticsHandOverOnce = false
     func diagnostics(_ handle: String) async -> String? {
+        diagnosticsCalls.append(handle)
         if let diagnosticsGate { await diagnosticsGate() }
+        defer { if diagnosticsHandOverOnce { diagnosticsText = nil } }
         return diagnosticsText
     }
     /// What `markCreationUnproven` answers: nil, or why the creation was
