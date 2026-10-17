@@ -1047,48 +1047,7 @@ private struct ProjectDisclosure: View {
     /// one line for every heading, local or not.
     private var headerLabel: some View {
         let title = ProjectHeaderTitle(project.key)
-        return HStack(spacing: 6) {
-            Image(systemName: "chevron.right")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.tertiary)
-                .rotationEffect(.degrees(expanded ? 90 : 0))
-                .frame(width: 12)
-            // The name and, on a host, the host after it. Grouped so the
-            // host yields to the name inside the group while the group as a
-            // whole meets the rule exactly as the name alone always has: a
-            // lower priority against the rule would hand the rule the host's
-            // room and the host would never show.
-            HStack(spacing: 6) {
-                // Hand-rolled, not Label(_, systemImage:): a Label picks up the
-                // sidebar label style, which dims with window key-state — making
-                // project titles the ONLY thing in the app that reacts to focus
-                // changes. Plain Text renders like the session rows and holds.
-                Text(title.name)
-                    .font(.system(size: 11, weight: .medium))
-                    .tracking(1.4)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                if let host = title.hostLabel {
-                    // A tag, not a title: lowercase as the host spells it,
-                    // unspaced, a step quieter than the name, and the first
-                    // to give way on a narrow rail, from the middle so
-                    // "-mentes" survives.
-                    Text(host)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .layoutPriority(-1)
-                }
-            }
-            Rectangle()
-                .fill(Palette.hairline)
-                .frame(height: 1)
-                .padding(.leading, 4)
-                // The `+` lands over the rule's end on hover; leave it room.
-                .padding(.trailing, headerHovering ? 22 : 0)
-        }
-        .frame(height: ProjectHeaderTitle.lineHeight)
+        return ProjectHeadingLine(title: title, expanded: expanded, hovering: headerHovering)
         // A project on a host says where it is: `host:/absolute/path`. A
         // project on this Mac has no tooltip, as before remote.
         .helpIfAny(ProjectHeaderTitle.help(project.key))
@@ -1096,6 +1055,94 @@ private struct ProjectDisclosure: View {
         .accessibilityLabel(project.name)
         .accessibilityAddTraits(.isHeader)
         .accessibilityValue(expanded ? "expanded" : "collapsed")
+    }
+}
+
+/// A project heading's one line: the chevron, the name, on a host `@host`,
+/// then the rule to the edge. Room gives way in this order: the rule, down
+/// to `ruleMinimum`; then the host, from the middle; the name last. Each
+/// is its own child of one stack with its own priority: grouped, the name
+/// and host split the line evenly with the rule at equal priority, and the
+/// host showed only "…" with room to spare (computer-use pass on 99eb8e8).
+/// A local heading keeps the rule at the name's priority with no minimum,
+/// exactly as before remote.
+struct ProjectHeadingLine: View {
+    let title: ProjectHeaderTitle
+    let expanded: Bool
+    let hovering: Bool
+    /// Tests only: the laid-out widths of the name and the host.
+    var measured: ((_ name: CGFloat, _ host: CGFloat?) -> Void)?
+
+    /// The least of the rule a host's heading keeps before its host gives way.
+    static let ruleMinimum: CGFloat = 12
+
+    var body: some View {
+        let remote = title.hostLabel != nil
+        HStack(spacing: 6) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .rotationEffect(.degrees(expanded ? 90 : 0))
+                .frame(width: 12)
+            // Hand-rolled, not Label(_, systemImage:): a Label picks up the
+            // sidebar label style, which dims with window key-state — making
+            // project titles the ONLY thing in the app that reacts to focus
+            // changes. Plain Text renders like the session rows and holds.
+            Text(title.name)
+                .font(.system(size: 11, weight: .medium))
+                .tracking(1.4)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .background(measure(\.name))
+            if let host = title.hostLabel {
+                // A tag, not a title: lowercase as the host spells it,
+                // unspaced, a step quieter than the name, and giving way
+                // before the name, from the middle so "-mentes" survives.
+                Text(host)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .background(measure(\.host))
+                    .layoutPriority(-1)
+            }
+            Rectangle()
+                .fill(Palette.hairline)
+                .frame(height: 1)
+                .frame(minWidth: remote ? Self.ruleMinimum : 0)
+                .padding(.leading, 4)
+                // The `+` lands over the rule's end on hover; leave it room.
+                .padding(.trailing, hovering ? 22 : 0)
+                .layoutPriority(remote ? -2 : 0)
+        }
+        .frame(height: ProjectHeaderTitle.lineHeight)
+        .onPreferenceChange(Widths.self) { widths in
+            guard let measured, let name = widths.name else { return }
+            measured(name, widths.host)
+        }
+    }
+
+    /// A width reported only when a test asks for it.
+    @ViewBuilder
+    private func measure(_ part: WritableKeyPath<Widths, CGFloat?>) -> some View {
+        if measured != nil {
+            GeometryReader { geo in
+                Color.clear.preference(key: Widths.self, value: {
+                    var widths = Widths(); widths[keyPath: part] = geo.size.width; return widths
+                }())
+            }
+        }
+    }
+
+    private struct Widths: PreferenceKey, Equatable {
+        var name: CGFloat?
+        var host: CGFloat?
+        static let defaultValue = Widths()
+        static func reduce(value: inout Widths, nextValue: () -> Widths) {
+            let next = nextValue()
+            value.name = next.name ?? value.name
+            value.host = next.host ?? value.host
+        }
     }
 }
 

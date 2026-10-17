@@ -1043,7 +1043,10 @@ test did not prove tmux missing.
 Sidebar section (as built, UX round 2): one 28pt line for every heading,
 local or not. After the name (unchanged), `@host` as the host spells
 itself, 11pt regular, tertiary, no tracking, never uppercased, truncated in
-the middle and yielding before the name; then the rule. Tooltip
+the middle; then the rule. Room gives way in order: the rule first (down
+to 12pt), then the host, the name last (the host showed only "…" at the
+default width while the rule split the line evenly with name and host;
+computer-use pass on 99eb8e8). Tooltip
 `host:/absolute/path`. The hands-on T1 design (a second line under the
 name with the globe and the host) is **superseded**: the owner found the
 host line read like a session row. Remote tab headers: the exit table's lines, "Claude
