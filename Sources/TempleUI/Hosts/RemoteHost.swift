@@ -268,33 +268,11 @@ final class RemoteHostLauncher: RemoteSessionHost {
         }
     }
 
-    func confirm(_ handle: String, suggestion: RemoteSuggestion) async -> RemoteIdentity {
-        await identity(await sessions.confirm(handle, suggestion: Self.candidate(suggestion)), handle: handle)
-    }
-
-    func autoConfirm(_ handle: String, suggestion: RemoteSuggestion) async -> RemoteIdentity {
-        await identity(await sessions.confirm(handle, suggestion: Self.candidate(suggestion), automatic: true), handle: handle)
-    }
-
-    private static func candidate(_ suggestion: RemoteSuggestion) -> CodexSuggestion {
-        CodexSuggestion(rolloutPath: suggestion.rolloutPath, sessionID: suggestion.sessionID,
-                        firstPrompt: suggestion.firstPrompt, startedAt: suggestion.startedAt,
-                        directory: suggestion.directory, promptKnown: suggestion.promptKnown)
-    }
-
-    func markAsked(_ handle: String) async throws { try await sessions.markAsked(handle) }
-
-    func recordAutoLinkRow(_ handle: String, sessionID: String, incarnation: String) async throws {
-        try await sessions.recordAutoLinkRow(handle, sessionID: sessionID, incarnation: incarnation)
-    }
-
-    func autoLink(of handle: String) async -> RemoteAutoLink? {
-        guard let run = await sessions.run(handle), let link = run.autoLink, let id = run.sessionID,
-              Array(id.utf8) == Array(link.sessionID.utf8) else { return nil }
-        let suggestion = RemoteSuggestion(rolloutPath: link.rolloutPath, sessionID: link.sessionID,
-                                          firstPrompt: link.firstPrompt, startedAt: link.startedAt,
-                                          directory: link.directory, promptKnown: link.promptKnown)
-        return RemoteAutoLink(suggestion: suggestion, sessionID: link.sessionID, createdIncarnation: link.incarnation)
+    func confirm(_ handle: String, suggestion: RemoteSuggestion, automatic: Bool) async -> RemoteIdentity {
+        let candidate = CodexSuggestion(rolloutPath: suggestion.rolloutPath, sessionID: suggestion.sessionID,
+                                        firstPrompt: suggestion.firstPrompt, startedAt: suggestion.startedAt,
+                                        directory: suggestion.directory, promptKnown: suggestion.promptKnown)
+        return await identity(await sessions.confirm(handle, suggestion: candidate, automatic: automatic), handle: handle)
     }
 
     func decline(_ handle: String, rolloutPath: String) async throws {
@@ -308,11 +286,6 @@ final class RemoteHostLauncher: RemoteSessionHost {
 
     func markJoined(_ handle: String) async throws { try await sessions.markJoined(handle) }
 
-    func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws {
-        try await sessions.unlink(handle, sessionID: sessionID, rolloutPath: rolloutPath)
-        await refreshLiveSessions()
-    }
-
     func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)] {
         await sessions.unjoinedClaims().compactMap { run in run.sessionID.map { (run.handle, $0, run.directory) } }
     }
@@ -320,8 +293,7 @@ final class RemoteHostLauncher: RemoteSessionHost {
     func pendingRuns() async -> [RemotePendingRun] {
         await sessions.pendingRuns().map {
             RemotePendingRun(handle: $0.handle, directory: $0.directory ?? $0.directoryIntent, ended: $0.isEnded,
-                             sessionID: $0.sessionID, typed: $0.inputSeenAt != nil, joined: $0.joinedAt != nil,
-                             asked: $0.askedAt != nil)
+                             sessionID: $0.sessionID, typed: $0.inputSeenAt != nil, joined: $0.joinedAt != nil)
         }
     }
 
@@ -345,12 +317,9 @@ final class RemoteStoreLedger: RemoteRunLedger {
     private let store: RemoteStateStore
     init(store: RemoteStateStore) { self.store = store }
 
-    /// Only a run that still has an id: one whose claim was undone since
-    /// ("Not this session") is restored by its handle again, and a late
-    /// hand-over must not retire that.
     func markTabClosed(_ handle: String) async throws {
         let now = Date()
-        _ = try await store.perform { try $0.update(handle) { if $0.sessionID != nil { $0.tabClosedAt = now } } }
+        _ = try await store.perform { try $0.update(handle) { $0.tabClosedAt = now } }
     }
 }
 

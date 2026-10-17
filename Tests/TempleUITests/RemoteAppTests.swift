@@ -332,42 +332,6 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertTrue(app.overlay.rows["d1"] == nil || app.overlay.rows["d1"]?.archived == true)
     }
 
-    /// A lone candidate's link joins core; Not this session lets go of the
-    /// row it made (after the tab set no longer holds it), whatever the
-    /// host's enrichment filled in; a row the user made theirs meanwhile
-    /// (named) stays, as a real session on that host.
-    func testNotThisSessionLetsGoOfTheRowTheLinkMade() async throws {
-        for named in [false, true] {
-            let remote = FakeRemoteHost("box")
-            remote.suggestionsResult = .candidates([RemoteSuggestion(rolloutPath: "/r/c7.jsonl", sessionID: "c7",
-                                                                     firstPrompt: "hi", startedAt: Date(),
-                                                                     directory: "/home/u/p")])
-            let db = try TempleDB.inMemory()
-            let app = try app(remote, db: db)
-            app.openSessions.remoteTabs.identitySchedule = [0.01]
-            app.openSessions.remoteTabs.identityInterval = 0.05
-            let tab = app.openSessions.newSession(agent: .codex, project: ProjectKey(host: hostID, path: "/home/u/p"))
-            await settle { tab.hasLiveProcess }
-            app.openSessions.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
-            await settle { tab.remote?.autoLink != nil }
-            XCTAssertNotNil(app.overlay.rows["c7"], "the link joined core")
-            XCTAssertNotNil(tab.remote?.autoLink?.createdIncarnation, "and made the row")
-            _ = try db.updateTranscriptHint(sessionID: "c7", agent: .codex,
-                                            locator: TranscriptLocator(host: hostID, path: "/home/u/.codex/sessions/rollout-c7.jsonl"))
-            if named { app.overlay.rename("c7", to: "Mine") }
-            app.openSessions.remoteTabs.unlink(tab)
-            await settle { remote.unlinks.count == 1 }
-            if named {
-                try await Task.sleep(for: .milliseconds(150))
-                XCTAssertEqual(app.overlay.rows["c7"]?.customName, "Mine", "the user's row stays")
-            } else {
-                await settle { app.overlay.rows["c7"] == nil }
-                XCTAssertNil(app.overlay.rows["c7"], "no orphan row")
-                XCTAssertNil(try db.sessionState("c7"))
-            }
-        }
-    }
-
     /// Retiring a host takes its notice and any sheet asked for it with it,
     /// and nothing opens a sheet for a host that is not enabled (Sol
     /// round 1: no remote UI without an enabled host).

@@ -390,26 +390,26 @@ session? <first prompt or "(no prompt)">, started <time> in <folder>."
 [Yes, that's it] [Not this one]. Several, the user picks or declines; a
 declined candidate is not offered again for that run.
 
-**As built (owner, round 2): a lone candidate is linked, and said.** When
-the lookup finds exactly one eligible candidate for a connected run that
-was typed into and that Temple has not asked about yet this launch, Temple
-claims it as a yes does: the same recheck at decision time
-(`RemoteSessions.confirm`), the same uniqueness, the same core join. Only a
-claim that answer made (`.adopted`, the candidate's own id by bytes) is
-shown as a link: one line in the tab, "Linked to “<first prompt>” on
-<host>.", with **Not this session**. That undoes it in one remote write
-(`RemoteStateStore.unlinkClaim`: the claim of that id goes, `tab_closed_at`
-is cleared so the run restores by its handle again, the candidate is
-declined), lets go of the core row the link made, unless the user made it
-theirs (`TempleDB.releaseLinkedSession`, after the tab set is saved without
-the session), and asks the question, without that candidate (with none
-left, the tab says "Temple couldn't tell which Codex session this is.",
-never a bare tab; found by the computer-use pass on fa2d633); Temple then
-never links on its own again for that run (`asked_at`, kept with the run). The tab's title is
-Codex's own terminal title throughout, as for any pending tab. A hand-over already
-under way finds no id and retires nothing (`RemoteStoreLedger` writes
-`tab_closed_at` only for a run with an id). An ended tab, two or more
-candidates, an untyped run, or a run already asked about: the question.
+**As built (owner, round 2; Fable's decision after two clustered Sol
+rounds): a lone candidate gets Temple's own yes.** When the lookup finds
+exactly one eligible candidate for a connected run that was typed into and
+never asked about, Temple says yes through the yes's exact path
+(`RemoteTabController.claim(automatic:)` → `RemoteSessions.confirm`, a
+claim `how: .automatic`, the same recheck at decision time, uniqueness and
+core join; a run that ended meanwhile concludes as a yes does, `.known` is
+simply the session, and a failed claim asks the question). The only
+addition is a display-only note in the tab, gated with the rest of the
+tab's part ("Linked on its own to “<first prompt>”. Use Discard if it’s
+the wrong session."). A wrong one is corrected by Discard: the agent is
+stopped first (Temple's client, then the one-command stop), and a
+confirmed stop goes on to the existing Discard (runs dismissed, the row let
+go or archived under its incarnation); a stop Temple can't confirm leaves
+it running and listed, nothing discarded. "Asked" is the question shown
+this launch (memory, per handle) or any declined candidate for the run,
+which the claim's own transaction checks: the only durable decline is a
+decline. An ended tab, two or more candidates, an untyped run, or a run
+already asked about: the question; with the last candidate declined, the
+tab says Temple couldn't tell.
 
 **Uniqueness after the fact.** As built (astra's implementation note 1,
 phase 1b note 10): a verified or confirmed id is a **claim**, written in
@@ -1067,10 +1067,10 @@ or as another agent is refused and shown. "Already host-keyed" means
     end_evidence ('absent' | 'killed'), left_running_at,
     left_running_reason ('host did not answer' | 'stop not acknowledged' |
     'another client attached' | 'quit deadline'), dismissed_at, failure)`.
-    As built, migrations `r2-conversation` to `r6-auto-link` add the
+    As built, migrations `r2-conversation` to `r5-input` add the
     conversation flag, the config root and Codex home the pane ran with,
-    `claim`, `joined_at`, `tab_closed_at`, `input_seen_at`, `asked_at` and
-    `auto_link` (an automatic claim's provenance); uniqueness is
+    `claim` (`verified`, `confirmed` or `automatic`), `joined_at`,
+    `tab_closed_at` and `input_seen_at`; uniqueness is
     on claims (`runs_claim`, section 3), not on every row.
   - `declined_candidates(handle, rollout_path, PRIMARY KEY (handle,
     rollout_path))`: suggestions the user said no to.
@@ -2937,15 +2937,30 @@ and the sections above say so where they changed.
    remote tabs), `clipboard-write = allow` (libghostty's default, pinned),
    the acknowledged tab save, the registry box, the engine set's add and
    remove, and the quit prompt's host line (absent with no remote tab).
-3. **A lone Codex candidate is linked** (Fable's UX item 1): section 3's
-   "As built (owner, round 2)" note. The `--no-daemon` hint left the bands
-   for the Hosts card's notes.
+3. **A lone Codex candidate gets Temple's own yes** (Fable's UX item 1):
+   section 3's "As built (owner, round 2)" note. The `--no-daemon` hint
+   left the bands for the Hosts card's notes.
 4. **Quit stops nothing on a host** (section 5's Quit, as built): every
    client detached, every run left running and restored as a tab.
    Docs: jetson's Claude login is optional coverage, not a gate; the
    additive-schema rule stays, kept by the owner.
 
 ### Round 2 fixes (the computer-use pass and Sol's review)
+
+**Superseded** (all but the first and last bullets): the undo design these
+fixed, Not this session with its per-run identity state machine, epochs,
+deferred save-acknowledged unlink, `r6-auto-link` provenance and
+`asked_at`, was removed before it was pushed. Sol's round 2 found five more
+problems in the same mechanism (a row-ownership proof for the undo's delete,
+provenance lost on reconnect, an aborted link's release racing identity
+results, a deferred unlink fencing the wrong ticket, `asked_at` backfill):
+two clustered rounds, so the mechanism changed instead of another patch.
+Fable's decision: an automatic link is a yes Temple gives through
+`confirm`'s exact path, plus a display-only note, and a wrong one is
+corrected with Discard (section 3). Each race class existed only because
+the undo deleted a row, re-showed a button, released a claim concurrently
+or deferred its write; none of that exists now. Kept: the couldn't-tell
+line (for the last declined candidate) and the retired host fix.
 
 - **Never a bare tab.** Not this session on the only candidate left the tab
   with nothing (the host's lookups leave a declined candidate out). A run

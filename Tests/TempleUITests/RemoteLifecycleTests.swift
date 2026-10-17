@@ -228,10 +228,8 @@ final class FakeRemoteHost: RemoteSessionHost {
     private(set) var identifies: [String] = []
     func identify(_ handle: String) async -> RemoteIdentity {
         identifies.append(handle)
-        // Each call's answer is decided as it arrives, so a held call keeps
-        // its own answer while later ones pass it.
-        let answer = identityAnswers.isEmpty ? identityResult : identityAnswers.removeFirst()
         if let identityGate { await identityGate() }
+        let answer = identityAnswers.isEmpty ? identityResult : identityAnswers.removeFirst()
         claim(answer, handle)
         return answer
     }
@@ -295,46 +293,23 @@ final class FakeRemoteHost: RemoteSessionHost {
     var confirmResult: RemoteIdentity?
     var confirmGate: (() async -> Void)?
     private(set) var confirms: [(handle: String, sessionID: String)] = []
-    func confirm(_ handle: String, suggestion: RemoteSuggestion) async -> RemoteIdentity {
-        confirms.append((handle, suggestion.sessionID))
+    /// Temple's own yeses (`automatic`), apart from the user's.
+    private(set) var automaticConfirms: [(handle: String, sessionID: String)] = []
+    func confirm(_ handle: String, suggestion: RemoteSuggestion, automatic: Bool) async -> RemoteIdentity {
+        if automatic { automaticConfirms.append((handle, suggestion.sessionID)) } else { confirms.append((handle, suggestion.sessionID)) }
         if let confirmGate { await confirmGate() }
+        // As the store's claim: never automatic for a run with a decline.
+        if automatic, declines.contains(where: { $0.handle == handle }) {
+            return .inconclusive("that session was declined for this one", lasting: false, ended: false)
+        }
         let answer = confirmResult ?? .adopted(suggestion.sessionID, directory: suggestion.directory)
         claim(answer, handle)
         return answer
     }
 
-    /// The automatic claim (`autoConfirm`), as the store makes it: refused
-    /// for a run already asked about; its provenance kept with the run.
-    var autoConfirmResult: RemoteIdentity?
-    var autoConfirmGate: (() async -> Void)?
-    private(set) var autoConfirms: [(handle: String, sessionID: String)] = []
-    var asked: Set<String> = []
-    var autoLinks: [String: RemoteAutoLink] = [:]
-    func autoConfirm(_ handle: String, suggestion: RemoteSuggestion) async -> RemoteIdentity {
-        autoConfirms.append((handle, suggestion.sessionID))
-        if let autoConfirmGate { await autoConfirmGate() }
-        if asked.contains(handle) { return .inconclusive("you were already asked", lasting: false, ended: false) }
-        let answer = autoConfirmResult ?? .adopted(suggestion.sessionID, directory: suggestion.directory)
-        claim(answer, handle)
-        if case .adopted(let id, _) = answer, id == suggestion.sessionID {
-            autoLinks[handle] = RemoteAutoLink(suggestion: suggestion, sessionID: id, createdIncarnation: nil)
-        }
-        return answer
-    }
-    private(set) var askedWrites: [String] = []
-    func markAsked(_ handle: String) async throws {
-        askedWrites.append(handle)
-        asked.insert(handle)
-    }
-    func recordAutoLinkRow(_ handle: String, sessionID: String, incarnation: String) async throws {
-        guard let link = autoLinks[handle], link.sessionID == sessionID else { return }
-        autoLinks[handle] = RemoteAutoLink(suggestion: link.suggestion, sessionID: sessionID, createdIncarnation: incarnation)
-    }
-    func autoLink(of handle: String) async -> RemoteAutoLink? { autoLinks[handle] }
-
     var declineError: Error?
     var declineGate: (() async -> Void)?
-    private(set) var declines: [(handle: String, path: String)] = []
+    var declines: [(handle: String, path: String)] = []
     func decline(_ handle: String, rolloutPath: String) async throws {
         declines.append((handle, rolloutPath))
         if let declineGate { await declineGate() }
@@ -344,32 +319,11 @@ final class FakeRemoteHost: RemoteSessionHost {
     private(set) var released: [(handle: String, sessionID: String)] = []
     func releaseClaim(_ handle: String, sessionID: String) async throws {
         released.append((handle, sessionID))
-        autoLinks[handle] = nil
         if let index = pending.firstIndex(where: { $0.handle == handle }) {
             pending[index].sessionID = nil
             pending[index].claimed = false
         }
         unjoined.removeAll { $0.handle == handle }
-    }
-
-    var unlinkError: Error?
-    var unlinkGate: (() async -> Void)?
-    private(set) var unlinks: [(handle: String, sessionID: String, path: String)] = []
-    /// Not this session, as the store writes it: the claim of that id goes,
-    /// the run is restorable again, the candidate is declined.
-    func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws {
-        unlinks.append((handle, sessionID, rolloutPath))
-        if let unlinkGate { await unlinkGate() }
-        if let unlinkError { throw unlinkError }
-        autoLinks[handle] = nil
-        asked.insert(handle)
-        if let index = pending.firstIndex(where: { $0.handle == handle && $0.sessionID == sessionID && $0.claimed }) {
-            pending[index].sessionID = nil
-            pending[index].claimed = false
-            pending[index].joined = false
-            pending[index].tabClosed = false
-        }
-        declines.append((handle, rolloutPath))
     }
 
     private(set) var joinedMarks: [String] = []
@@ -386,8 +340,7 @@ final class FakeRemoteHost: RemoteSessionHost {
         if let pendingRunsGate { await pendingRunsGate() }
         return pending.filter { ($0.sessionID == nil || $0.claimed) && !$0.dismissed && !$0.tabClosed }
             .map { RemotePendingRun(handle: $0.handle, directory: $0.directory, ended: $0.ended,
-                                    sessionID: $0.claimed ? $0.sessionID : nil, typed: $0.typed, joined: $0.joined,
-                                    asked: asked.contains($0.handle)) }
+                                    sessionID: $0.claimed ? $0.sessionID : nil, typed: $0.typed, joined: $0.joined) }
     }
 
     fileprivate(set) var closedPending: [String] = []

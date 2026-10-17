@@ -157,24 +157,6 @@ public enum RemoteSuggestions: Equatable {
     case unavailable(String)
 }
 
-/// A lone candidate Temple claimed on its own for a pending Codex run that
-/// was typed into (the same claim, recheck and core join as a yes): what
-/// Not this session undoes.
-public struct RemoteAutoLink: Equatable {
-    public let suggestion: RemoteSuggestion
-    /// The id claimed (the candidate's, compared by bytes).
-    public let sessionID: String
-    /// The core row's membership when this link created it; nil when the
-    /// row was there before (Not this session then leaves it alone).
-    let createdIncarnation: String?
-    /// Restored after a relaunch: when this Temple's own open of the tab
-    /// had marked the row opened (an open no later than this is the link's).
-    var openedThrough: Date?
-    public init(suggestion: RemoteSuggestion, sessionID: String, createdIncarnation: String?) {
-        self.suggestion = suggestion; self.sessionID = sessionID; self.createdIncarnation = createdIncarnation
-    }
-}
-
 /// A pending Codex run restored as a chip at launch.
 public struct RemotePendingRun: Equatable {
     public let handle: String
@@ -188,12 +170,10 @@ public struct RemotePendingRun: Equatable {
     public let typed: Bool
     /// Its claim reached core.
     public let joined: Bool
-    /// The user was asked which session it is (no automatic link for it).
-    public let asked: Bool
     public init(handle: String, directory: String, ended: Bool, sessionID: String? = nil, typed: Bool = false,
-                joined: Bool = false, asked: Bool = false) {
+                joined: Bool = false) {
         self.handle = handle; self.directory = directory; self.ended = ended
-        self.sessionID = sessionID; self.typed = typed; self.joined = joined; self.asked = asked
+        self.sessionID = sessionID; self.typed = typed; self.joined = joined
     }
 }
 
@@ -289,27 +269,16 @@ public protocol RemoteSessionHost: HostLauncher {
     func identify(_ handle: String) async -> RemoteIdentity
     /// The candidates to ask about; never adopts.
     func suggestions(_ handle: String) async -> RemoteSuggestions
-    /// The user's yes: claimed under the same uniqueness as a verified id.
-    func confirm(_ handle: String, suggestion: RemoteSuggestion) async -> RemoteIdentity
-    /// The lone candidate claimed as a yes claims it, recorded as automatic
-    /// (its provenance kept with the run), and refused for a run the user
-    /// was already asked about, or with more than one candidate now.
-    func autoConfirm(_ handle: String, suggestion: RemoteSuggestion) async -> RemoteIdentity
-    /// The user was asked about this run: no automatic claim from now on.
-    func markAsked(_ handle: String) async throws
-    /// The core row an automatic claim's join made (for Not this session).
-    func recordAutoLinkRow(_ handle: String, sessionID: String, incarnation: String) async throws
-    /// The run's automatic claim, if its claim is one (after a relaunch).
-    func autoLink(of handle: String) async -> RemoteAutoLink?
+    /// The user's yes (or Temple's, `automatic`, for a lone candidate):
+    /// claimed under the same uniqueness as a verified id; an automatic
+    /// one only while it is still the only candidate and the run has no
+    /// declined candidate.
+    func confirm(_ handle: String, suggestion: RemoteSuggestion, automatic: Bool) async -> RemoteIdentity
     /// "Not this one": never offered again for this run.
     func decline(_ handle: String, rolloutPath: String) async throws
     /// The core join refused the id: the run is pending again.
     func releaseClaim(_ handle: String, sessionID: String) async throws
     func markJoined(_ handle: String) async throws
-    /// "Not this session" on a lone candidate Temple linked on its own: the
-    /// claim goes, the run is restorable by its handle again, and the
-    /// candidate is declined for the run (never offered again), in one write.
-    func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws
     /// Claims whose core join never happened, with their folders.
     func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)]
     func pendingRuns() async -> [RemotePendingRun]
@@ -383,9 +352,9 @@ public struct RemoteTabState: Equatable {
     var identityOperation: UUID?
     /// Core refused the id this run's check found: Try again is offered.
     public var identityRefused = false
-    /// The lone candidate Temple linked on its own, with no question: the
-    /// tab says so in one line, with Not this session.
-    public var autoLink: RemoteAutoLink?
+    /// Temple said yes on its own to the lone candidate in this connection:
+    /// `identityNote` says so, and Discard corrects it.
+    public var linkedOnItsOwn = false
 
     public init(phase: Phase) { self.phase = phase }
 
@@ -634,15 +603,13 @@ public enum RemoteCopy {
     public static let suggestionYes = "Yes, that's it"
     public static let suggestionNo = "Not this one"
 
-    /// The one line a tab shows when Temple linked a lone candidate on its
-    /// own: a fact, with Not this session after it.
-    public static func autoLinked(_ suggestion: RemoteSuggestion, host: String, now: Date = Date()) -> String {
+    /// The note a tab shows when Temple said yes on its own to the lone
+    /// candidate: display only; Discard corrects a wrong one.
+    public static func linkedOnItsOwn(_ suggestion: RemoteSuggestion, now: Date = Date()) -> String {
         let subject = suggestion.firstPrompt.map { "\u{201C}\($0)\u{201D}" }
             ?? "the Codex session started \(startTime(suggestion.startedAt, now: now))"
-        return "Linked to \(subject) on \(host)."
+        return "Linked on its own to \(subject). Use Discard if it\u{2019}s the wrong session."
     }
-
-    public static let notThisSession = "Not this session"
 
     /// A run whose id another session started from Temple already holds.
     public static let couldNotTell = "Temple couldn't tell which Codex session this is."
@@ -656,6 +623,11 @@ public enum RemoteCopy {
         archives
             ? "Archives this session, since you named, pinned or colored it. You can restore it from History."
             : "Removes this session from Temple."
+    }
+
+    /// Discard on a session Temple linked on its own: what it does.
+    public static func discardLinkedHelp(_ host: String) -> String {
+        "Stops this session on \(host) and removes it from Temple."
     }
 
     public static func discardPendingHelp(_ host: String) -> String {

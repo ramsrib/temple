@@ -713,15 +713,6 @@ public final class AppModel: ObservableObject {
             self?.remoteSessionsSheet?.id == id || self?.remoteFolderSheet?.id == id
         }
         openSessions.remoteTabs.rowIncarnation = { [weak self] id in self?.overlay.rows[id]?.incarnation }
-        openSessions.remoteTabs.releaseLinkHandler = { [weak self] id, host, incarnation, openedThrough in
-            // Not this session: the row the link made goes, unless the user
-            // made it theirs (one statement under its membership). Its ⌘⇧T
-            // entries go with it.
-            guard let self else { return }
-            if try self.overlay.releaseLinkedSession(id, host: host, incarnation: incarnation, openedThrough: openedThrough) {
-                self.openSessions.forgetClosedTabs(sessionID: id)
-            }
-        }
         openSessions.remoteTabs.discardHandler = { [weak self] id, host, incarnation in
             // One transaction under (id, host, incarnation): the row goes,
             // or (the user made it theirs: named, pinned, colored) is

@@ -1277,16 +1277,13 @@ public final class RemoteSessions {
         }
     }
 
-    private func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim, rolloutPath: String? = nil,
-                       automatic: RemoteRun.AutoLink? = nil) async -> Identity {
+    private func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim, rolloutPath: String? = nil) async -> Identity {
         do {
-            switch try await write({ try $0.claim(handle, sessionID: sessionID, how: how, rolloutPath: rolloutPath,
-                                                  automatic: automatic) }) {
+            switch try await write({ try $0.claim(handle, sessionID: sessionID, how: how, rolloutPath: rolloutPath) }) {
             case .claimed: return .adopted(sessionID)
             case .alreadyKnown(let id): return .known(id)
             case .taken: return .taken
             case .declined: return .inconclusive(.retry("that session was declined for this one"))
-            case .asked: return .inconclusive(.retry("you were already asked which session this is"))
             case .gone: return .inconclusive(.ended("Temple no longer tracks this session"))
             }
         } catch {
@@ -1360,6 +1357,10 @@ public final class RemoteSessions {
     /// held), then claimed under the same uniqueness as a verified id, the
     /// claim refusing a declined file in its own transaction. A check that
     /// can't be made claims nothing.
+    ///
+    /// `automatic`: Temple's own yes to a lone candidate (owner, round 2),
+    /// through this same path: still the only candidate now, and refused in
+    /// the claim's transaction for a run with a declined candidate.
     public func confirm(_ handle: String, suggestion: CodexSuggestion, automatic: Bool = false) async -> Identity {
         switch await eligible(handle) {
         case .unavailable(let reason):
@@ -1368,28 +1369,12 @@ public final class RemoteSessions {
             guard current.contains(where: { $0.id == suggestion.id && Array($0.sessionID.utf8) == Array(suggestion.sessionID.utf8) }) else {
                 return .inconclusive(.retry("that session is no longer a candidate for this one"))
             }
-            // An automatic link is the lone candidate's, claimed only for a
-            // run never asked about (the claim's own transaction checks).
             if automatic, current.count != 1 {
                 return .inconclusive(.retry("more than one session is a candidate for this one"))
             }
-            let link = automatic ? RemoteRun.AutoLink(rolloutPath: suggestion.rolloutPath, sessionID: suggestion.sessionID,
-                                                      firstPrompt: suggestion.firstPrompt, promptKnown: suggestion.promptKnown,
-                                                      startedAt: suggestion.startedAt, directory: suggestion.directory) : nil
-            return await claim(handle, sessionID: suggestion.sessionID, how: .confirmed, rolloutPath: suggestion.rolloutPath,
-                               automatic: link)
+            return await claim(handle, sessionID: suggestion.sessionID, how: automatic ? .automatic : .confirmed,
+                               rolloutPath: suggestion.rolloutPath)
         }
-    }
-
-    /// The user was asked about this run: no automatic claim from now on.
-    public func markAsked(_ handle: String) async throws {
-        let now = now()
-        try await write { try $0.markAsked(handle, at: now) }
-    }
-
-    /// The core row an automatic claim's join made.
-    public func recordAutoLinkRow(_ handle: String, sessionID: String, incarnation: String) async throws {
-        try await write { try $0.recordAutoLinkRow(handle, sessionID: sessionID, incarnation: incarnation) }
     }
 
     /// "Not this one": never offered again for this run.
@@ -1400,13 +1385,6 @@ public final class RemoteSessions {
     /// The core join refused the id (another host's, or another agent's).
     public func releaseClaim(_ handle: String, sessionID: String) async throws {
         try await write { try $0.releaseClaim(handle, sessionID: sessionID) }
-    }
-
-    /// "Not this session": the claim goes, the run is restorable by its
-    /// handle again, and the candidate is declined for it, in one write.
-    @discardableResult
-    public func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws -> Bool {
-        try await write { try $0.unlinkClaim(handle, sessionID: sessionID, rolloutPath: rolloutPath) }
     }
 
     public func markJoined(_ handle: String) async throws {

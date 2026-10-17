@@ -81,13 +81,15 @@ private struct SessionTerminalView: View {
                    !remote.suggestions.isEmpty || remote.identityNote != nil {
                     question(remote).band()
                 }
-                // A lone candidate Temple linked on its own: one line, and
-                // the way back to the question.
-                if remote.phase == .connected, let link = remote.autoLink, tab.sessionID != nil {
-                    notice(symbol: "link", text: RemoteCopy.autoLinked(link.suggestion, host: displayHost)) {
-                        Button(RemoteCopy.notThisSession) { model.openSessions.remoteTabs.unlink(tab) }
-                    } dismiss: {
+                // Temple said yes on its own to the lone candidate: one
+                // line, and Discard if it is the wrong session.
+                if remote.phase == .connected, remote.linkedOnItsOwn, tab.sessionID != nil,
+                   let note = remote.identityNote {
+                    notice(symbol: "link", text: note) {
                         EmptyView()
+                    } dismiss: {
+                        Button("Discard") { model.openSessions.remoteTabs.discard(tab) }
+                            .help(RemoteCopy.discardLinkedHelp(displayHost))
                     }
                 }
             } else if case .exited(let status) = tab.activity {

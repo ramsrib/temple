@@ -2204,21 +2204,19 @@ rows ("Removing remote", below).
   Any other writer (a child, a launcher's native binary, Codex's shared app
   server, which writes every rollout by default) proves nothing. Then the
   candidates by folder and time on the host's clock decide. Exactly one,
-  for a connected tab that was typed into and not yet asked about: Temple
-  claims it as a yes does (the same recheck, uniqueness and core join) and
-  the tab says "Linked to “<first prompt>” on <host>." with **Not this
-  session** (owner, round 2), which undoes the claim and the run's
-  hand-over, declines the candidate (one remote write), lets go of the core
-  row the link made unless the user made it theirs or anyone opened it,
-  and asks; Temple never links on its own again for that run, nor for any
-  run it has asked about (`asked_at` with the run, r6). Not this session
-  releases nothing until the tab set is saved without the session, and the
-  link's provenance is kept with the run, so a tab restored after a
-  relaunch, attached to the same run, keeps the line. One identity
-  transition at a time per run: an answer that began before an undo is
-  void, and a link whose tab ended meanwhile is released, not shown. Two or more, an
-  ended tab, or once asked: the tab asks, **Yes, that's it** or **Not this
-  one**, declined ones never offered again. A
+  for a connected tab that was typed into and never asked about: Temple
+  says yes on its own (owner, round 2), through the yes's exact path
+  (`confirm`, a claim `how: .automatic`, the same recheck, uniqueness and
+  core join; a run that ended meanwhile concludes as a yes does). The only
+  addition is a display-only note in the tab, "Linked on its own to
+  “<first prompt>”. Use Discard if it’s the wrong session.", and a wrong
+  one is corrected by **Discard** (the agent stopped first, then the
+  session's runs dismissed and its row let go or archived as a Discard
+  does). "Asked" is the question shown this launch, or any declined
+  candidate for the run, which the claim's own transaction checks, so a
+  decline holds across relaunches. Two or more, an ended tab, or once
+  asked: the tab asks, **Yes, that's it** or **Not this one**, declined
+  ones never offered again. A
   claim is unique per host before the core join, and core's refusal
   (`hostConflict`, `agentConflict`) is shown. Temple passes no
   `--no-daemon` (AGENTS.md: no opinion on how a CLI runs); the Hosts card
@@ -2261,7 +2259,7 @@ rows ("Removing remote", below).
   identity verification decides, so the cost is at most a missed fill.
 - **remote-state.sqlite, and no core schema change.** `TempleRemoteHost`
   owns `remote-state.sqlite` in the state directory, with its own migrator
-  (`r1-runs` to `r6-auto-link`): `runs`, `declined_candidates`,
+  (`r1-runs` to `r5-input`): `runs`, `declined_candidates`,
   `remote_project_state` (a host's project archive and order). A run
   persists its evidence: the pane's folder, pid and start time, the pinned
   socket path and server, the config root and Codex home it ran with. The
@@ -2347,6 +2345,6 @@ every unarchived remote row with a transcript costs one read at startup.
 bundled ssh library, a generated ssh config, a Temple-shipped helper daemon,
 dtach and abduco (no screen on reattach), mosh, and screen; adopting a Codex
 rollout by folder and time, or by uniqueness of a match, without saying so
-(the lone-candidate link is said in the tab and undone by Not this session);
+(Temple's own yes to a lone candidate is said in the tab, with Discard);
 deferred stops of any kind; stopping anything at quit; listing the private server's sessions as "Not in Temple";
 `open_tabs.host`; Temple passing `--no-daemon`; a byte-exact core locator.

@@ -356,13 +356,16 @@ it. What follows appears for an enabled host only.
   its own only when the Codex process it started holds the session's file
   open. By default Codex's shared app server writes that file, so Temple
   looks for sessions begun in the folder since it started. When exactly one
-  matches and you have typed into the tab, Temple links it as a yes would,
-  and the tab says so in one line, "Linked to “<first prompt>” on <host>.",
-  with **Not this session**, which undoes the link, never offers that
-  session again for this tab, and asks instead (with none left, it says
-  Temple couldn't tell which session it is). With two or more, or once
-  it has asked, the tab asks: "Is this the session?" with the first prompt,
-  the time and the folder, and **Yes, that's it** or **Not this one**. With
+  matches, you have typed into the tab, and Temple has not asked about it
+  (nor have you declined a candidate for it, even before a relaunch),
+  Temple says yes on its own, exactly as you would, and the tab says so
+  in one line: "Linked on its own to “<first prompt>”. Use Discard if
+  it’s the wrong session.", with **Discard**, which stops the session on
+  the host and removes it from Temple, as a Discard does. With two or more,
+  or once it has asked, the tab asks: "Is this the session?" with the first
+  prompt, the time and the folder, and **Yes, that's it** or **Not this
+  one**; with the last one declined, it says Temple couldn't tell which
+  session it is. With
   `--no-daemon` in Codex's arguments, Temple identifies the session on its
   own; the Hosts card says so.
   A Codex session that ended before Temple learned its ID asks in one
@@ -376,7 +379,7 @@ it. What follows appears for an enabled host only.
   session's row sits at the top of its project, titled with that first
   prompt until Codex's own title arrives; opening it resumes it.
 - **Banners.** A tab's banner puts its answers (Reconnect, Resume anyway,
-  Start a new session, Yes and No, Not this session) right after its
+  Start a new session, Yes and No) right after its
   sentence as small buttons; only Discard and Cancel sit at the trailing
   edge.
 - **Scrolling and find.** tmux keeps a session's history. The wheel scrolls

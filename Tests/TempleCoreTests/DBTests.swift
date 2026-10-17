@@ -1259,55 +1259,6 @@ extension DBTests {
         XCTAssertEqual(try db.discardRemoteSession(sessionID: "named", host: remote, incarnation: named), .unchanged)
     }
 
-    /// Not this session lets go of the row a link on a host made, under
-    /// its membership, transcript path or not; a row the user made theirs,
-    /// one a saved tab holds, or a replaced membership stays.
-    func testReleasingALinkedSessionDeletesOnlyAnUntouchedRowOfThatMembership() throws {
-        let (db, _) = try database()
-        let remote = HostID(rawValue: "box")
-        let core = SessionCore(host: remote)
-        for id in ["filled", "named", "pinned", "tabbed"] { try db.join(sessionID: id, via: .created, core: core) }
-        func incarnation(_ id: String) throws -> String { try XCTUnwrap(db.sessionState(id)?.incarnation) }
-        _ = try db.updateTranscriptHint(sessionID: "filled", agent: .codex,
-                                        locator: TranscriptLocator(host: remote, path: "/home/u/.codex/r-filled.jsonl"))
-        try db.setCustomName("Mine", sessionID: "named")
-        try db.setPinned(true, sessionID: "pinned")
-        try db.replaceOpenTabs([OpenTabRecord(projectPath: "/home/u/p", sessionID: "tabbed", position: 0,
-                                              agent: "codex", title: "T", isActive: true)])
-        XCTAssertFalse(try db.releaseLinkedSession(sessionID: "filled", host: remote, incarnation: "stale"))
-        XCTAssertFalse(try db.releaseLinkedSession(sessionID: "filled", host: .local, incarnation: try incarnation("filled")))
-        XCTAssertTrue(try db.releaseLinkedSession(sessionID: "filled", host: remote, incarnation: try incarnation("filled")),
-                      "an enrichment's transcript does not keep a guess the user undid")
-        XCTAssertNil(try db.sessionState("filled"))
-        for id in ["named", "pinned", "tabbed"] {
-            XCTAssertFalse(try db.releaseLinkedSession(sessionID: id, host: remote, incarnation: try incarnation(id)), id)
-            XCTAssertNotNil(try db.sessionState(id), id)
-        }
-    }
-
-    /// A row somebody opened is not untouched (Sol round 1): another
-    /// Temple's open keeps it; only the link's own tab's open, no later
-    /// than `openedThrough`, does not.
-    func testReleasingALinkedSessionKeepsARowSomebodyOpened() throws {
-        let (db, _) = try database()
-        let remote = HostID(rawValue: "box")
-        let core = SessionCore(host: remote)
-        try db.join(sessionID: "opened", via: .created, core: core)
-        try db.join(sessionID: "ours", via: .created, core: core)
-        let opened = try XCTUnwrap(db.sessionState("opened")?.incarnation)
-        let ours = try XCTUnwrap(db.sessionState("ours")?.incarnation)
-        let early = Date(timeIntervalSince1970: 1_800_000_000)
-        try db.recordOpened(sessionID: "opened", host: remote, at: early.addingTimeInterval(60))
-        try db.recordOpened(sessionID: "ours", host: remote, at: early)
-        XCTAssertFalse(try db.releaseLinkedSession(sessionID: "opened", host: remote, incarnation: opened))
-        XCTAssertFalse(try db.releaseLinkedSession(sessionID: "opened", host: remote, incarnation: opened, openedThrough: early),
-                       "opened after the link's own open: kept")
-        XCTAssertNotNil(try db.sessionState("opened"))
-        XCTAssertTrue(try db.releaseLinkedSession(sessionID: "ours", host: remote, incarnation: ours,
-                                                  openedThrough: early.addingTimeInterval(1)))
-        XCTAssertNil(try db.sessionState("ours"))
-    }
-
     func testFillsAndHintsReportDistinctOutcomesUnderTheIncarnationPredicate() throws {
         let (db, _) = try database()
         try db.join(sessionID: "s", via: .imported)
