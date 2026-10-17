@@ -625,7 +625,7 @@ Changes apply live where applicable.
   fixed once saved, an address, and optionally a user, port, identity file
   and jump host, with **Copy as ssh config**), and **Edit ~/.ssh/config**
   opens the file. With no alias to offer the sheet says why: "No hosts in
-  ~/.ssh/config." or "Every host in ~/.ssh/config is in use.". Test connection opens a
+  ~/.ssh/config." or "Every host in ~/.ssh/config is in use." Test connection opens a
   small terminal, in the app's light or dark, where your own ssh
   connects and asks what it needs (a host key, a password, a second factor),
   then checks the login shell's PATH, `claude`, `codex`, tmux (by running
