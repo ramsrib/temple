@@ -402,19 +402,19 @@ final class RemoteLifecycleTests: XCTestCase {
         return tab
     }
 
-    /// "Open in Temple" in Sessions on <host> means this Temple has a live
+    /// "In a tab" in Sessions on <host> means this Temple has a live
     /// tab of the run (sol round 1), not that tmux counts a client: the
     /// run of a connected tab is open here; another run, attached from a
     /// terminal or another Temple, is Running; once the tab goes, so does
-    /// "Open in Temple".
-    func testOpenInTempleMeansALiveTabHere() async throws {
+    /// "In a tab".
+    func testInATabMeansALiveTabHere() async throws {
         let tab = await openRow()
         let handle = try XCTUnwrap(tab.remote?.handle)
         func label(_ handle: String) -> String {
             RemoteCopy.trackedState(.present(attached: true),
                                     openHere: model.remoteTabs.hasLiveTab(handle: handle, host: hostID))
         }
-        XCTAssertEqual(label(handle), "Open in Temple")
+        XCTAssertEqual(label(handle), "In a tab")
         XCTAssertEqual(label("elsewhere"), "Running", "attached, but not by this Temple")
         XCTAssertFalse(model.remoteTabs.hasLiveTab(handle: handle, host: HostID(rawValue: "other")))
         model.remoteTabs.detach(tab.id)

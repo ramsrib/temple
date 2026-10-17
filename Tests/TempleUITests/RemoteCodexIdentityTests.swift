@@ -867,7 +867,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(RemoteCopy.noTrackedSessions, "No sessions started from Temple.")
         XCTAssertEqual(RemoteCopy.stillWorkingMessage, "Detach leaves it running; Stop ends it.")
         // Sessions on <host> in the app's words; the tmux name is a tooltip.
-        XCTAssertEqual(RemoteCopy.trackedState(.present(attached: true), openHere: true), "Open in Temple")
+        XCTAssertEqual(RemoteCopy.trackedState(.present(attached: true), openHere: true), "In a tab")
         XCTAssertEqual(RemoteCopy.trackedState(.present(attached: true), openHere: false), "Running",
                        "another client attached is not this Temple")
         XCTAssertEqual(RemoteCopy.trackedState(.present(attached: false), openHere: false), "Running")
