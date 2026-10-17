@@ -1231,6 +1231,12 @@ public final class RemoteTabController {
         }
         tab.remote?.suggestions = offered
         if !offered.isEmpty { asked.insert(handle) }
+        // After Not this session the tab is never bare: with no candidate
+        // left (the declined one was the only one), it says Temple
+        // couldn't tell, as a failed yes does.
+        if offered.isEmpty, unlinked.contains(handle), tab.remote?.identityNote == nil {
+            tab.remote?.identityNote = RemoteCopy.couldNotTell
+        }
     }
 
     /// Runs whose question has been put to the user this launch (candidates
@@ -1240,6 +1246,9 @@ public final class RemoteTabController {
     /// Runs whose Not this session is being written: nothing claims them
     /// meanwhile.
     private var unlinking: Set<String> = []
+    /// Runs whose link the user undid this launch: their tab keeps saying
+    /// something (the question, or that Temple couldn't tell).
+    private var unlinked: Set<String> = []
 
     /// A lone candidate may be linked without asking: a connected tab (an
     /// ended one keeps its question: a yes there closes the tab), typed
@@ -1300,6 +1309,7 @@ public final class RemoteTabController {
         let hostID = tab.host, id = link.sessionID
         asked.insert(handle)
         unlinking.insert(handle)
+        unlinked.insert(handle)
         // The obligation to retire the run's restoration goes with the
         // claim (a write already under way finds no claim and writes nothing).
         if handOvers[handle]?.inFlight == false { handOvers[handle] = nil }

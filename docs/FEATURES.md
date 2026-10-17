@@ -359,7 +359,8 @@ it. What follows appears for an enabled host only.
   matches and you have typed into the tab, Temple links it as a yes would,
   and the tab says so in one line, "Linked to “<first prompt>” on <host>.",
   with **Not this session**, which undoes the link, never offers that
-  session again for this tab, and asks instead. With two or more, or once
+  session again for this tab, and asks instead (with none left, it says
+  Temple couldn't tell which session it is). With two or more, or once
   it has asked, the tab asks: "Is this the session?" with the first prompt,
   the time and the folder, and **Yes, that's it** or **Not this one**. With
   `--no-daemon` in Codex's arguments, Temple identifies the session on its

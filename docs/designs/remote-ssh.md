@@ -402,8 +402,11 @@ shown as a link: one line in the tab, "Linked to “<first prompt>” on
 is cleared so the run restores by its handle again, the candidate is
 declined), lets go of the core row the link made, unless the user made it
 theirs (`TempleDB.releaseLinkedSession`, after the tab set is saved without
-the session), and asks the question, without that candidate; Temple then
-never links on its own again for that run this launch. A hand-over already
+the session), and asks the question, without that candidate (with none
+left, the tab says "Temple couldn't tell which Codex session this is.",
+never a bare tab; found by the computer-use pass on fa2d633); Temple then
+never links on its own again for that run this launch. The tab's title is
+Codex's own terminal title throughout, as for any pending tab. A hand-over already
 under way finds no id and retires nothing (`RemoteStoreLedger` writes
 `tab_closed_at` only for a run with an id). An ended tab, two or more
 candidates, an untyped run, or a run already asked about: the question.

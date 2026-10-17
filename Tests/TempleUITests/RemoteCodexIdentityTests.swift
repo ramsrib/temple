@@ -288,6 +288,39 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertNil(tab.remote?.autoLink, "a yes is the user's own: no line")
     }
 
+    /// The real sequence on a host (computer-use pass, round 2): the lone
+    /// candidate is linked, Not this session declines it, and the host's
+    /// next lookups leave it out, so none is left. The tab is pending again
+    /// and is never bare: it says Temple couldn't tell, on every later
+    /// identity check too. Its title is Codex's own terminal title, as the
+    /// pending tab's was before the link (never the row's, which is gone).
+    func testNotThisSessionOnTheOnlyCandidateSaysTempleCouldNotTell() async throws {
+        remote.excludesDeclined = true
+        remote.identityResult = .inconclusive("Codex's shared server writes the session file", lasting: true, ended: false)
+        remote.suggestionsResult = .candidates([suggestion()])
+        let tab = await newCodex()
+        let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
+        surface.simulateTitle("Reply ok | project")
+        model.surfaceDidSubmitInput(surface)
+        await settle(tab.remote?.autoLink != nil)
+        XCTAssertEqual(tab.title, "Reply ok | project")
+        model.remoteTabs.unlink(tab)
+        await settle(self.remote.unlinks.count == 1)
+        await settle(tab.remote?.identityNote == RemoteCopy.couldNotTell, "never a bare tab")
+        XCTAssertEqual(tab.remote?.suggestions, [])
+        XCTAssertNil(tab.sessionID)
+        XCTAssertTrue(tab.isProvisional)
+        XCTAssertEqual(tab.title, "Reply ok | project", "Codex's own title, as before the link")
+        // The next identity checks run, look again, and keep saying it.
+        let lookups = remote.suggestionLookups.count
+        await settle(self.remote.suggestionLookups.count > lookups + 1, "the identity checks go on")
+        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.couldNotTell)
+        XCTAssertEqual(remote.confirms.count, 1, "nothing linked again")
+        // Codex retitles itself: the tab follows, as any pending tab does.
+        surface.simulateTitle("project")
+        XCTAssertEqual(tab.title, "project")
+    }
+
     /// Not this session that can't be written says so once; the tab stays
     /// pending, and nothing claims it while the write is under way.
     func testAFailedNotThisSessionIsSaid() async throws {

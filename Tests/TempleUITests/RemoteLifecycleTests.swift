@@ -279,10 +279,15 @@ final class FakeRemoteHost: RemoteSessionHost {
     var suggestionsResult: RemoteSuggestions = .candidates([])
     var suggestionsGate: (() async -> Void)?
     private(set) var suggestionLookups: [String] = []
+    /// As the host does: a declined candidate is never offered again for
+    /// its run (opt-in, so older tests keep their fixed answers).
+    var excludesDeclined = false
     func suggestions(_ handle: String) async -> RemoteSuggestions {
         suggestionLookups.append(handle)
         if let suggestionsGate { await suggestionsGate() }
-        return suggestionsResult
+        guard excludesDeclined, case .candidates(let found) = suggestionsResult else { return suggestionsResult }
+        let declined = Set(declines.filter { $0.handle == handle }.map(\.path))
+        return .candidates(found.filter { !declined.contains($0.rolloutPath) })
     }
 
     var confirmResult: RemoteIdentity?
