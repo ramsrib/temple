@@ -216,7 +216,8 @@ final class RemoteCodexIdentityTests: XCTestCase {
         let tab = await newCodex()
         model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
         await settle(tab.sessionID == "c7", "linked on its own")
-        XCTAssertEqual(remote.confirms.map(\.sessionID), ["c7"], "through the yes's own claim and recheck")
+        XCTAssertEqual(remote.autoConfirms.map(\.sessionID), ["c7"], "through the yes's own claim and recheck, as automatic")
+        XCTAssertTrue(remote.confirms.isEmpty)
         XCTAssertEqual(joins.map(\.id), ["c7"])
         XCTAssertFalse(tab.isProvisional)
         XCTAssertEqual(tab.remote?.autoLink?.sessionID, "c7")
@@ -235,6 +236,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await settle(tab.remote?.suggestions.count == 2)
         try await Task.sleep(for: .milliseconds(150))
         XCTAssertTrue(remote.confirms.isEmpty)
+        XCTAssertTrue(remote.autoConfirms.isEmpty)
         XCTAssertNil(tab.sessionID)
         XCTAssertNil(tab.remote?.autoLink)
     }
@@ -248,7 +250,9 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await settle(tab.remote?.suggestions.count == 1)
         try await Task.sleep(for: .milliseconds(150))
         XCTAssertTrue(remote.confirms.isEmpty)
+        XCTAssertTrue(remote.autoConfirms.isEmpty)
         XCTAssertNil(tab.sessionID)
+        XCTAssertEqual(remote.askedWrites, ["p1"], "asked: kept with the run")
     }
 
     /// Not this session: the tab is pending again at once (no id, not in the
@@ -279,7 +283,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertNil(run.sessionID, "the claim is gone")
         XCTAssertFalse(run.tabClosed, "restorable by its handle again")
         await settle(tab.remote?.suggestions.map(\.sessionID) == ["c8"], "the question, with what is left")
-        XCTAssertEqual(remote.confirms.map(\.sessionID), ["c7"], "no link on its own again for this run")
+        XCTAssertEqual(remote.autoConfirms.map(\.sessionID), ["c7"], "no link on its own again for this run")
         XCTAssertNil(tab.sessionID)
         await settle(self.remote.identifies.count > identifiesBefore, "the identity checks restart")
         // A yes still works from here.
@@ -315,10 +319,147 @@ final class RemoteCodexIdentityTests: XCTestCase {
         let lookups = remote.suggestionLookups.count
         await settle(self.remote.suggestionLookups.count > lookups + 1, "the identity checks go on")
         XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.couldNotTell)
-        XCTAssertEqual(remote.confirms.count, 1, "nothing linked again")
+        XCTAssertEqual(remote.autoConfirms.count, 1, "nothing linked again")
         // Codex retitles itself: the tab follows, as any pending tab does.
         surface.simulateTitle("project")
         XCTAssertEqual(tab.title, "project")
+    }
+
+    // MARK: Sol round 1 on the lone-candidate link
+
+    /// The run ends while its automatic claim is in flight: no link is made
+    /// that the tab could no longer correct. The claim is released and the
+    /// ended tab asks; nothing reaches core.
+    func testARunThatEndsWhileItsAutomaticClaimIsInFlightIsNotLinked() async throws {
+        let hold = Gate()
+        remote.autoConfirmGate = { await hold.wait() }
+        remote.suggestionsResult = .candidates([suggestion()])
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(self.remote.autoConfirms.count == 1)
+        try await Task.sleep(for: .milliseconds(350))
+        remote.liveness = .absent
+        factory.created.last?.simulateExit(status: 0)
+        await settle(tab.remote?.phase == .endedPending)
+        await hold.open()
+        await settle(self.remote.released.map(\.sessionID) == ["c7"], "the automatic claim is released")
+        XCTAssertTrue(joins.isEmpty, "nothing reaches core")
+        XCTAssertNil(tab.sessionID)
+        XCTAssertNil(tab.remote?.autoLink)
+        XCTAssertTrue(model.tabs.contains { $0 === tab }, "the ended tab stays and asks")
+        await settle(tab.remote?.suggestions.map(\.sessionID) == ["c7"])
+    }
+
+    /// One identity transition at a time: a check that answers with the
+    /// claim while the automatic claim is in flight is not taken up (the
+    /// link is), and a check that began before Not this session never
+    /// rejoins the undone identity after it.
+    func testChecksNeverOverlapALinkOrItsUndo() async throws {
+        model.remoteTabs.identitySchedule = [60]
+        let checkHold = Gate()
+        var held = 0
+        remote.identityGate = { held += 1; if held == 1 { await checkHold.wait() } }
+        remote.identityAnswers = [.known("c7", directory: "/home/u/project")]
+        remote.identityResult = .inconclusive("shared server", lasting: true, ended: false)
+        remote.suggestionsResult = .candidates([suggestion()])
+        let linkHold = Gate()
+        remote.autoConfirmGate = { await linkHold.wait() }
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        // Check A starts (held; it will answer the claim, .known c7).
+        model.remoteTabs.activated(tab)
+        await settle(held == 1)
+        // Check B finds the lone candidate: the automatic claim, held.
+        model.remoteTabs.retryIdentity(tab)
+        await settle(self.remote.autoConfirms.count == 1)
+        await checkHold.open()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(tab.sessionID, "a check's answer is not taken up while the link is in flight")
+        await linkHold.open()
+        await settle(tab.remote?.autoLink != nil, "the link is the one that lands, with its correction")
+        XCTAssertEqual(joins.map(\.id), ["c7"])
+
+        // A check from before Not this session answering the old claim.
+        let lateHold = Gate()
+        held = 0
+        remote.identityGate = { held += 1; if held == 1 { await lateHold.wait() } }
+        remote.identityAnswers = [.known("c7", directory: "/home/u/project")]
+        let late = model.remoteTabs.identities["p1"]?.epoch
+        model.remoteTabs.unlink(tab)
+        XCTAssertNotEqual(model.remoteTabs.identities["p1"]?.epoch, late, "the unlink moves the epoch")
+        await settle(self.remote.unlinks.count == 1)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(tab.sessionID)
+        XCTAssertEqual(joins.map(\.id), ["c7"], "never joined again")
+        await lateHold.open()
+    }
+
+    /// Not this session waits for the tab set to be saved without the
+    /// session: while the save fails nothing is released (the claim and
+    /// core row stay, the session still in the saved tabs), it is said
+    /// once, and the next acknowledged save finishes it.
+    func testNotThisSessionWaitsForAnAcknowledgedSave() async throws {
+        let store = FailingTabPersistence()
+        store.failing = false
+        makeModel(persistence: store)
+        model.remoteTabs.unlinkSaveRetries = [0.02, 0.02]
+        remote.suggestionsResult = .candidates([suggestion()])
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(tab.remote?.autoLink != nil)
+        await settle(store.saved.contains { $0.sessionID == "c7" })
+        store.failing = true
+        model.remoteTabs.unlink(tab)
+        XCTAssertNil(tab.sessionID, "pending again on screen at once")
+        await settle(self.notices.count == 1, "said once")
+        XCTAssertTrue(remote.unlinks.isEmpty, "nothing released while the saved tabs still hold the session")
+        XCTAssertTrue(store.saved.contains { $0.sessionID == "c7" })
+        XCTAssertNotNil(tab.remote?.identityNote)
+        store.failing = false
+        model.persist()
+        await settle(self.remote.unlinks.count == 1, "the next acknowledged save finishes it")
+        XCTAssertFalse(store.saved.contains { $0.sessionID == "c7" })
+        await settle(tab.remote?.identityNote == RemoteCopy.couldNotTell || tab.remote?.suggestions.isEmpty == false)
+        XCTAssertEqual(notices.count, 1)
+    }
+
+    /// Asked is kept with the run: after a relaunch a run the user was
+    /// asked about (or declined one for) is never linked on its own; the
+    /// host's own claim refuses it too.
+    func testAskedSurvivesARelaunchAndBlocksTheLink() async throws {
+        remote.pending = [.init(handle: "p7", directory: "/home/u/project", typed: true)]
+        remote.asked = ["p7"]
+        remote.suggestionsResult = .candidates([suggestion()])
+        model.remoteTabs.restorePending(hosts: [hostID])
+        await settle(self.model.tabs.count == 1)
+        let chip = try XCTUnwrap(model.tabs.first)
+        XCTAssertEqual(model.remoteTabs.identities["p7"]?.asked, true, "restored from the run")
+        model.activate(chip)
+        await settle(chip.remote?.suggestions.count == 1, "the question, not a link")
+        XCTAssertTrue(remote.autoConfirms.isEmpty)
+        XCTAssertNil(chip.sessionID)
+    }
+
+    /// A tab Temple linked on its own, restored after a relaunch and
+    /// attached to the same run, gets its line and Not this session back
+    /// from the run's provenance; Not this session then works as before.
+    func testAnAutomaticLinkKeepsItsCorrectionAfterARelaunch() async throws {
+        remote.runs = [.init(handle: "p1", sessionID: "c7", resume: false)]
+        remote.pending = [.init(handle: "p1", directory: "/home/u/project", sessionID: "c7", typed: true, claimed: true, joined: true)]
+        remote.autoLinks["p1"] = RemoteAutoLink(suggestion: suggestion(), sessionID: "c7", createdIncarnation: nil)
+        persistence.save([PersistedTab(sessionID: "c7", agent: .codex, projectPath: "/home/u/project", title: "Reply ok", isActive: false)])
+        model.sessionRow = { id in id == "c7" ? Fixture.row("c7", agent: .codex, project: "/home/u/project", host: HostID(rawValue: "box")) : nil }
+        model.restore()
+        let tab = try XCTUnwrap(model.tabs.first)
+        model.activate(tab)
+        await settle(tab.hasLiveProcess)
+        await settle(tab.remote?.autoLink?.sessionID == "c7", "the line comes back")
+        XCTAssertNotNil(tab.remote?.autoLink?.openedThrough, "this tab's own open does not keep the row")
+        remote.suggestionsResult = .candidates([])
+        model.remoteTabs.unlink(tab)
+        await settle(self.remote.unlinks.count == 1)
+        XCTAssertNil(tab.sessionID)
+        await settle(tab.remote?.identityNote == RemoteCopy.couldNotTell)
     }
 
     /// Not this session that can't be written says so once; the tab stays

@@ -63,6 +63,12 @@ extension AppModel {
     /// The sidebar's Show: the sheet for that host. A count line is then
     /// acted on, and never comes back for the same flags.
     public func showRemoteSessions(_ host: HostID) {
+        // Only for an enabled host: a notice or menu of one that is gone
+        // opens nothing.
+        guard remoteHost(host) != nil else {
+            if remoteNotice?.host == host { remoteNotice = nil }
+            return
+        }
         if case .count? = remoteNotice?.kind, remoteNotice?.host == host, let launcher = remoteHost(host) {
             remoteNotice = nil
             openSessions.remoteTabs.operations.run(host: host, .write) { await launcher.noticeLeftRunning() }
@@ -113,6 +119,7 @@ extension AppModel {
     /// ⌘N's and the launcher's "Folder on <host>…".
     public func chooseRemoteFolder(host: HostID, agent: Agent? = nil) {
         newSessionPickerPresented = false
+        guard remoteHost(host) != nil else { return }
         remoteFolderSheet = RemoteFolderRequest(host: host, agent: agent ?? settings.defaultAgent)
     }
 

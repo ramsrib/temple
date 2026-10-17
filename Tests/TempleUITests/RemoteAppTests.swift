@@ -367,4 +367,32 @@ final class RemoteAppTests: XCTestCase {
             }
         }
     }
+
+    /// Retiring a host takes its notice and any sheet asked for it with it,
+    /// and nothing opens a sheet for a host that is not enabled (Sol
+    /// round 1: no remote UI without an enabled host).
+    func testRetiringAHostClearsItsNoticeAndSheets() throws {
+        let defaults = Fixture.uniqueDefaults()
+        defaults.set(RemoteHostList(records: [.config("box")]).encode(), forKey: RemoteHostsModel.hostsKey)
+        let hosts = RemoteHostsModel(defaults: defaults, readConfigAliases: { [] })
+        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), database: try TempleDB.inMemory(),
+                           settings: SettingsStore(defaults: defaults),
+                           hostRegistry: Fixture.hostsWithoutFolderEvidence(), remoteHosts: hosts)
+        XCTAssertNotNil(app.remoteHost(hostID))
+        app.remoteNotice = RemoteNotice(host: hostID, message: "Left running", kind: .closed)
+        app.showRemoteSessions(hostID)
+        XCTAssertEqual(app.remoteSessionsSheet?.host, hostID)
+        app.chooseRemoteFolder(host: hostID, agent: .codex)
+        XCTAssertEqual(app.remoteFolderSheet?.host, hostID)
+        hosts.remove("box")
+        XCTAssertNil(app.remoteNotice)
+        XCTAssertNil(app.remoteSessionsSheet)
+        XCTAssertNil(app.remoteFolderSheet)
+        app.remoteNotice = RemoteNotice(host: hostID, message: "stale", kind: .closed)
+        app.showRemoteSessions(hostID)
+        XCTAssertNil(app.remoteSessionsSheet, "no sheet for a host that is not enabled")
+        XCTAssertNil(app.remoteNotice)
+        app.chooseRemoteFolder(host: hostID)
+        XCTAssertNil(app.remoteFolderSheet)
+    }
 }

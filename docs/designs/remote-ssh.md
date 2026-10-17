@@ -405,7 +405,7 @@ theirs (`TempleDB.releaseLinkedSession`, after the tab set is saved without
 the session), and asks the question, without that candidate (with none
 left, the tab says "Temple couldn't tell which Codex session this is.",
 never a bare tab; found by the computer-use pass on fa2d633); Temple then
-never links on its own again for that run this launch. The tab's title is
+never links on its own again for that run (`asked_at`, kept with the run). The tab's title is
 Codex's own terminal title throughout, as for any pending tab. A hand-over already
 under way finds no id and retires nothing (`RemoteStoreLedger` writes
 `tab_closed_at` only for a run with an id). An ended tab, two or more
@@ -1067,9 +1067,10 @@ or as another agent is refused and shown. "Already host-keyed" means
     end_evidence ('absent' | 'killed'), left_running_at,
     left_running_reason ('host did not answer' | 'stop not acknowledged' |
     'another client attached' | 'quit deadline'), dismissed_at, failure)`.
-    As built, migrations `r2-conversation` to `r5-input` add the
+    As built, migrations `r2-conversation` to `r6-auto-link` add the
     conversation flag, the config root and Codex home the pane ran with,
-    `claim`, `joined_at`, `tab_closed_at` and `input_seen_at`; uniqueness is
+    `claim`, `joined_at`, `tab_closed_at`, `input_seen_at`, `asked_at` and
+    `auto_link` (an automatic claim's provenance); uniqueness is
     on claims (`runs_claim`, section 3), not on every row.
   - `declined_candidates(handle, rollout_path, PRIMARY KEY (handle,
     rollout_path))`: suggestions the user said no to.
@@ -2944,8 +2945,38 @@ and the sections above say so where they changed.
    Docs: jetson's Claude login is optional coverage, not a gate; the
    additive-schema rule stays, kept by the owner.
 
-Later, still open: a link survives a relaunch as an ordinary session (its
-line and Not this session are this launch's, while its tab stays connected),
-and "asked already" is memory only, so after a relaunch a run whose question
-was shown can link a lone candidate.
+### Round 2 fixes (the computer-use pass and Sol's review)
+
+- **Never a bare tab.** Not this session on the only candidate left the tab
+  with nothing (the host's lookups leave a declined candidate out). A run
+  that was asked about now says "Temple couldn't tell which Codex session
+  this is." whenever no candidate is left. The tab's title is Codex's own
+  terminal title throughout, as for any pending tab.
+- **One identity state machine per run** (`RemoteTabController.RunIdentity`,
+  replacing three loose sets): pending → linking → linked → unlinking →
+  pending, with an `epoch` that every Not this session moves. A check,
+  open, close or yes captures the epoch when it begins, and `adopted`
+  ignores an answer from an older epoch; while linking or unlinking no
+  check runs and only the automatic claim's own answer is taken up.
+- **A link is made only where it can be undone.** The automatic claim
+  (`autoConfirm`, `RemoteSessions.confirm(automatic:)`) is checked again
+  when it answers: if the tab ended, closed or reconnected meanwhile, or
+  the app is quitting, the claim is released and the question decides.
+- **Not this session waits for the saved tab set.** Nothing is released
+  until a save without the session is acknowledged; it is retried
+  (`unlinkSaveRetries`), said once if it keeps failing, and finished at the
+  next acknowledged save. An unlink still owed at quit is lost with the
+  memory, and the restored tab keeps its link line.
+- **Kept with the run** (`r6-auto-link`, additive): `asked_at` (the store
+  refuses an automatic claim once the user was asked, across relaunches;
+  set when candidates are shown, one is declined, or a link is undone) and
+  `auto_link` (the claim's candidate and the core row its join made). A
+  session tab attached to that run after a relaunch gets its line and Not
+  this session back (`restoreAutoLink`).
+- **A row somebody opened stays.** `releaseLinkedSession` also needs
+  `last_opened_at` empty, or no later than the restored tab's own open
+  (`openedThrough`).
+- **A retired host leaves nothing on screen.** Its notice and any sheet
+  asked for it go with it, and Sessions on <host> or the folder sheet open
+  only for an enabled host.
 

@@ -713,12 +713,12 @@ public final class AppModel: ObservableObject {
             self?.remoteSessionsSheet?.id == id || self?.remoteFolderSheet?.id == id
         }
         openSessions.remoteTabs.rowIncarnation = { [weak self] id in self?.overlay.rows[id]?.incarnation }
-        openSessions.remoteTabs.releaseLinkHandler = { [weak self] id, host, incarnation in
+        openSessions.remoteTabs.releaseLinkHandler = { [weak self] id, host, incarnation, openedThrough in
             // Not this session: the row the link made goes, unless the user
             // made it theirs (one statement under its membership). Its ⌘⇧T
             // entries go with it.
             guard let self else { return }
-            if try self.overlay.releaseLinkedSession(id, host: host, incarnation: incarnation) {
+            if try self.overlay.releaseLinkedSession(id, host: host, incarnation: incarnation, openedThrough: openedThrough) {
                 self.openSessions.forgetClosedTabs(sessionID: id)
             }
         }
@@ -985,6 +985,11 @@ public final class AppModel: ObservableObject {
             hostBox.value = hostBox.value.removing(host)
             engineSet.remove(host: host)
             managedRemoteHosts.removeValue(forKey: host)
+            // Nothing of a host that is gone stays on screen: its notice and
+            // any sheet asked for it (no remote UI without an enabled host).
+            if remoteNotice?.host == host { remoteNotice = nil }
+            if remoteSessionsSheet?.host == host { remoteSessionsSheet = nil }
+            if remoteFolderSheet?.host == host { remoteFolderSheet = nil }
         }
         for record in wanted where managedRemoteHosts[record.host] == nil {
             // A host the caller registered itself (tests) is theirs.

@@ -269,10 +269,32 @@ final class RemoteHostLauncher: RemoteSessionHost {
     }
 
     func confirm(_ handle: String, suggestion: RemoteSuggestion) async -> RemoteIdentity {
-        let candidate = CodexSuggestion(rolloutPath: suggestion.rolloutPath, sessionID: suggestion.sessionID,
-                                        firstPrompt: suggestion.firstPrompt, startedAt: suggestion.startedAt,
-                                        directory: suggestion.directory, promptKnown: suggestion.promptKnown)
-        return await identity(await sessions.confirm(handle, suggestion: candidate), handle: handle)
+        await identity(await sessions.confirm(handle, suggestion: Self.candidate(suggestion)), handle: handle)
+    }
+
+    func autoConfirm(_ handle: String, suggestion: RemoteSuggestion) async -> RemoteIdentity {
+        await identity(await sessions.confirm(handle, suggestion: Self.candidate(suggestion), automatic: true), handle: handle)
+    }
+
+    private static func candidate(_ suggestion: RemoteSuggestion) -> CodexSuggestion {
+        CodexSuggestion(rolloutPath: suggestion.rolloutPath, sessionID: suggestion.sessionID,
+                        firstPrompt: suggestion.firstPrompt, startedAt: suggestion.startedAt,
+                        directory: suggestion.directory, promptKnown: suggestion.promptKnown)
+    }
+
+    func markAsked(_ handle: String) async throws { try await sessions.markAsked(handle) }
+
+    func recordAutoLinkRow(_ handle: String, sessionID: String, incarnation: String) async throws {
+        try await sessions.recordAutoLinkRow(handle, sessionID: sessionID, incarnation: incarnation)
+    }
+
+    func autoLink(of handle: String) async -> RemoteAutoLink? {
+        guard let run = await sessions.run(handle), let link = run.autoLink, let id = run.sessionID,
+              Array(id.utf8) == Array(link.sessionID.utf8) else { return nil }
+        let suggestion = RemoteSuggestion(rolloutPath: link.rolloutPath, sessionID: link.sessionID,
+                                          firstPrompt: link.firstPrompt, startedAt: link.startedAt,
+                                          directory: link.directory, promptKnown: link.promptKnown)
+        return RemoteAutoLink(suggestion: suggestion, sessionID: link.sessionID, createdIncarnation: link.incarnation)
     }
 
     func decline(_ handle: String, rolloutPath: String) async throws {
@@ -298,7 +320,8 @@ final class RemoteHostLauncher: RemoteSessionHost {
     func pendingRuns() async -> [RemotePendingRun] {
         await sessions.pendingRuns().map {
             RemotePendingRun(handle: $0.handle, directory: $0.directory ?? $0.directoryIntent, ended: $0.isEnded,
-                             sessionID: $0.sessionID, typed: $0.inputSeenAt != nil, joined: $0.joinedAt != nil)
+                             sessionID: $0.sessionID, typed: $0.inputSeenAt != nil, joined: $0.joinedAt != nil,
+                             asked: $0.askedAt != nil)
         }
     }
 

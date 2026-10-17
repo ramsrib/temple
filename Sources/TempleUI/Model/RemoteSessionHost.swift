@@ -167,6 +167,12 @@ public struct RemoteAutoLink: Equatable {
     /// The core row's membership when this link created it; nil when the
     /// row was there before (Not this session then leaves it alone).
     let createdIncarnation: String?
+    /// Restored after a relaunch: when this Temple's own open of the tab
+    /// had marked the row opened (an open no later than this is the link's).
+    var openedThrough: Date?
+    public init(suggestion: RemoteSuggestion, sessionID: String, createdIncarnation: String?) {
+        self.suggestion = suggestion; self.sessionID = sessionID; self.createdIncarnation = createdIncarnation
+    }
 }
 
 /// A pending Codex run restored as a chip at launch.
@@ -182,10 +188,12 @@ public struct RemotePendingRun: Equatable {
     public let typed: Bool
     /// Its claim reached core.
     public let joined: Bool
+    /// The user was asked which session it is (no automatic link for it).
+    public let asked: Bool
     public init(handle: String, directory: String, ended: Bool, sessionID: String? = nil, typed: Bool = false,
-                joined: Bool = false) {
+                joined: Bool = false, asked: Bool = false) {
         self.handle = handle; self.directory = directory; self.ended = ended
-        self.sessionID = sessionID; self.typed = typed; self.joined = joined
+        self.sessionID = sessionID; self.typed = typed; self.joined = joined; self.asked = asked
     }
 }
 
@@ -283,6 +291,16 @@ public protocol RemoteSessionHost: HostLauncher {
     func suggestions(_ handle: String) async -> RemoteSuggestions
     /// The user's yes: claimed under the same uniqueness as a verified id.
     func confirm(_ handle: String, suggestion: RemoteSuggestion) async -> RemoteIdentity
+    /// The lone candidate claimed as a yes claims it, recorded as automatic
+    /// (its provenance kept with the run), and refused for a run the user
+    /// was already asked about, or with more than one candidate now.
+    func autoConfirm(_ handle: String, suggestion: RemoteSuggestion) async -> RemoteIdentity
+    /// The user was asked about this run: no automatic claim from now on.
+    func markAsked(_ handle: String) async throws
+    /// The core row an automatic claim's join made (for Not this session).
+    func recordAutoLinkRow(_ handle: String, sessionID: String, incarnation: String) async throws
+    /// The run's automatic claim, if its claim is one (after a relaunch).
+    func autoLink(of handle: String) async -> RemoteAutoLink?
     /// "Not this one": never offered again for this run.
     func decline(_ handle: String, rolloutPath: String) async throws
     /// The core join refused the id: the run is pending again.

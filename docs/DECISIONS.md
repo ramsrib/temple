@@ -2209,8 +2209,14 @@ rows ("Removing remote", below).
   the tab says "Linked to “<first prompt>” on <host>." with **Not this
   session** (owner, round 2), which undoes the claim and the run's
   hand-over, declines the candidate (one remote write), lets go of the core
-  row the link made unless the user made it theirs, and asks; Temple does
-  not link on its own again for that run this launch. Two or more, an
+  row the link made unless the user made it theirs or anyone opened it,
+  and asks; Temple never links on its own again for that run, nor for any
+  run it has asked about (`asked_at` with the run, r6). Not this session
+  releases nothing until the tab set is saved without the session, and the
+  link's provenance is kept with the run, so a tab restored after a
+  relaunch, attached to the same run, keeps the line. One identity
+  transition at a time per run: an answer that began before an undo is
+  void, and a link whose tab ended meanwhile is released, not shown. Two or more, an
   ended tab, or once asked: the tab asks, **Yes, that's it** or **Not this
   one**, declined ones never offered again. A
   claim is unique per host before the core join, and core's refusal
@@ -2255,7 +2261,7 @@ rows ("Removing remote", below).
   identity verification decides, so the cost is at most a missed fill.
 - **remote-state.sqlite, and no core schema change.** `TempleRemoteHost`
   owns `remote-state.sqlite` in the state directory, with its own migrator
-  (`r1-runs` to `r5-input`): `runs`, `declined_candidates`,
+  (`r1-runs` to `r6-auto-link`): `runs`, `declined_candidates`,
   `remote_project_state` (a host's project archive and order). A run
   persists its evidence: the pane's folder, pid and start time, the pinned
   socket path and server, the config root and Codex home it ran with. The

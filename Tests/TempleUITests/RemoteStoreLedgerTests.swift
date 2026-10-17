@@ -61,5 +61,41 @@ final class RemoteStoreLedgerTests: XCTestCase {
 
         try await ledger.markTabClosed("p1")
         XCTAssertNil(try store.run("p1")?.tabClosedAt, "a late hand-over finds no id: the run stays restorable")
+        XCTAssertNotNil(try store.run("p1")?.askedAt, "undone: asked about from now on")
+    }
+
+    /// Asked and an automatic claim's provenance are kept with the run
+    /// (r6): an automatic claim records what Not this session needs, is
+    /// refused once the run was asked about, and goes with the claim.
+    func testAutomaticClaimProvenanceAndAskedAreKeptWithTheRun() throws {
+        let directory = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("temple-asked-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let box = HostID(rawValue: "box")
+        let store = try RemoteStateStore(directory: directory)
+        for handle in ["p1", "p2"] {
+            var run = RemoteRun(handle: handle, host: box, agent: .codex, mode: .new, directoryIntent: "~",
+                                sessionID: nil, recordPath: RecordDirectory.locator(marker: "r-\(handle)"), startedAt: Date())
+            run.creation = .proven
+            try store.insert(run)
+        }
+        let link = RemoteRun.AutoLink(rolloutPath: "/r/c7.jsonl", sessionID: "c7", firstPrompt: "hi", promptKnown: true,
+                                      startedAt: Date(timeIntervalSince1970: 1_800_000_000), directory: "/home/u/p")
+        XCTAssertEqual(try store.claim("p1", sessionID: "c7", how: .confirmed, rolloutPath: link.rolloutPath, automatic: link), .claimed)
+        XCTAssertEqual(try store.run("p1")?.autoLink, link)
+        try store.recordAutoLinkRow("p1", sessionID: "c7", incarnation: "inc-1")
+        XCTAssertEqual(try store.run("p1")?.autoLink?.incarnation, "inc-1")
+        try store.releaseClaim("p1", sessionID: "c7")
+        XCTAssertNil(try store.run("p1")?.autoLink, "goes with the claim")
+
+        try store.markAsked("p2", at: Date())
+        XCTAssertNotNil(try store.run("p2")?.askedAt)
+        XCTAssertEqual(try store.claim("p2", sessionID: "c8", how: .confirmed, rolloutPath: "/r/c8.jsonl",
+                                       automatic: RemoteRun.AutoLink(rolloutPath: "/r/c8.jsonl", sessionID: "c8", firstPrompt: nil,
+                                                                     promptKnown: false, startedAt: Date(), directory: "/home/u/p")),
+                       .asked, "never automatic once asked")
+        XCTAssertEqual(try store.claim("p2", sessionID: "c8", how: .confirmed, rolloutPath: "/r/c8.jsonl"), .claimed,
+                       "the user's own yes still claims")
     }
 }

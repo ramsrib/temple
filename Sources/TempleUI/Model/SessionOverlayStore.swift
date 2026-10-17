@@ -402,8 +402,8 @@ public final class SessionOverlayStore: ObservableObject {
     /// made it theirs (`TempleDB.releaseLinkedSession`). A failed write
     /// throws: the caller says so.
     @discardableResult
-    public func releaseLinkedSession(_ id: String, host: HostID, incarnation: String) throws -> Bool {
-        try db.releaseLinkedSession(sessionID: id, host: host, incarnation: incarnation)
+    public func releaseLinkedSession(_ id: String, host: HostID, incarnation: String, openedThrough: Date?) throws -> Bool {
+        try db.releaseLinkedSession(sessionID: id, host: host, incarnation: incarnation, openedThrough: openedThrough)
     }
 
     /// The session was opened in a tab. Written for members only (it never

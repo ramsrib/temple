@@ -105,6 +105,33 @@ public struct RemoteRun: Equatable, Sendable {
     public static let inputBeforeRecorded = Date(timeIntervalSince1970: 0)
     /// A launch failure's words (`failed cd`, `failed tmux`).
     public var failure: String?
+    /// The user was asked which session this pending run is (candidates
+    /// shown, one declined, or a link undone): an automatic claim is
+    /// refused from then on, across relaunches (owner, round 2). Written
+    /// only by `markAsked` and `unlinkClaim`.
+    public var askedAt: Date?
+    /// The run's claim was made automatically (a lone candidate), with what
+    /// Not this session needs to undo it; cleared with the claim. Written
+    /// only by `claim`, `recordAutoLinkRow`, `releaseClaim` and `unlinkClaim`.
+    public var autoLink: AutoLink?
+
+    /// An automatic claim's provenance (stored as JSON in `auto_link`).
+    public struct AutoLink: Codable, Sendable, Equatable {
+        public var rolloutPath: String
+        public var sessionID: String
+        public var firstPrompt: String?
+        public var promptKnown: Bool
+        public var startedAt: Date
+        public var directory: String
+        /// The core row's membership when the claim's join made it.
+        public var incarnation: String?
+        public init(rolloutPath: String, sessionID: String, firstPrompt: String?, promptKnown: Bool,
+                    startedAt: Date, directory: String, incarnation: String? = nil) {
+            self.rolloutPath = rolloutPath; self.sessionID = sessionID; self.firstPrompt = firstPrompt
+            self.promptKnown = promptKnown; self.startedAt = startedAt; self.directory = directory
+            self.incarnation = incarnation
+        }
+    }
 
     /// How a pending Codex run's id was learned (section 3).
     public enum Claim: String, Sendable {
@@ -234,6 +261,12 @@ public final class RemoteStateStore: @unchecked Sendable {
         migrator.registerMigration("r5-input") { database in
             try database.execute(sql: "ALTER TABLE runs ADD COLUMN input_seen_at DOUBLE")
             try database.execute(sql: "UPDATE runs SET input_seen_at = \(RemoteRun.inputBeforeRecorded.timeIntervalSince1970)")
+        }
+        // Owner round 2: whether a pending run was asked about, and an
+        // automatic claim's provenance, survive a relaunch. Additive.
+        migrator.registerMigration("r6-auto-link") { database in
+            try database.execute(sql: "ALTER TABLE runs ADD COLUMN asked_at DOUBLE")
+            try database.execute(sql: "ALTER TABLE runs ADD COLUMN auto_link TEXT")
         }
         return migrator
     }
@@ -398,7 +431,13 @@ public final class RemoteStateStore: @unchecked Sendable {
         run.joinedAt = date("joined_at")
         run.tabClosedAt = date("tab_closed_at")
         run.inputSeenAt = date("input_seen_at")
+        run.askedAt = date("asked_at")
+        run.autoLink = (row["auto_link"] as String?).flatMap { try? JSONDecoder().decode(RemoteRun.AutoLink.self, from: Data($0.utf8)) }
         return run
+    }
+
+    private static func json(_ link: RemoteRun.AutoLink?) -> String? {
+        link.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
     }
 
     /// What an ordinary Open found or reserved, decided in one immediate
@@ -462,6 +501,8 @@ public final class RemoteStateStore: @unchecked Sendable {
         case taken
         /// The user declined that file for this run.
         case declined
+        /// An automatic claim, for a run the user was already asked about.
+        case asked
         /// The run is gone or was discarded.
         case gone
     }
@@ -470,7 +511,8 @@ public final class RemoteStateStore: @unchecked Sendable {
     /// transaction across processes: refused when any other run on the
     /// host already holds that id (a claim, or a run of that session).
     /// Written before the core join; a claimed conversation exists.
-    public func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim, rolloutPath: String? = nil) throws -> ClaimOutcome {
+    public func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim, rolloutPath: String? = nil,
+                      automatic: RemoteRun.AutoLink? = nil) throws -> ClaimOutcome {
         try queue.writeWithoutTransaction { database in
             var outcome = ClaimOutcome.gone
             try database.inTransaction(.immediate) {
@@ -488,6 +530,10 @@ public final class RemoteStateStore: @unchecked Sendable {
                     outcome = .declined
                     return .commit
                 }
+                if automatic != nil, run.askedAt != nil {
+                    outcome = .asked
+                    return .commit
+                }
                 let held = try Int.fetchOne(database, sql: """
                     SELECT COUNT(*) FROM runs WHERE host = ? AND session_id = ? AND handle != ?
                     """, arguments: [run.host.rawValue, sessionID, handle]) ?? 0
@@ -496,8 +542,10 @@ public final class RemoteStateStore: @unchecked Sendable {
                     return .commit
                 }
                 try database.execute(sql: """
-                    UPDATE runs SET session_id = ?, claim = ?, conversation = ?, joined_at = NULL WHERE handle = ?
-                    """, arguments: [sessionID, how.rawValue, RemoteRun.Conversation.confirmed.rawValue, handle])
+                    UPDATE runs SET session_id = ?, claim = ?, conversation = ?, joined_at = NULL, auto_link = ?
+                    WHERE handle = ?
+                    """, arguments: [sessionID, how.rawValue, RemoteRun.Conversation.confirmed.rawValue,
+                                     Self.json(automatic), handle])
                 outcome = .claimed
                 return .commit
             }
@@ -510,15 +558,38 @@ public final class RemoteStateStore: @unchecked Sendable {
     public func releaseClaim(_ handle: String, sessionID: String) throws {
         try queue.write { database in
             try database.execute(sql: """
-                UPDATE runs SET session_id = NULL, claim = NULL, joined_at = NULL
+                UPDATE runs SET session_id = NULL, claim = NULL, joined_at = NULL, auto_link = NULL
                 WHERE handle = ? AND session_id = ? AND claim IS NOT NULL
                 """, arguments: [handle, sessionID])
         }
     }
 
+    /// The user was asked about this pending run: no automatic claim from
+    /// now on (first time only).
+    public func markAsked(_ handle: String, at date: Date) throws {
+        try queue.write { database in
+            try database.execute(sql: "UPDATE runs SET asked_at = ? WHERE handle = ? AND asked_at IS NULL",
+                                 arguments: [date.timeIntervalSince1970, handle])
+        }
+    }
+
+    /// The core row an automatic claim's join made, for Not this session.
+    public func recordAutoLinkRow(_ handle: String, sessionID: String, incarnation: String) throws {
+        try queue.writeWithoutTransaction { database in
+            try database.inTransaction(.immediate) {
+                guard let run = try Row.fetchOne(database, sql: "SELECT * FROM runs WHERE handle = ?",
+                                                 arguments: [handle]).map(Self.run),
+                      run.sessionID == sessionID, var link = run.autoLink, link.sessionID == sessionID else { return .commit }
+                link.incarnation = incarnation
+                try database.execute(sql: "UPDATE runs SET auto_link = ? WHERE handle = ?", arguments: [Self.json(link), handle])
+                return .commit
+            }
+        }
+    }
+
     /// "Not this session", on a lone candidate Temple linked on its own:
     /// in one transaction, the claim of that id goes (the run is pending
-    /// again), its restoration by handle comes back (`tab_closed_at`
+    /// again, asked about from now on), its restoration by handle comes back (`tab_closed_at`
     /// cleared: no saved tab holds it now), and the candidate is declined
     /// for the run, never offered or claimed for it again. Only a claim of
     /// that id is undone; the decline is written either way. Whether the
@@ -527,10 +598,13 @@ public final class RemoteStateStore: @unchecked Sendable {
     public func unlinkClaim(_ handle: String, sessionID: String, rolloutPath: String) throws -> Bool {
         try queue.write { database in
             try database.execute(sql: """
-                UPDATE runs SET session_id = NULL, claim = NULL, joined_at = NULL, tab_closed_at = NULL
+                UPDATE runs SET session_id = NULL, claim = NULL, joined_at = NULL, tab_closed_at = NULL,
+                    auto_link = NULL
                 WHERE handle = ? AND session_id = ? AND claim IS NOT NULL
                 """, arguments: [handle, sessionID])
             let undone = database.changesCount > 0
+            try database.execute(sql: "UPDATE runs SET asked_at = ? WHERE handle = ? AND asked_at IS NULL",
+                                 arguments: [Date().timeIntervalSince1970, handle])
             try database.execute(sql: "INSERT OR IGNORE INTO declined_candidates (handle, rollout_path) VALUES (?, ?)",
                                  arguments: [handle, rolloutPath])
             return undone
