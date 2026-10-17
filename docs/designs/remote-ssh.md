@@ -1675,7 +1675,8 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
 3. **An agent that fails at once** (decision 3). No `remain-on-exit`. The
    pane pipes what it shows (its first 64 KiB, `pipe-pane`, started from
    inside the pane before the `exec`) to `<record>.out`; the tail comes
-   back with the records, and a tab whose agent ended within the early
+   back with the records (only from a capture that never reached the cap:
+   a capped one's end is mid-session text, fix round), and a tab whose agent ended within the early
    window shows "<agent> exited immediately on <host>." with those lines
    and the argv. The agent keeps its terminal for stdout and stderr, the
    pane pid stays the agent's, and liveness is unchanged. Measured on tmux
@@ -2775,3 +2776,16 @@ changed, by finding:
   attachment count, which counts a terminal or another Temple too. It now
   means this Temple has a connected tab of the run
   (`RemoteTabController.hasLiveTab`); any other attachment reads Running.
+- **Only a complete capture is shown as the last lines** (Fable's visual
+  re-check). The pane's capture keeps its first 64 KiB
+  (`LaunchRecords.outputCap`), so a long session's "last lines" were
+  mid-session text under a label that said otherwise. The host now prints
+  a capture's end only when the capture never reached the cap; a capped
+  one is removed and treated as no output, and the band shows its
+  fallback line alone. The real fix, keeping the tail rather than the head,
+  is deferred: `pipe-pane` would have to run a bounded rotating writer (two
+  segments of at most 32 KiB renamed in turn, read back in order), every
+  reader of `.out` (the take, the end-proof discard, the collect) would
+  read the segments, and it needs a reader of the pipe that never reads
+  past its chunk (BSD `head -c` reads through stdio and can drop bytes at
+  a boundary), proven against real tmux on macOS and Linux.

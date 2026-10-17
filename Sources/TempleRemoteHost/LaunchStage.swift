@@ -95,13 +95,13 @@ public enum LaunchStage {
 
     /// Argument: the marker. The run's end is proven: prints the last
     /// 4 KiB of what its pane showed (for a header about an agent that
-    /// ended at once), then removes that output file and every staged
+    /// ended at once), if its capture is complete, then removes that output file and every staged
     /// launch of the run. Nothing of an ended run stays behind but the
     /// records Temple has not acknowledged yet.
     static let discardRunScript = RecordDirectory.functions + "\n" + #"""
     rd=$(temple_record_dir) || exit 0
     p=$rd/$1.out
-    [ -f "$p" ] && [ ! -L "$p" ] && tail -c 4096 "$p"
+    \#(LaunchRecords.completeTail)
     rm -f "$rd/$1".s-* "$p"
     exit 0
     """#

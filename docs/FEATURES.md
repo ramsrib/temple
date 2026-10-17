@@ -360,7 +360,9 @@ then relaunch, turns it on.
   was. Is it "<first prompt>" (<time>)?", with **Yes, that's it**, **Not
   this one** and **Start a new session** after it and **Discard** at the
   edge; where its terminal was, the tab shows the last lines its pane
-  printed. Answering yes closes its tab, as a local exit does, and selects
+  printed, when Temple has all of what it printed (a long session's
+  output is captured only up to 64 KiB, so its end is not known; the tab
+  then says it couldn't get what Codex showed). Answering yes closes its tab, as a local exit does, and selects
   its row; opening the row resumes it.
 - **Banners.** A tab's banner puts its answers (Reconnect, Resume anyway,
   Start a new session, Yes and No) right after its sentence as small

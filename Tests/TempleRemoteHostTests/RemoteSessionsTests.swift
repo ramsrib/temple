@@ -722,6 +722,27 @@ final class RemoteSessionsTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: host.recordDirectory + "/r-h1.out"))
     }
 
+    /// A capture that reached its cap ends mid-session: its end is never
+    /// shown as what the pane printed last (Fable's visual re-check). Nil,
+    /// and removed all the same.
+    func testACappedCaptureIsNotShownAsThePanesLastLines() async throws {
+        let host = StandIn()
+        try host.makeRecordDirectory()
+        let store = try RemoteStateStore()
+        try insertRun(store, creation: nil)
+        let out = host.recordDirectory + "/r-h1.out"
+        try String(repeating: "mid-session text\n", count: LaunchRecords.outputCap / 17 + 1)
+            .write(toFile: out, atomically: true, encoding: .utf8)
+        let sessions = controller(host, store: store)
+        let words = await sessions.diagnostics("h1")
+        XCTAssertNil(words)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: out))
+        // One byte under the cap is complete.
+        try String(repeating: "x", count: LaunchRecords.outputCap - 1).write(toFile: out, atomically: true, encoding: .utf8)
+        let whole = await sessions.diagnostics("h1")
+        XCTAssertEqual(whole?.count, 4096)
+    }
+
     /// A PATH resolved over connection A that answers after the alias moved
     /// to B is not cached for B.
     func testAPathResolvedForAnOldConnectionIsNotCached() async throws {
