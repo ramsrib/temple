@@ -414,10 +414,12 @@ public enum RemoteCopy {
     public static func sessionsOnMenuItem(_ host: String) -> String { "Sessions on \(host)\u{2026}" }
 
     /// A tracked session's state in "Sessions on <host>", in the app's words
-    /// (nothing local says "attached").
-    public static func trackedState(_ state: RemoteTrackedSession.State) -> String {
+    /// (nothing local says "attached"). `openHere`: this Temple has a live
+    /// tab of the run. Another client attached (a terminal, another Temple)
+    /// is still "Running": tmux's attachment count can't tell them apart.
+    public static func trackedState(_ state: RemoteTrackedSession.State, openHere: Bool) -> String {
         switch state {
-        case .present(let attached): attached ? "Open in Temple" : "Running"
+        case .present: openHere ? "Open in Temple" : "Running"
         case .unknown: "Unknown"
         }
     }

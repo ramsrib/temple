@@ -67,6 +67,14 @@ public final class RemoteTabController {
         (model.launcherForHost(host) as? RemoteSessionHost)?.hasLiveRun(sessionID: sessionID) ?? false
     }
 
+    /// Whether this Temple has a live tab of the run: its client is
+    /// running and connected ("Open in Temple" in Sessions on <host>).
+    public func hasLiveTab(handle: String, host: HostID) -> Bool {
+        model.tabs.contains {
+            $0.host == host && $0.remote?.handle == handle && $0.remote?.phase == .connected && $0.hasLiveProcess
+        }
+    }
+
     static func reconnectable(_ state: RemoteTabState) -> Bool {
         switch state.phase {
         case .disconnected, .unknown: true

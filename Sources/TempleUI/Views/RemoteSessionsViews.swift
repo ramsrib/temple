@@ -91,7 +91,9 @@ struct RemoteSessionsSheet: View {
                 Spacer(minLength: 8)
                 // The state in a slot of its own, so it never reads as a
                 // third action beside Stop and Keep.
-                Text(RemoteCopy.trackedState(session.state))
+                Text(RemoteCopy.trackedState(session.state,
+                                             openHere: model.openSessions.remoteTabs.hasLiveTab(handle: session.handle,
+                                                                                                host: sheet.request.host)))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

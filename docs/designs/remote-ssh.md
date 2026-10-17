@@ -691,8 +691,9 @@ heading's context menu → "Sessions on <host>…", and
 offered by every notice above): per enabled host, the sessions **Temple
 started and still tracks** there (runs not Ended), each with its row's
 title (the tmux name `temple-<handle>` as its tooltip), each asked about on
-its own pinned server, its state in a slot of its own ("Open in Temple",
-"Running" or "Unknown", remote UX round 1), with
+its own pinned server, its state in a slot of its own ("Open in Temple"
+when this Temple has a connected tab of it, "Running" otherwise, even with
+another client attached, or "Unknown"; remote UX round 1), with
 Stop / Keep (Keep clears a left-running flag, Fable's must-fix 6; a
 pending Codex session also has Open); a session flagged left running shows
 its notice ("Left running: <host> didn't answer when you closed it.") and
@@ -2764,3 +2765,7 @@ changed, by finding:
   `.endedRowSelection`: it passes the gate (nothing after the quit or the
   host's retirement), and it replaces only the follower's own write, so a
   row selected meanwhile stays selected.
+- **"Open in Temple" is this Temple's** (sol 4). It came from tmux's
+  attachment count, which counts a terminal or another Temple too. It now
+  means this Temple has a connected tab of the run
+  (`RemoteTabController.hasLiveTab`); any other attachment reads Running.
