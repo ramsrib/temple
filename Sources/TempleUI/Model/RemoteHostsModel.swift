@@ -34,14 +34,18 @@ public final class RemoteHostsModel: ObservableObject {
     var onChange: (() -> Void)?
 
     private let defaults: UserDefaults
-    private let readConfigAliases: () -> [SSHConfigHost]
+    private let readConfigAliases: @Sendable () -> [SSHConfigHost]
+    /// A read of `~/.ssh/config` is under way (off the main actor).
+    @Published private(set) var configReading = false
+    /// Which read is the newest: an older one that ends later is dropped.
+    private var configGeneration = 0
     private let stateDirectory: () -> URL
     private let makeTest: @MainActor (RemoteHostRecord, URL) -> ConnectionTest
     /// The test in progress, per host, so Remove, Disable and Edit can stop it.
     private var running: [String: ConnectionTest] = [:]
 
     init(defaults: UserDefaults,
-         readConfigAliases: @escaping () -> [SSHConfigHost] = RemoteHostComposition.configHosts,
+         readConfigAliases: @escaping @Sendable () -> [SSHConfigHost] = { RemoteHostComposition.configHosts() },
          stateDirectory: @escaping () -> URL = { TempleState.directory },
          makeTest: @escaping @MainActor (RemoteHostRecord, URL) -> ConnectionTest = {
              RemoteHostComposition.connectionTest(for: $0, stateDirectory: $1)
@@ -63,10 +67,22 @@ public final class RemoteHostsModel: ObservableObject {
 
     // MARK: ~/.ssh/config
 
-    /// Reads the aliases now (on showing the Hosts card, and as the Add
-    /// host sheet opens).
-    func loadConfigAliases() {
-        configHosts = readConfigAliases()
+    /// Reads the aliases (on showing the Hosts card, and as the Add host
+    /// sheet opens), off the main actor: a config of thousands of hosts
+    /// must not stall Settings. The newest read wins; until it ends, what
+    /// the last one found stays.
+    @discardableResult
+    func loadConfigAliases() -> Task<Void, Never> {
+        configGeneration += 1
+        let generation = configGeneration
+        let read = readConfigAliases
+        configReading = true
+        return Task { [weak self] in
+            let hosts = await Task.detached(priority: .userInitiated) { read() }.value
+            guard let self, generation == self.configGeneration else { return }
+            self.configHosts = hosts
+            self.configReading = false
+        }
     }
 
     /// A config alias turned on or off in Temple.

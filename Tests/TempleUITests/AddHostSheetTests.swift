@@ -9,14 +9,18 @@ import TempleCore
 /// `~/.ssh/config` or runs their ssh: both are stand-ins.
 @MainActor
 final class AddHostSheetTests: XCTestCase {
-    private func hosts(records: [RemoteHostRecord] = [], configReads: @escaping () -> [SSHConfigHost]) -> RemoteHostsModel {
+    private func hosts(records: [RemoteHostRecord] = [], configReads: @escaping @Sendable () -> [SSHConfigHost]) -> RemoteHostsModel {
         let defaults = Fixture.uniqueDefaults()
         defaults.set(RemoteHostList(records: records).encode(), forKey: RemoteHostsModel.hostsKey)
         return RemoteHostsModel(defaults: defaults, readConfigAliases: configReads)
     }
 
-    private func numbered(_ count: Int) -> [SSHConfigHost] {
-        (1...count).map { SSHConfigHost(alias: "host-\($0)") }
+    /// The sheet once its read of the config has ended (off the main actor).
+    private func open(_ hosts: RemoteHostsModel) -> AddHostSheetModel {
+        let sheet = AddHostSheetModel(hosts: hosts)
+        let deadline = Date().addingTimeInterval(10)
+        while hosts.configReading, Date() < deadline { spin(0.01) }
+        return sheet
     }
 
     private func spin(_ seconds: TimeInterval = 0.2) {
@@ -27,12 +31,12 @@ final class AddHostSheetTests: XCTestCase {
     /// card appeared is offered), not before; only aliases not in use are
     /// offered, a hand-added host with an alias's name taking it out too.
     func testTheConfigIsReadAsTheSheetOpensAndOnlyUnusedAliasesAreOffered() {
-        var reads = 0
+        let reads = ReadCounter()
         let records: [RemoteHostRecord] = [.config("box"), RemoteHostRecord(name: "jetson", source: .temple, address: "a")]
-        let model = hosts(records: records) { reads += 1; return ["box", "jetson", "spare"] }
-        XCTAssertEqual(reads, 0)
-        let sheet = AddHostSheetModel(hosts: model)
-        XCTAssertEqual(reads, 1)
+        let model = hosts(records: records) { reads.bump(); return ["box", "jetson", "spare"] }
+        XCTAssertEqual(reads.count, 0)
+        let sheet = open(model)
+        XCTAssertEqual(reads.count, 1)
         XCTAssertEqual(sheet.offered.map(\.alias), ["spare"])
         XCTAssertNil(sheet.emptyNote)
     }
@@ -57,7 +61,7 @@ final class AddHostSheetTests: XCTestCase {
     /// The field filters live, ignoring case: aliases it starts first, then
     /// those it is inside of; cleared, every alias again.
     func testTheFieldFiltersAsItIsTyped() {
-        let sheet = AddHostSheetModel(hosts: hosts { ["masterblaster-mentes", "jetson-mentes", "Mentes-box", "github.com"] })
+        let sheet = open(hosts { ["masterblaster-mentes", "jetson-mentes", "Mentes-box", "github.com"] })
         sheet.text = "ment"
         XCTAssertEqual(sheet.shown.map(\.alias), ["Mentes-box", "masterblaster-mentes", "jetson-mentes"])
         sheet.text = "  JET "
@@ -74,7 +78,7 @@ final class AddHostSheetTests: XCTestCase {
     /// is no scroll view). A filter with more than six matches is cut the
     /// same way.
     func testSixAreShownThenShowMore() {
-        let sheet = AddHostSheetModel(hosts: hosts { self.numbered(9) })
+        let sheet = open(hosts { numberedHosts(9) })
         XCTAssertEqual(sheet.shown.map(\.alias), (1...6).map { "host-\($0)" })
         XCTAssertEqual(sheet.hiddenCount, 3)
         XCTAssertEqual(RemoteCopy.addHostShowMore(3), "Show 3 more")
@@ -92,13 +96,13 @@ final class AddHostSheetTests: XCTestCase {
     /// use, and the next sheet does not offer it. Turn off offers it again.
     func testARowAddsItsAliasAtOnce() {
         let model = hosts { ["box", "spare"] }
-        let sheet = AddHostSheetModel(hosts: model)
+        let sheet = open(model)
         sheet.choose("spare")
         XCTAssertEqual(sheet.outcome, .added("spare"))
         XCTAssertEqual(model.records, [.config("spare")])
-        XCTAssertEqual(AddHostSheetModel(hosts: model).offered.map(\.alias), ["box"])
+        XCTAssertEqual(open(model).offered.map(\.alias), ["box"])
         model.setConfigHost("spare", enabled: false)
-        XCTAssertEqual(AddHostSheetModel(hosts: model).offered.map(\.alias), ["box", "spare"])
+        XCTAssertEqual(open(model).offered.map(\.alias), ["box", "spare"])
     }
 
     /// Return adds what the field holds: an offered alias turns on; a host
@@ -107,19 +111,19 @@ final class AddHostSheetTests: XCTestCase {
     func testReturnAddsWhatTheFieldHolds() {
         let model = hosts(records: [.config("box")]) { ["box", "spare"] }
 
-        let empty = AddHostSheetModel(hosts: model)
+        let empty = open(model)
         empty.text = "   "
         XCTAssertEqual(empty.trimmedText, "", "Add is disabled")
         empty.submit()
         XCTAssertNil(empty.outcome)
 
-        let alias = AddHostSheetModel(hosts: model)
+        let alias = open(model)
         alias.text = " spare "
         alias.submit()
         XCTAssertEqual(alias.outcome, .added("spare"))
         XCTAssertNotNil(model.record(named: "spare"))
 
-        let inUse = AddHostSheetModel(hosts: model)
+        let inUse = open(model)
         inUse.text = "box"
         inUse.submit()
         XCTAssertNil(inUse.outcome, "the sheet stays")
@@ -127,7 +131,7 @@ final class AddHostSheetTests: XCTestCase {
         inUse.text = "box2"
         XCTAssertNil(inUse.note, "typing clears it")
 
-        let address = AddHostSheetModel(hosts: model)
+        let address = open(model)
         address.text = "sri@build-box.local:2222"
         address.submit()
         var expected = RemoteHostForm()
@@ -135,7 +139,7 @@ final class AddHostSheetTests: XCTestCase {
         XCTAssertEqual(address.outcome, .details(expected))
         XCTAssertEqual(model.records.map(\.name), ["box", "spare"], "nothing is added until the form is saved")
 
-        let unreadable = AddHostSheetModel(hosts: model)
+        let unreadable = open(model)
         unreadable.text = "me@[fe80::1]garbage"
         unreadable.submit()
         XCTAssertNil(unreadable.outcome, "the sheet stays")
@@ -148,22 +152,22 @@ final class AddHostSheetTests: XCTestCase {
     /// leave it to the form. A host in use is found the same way.
     func testReturnFindsAnAliasIgnoringCaseWhenOnlyOneMatches() {
         let model = hosts(records: [.config("Jetson")]) { ["box", "Mixed", "mixed", "Jetson"] }
-        let upper = AddHostSheetModel(hosts: model)
+        let upper = open(model)
         upper.text = "BOX"
         upper.submit()
         XCTAssertEqual(upper.outcome, .added("box"))
 
-        let exact = AddHostSheetModel(hosts: model)
+        let exact = open(model)
         exact.text = "mixed"
         exact.submit()
         XCTAssertEqual(exact.outcome, .added("mixed"), "the exact alias wins")
 
-        let ambiguous = AddHostSheetModel(hosts: hosts { ["Mixed", "mixed"] })
+        let ambiguous = open(hosts { ["Mixed", "mixed"] })
         ambiguous.text = "MIXED"
         ambiguous.submit()
         XCTAssertEqual(ambiguous.outcome, .details(AddHostSheetModel.form(for: "MIXED")!), "two aliases match ignoring case: the form")
 
-        let inUse = AddHostSheetModel(hosts: model)
+        let inUse = open(model)
         inUse.text = "jetson"
         inUse.submit()
         XCTAssertNil(inUse.outcome)
@@ -198,16 +202,16 @@ final class AddHostSheetTests: XCTestCase {
     /// Enter details… opens an empty form, Edit ~/.ssh/config the file.
     func testCancelAddsNothing() {
         let model = hosts { ["box"] }
-        let sheet = AddHostSheetModel(hosts: model)
+        let sheet = open(model)
         sheet.text = "box"
         sheet.cancel()
         XCTAssertEqual(sheet.outcome, .cancelled)
         XCTAssertEqual(model.records, [])
 
-        let details = AddHostSheetModel(hosts: model)
+        let details = open(model)
         details.enterDetails()
         XCTAssertEqual(details.outcome, .details(RemoteHostForm()))
-        let edit = AddHostSheetModel(hosts: model)
+        let edit = open(model)
         edit.editConfig()
         XCTAssertEqual(edit.outcome, .editConfig)
         XCTAssertEqual(RemoteCopy.addHostNotInConfig, "Not in ~/.ssh/config?")
@@ -218,11 +222,11 @@ final class AddHostSheetTests: XCTestCase {
     /// With no alias to offer the sheet says why, under the field: none in
     /// the config, or every one in use.
     func testTheSheetSaysWhyNoAliasIsOffered() {
-        let empty = AddHostSheetModel(hosts: hosts { [] })
+        let empty = open(hosts { [] })
         XCTAssertEqual(empty.emptyNote, "No hosts in ~/.ssh/config.")
         XCTAssertEqual(empty.shown, [])
 
-        let all = AddHostSheetModel(hosts: hosts(records: [.config("box")]) { ["box"] })
+        let all = open(hosts(records: [.config("box")]) { ["box"] })
         XCTAssertEqual(all.emptyNote, "Every host in ~/.ssh/config is in use.")
     }
 
@@ -231,7 +235,7 @@ final class AddHostSheetTests: XCTestCase {
     /// `user@hostname` is what the alias's own blocks set.
     func testOpeningTheSheetRunsNothingAndShowsWhatTheConfigSets() {
         let launches = RemoteHostComposition.processLaunches
-        let sheet = AddHostSheetModel(hosts: hosts {
+        let sheet = open(hosts {
             [SSHConfigHost(alias: "box", options: ["user": "mentes", "hostname": "10.0.0.4"]), "github.com"]
         })
         sheet.showAll()
@@ -243,7 +247,7 @@ final class AddHostSheetTests: XCTestCase {
     /// The sheet renders each state: aliases with Show all, filtered,
     /// expanded, and an empty note.
     func testTheSheetRenders() {
-        let sheet = AddHostSheetModel(hosts: hosts { self.numbered(8) })
+        let sheet = open(hosts { numberedHosts(8) })
         let window = render(AddHostSheet(sheet: sheet) { _ in }, size: NSSize(width: 520, height: 400))
         spin()
         sheet.text = "host-2"
@@ -253,7 +257,7 @@ final class AddHostSheetTests: XCTestCase {
         spin()
         window.close()
         XCTAssertEqual(AddHostSheet.aliasColumn, 200, "a fixed column: the destinations don't move as rows change")
-        let emptyWindow = render(AddHostSheet(sheet: AddHostSheetModel(hosts: hosts { [] })) { _ in },
+        let emptyWindow = render(AddHostSheet(sheet: open(hosts { [] })) { _ in },
                                  size: NSSize(width: 520, height: 300))
         spin()
         emptyWindow.close()
@@ -270,4 +274,8 @@ final class AddHostSheetTests: XCTestCase {
         window.contentView?.layoutSubtreeIfNeeded()
         return window
     }
+}
+
+private func numberedHosts(_ count: Int) -> [SSHConfigHost] {
+    (1...count).map { SSHConfigHost(alias: "host-\($0)") }
 }

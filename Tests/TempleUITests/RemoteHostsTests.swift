@@ -63,8 +63,8 @@ final class RemoteHostsTests: XCTestCase {
         // The old flag's key, on, with an empty list: still nothing.
         let defaults = Fixture.uniqueDefaults()
         defaults.set(true, forKey: "temple.feature.remoteHosts")
-        var configReads = 0
-        let hosts = RemoteHostsModel(defaults: defaults, readConfigAliases: { configReads += 1; return ["x"] })
+        let configReads = ReadCounter()
+        let hosts = RemoteHostsModel(defaults: defaults, readConfigAliases: { configReads.bump(); return ["x"] })
         let root = URL(fileURLWithPath: "/private/tmp/temple-no-host-\(UUID().uuidString.prefix(8))")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let empty = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
@@ -81,7 +81,7 @@ final class RemoteHostsTests: XCTestCase {
         XCTAssertNil(empty.remoteNotice, "no sidebar notice")
         XCTAssertNil(empty.overlay.remoteProjectState, "the remote store is not even attached")
         XCTAssertFalse(empty.openSessions.tabs.contains { $0.remote != nil }, "no pending chips")
-        XCTAssertEqual(configReads, 0, "no ssh config read until the Hosts card is shown")
+        XCTAssertEqual(configReads.count, 0, "no ssh config read until the Hosts card is shown")
         XCTAssertNil(hosts.configAliases)
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("remote-state.sqlite").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("ssh").path))
@@ -201,14 +201,37 @@ final class RemoteHostsTests: XCTestCase {
         XCTAssertEqual(hosts.records.map(\.name), ["added-box", "other-process", "jetson-mentes"])
     }
 
-    func testConfigAliasesAreReadOnlyOnRequest() {
-        var reads = 0
-        let hosts = RemoteHostsModel(defaults: enabledDefaults([]), readConfigAliases: { reads += 1; return ["box", "jetson-mentes"] })
+    func testConfigAliasesAreReadOnlyOnRequest() async {
+        let reads = ReadCounter()
+        let hosts = RemoteHostsModel(defaults: enabledDefaults([]), readConfigAliases: { reads.bump(); return ["box", "jetson-mentes"] })
         XCTAssertNil(hosts.configAliases)
-        XCTAssertEqual(reads, 0, "constructing the model reads no ssh config")
-        hosts.loadConfigAliases()
+        XCTAssertEqual(reads.count, 0, "constructing the model reads no ssh config")
+        await hosts.loadConfigAliases().value
         XCTAssertEqual(hosts.configAliases, ["box", "jetson-mentes"])
-        XCTAssertEqual(reads, 1)
+        XCTAssertEqual(reads.count, 1)
+        XCTAssertFalse(hosts.configReading)
+    }
+
+    /// The config is read off the main actor, and the newest read wins: an
+    /// older one that ends after it is dropped.
+    func testTheNewestConfigReadWins() async {
+        let gate = ReadGate()
+        let hosts = RemoteHostsModel(defaults: enabledDefaults([]), readConfigAliases: {
+            XCTAssertFalse(Thread.isMainThread, "read off the main thread")
+            return gate.read()
+        })
+        let first = hosts.loadConfigAliases()
+        while gate.started < 1 { try? await Task.sleep(for: .milliseconds(5)) }
+        let second = hosts.loadConfigAliases()
+        while gate.started < 2 { try? await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertTrue(hosts.configReading)
+        gate.finish(2, with: ["new"])
+        await second.value
+        XCTAssertEqual(hosts.configAliases, ["new"])
+        gate.finish(1, with: ["old"])
+        await first.value
+        XCTAssertEqual(hosts.configAliases, ["new"], "the older read, ending last, is dropped")
+        XCTAssertFalse(hosts.configReading)
     }
 
     /// No host, then a host with no project yet, over a database on disk: reordering,
@@ -247,5 +270,36 @@ final class RemoteHostsTests: XCTestCase {
         XCTAssertEqual(persisting.projectStates().first { $0.key == remote }?.position, 0)
         persisting.setOrder([])
         XCTAssertNil(persisting.projectStates().first { $0.key == remote }?.position, "an empty order still clears")
+    }
+}
+
+/// Counts config reads from whichever thread does them.
+final class ReadCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.withLock { value } }
+    func bump() { lock.withLock { value += 1 } }
+}
+
+/// A config read that ends when the test says: the nth read waits for
+/// `finish(n, with:)`.
+private final class ReadGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var _started = 0
+    private var answers: [Int: [SSHConfigHost]] = [:]
+
+    var started: Int { condition.withLock { _started } }
+
+    func read() -> [SSHConfigHost] {
+        condition.lock()
+        defer { condition.unlock() }
+        _started += 1
+        let n = _started
+        while answers[n] == nil { condition.wait() }
+        return answers[n]!
+    }
+
+    func finish(_ n: Int, with hosts: [SSHConfigHost]) {
+        condition.withLock { answers[n] = hosts; condition.broadcast() }
     }
 }

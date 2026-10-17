@@ -9,7 +9,7 @@ import TempleTerminalAPI
 /// process: nothing of the app is launched or driven.
 @MainActor
 final class HostsSettingsViewTests: XCTestCase {
-    private func app(records: [RemoteHostRecord] = [], configReads: @escaping () -> [SSHConfigHost]) throws -> (AppModel, FakeTerminalSurfaceFactory) {
+    private func app(records: [RemoteHostRecord] = [], configReads: @escaping @Sendable () -> [SSHConfigHost]) throws -> (AppModel, FakeTerminalSurfaceFactory) {
         let defaults = Fixture.uniqueDefaults()
         defaults.set(RemoteHostList(records: records).encode(), forKey: RemoteHostsModel.hostsKey)
         let state = URL(fileURLWithPath: "/private/tmp/temple-hosts-view-\(UUID().uuidString.prefix(8))")
@@ -59,22 +59,22 @@ final class HostsSettingsViewTests: XCTestCase {
     /// remote surface then, and the way to add one), and the ssh config is
     /// read only once it is shown, never before.
     func testTheHostsCardIsAlwaysShownAndReadsTheConfigOnlyWhenShown() throws {
-        var reads = 0
-        let (empty, _) = try app { reads += 1; return ["box"] }
-        XCTAssertEqual(reads, 0, "building the model reads no ssh config")
+        let reads = ReadCounter()
+        let (empty, _) = try app { reads.bump(); return ["box"] }
+        XCTAssertEqual(reads.count, 0, "building the model reads no ssh config")
         XCTAssertNil(empty.remoteHosts.configAliases)
         let emptyWindow = render(SettingsView(settings: empty.settings).environmentObject(empty))
         spin()
-        XCTAssertEqual(reads, 1, "with no host, the card is shown and reads ~/.ssh/config on appearing")
+        XCTAssertEqual(reads.count, 1, "with no host, the card is shown and reads ~/.ssh/config on appearing")
         XCTAssertEqual(empty.remoteHosts.configAliases, ["box"])
         XCTAssertEqual(empty.hostRegistry.entries.map(\.source.host), [.local], "showing the card registers nothing")
         emptyWindow.close()
 
         let (lit, _) = try app(records: [.config("box"),
-            RemoteHostRecord(name: "added", source: .temple, address: "10.0.0.2", user: "me")]) { reads += 1; return ["box", "jetson-mentes"] }
+            RemoteHostRecord(name: "added", source: .temple, address: "10.0.0.2", user: "me")]) { reads.bump(); return ["box", "jetson-mentes"] }
         let window = render(SettingsView(settings: lit.settings).environmentObject(lit))
         spin()
-        XCTAssertEqual(reads, 2, "the card read ~/.ssh/config once, on appearing")
+        XCTAssertEqual(reads.count, 2, "the card read ~/.ssh/config once, on appearing")
         XCTAssertEqual(lit.remoteHosts.configAliases, ["box", "jetson-mentes"])
         window.close()
     }

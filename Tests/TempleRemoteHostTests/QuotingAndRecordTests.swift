@@ -482,6 +482,29 @@ final class SSHConfigHostsTests: XCTestCase {
                        "included under a Match nothing matches; under Host * it does")
     }
 
+    /// One pass over the config, not one per alias: 5,000 aliases, each
+    /// with its own block, under an included file and a `Host *`, and one
+    /// line naming 5,000 more, read well inside a bound a walk per alias
+    /// (seconds here) cannot meet.
+    func testThousandsOfAliasesAreReadInOnePass() {
+        var config = "Include extra\nHost *\n  ServerAliveInterval 30\n"
+        for i in 0..<5_000 { config += "Host box-\(i)\n  HostName 10.0.\(i / 256).\(i % 256)\n  User u\(i)\n" }
+        config += "Host " + (0..<5_000).map { "many-\($0)" }.joined(separator: " ") + "\n  User shared\n"
+        let extra = (0..<500).map { "Host box-\($0)\n  Port 22\($0 % 10)\n" }.joined()
+        let tree = TempTree("ssh-config-scale")
+        let ssh = tree.directory(".ssh")
+        tree.write(".ssh/config", config)
+        tree.write(".ssh/extra", extra)
+        let started = Date()
+        let hosts = SSHConfigHosts.loadHosts(configURL: ssh.appendingPathComponent("config"), sshDirectory: ssh, home: tree.path)
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertEqual(hosts.count, 10_000)
+        XCTAssertEqual(hosts[0].options, ["port": "220", "hostname": "10.0.0.0", "user": "u0"])
+        XCTAssertEqual(hosts[4_999].destination, "u4999@10.0.19.135")
+        XCTAssertEqual(hosts[9_999].options, ["user": "shared"])
+        XCTAssertLessThan(elapsed, 1.0, "read in \(elapsed) s")
+    }
+
     /// ssh's Host matching: wildcards, negation wins, ignoring case.
     func testHostPatternsMatchAsSSHMatchesThem() {
         XCTAssertTrue(SSHConfigHosts.hostMatches("box", ["*"]))

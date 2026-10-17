@@ -992,7 +992,10 @@ unknown, proof is unproven, adoption is inconclusive.
   the sheet closes, and reopening it reads the file again). With no alias
   to offer: "No hosts in ~/.ssh/config." or "Every host in ~/.ssh/config is
   in use.", field and footer only. The config is read when the card is
-  shown and again as the sheet opens, never at launch. **Opening the sheet
+  shown and again as the sheet opens, never at launch, off the main actor
+  (the newest read wins; the sheet shows the last read's rows until it
+  ends), in one pass over the statements for every alias (a walk per
+  alias was quadratic: seconds for 5,000 aliases). **Opening the sheet
   runs nothing.** A first build ran `ssh -G` per row shown; Sol's review
   pointed out that `ssh -G` evaluates a config's `Match exec` commands, so
   merely opening the chooser ran them for aliases nobody chose. `ssh -G`

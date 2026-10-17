@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import TempleCore
 
@@ -14,8 +15,8 @@ enum AddHostOutcome: Equatable {
 
 /// The Add host sheet's model (docs/designs/remote-ssh.md section 7): the
 /// config's unused aliases, ranked and filtered by the field, each with the
-/// `user@hostname` its own blocks set. A snapshot of the config read as the
-/// sheet opens. Nothing is run to show it: `ssh -G` would evaluate a
+/// `user@hostname` its own blocks set. The config is read again as the
+/// sheet opens, off the main actor; the rows follow it. Nothing is run to show it: `ssh -G` would evaluate a
 /// config's `Match exec` commands for aliases nobody chose, so it runs only
 /// where it already did, for a host being tested or used.
 @MainActor
@@ -34,18 +35,28 @@ final class AddHostSheetModel: ObservableObject, Identifiable {
     private(set) var outcome: AddHostOutcome?
 
     /// The config's aliases not in use, ranked (`ranked`).
-    let offered: [SSHConfigHost]
+    @Published private(set) var offered: [SSHConfigHost] = []
+    /// The config has been read (by this sheet or the card before it).
+    @Published private(set) var configKnown = false
     /// The config names no host at all.
-    let configIsEmpty: Bool
+    @Published private(set) var configIsEmpty = false
 
     private let hosts: RemoteHostsModel
+    private var subscription: AnyCancellable?
 
-    /// Reads `~/.ssh/config`: the sheet is opening.
+    /// Reads `~/.ssh/config`: the sheet is opening. Until the read ends,
+    /// the rows are what the card's read found.
     init(hosts: RemoteHostsModel) {
         self.hosts = hosts
+        // Published as it is set: the value given is the new one.
+        subscription = hosts.$configHosts.sink { [weak self] configHosts in self?.update(configHosts) }
         hosts.loadConfigAliases()
-        let configHosts = hosts.configHosts ?? []
+    }
+
+    private func update(_ configHosts: [SSHConfigHost]?) {
+        guard let configHosts else { return }
         let names = Set(hosts.records.map(\.name))
+        configKnown = true
         configIsEmpty = configHosts.isEmpty
         offered = Self.ranked(configHosts.filter { !names.contains($0.alias) })
     }
@@ -88,6 +99,7 @@ final class AddHostSheetModel: ObservableObject, Identifiable {
 
     /// Why no alias is offered, with none to offer.
     var emptyNote: String? {
+        guard configKnown else { return nil }
         if configIsEmpty { return RemoteCopy.addHostNoConfigHosts }
         return offered.isEmpty ? RemoteCopy.addHostAllInUse : nil
     }
