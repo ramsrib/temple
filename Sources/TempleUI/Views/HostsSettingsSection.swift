@@ -122,11 +122,7 @@ struct HostsSettingsSection: View {
                         Toggle("", isOn: Binding(get: { enabled },
                                                  set: { hosts.setConfigHost(alias, enabled: $0) }))
                             .toggleStyle(.switch)
-                            .controlSize(.mini)
-                            // The system's tint, not the app's neutral
-                            // accent: on and off must read apart, in dark
-                            // as in light.
-                            .tint(.accentColor)
+                            .controlSize(.small)
                             .labelsHidden()
                             .accessibilityLabel("Use \(alias) in Temple")
                             .disabled(hosts.record(named: alias)?.source == .temple)

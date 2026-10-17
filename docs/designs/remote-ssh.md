@@ -2733,8 +2733,10 @@ changed, by finding:
   sheet's colour scheme changes; it is 160 pt tall. An enabled host's links
   read "Test connection" and "Sessions…" (the row names the host) in one
   trailing group, its status line is an 11 pt tertiary caption (orange and
-  red still mark a proven fault), and the config switches use the system
-  tint, so on and off read apart in dark.
+  red still mark a proven fault). The config switches keep the app's
+  neutral tint (a `.tint(.accentColor)` tried in round 1 resolved to that
+  same neutral inside `RootView` and was removed in the fix round) and are
+  small rather than mini, whose knob read heavy in dark.
 - **One error colour, one field** (visual 3). The folder sheet's field is
   the Add host form's (plain, on the control fill, no heavy ring), and its
   "No folder …" and unreachable lines use the form's red.
