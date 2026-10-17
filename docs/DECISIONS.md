@@ -2268,8 +2268,8 @@ rows ("Removing remote", below).
   (`ModuleBoundaryTests`), and the remote tab logic is
   `RemoteTabController`, behind thin seams in `OpenSessionsModel`.
   `temple.feature.remoteHosts` is read once at launch through `AppStartup`
-  and `AppModel`, which both `@main`s share; it is off by default, and
-  turning it on is the owner's call; with it off the registry holds
+  and `AppModel`, which both `@main`s share; it is off by default; with it
+  off the registry holds
   this Mac only, nothing is spawned or read, and no remote store is created.
 
 **Amends ADR-010 for remote hosts:** *an agent on another machine is not
