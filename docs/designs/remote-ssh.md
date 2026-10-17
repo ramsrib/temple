@@ -2044,7 +2044,11 @@ What the boxes showed, which shaped the build:
 
 Also folded in from the on-screen check of 1a: an acknowledged stop and a
 proven absence remove the run's pane output (`.out`, kept in memory for
-the diagnostics header), which the pane now creates under `umask 077`;
+the diagnostics header), which the pane now creates under `umask 077`
+(except for a new Codex session that was typed into and never
+identified: its output stays on the host, 0600, until its ended question
+takes it or the run is dismissed, so that question shows what the pane
+printed even after a stop or a relaunch; remote UX round 1, fix round);
 Return in the folder sheet starts the session (the window's key catcher
 took it for the sidebar while no tab was active: a sheet now owns every
 key); a host's project heading leads with the globe and keeps the host

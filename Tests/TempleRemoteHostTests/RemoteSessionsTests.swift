@@ -984,6 +984,51 @@ final class RemoteSessionsTests: XCTestCase {
         guard case .inconclusive = blindYes else { return XCTFail("\(blindYes)") }
     }
 
+    /// The pane's output of a new Codex session Temple never identified,
+    /// once it was typed into, outlives the proof of its end (a stop, here)
+    /// until its ended question takes it: the stop removed it before, and
+    /// the ended band showed only its fallback line. Taken once; one never
+    /// typed into leaves nothing behind; a dismissed one takes it along.
+    func testAnUnidentifiedCodexRunTypedIntoKeepsItsOutputUntilItsQuestionTakesIt() async throws {
+        let host = StandIn()
+        try host.installRealTmux()
+        installCodex(host)
+        defer { _ = try? host.tmux(["-L", "temple", "kill-server"]) }
+        let store = try RemoteStateStore()
+        let sessions = controller(host, store: store)
+        func started() async throws -> (plan: RemoteSessions.OpenPlan, output: String) {
+            let plan = try pendingPlan(await sessions.openPending(handle: nil, directory: "~", extraArguments: []))
+            let client = try tab(host, plan)
+            defer { client.end() }
+            let collected = await until(15) { if case .ok = await sessions.collect(plan.handle) { return true }; return false }
+            XCTAssertTrue(collected)
+            let marker = try XCTUnwrap(RecordDirectory.marker(from: try XCTUnwrap(store.run(plan.handle)).recordPath))
+            let output = host.recordDirectory + "/" + marker + ".out"
+            try "codex's last words\n".write(toFile: output, atomically: false, encoding: .utf8)
+            return (plan, output)
+        }
+
+        let typed = try await started()
+        try await sessions.recordInput(typed.plan.handle)
+        _ = try await sessions.stop(typed.plan.handle, fromAttachedTab: true)
+        XCTAssertNotNil(try store.run(typed.plan.handle)?.endedAt)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: typed.output), "left for its question")
+        let words = await sessions.diagnostics(typed.plan.handle)
+        XCTAssertEqual(words?.contains("codex's last words"), true, "\(String(describing: words))")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: typed.output), "the question took it")
+
+        let untyped = try await started()
+        _ = try await sessions.stop(untyped.plan.handle, fromAttachedTab: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: untyped.output), "nothing will ask: removed at the stop")
+
+        let dismissed = try await started()
+        try await sessions.recordInput(dismissed.plan.handle)
+        _ = try await sessions.stop(dismissed.plan.handle, fromAttachedTab: true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dismissed.output))
+        try await sessions.dismissRun(dismissed.plan.handle)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dismissed.output), "dismissed: nothing will ask")
+    }
+
     /// A pending run reopened while it runs attaches (never a second
     /// codex); once it ended, Temple says so and creates nothing.
     func testAPendingRunReopensByItsHandle() async throws {
