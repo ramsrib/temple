@@ -1123,9 +1123,10 @@ final class RemoteCodexIdentityTests: XCTestCase {
         // Candidates whose prompts read the same are told apart by when they
         // started after the tab opened; the clock time otherwise.
         let opened = Date(timeIntervalSince1970: 1_800_000_000)
-        func started(_ seconds: TimeInterval) -> RemoteSuggestion {
+        func started(_ seconds: TimeInterval, hostAhead: TimeInterval? = 0) -> RemoteSuggestion {
             RemoteSuggestion(rolloutPath: "/r/\(seconds)", sessionID: "x", firstPrompt: "hi",
-                             startedAt: opened.addingTimeInterval(seconds), directory: "/w/temple-r2")
+                             startedAt: opened.addingTimeInterval(seconds + (hostAhead ?? 0)), directory: "/w/temple-r2",
+                             hostClockOffset: hostAhead)
         }
         XCTAssertEqual(RemoteCopy.suggestionQuestion(started(4.2), tabOpenedAt: opened),
                        "Is this the session? \u{201C}hi\u{201D}, started 4 s after this tab opened in temple-r2.")
@@ -1137,6 +1138,14 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertFalse(RemoteCopy.suggestionQuestion(started(-600), tabOpenedAt: opened).contains("after this tab opened"),
                        "a start well before the open: the clock time")
         XCTAssertFalse(RemoteCopy.suggestionQuestion(started(4), tabOpenedAt: nil).contains("after this tab opened"))
+        // The host's clock ahead or behind this Mac's (Sol round 6): the
+        // start is moved by the offset the lookup measured.
+        XCTAssertTrue(RemoteCopy.suggestionQuestion(started(4, hostAhead: 600), tabOpenedAt: opened)
+            .contains("started 4 s after this tab opened"), "a host 10 min ahead")
+        XCTAssertTrue(RemoteCopy.suggestionQuestion(started(4, hostAhead: -600), tabOpenedAt: opened)
+            .contains("started 4 s after this tab opened"), "a host 10 min behind")
+        XCTAssertFalse(RemoteCopy.suggestionQuestion(started(4, hostAhead: nil), tabOpenedAt: opened)
+            .contains("after this tab opened"), "no offset: the clock time")
         let copy = [RemoteCopy.codexEndedPending("box"), RemoteCopy.couldNotTell, RemoteCopy.noDaemonHint,
                     RemoteCopy.linkedOnItsOwn(suggestion()), RemoteCopy.discardLinkedHelp("box"),
                     RemoteCopy.quitLine(["box", "jet"]),

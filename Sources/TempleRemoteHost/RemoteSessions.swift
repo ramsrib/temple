@@ -1349,8 +1349,11 @@ public final class RemoteSessions {
         } catch {
             return .unavailable("Temple couldn't read what it knows about this session: \(error.localizedDescription)")
         }
+        // Each candidate carries the offset just measured, so its start can
+        // be said relative to this Mac's clock (display only).
         return .candidates(CodexSuggestionLookup.eligible(files, directory: directory, since: okAt, until: until,
-                                                          declined: declined, held: held))
+                                                          declined: declined, held: held)
+            .map { var candidate = $0; candidate.hostClockOffset = offset; return candidate })
     }
 
     /// The user said "Yes, that's it": the candidate is checked again now

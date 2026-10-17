@@ -263,7 +263,8 @@ final class RemoteHostLauncher: RemoteSessionHost {
         case .candidates(let found):
             .candidates(found.map {
                 RemoteSuggestion(rolloutPath: $0.rolloutPath, sessionID: $0.sessionID, firstPrompt: $0.firstPrompt,
-                                 startedAt: $0.startedAt, directory: $0.directory, promptKnown: $0.promptKnown)
+                                 startedAt: $0.startedAt, directory: $0.directory, promptKnown: $0.promptKnown,
+                                 hostClockOffset: $0.hostClockOffset)
             })
         }
     }

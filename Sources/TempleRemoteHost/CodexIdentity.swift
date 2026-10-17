@@ -234,11 +234,17 @@ public struct CodexSuggestion: Sendable, Equatable, Identifiable {
     public let startedAt: Date
     /// Its folder (the run's own).
     public let directory: String
+    /// How far the host's clock was ahead of this Mac's when the lookup
+    /// asked (negative: behind), measured by that lookup; nil when unknown.
+    /// Display only (a start said relative to the tab's open); never part
+    /// of a candidate's identity.
+    public var hostClockOffset: TimeInterval?
 
     public init(rolloutPath: String, sessionID: String, firstPrompt: String?, startedAt: Date, directory: String,
-                promptKnown: Bool = true) {
+                promptKnown: Bool = true, hostClockOffset: TimeInterval? = nil) {
         self.rolloutPath = rolloutPath; self.sessionID = sessionID; self.firstPrompt = firstPrompt
         self.startedAt = startedAt; self.directory = directory; self.promptKnown = promptKnown
+        self.hostClockOffset = hostClockOffset
     }
 
     public static func == (lhs: CodexSuggestion, rhs: CodexSuggestion) -> Bool {
@@ -456,7 +462,8 @@ public enum CodexSuggestionLookup {
             let prompt = head.flatMap(CodexFormat.firstTypedPrompt(in:))
             let known = head.map { prompt != nil || $0.count < headBytes } ?? false
             return CodexSuggestion(rolloutPath: $0.rolloutPath, sessionID: $0.sessionID, firstPrompt: prompt,
-                                   startedAt: $0.startedAt, directory: $0.directory, promptKnown: known)
+                                   startedAt: $0.startedAt, directory: $0.directory, promptKnown: known,
+                                   hostClockOffset: $0.hostClockOffset)
         }
     }
 }

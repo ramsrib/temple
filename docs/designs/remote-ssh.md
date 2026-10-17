@@ -2967,8 +2967,10 @@ and the sections above say so where they changed.
 - The linked band's Discard sits right after its sentence as a small
   bordered button, as the question's answers do.
 - A candidate's start reads relative to the tab's open ("started 4 s after
-  this tab opened", whole minutes past one; the clock time when the open is
-  unknown, the start was well before it, or an hour after), so candidates
+  this tab opened", whole minutes past one; the start, on the host's
+  clock, is moved by the offset the lookup measured (Sol round 6); the
+  clock time when the open or the offset is unknown, the start was well
+  before it, or an hour after), so candidates
   whose prompts read the same are told apart; candidates are listed in
   start order.
 - The remote close alert reads "<agent> is running on <host>." (it shows

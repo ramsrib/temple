@@ -139,10 +139,14 @@ public struct RemoteSuggestion: Equatable, Identifiable {
     /// False when the prompt could not be read: shown as unknown, never
     /// as "no prompt".
     public let promptKnown: Bool
+    /// How far the host's clock was ahead of this Mac's when the lookup
+    /// asked (negative: behind); nil when unknown. Display only.
+    public let hostClockOffset: TimeInterval?
     public init(rolloutPath: String, sessionID: String, firstPrompt: String?, startedAt: Date, directory: String,
-                promptKnown: Bool = true) {
+                promptKnown: Bool = true, hostClockOffset: TimeInterval? = nil) {
         self.rolloutPath = rolloutPath; self.sessionID = sessionID; self.firstPrompt = firstPrompt
         self.startedAt = startedAt; self.directory = directory; self.promptKnown = promptKnown
+        self.hostClockOffset = hostClockOffset
     }
 
     public static func == (lhs: RemoteSuggestion, rhs: RemoteSuggestion) -> Bool {
@@ -578,16 +582,21 @@ public enum RemoteCopy {
     }
 
     /// The question about one candidate: never a fact. When the tab's open
-    /// time is known, the start is said relative to it ("4 s after this tab
-    /// opened"), which tells apart candidates whose prompts read the same;
-    /// otherwise (or a start before it, or hours after) the clock time.
+    /// time and the host's clock offset are both known, the start (on the
+    /// host's clock) is moved to this Mac's and said relative to the open
+    /// ("4 s after this tab opened"), which tells apart candidates whose
+    /// prompts read the same; otherwise (or a start before it, or an hour
+    /// after) the clock time.
     public static func suggestionQuestion(_ suggestion: RemoteSuggestion, tabOpenedAt: Date? = nil,
                                           now: Date = Date()) -> String {
         let prompt = suggestion.firstPrompt.map { "\u{201C}\($0)\u{201D}" }
             ?? (suggestion.promptKnown ? "No prompt yet" : "First prompt unreadable")
         let folder = URL(fileURLWithPath: suggestion.directory).lastPathComponent
-        let when = tabOpenedAt.flatMap { afterOpen(suggestion.startedAt, openedAt: $0) }
-            ?? startTime(suggestion.startedAt, now: now)
+        var relative: String?
+        if let tabOpenedAt, let offset = suggestion.hostClockOffset {
+            relative = afterOpen(suggestion.startedAt.addingTimeInterval(-offset), openedAt: tabOpenedAt)
+        }
+        let when = relative ?? startTime(suggestion.startedAt, now: now)
         return "Is this the session? \(prompt), started \(when) in \(folder)."
     }
 

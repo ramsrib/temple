@@ -876,6 +876,12 @@ final class RemoteSessionsTests: XCTestCase {
         guard case .candidates(let offered) = await sessions.suggestions(first.handle) else { return XCTFail() }
         XCTAssertEqual(offered.map(\.sessionID), [otherID, mineID])
         XCTAssertEqual(offered.last?.firstPrompt, "reply with the word ok")
+        // Each carries the host clock's offset the lookup measured (here this
+        // Mac is the host: about zero), through the prompt read too.
+        for candidate in offered {
+            let offset = try XCTUnwrap(candidate.hostClockOffset)
+            XCTAssertLessThan(abs(offset), 5)
+        }
 
         try await sessions.decline(first.handle, rolloutPath: other)
         guard case .candidates(let after) = await sessions.suggestions(first.handle) else { return XCTFail() }
