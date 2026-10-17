@@ -196,9 +196,13 @@ running server cannot hand the agent a different one).
   frame>'` with the same fallbacks and 5 s timeout, parsed between frame
   markers so rc chatter, motd and prompts are discarded. Kept in memory per
   host per run, re-resolved on Test connection and on the first query after
-  a transport failure. Never persisted.
-- Use: every remote command is `env PATH=<resolved> sh -c '<fixed script>'
-  temple <quoted args…>`.
+  a transport failure. The login environment is never persisted (what a
+  pane ran with is run evidence, section 8). As built, the resolver runs in
+  its own process group under one 5 s budget (phase 1a note 10).
+- Use: as built (phase 1a notes 22 and 23), every command line is a short
+  fixed bootstrap (`sh -c '<bootstrap>' temple <end>`, under 1 KiB); the
+  program (`set --` with its arguments, the resolved PATH, the script) and
+  any input travel on stdin, and a launch is staged on the host first.
 - When resolution fails, probe and launch both use ssh's default command
   environment and the Hosts list says so. The rule is only that the two
   agree.
@@ -550,11 +554,11 @@ else). Detached, on a throwaway socket, from the sheet's query
 phase: `tmux -L
 temple-check-<nonce> -f /dev/null <the same configure commands> \;
 new-session -d -s check -c "$HOME" -e PATH="$PATH" 'exit 0' \;
-kill-server`, stderr captured. Attached, in the sheet's own terminal surface
-right after the connect step: the same chain with `new-session -s check
+kill-server`, stderr captured. Attached (as built, the Linux acceptance's,
+not the sheet's; phase 0 note 2): the same chain with `new-session -s check
 'tput colors >/dev/null && tput cup 0 0 && exit 0'` so an attached client
 under `TERM=xterm-256color` outside and `tmux-256color` inside is proven on
-that host, then `kill-server` on the throwaway socket. It passes only when
+that host, then `kill-server` on the throwaway socket. The detached check passes only when
 every command the launcher will send is accepted; the row shows tmux's own
 line when one is not (including "allow-passthrough: not on this version,
 clipboard passthrough off" when `-q` had to swallow it, detected by
@@ -618,14 +622,15 @@ on, the user closed the tab meanwhile, or the app is quitting.
 
 The explicit way out of Unknown (and of a pending Codex launch that Ended)
 is a button in the kept tab's header and the chip's menu. "Run" is internal
-vocabulary and never appears on screen. With a known id: **Resume anyway**,
-copy "Temple can't reach this session on <host> and can't tell whether it is
-still running. Resume anyway? If the original is still running, it keeps
-running; you can stop it from <host> with `tmux -L temple kill-session -t
-temple-<handle>`." For a pending Codex launch: **Start a new session**, copy
-"Temple can't tell whether Codex is still running on <host>. Start a new
-session? If the original is still running, it keeps running; …" with the
-same stop instruction. Internally both create a new run under a new handle
+vocabulary and never appears on screen. As built (phase 1b decision 5 and
+Fable's final copy), each confirms in a sheet with a short title, one
+sentence, and the stop command apart and selectable ("To stop the original
+on <host>, run:" `tmux -L temple kill-session -t temple-<handle>`). With a
+known id: **Resume anyway?**, "Temple can't reach this session on <host>
+and can't tell whether it is still running. If it is, it keeps running."
+For a pending Codex launch: **Start a new session?**, "Temple can't tell
+whether Codex is still running on <host>. If it is, it keeps running, and a
+new session starts beside it."  Internally both create a new run under a new handle
 (`resume <id>`, or a fresh `codex`); the old run row is kept (not Ended) so
 the hint stays truthful and Stop can still reach it when the host answers
 again.
@@ -684,10 +689,12 @@ its notice ("Left running: <host> didn't answer when you closed it.") and
 the same Stop button, which runs the one-command kill below. A run that its pinned
 server says is gone is Ended and leaves the list; one Temple can't check
 stays, and the sheet says "Temple couldn't check these sessions"; an empty
-tracked list reads "No Temple sessions to show". The sheet is offered by
-every left-running notice and opened at launch only when a left-running
-flag exists for a host that just answered (one line in the sidebar's
-notice area, "2 sessions left running on <host>", with Show). **Temple
+tracked list reads "No sessions started from Temple." (as built, phase 1b
+decision 5). The sheet is offered by
+every left-running notice; at launch it is never opened by itself: a host
+with left-running flags that answers gets one line in the sidebar's notice
+area, "2 sessions left running on <host>", with Show and a dismiss, shown
+once per flag (Fable's must-fix 6). **Temple
 never discovers or stops a session it did not start** (owner's decision,
 phase 1a review): there is no listing of the private server and no "Not in
 Temple" row, and it never lists or touches the user's own tmux server.
@@ -746,9 +753,10 @@ with remote work fitted inside it:
    stopped, phase 1b round 2 ruling 2). Pending Codex runs follow the same
    policy (round 1 ruling 5); a stopped one that was typed into keeps its
    ended record so the next launch still asks, and an unused one is
-   dismissed. Each stop is the one-command Stop above, dispatched in parallel, one
-   query per run, inside the same window, and its tab's client is
-   terminated once the acknowledgement arrives or the window closes. At the
+   dismissed. Each stop is the one-command Stop above, dispatched in
+   parallel, one query per run, inside the same window. The tab's own client
+   is terminated first, before the stop is sent, so the server-side
+   zero-attached check can succeed (as built, `startQuitStop`). At the
    window's deadline every outstanding query client is cancelled (killed),
    exactly as a local straggler is terminated, and its session is recorded
    **left running** with reason `quit deadline`; a host with no live master
@@ -813,9 +821,13 @@ batch; a transport failure defers the batch with a backoff that doubles to a
 it `incomplete` when its agent's listing is not in `complete`, and nothing
 schedules a retry after that. So, honestly:
 
-- At startup, one locate exec per remote host for all its rows that still
-  want a field, and one read per candidate found; then nothing until an
-  open, an import, a membership change or a relaunch.
+- At startup, one locate exec per remote host for every unarchived member
+  (as built: the engine locates and verifies every member, not only rows
+  that want a field), and one identity read per member with a candidate,
+  two execs at a time and 64 KiB each; facts are parsed only for rows that
+  still want a field. Accepted for v1 (phase 2 round 1, astra's decision;
+  the engine stays generic). Then nothing until an open, an import, a
+  membership change or a relaunch.
 - A host that is unreachable costs one failed exec per backoff step. The
   source adds a **circuit breaker**: after 3 consecutive transport failures
   it answers `.transport("<host> unreachable since <time>; next try at
@@ -832,9 +844,15 @@ Primitives:
 
 - **`locate`**: one exec; per `(agent, id)`: Claude `find "$HOME/.claude/
   projects" -mindepth 2 -maxdepth 2 -name "<id>.jsonl"`, Codex `find
-  "$HOME/.codex/sessions" -name "rollout-*-<id>.jsonl"`, both `-printf
-  '%s\t%T@\t%i\t%p\n'` (size, seconds with nanoseconds, inode, path; GNU),
-  BSD fallback `stat -f '%z %Fm %i %N'`. As built (phase 2 note 3) the
+  "$HOME/.codex/sessions" -name "rollout-*-<id>.jsonl"`. As built (phase 2
+  notes 3 and 5, round 1 notes 2 and 5) the answer is typed and byte-safe:
+  each group's records are `type TAB size TAB mtime TAB inode TAB path`
+  (GNU `-printf` with `%y`, or `test -L`/`-f` and `stat -f` under BSD), each
+  NUL-terminated, followed by `S<find's status>`, the whole hex-encoded on
+  one `list <group> <hex>` line after a `root <group> ok <hex>` line; hints
+  answer `hint <hex path> …`; the answer ends with `done`, and anything not
+  well formed is a transport failure (`RemoteTranscripts.locateScript` and
+  `parseLocate`). The
   roots are the ones the session's latest run recorded (or the login
   environment's for a row with no run), Codex also matches reverts
   (`rollout-*-<id>_*.jsonl`), links are unreadable, and the row's recorded
@@ -943,8 +961,9 @@ test did not prove tmux missing.
 
 ### How a remote row and tab look
 
-Sidebar section: folder name with the host appended; tooltip
-`name:/absolute/path`. Remote tab headers: the exit table's lines, "Claude
+Sidebar section (as built, hands-on T1): line 1 is exactly a local
+project's heading; line 2, under the name, is the globe and the host as it
+spells itself; tooltip `name:/absolute/path`. Remote tab headers: the exit table's lines, "Claude
 Code failed to start on <host>." with the agent's argv (never the wrapper),
 the pending-Codex lines. A row whose host was removed: "Host <name> is not
 set up. Add it in Settings to open this session."; no query goes to a host
@@ -1021,8 +1040,12 @@ or as another agent is refused and shown. "Already host-keyed" means
   - Per-row read-modify-write inside `remote-state.sqlite` transactions; no
     whole-array rewrites, so two Temple processes cannot erase each other's
     handles.
-- **Memory only**: environment, test results, `ssh -G` resolution, socket
-  paths, breaker state.
+- **Memory only**: the login-environment cache (PATH, `CLAUDE_CONFIG_DIR`,
+  `CODEX_HOME` as the login shell reports them, per connection), test
+  results, `ssh -G` resolution and the ControlPath derived from it, breaker
+  state. **Persisted with each run** (above, `runs`), by contrast: the
+  pane's evidence, its pinned socket path and server, and the config root
+  and Codex home it ran with.
 - **On this Mac**: the masters' socket files in `<state dir>/ssh/` (or the
   short fallbacks, section 2).
 - **On the host**: `~/.temple/launch/` records and staged launches (a
@@ -1151,16 +1174,20 @@ Deleting the feature, should the experiment end:
   closed, nothing created); `-S <pinned socket>` on every management
   command. The deferred repair path has its tests written when it is
   taken up, not before.
-- Identity: `/proc`-style fixtures for the process-tree walk (pane pid,
-  npm launcher child, native grandchild, start-time ordering, depth limit,
-  pid reuse, an unreadable `fd` or `stat`, a process gone mid-walk, no
-  `/proc`): exactly one writable rollout in the tree → adopted; every other
-  case → inconclusive, never a claim. Suggestions: candidates by directory
-  and time (remote epochs ahead of and behind the Mac's clock, delayed
-  rollout creation, a login prompt past 5 s), two runs in one folder both
-  shown the same candidate (the user's Yes on one makes it unavailable to
-  the other through UNIQUE; the other keeps asking), a declined candidate
-  not offered again, a core conflict on confirm.
+- Identity (as built, phase 1b round 2): `/proc`-style fixtures and each
+  box's real `/proc` for the ownership check: exactly one writable rollout
+  held by the **pane's own process** (pid and start time verified, tmux's
+  `#{pane_pid}` agreeing, header id equal to the file name's, `cwd` the
+  run's folder) → adopted; a rollout written by a child, a grandchild (an
+  npm launcher's native binary), a nested codex or Codex's shared app
+  server → lastingly inconclusive, never a claim; pid reuse, an unreadable
+  `fd`, `fdinfo` or `stat`, a process gone mid-check, no `/proc` →
+  inconclusive. Suggestions: candidates by directory and time (remote
+  epochs ahead of and behind the Mac's clock, delayed rollout creation, a
+  login prompt past 5 s), two runs in one folder both shown the same
+  candidate (the user's Yes on one makes it unavailable to the other
+  through the claim index `runs_claim`; the other keeps asking), a declined
+  candidate not offered again, a core conflict on confirm.
 - Lifecycle (`OpenSessionsModelTests`, `RuntimeControllerTests`,
   `AppLifecycleTests`): the exit table; close idle → the one-command
   attached-checked kill acknowledged → Ended (`killed`), reopen → new run
