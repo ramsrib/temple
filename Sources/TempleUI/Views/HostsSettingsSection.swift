@@ -8,11 +8,12 @@ import TempleTerminalAPI
 /// way to enable one; the ssh config is read when it appears). One "In use"
 /// list of every enabled host, whichever source it came from (a caption says
 /// which), each with Test connection, Sessions… and its status line; then
-/// Add host…, a menu of the `~/.ssh/config` aliases not in use yet (choosing
-/// one turns it on), Enter details… and Edit ~/.ssh/config. The question
-/// the card answers is which hosts Temple uses: the owner read "Added in
-/// Temple: No hosts added yet." as none while a config host was on, and
-/// found a list of hosts not in use unnecessary.
+/// Add host…, a sheet (`AddHostSheet`): one field, the `~/.ssh/config`
+/// aliases not in use under it (choosing one turns it on), the full form
+/// and Edit ~/.ssh/config behind links. The question the card answers is
+/// which hosts Temple uses: the owner read "Added in Temple: No hosts added
+/// yet." as none while a config host was on, and found a list of hosts not
+/// in use unnecessary.
 ///
 /// Layout rules as for the rest of Settings (AGENTS.md, the split view's
 /// titlebar inset): no `.fixedSize`, `.allowsHitTesting`, `layoutPriority`,
@@ -22,6 +23,9 @@ struct HostsSettingsSection: View {
     @ObservedObject var hosts: RemoteHostsModel
 
     @State private var form: HostFormRequest?
+    @State private var addHost: AddHostSheetModel?
+    /// The form Add host ended with: it opens once that sheet is gone.
+    @State private var formAfterAddHost: HostFormRequest?
     @State private var test: ConnectionTest?
     /// "Save and test": the test opens once the form's sheet is gone.
     @State private var testAfterForm: String?
@@ -52,6 +56,17 @@ struct HostsSettingsSection: View {
                                   configAliases: Set(hosts.configAliases ?? [])) { record, thenTest in
                         hosts.save(record, editing: request.editing?.name)
                         testAfterForm = thenTest ? record.name : nil
+                    }
+                    .remoteSheet(model)
+                }
+            Color.clear
+                .sheet(item: $addHost, onDismiss: openPendingForm) { sheet in
+                    AddHostSheet(sheet: sheet) { outcome in
+                        switch outcome {
+                        case .details(let prefill): formAfterAddHost = HostFormRequest(editing: nil, prefill: prefill)
+                        case .editConfig: openSSHConfig()
+                        case .added, .cancelled: break
+                        }
                     }
                     .remoteSheet(model)
                 }
@@ -152,98 +167,22 @@ struct HostsSettingsSection: View {
                     HostStatusLine(text: hosts.statusLine(for: record.name), summary: hosts.summaries[record.name])
                 }
             }
-            HostLink("Add host…", systemImage: "plus") { showAddHostMenu() }
+            HostLink("Add host…", systemImage: "plus") { addHost = AddHostSheetModel(hosts: hosts) }
                 .padding(.top, inUse.isEmpty ? 0 : 2)
         }
         .padding(.top, 5)
-    }
-
-    // MARK: Add host…
-
-    /// The aliases to offer: those the config names that no host in use
-    /// has the name of (a hand-added host with an alias's name is not
-    /// offered either). Nil until the config is read.
-    static func offered(configAliases: [String]?, records: [RemoteHostRecord]) -> [String]? {
-        let names = Set(records.map(\.name))
-        return configAliases?.filter { !names.contains($0) }
-    }
-
-    /// One line of the Add host… menu.
-    enum AddHostEntry: Equatable {
-        /// A config alias not in use: choosing it turns it on.
-        case alias(String)
-        /// Why no alias is offered, disabled.
-        case unavailable(String)
-        case divider
-        /// Today's Add host form.
-        case enterDetails
-        case editConfig
-
-        var title: String {
-            switch self {
-            case .alias(let alias): alias
-            case .unavailable(let reason): reason
-            case .divider: ""
-            case .enterDetails: "Enter details\u{2026}"
-            case .editConfig: "Edit ~/.ssh/config"
-            }
-        }
-    }
-
-    /// The Add host… menu: the aliases first (or, disabled, why there are
-    /// none), then a divider, Enter details… and Edit ~/.ssh/config.
-    static func addHostMenu(configAliases: [String]?, records: [RemoteHostRecord]) -> [AddHostEntry] {
-        let head: [AddHostEntry]
-        if let aliases = configAliases {
-            let offered = offered(configAliases: aliases, records: records) ?? []
-            if aliases.isEmpty {
-                head = [.unavailable("No hosts in ~/.ssh/config")]
-            } else if offered.isEmpty {
-                head = [.unavailable("Every host in ~/.ssh/config is in use")]
-            } else {
-                head = offered.map(AddHostEntry.alias)
-            }
-        } else {
-            head = [.unavailable("Reading ~/.ssh/config\u{2026}")]
-        }
-        return head + [.divider, .enterDetails, .editConfig]
-    }
-
-    /// An AppKit menu at the click, so the link looks like every other link
-    /// on the card (a SwiftUI borderless Menu needs `.fixedSize` to keep to
-    /// its label, which this pane must not use) and so the config is read
-    /// again as it opens: an alias added since the card appeared is offered.
-    private func showAddHostMenu() {
-        hosts.loadConfigAliases()
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        for entry in Self.addHostMenu(configAliases: hosts.configAliases, records: hosts.records) {
-            switch entry {
-            case .divider:
-                menu.addItem(.separator())
-            case .unavailable:
-                let item = NSMenuItem(title: entry.title, action: nil, keyEquivalent: "")
-                item.isEnabled = false
-                menu.addItem(item)
-            case .alias(let alias):
-                menu.addItem(MenuAction.item(entry.title) { hosts.setConfigHost(alias, enabled: true) })
-            case .enterDetails:
-                menu.addItem(MenuAction.item(entry.title) { form = HostFormRequest(editing: nil) })
-            case .editConfig:
-                menu.addItem(MenuAction.item(entry.title) { openSSHConfig() })
-            }
-        }
-        // At the pointer: a click's own location, and somewhere sensible for
-        // a press from the keyboard too (a key event has no location).
-        guard let window = NSApp.currentEvent?.window ?? NSApp.keyWindow, let view = window.contentView else { return }
-        let point = view.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
-        menu.popUp(positioning: nil, at: point, in: view)
     }
 
     // MARK: Actions
 
     private func startTest(_ name: String) {
         test = hosts.startTest(for: name)
+    }
+
+    private func openPendingForm() {
+        guard let request = formAfterAddHost else { return }
+        formAfterAddHost = nil
+        form = request
     }
 
     private func openPendingTest() {
@@ -273,29 +212,12 @@ struct HostsSettingsSection: View {
     static let sessionsLink = "Sessions\u{2026}"
 }
 
-/// A menu item that runs a closure; the item keeps it alive (an item's
-/// target is weak).
-@MainActor
-private final class MenuAction: NSObject {
-    private let run: () -> Void
-
-    private init(_ run: @escaping () -> Void) { self.run = run }
-
-    static func item(_ title: String, _ run: @escaping () -> Void) -> NSMenuItem {
-        let action = MenuAction(run)
-        let item = NSMenuItem(title: title, action: #selector(fire), keyEquivalent: "")
-        item.target = action
-        item.representedObject = action
-        return item
-    }
-
-    @objc private func fire() { run() }
-}
-
 /// What the Add host / Edit sheet is for.
 struct HostFormRequest: Identifiable {
     let id = UUID()
     let editing: RemoteHostRecord?
+    /// A new host's fields as the Add host sheet's field gave them.
+    var prefill: RemoteHostForm?
 }
 
 /// Settings' row shape: a 168pt label column, then the content.
@@ -388,7 +310,7 @@ struct HostFormSheet: View {
         self.existing = existing
         self.configAliases = configAliases
         self.onSave = onSave
-        _form = State(initialValue: request.editing.map(RemoteHostForm.init) ?? RemoteHostForm())
+        _form = State(initialValue: request.editing.map(RemoteHostForm.init) ?? request.prefill ?? RemoteHostForm())
     }
 
     private var isEditing: Bool { request.editing != nil }

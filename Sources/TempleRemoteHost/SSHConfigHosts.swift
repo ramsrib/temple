@@ -1,5 +1,31 @@
 import Foundation
 
+/// One alias an ssh config names, with what its own `Host` blocks set
+/// (first value of each keyword, lowercased; a pattern's block, `Host *`
+/// included, is not the alias's own). Only for ordering what Add host
+/// offers: ssh resolves the host itself (`ssh -G`).
+public struct SSHConfigHost: Equatable, Sendable, ExpressibleByStringLiteral {
+    public let alias: String
+    /// Keyword (lowercased) to its first value, from the alias's own blocks.
+    public let options: [String: String]
+
+    public init(alias: String, options: [String: String] = [:]) {
+        self.alias = alias; self.options = options
+    }
+
+    public init(stringLiteral alias: String) { self.init(alias: alias) }
+
+    /// It names how to log in: a `User` or an `IdentityFile`.
+    public var setsLogin: Bool { options["user"] != nil || options["identityfile"] != nil }
+
+    /// A bare name: no login set, and it goes where it says (`Host
+    /// github.com` with no `HostName`, or one equal to the alias). Other
+    /// options (a `ProxyJump`, a `Port`) don't count either way.
+    public var isBare: Bool {
+        !setsLogin && (options["hostname"] ?? alias).lowercased() == alias.lowercased()
+    }
+}
+
 /// The host aliases in an ssh config, read-only: every name on a `Host`
 /// line, in file order, following `Include` one level deep. Patterns
 /// (`*`, `?`), negations (`!name`) and `Match` blocks are skipped: they
@@ -15,7 +41,16 @@ public enum SSHConfigHosts {
 
     /// Every alias `text` names directly, and its `Include` arguments, in order.
     static func entries(in text: String) -> [Entry] {
+        scan(text).entries
+    }
+
+    /// The entries, and each alias's own options (first value wins, as
+    /// ssh's does): a line after `Host a b` belongs to a and b, one after
+    /// `Match` or a `Host` of patterns only to no alias.
+    private static func scan(_ text: String) -> (entries: [Entry], options: [String: [String: String]]) {
         var entries: [Entry] = []
+        var options: [String: [String: String]] = [:]
+        var current: [String] = []
         for rawLine in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             guard let first = line.unicodeScalars.first, first != "#" else { continue }
@@ -23,15 +58,21 @@ public enum SSHConfigHosts {
             switch keyword.lowercased() {
             case "host":
                 let names = (words(rest) ?? []).filter(isAlias)
+                current = names
                 if !names.isEmpty { entries.append(.host(names)) }
+            case "match":
+                current = []
             case "include":
                 let paths = words(rest) ?? []
                 if !paths.isEmpty { entries.append(.include(paths)) }
             default:
-                continue
+                guard let value = words(rest)?.first else { continue }
+                for name in current where options[name]?[keyword.lowercased()] == nil {
+                    options[name, default: [:]][keyword.lowercased()] = value
+                }
             }
         }
-        return entries
+        return (entries, options)
     }
 
     /// Aliases in `text` alone (no includes followed).
@@ -50,9 +91,24 @@ public enum SSHConfigHosts {
     public static func load(configURL: URL, sshDirectory: URL,
                             home: String = NSHomeDirectory(),
                             read: (URL) -> String? = { try? String(contentsOf: $0, encoding: .utf8) }) -> [String] {
+        loadHosts(configURL: configURL, sshDirectory: sshDirectory, home: home, read: read).map(\.alias)
+    }
+
+    /// `load`'s aliases, each with what its own blocks set (the top file's
+    /// first, then each included file's, as ssh reads them).
+    public static func loadHosts(configURL: URL, sshDirectory: URL,
+                                 home: String = NSHomeDirectory(),
+                                 read: (URL) -> String? = { try? String(contentsOf: $0, encoding: .utf8) }) -> [SSHConfigHost] {
         guard let text = read(configURL) else { return [] }
+        let top = scan(text)
         var names: [String] = []
-        for entry in entries(in: text) {
+        var options = top.options
+        func merge(_ found: [String: [String: String]]) {
+            for (name, values) in found {
+                options[name, default: [:]].merge(values) { first, _ in first }
+            }
+        }
+        for entry in top.entries {
             switch entry {
             case .host(let aliases):
                 names += aliases
@@ -60,12 +116,17 @@ public enum SSHConfigHosts {
                 for pattern in patterns {
                     for path in expand(pattern, sshDirectory: sshDirectory, home: home) {
                         guard let included = read(URL(fileURLWithPath: path)) else { continue }
-                        names += aliases(in: included)
+                        let scanned = scan(included)
+                        names += scanned.entries.flatMap { entry -> [String] in
+                            if case .host(let names) = entry { return names }
+                            return []
+                        }
+                        merge(scanned.options)
                     }
                 }
             }
         }
-        return unique(names)
+        return unique(names).map { SSHConfigHost(alias: $0, options: options[$0] ?? [:]) }
     }
 
     /// `~` and relative paths as ssh reads them in a user config, then glob.

@@ -23,8 +23,10 @@ public final class RemoteHostsModel: ObservableObject {
 
     /// The enabled hosts, in the order they were added.
     @Published private(set) var records: [RemoteHostRecord]
+    /// The hosts `~/.ssh/config` names, with what each sets (nil until read).
+    @Published private(set) var configHosts: [SSHConfigHost]?
     /// Aliases in `~/.ssh/config` (nil until read).
-    @Published private(set) var configAliases: [String]?
+    var configAliases: [String]? { configHosts?.map(\.alias) }
     /// Each host's last Test connection, by name; memory only.
     @Published private(set) var summaries: [String: HostTestSummary] = [:]
 
@@ -32,20 +34,24 @@ public final class RemoteHostsModel: ObservableObject {
     var onChange: (() -> Void)?
 
     private let defaults: UserDefaults
-    private let readConfigAliases: () -> [String]
+    private let readConfigAliases: () -> [SSHConfigHost]
+    /// `ssh -G` for an alias, for the Add host sheet: local, off the main actor.
+    let resolveAlias: @Sendable (String) async -> ConnectionTest.Resolution
     private let stateDirectory: () -> URL
     private let makeTest: @MainActor (RemoteHostRecord, URL) -> ConnectionTest
     /// The test in progress, per host, so Remove, Disable and Edit can stop it.
     private var running: [String: ConnectionTest] = [:]
 
     init(defaults: UserDefaults,
-         readConfigAliases: @escaping () -> [String] = RemoteHostComposition.configAliases,
+         readConfigAliases: @escaping () -> [SSHConfigHost] = RemoteHostComposition.configHosts,
+         resolveAlias: @escaping @Sendable (String) async -> ConnectionTest.Resolution = { await RemoteHostComposition.resolveAlias($0) },
          stateDirectory: @escaping () -> URL = { TempleState.directory },
          makeTest: @escaping @MainActor (RemoteHostRecord, URL) -> ConnectionTest = {
              RemoteHostComposition.connectionTest(for: $0, stateDirectory: $1)
          }) {
         self.defaults = defaults
         self.readConfigAliases = readConfigAliases
+        self.resolveAlias = resolveAlias
         self.stateDirectory = stateDirectory
         self.makeTest = makeTest
         records = Self.load(defaults).records
@@ -61,9 +67,10 @@ public final class RemoteHostsModel: ObservableObject {
 
     // MARK: ~/.ssh/config
 
-    /// Reads the aliases now (on showing the Hosts card, and on request).
+    /// Reads the aliases now (on showing the Hosts card, and as the Add
+    /// host sheet opens).
     func loadConfigAliases() {
-        configAliases = readConfigAliases()
+        configHosts = readConfigAliases()
     }
 
     /// A config alias turned on or off in Temple.

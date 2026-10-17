@@ -954,21 +954,46 @@ unknown, proof is unproven, adoption is inconclusive.
   no longer names, once the config has been read), then **Test
   connection**, **Sessions…**, and **Edit** and **Remove** (added in
   Temple) or **Turn off** (an alias); the status line under it. Empty:
-  "No hosts in use." Hosts not in use are not listed. Last, **Add host…**,
-  an AppKit menu at the click: the config's aliases not in use (every
-  `Host` entry, one level of `Include`, wildcards and `Match` skipped; a
-  host added in Temple under an alias's name takes that alias out too),
-  choosing one turns it on; or, disabled, "Reading ~/.ssh/config…", "No
-  hosts in ~/.ssh/config", "Every host in ~/.ssh/config is in use"; then a
-  divider, **Enter details…** (the form below) and **Edit ~/.ssh/config**.
-  The config is read when the card is shown and again as the menu opens.
-  **Superseded**: the earlier card's two lists by source, **Added in
+  "No hosts in use." Hosts not in use are not listed. Last, **Add host…**.
+- **Add host…** (as built, UX round 3, Fable's option 3) is a sheet in the
+  folder sheet's shape (`AddHostSheet`): 520 pt, padding 20, "Add host" at
+  15 semibold, one autofocused **Host** field (mono 13 on the control fill,
+  placeholder "alias from ~/.ssh/config, or user@address"). Under it, the
+  config's aliases not in use (every `Host` entry, one level of `Include`,
+  wildcards and `Match` skipped; a host added in Temple under an alias's
+  name takes that alias out too) as link rows, mono 12: the alias, then in
+  secondary the `user@hostname` of its `ssh -G`. Ranked: an alias whose own
+  blocks set `User` or `IdentityFile` first, a bare one (no login set, its
+  `HostName` absent or the alias itself, like `github.com`) last, the rest
+  between, the config's order within each; nothing is hidden. The field
+  filters live, ignoring case (aliases it starts, then those it is inside
+  of). Six rows (filtered or not), then **Show all N…**, which shows every match (the sheet
+  grows; no scroll view). A row turns its alias on at once and closes the
+  sheet. Return (or **Add**, disabled while the field is empty) adds what
+  the field holds: an offered alias turns on; a host already in use says
+  "<name> is already in use." and the sheet stays; anything else is read as
+  `user@address[:port]` (an IPv6 address in brackets for a port) and opens
+  the form below prefilled, the name from a host name's first label. Esc
+  cancels. Under the list: "Not in ~/.ssh/config? **Enter details…**" (the
+  form, empty) and **Edit ~/.ssh/config** (the file, in the user's editor;
+  the sheet closes, and reopening it reads the file again). With no alias
+  to offer: "No hosts in ~/.ssh/config." or "Every host in ~/.ssh/config is
+  in use.", field and footer only. The config is read when the card is
+  shown and again as the sheet opens, never at launch. `ssh -G` (local,
+  `-o ForkAfterAuthentication=no`, five-second deadline) runs only for the
+  rows shown, at most four at once, once per alias per sheet, off the main
+  actor, and is cancelled with the sheet; an alias it can't answer for is
+  shown without a destination. **Superseded**: the AppKit menu at the
+  click (UX round 2: the unused aliases, or disabled why there were none,
+  a divider, Enter details… and Edit ~/.ssh/config); the owner found it
+  looked bad.
+- **Superseded** (the card): the earlier card's two lists by source, **Added in
   Temple** and **From ~/.ssh/config** (every alias with a switch). The
   owner read "Added in Temple: No hosts added yet." as no hosts while a
   config host was on; Fable's next design (one In use list, the config list
   reduced to a chooser of unused aliases with switches) was overridden by
   the owner, who found listing hosts not in use unnecessary, so the
-  chooser became the Add host… menu.
+  chooser became the Add host… menu (itself superseded by the sheet above).
 - **Enter details… / Edit**: **Name** (the `HostID`; `[A-Za-z0-9._-]`, not
   starting with `-`, not an existing config alias; fixed once saved: "The
   name can't be changed later. Address, user and port can."), **Address**,
@@ -2819,7 +2844,7 @@ changed, by finding:
   same neutral inside `RootView` and was removed in the fix round) and are
   small rather than mini, whose knob read heavy in dark. (The switches are
   **superseded** by UX round 2: the card lists only hosts in use, and an
-  alias is turned on from the Add host… menu, section 7.)
+  alias is turned on from Add host…, section 7, now a sheet.)
 - **One error colour, one field** (visual 3). The folder sheet's field is
   the Add host form's (plain, on the control fill, no heavy ring), and its
   "No folder …" and unreachable lines use the form's red.

@@ -9,7 +9,7 @@ import TempleTerminalAPI
 /// process: nothing of the app is launched or driven.
 @MainActor
 final class HostsSettingsViewTests: XCTestCase {
-    private func app(records: [RemoteHostRecord] = [], configReads: @escaping () -> [String]) throws -> (AppModel, FakeTerminalSurfaceFactory) {
+    private func app(records: [RemoteHostRecord] = [], configReads: @escaping () -> [SSHConfigHost]) throws -> (AppModel, FakeTerminalSurfaceFactory) {
         let defaults = Fixture.uniqueDefaults()
         defaults.set(RemoteHostList(records: records).encode(), forKey: RemoteHostsModel.hostsKey)
         let state = URL(fileURLWithPath: "/private/tmp/temple-hosts-view-\(UUID().uuidString.prefix(8))")
@@ -97,40 +97,6 @@ final class HostsSettingsViewTests: XCTestCase {
         XCTAssertEqual(HostsSettingsSection.caption(for: .config("jetson-mentes"), configAliases: nil), .sshConfig,
                        "nothing is known missing while the config is read")
         XCTAssertEqual(HostsSettingsSection.inUseEmpty, "No hosts in use.")
-    }
-
-    /// The card lists no host that is not in use: Add host… offers the
-    /// config's unused aliases (a hand-added host with an alias's name
-    /// takes it out too), or says disabled why there are none, then Enter
-    /// details… and Edit ~/.ssh/config.
-    func testAddHostOffersOnlyTheConfigsAliasesNotInUse() {
-        typealias Entry = HostsSettingsSection.AddHostEntry
-        let tail: [Entry] = [.divider, .enterDetails, .editConfig]
-        let records: [RemoteHostRecord] = [.config("box"), RemoteHostRecord(name: "jetson", source: .temple, address: "a")]
-        XCTAssertEqual(HostsSettingsSection.addHostMenu(configAliases: ["box", "jetson", "spare"], records: records),
-                       [.alias("spare")] + tail)
-        XCTAssertEqual(HostsSettingsSection.addHostMenu(configAliases: nil, records: records),
-                       [.unavailable("Reading ~/.ssh/config\u{2026}")] + tail)
-        XCTAssertEqual(HostsSettingsSection.addHostMenu(configAliases: [], records: []),
-                       [.unavailable("No hosts in ~/.ssh/config")] + tail)
-        XCTAssertEqual(HostsSettingsSection.addHostMenu(configAliases: ["box"], records: records),
-                       [.unavailable("Every host in ~/.ssh/config is in use")] + tail)
-        XCTAssertEqual(Entry.enterDetails.title, "Enter details\u{2026}")
-        XCTAssertEqual(Entry.editConfig.title, "Edit ~/.ssh/config")
-    }
-
-    /// Choosing an alias turns it on, so it is in use and no longer offered;
-    /// Turn off brings it back to the menu.
-    func testChoosingAnAliasPutsItInUseAndTurnOffOffersItAgain() throws {
-        let (app, _) = try app { ["box", "spare"] }
-        let hosts = app.remoteHosts
-        hosts.loadConfigAliases()
-        hosts.setConfigHost("spare", enabled: true)
-        XCTAssertEqual(HostsSettingsSection.inUse(hosts.records).map(\.name), ["spare"])
-        XCTAssertEqual(HostsSettingsSection.offered(configAliases: hosts.configAliases, records: hosts.records), ["box"])
-        hosts.setConfigHost("spare", enabled: false)
-        XCTAssertEqual(HostsSettingsSection.inUse(hosts.records), [])
-        XCTAssertEqual(HostsSettingsSection.offered(configAliases: hosts.configAliases, records: hosts.records), ["box", "spare"])
     }
 
     /// The sheet's terminal runs the user's ssh itself, nothing wrapped

@@ -444,6 +444,19 @@ public enum RemoteCopy {
     /// The folder sheet's field label (the sheet's title names the host).
     public static let folderFieldLabel = "Folder"
 
+    /// The Add host sheet (Settings, Hosts): one field, the config's unused
+    /// aliases under it, the full form behind a link.
+    public static let addHostTitle = "Add host"
+    public static let addHostFieldLabel = "Host"
+    public static let addHostPlaceholder = "alias from ~/.ssh/config, or user@address"
+    public static func addHostShowAll(_ count: Int) -> String { "Show all \(count)\u{2026}" }
+    public static let addHostNoConfigHosts = "No hosts in ~/.ssh/config."
+    public static let addHostAllInUse = "Every host in ~/.ssh/config is in use."
+    public static func addHostAlreadyInUse(_ name: String) -> String { "\(name) is already in use." }
+    public static let addHostNotInConfig = "Not in ~/.ssh/config?"
+    public static let addHostEnterDetails = "Enter details\u{2026}"
+    public static let addHostEditConfig = "Edit ~/.ssh/config"
+
     /// Resume anyway's confirmation (a sheet): a short title, why, and the
     /// command that stops the original on the host, apart, to copy.
     public static let resumeAnywayTitle = "Resume anyway?"

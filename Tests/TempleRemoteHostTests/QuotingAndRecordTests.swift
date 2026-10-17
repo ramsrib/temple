@@ -410,6 +410,42 @@ final class SSHConfigHostsTests: XCTestCase {
                        ["from-single-quoted", "from-escaped", "from-double-quoted"])
     }
 
+    /// What each alias's own blocks set, first value winning as in ssh: a
+    /// pattern's block (`Host *` included) and a `Match` block set nothing
+    /// for an alias; an included file's blocks count. For ranking only.
+    func testEachAliasCarriesWhatItsOwnBlocksSet() throws {
+        let tree = TempTree("ssh-config-options")
+        let ssh = tree.directory(".ssh")
+        tree.write(".ssh/config", """
+        Host box jetson-mentes
+          HostName 10.0.0.2
+          User=mentes
+        Host box
+          User other
+        Host *
+          User everyone
+          IdentityFile ~/.ssh/all
+        Match host github.com
+          User git
+        Host github.com
+        Host plain-name
+          HostName Plain-Name
+        Include extra
+        """)
+        tree.write(".ssh/extra", "Host keyed\n  IdentityFile ~/.ssh/keyed\n")
+        let hosts = SSHConfigHosts.loadHosts(configURL: ssh.appendingPathComponent("config"), sshDirectory: ssh, home: tree.path)
+        XCTAssertEqual(hosts.map(\.alias), ["box", "jetson-mentes", "github.com", "plain-name", "keyed"])
+        XCTAssertEqual(hosts[0].options, ["hostname": "10.0.0.2", "user": "mentes"], "the first value wins")
+        XCTAssertEqual(hosts[1].options["user"], "mentes")
+        XCTAssertEqual(hosts[2].options, [:], "Host * and Match set nothing for an alias")
+        XCTAssertEqual(hosts[4].options, ["identityfile": "~/.ssh/keyed"])
+        XCTAssertEqual(hosts.map(\.setsLogin), [true, true, false, false, true])
+        XCTAssertEqual(hosts.map(\.isBare), [false, false, true, true, false])
+        XCTAssertFalse(SSHConfigHost(alias: "build", options: ["hostname": "10.0.0.9"]).isBare, "it goes somewhere else")
+        XCTAssertEqual(SSHConfigHosts.load(configURL: ssh.appendingPathComponent("config"), sshDirectory: ssh, home: tree.path),
+                       hosts.map(\.alias))
+    }
+
     func testIncludeIsFollowedOneLevel() throws {
         let tree = TempTree("ssh-config")
         let ssh = tree.directory(".ssh")
