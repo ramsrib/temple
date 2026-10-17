@@ -247,6 +247,39 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertNotNil(app.overlay.rows["c7"])
     }
 
+    /// A session started on a host shows its project heading at once, from
+    /// the folder typed, before the pane reports where it went: display
+    /// only. Nothing is written for it; the reported folder is what the row
+    /// records, and the hint goes.
+    func testAHostProjectHeadingShowsFromTheTypedFolderUntilThePaneReports() async throws {
+        let remote = FakeRemoteHost("box")
+        let app = try app(remote)
+        app.openSessions.remoteTabs.recordPollDelays = [60]
+        app.openSessions.remoteTabs.identitySchedule = [60]
+        let typed = ProjectKey(host: hostID, path: "~/new")
+        let claude = app.openSessions.newSession(agent: .claude, project: typed)
+        await settle { claude.hasLiveProcess }
+        let id = try XCTUnwrap(claude.sessionID)
+        await settle { app.overlay.rows[id] != nil }
+        let hinted = try XCTUnwrap(app.displayProjects.first { $0.key == typed }, "the heading is there at once")
+        XCTAssertEqual(hinted.sessions.map(\.id), [id], "the row with no folder yet sits under it")
+        XCTAssertNil(app.overlay.rows[id]?.directory, "nothing written to the row")
+        XCTAssertFalse(app.overlay.projectKeyOrder.contains(typed), "nor to the project order")
+        XCTAssertFalse(app.orderedVisibleProjectKeys.contains(typed), "and no Move or drag can persist it")
+
+        let codex = app.openSessions.newSession(agent: .codex, project: ProjectKey(host: hostID, path: "~/cx"))
+        await settle { codex.hasLiveProcess }
+        let pending = try XCTUnwrap(app.displayProjects.first { $0.key == ProjectKey(host: hostID, path: "~/cx") })
+        XCTAssertTrue(pending.sessions.isEmpty, "a pending Codex session: the heading alone")
+
+        // The pane reports where it went: that folder wins and is recorded.
+        app.openSessions.applyLaunchDirectory(claude, canonical: "/home/u/new")
+        await settle { app.overlay.rows[id]?.directory == "/home/u/new" }
+        await settle { app.displayProjects.contains { $0.key == ProjectKey(host: self.hostID, path: "/home/u/new") } }
+        XCTAssertFalse(app.displayProjects.contains { $0.key == typed }, "the hint went")
+        XCTAssertEqual(app.displayProjects.first { $0.key.path == "/home/u/new" }?.sessions.map(\.id), [id])
+    }
+
     /// The --no-daemon hint reads as the copy says, the flag set as code.
     func testTheNoDaemonHintSetsTheFlagAsCode() {
         let hint = MainContentView.noDaemonHint

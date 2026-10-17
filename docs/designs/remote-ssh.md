@@ -962,7 +962,9 @@ test did not prove tmux missing.
   "No folder <path> on <host>." stops; a transport failure offers **Start
   anyway** and **Test connection**. Whatever the sheet resolved is intent;
   the row records a folder only from the `ok` record, through
-  `applyLaunchDirectory`.
+  `applyLaunchDirectory`. Meanwhile the sidebar shows the
+  project heading from the tab's folder as a display hint (remote UX round
+  1), never written anywhere.
 - A remote folder path means an absolute path on that host as the ssh login
   user sees it, spelled as the host's `pwd -P` spells it.
 
@@ -2693,4 +2695,13 @@ changed, by finding:
   active never moved it. It now follows the active session tab's id as it
   changes (nil: no row selected), resolved when the activation is emitted;
   a utility tab leaves it.
+- **The heading comes at once** (UX 5). Until a session on a host reports
+  its folder (the `ok` record; a pending Codex session has no row at all
+  until identified), the sidebar shows its project heading from the tab's
+  folder, the one typed in the sheet, with the session's row under it when
+  it has one. A display hint in `AppModel.displayProjects` only: nothing is
+  written to the row, `session_state`, the remote store or the project
+  order, and hints are left out of `orderedVisibleProjectKeys`, so neither
+  a drag nor a Move can persist one. The reported folder still wins: the
+  tab moves to it, the row records it, and the hint goes.
 

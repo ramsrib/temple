@@ -310,7 +310,9 @@ then relaunch, turns it on.
   host project's `+` and `⌘T` start there. The folder sheet takes a path on
   the host (`~/…` works), checks it there and shows where it resolved; when
   the host does not answer, it offers **Start anyway** and **Test
-  connection**.
+  connection**. The project's heading shows in the sidebar at once, from the
+  folder you typed, and moves to the folder the session reports it entered;
+  only that one is recorded.
 - **It keeps running.** The agent runs inside a hidden tmux server of
   Temple's own on the host (`tmux -L temple`, tmux 3.2 or newer), so it
   survives a dropped connection, a sleeping Mac and a Temple quit while it

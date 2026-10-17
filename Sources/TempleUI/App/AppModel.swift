@@ -1199,7 +1199,40 @@ public final class AppModel: ObservableObject {
     /// Projects for the sidebar (in-memory search over the cached non-noise
     /// set), sessions in the launch-frozen order — not live recency.
     public var displayProjects: [SessionRowProject] {
-        sidebarProjects(matching: searchText.trimmingCharacters(in: .whitespaces))
+        let q = searchText.trimmingCharacters(in: .whitespaces)
+        let projects = sidebarProjects(matching: q)
+        return q.isEmpty ? withLaunchFolderHints(projects) : projects
+    }
+
+    /// A session started on a host has its project heading at once, from
+    /// the folder its tab was given (what the user typed), until its pane
+    /// reports the folder it entered: a display hint only. Nothing here is
+    /// written to the row or any store; the pane's folder still wins, is
+    /// what the tab moves to and what the row records, and only then is
+    /// the project a real one. A pending Codex tab (no row yet) gets the
+    /// heading alone; a row with no folder yet is shown under it. Hints sit
+    /// on top, as a new session does, and are not in the project order
+    /// (`orderedVisibleProjectKeys`), so no drag or Move can persist one.
+    private func withLaunchFolderHints(_ projects: [SessionRowProject]) -> [SessionRowProject] {
+        var placed = projects
+        var hints: [SessionRowProject] = []
+        for tab in openSessions.tabs where tab.kind == .session && tab.remote != nil && !tab.projectPath.isEmpty {
+            let row = tab.sessionID.flatMap { presentedByID[$0] }
+            if let row, row.project != nil || row.state.archived { continue }
+            let key = tab.projectKey
+            if let index = placed.firstIndex(where: { $0.key == key }) {
+                if let row, !placed[index].sessions.contains(where: { $0.id == row.id }) {
+                    placed[index] = SessionRowProject(key: key, sessions: [row] + placed[index].sessions)
+                }
+            } else if let index = hints.firstIndex(where: { $0.key == key }) {
+                if let row, !hints[index].sessions.contains(where: { $0.id == row.id }) {
+                    hints[index] = SessionRowProject(key: key, sessions: [row] + hints[index].sessions)
+                }
+            } else {
+                hints.append(SessionRowProject(key: key, sessions: row.map { [$0] } ?? []))
+            }
+        }
+        return hints + placed
     }
 
     private func sidebarProjects(matching q: String) -> [SessionRowProject] {
