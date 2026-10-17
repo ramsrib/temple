@@ -722,27 +722,6 @@ final class RemoteSessionsTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: host.recordDirectory + "/r-h1.out"))
     }
 
-    /// A capture that reached its cap ends mid-session: its end is never
-    /// shown as what the pane printed last (Fable's visual re-check). Nil,
-    /// and removed all the same.
-    func testACappedCaptureIsNotShownAsThePanesLastLines() async throws {
-        let host = StandIn()
-        try host.makeRecordDirectory()
-        let store = try RemoteStateStore()
-        try insertRun(store, creation: nil)
-        let out = host.recordDirectory + "/r-h1.out"
-        try String(repeating: "mid-session text\n", count: LaunchRecords.outputCap / 17 + 1)
-            .write(toFile: out, atomically: true, encoding: .utf8)
-        let sessions = controller(host, store: store)
-        let words = await sessions.diagnostics("h1")
-        XCTAssertNil(words)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: out))
-        // One byte under the cap is complete.
-        try String(repeating: "x", count: LaunchRecords.outputCap - 1).write(toFile: out, atomically: true, encoding: .utf8)
-        let whole = await sessions.diagnostics("h1")
-        XCTAssertEqual(whole?.count, 4096)
-    }
-
     /// A PATH resolved over connection A that answers after the alias moved
     /// to B is not cached for B.
     func testAPathResolvedForAnOldConnectionIsNotCached() async throws {
@@ -1003,68 +982,6 @@ final class RemoteSessionsTests: XCTestCase {
         guard case .unavailable = await sessions.suggestions("p1") else { return XCTFail("a list that forgot the declines") }
         let blindYes = await sessions.confirm("p1", suggestion: targetSuggestion)
         guard case .inconclusive = blindYes else { return XCTFail("\(blindYes)") }
-    }
-
-    /// The pane's output of a new Codex session Temple never identified,
-    /// once it was typed into, outlives the proof of its end (a stop, here)
-    /// until its ended question takes it: the stop removed it before, and
-    /// the ended band showed only its fallback line. Taken once; one never
-    /// typed into leaves nothing behind; a dismissed one takes it along.
-    func testAnUnidentifiedCodexRunTypedIntoKeepsItsOutputUntilItsQuestionTakesIt() async throws {
-        let host = StandIn()
-        try host.installRealTmux()
-        installCodex(host)
-        defer { _ = try? host.tmux(["-L", "temple", "kill-server"]) }
-        let store = try RemoteStateStore()
-        let sessions = controller(host, store: store)
-        func started() async throws -> (plan: RemoteSessions.OpenPlan, output: String) {
-            let plan = try pendingPlan(await sessions.openPending(handle: nil, directory: "~", extraArguments: []))
-            let client = try tab(host, plan)
-            defer { client.end() }
-            let collected = await until(15) { if case .ok = await sessions.collect(plan.handle) { return true }; return false }
-            XCTAssertTrue(collected)
-            let marker = try XCTUnwrap(RecordDirectory.marker(from: try XCTUnwrap(store.run(plan.handle)).recordPath))
-            let output = host.recordDirectory + "/" + marker + ".out"
-            try "codex's last words\n".write(toFile: output, atomically: false, encoding: .utf8)
-            return (plan, output)
-        }
-
-        let typed = try await started()
-        try await sessions.recordInput(typed.plan.handle)
-        _ = try await sessions.stop(typed.plan.handle, fromAttachedTab: true)
-        XCTAssertNotNil(try store.run(typed.plan.handle)?.endedAt)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: typed.output), "left for its question")
-        let words = await sessions.diagnostics(typed.plan.handle)
-        XCTAssertEqual(words?.contains("codex's last words"), true, "\(String(describing: words))")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: typed.output), "the question took it")
-
-        let untyped = try await started()
-        _ = try await sessions.stop(untyped.plan.handle, fromAttachedTab: true)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: untyped.output), "nothing will ask: removed at the stop")
-
-        let dismissed = try await started()
-        try await sessions.recordInput(dismissed.plan.handle)
-        _ = try await sessions.stop(dismissed.plan.handle, fromAttachedTab: true)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: dismissed.output))
-        try await sessions.dismissRun(dismissed.plan.handle)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: dismissed.output), "dismissed: nothing will ask")
-
-        // Detached (its tab closed), then proven ended: no chip comes back
-        // to ask, so nothing is kept (sol round 2).
-        let detached = try await started()
-        try await sessions.recordInput(detached.plan.handle)
-        try await sessions.closePendingTab(detached.plan.handle)
-        _ = try await sessions.stop(detached.plan.handle, fromAttachedTab: false)
-        XCTAssertNotNil(try store.run(detached.plan.handle)?.endedAt)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: detached.output), "its tab was closed: nothing will ask")
-
-        // Ended with its output kept, then its tab closed: removed then.
-        let closed = try await started()
-        try await sessions.recordInput(closed.plan.handle)
-        _ = try await sessions.stop(closed.plan.handle, fromAttachedTab: true)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: closed.output))
-        try await sessions.closePendingTab(closed.plan.handle)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: closed.output), "its tab closed: nothing will ask")
     }
 
     /// A pending run reopened while it runs attaches (never a second

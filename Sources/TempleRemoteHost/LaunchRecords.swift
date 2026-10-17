@@ -118,30 +118,14 @@ public enum LaunchRecords {
     m=$1
     rd=$(temple_record_dir) || exit 0
     p=$rd/$m.out
-    \(completeTail)
+    [ -f "$p" ] && [ ! -L "$p" ] && tail -c 4096 "$p"
     rm -f "$p"
     exit 0
     """
 
-    /// The pane's output is captured up to this many bytes, from its start
-    /// (`pipe-pane` with `head -c`), so a capture that reached it ends
-    /// mid-session.
-    public static let outputCap = 65536
-
-    /// Prints the end of `$p` only when the capture is complete (it never
-    /// reached the cap): the end of a capped capture is mid-session text,
-    /// never what the pane showed last (Fable's visual re-check).
-    static let completeTail = #"""
-    if [ -f "$p" ] && [ ! -L "$p" ]; then
-      n=$(wc -c < "$p" | tr -d ' ')
-      [ "${n:-0}" -lt \#(outputCap) ] && tail -c 4096 "$p"
-    fi
-    """#
-
     public static let deadline: TimeInterval = 5
 
-    /// The pane's diagnostics, fetched once and removed; nothing else. Nil
-    /// for a capture that reached `outputCap`: its end is not the pane's.
+    /// The pane's diagnostics, fetched once and removed; nothing else.
     public static func takeOutput(marker: String, using exec: RemoteExec) async -> String? {
         precondition(RemoteQuoting.isSafeToken(marker))
         guard let output = try? await exec.run(script: outputScript, args: [marker], deadline: deadline),

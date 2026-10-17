@@ -95,23 +95,14 @@ public enum LaunchStage {
 
     /// Argument: the marker. The run's end is proven: prints the last
     /// 4 KiB of what its pane showed (for a header about an agent that
-    /// ended at once), if its capture is complete, then removes that output file and every staged
+    /// ended at once), then removes that output file and every staged
     /// launch of the run. Nothing of an ended run stays behind but the
     /// records Temple has not acknowledged yet.
     static let discardRunScript = RecordDirectory.functions + "\n" + #"""
     rd=$(temple_record_dir) || exit 0
     p=$rd/$1.out
-    \#(LaunchRecords.completeTail)
+    [ -f "$p" ] && [ ! -L "$p" ] && tail -c 4096 "$p"
     rm -f "$rd/$1".s-* "$p"
-    exit 0
-    """#
-
-    /// Argument: the marker. The staged launches of a run whose pane's
-    /// output is left for a question still to come (`discardAll` takes the
-    /// output too).
-    static let discardStagedScript = RecordDirectory.functions + "\n" + #"""
-    rd=$(temple_record_dir) || exit 0
-    rm -f "$rd/$1".s-*
     exit 0
     """#
 
@@ -155,13 +146,6 @@ public enum LaunchStage {
         guard let output = try? await exec.run(script: discardRunScript, args: [marker], deadline: 5),
               output.reachedCommand, output.status == 0, !output.stdout.isEmpty else { return nil }
         return output.stdout
-    }
-
-    /// Best effort, for a run whose end is proven but whose pane's output
-    /// is still to be asked for: its staged launches go, the output stays.
-    public static func discardStaged(marker: String, using exec: RemoteExec) async {
-        precondition(RemoteQuoting.isSafeToken(marker))
-        _ = try? await exec.run(script: discardStagedScript, args: [marker], deadline: 5)
     }
 
     /// Best effort: a staged launch nothing will read.

@@ -947,42 +947,13 @@ public final class RemoteSessions {
             do { try await markEnded(handle, evidence: .absent) } catch {
                 return .unknown(reason: "Temple couldn't record that it ended: \(error.localizedDescription)", socketMissing: false)
             }
-            await endProven(run, using: exec, keepOutput: true)
+            if !retired { endedOutput[handle] = await LaunchStage.discardAll(marker: marker(run), using: exec) }
         case .unknown(_, false):
             transportFailed()
         default:
             break
         }
         return liveness
-    }
-
-    /// A run whose end is proven leaves nothing behind: its staged
-    /// launches go, and its pane's output with them (`keepOutput`: what it
-    /// held is kept here for the diagnostics header that may follow). The
-    /// one exception is a new Codex session Temple has not identified and
-    /// that was typed into: its tab asks which session it was, with what
-    /// the pane showed, possibly after a relaunch, so its output stays on
-    /// the host (0600) until that question takes it (`diagnostics`) or the
-    /// run is dismissed (`dismissRun`); the launch's 24-hour sweep bounds
-    /// it either way.
-    private func endProven(_ run: RemoteRun, using exec: RemoteExec, keepOutput: Bool = false) async {
-        guard !retired else { return }
-        if Self.outputAwaitsQuestion(run) {
-            await LaunchStage.discardStaged(marker: marker(run), using: exec)
-            return
-        }
-        let output = await LaunchStage.discardAll(marker: marker(run), using: exec)
-        // Never an empty answer over one already taken.
-        if keepOutput, let output { endedOutput[run.handle] = output }
-    }
-
-    /// Whether a run's pane output is left for its ended question: only a
-    /// run that comes back with that question (`pendingRuns`: not
-    /// dismissed, its tab not closed, not a creation that never ran), and
-    /// only once it was typed into.
-    static func outputAwaitsQuestion(_ run: RemoteRun) -> Bool {
-        run.isPending && run.inputSeenAt != nil && run.dismissedAt == nil && run.tabClosedAt == nil
-            && run.creation != .failed
     }
 
     private func markEnded(_ handle: String, evidence: RemoteRun.EndEvidence) async throws {
@@ -1039,8 +1010,8 @@ public final class RemoteSessions {
         }
         // The run ended: what was staged for it and never read goes too
         // (best effort, after the outcome is written).
-        if outcome == .killed || outcome == .absent, let stopExec, !Task.isCancelled {
-            await endProven(run, using: stopExec)
+        if outcome == .killed || outcome == .absent, let stopExec, !retired, !Task.isCancelled {
+            await LaunchStage.discardAll(marker: marker(run), using: stopExec)
         }
         return StopRecord(outcome: outcome)
     }
@@ -1131,8 +1102,8 @@ public final class RemoteSessions {
                 reached = true
                 if (try? await markEnded(run.handle, evidence: .absent)) == nil {
                     tracked.append(Tracked(run: run, state: .unknown("Temple couldn't record that it ended")))
-                } else {
-                    await endProven(run, using: exec)
+                } else if !retired {
+                    await LaunchStage.discardAll(marker: marker(run), using: exec)
                 }
             case .unknown(let reason, let reachedHost):
                 reached = reached || reachedHost
@@ -1158,8 +1129,8 @@ public final class RemoteSessions {
             case .present: reached = true
             case .absent:
                 reached = true
-                if (try? await markEnded(run.handle, evidence: .absent)) != nil {
-                    await endProven(run, using: exec)
+                if (try? await markEnded(run.handle, evidence: .absent)) != nil, !retired {
+                    await LaunchStage.discardAll(marker: marker(run), using: exec)
                 }
             case .unknown(_, let reachedHost): reached = reached || reachedHost
             }
@@ -1434,26 +1405,14 @@ public final class RemoteSessions {
 
     /// A pending run's tab was closed: it is not restored as a chip.
     public func closePendingTab(_ handle: String) async throws {
-        let before = await run(handle)
         let now = now()
         try await write { try $0.update(handle) { $0.tabClosedAt = now } }
-        // An ended run whose output was left for its question: with its tab
-        // closed, nothing asks (best effort, after the write).
-        guard let before, before.endedAt != nil, Self.outputAwaitsQuestion(before), !retired,
-              let exec = try? await queryExec(), !retired else { return }
-        await LaunchStage.discardAll(marker: marker(before), using: exec)
     }
 
     /// Discard of a pending run: Temple stops tracking it (its transcript,
     /// if any, stays on the host).
     public func dismissRun(_ handle: String) async throws {
-        let before = await run(handle)
         let now = now()
         try await write { try $0.dismissRun(handle, at: now) }
-        // What its pane showed was left for its question: nothing asks now
-        // (best effort, after the dismissal is written).
-        guard let before, Self.outputAwaitsQuestion(before), !retired,
-              let exec = try? await queryExec(), !retired else { return }
-        await LaunchStage.discardAll(marker: marker(before), using: exec)
     }
 }
