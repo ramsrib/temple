@@ -21,7 +21,7 @@ struct RemoteSessionsSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Sessions on \(host)")
+            Text(RemoteCopy.sessionsOn(host))
                 .font(.system(size: 15, weight: .semibold))
             content
             HStack {
@@ -82,36 +82,42 @@ struct RemoteSessionsSheet: View {
     private func row(_ session: RemoteTrackedSession, checked: Bool) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title(session))
-                        .font(.system(size: 13))
-                        .lineLimit(1)
-                    Text("temple-\(session.handle)")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
+                // The tmux session's name only matters to someone who will
+                // ssh in: a tooltip, not a line.
+                Text(title(session))
+                    .font(.system(size: 13))
+                    .lineLimit(1)
+                    .help(RemoteCopy.trackedHandleHelp(session.handle))
                 Spacer(minLength: 8)
-                Text(status(session))
+                // The state in a slot of its own, so it never reads as a
+                // third action beside Stop and Keep.
+                Text(RemoteCopy.trackedState(session.state))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                if sheet.stopping.contains(session.handle) {
-                    ProgressView().controlSize(.small)
-                } else if sheet.kept.contains(session.handle) {
-                    Text("Kept").font(.system(size: 12)).foregroundStyle(.secondary)
-                } else {
-                    // A new Codex session Temple has not identified: no row
-                    // to open it from, so it opens here (it attaches).
-                    if session.sessionID == nil, session.agent == .codex, let directory = session.directory {
-                        Button("Open") {
-                            model.openSessions.remoteTabs.openPendingRun(handle: session.handle, host: sheet.request.host,
-                                                                         directory: directory)
-                            dismiss()
+                    .lineLimit(1)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Palette.controlFill))
+                HStack(spacing: 10) {
+                    if sheet.stopping.contains(session.handle) {
+                        ProgressView().controlSize(.small)
+                    } else if sheet.kept.contains(session.handle) {
+                        Text("Kept").font(.system(size: 12)).foregroundStyle(.secondary)
+                    } else {
+                        // A new Codex session Temple has not identified: no row
+                        // to open it from, so it opens here (it attaches).
+                        if session.sessionID == nil, session.agent == .codex, let directory = session.directory {
+                            Button("Open") {
+                                model.openSessions.remoteTabs.openPendingRun(handle: session.handle, host: sheet.request.host,
+                                                                             directory: directory)
+                                dismiss()
+                            }
                         }
+                        Button("Stop") { sheet.stop(session) }
+                        Button("Keep") { sheet.keep(session) }
                     }
-                    Button("Stop") { sheet.stop(session) }
-                    Button("Keep") { sheet.keep(session) }
                 }
+                .padding(.leading, 16)
             }
             if let reason = session.leftRunning, !sheet.kept.contains(session.handle) {
                 Text(RemoteCopy.leftRunningLine(host, reason: reason))
@@ -134,13 +140,6 @@ struct RemoteSessionsSheet: View {
         .buttonStyle(.link)
         .font(.system(size: 12))
         .padding(.vertical, 8)
-    }
-
-    private func status(_ session: RemoteTrackedSession) -> String {
-        switch session.state {
-        case .present(let attached): attached ? "Attached" : "Detached"
-        case .unknown: "Unknown"
-        }
     }
 
     private func title(_ session: RemoteTrackedSession) -> String {
@@ -173,7 +172,7 @@ struct RemoteFolderSheet: View {
             Text("New \(sheet.request.agent.displayName) session on \(host)")
                 .font(.system(size: 15, weight: .semibold))
             VStack(alignment: .leading, spacing: 4) {
-                Text("Folder on \(host)").font(.system(size: 12))
+                Text(RemoteCopy.folderFieldLabel).font(.system(size: 12))
                 TextField(placeholder, text: $sheet.path)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 13, design: .monospaced))

@@ -817,6 +817,13 @@ final class RemoteCodexIdentityTests: XCTestCase {
         }
         XCTAssertEqual(RemoteCopy.noTrackedSessions, "No sessions started from Temple.")
         XCTAssertEqual(RemoteCopy.stillWorkingMessage("box"), "Detach keeps it working on box; Stop ends it.")
+        // Sessions on <host> in the app's words; the tmux name is a tooltip.
+        XCTAssertEqual(RemoteCopy.trackedState(.present(attached: true)), "Open in Temple")
+        XCTAssertEqual(RemoteCopy.trackedState(.present(attached: false)), "Running")
+        XCTAssertEqual(RemoteCopy.trackedState(.unknown("no answer")), "Unknown")
+        XCTAssertEqual(RemoteCopy.trackedHandleHelp("f87e"), "tmux session temple-f87e")
+        XCTAssertEqual(RemoteCopy.sessionsOnMenuItem("box"), "Sessions on box\u{2026}")
+        XCTAssertEqual(RemoteCopy.folderFieldLabel, "Folder")
         let unread = RemoteSuggestion(rolloutPath: "/r", sessionID: "x", firstPrompt: nil, startedAt: Date(),
                                       directory: "/w", promptKnown: false)
         XCTAssertTrue(RemoteCopy.suggestionQuestion(unread).hasPrefix("Is this the session? First prompt unreadable, started "))

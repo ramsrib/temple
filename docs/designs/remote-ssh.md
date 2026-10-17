@@ -686,10 +686,13 @@ Sessions on <host> sheet is where what was left is seen and stopped.
 the tab stays "Disconnected" and the next Open attaches. Closing that kept
 tab is a Close as above (Stop now if the host answers, left running if not).
 
-**The Remote sessions sheet** (Hosts card → "Sessions on <host>…", and
+**The Remote sessions sheet** (Hosts card → "Sessions…", a host project
+heading's context menu → "Sessions on <host>…", and
 offered by every notice above): per enabled host, the sessions **Temple
 started and still tracks** there (runs not Ended), each with its row's
-title, each asked about on its own pinned server (attached or not), with
+title (the tmux name `temple-<handle>` as its tooltip), each asked about on
+its own pinned server, its state in a slot of its own ("Open in Temple",
+"Running" or "Unknown", remote UX round 1), with
 Stop / Keep (Keep clears a left-running flag, Fable's must-fix 6; a
 pending Codex session also has Open); a session flagged left running shows
 its notice ("Left running: <host> didn't answer when you closed it.") and
@@ -955,7 +958,8 @@ test did not prove tmux missing.
 - ⌘N: remote project rows read "project @host"; below **Choose folder…**,
   **Folder on <host>…** per listed host. Launcher: **New session on
   <host>…**. Project `+` and ⌘T are host-aware already.
-- The folder sheet: a text field ("Folder on <host>", placeholder
+- The folder sheet: a text field ("Folder" since remote UX round 1, the
+  sheet's title naming the host; placeholder
   `/home/<user>/Projects/…` or `~/…`), the host's recent folders beneath,
   Return to confirm. Confirm runs an advisory `cd -- <path> && pwd -P` query
   (same `~` rule as the pane): success shows the resolved path and starts;
@@ -2704,4 +2708,11 @@ changed, by finding:
   order, and hints are left out of `orderedVisibleProjectKeys`, so neither
   a drag nor a Move can persist one. The reported folder still wins: the
   tab moves to it, the row records it, and the hint goes.
+- **Copy and the Sessions sheet** (UX 7, UX 8 in part, visual 8). The
+  folder sheet's field reads "Folder" (its title names the host). Sessions
+  on <host> says "Open in Temple" / "Running" / "Unknown" (nothing local
+  says attached), in a capsule apart from Stop and Keep; the tmux name
+  `temple-<handle>` moved from a line to the title's tooltip. A host
+  project heading's context menu has "Sessions on <host>…". Folding the
+  manual stop command into the sheet's header (UX 9) is later.
 

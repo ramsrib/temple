@@ -945,6 +945,13 @@ private struct ProjectDisclosure: View {
             NSPasteboard.general.setString(project.path, forType: .string)
         }
         Button("Show in History") { model.showInHistory(project: project.key) }
+        if !project.key.host.isLocal {
+            // What Temple started on that host and still tracks, with Stop
+            // and Keep: reachable from the project, not only from Settings.
+            Button(RemoteCopy.sessionsOnMenuItem(project.key.host.rawValue)) {
+                model.showRemoteSessions(project.key.host)
+            }
+        }
         Divider()
         if hasOpenTabs {
             // Named rather than merely greyed out, like the session row's item.

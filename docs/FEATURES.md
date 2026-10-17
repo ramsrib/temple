@@ -328,9 +328,11 @@ then relaunch, turns it on.
 - **Left running.** When the host does not answer as you close a tab, or
   another terminal is attached to the session, Temple leaves it running and
   says so once. It never stops anything later on its own. **Sessions on
-  <host>** (in Settings ▸ Hosts, and offered by every such notice) lists every
-  session Temple started on that host and still tracks, with its state and
-  **Stop** and **Keep**. Temple never lists or stops a session it did not
+  <host>** (in Settings ▸ Hosts, in a host project heading's context menu,
+  and offered by every such notice) lists every session Temple started on
+  that host and still tracks, with its state (**Open in Temple**, **Running**
+  or **Unknown**; the tmux session's name is its tooltip) and **Stop** and
+  **Keep**. Temple never lists or stops a session it did not
   start, and never touches your own tmux sessions.
 - **Quitting.** The quit prompt asks about local working agents only and
   adds "Sessions working on <host> keep running; Temple will reconnect to

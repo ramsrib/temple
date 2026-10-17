@@ -410,6 +410,25 @@ public enum RemoteCopy {
     /// "Sessions on <host>": the sheet's title and the button that opens it.
     public static func sessionsOn(_ host: String) -> String { "Sessions on \(host)" }
 
+    /// The menu item that opens it (a host project heading's context menu).
+    public static func sessionsOnMenuItem(_ host: String) -> String { "Sessions on \(host)\u{2026}" }
+
+    /// A tracked session's state in "Sessions on <host>", in the app's words
+    /// (nothing local says "attached").
+    public static func trackedState(_ state: RemoteTrackedSession.State) -> String {
+        switch state {
+        case .present(let attached): attached ? "Open in Temple" : "Running"
+        case .unknown: "Unknown"
+        }
+    }
+
+    /// The tmux session behind a tracked one, for someone who will ssh in:
+    /// a tooltip, not a line.
+    public static func trackedHandleHelp(_ handle: String) -> String { "tmux session temple-\(handle)" }
+
+    /// The folder sheet's field label (the sheet's title names the host).
+    public static let folderFieldLabel = "Folder"
+
     /// Resume anyway's confirmation (a sheet): a short title, why, and the
     /// command that stops the original on the host, apart, to copy.
     public static let resumeAnywayTitle = "Resume anyway?"
