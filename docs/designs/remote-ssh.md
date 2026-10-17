@@ -2671,8 +2671,9 @@ changed, by finding:
   session that ended before Temple learned its id records the claim (and
   the core join) as before, then closes the tab exactly as a local exit
   does and selects the now-identified row (`selectRowHandler`, set again
-  after the activation the close caused). The run is handed over as any
-  identified tab's is. The `endedIdentified` phase, its banner and its
+  after the activation the close caused). The tab never becomes the
+  session's tab, so no save of the tab set holds it; the run's own
+  restoration is retired once the pending tab is gone (fix round). The `endedIdentified` phase, its banner and its
   Resume are gone; opening the row resumes, nothing resumes on its own.
 - **Ended before identified: one band** (UX 2, visual 2). The fact and the
   question are one sentence, question first: "Codex ended on <host> before
@@ -2749,3 +2750,10 @@ changed, by finding:
   A new Codex session that was typed into and never identified now keeps
   its output on the host (0600) until its question takes it or the run is
   dismissed; every other run still leaves nothing behind.
+- **A yes for an ended session saves no tab of it** (sol 1). It used to
+  make the tab the session's (saved, active) and then close it, so a
+  failed second save left a tab the next launch resumed. The pending tab
+  now closes as it is and its run's restoration (`tab_closed_at`) is owed
+  until the tab is gone, then written with the hand-over's retries; one
+  that keeps failing is written at a later close, the quit or the next
+  launch, and at worst comes back as an inert chip, never an active one.

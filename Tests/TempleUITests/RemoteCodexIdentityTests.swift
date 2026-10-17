@@ -437,7 +437,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         let created = factory.created.count
         model.remoteTabs.confirm(try XCTUnwrap(tab.remote?.suggestions.first), in: tab)
         await settle(!self.model.tabs.contains { $0 === tab }, "the tab closes like a local exit")
-        XCTAssertEqual(tab.sessionID, "c7")
+        XCTAssertNil(tab.sessionID, "it never became the session's tab")
         XCTAssertEqual(joins.map(\.id), ["c7"])
         XCTAssertEqual(selected.map(\.0), ["c7"])
         XCTAssertEqual(selected.map(\.1), [hostID])
@@ -445,6 +445,61 @@ final class RemoteCodexIdentityTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(factory.created.count, created, "nothing started")
         XCTAssertTrue(remote.opens.isEmpty, "nothing resumed")
+    }
+
+    /// The yes for an ended session never puts a tab of it in the saved
+    /// tab set (sol round 1): it used to become the session's tab (saved,
+    /// active) and then close, so a second save that failed left a tab the
+    /// next launch resumed. Every save here after the first fails; nothing
+    /// saved names the session, its run's restoration is retired, and a
+    /// relaunch brings back no tab of it.
+    func testAYesForAnEndedSessionSavesNoTabOfItEvenWhenASaveFails() async throws {
+        let store = ScriptedTabPersistence { _ in true }
+        makeModel(persistence: store)
+        remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
+        remote.suggestionsResult = .candidates([suggestion("c7")])
+        model.remoteTabs.restorePending(hosts: [hostID])
+        await settle(self.model.tabs.count == 1)
+        let tab = try XCTUnwrap(model.tabs.first)
+        model.activate(tab)
+        await settle(tab.remote?.suggestions.count == 1)
+        // From here, the first save is written and every later one fails.
+        let first = store.saves + 1
+        store.succeeds = { $0 <= first }
+        model.remoteTabs.confirm(try XCTUnwrap(tab.remote?.suggestions.first), in: tab)
+        await settle(!self.model.tabs.contains { $0 === tab })
+        await settle(self.remote.closedPending == ["p7"], "its run's restoration is retired")
+        XCTAssertGreaterThanOrEqual(store.saves, first, "the close saved")
+        XCTAssertFalse(store.attempted.joined().contains { $0.sessionID == "c7" }, "no save ever held a tab of it")
+        // Relaunch: nothing of it comes back, nothing resumes.
+        makeModel(persistence: store)
+        model.restore()
+        model.remoteTabs.restorePending(hosts: [hostID])
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertFalse(model.tabs.contains { $0.sessionID == "c7" || $0.remote?.handle == "p7" })
+        XCTAssertTrue(remote.opens.isEmpty, "nothing resumed")
+    }
+
+    /// The same when the run store refuses the retirement every time: the
+    /// yes still saves no tab of the session; the run is owed until a later
+    /// close, the quit or the next launch writes it.
+    func testAYesForAnEndedSessionWhoseRetirementFailsIsOwed() async throws {
+        model.remoteTabs.handOverRetries = [0.01]
+        remote.ledgerFailures = 2
+        remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
+        remote.suggestionsResult = .candidates([suggestion("c7")])
+        model.remoteTabs.restorePending(hosts: [hostID])
+        await settle(self.model.tabs.count == 1)
+        let tab = try XCTUnwrap(model.tabs.first)
+        model.activate(tab)
+        await settle(tab.remote?.suggestions.count == 1)
+        model.remoteTabs.confirm(try XCTUnwrap(tab.remote?.suggestions.first), in: tab)
+        await settle(!self.model.tabs.contains { $0 === tab })
+        await settle(self.notices.count == 1, "said once")
+        XCTAssertTrue(model.remoteTabs.owesHandOver("p7"))
+        XCTAssertFalse(persistence.load().contains { $0.sessionID == "c7" })
+        _ = model.quitDrainPlan()
+        await settle(self.remote.closedPending == ["p7"], "the quit writes it")
     }
 
     /// A pending run another Temple identified meanwhile opens as that
@@ -876,6 +931,24 @@ final class RemoteCodexIdentityTests: XCTestCase {
                     RemoteCopy.leftRunningLine("box", reason: .quitDeadline), RemoteCopy.disconnected("box"),
                     RemoteCopy.unknown("box", agent: .codex, reason: "x"), RemoteCopy.stillConnecting("box")]
         for line in copy { XCTAssertFalse(line.contains("\u{2014}"), line) }
+    }
+}
+
+/// A tab store whose Nth save (1-based) succeeds only when `succeeds`
+/// says so; every attempt is kept.
+final class ScriptedTabPersistence: TabPersistence {
+    var succeeds: (Int) -> Bool
+    private(set) var saved: [PersistedTab] = []
+    private(set) var attempted: [[PersistedTab]] = []
+    var saves: Int { attempted.count }
+    init(succeeds: @escaping (Int) -> Bool) { self.succeeds = succeeds }
+    func load() -> [PersistedTab] { saved }
+    func save(_ tabs: [PersistedTab]) { _ = saveAcknowledged(tabs) }
+    func saveAcknowledged(_ tabs: [PersistedTab]) -> Bool {
+        attempted.append(tabs)
+        guard succeeds(attempted.count) else { return false }
+        saved = tabs
+        return true
     }
 }
 

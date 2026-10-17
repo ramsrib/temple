@@ -806,7 +806,8 @@ public final class RemoteTabController {
         let hostName: String
         let tabID: SessionTab.ID
         /// The model's acknowledged saves when it was owed: a later one
-        /// wrote the tab set with this tab in it.
+        /// wrote the tab set with this tab in it (`.max`: none counts, only
+        /// the tab's absence does).
         let savesBefore: Int
         var inFlight = false
         var said = false
@@ -1011,18 +1012,33 @@ public final class RemoteTabController {
             }
         }
         guard gate.admit(.identityResult, ticket), let tab = ticket.tab, isPending(tab) else { return }
-        let ended = tab.remote?.phase == .endedPending
-        becomeSession(tab, id: id, host: host)
         if let at = tab.launchObservation?.at { model.touchHandler?(id, hostID, at) }
         if !tab.title.isEmpty, tab.title != tab.agent.newSessionTitle { model.titleHandler?(id, hostID, tab.title) }
-        if ended {
-            // Its run ended: the yes records who it was, nothing more. The
-            // tab closes, as a local tab does when its agent exits, and the
-            // now-identified row is selected: opening it is the way back,
-            // and resuming is the user's act, never this answer's (round 1).
-            model.removeTab(tab.id)
-            model.selectRowHandler?(id, hostID)
+        if tab.remote?.phase == .endedPending {
+            concludeEnded(tab, id: id, host: host)
+            return
         }
+        becomeSession(tab, id: id, host: host)
+    }
+
+    /// Its run ended: the yes records who it was (the claim and the join,
+    /// already written), nothing more. The tab closes, as a local tab does
+    /// when its agent exits, and the now-identified row is selected:
+    /// opening it is the way back, and resuming is the user's act, never
+    /// this answer's (round 1). The tab never becomes the session, so no
+    /// save of the tab set can hold a resumable tab of it: the run's own
+    /// restoration is retired once the pending tab is gone (fix round).
+    private func concludeEnded(_ tab: SessionTab, id: String, host: RemoteSessionHost) {
+        let hostID = tab.host
+        if let operation = tab.remote?.identityOperation { operations.cancel(id: operation) }
+        tab.remote?.identityOperation = nil
+        if let handle = tab.remote?.handle {
+            refusedClaims[handle] = nil
+            oweHandOver(handle: handle, tabID: tab.id, host: host, hostID: hostID, untilGone: true)
+        }
+        // Its removal finishes the hand-over (`tabRemoved`).
+        model.removeTab(tab.id)
+        model.selectRowHandler?(id, hostID)
     }
 
     /// The tab is that session from here on: in `open_tabs`, so its run is
@@ -1049,15 +1065,25 @@ public final class RemoteTabController {
     /// retired (`tab_closed_at`) once the tab set is written, or once the
     /// tab is gone, whichever comes first, and not before.
     private func handOver(_ tab: SessionTab, handle: String, host: RemoteSessionHost) {
-        guard let ledger = host.runLedger() else {
-            TempleUILog.db.error("no run store to hand a run over with; it stays restorable by its run")
-            return
-        }
-        handOvers[handle] = HandOver(ledger: ledger, hostID: tab.host, hostName: host.hostName, tabID: tab.id,
-                                     savesBefore: model.acknowledgedSaves)
+        guard oweHandOver(handle: handle, tabID: tab.id, host: host, hostID: tab.host, untilGone: false) else { return }
         // The tab set's ordinary save: its acknowledgement settles this.
         model.persist()
         settleHandOvers()
+    }
+
+    /// Records that the run's restoration is to be retired. `untilGone`:
+    /// only once its tab is gone (a tab that never becomes the session, so
+    /// no save of the tab set holds it); otherwise also once a save has.
+    @discardableResult
+    private func oweHandOver(handle: String, tabID: SessionTab.ID, host: RemoteSessionHost, hostID: HostID,
+                             untilGone: Bool) -> Bool {
+        guard let ledger = host.runLedger() else {
+            TempleUILog.db.error("no run store to hand a run over with; it stays restorable by its run")
+            return false
+        }
+        handOvers[handle] = HandOver(ledger: ledger, hostID: hostID, hostName: host.hostName, tabID: tabID,
+                                     savesBefore: untilGone ? .max : model.acknowledgedSaves)
+        return true
     }
 
     /// The model's own save of the tab set was written (round 5: no save
