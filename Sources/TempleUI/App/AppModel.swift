@@ -406,7 +406,15 @@ public final class AppModel: ObservableObject {
 
     // Sidebar UI state (U1)
     @Published public var searchText = ""
-    @Published public var highlightedID: String?
+    @Published public var highlightedID: String? {
+        didSet { if !followerWriting { selectionRevision &+= 1 } }
+    }
+    /// Counts every selection made by anything but the active-tab follower
+    /// (a click, a key, a reveal, this model's own): what a deferred
+    /// selection checks to know none was made since.
+    private(set) var selectionRevision = 0
+    /// The active-tab follower is writing the selection.
+    private var followerWriting = false
     /// One turn of the main run loop, the scheduler the active-tab
     /// follower delivers on: what a selection that must land after the
     /// follower's waits for (tests hold it).
@@ -746,22 +754,20 @@ public final class AppModel: ObservableObject {
         // below writes a run-loop turn later; so the selection is set again
         // after that turn, as a remote completion (`.endedRowSelection`):
         // through the gate (nothing after the quit or the host's
-        // retirement), and only over the follower's own write, never over
-        // a selection made since.
+        // retirement), and only over the follower's own writes: any other
+        // selection made since, even of that same neighbour's row, stands
+        // (`selectionRevision`).
         openSessions.selectRowHandler = { [weak self] id, host in
             guard let self else { return }
             self.highlightedID = id
+            let since = self.selectionRevision
             let remote = self.openSessions.remoteTabs
             let ticket = remote.gate.ticket(host: host)
-            // What the follower is about to write: the active session tab's
-            // id (nil when it has none); nothing for a utility tab or none.
-            var follower: String?? = nil
-            if let active = self.openSessions.activeTab, active.kind == .session { follower = .some(active.sessionID) }
             let turn = self.rowSelectionTurn
             Task { @MainActor [weak self] in
                 await turn()
                 guard let self, remote.gate.admit(.endedRowSelection, ticket),
-                      case .some(let written) = follower, written != id, self.highlightedID == written else { return }
+                      self.selectionRevision == since, self.highlightedID != id else { return }
                 self.highlightedID = id
             }
         }
@@ -795,8 +801,10 @@ public final class AppModel: ObservableObject {
             .switchToLatest()
             .receive(on: RunLoop.main)
             .sink { [weak self] selection in
-                guard case .some(let sid) = selection else { return }
-                self?.highlightedID = sid
+                guard let self, case .some(let sid) = selection else { return }
+                self.followerWriting = true
+                self.highlightedID = sid
+                self.followerWriting = false
             }
             .store(in: &cancellables)
         openSessions.$activeTabID
