@@ -174,6 +174,51 @@ final class AddHostSheetTests: XCTestCase {
         XCTAssertEqual(inUse.note, "Jetson is already in use.")
     }
 
+    /// Return while the config is still being read waits for the read, so
+    /// an alias it has not listed yet is not taken for an address: on the
+    /// first read and on the sheet's refresh. Typing again drops the wait;
+    /// an address still opens the form once the read ends.
+    func testReturnDuringTheConfigReadWaitsForIt() {
+        func waitFor(_ condition: () -> Bool) {
+            let deadline = Date().addingTimeInterval(10)
+            while !condition(), Date() < deadline { spin(0.01) }
+        }
+        let gate = ReadGate()
+        let model = hosts { gate.read() }
+        let first = AddHostSheetModel(hosts: model)
+        waitFor { gate.started == 1 }
+        first.text = "box.prod"
+        first.submit()
+        XCTAssertNil(first.outcome, "nothing is decided while the config is read")
+        XCTAssertTrue(first.waitingForConfig)
+        gate.finish(1, with: ["box.prod"])
+        waitFor { first.outcome != nil }
+        XCTAssertEqual(first.outcome, .added("box.prod"))
+        XCTAssertFalse(first.waitingForConfig)
+
+        let refresh = AddHostSheetModel(hosts: model)
+        waitFor { gate.started == 2 }
+        XCTAssertTrue(model.configReading)
+        refresh.text = "new.prod"
+        refresh.submit()
+        XCTAssertNil(refresh.outcome, "the last read's list doesn't decide it either")
+        gate.finish(2, with: ["box.prod", "new.prod"])
+        waitFor { refresh.outcome != nil }
+        XCTAssertEqual(refresh.outcome, .added("new.prod"))
+
+        let edited = AddHostSheetModel(hosts: model)
+        waitFor { gate.started == 3 }
+        edited.text = "other"
+        edited.submit()
+        XCTAssertTrue(edited.waitingForConfig)
+        edited.text = "other2"
+        XCTAssertFalse(edited.waitingForConfig, "typing again drops it")
+        edited.submit()
+        gate.finish(3, with: ["box.prod", "new.prod"])
+        waitFor { edited.outcome != nil }
+        XCTAssertEqual(edited.outcome, .details(AddHostSheetModel.form(for: "other2")!), "an address, once the read ends")
+    }
+
     /// The field's text as the form's fields: user, address, port, and a
     /// name from a host name's first label (none for an IP address). What
     /// can't be read as `user@address[:port]` is nil: a bracket must end the

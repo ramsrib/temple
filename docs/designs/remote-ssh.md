@@ -986,7 +986,11 @@ unknown, proof is unproven, adoption is inconclusive.
   `user@address[:port]` (an IPv6 address in brackets for a port; the
   bracket must end the text or come right before the port) and opens the
   form below prefilled, the name from a host name's first label. Text that
-  can't be read so stays in the field with a note. Esc
+  can't be read so stays in the field with a note. A Return while the
+  config is still being read waits for the read (a spinner by Add, which
+  is disabled meanwhile) and is then decided against the new list, so an
+  alias not yet listed is never taken for an address; typing again drops
+  the wait. Esc
   cancels. Under the list: "Not in ~/.ssh/config? **Enter details…**" (the
   form, empty) and **Edit ~/.ssh/config** (the file, in the user's editor;
   the sheet closes, and reopening it reads the file again). With no alias

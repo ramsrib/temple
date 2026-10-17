@@ -283,7 +283,7 @@ final class ReadCounter: @unchecked Sendable {
 
 /// A config read that ends when the test says: the nth read waits for
 /// `finish(n, with:)`.
-private final class ReadGate: @unchecked Sendable {
+final class ReadGate: @unchecked Sendable {
     private let condition = NSCondition()
     private var _started = 0
     private var answers: [Int: [SSHConfigHost]] = [:]

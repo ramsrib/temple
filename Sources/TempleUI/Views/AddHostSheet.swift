@@ -26,13 +26,18 @@ final class AddHostSheetModel: ObservableObject, Identifiable {
 
     /// What the field holds.
     @Published var text = "" {
-        didSet { if text != oldValue { note = nil } }
+        didSet { if text != oldValue { note = nil; waitingForConfig = false } }
     }
     /// "Show N more" was chosen: every match is shown.
     @Published private(set) var expanded = false
     /// A line under the field: the typed name is in use, or can't be read.
     @Published private(set) var note: String?
-    private(set) var outcome: AddHostOutcome?
+    /// How the sheet ended; the view closes on it.
+    @Published private(set) var outcome: AddHostOutcome?
+    /// Return came while the config was still being read: it is decided
+    /// once the read ends (an alias not yet listed is not an address).
+    /// Typing again drops it.
+    @Published private(set) var waitingForConfig = false
 
     /// The config's aliases not in use, ranked (`ranked`).
     @Published private(set) var offered: [SSHConfigHost] = []
@@ -42,15 +47,28 @@ final class AddHostSheetModel: ObservableObject, Identifiable {
     @Published private(set) var configIsEmpty = false
 
     private let hosts: RemoteHostsModel
-    private var subscription: AnyCancellable?
+    private var subscriptions: [AnyCancellable] = []
+    /// The model's read is under way (as published: set before the
+    /// model's own property is).
+    private var reading = false
 
     /// Reads `~/.ssh/config`: the sheet is opening. Until the read ends,
     /// the rows are what the card's read found.
     init(hosts: RemoteHostsModel) {
         self.hosts = hosts
         // Published as it is set: the value given is the new one.
-        subscription = hosts.$configHosts.sink { [weak self] configHosts in self?.update(configHosts) }
+        subscriptions.append(hosts.$configHosts.sink { [weak self] configHosts in self?.update(configHosts) })
+        // The hosts are published before the read is said to be over, so
+        // a waiting Return is decided against the new list.
+        subscriptions.append(hosts.$configReading.sink { [weak self] reading in self?.readingChanged(reading) })
         hosts.loadConfigAliases()
+    }
+
+    private func readingChanged(_ reading: Bool) {
+        self.reading = reading
+        guard !reading, waitingForConfig else { return }
+        waitingForConfig = false
+        submit()
     }
 
     private func update(_ configHosts: [SSHConfigHost]?) {
@@ -125,6 +143,10 @@ final class AddHostSheetModel: ObservableObject, Identifiable {
     func submit() {
         let typed = trimmedText
         guard outcome == nil, !typed.isEmpty else { return }
+        guard !reading else {
+            waitingForConfig = true
+            return
+        }
         let inUse = hosts.records.map(\.name)
         let aliases = offered.map(\.alias)
         func unique(_ names: [String]) -> String? {
@@ -211,6 +233,7 @@ struct AddHostSheet: View {
     let onFinish: (AddHostOutcome) -> Void
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focused: Bool
+    @State private var finished = false
 
     /// The alias column: fixed, so the destinations stay put whichever rows
     /// show (sized to the widest alias shown, it moved as the list filtered).
@@ -255,14 +278,25 @@ struct AddHostSheet: View {
                 Spacer()
                 Button("Cancel") { act { sheet.cancel() } }
                     .keyboardShortcut(.cancelAction)
+                if sheet.waitingForConfig {
+                    // Return waits for the config's read to end.
+                    ProgressView().controlSize(.small)
+                }
                 Button("Add") { act { sheet.submit() } }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(sheet.trimmedText.isEmpty)
+                    .disabled(sheet.trimmedText.isEmpty || sheet.waitingForConfig)
             }
         }
         .padding(20)
         .frame(width: 520)
         .onAppear { focused = true }
+        // Ended now or, for a Return that waited for the config, later.
+        .onChange(of: sheet.outcome) {
+            guard let outcome = sheet.outcome, !finished else { return }
+            finished = true
+            onFinish(outcome)
+            dismiss()
+        }
     }
 
     @ViewBuilder
@@ -310,13 +344,10 @@ struct AddHostSheet: View {
         .accessibilityLabel(host.destination.map { "\(host.alias), \($0)" } ?? host.alias)
     }
 
-    /// Runs a sheet action; if it ended the sheet, says how and closes,
-    /// once (Return reaches both the field and the default button).
+    /// Runs a sheet action unless the sheet has ended (Return reaches both
+    /// the field and the default button); an ending closes it (`onChange`).
     private func act(_ action: () -> Void) {
         guard sheet.outcome == nil else { return }
         action()
-        guard let outcome = sheet.outcome else { return }
-        onFinish(outcome)
-        dismiss()
     }
 }
