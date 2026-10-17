@@ -78,10 +78,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// A new session's tab went away before anything was sent to it.
     public var unstartedHandler: ((_ sessionID: String, _ host: HostID) -> Void)?
     public var launchDirectoryHandler: ((_ sessionID: String, _ host: HostID, _ directory: String) -> Void)?
-    /// A session's row should be the sidebar's selection, though no tab of
-    /// it is active (a new Codex session on a host identified after it
-    /// ended: its tab closed, its row is the way back).
-    public var selectRowHandler: ((_ sessionID: String, _ host: HostID) -> Void)?
+    /// A new Codex session on a host was identified by the user's yes: the
+    /// candidate's first prompt stands in for its row's title until the
+    /// transcript's own arrives (display only, never stored).
+    public var titleHintHandler: ((_ sessionID: String, _ title: String) -> Void)?
     /// Tabs on hosts: their open, exit, close, the quit's plan for them and
     /// a host's retirement (docs/designs/remote-ssh.md sections 3 to 5).
     public private(set) lazy var remoteTabs = RemoteTabController(model: self)

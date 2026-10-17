@@ -222,9 +222,13 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertEqual(app.highlightedID, "a", "a utility tab leaves the selection as it was")
     }
 
-    /// A yes for a Codex session that ended unidentified closes its tab and
-    /// selects its row, though the close activated another tab.
-    func testAYesForAnEndedCodexSessionSelectsItsRow() async throws {
+    /// A yes for a Codex session that ended unidentified closes its tab;
+    /// the selection follows the tab its close activated, as after any
+    /// close, and nothing selects the identified row afterwards. That row
+    /// shows the candidate's first prompt as its title (display only) until
+    /// the transcript's title fact fills it, never "New Codex session", and
+    /// the ended tab's terminal title is never written as its title.
+    func testAYesForAnEndedCodexSessionHintsItsRowsTitleAndLeavesTheSelectionToTheFollower() async throws {
         let remote = FakeRemoteHost("box")
         let db = try TempleDB.inMemory()
         Fixture.join([Fixture.row("a", project: "/home/u/p", host: hostID)], to: db)
@@ -239,46 +243,27 @@ final class RemoteAppTests: XCTestCase {
         let chip = try XCTUnwrap(app.openSessions.tabs.first { $0.remote?.handle == "p7" })
         app.openSessions.activate(chip)
         await settle { chip.remote?.suggestions.count == 1 }
+        chip.title = "Reply ok | temple-ux3"
         app.openSessions.remoteTabs.confirm(try XCTUnwrap(chip.remote?.suggestions.first), in: chip)
         await settle { !app.openSessions.tabs.contains { $0 === chip } }
+        await settle { app.sessions.contains { $0.id == "c7" } }
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(app.openSessions.activeTab?.sessionID, "a", "the close activated the other tab")
-        XCTAssertEqual(app.highlightedID, "c7", "the now-identified row is selected")
-        XCTAssertNotNil(app.overlay.rows["c7"])
-    }
+        XCTAssertEqual(app.highlightedID, "a", "the selection follows it")
+        let row = try XCTUnwrap(app.sessions.first { $0.id == "c7" })
+        XCTAssertEqual(app.displayTitle(row), "hi", "the candidate's prompt, never the launcher placeholder")
+        XCTAssertNil(row.state.title, "nothing written for it")
+        app.overlay.flushPendingTitles()
+        XCTAssertNil(try db.sessionState("c7")?.generatedTitle, "the terminal's title is not the session's")
 
-    /// The selection made again after the close's activation (sol rounds
-    /// 1 and 2) replaces only the follower's write of the neighbour's row:
-    /// a row the user selected meanwhile stays selected, even the
-    /// neighbour's own row selected again.
-    func testAYesForAnEndedCodexSessionNeverTakesANewerSelection() async throws {
-        for chosen in ["b", "a"] {
-            let remote = FakeRemoteHost("box")
-            let db = try TempleDB.inMemory()
-            Fixture.join([Fixture.row("a", project: "/home/u/p", host: hostID),
-                          Fixture.row("b", project: "/home/u/p", host: hostID)], to: db)
-            let app = try app(remote, db: db)
-            await settle { app.sessions.count == 2 }
-            app.openSessions.openSession(try XCTUnwrap(app.sessions.first { $0.id == "a" }))
-            let hold = Gate()
-            var reached = false
-            app.rowSelectionTurn = { reached = true; await hold.wait() }
-            remote.pending = [.init(handle: "p7", directory: "/home/u/p", ended: true, typed: true)]
-            remote.suggestionsResult = .candidates([RemoteSuggestion(rolloutPath: "/r/c7.jsonl", sessionID: "c7",
-                                                                     firstPrompt: "hi", startedAt: Date(), directory: "/home/u/p")])
-            app.openSessions.remoteTabs.restorePending(hosts: [hostID])
-            await settle { app.openSessions.tabs.contains { $0.remote?.handle == "p7" } }
-            let chip = try XCTUnwrap(app.openSessions.tabs.first { $0.remote?.handle == "p7" })
-            app.openSessions.activate(chip)
-            await settle { chip.remote?.suggestions.count == 1 }
-            app.openSessions.remoteTabs.confirm(try XCTUnwrap(chip.remote?.suggestions.first), in: chip)
-            await settle { reached && app.highlightedID == "a" }
-            XCTAssertEqual(app.highlightedID, "a", "the follower wrote the neighbour's row")
-            app.highlightedID = chosen
-            await hold.open()
-            try await Task.sleep(for: .milliseconds(100))
-            XCTAssertEqual(app.highlightedID, chosen, "the user's selection of \(chosen) stands")
-        }
+        // The transcript's title fact arrives: it wins, and the hint goes.
+        let summary = TranscriptSummary(id: "c7", agent: .codex,
+                                        locator: TranscriptLocator(host: hostID, path: "/r/c7.jsonl"),
+                                        modifiedAt: Date(), cwd: "/home/u/p", firstPrompt: "hi there")
+        app.overlay.applyFacts(["c7": try XCTUnwrap(AuthorizedFacts.current(summary, in: db))])
+        await settle { app.titleHints["c7"] == nil }
+        XCTAssertNil(app.titleHints["c7"])
+        XCTAssertEqual(app.displayTitle(try XCTUnwrap(app.sessions.first { $0.id == "c7" })), "hi there")
     }
 
     /// A session started on a host shows its project heading at once, from

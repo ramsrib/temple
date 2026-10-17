@@ -972,9 +972,11 @@ public final class RemoteTabController {
     /// the core join and the row's folder are durable work too (only the
     /// quit defers them, to the next launch's reconciliation). A join core
     /// refuses releases the claim and the tab says why. The tab becomes the
-    /// session through the gate.
+    /// session through the gate. `titleHint`: the first prompt of the
+    /// candidate the user said yes to, which the row shows until its
+    /// transcript's title arrives (display only).
     private func adopted(_ id: String, directory: String?, handle: String, host: RemoteSessionHost,
-                         ticket: RemoteTicket) async {
+                         ticket: RemoteTicket, titleHint: String? = nil) async {
         let hostID = ticket.host
         // While quitting the join waits for the next launch (the claim
         // stays unjoined); the gate below refuses the tab's part.
@@ -983,6 +985,9 @@ public final class RemoteTabController {
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
                 if let directory { model.launchDirectoryHandler?(id, hostID, directory) }
+                if let titleHint = titleHint?.trimmingCharacters(in: .whitespacesAndNewlines), !titleHint.isEmpty {
+                    model.titleHintHandler?(id, titleHint)
+                }
                 operations.run(host: hostID, .write) {
                     do { try await host.markJoined(handle) } catch {
                         // Unmarked, the next launch joins it again (idempotent).
@@ -1011,21 +1016,24 @@ public final class RemoteTabController {
         }
         guard gate.admit(.identityResult, ticket), let tab = ticket.tab, isPending(tab) else { return }
         if let at = tab.launchObservation?.at { model.touchHandler?(id, hostID, at) }
-        if !tab.title.isEmpty, tab.title != tab.agent.newSessionTitle { model.titleHandler?(id, hostID, tab.title) }
+        // An ended tab's title is the terminal's last, never the session's
+        // own: the transcript's fill titles the row (the hint until then).
         if tab.remote?.phase == .endedPending {
             concludeEnded(tab, id: id, host: host)
             return
         }
+        if !tab.title.isEmpty, tab.title != tab.agent.newSessionTitle { model.titleHandler?(id, hostID, tab.title) }
         becomeSession(tab, id: id, host: host)
     }
 
     /// Its run ended: the yes records who it was (the claim and the join,
     /// already written), nothing more. The tab closes, as a local tab does
-    /// when its agent exits, and the now-identified row is selected:
-    /// opening it is the way back, and resuming is the user's act, never
-    /// this answer's (round 1). The tab never becomes the session, so no
-    /// save of the tab set can hold a resumable tab of it: the run's own
-    /// restoration is retired once the pending tab is gone (fix round).
+    /// when its agent exits, and the selection follows the active tab as
+    /// after any close: the identified row, at the top of its project, is
+    /// the way back, and resuming is the user's act, never this answer's
+    /// (round 1). The tab never becomes the session, so no save of the tab
+    /// set can hold a resumable tab of it: the run's own restoration is
+    /// retired once the pending tab is gone (fix round).
     private func concludeEnded(_ tab: SessionTab, id: String, host: RemoteSessionHost) {
         let hostID = tab.host
         if let operation = tab.remote?.identityOperation { operations.cancel(id: operation) }
@@ -1036,7 +1044,6 @@ public final class RemoteTabController {
         }
         // Its removal finishes the hand-over (`tabRemoved`).
         model.removeTab(tab.id)
-        model.selectRowHandler?(id, hostID)
     }
 
     /// The tab is that session from here on: in `open_tabs`, so its run is
@@ -1251,7 +1258,8 @@ public final class RemoteTabController {
             guard let self else { return }
             switch identity {
             case .adopted(let id, let directory), .known(let id, let directory):
-                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
+                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket,
+                                   titleHint: suggestion.firstPrompt)
             case .taken, .inconclusive:
                 guard self.gate.admit(.confirmResult, ticket), let tab = ticket.tab else { return }
                 tab.remote?.confirming = nil

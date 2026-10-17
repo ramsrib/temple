@@ -372,25 +372,33 @@ final class RemoteCodexIdentityTests: XCTestCase {
     }
 
     /// Confirming an ended session records who it was and nothing else:
-    /// the tab closes, as a local tab does when its agent exits, its run is
-    /// handed over, and the row is selected; nothing starts or resumes.
-    func testAYesForAnEndedSessionClosesItsTabAndSelectsTheRow() async throws {
-        var selected: [(String, HostID)] = []
-        model.selectRowHandler = { selected.append(($0, $1)) }
+    /// the tab closes, as a local tab does when its agent exits, and its
+    /// run is handed over; nothing starts or resumes, and nothing selects
+    /// the row (the selection follows the active tab, as after any close).
+    /// The ended tab's title is its terminal's last, so it is never pushed
+    /// as the session's title; the candidate's first prompt is its row's
+    /// title hint instead (display only).
+    func testAYesForAnEndedSessionClosesItsTabAndHintsTheRowsTitle() async throws {
+        var titles: [(String, String)] = []
+        var hints: [(String, String)] = []
+        model.titleHandler = { id, _, title in titles.append((id, title)) }
+        model.titleHintHandler = { hints.append(($0, $1)) }
         remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
-        remote.suggestionsResult = .candidates([suggestion("c7")])
+        remote.suggestionsResult = .candidates([suggestion("c7", prompt: "  reply with the word ok\n")])
         model.remoteTabs.restorePending(hosts: [hostID])
         await settle(self.model.tabs.count == 1)
         let tab = try XCTUnwrap(model.tabs.first)
         model.activate(tab)
         await settle(tab.remote?.suggestions.count == 1)
+        tab.title = "Reply ok | temple\u{2011}ux3"
         let created = factory.created.count
         model.remoteTabs.confirm(try XCTUnwrap(tab.remote?.suggestions.first), in: tab)
         await settle(!self.model.tabs.contains { $0 === tab }, "the tab closes like a local exit")
         XCTAssertNil(tab.sessionID, "it never became the session's tab")
         XCTAssertEqual(joins.map(\.id), ["c7"])
-        XCTAssertEqual(selected.map(\.0), ["c7"])
-        XCTAssertEqual(selected.map(\.1), [hostID])
+        XCTAssertEqual(hints.map(\.0), ["c7"])
+        XCTAssertEqual(hints.map(\.1), ["reply with the word ok"])
+        XCTAssertTrue(titles.isEmpty, "the terminal's title is never the session's: \(titles)")
         await settle(self.remote.closedPending == ["p7"], "its run is handed over, not restored again")
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(factory.created.count, created, "nothing started")

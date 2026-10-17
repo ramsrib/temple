@@ -292,26 +292,6 @@ final class RemoteGateWalkTests: XCTestCase {
                 await self.settle { !h.remote.suggestionLookups.isEmpty }
             }, effect: { $0.tab?.remote?.suggestions.isEmpty == false }),
 
-            // The yes's own tab is gone by then (closing it is the yes), so
-            // the close disruption has nothing to close.
-            Scenario(completion: .endedRowSelection, disruptions: noClose, arm: { h in
-                h.app.openSessions.remoteTabs.identitySchedule = [60]
-                _ = await self.connectedTab(h)
-                var reached = false
-                h.app.rowSelectionTurn = { reached = true; await h.hold.wait() }
-                h.remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
-                h.app.openSessions.remoteTabs.restorePending(hosts: [h.host])
-                await self.settle { h.app.openSessions.tabs.contains { $0.remote?.handle == "p7" } }
-                let chip = try XCTUnwrap(h.app.openSessions.tabs.first { $0.remote?.handle == "p7" })
-                h.app.openSessions.activate(chip)
-                await self.settle { chip.remote?.phase == .endedPending }
-                h.app.openSessions.remoteTabs.confirm(Self.candidate, in: chip)
-                await self.settle { reached }
-                // The close activated the other tab, whose row the follower wrote.
-                await self.settle { h.app.highlightedID == "s1" }
-                XCTAssertEqual(h.app.highlightedID, "s1")
-            }, effect: { $0.app.highlightedID == "c7" }),
-
             Scenario(completion: .confirmResult, disruptions: tabDisruptions, arm: { h in
                 h.app.openSessions.remoteTabs.identitySchedule = [60]
                 h.remote.confirmResult = .taken

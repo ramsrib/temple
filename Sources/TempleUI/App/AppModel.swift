@@ -106,6 +106,9 @@ public final class AppModel: ObservableObject {
         presentedByID = Dictionary(uniqueKeysWithValues: next.map { ($0.id, $0) })
         builtSessions = next
         builtRowProjects = projects
+        // A hint stands in only until the row's title fact is filled.
+        let titled = titleHints.keys.filter { overlay.rows[$0]?.title != nil }
+        for id in titled { titleHints[id] = nil }
         extendRowRanks()
         openSessions.rowsChanged()
         if sessionsChanged { history.rowsChanged() }
@@ -406,23 +409,12 @@ public final class AppModel: ObservableObject {
 
     // Sidebar UI state (U1)
     @Published public var searchText = ""
-    @Published public var highlightedID: String? {
-        didSet { if !followerWriting { selectionRevision &+= 1 } }
-    }
-    /// Counts every selection made by anything but the active-tab follower
-    /// (a click, a key, a reveal, this model's own): what a deferred
-    /// selection checks to know none was made since.
-    private(set) var selectionRevision = 0
-    /// The active-tab follower is writing the selection.
-    private var followerWriting = false
-    /// One turn of the main run loop, the scheduler the active-tab
-    /// follower delivers on: what a selection that must land after the
-    /// follower's waits for (tests hold it).
-    var rowSelectionTurn: @MainActor () async -> Void = {
-        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
-            RunLoop.main.schedule { done.resume() }
-        }
-    }
+    @Published public var highlightedID: String?
+    /// A row's title until its transcript's own arrives, by session id: the
+    /// first prompt of the candidate the user said yes to for a new Codex
+    /// session on a host. Display only: never written to the row or any
+    /// store, and dropped once the row has a title fact.
+    @Published private(set) var titleHints: [String: String] = [:]
 
     /// Restored from `UIStateStore` in `init` (property observers don't fire
     /// there, so the restore doesn't write itself straight back). Every later
@@ -749,27 +741,9 @@ public final class AppModel: ObservableObject {
         openSessions.launchDirectoryHandler = { [weak self] id, host, cwd in
             self?.overlay.observeLaunchDirectory(id, host: host, cwd)
         }
-        // The row becomes the selection with no tab of it active. The tab's
-        // close activated a neighbour, whose row the active-tab follower
-        // below writes a run-loop turn later; so the selection is set again
-        // after that turn, as a remote completion (`.endedRowSelection`):
-        // through the gate (nothing after the quit or the host's
-        // retirement), and only over the follower's own writes: any other
-        // selection made since, even of that same neighbour's row, stands
-        // (`selectionRevision`).
-        openSessions.selectRowHandler = { [weak self] id, host in
-            guard let self else { return }
-            self.highlightedID = id
-            let since = self.selectionRevision
-            let remote = self.openSessions.remoteTabs
-            let ticket = remote.gate.ticket(host: host)
-            let turn = self.rowSelectionTurn
-            Task { @MainActor [weak self] in
-                await turn()
-                guard let self, remote.gate.admit(.endedRowSelection, ticket),
-                      self.selectionRevision == since, self.highlightedID != id else { return }
-                self.highlightedID = id
-            }
+        openSessions.titleHintHandler = { [weak self] id, title in
+            guard let self, self.overlay.rows[id]?.title == nil else { return }
+            self.titleHints[id] = title
         }
         // A resume failure uses this member's completed resolution. A newly
         // launched or unreadable transcript never acquires a missing verdict.
@@ -801,10 +775,8 @@ public final class AppModel: ObservableObject {
             .switchToLatest()
             .receive(on: RunLoop.main)
             .sink { [weak self] selection in
-                guard let self, case .some(let sid) = selection else { return }
-                self.followerWriting = true
-                self.highlightedID = sid
-                self.followerWriting = false
+                guard case .some(let sid) = selection else { return }
+                self?.highlightedID = sid
             }
             .store(in: &cancellables)
         openSessions.$activeTabID
@@ -1207,7 +1179,10 @@ public final class AppModel: ObservableObject {
 
     // MARK: Sidebar data (U1)
 
-    public func displayTitle(_ session: Session) -> String { session.displayTitle }
+    public func displayTitle(_ session: Session) -> String {
+        if session.state.customName == nil, session.state.title == nil, let hint = titleHints[session.id] { return hint }
+        return session.displayTitle
+    }
     public func resumeArgv(for session: Session) -> [String] { SessionLauncher.resumeArgv(session) }
 
     public func displayTitle(_ session: TranscriptSummary) -> String {
