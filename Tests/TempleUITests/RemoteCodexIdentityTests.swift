@@ -248,6 +248,25 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertNil(first.sessionID)
     }
 
+    /// A neighbour whose pane has not reported its folder yet (`~/p` before
+    /// it resolves) counts as the same folder: no yes on Temple's own.
+    /// (Resolved folders in different places: `testTwoNewSessionsInOneFolderBothAsk`
+    /// and the store test.)
+    func testANeighbourWithAnUnresolvedFolderBlocksTheAutomaticYes() async throws {
+        remote.identityResult = .inconclusive("shared server", lasting: true, ended: false)
+        remote.suggestionsResult = .candidates([suggestion()])
+        let tab = await newCodex()
+        await settle(tab.launchObservation?.directory == "/home/u/project")
+        remote.collectResult = .nothing   // the neighbour's pane never reports
+        let neighbour = model.newSession(agent: .codex, project: Fixture.key("~/p", host: hostID))
+        await settle(neighbour.hasLiveProcess)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(neighbour.launchObservation?.directory)
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(tab.remote?.suggestions.count == 1, "asks: the neighbour may be in the same folder")
+        XCTAssertTrue(remote.automaticConfirms.isEmpty)
+    }
+
     /// Two or more candidates: the question; nothing claimed.
     func testTwoCandidatesAsk() async throws {
         remote.suggestionsResult = .candidates([suggestion(), suggestion("c8")])

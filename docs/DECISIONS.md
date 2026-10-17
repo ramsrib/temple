@@ -2218,8 +2218,10 @@ rows ("Removing remote", below).
   candidate for the run, which the claim's own transaction checks, so a
   decline holds across relaunches. Nor while another new Codex session
   Temple started on the host in the same folder is still unidentified and
-  running (its window overlaps; the lone candidate may be the other's),
-  checked again in the claim's transaction over every run on the host.
+  running (its window overlaps; the lone candidate may be the other's; a
+  folder not yet resolved counts as the same, resolved ones compare by
+  bytes), checked again in the claim's transaction over every run on the
+  host.
   Two or more, an ended tab, or once asked: the tab asks, **Yes, that's it** or **Not this one**, declined
   ones never offered again. A
   claim is unique per host before the core join, and core's refusal

@@ -503,17 +503,20 @@ public final class RemoteStateStore: @unchecked Sendable {
                     outcome = .declined
                     return .commit
                 }
-                // Nor while another run Temple started on this host in the
-                // same folder is a new Codex session still unidentified and
-                // not ended: its window overlaps this one's, and the lone
-                // candidate either sees may be the other's.
+                // Nor while another run Temple started on this host is a
+                // new Codex session still unidentified and not ended in the
+                // same folder: its window overlaps this one's, and the lone
+                // candidate either sees may be the other's. Folders compare
+                // only once both are resolved (the pane's canonical folder),
+                // by bytes; a folder not yet resolved (`~/p` is
+                // `/home/u/p` until its pane says so) counts as the same.
                 if how == .automatic, try Bool.fetchOne(database, sql: """
                     SELECT EXISTS (SELECT 1 FROM runs WHERE host = ? AND handle != ? AND agent = ?
                         AND session_id IS NULL AND ended_at IS NULL AND dismissed_at IS NULL
                         AND (creation IS NULL OR creation != ?)
-                        AND COALESCE(directory, directory_intent) = ?)
+                        AND (directory IS NULL OR ? IS NULL OR CAST(directory AS BLOB) = CAST(? AS BLOB)))
                     """, arguments: [run.host.rawValue, handle, Agent.codex.rawValue, RemoteRun.Creation.failed.rawValue,
-                                     run.directory ?? run.directoryIntent]) ?? false {
+                                     run.directory, run.directory]) ?? false {
                     outcome = .contended
                     return .commit
                 }

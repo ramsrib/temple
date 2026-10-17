@@ -1272,11 +1272,15 @@ public final class RemoteTabController {
     /// overlaps this one's, so the lone candidate may be the other's, and
     /// both ask. (The claim's own transaction checks every run on the host,
     /// detached ones and another Temple's included.)
+    /// Folders compare only once both panes reported theirs (canonical,
+    /// by bytes); one not yet resolved counts as the same folder.
     private func hasUnidentifiedNeighbour(_ tab: SessionTab) -> Bool {
-        model.tabs.contains { other in
-            other !== tab && isPending(other) && other.host == tab.host
-                && Array(other.projectPath.utf8) == Array(tab.projectPath.utf8)
-                && other.remote != nil && other.remote?.phase != .endedPending
+        let mine = tab.launchObservation?.directory
+        return model.tabs.contains { other in
+            guard other !== tab, isPending(other), other.host == tab.host, other.remote != nil,
+                  other.remote?.phase != .endedPending else { return false }
+            guard let mine, let theirs = other.launchObservation?.directory else { return true }
+            return Array(mine.utf8) == Array(theirs.utf8)
         }
     }
 

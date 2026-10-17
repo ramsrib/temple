@@ -417,7 +417,10 @@ in the same folder is still unidentified, not ended and not dismissed (the
 computer-use pass on dd60e31: two tabs typed into within seconds each saw
 one candidate, perhaps the other's); the tab's gate checks this Temple's
 tabs, and the claim's transaction checks every run on the host
-(`ClaimOutcome.contended`), so both ask. An ended tab, two or more
+(`ClaimOutcome.contended`), so both ask. Folders compare only once both
+panes reported theirs (canonical, by bytes); a neighbour whose folder is
+not resolved yet (`~/p` before its pane says `/home/u/p`, detached or
+not) counts as the same folder (Sol round 5). An ended tab, two or more
 candidates, an untyped run, or a run already asked about: the question; with the last candidate declined, the
 tab says Temple couldn't tell.
 
