@@ -46,7 +46,7 @@ struct RemoteSessionsSheet: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Button("Try Again") { sheet.load() }
-                        .buttonStyle(.link)
+                        .buttonStyle(.neutralLink)
                         .font(.system(size: 12))
                 }
             }
@@ -139,7 +139,7 @@ struct RemoteSessionsSheet: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .buttonStyle(.link)
+        .buttonStyle(.neutralLink)
         .font(.system(size: 12))
         .padding(.vertical, 8)
     }

@@ -2694,7 +2694,10 @@ changed, by finding:
   puts its answers right after the sentence as small bordered buttons
   (Reconnect, Resume, Resume anyway, Start a new session, Sessions on
   <host>, Yes and No, Try again); the trailing edge holds only dismiss-type
-  actions (Discard, Cancel), as links. Icons: a question mark for a
+  actions (Discard, Cancel), as links in the app's bold-neutral style
+  (`.neutralLink`, as History's Refresh and Settings' Show output; never the
+  system blue, fix round), as are Sessions on <host>'s Open, Stop and Keep.
+  Icons: a question mark for a
   session whose state or identity is unknown, the bolt for a dropped
   connection, the triangle for a stop that failed.
 - **The working prompt explains itself** (UX 4). The remote "still working"

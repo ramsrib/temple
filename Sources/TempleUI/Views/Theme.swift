@@ -128,3 +128,21 @@ extension View {
             .shadow(color: .black.opacity(0.22), radius: 28, y: 10)
     }
 }
+
+/// The app's text link: bold neutral, as History's Refresh and Settings'
+/// Show output are, never the system's blue (the app's accent is neutral).
+struct NeutralLinkButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .fontWeight(.semibold)
+            .foregroundStyle(isEnabled ? HierarchicalShapeStyle.primary : HierarchicalShapeStyle.tertiary)
+            .opacity(configuration.isPressed ? 0.55 : 1)
+            .contentShape(Rectangle())
+    }
+}
+
+extension ButtonStyle where Self == NeutralLinkButtonStyle {
+    static var neutralLink: NeutralLinkButtonStyle { NeutralLinkButtonStyle() }
+}

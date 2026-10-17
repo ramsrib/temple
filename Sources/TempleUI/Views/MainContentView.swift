@@ -207,7 +207,7 @@ private struct SessionTerminalView: View {
                 Spacer(minLength: 8)
                 Button("Discard") { model.openSessions.remoteTabs.discardPending(tab) }
                     .help(RemoteCopy.discardPendingHelp(host))
-                    .buttonStyle(.link)
+                    .buttonStyle(.neutralLink)
                     .font(.system(size: 12))
                     .disabled(remote.confirming != nil)
             }
@@ -394,7 +394,7 @@ private struct SessionTerminalView: View {
                 .controlSize(.small)
             Spacer(minLength: 8)
             HStack(spacing: 12) { dismiss() }
-                .buttonStyle(.link)
+                .buttonStyle(.neutralLink)
                 .font(.system(size: 12))
         }
         .band()
