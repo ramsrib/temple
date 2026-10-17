@@ -405,6 +405,23 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertTrue(remote.opens.isEmpty, "nothing resumed")
     }
 
+    /// The candidate's prompt is a hint for the candidate only (sol round
+    /// 4): a claim that answers with another id, a concurrent `.known`,
+    /// seeds nothing, nor does one equal only under Unicode equivalence;
+    /// ids are compared by bytes.
+    func testAYesSeedsTheTitleHintOnlyForTheCandidatesOwnID() async throws {
+        var hints: [(String, String)] = []
+        model.titleHintHandler = { hints.append(($0, $1)) }
+        for (answer, candidate) in [("c8", "c7"), ("ce\u{301}", "c\u{e9}"), ("c7", "c7")] {
+            let tab = await newCodex()
+            remote.confirmResult = .known(answer, directory: "/home/u/project")
+            model.remoteTabs.confirm(suggestion(candidate), in: tab)
+            await settle(tab.sessionID == answer, "the claim's own id")
+        }
+        XCTAssertEqual(hints.map(\.0), ["c7"], "only the candidate's own id")
+        XCTAssertEqual(hints.map(\.1), ["reply with the word ok"])
+    }
+
     /// The yes for an ended session never puts a tab of it in the saved
     /// tab set (sol round 1): it used to become the session's tab (saved,
     /// active) and then close, so a second save that failed left a tab the

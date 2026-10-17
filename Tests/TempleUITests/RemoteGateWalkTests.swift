@@ -384,6 +384,32 @@ final class RemoteGateWalkTests: XCTestCase {
         }
     }
 
+    /// The title hint a yes seeds is the tab's part of `.identityResult`
+    /// (sol round 4): a confirmation answered after the tab closed, the
+    /// quit began or the host was retired seeds nothing; undisturbed, it
+    /// does.
+    func testAYesSeedsItsTitleHintOnlyThroughTheGate() async throws {
+        for disruption in [Disruption.none, .close, .quit, .retire] {
+            let h = try Harness(host: hostID)
+            h.app.openSessions.remoteTabs.identitySchedule = [60]
+            h.remote.confirmResult = .adopted("c7", directory: "/home/u/project")
+            h.remote.confirmGate = { await h.hold.wait() }
+            let tab = await pendingTab(h)
+            h.app.openSessions.remoteTabs.confirm(Self.candidate, in: tab)
+            await settle { !h.remote.confirms.isEmpty }
+            disrupt(h, disruption)
+            await h.hold.open()
+            if disruption == .none {
+                await settle { h.app.titleHints["c7"] != nil }
+                XCTAssertEqual(h.app.titleHints["c7"], "hi")
+            } else {
+                await settle({ h.gate.suppressed[.identityResult, default: 0] > 0 }, timeout: 3)
+                try await Task.sleep(for: .milliseconds(50))
+                XCTAssertNil(h.app.titleHints["c7"], "after \(disruption): no hint")
+            }
+        }
+    }
+
     /// Coverage of `RemoteCompletion`, not completeness against the source:
     /// a new completion must be added to the enum (and here) by hand; the
     /// enum's documentation lists the mechanisms deliberately outside it.

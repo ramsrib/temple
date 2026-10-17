@@ -974,7 +974,7 @@ public final class RemoteTabController {
     /// refuses releases the claim and the tab says why. The tab becomes the
     /// session through the gate. `titleHint`: the first prompt of the
     /// candidate the user said yes to, which the row shows until its
-    /// transcript's title arrives (display only).
+    /// transcript's title arrives (display only, through the gate).
     private func adopted(_ id: String, directory: String?, handle: String, host: RemoteSessionHost,
                          ticket: RemoteTicket, titleHint: String? = nil) async {
         let hostID = ticket.host
@@ -985,9 +985,6 @@ public final class RemoteTabController {
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
                 if let directory { model.launchDirectoryHandler?(id, hostID, directory) }
-                if let titleHint = titleHint?.trimmingCharacters(in: .whitespacesAndNewlines), !titleHint.isEmpty {
-                    model.titleHintHandler?(id, titleHint)
-                }
                 operations.run(host: hostID, .write) {
                     do { try await host.markJoined(handle) } catch {
                         // Unmarked, the next launch joins it again (idempotent).
@@ -1015,6 +1012,11 @@ public final class RemoteTabController {
             }
         }
         guard gate.admit(.identityResult, ticket), let tab = ticket.tab, isPending(tab) else { return }
+        // Display only, so it is the tab's part: nothing after its close,
+        // the quit or the host's retirement (sol round 4).
+        if let titleHint = titleHint?.trimmingCharacters(in: .whitespacesAndNewlines), !titleHint.isEmpty {
+            model.titleHintHandler?(id, titleHint)
+        }
         if let at = tab.launchObservation?.at { model.touchHandler?(id, hostID, at) }
         // An ended tab's title is the terminal's last, never the session's
         // own: the transcript's fill titles the row (the hint until then).
@@ -1258,8 +1260,12 @@ public final class RemoteTabController {
             guard let self else { return }
             switch identity {
             case .adopted(let id, let directory), .known(let id, let directory):
+                // The candidate's prompt titles only the candidate: a claim
+                // that answers with another id (a concurrent `.known`) gets
+                // none. Compared by bytes, as ids are everywhere else.
+                let same = id.utf8.elementsEqual(suggestion.sessionID.utf8)
                 await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket,
-                                   titleHint: suggestion.firstPrompt)
+                                   titleHint: same ? suggestion.firstPrompt : nil)
             case .taken, .inconclusive:
                 guard self.gate.admit(.confirmResult, ticket), let tab = ticket.tab else { return }
                 tab.remote?.confirming = nil
