@@ -2752,13 +2752,18 @@ changed, by finding:
   `RemoteTabController`, apart from any tab's ticket: a reopen while it is
   in flight waits on the same fetch, an empty later answer never replaces
   a good one, and only the presentation passes `.endedOutput`. The copy
-  goes when no tab holds the run.
+  goes when no tab holds the run, or when Start a new session moves the
+  tab to a new one. A fetch in flight is the run's over one launcher: a
+  reopen after the host was removed or edited starts its own, never
+  waiting on the retired host's cancelled one (sol round 2).
 - **The output outlives the stop** (the on-screen check). The stop that
   proves a run's end removed its `.out` and threw away what it held, so
   closing an ended-unidentified Codex tab always showed the fallback line.
   A new Codex session that was typed into and never identified now keeps
-  its output on the host (0600) until its question takes it or the run is
-  dismissed; every other run still leaves nothing behind.
+  its output on the host (0600) until its question takes it, the run is
+  dismissed or its tab is closed; only a run that comes back with that
+  question keeps it (not dismissed, tab not closed, as `pendingRuns`), and
+  every other run still leaves nothing behind.
 - **A yes for an ended session saves no tab of it** (sol 1). It used to
   make the tab the session's (saved, active) and then close it, so a
   failed second save left a tab the next launch resumed. The pending tab
@@ -2771,7 +2776,9 @@ changed, by finding:
   write of the neighbour the close activated. That second write is
   `.endedRowSelection`: it passes the gate (nothing after the quit or the
   host's retirement), and it replaces only the follower's own write, so a
-  row selected meanwhile stays selected.
+  row selected meanwhile stays selected, even the neighbour's own row
+  selected again (sol round 2: ownership by `selectionRevision`, which
+  every selection but the follower's bumps, not by comparing values).
 - **"Open in Temple" is this Temple's** (sol 4). It came from tmux's
   attachment count, which counts a terminal or another Temple too. It now
   means this Temple has a connected tab of the run

@@ -976,9 +976,13 @@ public final class RemoteSessions {
         if keepOutput, let output { endedOutput[run.handle] = output }
     }
 
-    /// Whether a run's pane output is left for its ended question.
+    /// Whether a run's pane output is left for its ended question: only a
+    /// run that comes back with that question (`pendingRuns`: not
+    /// dismissed, its tab not closed, not a creation that never ran), and
+    /// only once it was typed into.
     static func outputAwaitsQuestion(_ run: RemoteRun) -> Bool {
-        run.isPending && run.inputSeenAt != nil && run.dismissedAt == nil
+        run.isPending && run.inputSeenAt != nil && run.dismissedAt == nil && run.tabClosedAt == nil
+            && run.creation != .failed
     }
 
     private func markEnded(_ handle: String, evidence: RemoteRun.EndEvidence) async throws {
@@ -1430,8 +1434,14 @@ public final class RemoteSessions {
 
     /// A pending run's tab was closed: it is not restored as a chip.
     public func closePendingTab(_ handle: String) async throws {
+        let before = await run(handle)
         let now = now()
         try await write { try $0.update(handle) { $0.tabClosedAt = now } }
+        // An ended run whose output was left for its question: with its tab
+        // closed, nothing asks (best effort, after the write).
+        guard let before, before.endedAt != nil, Self.outputAwaitsQuestion(before), !retired,
+              let exec = try? await queryExec(), !retired else { return }
+        await LaunchStage.discardAll(marker: marker(before), using: exec)
     }
 
     /// Discard of a pending run: Temple stops tracking it (its transcript,

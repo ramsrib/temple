@@ -1048,6 +1048,23 @@ final class RemoteSessionsTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: dismissed.output))
         try await sessions.dismissRun(dismissed.plan.handle)
         XCTAssertFalse(FileManager.default.fileExists(atPath: dismissed.output), "dismissed: nothing will ask")
+
+        // Detached (its tab closed), then proven ended: no chip comes back
+        // to ask, so nothing is kept (sol round 2).
+        let detached = try await started()
+        try await sessions.recordInput(detached.plan.handle)
+        try await sessions.closePendingTab(detached.plan.handle)
+        _ = try await sessions.stop(detached.plan.handle, fromAttachedTab: false)
+        XCTAssertNotNil(try store.run(detached.plan.handle)?.endedAt)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: detached.output), "its tab was closed: nothing will ask")
+
+        // Ended with its output kept, then its tab closed: removed then.
+        let closed = try await started()
+        try await sessions.recordInput(closed.plan.handle)
+        _ = try await sessions.stop(closed.plan.handle, fromAttachedTab: true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: closed.output))
+        try await sessions.closePendingTab(closed.plan.handle)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: closed.output), "its tab closed: nothing will ask")
     }
 
     /// A pending run reopened while it runs attaches (never a second
