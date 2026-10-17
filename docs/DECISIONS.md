@@ -208,7 +208,7 @@ authority — it can be rebuilt from disk at any time.
 ---
 
 ## ADR-010 — Temple owns the agent processes; graceful lifecycle
-**Date:** 2026-07-10 · **Status:** Accepted
+**Date:** 2026-07-10 · **Status:** Accepted; amended by ADR-036 (an agent on another machine is not Temple's child process: idle ends, working detaches, an unconfirmed end is listed and never performed later)
 
 Temple maintains the set of **running agent processes** (each a CLI in a
 libghostty PTY surface) and is responsible for their clean lifecycle:
@@ -1119,7 +1119,7 @@ History) never navigate away on a repeat.
 ---
 
 ## ADR-029 — The row is the session; the transcript is enrichment
-**Date:** 2026-10-03 · **Status:** Accepted; amends ADR-007, ADR-009, ADR-011, ADR-027, ADR-028; "the rest are kept" is amended by ADR-030
+**Date:** 2026-10-03 · **Status:** Accepted; amends ADR-007, ADR-009, ADR-011, ADR-027, ADR-028; "the rest are kept" is amended by ADR-030; "What remote needs" is amended by ADR-036 (no v13-project-host; a restored chip's host is its row's; a host's project archive and order persist in the remote store)
 
 Temple began as a browser over the CLIs' stores (ADR-007), so a sidebar row
 was a parsed transcript. ADR-023 made membership Temple's own record and
@@ -1820,7 +1820,7 @@ inert responder.
 ---
 
 ## ADR-034 — A `temple` command line for the sessions you have open
-**Date:** 2026-10-13 · **Status:** Accepted
+**Date:** 2026-10-13 · **Status:** Accepted; amended by ADR-036 (sessions close refuses a working session on a host, --force detaches; sessions new is this Mac only)
 
 Temple's job is managing many Claude and Codex sessions at once: projects
 scope them, each project holds its tabs, History keeps the rest, and nothing
@@ -2268,7 +2268,8 @@ rows ("Removing remote", below).
   (`ModuleBoundaryTests`), and the remote tab logic is
   `RemoteTabController`, behind thin seams in `OpenSessionsModel`.
   `temple.feature.remoteHosts` is read once at launch through `AppStartup`
-  and `AppModel`, which both `@main`s share; with it off the registry holds
+  and `AppModel`, which both `@main`s share; it is off by default, and
+  turning it on is the owner's call; with it off the registry holds
   this Mac only, nothing is spawned or read, and no remote store is created.
 
 **Amends ADR-010 for remote hosts:** *an agent on another machine is not
