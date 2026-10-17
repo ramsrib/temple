@@ -694,7 +694,8 @@ and the launch-failure header apply as today when a `failed` record exists.
   Temple stops tracking it. The decision is made from what
   Temple observed on the connected tab; nothing on the host is asked to
   judge idleness.
-- Agent working → "Claude Code is still working on <host>." with the
+- Agent working → "Claude Code is running on <host>." (as built since the
+  owner's round 2 visual review; it was "is still working on") with the
   message "Detach leaves it running; Stop ends it." (remote UX
   round 1, the same alert shape as local's) [Detach]
   (default) [Stop] [Cancel], decided synchronously in the tab's own prompt.
@@ -2918,6 +2919,9 @@ Later, not now:
 - Stripping glyphs and suffixes from terminal-derived titles (a heuristic
   one TUI change behind; the title hint already covers ended rows), and
   the look of an ended row over the launcher.
+- Hiding the Hosts card's `--no-daemon` note until a host is enabled, and
+  listing only the `~/.ssh/config` hosts that answer (owner round 2 visual
+  review: later, not now).
 
 ## Owner decisions, round 2 (no flag, local unchanged, auto-link, quit)
 
@@ -2957,6 +2961,24 @@ and the sections above say so where they changed.
    client detached, every run left running and restored as a tab.
    Docs: jetson's Claude login is optional coverage, not a gate; the
    additive-schema rule stays, kept by the owner.
+
+### Round 2 visual review (Fable and Opus on the screenshots)
+
+- The linked band's Discard sits right after its sentence as a small
+  bordered button, as the question's answers do.
+- A candidate's start reads relative to the tab's open ("started 4 s after
+  this tab opened", whole minutes past one; the clock time when the open is
+  unknown, the start was well before it, or an hour after), so candidates
+  whose prompts read the same are told apart; candidates are listed in
+  start order.
+- The remote close alert reads "<agent> is running on <host>." (it shows
+  while a reattached agent can't yet be told idle), with "Detach leaves it
+  running; Stop ends it." The local alert is unchanged.
+- The Hosts card's note reads "With --no-daemon in Codex's arguments above,
+  Temple identifies each new Codex session on a host by itself."
+- ⌘N's "Folder on <host>…" glyph takes the width of "Choose folder…"'s, so
+  both labels start at one x; the rows were already one height each (46 pt),
+  and "Choose folder…", this Mac's row, is unchanged.
 
 ### Round 2 fixes (the computer-use pass and Sol's review)
 

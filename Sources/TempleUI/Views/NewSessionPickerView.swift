@@ -117,9 +117,14 @@ struct NewSessionPickerView: View {
     private func hostFolderRow(_ host: HostID, selected: Bool) -> some View {
         PickerRowChrome(selected: selected) {
             HStack(spacing: 10) {
-                Image(systemName: "network")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
+                // As wide as "Choose folder…"'s glyph, so both labels start
+                // at the same x (that row is this Mac's and stays as it was).
+                ZStack {
+                    Image(systemName: "folder.badge.plus").hidden()
+                    Image(systemName: "network")
+                }
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
                 Text("Folder on \(host.rawValue)…")
                     .font(.system(size: 13))
                 Spacer()

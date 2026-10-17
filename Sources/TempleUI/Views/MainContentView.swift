@@ -86,10 +86,11 @@ private struct SessionTerminalView: View {
                 if remote.phase == .connected, remote.linkedOnItsOwn, tab.sessionID != nil,
                    let note = remote.identityNote {
                     notice(symbol: "link", text: note) {
-                        EmptyView()
-                    } dismiss: {
+                        // Right after the sentence, as the question's answers sit.
                         Button("Discard") { model.openSessions.remoteTabs.discard(tab) }
                             .help(RemoteCopy.discardLinkedHelp(displayHost))
+                    } dismiss: {
+                        EmptyView()
                     }
                 }
             } else if case .exited(let status) = tab.activity {
@@ -138,7 +139,7 @@ private struct SessionTerminalView: View {
                     Image(systemName: "questionmark.circle")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
-                    Text(RemoteCopy.suggestionQuestion(suggestion))
+                    Text(RemoteCopy.suggestionQuestion(suggestion, tabOpenedAt: tab.spawnedAt))
                         .font(.system(size: 12))
                         .textSelection(.enabled)
                     answers(to: suggestion, remote)

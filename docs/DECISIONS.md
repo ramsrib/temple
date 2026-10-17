@@ -2161,7 +2161,7 @@ rows ("Removing remote", below).
   rest when its agent has received nothing since it started and its title
   is quiet; a local tab keeps the settle timer's reading, as before
   remote). Idle: Stop, at once and without a
-  prompt. Working: "<agent> is still working on <host>." with Detach (the
+  prompt. Working: "<agent> is running on <host>." with Detach (the
   default), Stop and Cancel. To stop, Temple first ends its own tmux client
   on this Mac (the tab's ssh) and waits briefly for the session's attached
   count to reach zero; then one tmux command queue on the host checks that

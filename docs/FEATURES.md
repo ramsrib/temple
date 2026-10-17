@@ -319,7 +319,7 @@ it. What follows appears for an enabled host only.
   agent.
 - **Closing a tab** means what it means locally. An idle agent is stopped,
   at once and without asking, and opening the session later resumes it from
-  its transcript. A working one asks "Claude Code is still working on
+  its transcript. A working one asks "Claude Code is running on
   <host>." ("Detach leaves it running; Stop ends it.") with
   **Detach** (the default: it keeps working, and you can open it again),
   **Stop** and **Cancel**. On a host, a tab whose agent has just started (a
@@ -366,8 +366,9 @@ it. What follows appears for an enabled host only.
   Temple.", with **Discard**, which stops the session on the host and
   removes it from Temple (to History, if you named, pinned or colored it). With two or more,
   or once it has asked, the tab asks: "Is this the session?" with the first
-  prompt, the time and the folder, and **Yes, that's it** or **Not this
-  one**; with the last one declined, it says Temple couldn't tell which
+  prompt, when it started (relative to the tab, "4 s after this tab
+  opened", when that is known) and the folder, earliest first, and **Yes,
+  that's it** or **Not this one**; with the last one declined, it says Temple couldn't tell which
   session it is. With
   `--no-daemon` in Codex's arguments, Temple identifies the session on its
   own; the Hosts card says so.

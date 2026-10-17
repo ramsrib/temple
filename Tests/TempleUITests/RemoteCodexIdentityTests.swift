@@ -267,6 +267,20 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertTrue(remote.automaticConfirms.isEmpty)
     }
 
+    /// The question lists candidates in start order, earliest first.
+    func testTheQuestionListsCandidatesInStartOrder() async throws {
+        remote.identityResult = .inconclusive("shared server", lasting: true, ended: false)
+        let now = Date()
+        func at(_ id: String, _ offset: TimeInterval) -> RemoteSuggestion {
+            RemoteSuggestion(rolloutPath: "/r/\(id).jsonl", sessionID: id, firstPrompt: "reply with the word ok",
+                             startedAt: now.addingTimeInterval(offset), directory: "/home/u/project")
+        }
+        remote.suggestionsResult = .candidates([at("late", 9), at("early", 2), at("middle", 5)])
+        let tab = await newCodex()
+        await settle(tab.remote?.suggestions.count == 3)
+        XCTAssertEqual(tab.remote?.suggestions.map(\.sessionID), ["early", "middle", "late"])
+    }
+
     /// Two or more candidates: the question; nothing claimed.
     func testTwoCandidatesAsk() async throws {
         remote.suggestionsResult = .candidates([suggestion(), suggestion("c8")])
@@ -1103,7 +1117,26 @@ final class RemoteCodexIdentityTests: XCTestCase {
                        "Linked to the Codex session started \(RemoteCopy.startTime(noon, now: noon)), the only one started in this folder since this tab opened. "
                        + "If that\u{2019}s wrong, Discard stops it and removes it from Temple.")
         XCTAssertEqual(RemoteCopy.noDaemonHint,
-                       "Add --no-daemon to Codex's arguments above and Temple identifies each new Codex session on a host on its own.")
+                       "With --no-daemon in Codex's arguments above, Temple identifies each new Codex session on a host by itself.")
+        XCTAssertEqual(RemoteCopy.stillWorking("box", agent: .codex), "Codex is running on box.")
+        XCTAssertEqual(RemoteCopy.stillWorking("box", agent: .claude), "Claude Code is running on box.")
+        // Candidates whose prompts read the same are told apart by when they
+        // started after the tab opened; the clock time otherwise.
+        let opened = Date(timeIntervalSince1970: 1_800_000_000)
+        func started(_ seconds: TimeInterval) -> RemoteSuggestion {
+            RemoteSuggestion(rolloutPath: "/r/\(seconds)", sessionID: "x", firstPrompt: "hi",
+                             startedAt: opened.addingTimeInterval(seconds), directory: "/w/temple-r2")
+        }
+        XCTAssertEqual(RemoteCopy.suggestionQuestion(started(4.2), tabOpenedAt: opened),
+                       "Is this the session? \u{201C}hi\u{201D}, started 4 s after this tab opened in temple-r2.")
+        XCTAssertEqual(RemoteCopy.suggestionQuestion(started(-2), tabOpenedAt: opened),
+                       "Is this the session? \u{201C}hi\u{201D}, started 0 s after this tab opened in temple-r2.",
+                       "a clock a little apart is not a start before the open")
+        XCTAssertTrue(RemoteCopy.suggestionQuestion(started(70), tabOpenedAt: opened).contains("started 1 min after this tab opened"))
+        XCTAssertTrue(RemoteCopy.suggestionQuestion(started(150), tabOpenedAt: opened).contains("started 3 min after this tab opened"))
+        XCTAssertFalse(RemoteCopy.suggestionQuestion(started(-600), tabOpenedAt: opened).contains("after this tab opened"),
+                       "a start well before the open: the clock time")
+        XCTAssertFalse(RemoteCopy.suggestionQuestion(started(4), tabOpenedAt: nil).contains("after this tab opened"))
         let copy = [RemoteCopy.codexEndedPending("box"), RemoteCopy.couldNotTell, RemoteCopy.noDaemonHint,
                     RemoteCopy.linkedOnItsOwn(suggestion()), RemoteCopy.discardLinkedHelp("box"),
                     RemoteCopy.quitLine(["box", "jet"]),

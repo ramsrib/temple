@@ -1258,7 +1258,10 @@ public final class RemoteTabController {
             claim(offered[0], in: tab, automatic: true)
             return
         }
-        tab.remote?.suggestions = offered
+        // In start order: the question reads earliest first.
+        tab.remote?.suggestions = offered.sorted {
+            $0.startedAt != $1.startedAt ? $0.startedAt < $1.startedAt : $0.id.lexicographicallyPrecedes($1.id)
+        }
         if !offered.isEmpty { asked.insert(handle) }
         // Once asked, the tab is never bare: with no candidate left (the
         // last one declined), it says Temple couldn't tell.

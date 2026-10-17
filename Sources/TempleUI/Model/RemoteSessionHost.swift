@@ -397,8 +397,11 @@ public enum RemoteCopy {
         "Temple couldn't enter the folder \(directory) on \(host)."
     }
 
+    /// The remote close alert's title: shown while the tab reads as
+    /// working, which for a reattached agent is before Temple can tell it is
+    /// idle, so it says running, not working (visual review, round 2).
     public static func stillWorking(_ host: String, agent: Agent) -> String {
-        "\(agent.displayName) is still working on \(host)."
+        "\(agent.displayName) is running on \(host)."
     }
 
     /// The working prompt's message line, as local's has one (the title
@@ -574,12 +577,29 @@ public enum RemoteCopy {
         "\(agent.displayName)'s last screen on \(host) isn't kept after it ends."
     }
 
-    /// The question about one candidate: never a fact.
-    public static func suggestionQuestion(_ suggestion: RemoteSuggestion, now: Date = Date()) -> String {
+    /// The question about one candidate: never a fact. When the tab's open
+    /// time is known, the start is said relative to it ("4 s after this tab
+    /// opened"), which tells apart candidates whose prompts read the same;
+    /// otherwise (or a start before it, or hours after) the clock time.
+    public static func suggestionQuestion(_ suggestion: RemoteSuggestion, tabOpenedAt: Date? = nil,
+                                          now: Date = Date()) -> String {
         let prompt = suggestion.firstPrompt.map { "\u{201C}\($0)\u{201D}" }
             ?? (suggestion.promptKnown ? "No prompt yet" : "First prompt unreadable")
         let folder = URL(fileURLWithPath: suggestion.directory).lastPathComponent
-        return "Is this the session? \(prompt), started \(startTime(suggestion.startedAt, now: now)) in \(folder)."
+        let when = tabOpenedAt.flatMap { afterOpen(suggestion.startedAt, openedAt: $0) }
+            ?? startTime(suggestion.startedAt, now: now)
+        return "Is this the session? \(prompt), started \(when) in \(folder)."
+    }
+
+    /// "4 s after this tab opened", "1 min after this tab opened"; nil for
+    /// a start before the open (beyond a few seconds of clock difference)
+    /// or an hour or more after it.
+    static func afterOpen(_ start: Date, openedAt: Date) -> String? {
+        let delta = start.timeIntervalSince(openedAt)
+        guard delta > -5, delta < 3600 else { return nil }
+        let seconds = max(0, Int(delta.rounded()))
+        if seconds < 60 { return "\(seconds) s after this tab opened" }
+        return "\(Int((Double(seconds) / 60).rounded())) min after this tab opened"
     }
 
     static func startTime(_ date: Date, now: Date) -> String {
@@ -623,7 +643,7 @@ public enum RemoteCopy {
 
     /// How Temple can tell by itself (Fable, round 1): one line in the
     /// Hosts card's notes, never in a tab's band (owner, round 2).
-    public static let noDaemonHint = "Add --no-daemon to Codex's arguments above and Temple identifies each new Codex session on a host on its own."
+    public static let noDaemonHint = "With --no-daemon in Codex's arguments above, Temple identifies each new Codex session on a host by itself."
 
     /// What Discard does, for its help tag.
     public static func discardHelp(archives: Bool) -> String {
