@@ -339,12 +339,18 @@ final class RemoteProjectStateStore: RemoteProjectStatePersisting {
     }
 
     func setArchived(_ archived: Bool, key: ProjectKey) {
+        // Unarchiving with no store yet has nothing to clear: no file.
+        if !archived, !RemoteHostComposition.storeExists(in: stateDirectory) { return }
         do { try store?.setProjectArchived(archived, host: key.host, path: key.path) } catch {
             TempleUILog.db.error("remote project state not written: \(String(describing: error), privacy: .public)")
         }
     }
 
     func setOrder(_ keys: [(key: ProjectKey, position: Int)]) {
+        // An order with no host's project in it (every local reorder while
+        // no host has a project) only clears positions: with no store yet
+        // there is nothing to clear, and no file is created for it.
+        if keys.isEmpty, !RemoteHostComposition.storeExists(in: stateDirectory) { return }
         // Positions are places in the whole list, not among hosts' alone.
         do { try store?.setProjectOrder(keys.map { ($0.key.host, $0.key.path, $0.position) }) } catch {
             TempleUILog.db.error("remote project order not written: \(String(describing: error), privacy: .public)")

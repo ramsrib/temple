@@ -177,4 +177,37 @@ final class RemoteHostsTests: XCTestCase {
         XCTAssertEqual(hosts.configAliases, ["box", "jetson-mentes"])
         XCTAssertEqual(reads, 1)
     }
+
+    /// The flag on with no hosts, over a database on disk: reordering,
+    /// archiving and restoring local projects creates no remote store. Once
+    /// a host's project has an order, a local reorder still clears it.
+    func testWithNoHostsLocalProjectChangesCreateNoRemoteStore() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/temple-no-remote-\(UUID().uuidString.prefix(8))")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let db = try TempleDB(path: root.appendingPathComponent("temple.sqlite"))
+        Fixture.join([Fixture.row("a", project: "/p/a"), Fixture.row("b", project: "/p/b")], to: db)
+        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), database: db,
+                           settings: SettingsStore(defaults: enabledDefaults([])),
+                           hostRegistry: Fixture.hostsWithoutFolderEvidence())
+        XCTAssertTrue(app.remoteHosts.isEnabled)
+        XCTAssertEqual(app.databaseDirectory?.resolvingSymlinksInPath().path, root.resolvingSymlinksInPath().path)
+        let store = root.appendingPathComponent("remote-state.sqlite")
+        let a = ProjectKey(host: .local, path: "/p/a"), b = ProjectKey(host: .local, path: "/p/b")
+        app.moveProject(b, before: a)
+        XCTAssertEqual(app.overlay.projectKeyOrder.prefix(2), [b, a])
+        app.archiveProject(a, undoManager: nil)
+        app.restoreProject(a, undoManager: nil)
+        app.moveProject(a, before: b)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.path), "no host, no remote store")
+
+        // A host's project with an order: the store exists, and a reorder
+        // that leaves no host's project placed clears its position.
+        let remote = ProjectKey(host: HostID(rawValue: "box"), path: "/p/a")
+        let persisting = try XCTUnwrap(app.overlay.remoteProjectState)
+        persisting.setOrder([(remote, 0)])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.path))
+        XCTAssertEqual(persisting.projectStates().first { $0.key == remote }?.position, 0)
+        persisting.setOrder([])
+        XCTAssertNil(persisting.projectStates().first { $0.key == remote }?.position, "an empty order still clears")
+    }
 }
