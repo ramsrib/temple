@@ -292,6 +292,18 @@ final class RemoteGateWalkTests: XCTestCase {
                 await self.settle { !h.remote.suggestionLookups.isEmpty }
             }, effect: { $0.tab?.remote?.suggestions.isEmpty == false }),
 
+            Scenario(completion: .endedOutput, disruptions: tabDisruptions, arm: { h in
+                h.remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
+                h.remote.diagnosticsText = "what codex said"
+                h.remote.diagnosticsGate = { await h.hold.wait() }
+                h.app.openSessions.remoteTabs.restorePending(hosts: [h.host])
+                await self.settle { h.app.openSessions.tabs.contains { $0.remote?.handle == "p7" } }
+                let tab = try XCTUnwrap(h.app.openSessions.tabs.first { $0.remote?.handle == "p7" })
+                h.tab = tab
+                h.app.openSessions.activate(tab)
+                await self.settle { tab.remote?.phase == .endedPending }
+            }, effect: { $0.tab?.remote?.outputChecked == true }),
+
             Scenario(completion: .confirmResult, disruptions: tabDisruptions, arm: { h in
                 h.app.openSessions.remoteTabs.identitySchedule = [60]
                 h.remote.confirmResult = .taken

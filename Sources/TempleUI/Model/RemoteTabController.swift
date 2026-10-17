@@ -390,6 +390,7 @@ public final class RemoteTabController {
                     if tab.inputSubmitted {
                         tab.remote?.phase = .endedPending
                         self.loadSuggestions(tab, host: host, handle: handle)
+                        self.loadEndedOutput(tab, host: host, handle: handle)
                     } else {
                         self.model.removeTab(tab.id)
                         self.pendingWrite(host, tab.host) { try await host.dismissRun(handle) }
@@ -831,6 +832,12 @@ public final class RemoteTabController {
         var state = RemoteTabState(phase: .opening)
         state.handle = handle
         state.suggestions = startNew ? [] : (tab.remote?.suggestions ?? [])
+        // What an ended run's pane printed is fetched once (the host hands
+        // it over a single time): kept while the tab reopens.
+        if !startNew, let previous = tab.remote, previous.outputChecked {
+            state.diagnostics = previous.diagnostics
+            state.outputChecked = true
+        }
         // A refusal this launch remembers for the run is said again whenever
         // it reopens, with Try again (round 3).
         if let handle, let refusal = refusedClaims[handle] {
@@ -859,7 +866,10 @@ public final class RemoteTabController {
             case .success(.ended):
                 tab.remote?.phase = .endedPending
                 tab.activity = .exited(status: 0)
-                if let handle { self.loadSuggestions(tab, host: host, handle: handle) }
+                if let handle {
+                    self.loadSuggestions(tab, host: host, handle: handle)
+                    self.loadEndedOutput(tab, host: host, handle: handle)
+                }
             case .success(.identified(let id, let directory)):
                 // Another Temple learned its id meanwhile: this tab is that
                 // session now (joined like any claim), then opened as any
@@ -1205,6 +1215,25 @@ public final class RemoteTabController {
         if case .candidates(let found) = answer { tab.remote?.suggestions = found.filter { $0.sessionID != refused } }
     }
 
+    /// How many of the pane's last lines stand in for an ended run's
+    /// terminal.
+    static let endedOutputLines = 40
+
+    /// What an ended pending run's pane printed (its record's output, as
+    /// the early-exit header has it), shown where its terminal was: tmux's
+    /// exit leaves the client's screen blank.
+    private func loadEndedOutput(_ tab: SessionTab, host: RemoteSessionHost, handle: String) {
+        if tab.remote?.outputChecked == true, tab.remote?.diagnostics.isEmpty == false { return }
+        let ticket = gate.ticket(for: tab)
+        operations.run(host: tab.host, .query) { [weak self] in
+            let raw = await host.diagnostics(handle)
+            guard let self, self.gate.admit(.endedOutput, ticket), let tab = ticket.tab,
+                  tab.remote?.phase == .endedPending else { return }
+            tab.remote?.diagnostics = raw.map { RemoteCopy.diagnosticLines($0, limit: Self.endedOutputLines) } ?? []
+            tab.remote?.outputChecked = true
+        }
+    }
+
     /// "Yes, that's it": the claim is durable work (owned through close and
     /// quit); what the tab shows passes the gate.
     public func confirm(_ suggestion: RemoteSuggestion, in tab: SessionTab) {
@@ -1358,6 +1387,7 @@ public final class RemoteTabController {
                 } else {
                     tab.remote?.phase = .endedPending
                     self.loadSuggestions(tab, host: host, handle: handle)
+                    self.loadEndedOutput(tab, host: host, handle: handle)
                 }
             case .leftRunning:
                 self.model.removeTab(tab.id)

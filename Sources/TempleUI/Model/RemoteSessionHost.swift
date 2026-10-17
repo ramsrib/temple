@@ -335,6 +335,9 @@ public struct RemoteTabState: Equatable {
     /// What the pane showed, for an agent that ended at once: the last
     /// lines, plain text.
     public var diagnostics: [String] = []
+    /// The pane's output was asked for (an ended pending run): nothing in
+    /// `diagnostics` now means nothing could be had.
+    public var outputChecked = false
     /// A sign of life arrived for this open (the pane's record, a title).
     public var evidenceSeen = false
     /// The owned operation staging this open's launch after the spawn.
@@ -398,6 +401,9 @@ public enum RemoteCopy {
     public static func stillWorking(_ host: String, agent: Agent) -> String {
         "\(agent.displayName) is still working on \(host)."
     }
+
+    /// "Sessions on <host>": the sheet's title and the button that opens it.
+    public static func sessionsOn(_ host: String) -> String { "Sessions on \(host)" }
 
     /// Resume anyway's confirmation (a sheet): a short title, why, and the
     /// command that stops the original on the host, apart, to copy.
@@ -516,7 +522,21 @@ public enum RemoteCopy {
     // Codex identity (phase 1b)
 
     public static func codexEndedPending(_ host: String) -> String {
-        "Codex ended before Temple learned its session ID. Its transcript is still on \(host)."
+        "Codex ended on \(host) before Temple learned which session this was."
+    }
+
+    /// The ended band's one sentence, the question after the fact: the
+    /// candidate's first prompt and when it started. Never a fact.
+    public static func codexEndedQuestion(_ host: String, suggestion: RemoteSuggestion, now: Date = Date()) -> String {
+        let subject = suggestion.firstPrompt.map { "\u{201C}\($0)\u{201D}" }
+            ?? (suggestion.promptKnown ? "the one with no prompt yet" : "the one whose first prompt couldn't be read")
+        return codexEndedPending(host) + " Is it \(subject) (\(startStamp(suggestion.startedAt, now: now)))?"
+    }
+
+    /// Where an ended session's terminal was, when nothing its pane printed
+    /// could be fetched.
+    public static func endedOutputUnavailable(_ host: String, agent: Agent) -> String {
+        "Temple couldn't get what \(agent.displayName) showed on \(host)."
     }
 
     /// The question about one candidate: never a fact.
@@ -538,6 +558,15 @@ public enum RemoteCopy {
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return "on " + formatter.string(from: date)
+    }
+
+    /// A start time on its own: the time today, else the date and time.
+    static func startStamp(_ date: Date, now: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.dateStyle = Calendar.current.isDate(date, inSameDayAs: now) ? .none : .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 
     public static let suggestionYes = "Yes, that's it"

@@ -343,6 +343,48 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await settle(restored.remote?.suggestions.count == 1, "typed before the relaunch: asked")
     }
 
+    /// An ended, unidentified session asks in one sentence, question
+    /// first, and shows what its pane printed where its terminal was
+    /// (tmux's exit left that blank); kept when the tab opens again.
+    func testAnEndedSessionAsksInOneSentenceAndShowsWhatItPrinted() async throws {
+        remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
+        remote.suggestionsResult = .candidates([suggestion("c7")])
+        remote.diagnosticsText = "\u{1b}[1mOpenAI Codex\u{1b}[0m\r\n> reply with the word ok\r\n\r\nok\r\n"
+        model.remoteTabs.restorePending(hosts: [hostID])
+        await settle(self.model.tabs.count == 1)
+        let tab = try XCTUnwrap(model.tabs.first)
+        model.activate(tab)
+        await settle(tab.remote?.outputChecked == true && tab.remote?.suggestions.count == 1)
+        XCTAssertEqual(tab.remote?.phase, .endedPending)
+        XCTAssertEqual(tab.remote?.diagnostics, ["OpenAI Codex", "> reply with the word ok", "ok"])
+        let question = RemoteCopy.codexEndedQuestion("box", suggestion: try XCTUnwrap(tab.remote?.suggestions.first))
+        XCTAssertTrue(question.hasPrefix("Codex ended on box before Temple learned which session this was. "
+                                         + "Is it \u{201C}reply with the word ok\u{201D} ("), question)
+        XCTAssertTrue(question.hasSuffix(")?"), question)
+        // Opened again: the host hands the output over once; the tab keeps it.
+        remote.diagnosticsText = nil
+        model.remoteTabs.ensurePending(tab, on: remote, startNew: false)
+        await settle(tab.remote?.phase == .endedPending)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(tab.remote?.diagnostics.count, 3)
+    }
+
+    /// Nothing the pane printed could be had: the pane says so, never blank.
+    func testAnEndedSessionWithNoOutputSaysSo() async throws {
+        remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
+        model.remoteTabs.restorePending(hosts: [hostID])
+        await settle(self.model.tabs.count == 1)
+        let tab = try XCTUnwrap(model.tabs.first)
+        model.activate(tab)
+        await settle(tab.remote?.outputChecked == true)
+        XCTAssertEqual(tab.remote?.diagnostics, [])
+        XCTAssertEqual(RemoteCopy.endedOutputUnavailable("box", agent: .codex), "Temple couldn't get what Codex showed on box.")
+        let unread = RemoteSuggestion(rolloutPath: "/r", sessionID: "x", firstPrompt: nil, startedAt: Date(),
+                                      directory: "/w", promptKnown: false)
+        XCTAssertTrue(RemoteCopy.codexEndedQuestion("box", suggestion: unread)
+            .contains("Is it the one whose first prompt couldn't be read ("))
+    }
+
     /// Confirming an ended session records who it was and nothing else:
     /// the tab closes, as a local tab does when its agent exits, its run is
     /// handed over, and the row is selected; nothing starts or resumes.
@@ -779,6 +821,8 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertTrue(RemoteCopy.suggestionQuestion(unread).hasPrefix("Is this the session? First prompt unreadable, started "))
         XCTAssertFalse(RemoteCopy.suggestionQuestion(unread).contains("No prompt yet"))
         let copy = [RemoteCopy.codexEndedPending("box"), RemoteCopy.couldNotTell, RemoteCopy.noDaemonHint,
+                    RemoteCopy.codexEndedQuestion("box", suggestion: suggestion()),
+                    RemoteCopy.endedOutputUnavailable("box", agent: .codex), RemoteCopy.sessionsOn("box"),
                     RemoteCopy.resumeAnyway("box"),
                     RemoteCopy.startNewPending("box"), RemoteCopy.stopHint("box"), RemoteCopy.discardHelp(archives: true),
                     RemoteCopy.discardHelp(archives: false), RemoteCopy.discardPendingHelp("box"),

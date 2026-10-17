@@ -70,6 +70,8 @@ private struct SessionTerminalView: View {
                 // is not its agent ending (checking, stopping: nothing yet).
                 if remote.phase == .connected, remote.stillConnecting {
                     notice(symbol: "hourglass", text: RemoteCopy.stillConnecting(tab.host.rawValue)) {
+                        EmptyView()
+                    } dismiss: {
                         Button("Cancel") { model.openSessions.remoteTabs.cancelConnect(tab) }
                     }
                 } else if let header = RemoteHeader.make(remote.phase) { remoteHeader(header) }
@@ -77,13 +79,17 @@ private struct SessionTerminalView: View {
                 // while it runs, whether one of its candidates is it.
                 if remote.phase == .connected, tab.sessionID == nil,
                    !remote.suggestions.isEmpty || remote.identityNote != nil {
-                    question(remote).background(Palette.surfaceFill)
-                        .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairline).frame(height: 1) }
+                    question(remote).band()
                 }
             } else if case .exited(let status) = tab.activity {
                 launchFailure(status: status)
             }
-            if let surface = tab.surface {
+            if let remote = tab.remote, remote.phase == .endedPending {
+                // tmux's exit leaves the client's screen as it was before
+                // tmux drew (blank), so the pane's own last lines stand in
+                // for the terminal: never a blank pane.
+                endedOutput(remote)
+            } else if let surface = tab.surface {
                 TerminalSurfaceHost(surface: surface)
                     // ⌘F. Floats over the terminal's top-right corner, so the
                     // surface keeps its size and the agent's prompt line, at
@@ -111,7 +117,8 @@ private struct SessionTerminalView: View {
     }
 
     /// The candidates for a pending Codex session, each a question (never
-    /// a fact), and why Temple couldn't tell when it couldn't.
+    /// a fact) with its answers right after it, and why Temple couldn't
+    /// tell when it couldn't.
     private func question(_ remote: RemoteTabState) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(remote.suggestions) { suggestion in
@@ -122,46 +129,118 @@ private struct SessionTerminalView: View {
                     Text(RemoteCopy.suggestionQuestion(suggestion))
                         .font(.system(size: 12))
                         .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if remote.confirming == suggestion.id {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        HStack(spacing: 12) {
-                            Button(RemoteCopy.suggestionYes) { model.openSessions.remoteTabs.confirm(suggestion, in: tab) }
-                                .disabled(remote.confirming != nil)
-                            Button(RemoteCopy.suggestionNo) { model.openSessions.remoteTabs.decline(suggestion, in: tab) }
-                                .disabled(remote.confirming != nil)
-                        }
-                        .buttonStyle(.link)
-                        .font(.system(size: 12))
-                    }
+                    answers(to: suggestion, remote)
+                    Spacer(minLength: 8)
                 }
             }
-            if let note = remote.identityNote {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(note)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if remote.identityRefused {
-                        Button("Try again") { model.openSessions.remoteTabs.retryIdentity(tab) }
-                            .buttonStyle(.link)
-                            .font(.system(size: 11))
-                    }
-                }
-                .padding(.leading, 20)
+            identityCaptions(remote)
+        }
+    }
+
+    /// Yes and No for one candidate, as small bordered buttons right after
+    /// its question; a spinner while its yes is written.
+    @ViewBuilder
+    private func answers(to suggestion: RemoteSuggestion, _ remote: RemoteTabState) -> some View {
+        if remote.confirming == suggestion.id {
+            ProgressView().controlSize(.small)
+        } else {
+            HStack(spacing: 6) {
+                Button(RemoteCopy.suggestionYes) { model.openSessions.remoteTabs.confirm(suggestion, in: tab) }
+                    .disabled(remote.confirming != nil)
+                Button(RemoteCopy.suggestionNo) { model.openSessions.remoteTabs.decline(suggestion, in: tab) }
+                    .disabled(remote.confirming != nil)
             }
-            if !remote.identityRefused {
-                Text(MainContentView.noDaemonHint)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+    }
+
+    /// Under the question: why Temple couldn't tell (with Try again after
+    /// a refusal), and how it could tell by itself.
+    @ViewBuilder
+    private func identityCaptions(_ remote: RemoteTabState) -> some View {
+        if let note = remote.identityNote {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(note)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, 20)
+                    .textSelection(.enabled)
+                if remote.identityRefused {
+                    Button("Try again") { model.openSessions.remoteTabs.retryIdentity(tab) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+                Spacer(minLength: 0)
             }
+            .padding(.leading, 20)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        if !remote.identityRefused {
+            Text(MainContentView.noDaemonHint)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 20)
+        }
+    }
+
+    /// A new Codex session that ended before Temple learned its id: one
+    /// band, the question first ("Codex ended on <host> before Temple
+    /// learned which session this was. Is it …?"), its answers and Start a
+    /// new session after it, Discard at the trailing edge. One candidate at
+    /// a time: "Not this one" brings the next.
+    private func endedBand(_ host: String, _ remote: RemoteTabState) -> some View {
+        let candidate = remote.suggestions.first
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 9) {
+                Image(systemName: "questionmark.circle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Text(candidate.map { RemoteCopy.codexEndedQuestion(host, suggestion: $0) }
+                     ?? RemoteCopy.codexEndedPending(host))
+                    .font(.system(size: 12))
+                    .textSelection(.enabled)
+                if let candidate { answers(to: candidate, remote) }
+                Button("Start a new session") { model.openSessions.remoteTabs.startNewPending(tab) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(remote.confirming != nil)
+                Spacer(minLength: 8)
+                Button("Discard") { model.openSessions.remoteTabs.discardPending(tab) }
+                    .help(RemoteCopy.discardPendingHelp(host))
+                    .buttonStyle(.link)
+                    .font(.system(size: 12))
+                    .disabled(remote.confirming != nil)
+            }
+            identityCaptions(remote)
+        }
+        .band()
+    }
+
+    /// Where an ended session's terminal was: what its pane printed, the
+    /// last lines that say something, or why there is nothing to show.
+    private func endedOutput(_ remote: RemoteTabState) -> some View {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 2) {
+                if remote.diagnostics.isEmpty {
+                    if remote.outputChecked {
+                        Text(RemoteCopy.endedOutputUnavailable(tab.host.rawValue, agent: tab.agent))
+                            .font(.system(size: 12))
+                            .foregroundStyle(.tertiary)
+                    }
+                } else {
+                    ForEach(Array(remote.diagnostics.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     /// What a remote tab's header says, by phase; nil for none.
@@ -188,6 +267,10 @@ private struct SessionTerminalView: View {
         }
     }
 
+    /// Every remote band: the answers right after the sentence, as small
+    /// bordered buttons; only a dismiss-type action (Discard, Cancel) at the
+    /// trailing edge. One icon per meaning: a question (the session's
+    /// state or identity unknown), a connection, a failure.
     @ViewBuilder
     private func remoteHeader(_ header: RemoteHeader) -> some View {
         let host = tab.host.rawValue
@@ -199,52 +282,41 @@ private struct SessionTerminalView: View {
         case .decision(let checked):
             notice(symbol: "questionmark.circle",
                    text: checked ? RemoteCopy.unconfirmedConversation : RemoteCopy.uncheckedConversation) {
-                HStack(spacing: 12) {
-                    if !checked {
-                        Button("Resume") { model.openSessions.remoteTabs.resumeUnconfirmed(tab) }
-                    }
-                    Button("Start a new session") { model.openSessions.remoteTabs.startNewSession(tab) }
-                    Button("Discard") { model.openSessions.remoteTabs.discard(tab) }
-                        .help(RemoteCopy.discardHelp(archives: tab.sessionID.map(model.discardArchives) ?? false))
+                if !checked {
+                    Button("Resume") { model.openSessions.remoteTabs.resumeUnconfirmed(tab) }
                 }
+                Button("Start a new session") { model.openSessions.remoteTabs.startNewSession(tab) }
+            } dismiss: {
+                Button("Discard") { model.openSessions.remoteTabs.discard(tab) }
+                    .help(RemoteCopy.discardHelp(archives: tab.sessionID.map(model.discardArchives) ?? false))
             }
         case .endedPending:
-            VStack(spacing: 0) {
-                notice(symbol: "questionmark.circle", text: RemoteCopy.codexEndedPending(host)) {
-                    HStack(spacing: 12) {
-                        Button("Start a new session") { model.openSessions.remoteTabs.startNewPending(tab) }
-                        Button("Discard") { model.openSessions.remoteTabs.discardPending(tab) }
-                            .help(RemoteCopy.discardPendingHelp(host))
-                    }
-                }
-                // Asked even with no candidate yet: the hint says how Temple
-                // could tell by itself next time.
-                if let remote = tab.remote {
-                    question(remote).background(Palette.surfaceFill)
-                        .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairline).frame(height: 1) }
-                }
-            }
+            if let remote = tab.remote { endedBand(host, remote) }
         case .disconnected:
             notice(symbol: "bolt.horizontal.circle", text: RemoteCopy.disconnected(host)) {
                 Button("Reconnect") { model.openSessions.remoteTabs.reconnect(tab) }
+            } dismiss: {
+                EmptyView()
             }
         case .unknown(let reason):
             VStack(spacing: 0) {
                 notice(symbol: "questionmark.circle", text: RemoteCopy.unknown(host, agent: tab.agent, reason: reason)) {
-                    HStack(spacing: 12) {
-                        Button("Reconnect") { model.openSessions.remoteTabs.reconnect(tab) }
-                        if tab.sessionID != nil {
-                            Button("Resume anyway") { confirmation = .resumeAnyway }
-                        } else if tab.agent == .codex {
-                            Button("Start a new session") { confirmation = .startNewPending }
-                        }
+                    Button("Reconnect") { model.openSessions.remoteTabs.reconnect(tab) }
+                    if tab.sessionID != nil {
+                        Button("Resume anyway") { confirmation = .resumeAnyway }
+                    } else if tab.agent == .codex {
+                        Button("Start a new session") { confirmation = .startNewPending }
                     }
+                } dismiss: {
+                    EmptyView()
                 }
                 if let lines = tab.remote?.diagnostics, !lines.isEmpty { diagnosticLines(lines) }
             }
         case .stopFailed(let message):
             notice(symbol: "exclamationmark.triangle", text: message) {
-                Button("Sessions on \(host)") { model.showRemoteSessions(tab.host) }
+                Button(RemoteCopy.sessionsOn(host)) { model.showRemoteSessions(tab.host) }
+            } dismiss: {
+                EmptyView()
             }
         }
     }
@@ -304,8 +376,12 @@ private struct SessionTerminalView: View {
         .background(Palette.surfaceFill)
     }
 
-    private func notice<Actions: View>(symbol: String, text: String,
-                                       @ViewBuilder actions: () -> Actions) -> some View {
+    /// A remote band: the sentence, its answers right after it (small
+    /// bordered buttons), and dismiss-type actions alone at the trailing
+    /// edge (links).
+    private func notice<Answers: View, Dismiss: View>(symbol: String, text: String,
+                                                      @ViewBuilder answers: () -> Answers,
+                                                      @ViewBuilder dismiss: () -> Dismiss) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 9) {
             Image(systemName: symbol)
                 .font(.system(size: 11))
@@ -313,18 +389,15 @@ private struct SessionTerminalView: View {
             Text(text)
                 .font(.system(size: 12))
                 .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            actions()
+            HStack(spacing: 6) { answers() }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            Spacer(minLength: 8)
+            HStack(spacing: 12) { dismiss() }
                 .buttonStyle(.link)
                 .font(.system(size: 12))
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.surfaceFill)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(Palette.hairline).frame(height: 1)
-        }
+        .band()
     }
 
     /// The header's first line. On a host it names the host; a host that is
@@ -512,5 +585,19 @@ extension MainContentView {
             text[range].font = .system(size: 11, design: .monospaced)
         }
         return text
+    }
+}
+
+private extension View {
+    /// A header band over a tab's terminal: inset, on the surface fill,
+    /// with a hairline under it.
+    func band() -> some View {
+        padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Palette.surfaceFill)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(Palette.hairline).frame(height: 1)
+            }
     }
 }

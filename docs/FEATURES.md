@@ -346,10 +346,16 @@ then relaunch, turns it on.
   asks instead: "Is this the session?" with the first prompt, the time and
   the folder, and **Yes, that's it** or **Not this one**. With `--no-daemon`
   in Codex's arguments (Settings), Temple identifies the session on its own.
-  A Codex session that ended before Temple learned its ID says so and offers
-  the question, **Start a new session** and **Discard**.
-  Answering yes for one that ended closes its tab, as a local exit does, and
-  selects its row; opening the row resumes it.
+  A Codex session that ended before Temple learned its ID asks in one
+  sentence, "Codex ended on <host> before Temple learned which session this
+  was. Is it "<first prompt>" (<time>)?", with **Yes, that's it**, **Not
+  this one** and **Start a new session** after it and **Discard** at the
+  edge; where its terminal was, the tab shows the last lines its pane
+  printed. Answering yes closes its tab, as a local exit does, and selects
+  its row; opening the row resumes it.
+- **Banners.** A tab's banner puts its answers (Reconnect, Resume anyway,
+  Start a new session, Yes and No) right after its sentence as small
+  buttons; only Discard and Cancel sit at the trailing edge.
 - **Scrolling and find.** tmux keeps a session's history. The wheel scrolls
   it, and the first key you type returns to the prompt. A drag selects and
   copies (to the Mac clipboard with tmux 3.3 or newer); `⇧`-drag selects in

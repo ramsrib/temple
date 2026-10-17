@@ -90,6 +90,10 @@ public enum RemoteCompletion: String, CaseIterable, Sendable {
     case identityResult
     /// The suggestions to ask about reached the tab.
     case suggestionsLoaded
+    /// What an ended pending run's pane printed reached the tab, which
+    /// shows it in place of its terminal. No run evidence: the run has
+    /// ended, so no other client can attach to it.
+    case endedOutput
     /// The user's yes could not be claimed: the tab says why.
     case confirmResult
     /// Closing a pending Codex tab: the stop's outcome, and the question

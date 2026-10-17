@@ -652,9 +652,11 @@ and the launch-failure header apply as today when a `failed` record exists.
   with `resume` from the transcript. A pending Codex launch that is idle
   (as built, phase 1b note 12) gets one more identity check, then the same
   stop: identified, its tab closes like any; unidentified and typed into,
-  the tab stays with "Codex ended before Temple learned its session ID. Its
-  transcript is still on <host>.", the question, Start a new session and
-  Discard; never typed into, Temple stops tracking it. The decision is made from what
+  the tab stays with one band, "Codex ended on <host> before Temple learned
+  which session this was. Is it "<first prompt>" (<time>)?", Yes, Not this
+  one and Start a new session after it and Discard at the edge (remote UX
+  round 1), the pane's last lines where its terminal was; never typed into,
+  Temple stops tracking it. The decision is made from what
   Temple observed on the connected tab; nothing on the host is asked to
   judge idleness.
 - Agent working → "Claude Code is still working on <host>." [Detach]
@@ -2660,4 +2662,24 @@ changed, by finding:
   after the activation the close caused). The run is handed over as any
   identified tab's is. The `endedIdentified` phase, its banner and its
   Resume are gone; opening the row resumes, nothing resumes on its own.
+- **Ended before identified: one band** (UX 2, visual 2). The fact and the
+  question are one sentence, question first: "Codex ended on <host> before
+  Temple learned which session this was. Is it "<first prompt>" (<time>)?"
+  (no candidate: the first sentence alone), one candidate at a time, Not
+  this one bringing the next; the identity note and the `--no-daemon` hint
+  stay as its captions (the hint's place waits on the owner). The pane is
+  never blank: tmux's exit leaves the client's screen as it was before tmux
+  drew, so the band's tab shows, where the terminal was, the last 40 lines
+  of what the pane printed (its record's output, the end of the pane's
+  first 64 KiB, as the early-exit header has it), fetched once
+  (`.endedOutput`, a new gated completion with no run evidence: the run has
+  ended) and kept while the tab reopens; if none could be had it says
+  "Temple couldn't get what Codex showed on <host>."
+- **Banner answers sit by their sentence** (visual 5). Every remote band
+  puts its answers right after the sentence as small bordered buttons
+  (Reconnect, Resume, Resume anyway, Start a new session, Sessions on
+  <host>, Yes and No, Try again); the trailing edge holds only dismiss-type
+  actions (Discard, Cancel), as links. Icons: a question mark for a
+  session whose state or identity is unknown, the bolt for a dropped
+  connection, the triangle for a stop that failed.
 
