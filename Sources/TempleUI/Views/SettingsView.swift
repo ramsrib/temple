@@ -54,10 +54,9 @@ struct SettingsView: View {
                     agentsSection
                     agentSection(.claude)
                     agentSection(.codex)
-                    // Remote hosts, dark behind temple.feature.remoteHosts.
-                    if model.remoteHosts.isEnabled {
-                        HostsSettingsSection(hosts: model.remoteHosts)
-                    }
+                    // Hosts: always shown, the one way to add a host. The
+                    // ssh config is read only once it appears.
+                    HostsSettingsSection(hosts: model.remoteHosts)
                     appearanceSection
                 }
                 .frame(maxWidth: Self.formWidth, alignment: .leading)

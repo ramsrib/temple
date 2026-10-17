@@ -241,7 +241,7 @@ public struct RootView: View {
                     .ignoresSafeArea()
                 PanelHost(focus: model.overlayFocus, token: model.overlayFocus.token) {
                     ShortcutsView(maxHeight: max(200, geo.size.height - 2 * ShortcutsView.windowMargin),
-                                  remoteNote: model.remoteHosts.isEnabled)
+                                  remoteNote: model.remoteHosts.hasHosts)
                 }
                 .fixedSize()
             }

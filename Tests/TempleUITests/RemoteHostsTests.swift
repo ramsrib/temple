@@ -3,8 +3,9 @@ import Foundation
 import TempleCore
 @testable import TempleUI
 
-/// Phase 0 of remote (docs/designs/remote-ssh.md): the Hosts list, the
-/// registry rebuilt from it, and the flag that keeps all of it dark.
+/// Phase 0 of remote (docs/designs/remote-ssh.md): the Hosts list and the
+/// registry rebuilt from it. There is no flag: with no host enabled nothing
+/// remote exists, and remote appears only for an enabled host.
 @MainActor
 final class RemoteHostsTests: XCTestCase {
     private static let repo = URL(fileURLWithPath: #filePath)
@@ -14,7 +15,7 @@ final class RemoteHostsTests: XCTestCase {
 
     private let added = RemoteHostRecord(name: "added-box", source: .temple, address: "10.0.0.2", user: "me", port: 2222)
 
-    // MARK: Flag off
+    // MARK: No host enabled
 
     /// Both `@main` entry points build the model through the same
     /// initializer, with nothing remote passed in, so what this file proves
@@ -27,24 +28,28 @@ final class RemoteHostsTests: XCTestCase {
             XCTAssertTrue(flat.contains("return AppModel(surfaceFactory: GhosttyTerminalSurfaceFactory(configDirectory: TempleState.directory), database: database)"),
                           "\(relative) must build the model exactly as the other entry point does")
             XCTAssertEqual(flat.components(separatedBy: "AppModel(").count, 2, "\(relative): one model, built once")
-            for word in ["hostRegistry", "remoteHosts", "RemoteHost", "TempleRemoteHost", "temple.feature"] {
+            for word in ["hostRegistry", "remoteHosts", "RemoteHost", "TempleRemoteHost", "temple.feature", "temple.settings.remoteHosts"] {
                 XCTAssertFalse(text.contains(word), "\(relative) names \(word)")
             }
         }
     }
 
-    /// The model as the entry points build it, with the flag absent (its
-    /// default): one host, one engine, nothing executed, no socket
-    /// directory and no remote store, even with hosts in the list.
-    func testFlagOffRegistersNoRemoteHostAndRunsNothing() async throws {
+    /// The model as the entry points build it, with no host in the list:
+    /// one host, one engine, nothing executed, no ssh config read, no
+    /// socket directory, no remote store (not even attached), and none of
+    /// the remote UI's inputs: no ⌘N or launcher host rows, no shortcuts
+    /// note, no sidebar notice, no pending chips. An old flag left in the
+    /// settings domain changes none of it.
+    func testWithNoHostNothingRemoteExistsOrRuns() async throws {
         let launches = RemoteHostComposition.processLaunches
         let stateDirectory = TempleState.directory
         let socketDirectory = stateDirectory.appendingPathComponent("ssh")
         let socketsBefore = FileManager.default.fileExists(atPath: socketDirectory.path)
+        let storeBefore = FileManager.default.fileExists(atPath: stateDirectory.appendingPathComponent("remote-state.sqlite").path)
 
         // Exactly the entry points' call: surface factory and database only.
         let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), database: try TempleDB.inMemory())
-        XCTAssertFalse(app.remoteHosts.isEnabled, "the flag defaults to off")
+        XCTAssertFalse(app.remoteHosts.hasHosts, "the host list starts empty")
         XCTAssertEqual(app.hostRegistry.entries.map(\.source.host), [.local])
         XCTAssertEqual(app.engineSet.engines.map(\.host), [.local])
         app.start()
@@ -52,45 +57,73 @@ final class RemoteHostsTests: XCTestCase {
         XCTAssertEqual(app.hostRegistry.entries.count, 1)
         XCTAssertEqual(RemoteHostComposition.processLaunches, launches, "the exec seam ran nothing")
         XCTAssertEqual(FileManager.default.fileExists(atPath: socketDirectory.path), socketsBefore, "no socket directory")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: stateDirectory.appendingPathComponent("remote-state.sqlite").path))
+        XCTAssertEqual(FileManager.default.fileExists(atPath: stateDirectory.appendingPathComponent("remote-state.sqlite").path),
+                       storeBefore, "no remote store")
 
-        // Hosts stored, flag still off: nothing registered, nothing read.
+        // The old flag's key, on, with an empty list: still nothing.
         let defaults = Fixture.uniqueDefaults()
-        defaults.set(hostsJSON([.config("masterblaster-mentes"), added]), forKey: RemoteHostsModel.hostsKey)
+        defaults.set(true, forKey: "temple.feature.remoteHosts")
         var configReads = 0
         let hosts = RemoteHostsModel(defaults: defaults, readConfigAliases: { configReads += 1; return ["x"] })
-        let dark = AppModel(database: try TempleDB.inMemory(), settings: SettingsStore(defaults: defaults),
-                            hostRegistry: Fixture.hostsWithoutFolderEvidence(), remoteHosts: hosts)
-        XCTAssertEqual(dark.hostRegistry.entries.count, 1)
-        XCTAssertEqual(dark.engineSet.engines.count, 1)
-        XCTAssertEqual(hosts.records, [])
-        hosts.loadConfigAliases()
-        hosts.setConfigHost("jetson-mentes", enabled: true)
-        hosts.save(added, editing: nil)
-        hosts.remove("masterblaster-mentes")
-        XCTAssertEqual(configReads, 0)
-        XCTAssertNil(hosts.startTest(for: "masterblaster-mentes"))
-        XCTAssertEqual(dark.hostRegistry.entries.count, 1)
-        XCTAssertEqual(defaults.data(forKey: RemoteHostsModel.hostsKey), hostsJSON([.config("masterblaster-mentes"), added]),
-                       "a dark build never rewrites the list")
+        let root = URL(fileURLWithPath: "/private/tmp/temple-no-host-\(UUID().uuidString.prefix(8))")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let empty = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+                             database: try TempleDB(path: root.appendingPathComponent("temple.sqlite")),
+                             settings: SettingsStore(defaults: defaults),
+                             hostRegistry: Fixture.hostsWithoutFolderEvidence(), remoteHosts: hosts)
+        empty.start()
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertFalse(hosts.hasHosts)
+        XCTAssertEqual(empty.hostRegistry.entries.map(\.source.host), [.local])
+        XCTAssertEqual(empty.engineSet.engines.map(\.host), [.local])
+        XCTAssertTrue(empty.remoteHostIDs.isEmpty)
+        XCTAssertTrue(empty.remoteLaunchHosts.isEmpty, "no host rows in ⌘N or the launcher")
+        XCTAssertNil(empty.remoteNotice, "no sidebar notice")
+        XCTAssertNil(empty.overlay.remoteProjectState, "the remote store is not even attached")
+        XCTAssertFalse(empty.openSessions.tabs.contains { $0.remote != nil }, "no pending chips")
+        XCTAssertEqual(configReads, 0, "no ssh config read until the Hosts card is shown")
+        XCTAssertNil(hosts.configAliases)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("remote-state.sqlite").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("ssh").path))
         XCTAssertEqual(RemoteHostComposition.processLaunches, launches)
     }
 
-    func testOnlyAnExplicitTrueTurnsTheFlagOn() {
-        for (value, expected) in [(nil, false), (false as Any?, false), ("true" as Any?, false), (1 as Any?, true), (true as Any?, true)] {
-            let defaults = Fixture.uniqueDefaults()
-            if let value { defaults.set(value, forKey: RemoteHostsModel.featureKey) }
-            XCTAssertEqual(RemoteHostsModel.featureEnabled(in: defaults), expected, String(describing: value))
-        }
-        XCTAssertEqual(RemoteHostsModel.featureKey, "temple.feature.remoteHosts")
-        XCTAssertEqual(RemoteHostsModel.hostsKey, "temple.settings.remoteHosts")
+    /// Enabling a host is what makes remote appear, and only for that host.
+    func testEnablingAHostIsWhatMakesRemoteAppear() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/temple-first-host-\(UUID().uuidString.prefix(8))")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let defaults = Fixture.uniqueDefaults()
+        let hosts = RemoteHostsModel(defaults: defaults, readConfigAliases: { [] })
+        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+                           database: try TempleDB(path: root.appendingPathComponent("temple.sqlite")),
+                           settings: SettingsStore(defaults: defaults),
+                           hostRegistry: Fixture.hostsWithoutFolderEvidence(), remoteHosts: hosts)
+        XCTAssertTrue(app.remoteLaunchHosts.isEmpty)
+        hosts.setConfigHost("jetson-mentes", enabled: true)
+        XCTAssertTrue(hosts.hasHosts)
+        XCTAssertEqual(app.remoteLaunchHosts, [HostID(rawValue: "jetson-mentes")], "rows for that host only")
+        XCTAssertNotNil(app.overlay.remoteProjectState, "its projects' masks have a place now")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("remote-state.sqlite").path),
+                       "attached is not created: nothing written yet")
+        hosts.remove("jetson-mentes")
+        XCTAssertFalse(hosts.hasHosts)
+        XCTAssertTrue(app.remoteLaunchHosts.isEmpty)
     }
 
-    // MARK: Flag on
+    func testTheHostListKeyIsUnchangedAndTheOldFlagIsIgnored() {
+        XCTAssertEqual(RemoteHostsModel.hostsKey, "temple.settings.remoteHosts")
+        let defaults = Fixture.uniqueDefaults()
+        defaults.set(false, forKey: "temple.feature.remoteHosts")
+        defaults.set(hostsJSON([added]), forKey: RemoteHostsModel.hostsKey)
+        let hosts = RemoteHostsModel(defaults: defaults, readConfigAliases: { [] })
+        XCTAssertEqual(hosts.records, [added], "a host is enabled whatever the old flag said")
+        XCTAssertEqual(hosts.registeredHosts, [added])
+    }
+
+    // MARK: Hosts enabled
 
     private func enabledDefaults(_ records: [RemoteHostRecord]) -> UserDefaults {
         let defaults = Fixture.uniqueDefaults()
-        defaults.set(true, forKey: RemoteHostsModel.featureKey)
         defaults.set(hostsJSON(records), forKey: RemoteHostsModel.hostsKey)
         return defaults
     }
@@ -178,7 +211,7 @@ final class RemoteHostsTests: XCTestCase {
         XCTAssertEqual(reads, 1)
     }
 
-    /// The flag on with no hosts, over a database on disk: reordering,
+    /// No host, then a host with no project yet, over a database on disk: reordering,
     /// archiving and restoring local projects creates no remote store. Once
     /// a host's project has an order, a local reorder still clears it.
     func testWithNoHostsLocalProjectChangesCreateNoRemoteStore() throws {
@@ -189,7 +222,12 @@ final class RemoteHostsTests: XCTestCase {
         let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), database: db,
                            settings: SettingsStore(defaults: enabledDefaults([])),
                            hostRegistry: Fixture.hostsWithoutFolderEvidence())
-        XCTAssertTrue(app.remoteHosts.isEnabled)
+        XCTAssertNil(app.overlay.remoteProjectState, "no host: the remote store is not attached")
+        app.moveProject(ProjectKey(host: .local, path: "/p/b"), before: ProjectKey(host: .local, path: "/p/a"))
+        app.moveProject(ProjectKey(host: .local, path: "/p/a"), before: ProjectKey(host: .local, path: "/p/b"))
+        // A host enabled with no project of its own yet: local changes
+        // still create no store.
+        app.remoteHosts.setConfigHost("box", enabled: true)
         XCTAssertEqual(app.databaseDirectory?.resolvingSymlinksInPath().path, root.resolvingSymlinksInPath().path)
         let store = root.appendingPathComponent("remote-state.sqlite")
         let a = ProjectKey(host: .local, path: "/p/a"), b = ProjectKey(host: .local, path: "/p/b")

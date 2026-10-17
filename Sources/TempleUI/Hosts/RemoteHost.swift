@@ -330,6 +330,9 @@ final class RemoteProjectStateStore: RemoteProjectStatePersisting {
     private let stateDirectory: URL
     init(stateDirectory: URL) { self.stateDirectory = stateDirectory }
 
+    /// Whether the remote store file is there (asking creates nothing).
+    static func exists(in stateDirectory: URL) -> Bool { RemoteHostComposition.storeExists(in: stateDirectory) }
+
     private var store: RemoteStateStore? { try? RemoteHostComposition.store(in: stateDirectory) }
 
     /// Reading creates no file: with none yet there is nothing to read.

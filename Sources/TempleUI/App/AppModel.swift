@@ -545,10 +545,11 @@ public final class AppModel: ObservableObject {
     /// One engine per registry host, merged by current row ownership.
     let engineSet: EngineSet
     /// The registry as it stands: this Mac, plus every enabled remote host
-    /// while `temple.feature.remoteHosts` is on (`rebuildRemoteHosts`).
+    /// (`rebuildRemoteHosts`); with none enabled, this Mac alone.
     public var hostRegistry: HostRegistry { hostBox.value }
     let hostBox: HostRegistryBox
-    /// The Hosts connection manager (Settings), dark behind its flag.
+    /// The Hosts connection manager (Settings): remote is invisible until
+    /// it holds an enabled host.
     let remoteHosts: RemoteHostsModel
     /// Makes terminals outside tabs (the Test connection sheet's).
     let surfaceFactory: TerminalSurfaceFactory
@@ -658,11 +659,6 @@ public final class AppModel: ObservableObject {
         wireHistory(database: database)
         self.remoteHosts.onChange = { [weak self] in self?.rebuildRemoteHosts() }
         rebuildRemoteHosts()
-        // A host's projects keep their masks and order in the remote store;
-        // with the feature off it is never opened (no file is created).
-        if self.remoteHosts.isEnabled {
-            overlay.remoteProjectState = RemoteProjectStateStore(stateDirectory: databaseDirectory ?? TempleState.directory)
-        }
         overlayFocus.focusActiveTerminal = { [weak self] in self?.openSessions.focusActiveTerminal() }
         // NB: detection is NOT started here. It runs real binaries (`claude --version`),
         // and `AppModel` is constructed by tests — which must not shell out to whatever
@@ -989,6 +985,18 @@ public final class AppModel: ObservableObject {
             engineSet.add(makeEngine(entry.source))
             managedRemoteHosts[record.host] = record
         }
+        attachRemoteProjectState()
+    }
+
+    /// A host's projects keep their masks and order in the remote store.
+    /// It is attached once a host is enabled, or at launch when the store
+    /// is already there (hosts were set up before); otherwise never, so
+    /// with no host nothing remote is opened, read or created.
+    private func attachRemoteProjectState() {
+        guard overlay.remoteProjectState == nil else { return }
+        let directory = databaseDirectory ?? TempleState.directory
+        guard remoteHosts.hasHosts || RemoteProjectStateStore.exists(in: directory) else { return }
+        overlay.remoteProjectState = RemoteProjectStateStore(stateDirectory: directory)
     }
 
     // MARK: Lifecycle

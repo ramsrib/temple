@@ -11,15 +11,16 @@ import TempleCore
 /// `TEMPLE_DEFAULTS_SUITE`). Test results, the config's aliases and
 /// anything ssh resolves are memory only and recomputed.
 ///
-/// Dark behind `temple.feature.remoteHosts` (a user-layer key, default
-/// off, read once at launch): with it off the app registers no remote host,
-/// reads no ssh config and runs nothing.
+/// No flag: remote is invisible until a host is enabled. With the list
+/// empty the app registers no remote host, reads no ssh config (until the
+/// Hosts card is shown) and runs nothing; every remote surface (⌘N's and
+/// the launcher's host rows, the shortcuts note, the sidebar's notices)
+/// appears only for an enabled host (`hasHosts`). The key of the old flag
+/// (`temple.feature.remoteHosts`) is ignored.
 @MainActor
 public final class RemoteHostsModel: ObservableObject {
-    static let featureKey = "temple.feature.remoteHosts"
     static let hostsKey = "temple.settings.remoteHosts"
 
-    let isEnabled: Bool
     /// The enabled hosts, in the order they were added.
     @Published private(set) var records: [RemoteHostRecord]
     /// Aliases in `~/.ssh/config` (nil until read).
@@ -47,17 +48,14 @@ public final class RemoteHostsModel: ObservableObject {
         self.readConfigAliases = readConfigAliases
         self.stateDirectory = stateDirectory
         self.makeTest = makeTest
-        isEnabled = Self.featureEnabled(in: defaults)
-        records = isEnabled ? Self.load(defaults).records : []
-    }
-
-    /// The flag as stored: only an explicit true turns it on.
-    static func featureEnabled(in defaults: UserDefaults) -> Bool {
-        (defaults.object(forKey: featureKey) as? Bool) ?? false
+        records = Self.load(defaults).records
     }
 
     /// The hosts the registry carries: every enabled one, tested or not.
-    var registeredHosts: [RemoteHostRecord] { isEnabled ? records : [] }
+    var registeredHosts: [RemoteHostRecord] { records }
+
+    /// At least one host is enabled: only then does any remote UI appear.
+    var hasHosts: Bool { !records.isEmpty }
 
     func record(named name: String) -> RemoteHostRecord? { records.first { $0.name == name } }
 
@@ -65,13 +63,11 @@ public final class RemoteHostsModel: ObservableObject {
 
     /// Reads the aliases now (on showing the Hosts card, and on request).
     func loadConfigAliases() {
-        guard isEnabled else { return }
         configAliases = readConfigAliases()
     }
 
     /// A config alias turned on or off in Temple.
     func setConfigHost(_ alias: String, enabled: Bool) {
-        guard isEnabled else { return }
         if enabled {
             guard record(named: alias) == nil else { return }
             mutate { $0.append(.config(alias)) }
@@ -85,7 +81,6 @@ public final class RemoteHostsModel: ObservableObject {
     /// Adds `record`, or replaces the one named `editing`. An edit forgets
     /// the last test: it was about the old address.
     func save(_ record: RemoteHostRecord, editing: String?) {
-        guard isEnabled else { return }
         if let editing {
             stopTest(editing)
             summaries[editing] = nil
@@ -101,7 +96,6 @@ public final class RemoteHostsModel: ObservableObject {
     /// Removes a host (or disables a config alias): its test stops, its
     /// engine and entry go. Its master, if any, is left to expire.
     func remove(_ name: String) {
-        guard isEnabled else { return }
         stopTest(name)
         summaries[name] = nil
         mutate { $0.removeAll { $0.name == name } }
@@ -111,7 +105,7 @@ public final class RemoteHostsModel: ObservableObject {
 
     /// A new Test connection for a host; its result is kept when it ends.
     func startTest(for name: String) -> ConnectionTest? {
-        guard isEnabled, let record = record(named: name) else { return nil }
+        guard let record = record(named: name) else { return nil }
         stopTest(name)
         let test = makeTest(record, stateDirectory())
         test.onFinished = { [weak self, weak test] summary in

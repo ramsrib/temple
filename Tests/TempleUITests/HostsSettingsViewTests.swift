@@ -9,9 +9,8 @@ import TempleTerminalAPI
 /// process: nothing of the app is launched or driven.
 @MainActor
 final class HostsSettingsViewTests: XCTestCase {
-    private func app(enabled: Bool, records: [RemoteHostRecord] = [], configReads: @escaping () -> [String]) throws -> (AppModel, FakeTerminalSurfaceFactory) {
+    private func app(records: [RemoteHostRecord] = [], configReads: @escaping () -> [String]) throws -> (AppModel, FakeTerminalSurfaceFactory) {
         let defaults = Fixture.uniqueDefaults()
-        if enabled { defaults.set(true, forKey: RemoteHostsModel.featureKey) }
         defaults.set(RemoteHostList(records: records).encode(), forKey: RemoteHostsModel.hostsKey)
         let state = URL(fileURLWithPath: "/private/tmp/temple-hosts-view-\(UUID().uuidString.prefix(8))")
         addTeardownBlock { try? FileManager.default.removeItem(at: state) }
@@ -56,19 +55,26 @@ final class HostsSettingsViewTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     }
 
-    func testTheHostsCardAppearsOnlyWithTheFlagAndReadsTheConfigThen() throws {
+    /// No flag: the Hosts card is there with no host enabled (the one
+    /// remote surface then, and the way to add one), and the ssh config is
+    /// read only once it is shown, never before.
+    func testTheHostsCardIsAlwaysShownAndReadsTheConfigOnlyWhenShown() throws {
         var reads = 0
-        let (dark, _) = try app(enabled: false) { reads += 1; return ["box"] }
-        let darkWindow = render(SettingsView(settings: dark.settings).environmentObject(dark))
+        let (empty, _) = try app { reads += 1; return ["box"] }
+        XCTAssertEqual(reads, 0, "building the model reads no ssh config")
+        XCTAssertNil(empty.remoteHosts.configAliases)
+        let emptyWindow = render(SettingsView(settings: empty.settings).environmentObject(empty))
         spin()
-        XCTAssertEqual(reads, 0, "flag off: the Hosts card is absent and reads nothing")
-        darkWindow.close()
+        XCTAssertEqual(reads, 1, "with no host, the card is shown and reads ~/.ssh/config on appearing")
+        XCTAssertEqual(empty.remoteHosts.configAliases, ["box"])
+        XCTAssertEqual(empty.hostRegistry.entries.map(\.source.host), [.local], "showing the card registers nothing")
+        emptyWindow.close()
 
-        let (lit, _) = try app(enabled: true, records: [.config("box"),
+        let (lit, _) = try app(records: [.config("box"),
             RemoteHostRecord(name: "added", source: .temple, address: "10.0.0.2", user: "me")]) { reads += 1; return ["box", "jetson-mentes"] }
         let window = render(SettingsView(settings: lit.settings).environmentObject(lit))
         spin()
-        XCTAssertEqual(reads, 1, "the card read ~/.ssh/config once, on appearing")
+        XCTAssertEqual(reads, 2, "the card read ~/.ssh/config once, on appearing")
         XCTAssertEqual(lit.remoteHosts.configAliases, ["box", "jetson-mentes"])
         window.close()
     }
@@ -78,7 +84,7 @@ final class HostsSettingsViewTests: XCTestCase {
     /// a master is up on Temple's socket (here none: ssh -O check on an
     /// empty socket path, local); closing the sheet tears the terminal down.
     func testTheTestSheetRunsSSHAndAsksForTheMasterWhenItEnds() throws {
-        let (app, factory) = try app(enabled: true, records: [.config("box")]) { [] }
+        let (app, factory) = try app(records: [.config("box")]) { [] }
         let test = try XCTUnwrap(app.remoteHosts.startTest(for: "box"))
         var closed = false
         let sheet = ConnectionTestSheet(test: test, surfaceFactory: factory, appearance: .default,
@@ -118,7 +124,7 @@ final class HostsSettingsViewTests: XCTestCase {
     /// The terminal is 160 pt; the card's links do not repeat the host and
     /// its status line is a tertiary caption until a test proves a fault.
     func testTheTestSheetsTerminalAppliesTheAppsAppearance() throws {
-        let (app, factory) = try app(enabled: true, records: [.config("box")]) { [] }
+        let (app, factory) = try app(records: [.config("box")]) { [] }
         let test = try XCTUnwrap(app.remoteHosts.startTest(for: "box"))
         let light = TerminalAppearance(fontSize: 13, colorScheme: .light)
         let window = render(ConnectionTestSheet(test: test, surfaceFactory: factory, appearance: light,
@@ -137,7 +143,6 @@ final class HostsSettingsViewTests: XCTestCase {
     /// A socket directory Temple won't use: the sheet starts no terminal.
     func testNoTerminalStartsWhenTheTestCannotBePrepared() throws {
         let defaults = Fixture.uniqueDefaults()
-        defaults.set(true, forKey: RemoteHostsModel.featureKey)
         defaults.set(RemoteHostList(records: [.config("box")]).encode(), forKey: RemoteHostsModel.hostsKey)
         let state = URL(fileURLWithPath: "/private/tmp/temple-hosts-blocked-\(UUID().uuidString.prefix(8))")
         try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
@@ -174,7 +179,6 @@ final class HostsSettingsViewTests: XCTestCase {
             .write(toFile: ssh, atomically: true, encoding: .utf8)
         chmod(ssh, 0o755)
         let defaults = Fixture.uniqueDefaults()
-        defaults.set(true, forKey: RemoteHostsModel.featureKey)
         defaults.set(RemoteHostList(records: [.config("box")]).encode(), forKey: RemoteHostsModel.hostsKey)
         let hosts = RemoteHostsModel(defaults: defaults, readConfigAliases: { [] },
                                      stateDirectory: { URL(fileURLWithPath: tree + "/state") },

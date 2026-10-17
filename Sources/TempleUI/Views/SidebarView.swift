@@ -945,9 +945,10 @@ private struct ProjectDisclosure: View {
             NSPasteboard.general.setString(project.path, forType: .string)
         }
         Button("Show in History") { model.showInHistory(project: project.key) }
-        if !project.key.host.isLocal {
+        if !project.key.host.isLocal, model.remoteHost(project.key.host) != nil {
             // What Temple started on that host and still tracks, with Stop
             // and Keep: reachable from the project, not only from Settings.
+            // Only for an enabled host.
             Button(RemoteCopy.sessionsOnMenuItem(project.key.host.rawValue)) {
                 model.showRemoteSessions(project.key.host)
             }

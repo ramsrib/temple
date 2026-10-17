@@ -47,8 +47,8 @@ struct ShortcutsView: View {
     /// traffic lights. Bounded, it keeps its natural height when that fits
     /// and scrolls its sections when it does not.
     var maxHeight: CGFloat = .infinity
-    /// Sessions on hosts are on (`temple.feature.remoteHosts`): one line
-    /// on how scrolling works in them (tmux owns their scrollback).
+    /// A host is enabled: one line on how scrolling works in sessions
+    /// there (tmux owns their scrollback). Absent otherwise.
     var remoteNote = false
 
     static let remoteScrollingNote =

@@ -39,7 +39,6 @@ final class RemoteGateWalkTests: XCTestCase {
             source = FakeHostSource(host: host)
             factory = FakeTerminalSurfaceFactory()
             let defaults = Fixture.uniqueDefaults()
-            defaults.set(true, forKey: RemoteHostsModel.featureKey)
             defaults.set(try JSONEncoder().encode([["name": host.rawValue, "source": "config"]]), forKey: RemoteHostsModel.hostsKey)
             let local = Fixture.hostsWithoutFolderEvidence().entries[0]
             let hosts = HostRegistry(entries: [local, .init(source: source, launcher: remote)])

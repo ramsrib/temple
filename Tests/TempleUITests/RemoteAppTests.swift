@@ -74,7 +74,6 @@ final class RemoteAppTests: XCTestCase {
         let remote = FakeRemoteHost("box")
         remote.unnoticed = 2
         let defaults = Fixture.uniqueDefaults()
-        defaults.set(true, forKey: RemoteHostsModel.featureKey)
         defaults.set(try JSONEncoder().encode([["name": "box", "source": "config"]]), forKey: RemoteHostsModel.hostsKey)
         let local = Fixture.hostsWithoutFolderEvidence().entries[0]
         let hosts = HostRegistry(entries: [local, .init(source: FakeHostSource(host: hostID), launcher: remote)])

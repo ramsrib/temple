@@ -38,8 +38,7 @@ extension AppModel {
         hostRegistry.entry(for: host)?.launcher as? RemoteSessionHost
     }
 
-    /// Every registered host with sessions on it (no files are read or
-    /// created for a host with none, nor with the feature off).
+    /// Every registered remote host (none until a host is enabled).
     var remoteHostIDs: [HostID] {
         hostRegistry.entries.compactMap { $0.launcher is RemoteSessionHost ? $0.source.host : nil }
     }
@@ -83,7 +82,6 @@ extension AppModel {
     /// server; when the host answers, the line says how many are still left
     /// running. Nothing is stopped: a contact only asks.
     func contactHostsWithSessionsLeftRunning() {
-        guard remoteHosts.isEnabled else { return }
         for host in remoteHosts.registeredHosts.map(\.host) {
             guard let launcher = remoteHost(host) else { continue }
             let ticket = openSessions.remoteTabs.gate.ticket(host: host)

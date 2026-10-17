@@ -348,16 +348,23 @@ deletable without touching core rows; keep it that way
   host list in the `temple.settings.remoteHosts` key, never in
   `session_state`, `open_tabs` or `project_state`. A session on a host is
   still an ordinary row and its tab an ordinary saved tab.
-- **Two entry points.** The flag `temple.feature.remoteHosts` and the
-  registry are built by `AppStartup`/`AppModel`, which both `TempleApp.swift`
-  files share; anything remote added at launch goes there, not into one
-  `@main`. Before a release, run `Scripts/check-remote-off.sh` on the built
-  `.app`: it proves the shipped binary carries the remote code and that
-  nothing registers a default for the flag.
-- **Flag off means nothing happens.** With the flag off the registry holds
-  this Mac only, no ssh config is read, nothing is spawned and no remote
-  store file is created (`RemoteHostsTests`). A new remote path must keep
-  that true and be tested with the flag off.
+- **Two entry points.** The host list (`temple.settings.remoteHosts`) and
+  the registry are built by `AppStartup`/`AppModel`, which both
+  `TempleApp.swift` files share; anything remote added at launch goes
+  there, not into one `@main`. Before a release, run
+  `Scripts/check-remote-code.sh` on the built `.app`: it proves the shipped
+  binary carries the remote code and that nothing gives the host list a
+  default.
+- **No host enabled means nothing happens, and local is unchanged.** There
+  is no flag. With no host enabled the registry holds this Mac only, no ssh
+  config is read until Settings' Hosts card is shown, nothing is spawned,
+  no remote store file is created, and no remote UI appears (no ⌘N or
+  launcher host rows, no shortcuts note, no sidebar notices): the Hosts
+  card is the one exception, since it is how a host is added
+  (`RemoteHostsTests`). Remote UI appears for an enabled host only. A
+  remote change must not alter a local tab's behaviour or looks: scope it
+  to remote tabs and projects (`tab.remote`, `host.isLocal`), and test the
+  local case against what it did before.
 - **Never on a real host from a casual run.** Tests use `LocalShellExec` or
   stubs (`SSHConnectionTests` runs the local `ssh` against fixtures and a
   local listener only). The Linux acceptance tests are the only ones that

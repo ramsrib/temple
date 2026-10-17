@@ -4,7 +4,8 @@ import TempleCore
 import TempleTerminalAPI
 
 /// Settings' Hosts connection manager (docs/designs/remote-ssh.md section
-/// 7), shown only while `temple.feature.remoteHosts` is on: hosts added in
+/// 7), always shown (the one remote surface with no host enabled, and the
+/// way to enable one; the ssh config is read when it appears): hosts added in
 /// Temple (editable, removable) and the aliases in `~/.ssh/config`
 /// (read-only, each switched on or off for Temple). Every enabled host has
 /// one status line and Test connection.
