@@ -736,9 +736,13 @@ public final class TempleDB: @unchecked Sendable {
     /// it is archived as a person's archive (pin dropped, no reason). A
     /// membership replaced since, by this connection or any other, matches
     /// neither statement and is left alone. A write that fails throws.
+    ///
+    /// `lastOpenedAt`: the row's open state when Discard began. Both
+    /// statements require it unchanged (`IS`, so NULL matches NULL): an
+    /// Open between the choice and this write keeps the row as it is.
     @discardableResult
     public func discardRemoteSession(sessionID: String, host: HostID, incarnation: String,
-                                     at: Date = Date()) throws -> DiscardDisposition {
+                                     lastOpenedAt: Date?, at: Date = Date()) throws -> DiscardDisposition {
         let disposition = try db.write { database -> DiscardDisposition in
             try database.execute(
                 sql: """
@@ -747,18 +751,19 @@ public final class TempleDB: @unchecked Sendable {
                       AND transcript_path IS NULL
                       AND pinned = 0 AND archived = 0
                       AND custom_name IS NULL AND color IS NULL
+                      AND last_opened_at IS ?
                       AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
                     """,
-                arguments: [sessionID, host.rawValue, incarnation, JoinedVia.created.rawValue, sessionID])
+                arguments: [sessionID, host.rawValue, incarnation, JoinedVia.created.rawValue, lastOpenedAt, sessionID])
             if database.changesCount > 0 { return .deleted }
             try database.execute(
                 sql: """
                     UPDATE session_state
                     SET archived = 1, pinned = 0, archive_reason = NULL, kept_at = NULL, archived_at = ?
-                    WHERE id = ? AND host = ? AND incarnation = ?
+                    WHERE id = ? AND host = ? AND incarnation = ? AND last_opened_at IS ?
                       AND (archived IS NOT 1 OR pinned != 0 OR archive_reason IS NOT NULL OR kept_at IS NOT NULL)
                     """,
-                arguments: [at, sessionID, host.rawValue, incarnation])
+                arguments: [at, sessionID, host.rawValue, incarnation, lastOpenedAt])
             return database.changesCount > 0 ? .archived : .unchanged
         }
         switch disposition {

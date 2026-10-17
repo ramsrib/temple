@@ -33,7 +33,11 @@ public final class RemoteTabController {
     /// Discard on a session whose conversation was never confirmed: the
     /// app lets its row go (or archives it, if the row is the user's), only
     /// while the row is still the membership Discard was chosen for.
-    public var discardHandler: ((_ sessionID: String, _ host: HostID, _ incarnation: String) throws -> Void)?
+    public var discardHandler: ((_ sessionID: String, _ host: HostID, _ incarnation: String,
+                                 _ lastOpenedAt: Date?) throws -> Void)?
+    /// A row's open state (`last_opened_at`), read when Discard is chosen:
+    /// an Open after that keeps the row.
+    public var rowLastOpened: (_ sessionID: String) -> Date? = { _ in nil }
     /// A row's membership identity, read when Discard is chosen.
     public var rowIncarnation: (_ sessionID: String) -> String? = { _ in nil }
 
@@ -489,6 +493,7 @@ public final class RemoteTabController {
         let hostID = tab.host, agent = tab.agent
         let ticket = gate.ticket(host: hostID)
         let incarnation = rowIncarnation(sid)
+        let lastOpened = rowLastOpened(sid)
         // Held here, not looked up later: the disposition is durable work
         // and must not depend on this model outliving the window.
         let disposition = discardHandler
@@ -503,7 +508,7 @@ public final class RemoteTabController {
         let discardSession: @MainActor () async -> Void = { [weak self] in
             do {
                 try await host.discard(sessionID: sid)
-                if let incarnation { try disposition?(sid, hostID, incarnation) }
+                if let incarnation { try disposition?(sid, hostID, incarnation, lastOpened) }
             } catch {
                 guard let self, self.gate.admit(.discardNotice, ticket) else { return }
                 self.noticeHandler?(hostID, RemoteCopy.unrecorded(host.hostName, detail: error.localizedDescription))
@@ -529,7 +534,7 @@ public final class RemoteTabController {
                         TempleUILog.remote.notice("Discard of \(sid, privacy: .public) kept: a newer run is open")
                         return
                     }
-                    if let incarnation { try disposition?(sid, hostID, incarnation) }
+                    if let incarnation { try disposition?(sid, hostID, incarnation, lastOpened) }
                 } catch {
                     guard let self, self.gate.admit(.discardNotice, ticket) else { return }
                     self.noticeHandler?(hostID, RemoteCopy.unrecorded(host.hostName, detail: error.localizedDescription))

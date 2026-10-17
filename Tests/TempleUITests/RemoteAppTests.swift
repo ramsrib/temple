@@ -325,9 +325,9 @@ final class RemoteAppTests: XCTestCase {
         let app = try app(FakeRemoteHost("box"), db: db)
         await settle { app.overlay.rows["d1"] != nil }
         let incarnation = try XCTUnwrap(app.overlay.rows["d1"]?.incarnation)
-        try app.openSessions.remoteTabs.discardHandler?("d1", hostID, "another-membership")
+        try app.openSessions.remoteTabs.discardHandler?("d1", hostID, "another-membership", nil)
         XCTAssertEqual(app.overlay.rows["d1"]?.archived, false, "a replaced row is left alone")
-        try app.openSessions.remoteTabs.discardHandler?("d1", hostID, incarnation)
+        try app.openSessions.remoteTabs.discardHandler?("d1", hostID, incarnation, nil)
         await settle { app.overlay.rows["d1"]?.archived == true || app.overlay.rows["d1"] == nil }
         XCTAssertTrue(app.overlay.rows["d1"] == nil || app.overlay.rows["d1"]?.archived == true)
     }
@@ -358,5 +358,37 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertNil(app.remoteNotice)
         app.chooseRemoteFolder(host: hostID)
         XCTAssertNil(app.remoteFolderSheet)
+    }
+
+    /// Discard on a session Temple linked on its own: an Open that lands
+    /// after its run's dismissal commits, before the row's disposition,
+    /// keeps the row as it is (Sol round 4); undisturbed, the row goes.
+    func testDiscardLeavesARowReopenedBeforeItsDisposition() async throws {
+        for reopen in [false, true] {
+            let remote = FakeRemoteHost("box")
+            remote.suggestionsResult = .candidates([RemoteSuggestion(rolloutPath: "/r/c7.jsonl", sessionID: "c7",
+                                                                     firstPrompt: "hi", startedAt: Date(),
+                                                                     directory: "/home/u/p")])
+            let app = try app(remote)
+            app.openSessions.remoteTabs.identitySchedule = [0.01]
+            app.openSessions.remoteTabs.identityInterval = 0.05
+            let tab = app.openSessions.newSession(agent: .codex, project: ProjectKey(host: hostID, path: "/home/u/p"))
+            await settle { tab.hasLiveProcess }
+            app.openSessions.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+            await settle { tab.remote?.linkedOnItsOwn == true }
+            XCTAssertNotNil(app.overlay.rows["c7"])
+            if reopen {
+                remote.afterStoppedRunDismissal = { app.overlay.recordOpened("c7", host: self.hostID) }
+            }
+            app.openSessions.remoteTabs.discard(tab)
+            await settle { remote.stoppedRunDismissals == ["p1"] }
+            try await Task.sleep(for: .milliseconds(200))
+            if reopen {
+                XCTAssertNotNil(app.overlay.rows["c7"], "reopened meanwhile: the row stays")
+                XCTAssertEqual(app.overlay.rows["c7"]?.archived, false)
+            } else {
+                XCTAssertNil(app.overlay.rows["c7"], "undisturbed, the row goes")
+            }
+        }
     }
 }

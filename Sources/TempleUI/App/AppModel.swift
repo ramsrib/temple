@@ -713,14 +713,17 @@ public final class AppModel: ObservableObject {
             self?.remoteSessionsSheet?.id == id || self?.remoteFolderSheet?.id == id
         }
         openSessions.remoteTabs.rowIncarnation = { [weak self] id in self?.overlay.rows[id]?.incarnation }
-        openSessions.remoteTabs.discardHandler = { [weak self] id, host, incarnation in
+        openSessions.remoteTabs.rowLastOpened = { [weak self] id in self?.overlay.rows[id]?.lastOpenedAt }
+        openSessions.remoteTabs.discardHandler = { [weak self] id, host, incarnation, lastOpenedAt in
             // One transaction under (id, host, incarnation): the row goes,
             // or (the user made it theirs: named, pinned, colored) is
             // archived, reversibly. A membership replaced since, through
             // any connection, is another session's and is left alone. A
             // failed write throws, and the caller says so.
             guard let self else { return }
-            _ = try self.overlay.discardRemoteSession(id, host: host, incarnation: incarnation)
+            // An Open since Discard was chosen (`lastOpenedAt` moved)
+            // leaves the row as it is.
+            _ = try self.overlay.discardRemoteSession(id, host: host, incarnation: incarnation, lastOpenedAt: lastOpenedAt)
             self.openSessions.forgetClosedTabs(sessionID: id)
         }
         // ⌘T then close without typing: the minted id never got a transcript,

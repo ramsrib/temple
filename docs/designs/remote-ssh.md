@@ -400,9 +400,9 @@ core join; a run that ended meanwhile concludes as a yes does, `.known` is
 simply the session, and a failed claim asks the question). The only
 addition is a display-only note in the tab, gated with the rest of the
 tab's part ("Linked to “<first prompt>”, the only Codex session started
-in this folder. If that’s wrong, Discard stops it and removes it from
-Temple.", or "the Codex session started <time>, the only one started in
-this folder" with no prompt). A wrong one is corrected by Discard: the
+in this folder since this tab opened. If that’s wrong, Discard stops it and
+removes it from Temple.", or "the Codex session started <time>, the only
+one started in this folder since this tab opened" with no prompt). A wrong one is corrected by Discard: the
 agent is stopped first (Temple's client, then the one-command stop), and
 a confirmed stop dismisses that run alone (`dismissStoppedRun`, one
 immediate transaction, refused while another run of the session is live

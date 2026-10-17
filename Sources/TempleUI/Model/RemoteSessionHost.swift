@@ -612,10 +612,10 @@ public enum RemoteCopy {
     public static func linkedOnItsOwn(_ suggestion: RemoteSuggestion, now: Date = Date()) -> String {
         let fix = "If that\u{2019}s wrong, Discard stops it and removes it from Temple."
         if let prompt = suggestion.firstPrompt {
-            return "Linked to \u{201C}\(prompt)\u{201D}, the only Codex session started in this folder. \(fix)"
+            return "Linked to \u{201C}\(prompt)\u{201D}, the only Codex session started in this folder since this tab opened. \(fix)"
         }
         return "Linked to the Codex session started \(startTime(suggestion.startedAt, now: now)), "
-            + "the only one started in this folder. \(fix)"
+            + "the only one started in this folder since this tab opened. \(fix)"
     }
 
     /// A run whose id another session started from Temple already holds.

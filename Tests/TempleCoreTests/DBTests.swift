@@ -1245,18 +1245,42 @@ extension DBTests {
         let fresh = try XCTUnwrap(other.sessionState("replaced")?.incarnation)
         XCTAssertNotEqual(fresh, stale)
 
-        XCTAssertEqual(try db.discardRemoteSession(sessionID: "replaced", host: remote, incarnation: stale), .unchanged)
+        XCTAssertEqual(try db.discardRemoteSession(sessionID: "replaced", host: remote, incarnation: stale, lastOpenedAt: nil), .unchanged)
         XCTAssertEqual(try db.sessionState("replaced")?.incarnation, fresh, "the replacement is untouched")
         XCTAssertEqual(try db.sessionState("replaced")?.archived, false)
-        XCTAssertEqual(try db.discardRemoteSession(sessionID: "plain", host: .local, incarnation: plain), .unchanged,
+        XCTAssertEqual(try db.discardRemoteSession(sessionID: "plain", host: .local, incarnation: plain, lastOpenedAt: nil), .unchanged,
                        "another host's id names nothing here")
-        XCTAssertEqual(try db.discardRemoteSession(sessionID: "plain", host: remote, incarnation: plain), .deleted)
+        XCTAssertEqual(try db.discardRemoteSession(sessionID: "plain", host: remote, incarnation: plain, lastOpenedAt: nil), .deleted)
         XCTAssertNil(try db.sessionState("plain"))
-        XCTAssertEqual(try db.discardRemoteSession(sessionID: "named", host: remote, incarnation: named), .archived)
+        XCTAssertEqual(try db.discardRemoteSession(sessionID: "named", host: remote, incarnation: named, lastOpenedAt: nil), .archived)
         let archived = try XCTUnwrap(db.sessionState("named"))
         XCTAssertTrue(archived.archived)
         XCTAssertEqual(archived.customName, "Mine")
-        XCTAssertEqual(try db.discardRemoteSession(sessionID: "named", host: remote, incarnation: named), .unchanged)
+        XCTAssertEqual(try db.discardRemoteSession(sessionID: "named", host: remote, incarnation: named, lastOpenedAt: nil), .unchanged)
+    }
+
+    /// An Open between Discard's choice and its write leaves the row: both
+    /// the delete and the archive require the open state Discard saw.
+    func testRemoteDiscardLeavesARowOpenedSinceItWasChosen() throws {
+        let (db, _) = try database()
+        let remote = HostID(rawValue: "box")
+        let core = SessionCore(host: remote)
+        try db.join(sessionID: "plain", via: .created, core: core)
+        try db.join(sessionID: "named", via: .created, core: core)
+        try db.setCustomName("Mine", sessionID: "named")
+        let plain = try XCTUnwrap(db.sessionState("plain")?.incarnation)
+        let named = try XCTUnwrap(db.sessionState("named")?.incarnation)
+        let seen = try db.sessionState("plain")?.lastOpenedAt
+        XCTAssertNil(seen)
+        try db.recordOpened(sessionID: "plain", host: remote)
+        try db.recordOpened(sessionID: "named", host: remote)
+        XCTAssertEqual(try db.discardRemoteSession(sessionID: "plain", host: remote, incarnation: plain, lastOpenedAt: seen), .unchanged)
+        XCTAssertEqual(try db.discardRemoteSession(sessionID: "named", host: remote, incarnation: named, lastOpenedAt: nil), .unchanged)
+        XCTAssertNotNil(try db.sessionState("plain"))
+        XCTAssertEqual(try db.sessionState("named")?.archived, false)
+        let opened = try db.sessionState("named")?.lastOpenedAt
+        XCTAssertEqual(try db.discardRemoteSession(sessionID: "named", host: remote, incarnation: named, lastOpenedAt: opened), .archived,
+                       "the open state Discard saw: it acts")
     }
 
     func testFillsAndHintsReportDistinctOutcomesUnderTheIncarnationPredicate() throws {

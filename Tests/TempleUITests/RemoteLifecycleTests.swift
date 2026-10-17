@@ -357,6 +357,9 @@ final class FakeRemoteHost: RemoteSessionHost {
     /// As the store's transaction: the stopped run alone, refused while
     /// another run of the session is live.
     private(set) var stoppedRunDismissals: [String] = []
+    /// Runs after the dismissal commits, before it returns (the launcher's
+    /// refresh: the gap an Open can land in).
+    var afterStoppedRunDismissal: (() async -> Void)?
     func dismissStoppedRun(_ handle: String, sessionID: String) async throws -> Bool {
         if runs.contains(where: { $0.sessionID == sessionID && $0.handle != handle && !$0.dismissed && !$0.ended }) {
             return false
@@ -364,6 +367,7 @@ final class FakeRemoteHost: RemoteSessionHost {
         stoppedRunDismissals.append(handle)
         if let index = runs.firstIndex(where: { $0.handle == handle }) { runs[index].dismissed = true }
         if let index = pending.firstIndex(where: { $0.handle == handle }) { pending[index].dismissed = true }
+        if let afterStoppedRunDismissal { await afterStoppedRunDismissal() }
         return true
     }
 
@@ -1055,7 +1059,7 @@ final class RemoteLifecycleTests: XCTestCase {
         remote.decision = true
         var discardedRows: [String] = []
         model.remoteTabs.rowIncarnation = { "inc-\($0)" }
-        model.remoteTabs.discardHandler = { id, _, _ in discardedRows.append(id) }
+        model.remoteTabs.discardHandler = { id, _, _, _ in discardedRows.append(id) }
         let row = Fixture.row("u", project: "/p", host: hostID)
         rows["u"] = row
         model.openSession(row)
@@ -1083,7 +1087,7 @@ final class RemoteLifecycleTests: XCTestCase {
     func testADispositionThatFailsIsSaid() async throws {
         remote.decision = true
         model.remoteTabs.rowIncarnation = { "inc-\($0)" }
-        model.remoteTabs.discardHandler = { _, _, _ in throw CocoaError(.fileWriteUnknown) }
+        model.remoteTabs.discardHandler = { _, _, _, _ in throw CocoaError(.fileWriteUnknown) }
         var notices: [String] = []
         model.remoteTabs.noticeHandler = { _, text in notices.append(text) }
         let row = Fixture.row("w", project: "/p", host: hostID)

@@ -2209,8 +2209,8 @@ rows ("Removing remote", below).
   (`confirm`, a claim `how: .automatic`, the same recheck, uniqueness and
   core join; a run that ended meanwhile concludes as a yes does). The only
   addition is a display-only note in the tab, "Linked to “<first
-  prompt>”, the only Codex session started in this folder. If that’s
-  wrong, Discard stops it and removes it from Temple.", and a wrong one
+  prompt>”, the only Codex session started in this folder since this tab
+  opened. If that’s wrong, Discard stops it and removes it from Temple.", and a wrong one
   is corrected by **Discard** (the agent stopped first; then that run
   alone is dismissed, in one transaction and only while no newer or live
   run of the session exists, and the row let go or archived as a Discard

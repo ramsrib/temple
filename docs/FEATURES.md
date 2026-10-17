@@ -360,7 +360,7 @@ it. What follows appears for an enabled host only.
   (nor have you declined a candidate for it, even before a relaunch),
   Temple says yes on its own, exactly as you would, and the tab says so
   in one line: "Linked to “<first prompt>”, the only Codex session started
-  in this folder. If that’s wrong, Discard stops it and removes it from
+  in this folder since this tab opened. If that’s wrong, Discard stops it and removes it from
   Temple.", with **Discard**, which stops the session on the host and
   removes it from Temple (to History, if you named, pinned or colored it). With two or more,
   or once it has asked, the tab asks: "Is this the session?" with the first

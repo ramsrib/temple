@@ -57,7 +57,7 @@ final class RemoteGateWalkTests: XCTestCase {
                 self?.directories.append(directory)
                 original?(id, host, directory)
             }
-            app.openSessions.remoteTabs.discardHandler = { [weak self] id, _, _ in self?.discards.append(id) }
+            app.openSessions.remoteTabs.discardHandler = { [weak self] id, _, _, _ in self?.discards.append(id) }
         }
 
         var gate: RemoteEffectGate { app.openSessions.remoteTabs.gate }
@@ -508,7 +508,7 @@ final class RemoteGateWalkTests: XCTestCase {
     func testDiscardLeavesAReplacedRowAlone() async throws {
         let h = try Harness(host: hostID)
         var handled: [String] = []
-        h.app.openSessions.remoteTabs.discardHandler = { _, _, incarnation in handled.append(incarnation) }
+        h.app.openSessions.remoteTabs.discardHandler = { _, _, incarnation, _ in handled.append(incarnation) }
         h.remote.decision = true
         let row = Fixture.row("s1", project: "/p", host: hostID)
         Fixture.join([row], to: h.db)

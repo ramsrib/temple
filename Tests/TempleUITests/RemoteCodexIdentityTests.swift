@@ -293,7 +293,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
     /// go; a stop Temple can't confirm keeps everything and says so.
     func testDiscardCorrectsAWrongLink() async throws {
         var discards: [String] = []
-        model.remoteTabs.discardHandler = { id, _, _ in discards.append(id) }
+        model.remoteTabs.discardHandler = { id, _, _, _ in discards.append(id) }
         model.remoteTabs.rowIncarnation = { _ in "inc" }
         remote.suggestionsResult = .candidates([suggestion()])
         let tab = await newCodex()
@@ -325,7 +325,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
     /// checks in the dismissal's own transaction).
     func testDiscardKeepsASessionReopenedDuringItsStop() async throws {
         var discards: [String] = []
-        model.remoteTabs.discardHandler = { id, _, _ in discards.append(id) }
+        model.remoteTabs.discardHandler = { id, _, _, _ in discards.append(id) }
         model.remoteTabs.rowIncarnation = { _ in "inc" }
         remote.suggestionsResult = .candidates([suggestion()])
         let tab = await newCodex()
@@ -1054,12 +1054,12 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertTrue(RemoteCopy.suggestionQuestion(unread).hasPrefix("Is this the session? First prompt unreadable, started "))
         XCTAssertFalse(RemoteCopy.suggestionQuestion(unread).contains("No prompt yet"))
         XCTAssertEqual(RemoteCopy.linkedOnItsOwn(suggestion()),
-                       "Linked to \u{201C}reply with the word ok\u{201D}, the only Codex session started in this folder. "
+                       "Linked to \u{201C}reply with the word ok\u{201D}, the only Codex session started in this folder since this tab opened. "
                        + "If that\u{2019}s wrong, Discard stops it and removes it from Temple.")
         let noon = Calendar.current.date(bySettingHour: 15, minute: 12, second: 0, of: Date())!
         let timed = RemoteSuggestion(rolloutPath: "/r", sessionID: "x", firstPrompt: nil, startedAt: noon, directory: "/w")
         XCTAssertEqual(RemoteCopy.linkedOnItsOwn(timed, now: noon),
-                       "Linked to the Codex session started \(RemoteCopy.startTime(noon, now: noon)), the only one started in this folder. "
+                       "Linked to the Codex session started \(RemoteCopy.startTime(noon, now: noon)), the only one started in this folder since this tab opened. "
                        + "If that\u{2019}s wrong, Discard stops it and removes it from Temple.")
         XCTAssertEqual(RemoteCopy.noDaemonHint,
                        "Add --no-daemon to Codex's arguments above and Temple identifies each new Codex session on a host on its own.")
