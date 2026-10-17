@@ -157,6 +157,18 @@ public enum RemoteSuggestions: Equatable {
     case unavailable(String)
 }
 
+/// A lone candidate Temple claimed on its own for a pending Codex run that
+/// was typed into (the same claim, recheck and core join as a yes): what
+/// Not this session undoes.
+public struct RemoteAutoLink: Equatable {
+    public let suggestion: RemoteSuggestion
+    /// The id claimed (the candidate's, compared by bytes).
+    public let sessionID: String
+    /// The core row's membership when this link created it; nil when the
+    /// row was there before (Not this session then leaves it alone).
+    let createdIncarnation: String?
+}
+
 /// A pending Codex run restored as a chip at launch.
 public struct RemotePendingRun: Equatable {
     public let handle: String
@@ -276,6 +288,10 @@ public protocol RemoteSessionHost: HostLauncher {
     /// The core join refused the id: the run is pending again.
     func releaseClaim(_ handle: String, sessionID: String) async throws
     func markJoined(_ handle: String) async throws
+    /// "Not this session" on a lone candidate Temple linked on its own: the
+    /// claim goes, the run is restorable by its handle again, and the
+    /// candidate is declined for the run (never offered again), in one write.
+    func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws
     /// Claims whose core join never happened, with their folders.
     func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)]
     func pendingRuns() async -> [RemotePendingRun]
@@ -349,6 +365,9 @@ public struct RemoteTabState: Equatable {
     var identityOperation: UUID?
     /// Core refused the id this run's check found: Try again is offered.
     public var identityRefused = false
+    /// The lone candidate Temple linked on its own, with no question: the
+    /// tab says so in one line, with Not this session.
+    public var autoLink: RemoteAutoLink?
 
     public init(phase: Phase) { self.phase = phase }
 
@@ -597,11 +616,22 @@ public enum RemoteCopy {
     public static let suggestionYes = "Yes, that's it"
     public static let suggestionNo = "Not this one"
 
+    /// The one line a tab shows when Temple linked a lone candidate on its
+    /// own: a fact, with Not this session after it.
+    public static func autoLinked(_ suggestion: RemoteSuggestion, host: String, now: Date = Date()) -> String {
+        let subject = suggestion.firstPrompt.map { "\u{201C}\($0)\u{201D}" }
+            ?? "the Codex session started \(startTime(suggestion.startedAt, now: now))"
+        return "Linked to \(subject) on \(host)."
+    }
+
+    public static let notThisSession = "Not this session"
+
     /// A run whose id another session started from Temple already holds.
     public static let couldNotTell = "Temple couldn't tell which Codex session this is."
 
-    /// Under the question: how Temple can tell by itself (Fable, round 1).
-    public static let noDaemonHint = "With --no-daemon in Codex's arguments (Settings), Temple identifies the session on its own."
+    /// How Temple can tell by itself (Fable, round 1): one line in the
+    /// Hosts card's notes, never in a tab's band (owner, round 2).
+    public static let noDaemonHint = "Add --no-daemon to Codex's arguments above and Temple identifies each new Codex session on a host on its own."
 
     /// What Discard does, for its help tag.
     public static func discardHelp(archives: Bool) -> String {

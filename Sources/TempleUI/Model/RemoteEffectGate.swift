@@ -90,8 +90,12 @@ public enum RemoteCompletion: String, CaseIterable, Sendable {
     case identityResult
     /// The suggestions to ask about reached the tab.
     case suggestionsLoaded
-    /// The user's yes could not be claimed: the tab says why.
+    /// The user's yes (or a lone candidate's link) could not be claimed:
+    /// the tab says why.
     case confirmResult
+    /// Not this session was written: the tab asks its question again (its
+    /// identity checks restart). The unlink itself is durable work.
+    case unlinkResult
     /// Closing a pending Codex tab: the stop's outcome, and the question
     /// when Codex ended unidentified.
     case pendingStopOutcome

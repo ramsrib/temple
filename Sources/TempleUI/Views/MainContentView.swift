@@ -81,6 +81,15 @@ private struct SessionTerminalView: View {
                    !remote.suggestions.isEmpty || remote.identityNote != nil {
                     question(remote).band()
                 }
+                // A lone candidate Temple linked on its own: one line, and
+                // the way back to the question.
+                if remote.phase == .connected, let link = remote.autoLink, tab.sessionID != nil {
+                    notice(symbol: "link", text: RemoteCopy.autoLinked(link.suggestion, host: displayHost)) {
+                        Button(RemoteCopy.notThisSession) { model.openSessions.remoteTabs.unlink(tab) }
+                    } dismiss: {
+                        EmptyView()
+                    }
+                }
             } else if case .exited(let status) = tab.activity {
                 launchFailure(status: status)
             }
@@ -157,7 +166,8 @@ private struct SessionTerminalView: View {
     }
 
     /// Under the question: why Temple couldn't tell (with Try again after
-    /// a refusal), and how it could tell by itself.
+    /// a refusal). How Temple could tell by itself (`--no-daemon`) is the
+    /// Hosts card's note, not the tab's.
     @ViewBuilder
     private func identityCaptions(_ remote: RemoteTabState) -> some View {
         if let note = remote.identityNote {
@@ -174,13 +184,6 @@ private struct SessionTerminalView: View {
                 Spacer(minLength: 0)
             }
             .padding(.leading, 22)
-        }
-        if !remote.identityRefused {
-            Text(MainContentView.noDaemonHint)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 22)
         }
     }
 
@@ -587,18 +590,6 @@ private struct RemoteConfirmationSheet: View {
         }
         .padding(20)
         .frame(width: 460)
-    }
-}
-
-extension MainContentView {
-    /// The `--no-daemon` hint, the flag set as code (monospaced, same size),
-    /// the rest as it reads.
-    static var noDaemonHint: AttributedString {
-        var text = AttributedString(RemoteCopy.noDaemonHint)
-        if let range = text.range(of: "--no-daemon") {
-            text[range].font = .system(size: 11, design: .monospaced)
-        }
-        return text
     }
 }
 

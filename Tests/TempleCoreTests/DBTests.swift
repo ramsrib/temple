@@ -1259,6 +1259,32 @@ extension DBTests {
         XCTAssertEqual(try db.discardRemoteSession(sessionID: "named", host: remote, incarnation: named), .unchanged)
     }
 
+    /// Not this session lets go of the row a link on a host made, under
+    /// its membership, transcript path or not; a row the user made theirs,
+    /// one a saved tab holds, or a replaced membership stays.
+    func testReleasingALinkedSessionDeletesOnlyAnUntouchedRowOfThatMembership() throws {
+        let (db, _) = try database()
+        let remote = HostID(rawValue: "box")
+        let core = SessionCore(host: remote)
+        for id in ["filled", "named", "pinned", "tabbed"] { try db.join(sessionID: id, via: .created, core: core) }
+        func incarnation(_ id: String) throws -> String { try XCTUnwrap(db.sessionState(id)?.incarnation) }
+        _ = try db.updateTranscriptHint(sessionID: "filled", agent: .codex,
+                                        locator: TranscriptLocator(host: remote, path: "/home/u/.codex/r-filled.jsonl"))
+        try db.setCustomName("Mine", sessionID: "named")
+        try db.setPinned(true, sessionID: "pinned")
+        try db.replaceOpenTabs([OpenTabRecord(projectPath: "/home/u/p", sessionID: "tabbed", position: 0,
+                                              agent: "codex", title: "T", isActive: true)])
+        XCTAssertFalse(try db.releaseLinkedSession(sessionID: "filled", host: remote, incarnation: "stale"))
+        XCTAssertFalse(try db.releaseLinkedSession(sessionID: "filled", host: .local, incarnation: try incarnation("filled")))
+        XCTAssertTrue(try db.releaseLinkedSession(sessionID: "filled", host: remote, incarnation: try incarnation("filled")),
+                      "an enrichment's transcript does not keep a guess the user undid")
+        XCTAssertNil(try db.sessionState("filled"))
+        for id in ["named", "pinned", "tabbed"] {
+            XCTAssertFalse(try db.releaseLinkedSession(sessionID: id, host: remote, incarnation: try incarnation(id)), id)
+            XCTAssertNotNil(try db.sessionState(id), id)
+        }
+    }
+
     func testFillsAndHintsReportDistinctOutcomesUnderTheIncarnationPredicate() throws {
         let (db, _) = try database()
         try db.join(sessionID: "s", via: .imported)

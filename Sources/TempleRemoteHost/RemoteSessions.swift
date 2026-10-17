@@ -1379,6 +1379,13 @@ public final class RemoteSessions {
         try await write { try $0.releaseClaim(handle, sessionID: sessionID) }
     }
 
+    /// "Not this session": the claim goes, the run is restorable by its
+    /// handle again, and the candidate is declined for it, in one write.
+    @discardableResult
+    public func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws -> Bool {
+        try await write { try $0.unlinkClaim(handle, sessionID: sessionID, rolloutPath: rolloutPath) }
+    }
+
     public func markJoined(_ handle: String) async throws {
         let now = now()
         try await write { try $0.markJoined(handle, at: now) }

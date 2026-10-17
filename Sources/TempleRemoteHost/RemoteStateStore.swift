@@ -516,6 +516,27 @@ public final class RemoteStateStore: @unchecked Sendable {
         }
     }
 
+    /// "Not this session", on a lone candidate Temple linked on its own:
+    /// in one transaction, the claim of that id goes (the run is pending
+    /// again), its restoration by handle comes back (`tab_closed_at`
+    /// cleared: no saved tab holds it now), and the candidate is declined
+    /// for the run, never offered or claimed for it again. Only a claim of
+    /// that id is undone; the decline is written either way. Whether the
+    /// claim was undone.
+    @discardableResult
+    public func unlinkClaim(_ handle: String, sessionID: String, rolloutPath: String) throws -> Bool {
+        try queue.write { database in
+            try database.execute(sql: """
+                UPDATE runs SET session_id = NULL, claim = NULL, joined_at = NULL, tab_closed_at = NULL
+                WHERE handle = ? AND session_id = ? AND claim IS NOT NULL
+                """, arguments: [handle, sessionID])
+            let undone = database.changesCount > 0
+            try database.execute(sql: "INSERT OR IGNORE INTO declined_candidates (handle, rollout_path) VALUES (?, ?)",
+                                 arguments: [handle, rolloutPath])
+            return undone
+        }
+    }
+
     /// The claim reached core (joined, or found joined).
     public func markJoined(_ handle: String, at date: Date) throws {
         try queue.write { database in

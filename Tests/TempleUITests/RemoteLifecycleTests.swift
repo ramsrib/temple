@@ -315,6 +315,24 @@ final class FakeRemoteHost: RemoteSessionHost {
         unjoined.removeAll { $0.handle == handle }
     }
 
+    var unlinkError: Error?
+    var unlinkGate: (() async -> Void)?
+    private(set) var unlinks: [(handle: String, sessionID: String, path: String)] = []
+    /// Not this session, as the store writes it: the claim of that id goes,
+    /// the run is restorable again, the candidate is declined.
+    func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws {
+        unlinks.append((handle, sessionID, rolloutPath))
+        if let unlinkGate { await unlinkGate() }
+        if let unlinkError { throw unlinkError }
+        if let index = pending.firstIndex(where: { $0.handle == handle && $0.sessionID == sessionID && $0.claimed }) {
+            pending[index].sessionID = nil
+            pending[index].claimed = false
+            pending[index].joined = false
+            pending[index].tabClosed = false
+        }
+        declines.append((handle, rolloutPath))
+    }
+
     private(set) var joinedMarks: [String] = []
     func markJoined(_ handle: String) async throws {
         joinedMarks.append(handle)

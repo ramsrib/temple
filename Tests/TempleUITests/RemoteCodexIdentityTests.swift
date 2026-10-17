@@ -205,20 +205,116 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertNil(tab.sessionID)
     }
 
+    // MARK: A lone candidate (owner, round 2)
+
+    /// Exactly one eligible candidate for a run that was typed into:
+    /// claimed as "Yes, that's it" claims it (the host's recheck and
+    /// uniqueness, core's join), with no question; the tab says so in one
+    /// line with Not this session, and the tab set holds the session.
+    func testALoneCandidateOfATypedRunIsLinkedWithoutAsking() async throws {
+        remote.suggestionsResult = .candidates([suggestion()])
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(tab.sessionID == "c7", "linked on its own")
+        XCTAssertEqual(remote.confirms.map(\.sessionID), ["c7"], "through the yes's own claim and recheck")
+        XCTAssertEqual(joins.map(\.id), ["c7"])
+        XCTAssertFalse(tab.isProvisional)
+        XCTAssertEqual(tab.remote?.autoLink?.sessionID, "c7")
+        XCTAssertEqual(tab.remote?.suggestions, [], "no question")
+        XCTAssertEqual(persistence.load().map(\.sessionID), ["c7"])
+        XCTAssertEqual(RemoteCopy.autoLinked(try XCTUnwrap(tab.remote?.autoLink?.suggestion), host: "box"),
+                       "Linked to \u{201C}reply with the word ok\u{201D} on box.")
+        XCTAssertEqual(RemoteCopy.notThisSession, "Not this session")
+    }
+
+    /// Two or more candidates: the question, as before; nothing claimed.
+    func testTwoCandidatesStillAsk() async throws {
+        remote.suggestionsResult = .candidates([suggestion(), suggestion("c8")])
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(tab.remote?.suggestions.count == 2)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(remote.confirms.isEmpty)
+        XCTAssertNil(tab.sessionID)
+        XCTAssertNil(tab.remote?.autoLink)
+    }
+
+    /// A run nobody typed into is never linked: its lone candidate is asked
+    /// about (a host where the check can never tell), and only a yes claims.
+    func testAnUntypedRunIsNeverLinkedOnItsOwn() async throws {
+        remote.identityResult = .inconclusive("this host has no /proc", lasting: true, ended: false)
+        remote.suggestionsResult = .candidates([suggestion()])
+        let tab = await newCodex()
+        await settle(tab.remote?.suggestions.count == 1)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(remote.confirms.isEmpty)
+        XCTAssertNil(tab.sessionID)
+    }
+
+    /// Not this session: the tab is pending again at once (no id, not in the
+    /// tab set), the claim is undone, the run restorable by its handle and
+    /// the candidate declined in one write, and the question comes back with
+    /// what is left, never linked on its own again for this run, even a
+    /// different lone candidate. The identity checks restart.
+    func testNotThisSessionReleasesDeclinesAndAsks() async throws {
+        remote.suggestionsResult = .candidates([suggestion()])
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(tab.remote?.autoLink != nil)
+        await settle(self.remote.closedPending == ["p1"], "handed over to the tab set")
+        let identifiesBefore = remote.identifies.count
+        // The host offers only what is left (the declined one never again).
+        remote.suggestionsResult = .candidates([suggestion("c8")])
+        model.remoteTabs.unlink(tab)
+        XCTAssertNil(tab.sessionID, "pending again at once")
+        XCTAssertTrue(tab.isProvisional)
+        XCTAssertNil(tab.remote?.autoLink)
+        XCTAssertTrue(tab.inputSubmitted, "what was typed is still the run's")
+        XCTAssertTrue(persistence.load().isEmpty, "the tab set no longer holds the session")
+        await settle(self.remote.unlinks.count == 1)
+        XCTAssertEqual(remote.unlinks.first?.handle, "p1")
+        XCTAssertEqual(remote.unlinks.first?.sessionID, "c7")
+        XCTAssertEqual(remote.unlinks.first?.path, suggestion().rolloutPath)
+        let run = try XCTUnwrap(remote.pending.first { $0.handle == "p1" })
+        XCTAssertNil(run.sessionID, "the claim is gone")
+        XCTAssertFalse(run.tabClosed, "restorable by its handle again")
+        await settle(tab.remote?.suggestions.map(\.sessionID) == ["c8"], "the question, with what is left")
+        XCTAssertEqual(remote.confirms.map(\.sessionID), ["c7"], "no link on its own again for this run")
+        XCTAssertNil(tab.sessionID)
+        await settle(self.remote.identifies.count > identifiesBefore, "the identity checks restart")
+        // A yes still works from here.
+        model.remoteTabs.confirm(try XCTUnwrap(tab.remote?.suggestions.first), in: tab)
+        await settle(tab.sessionID == "c8")
+        XCTAssertNil(tab.remote?.autoLink, "a yes is the user's own: no line")
+    }
+
+    /// Not this session that can't be written says so once; the tab stays
+    /// pending, and nothing claims it while the write is under way.
+    func testAFailedNotThisSessionIsSaid() async throws {
+        remote.suggestionsResult = .candidates([suggestion()])
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(tab.remote?.autoLink != nil)
+        remote.unlinkError = CocoaError(.fileWriteUnknown)
+        model.remoteTabs.unlink(tab)
+        await settle(self.notices.count == 1)
+        XCTAssertTrue(notices.first?.hasPrefix("Temple couldn't save what happened to this session on box") == true)
+    }
+
     // MARK: Ending, closing, quitting
 
     /// Codex finished before its id was learned: something was typed, so
     /// the tab stays and asks; nothing typed, it closes and Temple stops
     /// tracking it. Never a row from a handle.
     func testACodexThatFinishedUnidentifiedAsksOrGoes() async throws {
-        remote.suggestionsResult = .candidates([suggestion()])
+        remote.suggestionsResult = .candidates([suggestion(), suggestion("c8")])
         let typed = await newCodex()
         model.surfaceDidSubmitInput(try XCTUnwrap(typed.surface))
         try await Task.sleep(for: .milliseconds(400))
         remote.liveness = .absent
         factory.created.last?.simulateExit(status: 0)
         await settle(typed.remote?.phase == .endedPending)
-        await settle(typed.remote?.suggestions.count == 1)
+        await settle(typed.remote?.suggestions.count == 2)
         XCTAssertTrue(joins.isEmpty)
 
         let untouched = await newCodex()
@@ -325,10 +421,10 @@ final class RemoteCodexIdentityTests: XCTestCase {
         let restored = try XCTUnwrap(model.tabs.first)
         XCTAssertTrue(restored.inputSubmitted)
         remote.identityResult = .inconclusive("no session file is open right now", lasting: false, ended: false)
-        remote.suggestionsResult = .candidates([suggestion()])
+        remote.suggestionsResult = .candidates([suggestion(), suggestion("c8")])
         model.activate(restored)
         await settle(restored.hasLiveProcess)
-        await settle(restored.remote?.suggestions.count == 1, "typed before the relaunch: asked")
+        await settle(restored.remote?.suggestions.count == 2, "typed before the relaunch: asked")
     }
 
     /// An ended, unidentified session asks in one sentence, question
@@ -893,8 +989,13 @@ final class RemoteCodexIdentityTests: XCTestCase {
                     RemoteCopy.suggestionQuestion(suggestion()), RemoteCopy.noTrackedSessions,
                     RemoteCopy.leftRunning("box", agent: .codex, reason: .hostDidNotAnswer, detail: nil),
                     RemoteCopy.leftRunningLine("box", reason: .quitDeadline), RemoteCopy.disconnected("box"),
-                    RemoteCopy.unknown("box", agent: .codex, reason: "x"), RemoteCopy.stillConnecting("box")]
-        for line in copy { XCTAssertFalse(line.contains("\u{2014}"), line) }
+                    RemoteCopy.unknown("box", agent: .codex, reason: "x"), RemoteCopy.stillConnecting("box"),
+                    RemoteCopy.autoLinked(suggestion(), host: "box"), RemoteCopy.autoLinked(unread, host: "box"),
+                    RemoteCopy.notThisSession, RemoteCopy.quitLine(["box", "jet"])]
+        for line in copy { XCTAssertFalse(line.contains("\u{2014}") || line.contains(" -- "), line) }
+        XCTAssertTrue(RemoteCopy.autoLinked(unread, host: "box").hasPrefix("Linked to the Codex session started "))
+        XCTAssertEqual(RemoteCopy.noDaemonHint,
+                       "Add --no-daemon to Codex's arguments above and Temple identifies each new Codex session on a host on its own.")
     }
 }
 

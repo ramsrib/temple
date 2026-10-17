@@ -34,8 +34,13 @@ public final class RemoteTabController {
     /// app lets its row go (or archives it, if the row is the user's), only
     /// while the row is still the membership Discard was chosen for.
     public var discardHandler: ((_ sessionID: String, _ host: HostID, _ incarnation: String) throws -> Void)?
-    /// A row's membership identity, read when Discard is chosen.
+    /// A row's membership identity, read when Discard is chosen (and when
+    /// a lone candidate's link joins core, to know whether it made the row).
     public var rowIncarnation: (_ sessionID: String) -> String? = { _ in nil }
+    /// Not this session: the app lets go of the core row the link created,
+    /// unless the user made it theirs, only while it is still that
+    /// membership. Called after the claim is undone.
+    public var releaseLinkHandler: ((_ sessionID: String, _ host: HostID, _ incarnation: String) throws -> Void)?
 
     /// Tabs whose host was removed or edited while connected: their exit
     /// asks nothing of the old host.
@@ -871,6 +876,9 @@ public final class RemoteTabController {
     @discardableResult
     private func checkIdentity(_ ticket: RemoteTicket, host: RemoteSessionHost, handle: String) async -> Bool {
         if let id = ticket.tab?.id { lastIdentityCheck[id] = Date() }
+        // Not this session is being written: the old claim must not be
+        // found and linked again before it is gone.
+        if unlinking.contains(handle) { return false }
         // Core refused this run's id: the walk would find and claim it again,
         // and core would refuse again. The question still comes.
         if refusedClaims[handle] != nil {
@@ -927,14 +935,21 @@ public final class RemoteTabController {
     /// candidate the user said yes to, which the row shows until its
     /// transcript's title arrives (display only, through the gate).
     private func adopted(_ id: String, directory: String?, handle: String, host: RemoteSessionHost,
-                         ticket: RemoteTicket, titleHint: String? = nil) async {
+                         ticket: RemoteTicket, titleHint: String? = nil, autoLinked: RemoteSuggestion? = nil) async {
         let hostID = ticket.host
+        // A claim Not this session is undoing is not taken up again.
+        guard !unlinking.contains(handle) else { return }
+        // Whether the join below makes the row (a link's Not this session
+        // lets go of only a row it made).
+        let rowBefore = rowIncarnation(id)
+        var createdIncarnation: String?
         // While quitting the join waits for the next launch (the claim
         // stays unjoined); the gate below refuses the tab's part.
         if !isQuitting {
             let open = SessionOpen(id: id, host: hostID, via: .created, agent: .codex, locator: nil)
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
+                if rowBefore == nil { createdIncarnation = rowIncarnation(id) }
                 if let directory { model.launchDirectoryHandler?(id, hostID, directory) }
                 operations.run(host: hostID, .write) {
                     do { try await host.markJoined(handle) } catch {
@@ -977,6 +992,11 @@ public final class RemoteTabController {
         }
         if !tab.title.isEmpty, tab.title != tab.agent.newSessionTitle { model.titleHandler?(id, hostID, tab.title) }
         becomeSession(tab, id: id, host: host)
+        // Linked on Temple's own: the tab says so, with Not this session.
+        if let autoLinked {
+            tab.remote?.autoLink = RemoteAutoLink(suggestion: autoLinked, sessionID: id,
+                                                  createdIncarnation: createdIncarnation)
+        }
     }
 
     /// Its run ended: the yes records who it was (the claim and the join,
@@ -1194,9 +1214,128 @@ public final class RemoteTabController {
 
     private func loadSuggestions(_ ticket: RemoteTicket, host: RemoteSessionHost, handle: String) async {
         let answer = await host.suggestions(handle)
-        guard gate.admit(.suggestionsLoaded, ticket), let tab = ticket.tab, isPending(tab) else { return }
+        guard gate.admit(.suggestionsLoaded, ticket), let tab = ticket.tab, isPending(tab),
+              case .candidates(let found) = answer else { return }
+        // A claim in flight (a yes, or a lone candidate's link) keeps the
+        // tab as it is until its answer.
+        guard tab.remote?.confirming == nil else { return }
         let refused = refusedClaims[handle]?.id
-        if case .candidates(let found) = answer { tab.remote?.suggestions = found.filter { $0.sessionID != refused } }
+        let offered = found.filter { $0.sessionID != refused }
+        // Exactly one eligible candidate for a run that was typed into, and
+        // Temple has not asked about this run yet: it is claimed as a yes
+        // would claim it (owner, round 2). Two or more, or once asked: the
+        // question.
+        if offered.count == 1, mayAutoLink(tab, handle: handle) {
+            autoLink(offered[0], in: tab, handle: handle, host: host)
+            return
+        }
+        tab.remote?.suggestions = offered
+        if !offered.isEmpty { asked.insert(handle) }
+    }
+
+    /// Runs whose question has been put to the user this launch (candidates
+    /// shown, a link undone): Temple links a lone candidate on its own only
+    /// before it has asked, never once the user is answering.
+    private var asked: Set<String> = []
+    /// Runs whose Not this session is being written: nothing claims them
+    /// meanwhile.
+    private var unlinking: Set<String> = []
+
+    /// A lone candidate may be linked without asking: a connected tab (an
+    /// ended one keeps its question: a yes there closes the tab), typed
+    /// into, no id core refused for the run, not asked about yet, and not
+    /// being unlinked.
+    private func mayAutoLink(_ tab: SessionTab, handle: String) -> Bool {
+        tab.remote?.phase == .connected && tab.inputSubmitted && !isQuitting
+            && refusedClaims[handle] == nil && !asked.contains(handle) && !unlinking.contains(handle)
+    }
+
+    /// The lone candidate claimed as "Yes, that's it" claims it: the same
+    /// recheck at decision time, the same uniqueness, the same core join.
+    /// Only a claim this answer made (`.adopted`, the candidate's own id,
+    /// by bytes) is shown as a link with Not this session; one another
+    /// Temple made (`.known`) is simply the session. A claim that fails
+    /// says why, as a yes's does, and the question takes over.
+    private func autoLink(_ suggestion: RemoteSuggestion, in tab: SessionTab, handle: String, host: RemoteSessionHost) {
+        tab.remote?.confirming = suggestion.id
+        let ticket = gate.ticket(for: tab)
+        operations.run(host: tab.host, .write) { [weak self] in
+            let identity = await host.confirm(handle, suggestion: suggestion)
+            guard let self else { return }
+            switch identity {
+            case .adopted(let id, let directory):
+                let same = id.utf8.elementsEqual(suggestion.sessionID.utf8)
+                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket,
+                                   titleHint: same ? suggestion.firstPrompt : nil, autoLinked: same ? suggestion : nil)
+            case .known(let id, let directory):
+                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
+            case .taken, .inconclusive:
+                guard self.gate.admit(.confirmResult, ticket), let tab = ticket.tab else { return }
+                tab.remote?.confirming = nil
+                tab.remote?.identityNote = RemoteCopy.couldNotTell
+                self.asked.insert(handle)
+            case .storage(let detail):
+                guard self.gate.admit(.confirmResult, ticket), let tab = ticket.tab else { return }
+                tab.remote?.confirming = nil
+                tab.remote?.identityNote = RemoteCopy.unrecorded(host.hostName, detail: detail)
+                self.asked.insert(handle)
+            }
+        }
+    }
+
+    /// "Not this session", on a tab Temple linked on its own: the tab is
+    /// the pending Codex session again at once (no id, its question to
+    /// come), and its tab set is saved without the session; then, as
+    /// durable work, the claim goes, the run is restorable by its handle
+    /// again and the candidate is declined for it (one write), and core's
+    /// row goes if the link made it and nobody made it theirs (the same
+    /// guards as a Discard's delete, transcript aside). Only then is the
+    /// question asked, without that candidate, and the identity checks
+    /// restart; Temple does not link on its own again for this run. A
+    /// write that fails is said once; the claim then stays, and the next
+    /// check finds it.
+    public func unlink(_ tab: SessionTab) {
+        guard let link = tab.remote?.autoLink, tab.sessionID.map({ $0.utf8.elementsEqual(link.sessionID.utf8) }) == true,
+              let handle = tab.remote?.handle, let host = remoteHost(for: tab), !isQuitting else { return }
+        let hostID = tab.host, id = link.sessionID
+        asked.insert(handle)
+        unlinking.insert(handle)
+        // The obligation to retire the run's restoration goes with the
+        // claim (a write already under way finds no claim and writes nothing).
+        if handOvers[handle]?.inFlight == false { handOvers[handle] = nil }
+        if let operation = tab.remote?.identityOperation { operations.cancel(id: operation) }
+        tab.remote?.identityOperation = nil
+        tab.remote?.autoLink = nil
+        tab.remote?.confirming = nil
+        tab.remote?.suggestions = []
+        tab.remote?.identityNote = nil
+        tab.sessionID = nil
+        tab.isProvisional = true
+        model.persist()
+        let release = releaseLinkHandler
+        let ticket = gate.ticket(for: tab)
+        let noticeTicket = gate.ticket(host: hostID)
+        operations.run(host: hostID, .write) { [weak self] in
+            var failure: Error?
+            do {
+                try await host.unlink(handle, sessionID: id, rolloutPath: link.suggestion.rolloutPath)
+                if let incarnation = link.createdIncarnation { try release?(id, hostID, incarnation) }
+            } catch {
+                failure = error
+            }
+            guard let self else { return }
+            self.unlinking.remove(handle)
+            if let failure {
+                TempleUILog.remote.notice("Not this session for \(handle, privacy: .public) not written: \(failure.localizedDescription, privacy: .public)")
+                if self.gate.admit(.pendingWriteNotice, noticeTicket) {
+                    self.noticeHandler?(hostID, RemoteCopy.unrecorded(host.hostName, detail: failure.localizedDescription))
+                }
+            }
+            guard self.gate.admit(.unlinkResult, ticket), let tab = ticket.tab, self.isPending(tab),
+                  tab.remote?.phase == .connected else { return }
+            self.startIdentity(tab, host: host, handle: handle)
+            await self.loadSuggestions(ticket, host: host, handle: handle)
+        }
     }
 
     /// "Yes, that's it": the claim is durable work (owned through close and
@@ -1235,6 +1374,7 @@ public final class RemoteTabController {
     public func decline(_ suggestion: RemoteSuggestion, in tab: SessionTab) {
         guard isPending(tab), let handle = tab.remote?.handle, let host = remoteHost(for: tab) else { return }
         tab.remote?.suggestions.removeAll { $0.id == suggestion.id }
+        asked.insert(handle)
         let ticket = gate.ticket(host: tab.host)
         operations.run(host: tab.host, .write) { [weak self] in
             do { try await host.decline(handle, rolloutPath: suggestion.rolloutPath) } catch {

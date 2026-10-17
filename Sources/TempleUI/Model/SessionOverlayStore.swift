@@ -398,6 +398,14 @@ public final class SessionOverlayStore: ObservableObject {
         try db.discardRemoteSession(sessionID: id, host: host, incarnation: incarnation, at: now())
     }
 
+    /// Not this session: the row a link on a host created goes, if nobody
+    /// made it theirs (`TempleDB.releaseLinkedSession`). A failed write
+    /// throws: the caller says so.
+    @discardableResult
+    public func releaseLinkedSession(_ id: String, host: HostID, incarnation: String) throws -> Bool {
+        try db.releaseLinkedSession(sessionID: id, host: host, incarnation: incarnation)
+    }
+
     /// The session was opened in a tab. Written for members only (it never
     /// joins one), so an import undone later can tell the session was used:
     /// `TempleDB.leave` keeps a row opened since.

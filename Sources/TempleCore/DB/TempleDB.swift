@@ -773,6 +773,36 @@ public final class TempleDB: @unchecked Sendable {
         return disposition
     }
 
+    /// "Not this session" on a session on a host that Temple linked on its
+    /// own: the row that link created goes, in one transaction under `(id,
+    /// host, incarnation)`, while it still says nothing a person decided
+    /// (never pinned, named, colored, archived or kept) and no saved tab
+    /// holds it. A transcript the host's enrichment filled in meanwhile does
+    /// not keep it: the session is not Temple's, it was a guess the user
+    /// undid. A row the user made theirs stays as it is (a real session on
+    /// that host, theirs to keep or archive); a membership replaced since is
+    /// left alone. Whether the row went.
+    @discardableResult
+    public func releaseLinkedSession(sessionID: String, host: HostID, incarnation: String) throws -> Bool {
+        let left = try db.write { database in
+            try database.execute(
+                sql: """
+                    DELETE FROM session_state
+                    WHERE id = ? AND host = ? AND incarnation = ? AND joined_via = ?
+                      AND pinned = 0 AND archived = 0 AND kept_at IS NULL
+                      AND custom_name IS NULL AND color IS NULL
+                      AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
+                    """,
+                arguments: [sessionID, host.rawValue, incarnation, JoinedVia.created.rawValue, sessionID])
+            return database.changesCount > 0
+        }
+        if left {
+            committedLeave(sessionID)
+            committedRowChange(sessionID)
+        }
+        return left
+    }
+
     // MARK: Temple's archive (ADR-030)
 
     /// Temple's own archive of rows nobody can resume any more (the CLI

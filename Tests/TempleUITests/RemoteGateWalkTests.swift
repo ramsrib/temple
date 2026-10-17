@@ -300,6 +300,21 @@ final class RemoteGateWalkTests: XCTestCase {
                 await self.settle { !h.remote.confirms.isEmpty }
             }, effect: { $0.tab?.remote?.identityNote == RemoteCopy.couldNotTell }),
 
+            // Not this session: the unlink is durable work; asking again
+            // (the identity checks restarted) is the tab's part. A close of
+            // the pending tab keeps it until its stop's outcome (as for
+            // `.identityResult`), and a tab that is not connected asks
+            // nothing, so the close disruption is not walked here.
+            Scenario(completion: .unlinkResult, disruptions: noClose, arm: { h in
+                h.remote.suggestionsResult = .candidates([Self.candidate])
+                let tab = await self.pendingTab(h)
+                h.app.openSessions.surfaceDidSubmitInput(tab.surface!)
+                await self.settle { tab.remote?.autoLink != nil }
+                h.remote.unlinkGate = { await h.hold.wait() }
+                h.app.openSessions.remoteTabs.unlink(tab)
+                await self.settle { !h.remote.unlinks.isEmpty }
+            }, effect: { $0.tab?.remote?.identityOperation != nil }),
+
             Scenario(completion: .pendingStopOutcome, disruptions: noClose, arm: { h in
                 h.app.openSessions.remoteTabs.identitySchedule = [60]
                 h.remote.stopGate = { _ in await h.hold.wait() }

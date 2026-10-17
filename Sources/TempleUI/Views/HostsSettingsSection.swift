@@ -34,6 +34,11 @@ struct HostsSettingsSection: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 12)
+            Text(Self.noDaemonHint)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
         }
         .padding(.top, 26)
         .onAppear { hosts.loadConfigAliases() }
@@ -60,6 +65,16 @@ struct HostsSettingsSection: View {
                         .remoteSheet(model)
                 }
         }
+    }
+
+    /// The `--no-daemon` note, the flag set as code (monospaced, same size),
+    /// the rest as it reads. Here rather than in a tab's band (owner, round 2).
+    static var noDaemonHint: AttributedString {
+        var text = AttributedString(RemoteCopy.noDaemonHint)
+        if let range = text.range(of: "--no-daemon") {
+            text[range].font = .system(size: 11, design: .monospaced)
+        }
+        return text
     }
 
     // MARK: Added in Temple
