@@ -326,8 +326,8 @@ during that refactor:
   newer-schema guard, so a dropped or retyped column breaks the installed
   app running beside a dev build on the same file. `generated_title` is
   still dual-written for them. (This rule used to end "until remote ships";
-  remote shipped without touching the core schema, so that is no longer
-  when it ends. Ending it is the owner's call.)
+  remote shipped without touching the core schema, and the owner keeps the
+  rule.)
 
 ## Sessions on hosts (ADR-036): where remote lives
 

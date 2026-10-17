@@ -104,6 +104,12 @@ notarization, and downloaders have to approve the app in System Settings.
 5. **Publish** — tags `<version>`, pushes the tag, and creates the GitHub
    release with both artifacts and `docs/releases/<version>.md` as its notes.
 
+Before releasing, build the app (`make app`) and run
+`Scripts/check-remote-code.sh dist/Temple.app`: it proves the shipped binary
+carries the code for sessions on hosts and that nothing gives the host list
+a default, so a fresh install shows no remote UI (AGENTS.md, "Two entry
+points").
+
 > `notarytool` accepts only `.zip`/`.dmg`/`.pkg` uploads, while `stapler` can
 > only write a ticket to the `.app`/`.dmg` — which is why submit and staple are
 > separate steps in the script.

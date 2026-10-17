@@ -51,8 +51,8 @@ without touching core rows (section 9, "Removing remote").
 - Start a Claude or Codex session in a folder on that host from ⌘N, the
   launcher and a project's `+`; work in it in a Temple tab, exactly as local.
 - The agent runs inside a Temple-owned, hidden tmux server on the host, so it
-  survives a dropped connection, a closed lid and a Temple quit while it is
-  working. Closing a tab means what it means locally (ADR-010): an idle
+  survives a dropped connection, a closed lid and a Temple quit (while it is
+  working, as designed; working or idle, as built since the owner's round 2). Closing a tab means what it means locally (ADR-010): an idle
   agent is stopped, a working one is detached or stopped as you choose, and
   reopening a stopped session resumes it from its transcript. A stop that
   Temple could not carry out and confirm at that moment (the host did not
@@ -374,10 +374,11 @@ while attached, at the exit check, and on each activation, not twice in
    mid-check) is **inconclusive**: no claim, try again on schedule. A host
    with no `/proc` is lastingly inconclusive.
 
-With Codex's default app server the question identifies the session; with
+With Codex's default app server the candidates identify the session; with
 `--no-daemon` in the user's Codex arguments the pane's process holds its
 own rollout and is adopted at the first check. Temple passes no flag of its
-own.
+own; the Hosts card's notes say so (as built in the owner's round 2: the
+hint left the tab's bands).
 
 **Suggested, by launch evidence, confirmed by the user.** When the automatic
 check stays inconclusive (the file is not held open between writes, the
@@ -386,9 +387,26 @@ header `cwd` is the run's canonical directory and whose header timestamp
 lies in [`ok` epoch, exit time or now] on the remote clock, and shows the
 candidates in the tab or chip as a question, never a fact: "Is this the
 session? <first prompt or "(no prompt)">, started <time> in <folder>."
-[Yes, that's it] [Not this one]. One candidate or several, the user picks or
-declines; a declined candidate is not offered again for that run. Nothing is
-adopted until the user says so.
+[Yes, that's it] [Not this one]. Several, the user picks or declines; a
+declined candidate is not offered again for that run.
+
+**As built (owner, round 2): a lone candidate is linked, and said.** When
+the lookup finds exactly one eligible candidate for a connected run that
+was typed into and that Temple has not asked about yet this launch, Temple
+claims it as a yes does: the same recheck at decision time
+(`RemoteSessions.confirm`), the same uniqueness, the same core join. Only a
+claim that answer made (`.adopted`, the candidate's own id by bytes) is
+shown as a link: one line in the tab, "Linked to “<first prompt>” on
+<host>.", with **Not this session**. That undoes it in one remote write
+(`RemoteStateStore.unlinkClaim`: the claim of that id goes, `tab_closed_at`
+is cleared so the run restores by its handle again, the candidate is
+declined), lets go of the core row the link made, unless the user made it
+theirs (`TempleDB.releaseLinkedSession`, after the tab set is saved without
+the session), and asks the question, without that candidate; Temple then
+never links on its own again for that run this launch. A hand-over already
+under way finds no id and retires nothing (`RemoteStoreLedger` writes
+`tab_closed_at` only for a run with an id). An ended tab, two or more
+candidates, an untyped run, or a run already asked about: the question.
 
 **Uniqueness after the fact.** As built (astra's implementation note 1,
 phase 1b note 10): a verified or confirmed id is a **claim**, written in
@@ -749,17 +767,24 @@ detaches, never stops.
 
 **Quit** (`windowShouldClose` → `applicationShouldTerminate` → drain, per
 AGENTS.md): the question is asked in `windowShouldClose`, synchronously,
-and counts **local** working tabs only; when remote working tabs exist the
-text gains one line, "Sessions working on <host> keep running; Temple will
-reconnect to them." The quit sequence as it exists in code today is kept,
-with remote work fitted inside it:
+and counts **local** working tabs only; when remote tabs are connected the
+text gains one line, "Sessions on <host> keep running; Temple will
+reconnect to them." **As built (owner, round 2): Temple stops no agent on a
+host at quit, working or idle.** Every live client of a tab on a host is
+detached; every run, pending Codex ones included, is left as it is and
+comes back as a tab next launch, where closing it stops it. The idle stop
+described in step 2 below, its live-master check and its `host did not
+answer` record are gone (they were decided from the settle timer's reading,
+which can take a long, quiet tool call for idle). The quit sequence as it
+exists in code today is kept, with remote work fitted inside it:
 
 1. `openSessions.prepareForQuit()` freezes the open-tab set, as today.
 2. `drainAll(graceful:detach:stops:completion:)`, the existing 3 s surface
    drain: graceful surfaces (local) get today's exit request, wait,
-   terminate; detach surfaces (remote, working by the tab's gate) get
+   terminate; detach surfaces (as built since round 2: every live remote
+   client, working or idle) get
    `terminate()` at once and no graceful-exit input (that input would reach
-   the agent through tmux); `stops` are **remote stop operations** for the
+   the agent through tmux); **superseded by round 2**: `stops` were **remote stop operations** for the
    remote tabs whose gate is idle and whose host has a live master, and that
    this launch attached to (a chip restored and never opened is never
    stopped, phase 1b round 2 ruling 2). Pending Codex runs follow the same
@@ -772,7 +797,9 @@ with remote work fitted inside it:
    window's deadline every outstanding query client is cancelled (killed),
    exactly as a local straggler is terminated, and its session is recorded
    **left running** with reason `quit deadline`; a host with no live master
-   is not asked at all (left running, `host did not answer`).
+   is not asked at all (left running, `host did not answer`). As built since
+   round 2, the only stops in the window are ones a close started before the
+   quit; one outstanding at the deadline is left running, `quit deadline`.
 3. The engine shutdown barrier as it exists (`engineSet.stopListening()`,
    then `engineSet.shutDown(timeout: 2 s)` on main, commit 4dc203a) runs
    unchanged after the drain; the remote store's pending writes are flushed
@@ -791,10 +818,11 @@ An acknowledgement that arrives after its client was cancelled cannot arrive
 at all. Quit is never delayed beyond today's 3 s drain plus the 2 s barrier
 by any host.
 
-After relaunch, a chip for a stopped session starts a new run at once
-(`end_evidence: killed`) and resumes from the transcript, exactly as a local
-tab is respawned with `--resume`; a chip for a session left running
-attaches.
+After relaunch, a chip for a session still running attaches (as built since
+round 2, every session on a host that had a tab is still running unless it
+ended by itself); a chip for a stopped or ended session starts a new run at
+once and resumes from the transcript, exactly as a local tab is respawned
+with `--resume`.
 
 **Canonical directory reconciliation.** When `ok` arrives, its `pwd -P` may
 differ from the intent (`~/project` → `/home/mentes/project`, a symlink
@@ -1081,8 +1109,8 @@ Deleting the feature, should the experiment end:
   sheet; the remote rows in ⌘N and the launcher; `RemoteTabController`
   (every remote tab's open, exit, close, quit plan, identity and
   retirement; as built in phase 1b it holds what were the remote branches
-  of `OpenSessionsModel`, which keeps only thin seams into it); the
-  feature flag.
+  of `OpenSessionsModel`, which keeps only thin seams into it). (There
+  was a feature flag until the owner's round 2; there is none now.)
 - **Storage**: `remote-state.sqlite` (deleted), `UserDefaults`
   `temple.settings.remoteHosts` (removed), `<state dir>/ssh/` and the
   fallbacks `$TMPDIR/temple-ssh-<uid>/` and `/tmp/temple-ssh-<uid>/`
@@ -1256,13 +1284,18 @@ Deleting the feature, should the experiment end:
   exec seam), form validation, decoder on old and partial JSON, the sheet's
   state machine, host-key classification from captured stderr samples,
   registry rebuilt on list change independent of test results.
-- **Flag off, both entry points**: `AppStartup` builds the registry for
-  both `@main`s; with the flag off the registry has one entry, the exec
-  seam ran nothing, and no remote store file is created;
-  `Scripts/check-remote-off.sh` runs `strings` on the `.app` binary for a
-  remote-only marker and asserts the flag default.
+- **No host, both entry points** (as built in round 2; it was "flag off"):
+  `AppStartup` builds the registry for both `@main`s; with no host enabled
+  the registry has one entry, the exec seam ran nothing, no ssh config is
+  read until the Hosts card is shown, no remote store file is created or
+  attached, and no remote UI input exists (no ⌘N or launcher host rows, no
+  shortcuts note, no sidebar notice); local close, quit and title behaviour
+  equal v0.5.2's (`RemoteHostsTests`, `NotificationStateTests`,
+  `ControlServiceTests`). `Scripts/check-remote-code.sh` runs `strings` on
+  the `.app` binary for a remote-only marker (the host list's key) and
+  asserts nothing gives the host list a default.
 
-**Linux acceptance (required before the flag flips):** `make
+**Linux acceptance (required before shipping):** `make
 remote-acceptance HOST=<alias>` copies the script suite to the host and
 runs it there under the host's `sh`, GNU find, `/proc` and real tmux, on
 both boxes as they are: `masterblaster-mentes` (Ubuntu 24.04, x86_64, tmux
@@ -1282,11 +1315,12 @@ the deferred repair path is ever needed); `KillUserProcesses` detection.
 
 - [x] `masterblaster-mentes`: phases 0, 1a, 1b and 2 pass, a logged-in
   Claude conversation and `--resume` included.
-- [ ] `jetson-mentes`: everything passes except the Claude conversation and
-  `--resume` check, which is **incomplete**: `claude` there is not logged in
-  (it stops at onboarding; `claude -p` says "Not logged in"). Log Claude in
-  on jetson and rerun phase 1a's acceptance before the flag ships on (phase
-  1a note 5). Codex and enrichment pass there.
+- [x] `jetson-mentes`: everything passes except the Claude conversation and
+  `--resume` check, which is optional coverage, not a gate (owner, round
+  2): `claude` there is not logged in (it stops at onboarding; `claude -p`
+  says "Not logged in"). Logging Claude in on jetson and rerunning phase
+  1a's acceptance adds that coverage (phase 1a note 5). Codex and
+  enrichment pass there.
 
 **Manual plan on `masterblaster-mentes`** (screen unlocked, Codex computer
 use per the memory rule; no synthetic input):
@@ -1359,8 +1393,8 @@ use per the memory rule; no synthetic input):
    reports uncertainty.
 9. `jetson-mentes`: steps 2, 4, 6; timeouts read right on the slower box.
 10. Remove the host with a row open: header says not set up; no `-O exit`;
-    re-add: works without a new fingerprint prompt. Finally delete
-    `remote-state.sqlite` with the flag off: every local session and tab is
+    re-add: works without a new fingerprint prompt. Finally remove every
+    host and delete `remote-state.sqlite`: every local session and tab is
     intact.
 
 ---
@@ -1369,7 +1403,8 @@ use per the memory rule; no synthetic input):
 
 Each phase lands on main (direct commits, local `codex review` first),
 reviewed by gpt-6.1-sol with gpt-6-astra alongside where the shape changes,
-dark behind `temple.feature.remoteHosts` until phase 3.
+dark behind `temple.feature.remoteHosts` until phase 3 (history: the owner
+removed the flag in round 2; remote is invisible until a host is enabled).
 
 **Phase 0: transport, environment and the connection manager.**
 `RemoteExec`, `SSHExec`, `SSHConnection.arguments(for:)`, the host record,
@@ -1420,9 +1455,9 @@ inputs, the breaker, `LocalShellExec`, `RemoteSourceContractTests`, the
 per-host actor, `ModuleBoundaryTests`. You get: a reopened or imported
 remote row that lacked a title, folder or date fills from its transcript.
 
-**Phase 3: ship.** Flag on by default (as built: prepared as its own
-commit on the local branch `remote-flag-on`, for the owner to decide; main
-keeps it off), ADR-036 (this document cut to
+**Phase 3: ship.** Flag on by default (history: prepared on the local
+branch `remote-flag-on`; superseded by the owner's round 2, which removed
+the flag: remote is invisible until a host is enabled), ADR-036 (this document cut to
 decisions, including the ADR-010 amendment and "Removing remote"),
 FEATURES.md (Sidebar, Session lifecycle, Settings, Shortcuts, Security), a
 note in AGENTS.md that remote shipped with no core schema change and
@@ -2538,7 +2573,9 @@ its own.
     keeps it until the agent retitles itself (generated titles overwrite;
     transcript fills are NULL-only and never replace it) or the user
     renames it; only dev and acceptance stores ran a build with the
-    regression, so no repair is shipped.
+    regression, so no repair is shipped. **Superseded for local tabs** by
+    the owner's round 2: only a tab on a host ignores a stand-in title; on
+    this Mac it is shown and kept, as in v0.5.2 (it is the tab's own folder).
 - **B2, working at close.** A spawn (a launch, a reopen, an attach) boots
   into running and only the 15 s settle timer took it back, so ⌘W soon
   after a reopen asked Detach or Stop. Measured on masterblaster: Codex
@@ -2562,6 +2599,9 @@ its own.
   detaches a working agent on a host. The CLI decides without touching the
   tab and applies "at rest" only once its request is committed. Same rule
   for local and remote tabs (round 1 of the hands-on review: Sol, Fable).
+  **Superseded for local tabs** by the owner's round 2: the rule is a tab
+  on a host's only; a local tab keeps the settle timer's reading, as in
+  v0.5.2.
   - **Follow-up, not changed here:** the quit gate keeps the timer's
     reading, and that timer ignores an unanswered Return (pre-existing):
     15 s after a Return with a quiet title it settles to idle, so a long
@@ -2588,7 +2628,7 @@ its own.
     | `mouseReport` from `mouseButtonCallback`, `cursorPosCallback` (drag), `scrollCallback`, while the program captures the mouse | mouse reports | `mouseDown`/`Up`, `right…`, `other…`, `…Dragged`, `scrollWheel` when `ghostty_surface_mouse_captured` (under tmux `mouse on`: always) |
     | `cursorPosCallback` motion reports (mode 1003, no button) | mouse reports | not recorded: no button, nothing chosen; tmux asks for button events only |
     | `scrollCallback` alternate scroll (alternate screen, no capture) | cursor Up/Down | not recorded (accepted, round 4): only Up/Down, and libghostty does not say when it applies |
-    | `maybePromptClick` (a click at a prompt that declared OSC 133): cursor arrows, or with `click_events` an SGR mouse report | cursor Left/Right, or a mouse report | closed: `cursor-click-to-move = false` in Temple's ghostty config (neither agent declares it; tmux does not pass it) |
+    | `maybePromptClick` (a click at a prompt that declared OSC 133): cursor arrows, or with `click_events` an SGR mouse report | cursor Left/Right, or a mouse report | not recorded: tmux does not pass prompt clicks on, so a tab on a host never gets one (neither agent declares them either, measured). Closed with `cursor-click-to-move = false` until the owner's round 2, which reverted it: it was app-wide, and local tabs keep libghostty's behaviour |
     | `flagsChanged`, `keyUp`: Kitty keyboard modifier and release reports, when the program enabled them | key reports | not recorded: a modifier or a release submits nothing; the press that does is recorded in `keyDown` |
     | `clear_screen` keybind: an FF to the program when it is at a prompt | `\x0c` | `keyDown` (keybind only) |
     | `focusCallback` (mode 1004), `colorSchemeCallback` (mode 2031), the title report (CSI 21 t), and termio's answers to queries (DA, DSR, OSC 10/11) | reports | not input: the terminal's own state or answers to the program's queries, no content from the user |
@@ -2861,3 +2901,48 @@ Later, not now:
 - Stripping glyphs and suffixes from terminal-derived titles (a heuristic
   one TUI change behind; the title hint already covers ended rows), and
   the look of an ended row over the launcher.
+
+## Owner decisions, round 2 (no flag, local unchanged, auto-link, quit)
+
+The owner decided four things after the UX round; each is built as below,
+and the sections above say so where they changed.
+
+1. **No feature flag.** `temple.feature.remoteHosts` is gone (a stored value
+   is ignored). Remote is invisible until a host is enabled: with none the
+   registry holds this Mac only, no ssh config is read until Settings' Hosts
+   card is shown, nothing is spawned, the remote project store is not even
+   attached (it is once a host is enabled, or when its file is already
+   there), and no remote UI appears but that card, the one way to add a
+   host. Remote UI appears for an enabled host only (a host project's
+   Sessions menu item included). `check-remote-off.sh` became
+   `check-remote-code.sh`: the `.app` carries the remote code and the host
+   list has no default. The `remote-flag-on` branch is superseded.
+2. **Local behaviour is v0.5.2's.** Every change since v0.5.2 that reached
+   this Mac's tabs was audited (`git diff v0.5.2..HEAD -- Sources`). Scoped
+   to remote: the early rest rule at ⌘W and the CLI's close; stand-in title
+   suppression; History's 240 pt meta column (only while a host's project is
+   listed); the key catcher's yielding to sheets (remote's own sheets, each
+   marked while up, not every sheet window). Reverted: `cursor-click-to-move
+   = false`; the quit drain's early end with local agents in it (they get
+   the whole window again); an empty tooltip on local project headings and
+   the find bar's wrapper. Kept, as fixes the owner accepted: Codex
+   app-server rollouts titled from the first typed prompt (91bddc4, with
+   `factsVersion` 3), and the sidebar selection following a tab that gets
+   its session while active (d5a8616). Inert for local and kept: the input
+   and stand-in hooks in the terminal view (reported, but read only for
+   remote tabs), `clipboard-write = allow` (libghostty's default, pinned),
+   the acknowledged tab save, the registry box, the engine set's add and
+   remove, and the quit prompt's host line (absent with no remote tab).
+3. **A lone Codex candidate is linked** (Fable's UX item 1): section 3's
+   "As built (owner, round 2)" note. The `--no-daemon` hint left the bands
+   for the Hosts card's notes.
+4. **Quit stops nothing on a host** (section 5's Quit, as built): every
+   client detached, every run left running and restored as a tab.
+   Docs: jetson's Claude login is optional coverage, not a gate; the
+   additive-schema rule stays, kept by the owner.
+
+Later, still open: a link survives a relaunch as an ordinary session (its
+line and Not this session are this launch's, while its tab stays connected),
+and "asked already" is memory only, so after a relaunch a run whose question
+was shown can link a lone candidate.
+

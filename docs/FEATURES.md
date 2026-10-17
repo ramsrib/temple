@@ -267,16 +267,13 @@ Settings tab is the one agent-less exception.
   persists on disk and remains in the sidebar.
 - Closing a tab asks for confirmation only while its agent is running. Return
   confirms; Esc cancels. Idle, attention, exited, inert, and Settings tabs close
-  immediately. A tab whose agent has just started (a new session or a resume)
-  and has received nothing from you since closes without asking once its
-  title has been quiet for a few seconds, without waiting for the settle
-  timer. Any key, paste, or click the agent takes in since it started means
-  the usual rule, so `⌘W` soon after an answer still asks.
+  immediately. (A tab on a host has one more rule; see
+  [Sessions on a host](#sessions-on-a-host).)
 - A non-user-initiated exit within roughly five seconds of launch keeps the tab
   visible with a red exited dot so the failure output can be read.
 - Quitting Temple gracefully shuts down all live agent processes on this Mac;
-  Temple does not detach or orphan them. Agents working on another machine
-  are the exception: they keep running ([Sessions on a host](#sessions-on-a-host)).
+  Temple does not detach or orphan them. Agents on another machine are the
+  exception: they all keep running ([Sessions on a host](#sessions-on-a-host)).
 - `Ctrl+D` passes through unchanged. If the agent exits on EOF, Temple handles it
   as an ordinary process exit.
 
@@ -301,9 +298,10 @@ for a prompt.
 Temple runs Claude Code and Codex on another machine you reach with ssh, in a
 tab that works like a local one
 ([ADR-036](./DECISIONS.md#adr-036--sessions-on-another-machine-through-the-users-own-ssh)).
-Hosts are set up in Settings ▸ Hosts. For now this is off by default:
-`defaults write com.sriramb.temple temple.feature.remoteHosts -bool true`,
-then relaunch, turns it on.
+Hosts are set up in Settings ▸ Hosts. Until one is, nothing here appears
+anywhere else in Temple: no host rows in `⌘N` or the launcher, no shortcuts
+note, no sidebar notices; local tabs behave exactly as they would without
+it. What follows appears for an enabled host only.
 
 - **Starting one.** `⌘N` lists **Folder on <host>…** under **Choose
   folder…** for each host, the launcher has **New session on <host>…**, and a
@@ -324,7 +322,12 @@ then relaunch, turns it on.
   its transcript. A working one asks "Claude Code is still working on
   <host>." ("Detach leaves it running; Stop ends it.") with
   **Detach** (the default: it keeps working, and you can open it again),
-  **Stop** and **Cancel**.
+  **Stop** and **Cancel**. On a host, a tab whose agent has just started (a
+  new session or a resume) and has received nothing from you since counts
+  as idle once its title has been quiet for a few seconds, without waiting
+  for the settle timer; any key, paste, or click it takes in since means
+  the usual rule, so `⌘W` soon after an answer still asks. Tabs on this Mac
+  keep the settle timer's reading.
 - **Left running.** When the host does not answer as you close a tab, or
   another terminal is attached to the session, Temple leaves it running and
   says so once. It never stops anything later on its own. **Sessions on
@@ -336,12 +339,12 @@ then relaunch, turns it on.
   tmux session's name is its tooltip) and **Stop** and
   **Keep**. Temple never lists or stops a session it did not
   start, and never touches your own tmux sessions.
-- **Quitting.** The quit prompt asks about local working agents only and
-  adds "Sessions working on <host> keep running; Temple will reconnect to
-  them." Working agents on hosts are detached. Idle ones are stopped when
-  their host answers within the quit's few seconds, and otherwise left
-  running and listed. After relaunch a chip for a stopped session resumes it
-  from its transcript, and one for a running session attaches to it.
+- **Quitting.** Temple stops no agent on a host when it quits, working or
+  idle: each tab's connection is detached and the agent keeps running there.
+  The quit prompt asks about local working agents only and adds "Sessions on
+  <host> keep running; Temple will reconnect to them." After relaunch each
+  comes back as a tab that attaches to it; closing that tab stops an idle
+  agent, as any close does.
 - **When Temple can't tell.** If Temple cannot tell whether a session is
   still running on its host, opening it only tries to attach. **Resume
   anyway** starts it again from its transcript; the sheet says that the
@@ -351,10 +354,16 @@ then relaunch, turns it on.
   session on a host reads "New Codex session" until Temple learns the ID;
   it reopens and restores like any tab meanwhile. Temple identifies it on
   its own only when the Codex process it started holds the session's file
-  open. By default Codex's shared app server writes that file, so the tab
-  asks instead: "Is this the session?" with the first prompt, the time and
-  the folder, and **Yes, that's it** or **Not this one**. With `--no-daemon`
-  in Codex's arguments (Settings), Temple identifies the session on its own.
+  open. By default Codex's shared app server writes that file, so Temple
+  looks for sessions begun in the folder since it started. When exactly one
+  matches and you have typed into the tab, Temple links it as a yes would,
+  and the tab says so in one line, "Linked to “<first prompt>” on <host>.",
+  with **Not this session**, which undoes the link, never offers that
+  session again for this tab, and asks instead. With two or more, or once
+  it has asked, the tab asks: "Is this the session?" with the first prompt,
+  the time and the folder, and **Yes, that's it** or **Not this one**. With
+  `--no-daemon` in Codex's arguments, Temple identifies the session on its
+  own; the Hosts card says so.
   A Codex session that ended before Temple learned its ID asks in one
   sentence, "Codex ended on <host> before Temple learned which session this
   was. Is it “<first prompt>” (<time>)?", with **Yes, that's it**, **Not
@@ -366,8 +375,9 @@ then relaunch, turns it on.
   session's row sits at the top of its project, titled with that first
   prompt until Codex's own title arrives; opening it resumes it.
 - **Banners.** A tab's banner puts its answers (Reconnect, Resume anyway,
-  Start a new session, Yes and No) right after its sentence as small
-  buttons; only Discard and Cancel sit at the trailing edge.
+  Start a new session, Yes and No, Not this session) right after its
+  sentence as small buttons; only Discard and Cancel sit at the trailing
+  edge.
 - **Scrolling and find.** tmux keeps a session's history. The wheel scrolls
   it, and the first key you type returns to the prompt. A drag selects and
   copies (to the Mac clipboard with tmux 3.3 or newer); `⇧`-drag selects in
@@ -596,7 +606,11 @@ Changes apply live where applicable.
   the exact commands a launch sends) and whether the host ends your
   processes when you log out (`KillUserProcesses`), each with **Show
   output**. A host that was never tested can still start sessions; only a
-  test that ran and found a CLI or tmux unusable rules it out.
+  test that ran and found a CLI or tmux unusable rules it out. The card is
+  always there, with no host yet too (it is how one is added); its notes
+  say that the arguments above apply on hosts and that `--no-daemon` in
+  Codex's arguments lets Temple identify new Codex sessions there on its
+  own. `~/.ssh/config` is read when the card is shown, never before.
 
 Agent arguments apply to both new and resumed sessions, on hosts too
 (`--dangerously-skip-permissions` included, as the Hosts card says). Command paths are
@@ -679,7 +693,7 @@ of truth.
 | **⌘1–9** | Switch to tab *N* in the active project. |
 | **⌃⇥ / ⌃⇧⇥** | Tab switcher: last visited tab (hold ⌃ to walk the MRU list, ⇧ reverses mid-walk, release to land). |
 | **⌘⇧[ / ⌘⇧]** | Previous / next project; returns to the session last used there. |
-| **⌘Q** | Quit, draining every agent first; closing the window does the same. Asks first if an agent is mid-task. Agents working on a host keep running. |
+| **⌘Q** | Quit, draining every agent first; closing the window does the same. Asks first if an agent is mid-task. Agents on a host keep running. |
 | **⌘P** | Project switcher (hold ⌘, tap P to walk, release to land). |
 | **⌘F** | Find in the active terminal (bar over the top-right corner); on the History tab, its search. |
 | **⌘G / ⌘⇧G** | Next / previous match while the find bar is open. |
@@ -693,7 +707,7 @@ of truth.
 | **⌘,** | Open Settings as a tab. |
 | **Esc** | Dismiss the palette or shortcuts overlay from anywhere; close the find bar from its field; cancel busy-close confirmation. On the History tab: clear the search, then the "Archived just now" chip, then the selection, then go back. |
 
-With sessions on hosts turned on, the shortcuts card adds: "In a session on a
+Once a host is enabled, the shortcuts card adds: "In a session on a
 host, scrolling up shows history; the first key you type returns to the
 prompt."
 

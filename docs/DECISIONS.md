@@ -208,7 +208,7 @@ authority — it can be rebuilt from disk at any time.
 ---
 
 ## ADR-010 — Temple owns the agent processes; graceful lifecycle
-**Date:** 2026-07-10 · **Status:** Accepted; amended by ADR-036 (an agent on another machine is not Temple's child process: idle ends, working detaches, an unconfirmed end is listed and never performed later)
+**Date:** 2026-07-10 · **Status:** Accepted; amended by ADR-036 (an agent on another machine is not Temple's child process: an idle close ends it, a working one detaches, an unconfirmed end is listed and never performed later, and a quit leaves every one running)
 
 Temple maintains the set of **running agent processes** (each a CLI in a
 libghostty PTY surface) and is responsible for their clean lifecycle:
@@ -2156,9 +2156,11 @@ rows ("Removing remote", below).
   running and how to stop it on the host. Repairing a lost socket is
   deferred until it is seen in practice.
 - **Close means what it means locally; nothing is stopped later.** The
-  tab's activity gate decides, as for a local tab, including the early
-  rest rule (⌘W takes a running tab as at rest only when its agent has
-  received nothing since it started). Idle: Stop, at once and without a
+  tab's activity gate decides, as for a local tab, plus an early rest rule
+  for tabs on a host only (⌘W and the CLI take a running tab there as at
+  rest when its agent has received nothing since it started and its title
+  is quiet; a local tab keeps the settle timer's reading, as before
+  remote). Idle: Stop, at once and without a
   prompt. Working: "<agent> is still working on <host>." with Detach (the
   default), Stop and Cancel. To stop, Temple first ends its own tmux client
   on this Mac (the tab's ssh) and waits briefly for the session's attached
@@ -2175,16 +2177,18 @@ rows ("Removing remote", below).
   stop, sweep, lock or retry: two review rounds found that any kill decided
   after the fact needs idle evidence Temple cannot get remotely. Temple
   never stops anything without a live user action.
-- **Quit keeps the existing sequence and never waits on a host.** The
-  question in `windowShouldClose` counts local working agents and adds
-  "Sessions working on <host> keep running; Temple will reconnect to them."
-  Inside the existing 3 s drain a working remote agent is detached (no exit
-  input, which tmux would deliver to it), and an idle one this launch
-  attached to is stopped by the same command when its host has a live
-  master. What is unacknowledged at the deadline, and every host with no
-  master, is left running (`quit deadline`, `host did not answer`). A chip
-  restored and never opened is never stopped. Remote store writes share the
-  engine barrier's 2 s. So agents on hosts can outlive Temple, by design.
+- **Quit stops nothing on a host and never waits on one.** The question in
+  `windowShouldClose` counts local working agents and adds "Sessions on
+  <host> keep running; Temple will reconnect to them." Inside the existing
+  3 s drain every live client of a tab on a host is detached (no exit
+  input, which tmux would deliver to the agent), working or idle (owner,
+  round 2: an idle stop at quit could only be decided from the settle
+  timer's reading, which can take a long, quiet tool call for idle). Every
+  run, pending Codex ones included, is left as it is and comes back as a
+  tab next launch, where closing it stops it. Only a stop a close started
+  before the quit runs inside the window; one unacknowledged at the
+  deadline is left running (`quit deadline`). Remote store writes share
+  the engine barrier's 2 s. So agents on hosts outlive Temple, by design.
 - **Temple never discovers or stops a session it did not start.**
   Sessions on <host> lists the runs Temple tracks, each asked about on its
   own pinned server; the private server is never listed. There is no remote
@@ -2199,22 +2203,30 @@ rows ("Removing remote", below).
   whose header id is its file name's and whose `cwd` is the run's folder.
   Any other writer (a child, a launcher's native binary, Codex's shared app
   server, which writes every rollout by default) proves nothing. Then the
-  tab asks: candidates by folder and time on the host's clock, **Yes,
-  that's it** or **Not this one**, declined ones never offered again. A
+  candidates by folder and time on the host's clock decide. Exactly one,
+  for a connected tab that was typed into and not yet asked about: Temple
+  claims it as a yes does (the same recheck, uniqueness and core join) and
+  the tab says "Linked to “<first prompt>” on <host>." with **Not this
+  session** (owner, round 2), which undoes the claim and the run's
+  hand-over, declines the candidate (one remote write), lets go of the core
+  row the link made unless the user made it theirs, and asks; Temple does
+  not link on its own again for that run this launch. Two or more, an
+  ended tab, or once asked: the tab asks, **Yes, that's it** or **Not this
+  one**, declined ones never offered again. A
   claim is unique per host before the core join, and core's refusal
   (`hostConflict`, `agentConflict`) is shown. Temple passes no
-  `--no-daemon` (AGENTS.md: no opinion on how a CLI runs); the tab says that
-  with it in Codex's arguments, Temple identifies the session on its own.
+  `--no-daemon` (AGENTS.md: no opinion on how a CLI runs); the Hosts card
+  says that with it in Codex's arguments, Temple identifies the session on
+  its own.
   A host without `/proc` is question-only. A pending session's own
   lifecycle: closing it while idle checks its identity once more, then
   stops it; identified, the tab closes; unidentified and typed into, the
   tab stays with "Codex ended before Temple learned its session ID." and
   the question, **Start a new session** and **Discard**; never typed into,
-  Temple stops tracking it. Quit treats pending runs like any (working
-  detached, idle stopped); a stopped one that was typed into keeps its
-  ended record, so the next launch still asks, and an unused one is
-  dismissed. Saying yes to an ended session records which session it was
-  and leaves the tab at rest with **Resume**; nothing launches until asked.
+  Temple stops tracking it. Quit treats pending runs like any: detached,
+  left running, back as chips next launch. Saying yes to an ended session
+  records which session it was and closes the tab, as a local exit does;
+  its row is the way back, and nothing launches until asked.
   Claims are made unique per host by a partial unique index on claimed
   runs (`runs_claim`), so a session's later resumes may share its id.
 - **Enrichment by known id; a transport failure is never absence.**
@@ -2263,23 +2275,26 @@ rows ("Removing remote", below).
   `v13-project-host` is not needed: it stays reserved and unused. The two
   files are not one transaction; a remote archive mask left out of step by
   a crash is rewritten by the next Restore or Undo (accepted).
-- **One module, one import, one flag.** `TempleUI` imports
+- **One module, one import, no flag.** `TempleUI` imports
   `TempleRemoteHost` only in `Sources/TempleUI/Hosts/RemoteHost.swift`
   (`ModuleBoundaryTests`), and the remote tab logic is
-  `RemoteTabController`, behind thin seams in `OpenSessionsModel`.
-  `temple.feature.remoteHosts` is read once at launch through `AppStartup`
-  and `AppModel`, which both `@main`s share; it is off by default; with it
-  off the registry holds
-  this Mac only, nothing is spawned or read, and no remote store is created.
+  `RemoteTabController`, behind thin seams in `OpenSessionsModel`. Remote
+  is invisible until a host is enabled (owner, round 2; the
+  `temple.feature.remoteHosts` flag it replaced is ignored): with none the
+  registry holds this Mac only, no ssh config is read until Settings'
+  Hosts card is shown, nothing is spawned, no remote store is created, and
+  no remote UI appears but that card. Remote UI appears for an enabled host
+  only, and nothing remote changes a local tab's behaviour or looks.
 
 **Amends ADR-010 for remote hosts:** *an agent on another machine is not
 Temple's child process. Closing its tab still ends it when it is idle, as
 locally; an agent that is working is detached, not killed, unless the user
 chooses Stop; and an end Temple could not carry out and confirm at that
 moment is recorded as left running and listed for the user, never performed
-later on Temple's own initiative.* The tab's ssh is a tmux client, and its
-exit proves nothing about the agent. "Quit never orphans an agent" holds for
-this Mac only.
+later on Temple's own initiative; quitting Temple stops no agent there,
+working or idle.* The tab's ssh is a tmux client, and its exit proves
+nothing about the agent. "Quit never orphans an agent" holds for this Mac
+only.
 
 **Amends ADR-029:** its "What remote needs" no longer includes
 `v13-project-host`; the interim rule that a restored chip takes its host from
@@ -2298,7 +2313,7 @@ rows because it reads rows.
 
 **Removing remote.** Code: the `TempleRemoteHost` module,
 `Hosts/RemoteHost.swift`, the Hosts card and its Test connection sheet, the
-host rows in `⌘N` and the launcher, `RemoteTabController`, the flag.
+host rows in `⌘N` and the launcher, `RemoteTabController`.
 Storage: `remote-state.sqlite`, the `temple.settings.remoteHosts` key, and
 the socket files in `<state dir>/ssh/` and the fallbacks for a long path,
 `$TMPDIR/temple-ssh-<uid>/` and `/tmp/temple-ssh-<uid>/` (masters expire on
@@ -2318,16 +2333,14 @@ no colour reports (Codex there uses its default palette); importing or
 listing sessions Temple did not start; per-host arguments (Settings'
 arguments apply on hosts too, `--dangerously-skip-permissions` included, as
 the Hosts card says); the usage meter and Reveal in Finder; routing `⌘F` to
-tmux; non-Linux hosts beyond a tested BSD fallback. Known gaps: the quit
-gate keeps the settle timer's reading, so a long tool call whose title
-stays quiet 15 s after a Return is stopped at quit as idle rather than
-detached; Claude on a host must be logged in there (the per-box status is
-the design doc's acceptance checklist); every unarchived
-remote row with a transcript costs one read at startup.
+tmux; non-Linux hosts beyond a tested BSD fallback. Known gaps: Claude on a host must be logged in there (the per-box status
+is the design doc's acceptance checklist, optional coverage, not a gate);
+every unarchived remote row with a transcript costs one read at startup.
 
 **Rejected:** sshfs (ADR-030 cannot prove anything on a network volume), a
 bundled ssh library, a generated ssh config, a Temple-shipped helper daemon,
 dtach and abduco (no screen on reattach), mosh, and screen; adopting a Codex
-rollout by folder and time, or by uniqueness of a match; deferred stops of
-any kind; listing the private server's sessions as "Not in Temple";
+rollout by folder and time, or by uniqueness of a match, without saying so
+(the lone-candidate link is said in the tab and undone by Not this session);
+deferred stops of any kind; stopping anything at quit; listing the private server's sessions as "Not in Temple";
 `open_tabs.host`; Temple passing `--no-daemon`; a byte-exact core locator.
