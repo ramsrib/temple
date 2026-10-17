@@ -201,7 +201,7 @@ private struct SessionTerminalView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     endedSentence(host, candidate)
                     endedAnswers(host, candidate, remote)
-                        .padding(.leading, 20)
+                        .padding(.leading, 22)
                 }
             }
             identityCaptions(remote)

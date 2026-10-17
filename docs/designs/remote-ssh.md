@@ -653,7 +653,7 @@ and the launch-failure header apply as today when a `failed` record exists.
   (as built, phase 1b note 12) gets one more identity check, then the same
   stop: identified, its tab closes like any; unidentified and typed into,
   the tab stays with one band, "Codex ended on <host> before Temple learned
-  which session this was. Is it "<first prompt>" (<time>)?", Yes, Not this
+  which session this was. Is it “<first prompt>” (<time>)?", Yes, Not this
   one and Start a new session after it and Discard at the edge (remote UX
   round 1), and where its terminal was one line, "Codex's last screen on
   <host> isn't kept after it ends." (simplification round); never typed into,
@@ -2676,7 +2676,7 @@ changed, by finding:
   Resume are gone; opening the row resumes, nothing resumes on its own.
 - **Ended before identified: one band** (UX 2, visual 2). The fact and the
   question are one sentence, question first: "Codex ended on <host> before
-  Temple learned which session this was. Is it "<first prompt>" (<time>)?"
+  Temple learned which session this was. Is it “<first prompt>” (<time>)?"
   (no candidate: the first sentence alone), one candidate at a time, Not
   this one bringing the next; the identity note and the `--no-daemon` hint
   stay as its captions (the hint's place waits on the owner). The pane is
@@ -2814,8 +2814,9 @@ patch, and two were removed rather than fixed again.
   the band was a run-on paragraph of spinner frames, status fragments and
   repeated JSON (Fable's visual round 3). Where the terminal was, the band's
   tab now says, at once and with nothing fetched, "Codex's last screen on
-  <host> isn't kept after it ends." (12 pt, tertiary, top-leading at the
-  band's 22 pt inset): a fact, not a failure, since there is nothing to try
+  <host> isn't kept after it ends." (12 pt, secondary, top-leading in the
+  band's text column: 36 pt leading, 22 pt trailing, where the captions sit
+  too): a fact, not a failure, since there is nothing to try
   again. A run's `.out` is handled for every run as it was before: an
   acknowledged stop or a proven absence removes it, kept in memory only
   for phase 1a's early-exit diagnostics, which are unchanged.

@@ -357,7 +357,7 @@ then relaunch, turns it on.
   in Codex's arguments (Settings), Temple identifies the session on its own.
   A Codex session that ended before Temple learned its ID asks in one
   sentence, "Codex ended on <host> before Temple learned which session this
-  was. Is it "<first prompt>" (<time>)?", with **Yes, that's it**, **Not
+  was. Is it “<first prompt>” (<time>)?", with **Yes, that's it**, **Not
   this one** and **Start a new session** after it and **Discard** at the
   edge (in a narrow window the answers sit on a row under the sentence);
   where its terminal was, one line says "Codex's last screen on <host>
