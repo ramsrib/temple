@@ -946,13 +946,30 @@ unknown, proof is unproven, adoption is inconclusive.
 
 ### The Hosts connection manager (Settings, under Agents)
 
-- **The list**: **From ~/.ssh/config** rows (every `Host` entry, one level of
-  `Include`, wildcards and `Match` skipped; read-only, "Edit in
-  ~/.ssh/config", a switch to enable in Temple) and **Added in Temple** rows
-  (editable, removable). Each enabled row: one status line, **Test
-  connection**; added rows also **Edit** and **Remove**; config rows
-  **Disable**.
-- **Add host… / Edit**: **Name** (the `HostID`; `[A-Za-z0-9._-]`, not
+- **The list** (as built, UX round 2): one **In use** list of every enabled
+  host, whichever source it came from, sorted by name. Each row: the name
+  (13 medium), a mono 11 secondary caption saying where it came from (the
+  address summary for a host added in Temple, `~/.ssh/config` for an
+  alias, orange "No longer in ~/.ssh/config" for an enabled alias the config
+  no longer names, once the config has been read), then **Test
+  connection**, **Sessions…**, and **Edit** and **Remove** (added in
+  Temple) or **Turn off** (an alias); the status line under it. Empty:
+  "No hosts in use." Hosts not in use are not listed. Last, **Add host…**,
+  an AppKit menu at the click: the config's aliases not in use (every
+  `Host` entry, one level of `Include`, wildcards and `Match` skipped; a
+  host added in Temple under an alias's name takes that alias out too),
+  choosing one turns it on; or, disabled, "Reading ~/.ssh/config…", "No
+  hosts in ~/.ssh/config", "Every host in ~/.ssh/config is in use"; then a
+  divider, **Enter details…** (the form below) and **Edit ~/.ssh/config**.
+  The config is read when the card is shown and again as the menu opens.
+  **Superseded**: the earlier card's two lists by source, **Added in
+  Temple** and **From ~/.ssh/config** (every alias with a switch). The
+  owner read "Added in Temple: No hosts added yet." as no hosts while a
+  config host was on; Fable's next design (one In use list, the config list
+  reduced to a chooser of unused aliases with switches) was overridden by
+  the owner, who found listing hosts not in use unnecessary, so the
+  chooser became the Add host… menu.
+- **Enter details… / Edit**: **Name** (the `HostID`; `[A-Za-z0-9._-]`, not
   starting with `-`, not an existing config alias; fixed once saved: "The
   name can't be changed later. Address, user and port can."), **Address**,
   **User** (optional), **Port** (optional, 1 to 65535), **Identity file**
@@ -2797,7 +2814,9 @@ changed, by finding:
   red still mark a proven fault). The config switches keep the app's
   neutral tint (a `.tint(.accentColor)` tried in round 1 resolved to that
   same neutral inside `RootView` and was removed in the fix round) and are
-  small rather than mini, whose knob read heavy in dark.
+  small rather than mini, whose knob read heavy in dark. (The switches are
+  **superseded** by UX round 2: the card lists only hosts in use, and an
+  alias is turned on from the Add host… menu, section 7.)
 - **One error colour, one field** (visual 3). The folder sheet's field is
   the Add host form's (plain, on the control fill, no heavy ring), and its
   "No folder …" and unreachable lines use the form's red.

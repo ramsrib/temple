@@ -602,14 +602,21 @@ Changes apply live where applicable.
 - **Appearance:** System, Light, or Dark theme.
 
 - **Hosts:** the machines you can start sessions on
-  ([Sessions on a host](#sessions-on-a-host)). **Added in Temple** hosts have
-  a name (fixed once saved), an address, and optionally a user, port,
-  identity file and jump host, with **Edit**, **Remove** and, in the form,
-  **Copy as ssh config**. **From ~/.ssh/config** lists the config's aliases
-  (`Host` entries, one level of `Include`; patterns and `Match` blocks are
-  skipped), each with a switch to use it in Temple, and **Edit in
-  ~/.ssh/config**. Every host in use has **Test connection** and
-  **Sessions…**, with its status line under it. Test connection opens a
+  ([Sessions on a host](#sessions-on-a-host)). **In use** lists every host
+  Temple uses, by name, wherever it came from: beside the name, the address
+  for a host added in Temple, `~/.ssh/config` for one of the config's
+  aliases (in orange, "No longer in ~/.ssh/config" when the config stopped
+  naming it). Each has **Test connection** and **Sessions…**, then **Edit**
+  and **Remove** for a host added in Temple or **Turn off** for an alias,
+  with its status line under it; with none, "No hosts in use." Hosts not in
+  use are not listed. **Add host…** is a menu: the config's aliases not in
+  use yet (`Host` entries, one level of `Include`; patterns and `Match`
+  blocks are skipped), any of which turns on at once, then **Enter
+  details…** (a name, fixed once saved, an address, and optionally a user,
+  port, identity file and jump host, with **Copy as ssh config**) and **Edit
+  ~/.ssh/config**. With no alias to offer it says why, greyed out: "Reading
+  ~/.ssh/config…", "No hosts in ~/.ssh/config" or "Every host in
+  ~/.ssh/config is in use". Test connection opens a
   small terminal, in the app's light or dark, where your own ssh
   connects and asks what it needs (a host key, a password, a second factor),
   then checks the login shell's PATH, `claude`, `codex`, tmux (by running
@@ -620,7 +627,8 @@ Changes apply live where applicable.
   always there, with no host yet too (it is how one is added); its notes
   say that the arguments above apply on hosts and that `--no-daemon` in
   Codex's arguments lets Temple identify new Codex sessions there on its
-  own. `~/.ssh/config` is read when the card is shown, never before.
+  own. `~/.ssh/config` is read when the card is shown and again when Add
+  host… opens, never before.
 
 Agent arguments apply to both new and resumed sessions, on hosts too
 (`--dangerously-skip-permissions` included, as the Hosts card says). Command paths are

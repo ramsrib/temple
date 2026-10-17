@@ -79,6 +79,60 @@ final class HostsSettingsViewTests: XCTestCase {
         window.close()
     }
 
+    /// One "In use" list, whichever source a host came from, by name; the
+    /// caption says where it came from, and an enabled alias the config no
+    /// longer names says so, but only once the config has been read. The
+    /// owner read "Added in Temple: No hosts added yet." as no hosts while a
+    /// config host was on.
+    func testInUseListsEveryEnabledHostByNameWithWhereItCameFrom() {
+        let added = RemoteHostRecord(name: "build-box", source: .temple, address: "10.0.0.2", user: "me")
+        let records: [RemoteHostRecord] = [.config("masterblaster-mentes"), added, .config("jetson-mentes")]
+        XCTAssertEqual(HostsSettingsSection.inUse(records).map(\.name), ["build-box", "jetson-mentes", "masterblaster-mentes"])
+        XCTAssertEqual(HostsSettingsSection.caption(for: added, configAliases: nil), .summary(added.summary))
+        let aliases = ["masterblaster-mentes"]
+        XCTAssertEqual(HostsSettingsSection.caption(for: .config("masterblaster-mentes"), configAliases: aliases), .sshConfig)
+        XCTAssertEqual(HostsSettingsSection.Caption.sshConfig.text, "~/.ssh/config")
+        XCTAssertEqual(HostsSettingsSection.caption(for: .config("jetson-mentes"), configAliases: aliases), .goneFromConfig)
+        XCTAssertEqual(HostsSettingsSection.Caption.goneFromConfig.text, "No longer in ~/.ssh/config")
+        XCTAssertEqual(HostsSettingsSection.caption(for: .config("jetson-mentes"), configAliases: nil), .sshConfig,
+                       "nothing is known missing while the config is read")
+        XCTAssertEqual(HostsSettingsSection.inUseEmpty, "No hosts in use.")
+    }
+
+    /// The card lists no host that is not in use: Add host… offers the
+    /// config's unused aliases (a hand-added host with an alias's name
+    /// takes it out too), or says disabled why there are none, then Enter
+    /// details… and Edit ~/.ssh/config.
+    func testAddHostOffersOnlyTheConfigsAliasesNotInUse() {
+        typealias Entry = HostsSettingsSection.AddHostEntry
+        let tail: [Entry] = [.divider, .enterDetails, .editConfig]
+        let records: [RemoteHostRecord] = [.config("box"), RemoteHostRecord(name: "jetson", source: .temple, address: "a")]
+        XCTAssertEqual(HostsSettingsSection.addHostMenu(configAliases: ["box", "jetson", "spare"], records: records),
+                       [.alias("spare")] + tail)
+        XCTAssertEqual(HostsSettingsSection.addHostMenu(configAliases: nil, records: records),
+                       [.unavailable("Reading ~/.ssh/config\u{2026}")] + tail)
+        XCTAssertEqual(HostsSettingsSection.addHostMenu(configAliases: [], records: []),
+                       [.unavailable("No hosts in ~/.ssh/config")] + tail)
+        XCTAssertEqual(HostsSettingsSection.addHostMenu(configAliases: ["box"], records: records),
+                       [.unavailable("Every host in ~/.ssh/config is in use")] + tail)
+        XCTAssertEqual(Entry.enterDetails.title, "Enter details\u{2026}")
+        XCTAssertEqual(Entry.editConfig.title, "Edit ~/.ssh/config")
+    }
+
+    /// Choosing an alias turns it on, so it is in use and no longer offered;
+    /// Turn off brings it back to the menu.
+    func testChoosingAnAliasPutsItInUseAndTurnOffOffersItAgain() throws {
+        let (app, _) = try app { ["box", "spare"] }
+        let hosts = app.remoteHosts
+        hosts.loadConfigAliases()
+        hosts.setConfigHost("spare", enabled: true)
+        XCTAssertEqual(HostsSettingsSection.inUse(hosts.records).map(\.name), ["spare"])
+        XCTAssertEqual(HostsSettingsSection.offered(configAliases: hosts.configAliases, records: hosts.records), ["box"])
+        hosts.setConfigHost("spare", enabled: false)
+        XCTAssertEqual(HostsSettingsSection.inUse(hosts.records), [])
+        XCTAssertEqual(HostsSettingsSection.offered(configAliases: hosts.configAliases, records: hosts.records), ["box", "spare"])
+    }
+
     /// The sheet's terminal runs the user's ssh itself, nothing wrapped
     /// around it; when it ends, whatever its status, the verdict is whether
     /// a master is up on Temple's socket (here none: ssh -O check on an

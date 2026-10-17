@@ -267,7 +267,7 @@ final class RemoteHostRecordTests: XCTestCase {
         XCTAssertEqual(problems { $0.name = "-oProxyCommand=x" }[.name], "A name can't start with a dash.")
         XCTAssertEqual(problems { $0.name = "my box" }[.name], "Use letters, digits, dots, dashes and underscores.")
         XCTAssertEqual(problems({ _ in }, aliases: ["box"])[.name],
-                       "~/.ssh/config already has a host named box. Turn it on under From ~/.ssh/config instead.")
+                       "~/.ssh/config already has a host named box. Choose it from Add host\u{2026} instead.")
         XCTAssertEqual(problems({ _ in }, existing: ["box"])[.name], "Temple already has a host named box.")
         XCTAssertNil(problems({ _ in }, existing: ["box"], editing: "box")[.name], "editing keeps its own name")
         XCTAssertEqual(problems { $0.address = "" }[.address], "Enter the host's address.")

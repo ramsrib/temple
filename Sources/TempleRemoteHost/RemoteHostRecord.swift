@@ -165,7 +165,7 @@ public struct RemoteHostForm: Equatable, Sendable {
         } else if !RemoteQuoting.isSafeToken(name) {
             problems[.name] = "Use letters, digits, dots, dashes and underscores."
         } else if configAliases.contains(name) {
-            problems[.name] = "~/.ssh/config already has a host named \(name). Turn it on under From ~/.ssh/config instead."
+            problems[.name] = "~/.ssh/config already has a host named \(name). Choose it from Add host\u{2026} instead."
         } else if existing.contains(name) {
             problems[.name] = "Temple already has a host named \(name)."
         }

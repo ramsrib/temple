@@ -5,10 +5,14 @@ import TempleTerminalAPI
 
 /// Settings' Hosts connection manager (docs/designs/remote-ssh.md section
 /// 7), always shown (the one remote surface with no host enabled, and the
-/// way to enable one; the ssh config is read when it appears): hosts added in
-/// Temple (editable, removable) and the aliases in `~/.ssh/config`
-/// (read-only, each switched on or off for Temple). Every enabled host has
-/// one status line and Test connection.
+/// way to enable one; the ssh config is read when it appears). One "In use"
+/// list of every enabled host, whichever source it came from (a caption says
+/// which), each with Test connection, Sessions… and its status line; then
+/// Add host…, a menu of the `~/.ssh/config` aliases not in use yet (choosing
+/// one turns it on), Enter details… and Edit ~/.ssh/config. The question
+/// the card answers is which hosts Temple uses: the owner read "Added in
+/// Temple: No hosts added yet." as none while a config host was on, and
+/// found a list of hosts not in use unnecessary.
 ///
 /// Layout rules as for the rest of Settings (AGENTS.md, the split view's
 /// titlebar inset): no `.fixedSize`, `.allowsHitTesting`, `layoutPriority`,
@@ -25,9 +29,7 @@ struct HostsSettingsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionRule("Hosts")
-            HostsRow("Added in Temple") { addedHosts }
-            hairline
-            HostsRow("From ~/.ssh/config", note: "Read-only. Turn a host on to use it in Temple.") { configHosts }
+            HostsRow("In use") { inUseHosts }
             hairline
             Text("Temple reaches these hosts with your own ssh. The arguments set above apply there too, --dangerously-skip-permissions included.")
                 .font(.system(size: 11))
@@ -77,100 +79,165 @@ struct HostsSettingsSection: View {
         return text
     }
 
-    // MARK: Added in Temple
+    // MARK: In use
+
+    /// Every enabled host, from either source, by name.
+    static func inUse(_ records: [RemoteHostRecord]) -> [RemoteHostRecord] {
+        records.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    static let inUseEmpty = "No hosts in use."
+
+    /// What an in-use row says beside the name: where the host came from.
+    enum Caption: Equatable {
+        /// A host added in Temple: its address summary.
+        case summary(String)
+        /// An alias from `~/.ssh/config`.
+        case sshConfig
+        /// An enabled alias the config no longer names (only once the config
+        /// has been read: while it is read nothing is known missing).
+        case goneFromConfig
+
+        var text: String {
+            switch self {
+            case .summary(let summary): summary
+            case .sshConfig: "~/.ssh/config"
+            case .goneFromConfig: "No longer in ~/.ssh/config"
+            }
+        }
+    }
+
+    static func caption(for record: RemoteHostRecord, configAliases: [String]?) -> Caption {
+        switch record.source {
+        case .temple: .summary(record.summary)
+        case .config: configAliases.map { $0.contains(record.name) } == false ? .goneFromConfig : .sshConfig
+        }
+    }
 
     @ViewBuilder
-    private var addedHosts: some View {
-        let added = hosts.records.filter { $0.source == .temple }
+    private var inUseHosts: some View {
+        let inUse = Self.inUse(hosts.records)
         VStack(alignment: .leading, spacing: 14) {
-            if added.isEmpty {
-                Text("No hosts added yet.")
+            if inUse.isEmpty {
+                Text(Self.inUseEmpty)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, 5)
             }
-            ForEach(added) { record in
+            ForEach(inUse) { record in
+                let caption = Self.caption(for: record, configAliases: hosts.configAliases)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
                         Text(record.name)
                             .font(.system(size: 13, weight: .medium))
-                        Text(record.summary)
+                        Text(caption.text)
                             .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(caption == .goneFromConfig ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.secondary))
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer(minLength: 8)
                         HStack(spacing: 14) {
                             HostLink("Test connection") { startTest(record.name) }
                             HostLink(Self.sessionsLink) { model.showRemoteSessions(record.host) }
-                            HostLink("Edit") { form = HostFormRequest(editing: record) }
-                            HostLink("Remove") { hosts.remove(record.name) }
+                            switch record.source {
+                            case .temple:
+                                HostLink("Edit") { form = HostFormRequest(editing: record) }
+                                HostLink("Remove") { hosts.remove(record.name) }
+                            case .config:
+                                HostLink("Turn off") { hosts.setConfigHost(record.name, enabled: false) }
+                            }
                         }
                     }
                     HostStatusLine(text: hosts.statusLine(for: record.name), summary: hosts.summaries[record.name])
                 }
             }
-            HostLink("Add host…", systemImage: "plus") { form = HostFormRequest(editing: nil) }
-                .padding(.top, added.isEmpty ? 0 : 2)
+            HostLink("Add host…", systemImage: "plus") { showAddHostMenu() }
+                .padding(.top, inUse.isEmpty ? 0 : 2)
         }
         .padding(.top, 5)
     }
 
-    // MARK: From ~/.ssh/config
+    // MARK: Add host…
 
-    /// Every alias the config names, plus any enabled one it no longer does.
-    private var configNames: [String] {
-        let aliases = hosts.configAliases ?? []
-        let enabledElsewhere = hosts.records.filter { $0.source == .config && !aliases.contains($0.name) }.map(\.name)
-        return aliases + enabledElsewhere
+    /// The aliases to offer: those the config names that no host in use
+    /// has the name of (a hand-added host with an alias's name is not
+    /// offered either). Nil until the config is read.
+    static func offered(configAliases: [String]?, records: [RemoteHostRecord]) -> [String]? {
+        let names = Set(records.map(\.name))
+        return configAliases?.filter { !names.contains($0) }
     }
 
-    @ViewBuilder
-    private var configHosts: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if configNames.isEmpty {
-                Text(hosts.configAliases == nil ? "Reading ~/.ssh/config…" : "No hosts in ~/.ssh/config.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+    /// One line of the Add host… menu.
+    enum AddHostEntry: Equatable {
+        /// A config alias not in use: choosing it turns it on.
+        case alias(String)
+        /// Why no alias is offered, disabled.
+        case unavailable(String)
+        case divider
+        /// Today's Add host form.
+        case enterDetails
+        case editConfig
+
+        var title: String {
+            switch self {
+            case .alias(let alias): alias
+            case .unavailable(let reason): reason
+            case .divider: ""
+            case .enterDetails: "Enter details\u{2026}"
+            case .editConfig: "Edit ~/.ssh/config"
             }
-            ForEach(configNames, id: \.self) { alias in
-                let enabled = hosts.record(named: alias)?.source == .config
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .center, spacing: 10) {
-                        Toggle("", isOn: Binding(get: { enabled },
-                                                 set: { hosts.setConfigHost(alias, enabled: $0) }))
-                            .toggleStyle(.switch)
-                            .controlSize(.small)
-                            .labelsHidden()
-                            .accessibilityLabel("Use \(alias) in Temple")
-                            .disabled(hosts.record(named: alias)?.source == .temple)
-                        Text(alias)
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(enabled ? .primary : .secondary)
-                            .lineLimit(1)
-                        if !(hosts.configAliases ?? []).contains(alias) {
-                            Text("No longer in ~/.ssh/config")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.orange)
-                        }
-                        Spacer(minLength: 8)
-                        if enabled {
-                            HStack(spacing: 14) {
-                                HostLink("Test connection") { startTest(alias) }
-                                HostLink(Self.sessionsLink) { model.showRemoteSessions(HostID(rawValue: alias)) }
-                            }
-                        }
-                    }
-                    if enabled {
-                        HostStatusLine(text: hosts.statusLine(for: alias), summary: hosts.summaries[alias])
-                            .padding(.leading, 42)
-                    }
-                }
-            }
-            HostLink("Edit in ~/.ssh/config") { openSSHConfig() }
-                .padding(.top, 2)
         }
-        .padding(.top, 5)
+    }
+
+    /// The Add host… menu: the aliases first (or, disabled, why there are
+    /// none), then a divider, Enter details… and Edit ~/.ssh/config.
+    static func addHostMenu(configAliases: [String]?, records: [RemoteHostRecord]) -> [AddHostEntry] {
+        let head: [AddHostEntry]
+        if let aliases = configAliases {
+            let offered = offered(configAliases: aliases, records: records) ?? []
+            if aliases.isEmpty {
+                head = [.unavailable("No hosts in ~/.ssh/config")]
+            } else if offered.isEmpty {
+                head = [.unavailable("Every host in ~/.ssh/config is in use")]
+            } else {
+                head = offered.map(AddHostEntry.alias)
+            }
+        } else {
+            head = [.unavailable("Reading ~/.ssh/config\u{2026}")]
+        }
+        return head + [.divider, .enterDetails, .editConfig]
+    }
+
+    /// An AppKit menu at the click, so the link looks like every other link
+    /// on the card (a SwiftUI borderless Menu needs `.fixedSize` to keep to
+    /// its label, which this pane must not use) and so the config is read
+    /// again as it opens: an alias added since the card appeared is offered.
+    private func showAddHostMenu() {
+        hosts.loadConfigAliases()
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for entry in Self.addHostMenu(configAliases: hosts.configAliases, records: hosts.records) {
+            switch entry {
+            case .divider:
+                menu.addItem(.separator())
+            case .unavailable:
+                let item = NSMenuItem(title: entry.title, action: nil, keyEquivalent: "")
+                item.isEnabled = false
+                menu.addItem(item)
+            case .alias(let alias):
+                menu.addItem(MenuAction.item(entry.title) { hosts.setConfigHost(alias, enabled: true) })
+            case .enterDetails:
+                menu.addItem(MenuAction.item(entry.title) { form = HostFormRequest(editing: nil) })
+            case .editConfig:
+                menu.addItem(MenuAction.item(entry.title) { openSSHConfig() })
+            }
+        }
+        // At the pointer: a click's own location, and somewhere sensible for
+        // a press from the keyboard too (a key event has no location).
+        guard let window = NSApp.currentEvent?.window ?? NSApp.keyWindow, let view = window.contentView else { return }
+        let point = view.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        menu.popUp(positioning: nil, at: point, in: view)
     }
 
     // MARK: Actions
@@ -206,6 +273,25 @@ struct HostsSettingsSection: View {
     static let sessionsLink = "Sessions\u{2026}"
 }
 
+/// A menu item that runs a closure; the item keeps it alive (an item's
+/// target is weak).
+@MainActor
+private final class MenuAction: NSObject {
+    private let run: () -> Void
+
+    private init(_ run: @escaping () -> Void) { self.run = run }
+
+    static func item(_ title: String, _ run: @escaping () -> Void) -> NSMenuItem {
+        let action = MenuAction(run)
+        let item = NSMenuItem(title: title, action: #selector(fire), keyEquivalent: "")
+        item.target = action
+        item.representedObject = action
+        return item
+    }
+
+    @objc private func fire() { run() }
+}
+
 /// What the Add host / Edit sheet is for.
 struct HostFormRequest: Identifiable {
     let id = UUID()
@@ -215,26 +301,18 @@ struct HostFormRequest: Identifiable {
 /// Settings' row shape: a 168pt label column, then the content.
 private struct HostsRow<Content: View>: View {
     let label: String
-    let note: String?
     let content: Content
 
-    init(_ label: String, note: String? = nil, @ViewBuilder content: () -> Content) {
-        self.label = label; self.note = note; self.content = content()
+    init(_ label: String, @ViewBuilder content: () -> Content) {
+        self.label = label; self.content = content()
     }
 
     var body: some View {
         HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(label).font(.system(size: 13))
-                if let note {
-                    Text(note)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .padding(.top, 5)
-            .frame(width: SettingsView.labelColumn, alignment: .leading)
+            Text(label)
+                .font(.system(size: 13))
+                .padding(.top, 5)
+                .frame(width: SettingsView.labelColumn, alignment: .leading)
             VStack(alignment: .leading, spacing: 0) { content }
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
