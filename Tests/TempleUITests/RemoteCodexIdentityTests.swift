@@ -133,7 +133,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertTrue(remote.suggestionLookups.isEmpty, "no question before anything was typed")
         model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
         await settle(tab.remote?.suggestions.count == 2)
-        XCTAssertEqual(RemoteCopy.suggestionQuestion(suggestion("c8", prompt: nil)).hasPrefix("Is this the session? No prompt yet, started at "), true)
+        XCTAssertEqual(RemoteCopy.suggestionQuestion(suggestion("c8", prompt: nil)).hasPrefix("Is this the session? No prompt yet, started in "), true)
         model.remoteTabs.decline(try XCTUnwrap(tab.remote?.suggestions.last), in: tab)
         XCTAssertEqual(tab.remote?.suggestions.map(\.sessionID), ["c7"])
         await settle(self.remote.declines.map(\.path) == [self.suggestion("c8").rolloutPath])
@@ -1129,21 +1129,21 @@ final class RemoteCodexIdentityTests: XCTestCase {
                              hostClockOffset: hostAhead)
         }
         XCTAssertEqual(RemoteCopy.suggestionQuestion(started(4.2), tabOpenedAt: opened),
-                       "Is this the session? \u{201C}hi\u{201D}, started 4 s after this tab opened in temple-r2.")
+                       "Is this the session? \u{201C}hi\u{201D}, started in temple-r2 4 s after this tab opened.")
         XCTAssertEqual(RemoteCopy.suggestionQuestion(started(-2), tabOpenedAt: opened),
-                       "Is this the session? \u{201C}hi\u{201D}, started 0 s after this tab opened in temple-r2.",
+                       "Is this the session? \u{201C}hi\u{201D}, started in temple-r2 as this tab opened.",
                        "a clock a little apart is not a start before the open")
-        XCTAssertTrue(RemoteCopy.suggestionQuestion(started(70), tabOpenedAt: opened).contains("started 1 min after this tab opened"))
-        XCTAssertTrue(RemoteCopy.suggestionQuestion(started(150), tabOpenedAt: opened).contains("started 3 min after this tab opened"))
+        XCTAssertTrue(RemoteCopy.suggestionQuestion(started(70), tabOpenedAt: opened).contains("temple-r2 1 min after this tab opened"))
+        XCTAssertTrue(RemoteCopy.suggestionQuestion(started(150), tabOpenedAt: opened).contains("temple-r2 3 min after this tab opened"))
         XCTAssertFalse(RemoteCopy.suggestionQuestion(started(-600), tabOpenedAt: opened).contains("after this tab opened"),
                        "a start well before the open: the clock time")
         XCTAssertFalse(RemoteCopy.suggestionQuestion(started(4), tabOpenedAt: nil).contains("after this tab opened"))
         // The host's clock ahead or behind this Mac's (Sol round 6): the
         // start is moved by the offset the lookup measured.
         XCTAssertTrue(RemoteCopy.suggestionQuestion(started(4, hostAhead: 600), tabOpenedAt: opened)
-            .contains("started 4 s after this tab opened"), "a host 10 min ahead")
+            .contains("temple-r2 4 s after this tab opened"), "a host 10 min ahead")
         XCTAssertTrue(RemoteCopy.suggestionQuestion(started(4, hostAhead: -600), tabOpenedAt: opened)
-            .contains("started 4 s after this tab opened"), "a host 10 min behind")
+            .contains("temple-r2 4 s after this tab opened"), "a host 10 min behind")
         XCTAssertFalse(RemoteCopy.suggestionQuestion(started(4, hostAhead: nil), tabOpenedAt: opened)
             .contains("after this tab opened"), "no offset: the clock time")
         let copy = [RemoteCopy.codexEndedPending("box"), RemoteCopy.couldNotTell, RemoteCopy.noDaemonHint,

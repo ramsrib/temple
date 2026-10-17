@@ -2232,7 +2232,8 @@ rows ("Removing remote", below).
   A host without `/proc` is question-only. A pending session's own
   lifecycle: closing it while idle checks its identity once more, then
   stops it; identified, the tab closes; unidentified and typed into, the
-  tab stays with "Codex ended before Temple learned its session ID." and
+  tab stays with "Codex ended on <host> before Temple learned which session
+  this was." and
   the question, **Start a new session** and **Discard**; never typed into,
   Temple stops tracking it. Quit treats pending runs like any: detached,
   left running, back as chips next launch. Saying yes to an ended session

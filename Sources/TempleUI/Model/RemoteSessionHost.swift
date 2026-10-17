@@ -597,16 +597,18 @@ public enum RemoteCopy {
             relative = afterOpen(suggestion.startedAt.addingTimeInterval(-offset), openedAt: tabOpenedAt)
         }
         let when = relative ?? startTime(suggestion.startedAt, now: now)
-        return "Is this the session? \(prompt), started \(when) in \(folder)."
+        return "Is this the session? \(prompt), started in \(folder) \(when)."
     }
 
-    /// "4 s after this tab opened", "1 min after this tab opened"; nil for
+    /// "as this tab opened", "4 s after this tab opened", "1 min after this
+    /// tab opened"; nil for
     /// a start before the open (beyond a few seconds of clock difference)
     /// or an hour or more after it.
     static func afterOpen(_ start: Date, openedAt: Date) -> String? {
         let delta = start.timeIntervalSince(openedAt)
         guard delta > -5, delta < 3600 else { return nil }
         let seconds = max(0, Int(delta.rounded()))
+        if seconds == 0 { return "as this tab opened" }
         if seconds < 60 { return "\(seconds) s after this tab opened" }
         return "\(Int((Double(seconds) / 60).rounded())) min after this tab opened"
     }

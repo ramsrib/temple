@@ -355,7 +355,7 @@ it. What follows appears for an enabled host only.
   it reopens and restores like any tab meanwhile. Temple identifies it on
   its own only when the Codex process it started holds the session's file
   open. By default Codex's shared app server writes that file, so Temple
-  looks for sessions begun in the folder since it started. When exactly one
+  looks for sessions begun in the folder since the tab opened. When exactly one
   matches, you have typed into the tab, and Temple has not asked about it
   (nor have you declined a candidate for it, even before a relaunch), and
   no other new Codex session Temple started in that folder is still

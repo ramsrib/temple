@@ -386,7 +386,9 @@ process has exited, the host has no `/proc`), Temple looks up rollouts whose
 header `cwd` is the run's canonical directory and whose header timestamp
 lies in [`ok` epoch, exit time or now] on the remote clock, and shows the
 candidates in the tab or chip as a question, never a fact: "Is this the
-session? <first prompt or "(no prompt)">, started <time> in <folder>."
+session? <first prompt or "(no prompt)">, started in <folder> <when>."
+(as built: <when> is relative to the tab's open, "4 s after this tab opened",
+or the clock time)
 [Yes, that's it] [Not this one]. Several, the user picks or declines; a
 declined candidate is not offered again for that run.
 
