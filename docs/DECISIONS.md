@@ -2098,10 +2098,15 @@ rows ("Removing remote", below).
 
 - **The user's own ssh, never a credential.** A tab runs the user's `ssh`
   with a PTY. Every other question to the host is a short non-interactive
-  query (`BatchMode`, a deadline) over a ControlMaster that only a tab or
-  Test connection creates. Its socket lives under the state directory,
-  keyed by the state directory and the connection as `ssh -G` resolves it.
-  Temple never sends `-O exit`; masters expire through `ControlPersist`.
+  query (`BatchMode`, a deadline). Only a tab or Test connection creates a
+  ControlMaster. An ordinary query (`.query`) rides the master when one is
+  up and otherwise makes its own `BatchMode` connection, which can never
+  ask anything; a query that must use the exact connection a tab was
+  planned on (`.overMaster`: staging a launch, the Test connection's checks)
+  rides that master or fails, and never connects on its own. The master's
+  socket lives under the state directory, keyed by the state directory and
+  the connection as `ssh -G` resolves it. Temple never sends `-O exit`;
+  masters expire through `ControlPersist`.
   Hosts come from `~/.ssh/config` (read-only, enabled per alias) or are
   added in Settings as `-o` options on the command line, never a generated
   config file (`-F` would drop the system config). Temple never writes ssh
@@ -2109,14 +2114,19 @@ rows ("Removing remote", below).
   `UserKnownHostsFile` or `IdentitiesOnly`; an identity file is a path the
   user typed. Test connection is a terminal sheet where ssh asks what it
   asks, then checks by execution: `claude`, `codex`, the exact tmux chain
-  the launch sends, and logind's `KillUserProcesses`. Every command line is
+  the launch sends (run detached, on a throwaway socket), and logind's
+  `KillUserProcesses`. An attached client under Temple's `TERM` is proven
+  by the Linux acceptance, not by the sheet. Every command line is
   a short fixed bootstrap; programs travel on stdin and launches are staged
   on the host first (macOS ssh's mux fails requests near multiples of
   8 KiB).
 - **One remote environment.** One bounded query reads the login shell's
   `PATH`, `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, framed so rc output is
   discarded; the probe, the launch, tmux, the pane and every transcript
-  read use it, and the pane is told each value explicitly. Never persisted.
+  read use it, and the pane is told each value explicitly. The login
+  environment is cached in memory per connection and never persisted;
+  what a pane actually ran with (its config root, its Codex home) is run
+  evidence and is persisted with the run.
 - **The keep-alive is a hidden tmux server of Temple's own, `tmux -L
   temple`.** tmux 3.2 or newer; configured in the same command queue that
   creates the session, with `-f /dev/null`: no status line, no prefix,
@@ -2150,13 +2160,16 @@ rows ("Removing remote", below).
   rest rule (⌘W takes a running tab as at rest only when its agent has
   received nothing since it started). Idle: Stop, at once and without a
   prompt. Working: "<agent> is still working on <host>." with Detach (the
-  default), Stop and Cancel. Stop is one tmux command queue: Temple's own
-  client is detached first, then the session is killed only if no client is
-  attached, else tmux prints `temple-not-killed`. A successful answer
-  without the marker is the end evidence; the marker means another terminal
-  is attached; no answer means unconfirmed. A stop Temple could not carry
-  out and confirm at that moment leaves the session **left running**, with
-  the reason on the run, one notice, and a row in **Sessions on <host>**
+  default), Stop and Cancel. To stop, Temple first ends its own tmux client
+  on this Mac (the tab's ssh) and waits briefly for the session's attached
+  count to reach zero; then one tmux command queue on the host checks that
+  the session exists and that no client is attached, and kills it in the
+  same queue, or prints `temple-not-killed`. A successful answer without
+  the marker is the end evidence; the marker means another terminal is
+  attached; no answer means unconfirmed. A stop Temple could not carry out
+  and confirm at that moment leaves the session **left running**: the tab
+  closes with one notice, the reason is on the run, and a row waits in
+  **Sessions on <host>**
   with Stop and Keep (Keep clears the flag, and the sidebar's "N sessions
   left running on <host>" line shows once per flag). There is no deferred
   stop, sweep, lock or retry: two review rounds found that any kill decided
@@ -2192,7 +2205,18 @@ rows ("Removing remote", below).
   (`hostConflict`, `agentConflict`) is shown. Temple passes no
   `--no-daemon` (AGENTS.md: no opinion on how a CLI runs); the tab says that
   with it in Codex's arguments, Temple identifies the session on its own.
-  A host without `/proc` is question-only.
+  A host without `/proc` is question-only. A pending session's own
+  lifecycle: closing it while idle checks its identity once more, then
+  stops it; identified, the tab closes; unidentified and typed into, the
+  tab stays with "Codex ended before Temple learned its session ID." and
+  the question, **Start a new session** and **Discard**; never typed into,
+  Temple stops tracking it. Quit treats pending runs like any (working
+  detached, idle stopped); a stopped one that was typed into keeps its
+  ended record, so the next launch still asks, and an unused one is
+  dismissed. Saying yes to an ended session records which session it was
+  and leaves the tab at rest with **Resume**; nothing launches until asked.
+  Claims are made unique per host by a partial unique index on claimed
+  runs (`runs_claim`), so a session's later resumes may share its id.
 - **Enrichment by known id; a transport failure is never absence.**
   `RemoteSessionSource` locates a row's transcript by id under the root its
   latest run's pane recorded (the login environment's for a row with no
@@ -2204,10 +2228,13 @@ rows ("Removing remote", below).
   minutes; an explicit open gets through once. So a remote row is never
   `confirmedAbsent`, dimmed, tagged "No transcript" or archived by Temple
   (ADR-030 applies unchanged and never fires); only a person archives one.
-- **Paths: byte-exact in the remote module, `String` in core.** Every
-  remote path in `TempleRemoteHost` is a `RemotePath` (equal by UTF-8
-  bytes), because a Linux host keeps precomposed and decomposed spellings
-  apart. Core's `TranscriptLocator` and `TranscriptCandidates.assign` keep
+- **Paths: byte-exact at the remote boundaries, `String` in core.** Every
+  comparison of remote paths in `TempleRemoteHost` (roots, listed files,
+  hints and their stats, store containment, Codex homes, the identity
+  check's folders, declined and seen rollouts, suggestions) is on
+  `RemotePath`, equal by UTF-8 bytes, because a Linux host keeps
+  precomposed and decomposed spellings apart. Fields stored as text in the
+  run store keep their bytes and are compared as `RemotePath` when read. Core's `TranscriptLocator` and `TranscriptCandidates.assign` keep
   `String` equality: APFS folds the spellings (measured), and locally one
   file reaches core from enumeration, FSEvents and stored hints, where byte
   equality would split it. On a host the residue is one candidate where a
@@ -2217,11 +2244,19 @@ rows ("Removing remote", below).
 - **remote-state.sqlite, and no core schema change.** `TempleRemoteHost`
   owns `remote-state.sqlite` in the state directory, with its own migrator
   (`r1-runs` to `r5-input`): `runs`, `declined_candidates`,
-  `remote_project_state` (a host's project archive and order). The host
-  list is the user layer, `temple.settings.remoteHosts`, through
-  `TempleState.settingsDefaults`; test results, environments and sockets
-  are memory only. On a host Temple writes only `~/.temple/launch/` (checked
-  private before every use) and the `-L temple` socket. Core migrations
+  `remote_project_state` (a host's project archive and order). A run
+  persists its evidence: the pane's folder, pid and start time, the pinned
+  socket path and server, the config root and Codex home it ran with. The
+  host list is the user layer, `temple.settings.remoteHosts`, through
+  `TempleState.settingsDefaults`. Memory only: test results, the login
+  environment, `ssh -G` resolutions and the breaker. On this Mac the
+  masters' socket files live in `<state dir>/ssh/` (or a short fallback
+  under `$TMPDIR` or `/tmp`). On a host Temple writes `~/.temple/launch/`
+  (records and staged launches, checked private before every use), the
+  `-L temple` socket, and short-lived `umask 077` temporary files under
+  `$TMPDIR` for the environment query and transcript reads
+  (`temple-env.*`, `temple-read.*`, removed on exit); Test connection's
+  tmux check uses a throwaway socket it kills. Core migrations
   still end at `v12-archive-provenance`. A restored tab's host is its row's
   host (ids are globally unique), a pending Codex tab restores from `runs`,
   and `open_tabs` positions are numbered per path across hosts, so
@@ -2249,8 +2284,11 @@ this Mac only.
 `v13-project-host`; the interim rule that a restored chip takes its host from
 its row is the rule; a host's project archive and order persist in the
 remote store, not in memory. The ssh launcher does relay the folder: the
-pane's `ok` record is its `.directoryEstablished`, so a session's folder on a
-host comes from its own pane, never from its transcript.
+pane's `ok` record is its `.directoryEstablished`, `tab`-sourced and
+replacing what was there, so the pane's folder takes precedence. A
+transcript on the host may still fill a row whose directory is NULL (an
+imported row, or one from before its first pane report), through
+`FactPersister` like any host's fill.
 
 **Amends ADR-034:** `temple sessions close` on a session working on a host
 is refused; `--force` detaches it and never stops it. `sessions new` starts
@@ -2282,8 +2320,8 @@ the Hosts card says); the usage meter and Reveal in Finder; routing `⌘F` to
 tmux; non-Linux hosts beyond a tested BSD fallback. Known gaps: the quit
 gate keeps the settle timer's reading, so a long tool call whose title
 stays quiet 15 s after a Return is stopped at quit as idle rather than
-detached; Claude on a host must be logged in there (jetson's is not, so its
-conversation and `--resume` acceptance is incomplete); every unarchived
+detached; Claude on a host must be logged in there (the per-box status is
+the design doc's acceptance checklist); every unarchived
 remote row with a transcript costs one read at startup.
 
 **Rejected:** sshfs (ADR-030 cannot prove anything on a network volume), a

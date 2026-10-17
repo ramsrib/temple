@@ -342,10 +342,12 @@ deletable without touching core rows; keep it that way
   `TempleUI` imports it only in `Sources/TempleUI/Hosts/RemoteHost.swift`
   (`ModuleBoundaryTests` asserts it). The remote tab logic is
   `RemoteTabController`; `OpenSessionsModel` keeps thin seams into it, so
-  don't grow remote branches back into the model. Remote state lives in
-  `remote-state.sqlite` (its own migrator) and the
-  `temple.settings.remoteHosts` key, never in `session_state`, `open_tabs`
-  or `project_state`.
+  don't grow remote branches back into the model. Remote-only lifecycle
+  metadata (runs, handles, pins, claims, left-running flags, a host's
+  project masks) lives in `remote-state.sqlite` (its own migrator) and the
+  host list in the `temple.settings.remoteHosts` key, never in
+  `session_state`, `open_tabs` or `project_state`. A session on a host is
+  still an ordinary row and its tab an ordinary saved tab.
 - **Two entry points.** The flag `temple.feature.remoteHosts` and the
   registry are built by `AppStartup`/`AppModel`, which both `TempleApp.swift`
   files share; anything remote added at launch goes there, not into one
