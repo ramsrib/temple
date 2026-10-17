@@ -35,8 +35,6 @@ public final class RemoteHostsModel: ObservableObject {
 
     private let defaults: UserDefaults
     private let readConfigAliases: () -> [SSHConfigHost]
-    /// `ssh -G` for an alias, for the Add host sheet: local, off the main actor.
-    let resolveAlias: @Sendable (String) async -> ConnectionTest.Resolution
     private let stateDirectory: () -> URL
     private let makeTest: @MainActor (RemoteHostRecord, URL) -> ConnectionTest
     /// The test in progress, per host, so Remove, Disable and Edit can stop it.
@@ -44,14 +42,12 @@ public final class RemoteHostsModel: ObservableObject {
 
     init(defaults: UserDefaults,
          readConfigAliases: @escaping () -> [SSHConfigHost] = RemoteHostComposition.configHosts,
-         resolveAlias: @escaping @Sendable (String) async -> ConnectionTest.Resolution = { await RemoteHostComposition.resolveAlias($0) },
          stateDirectory: @escaping () -> URL = { TempleState.directory },
          makeTest: @escaping @MainActor (RemoteHostRecord, URL) -> ConnectionTest = {
              RemoteHostComposition.connectionTest(for: $0, stateDirectory: $1)
          }) {
         self.defaults = defaults
         self.readConfigAliases = readConfigAliases
-        self.resolveAlias = resolveAlias
         self.stateDirectory = stateDirectory
         self.makeTest = makeTest
         records = Self.load(defaults).records

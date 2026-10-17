@@ -449,7 +449,9 @@ public enum RemoteCopy {
     public static let addHostTitle = "Add host"
     public static let addHostFieldLabel = "Host"
     public static let addHostPlaceholder = "alias from ~/.ssh/config, or user@address"
-    public static func addHostShowAll(_ count: Int) -> String { "Show all \(count)\u{2026}" }
+    /// The rows not shown yet, as the sidebar says it ("Show 3 more").
+    public static func addHostShowMore(_ hidden: Int) -> String { "Show \(hidden) more" }
+    public static let addHostUnreadable = "Enter an alias from ~/.ssh/config, or user@address with an optional :port."
     public static let addHostNoConfigHosts = "No hosts in ~/.ssh/config."
     public static let addHostAllInUse = "Every host in ~/.ssh/config is in use."
     public static func addHostAlreadyInUse(_ name: String) -> String { "\(name) is already in use." }

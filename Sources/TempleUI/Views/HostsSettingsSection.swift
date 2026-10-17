@@ -265,9 +265,9 @@ struct HostLink: View {
     }
 }
 
-/// A host's one status line, the row's caption: 11 pt tertiary when it is
-/// news, orange when a test proved something wrong, red when it could not
-/// connect.
+/// A host's one status line, the row's caption: 11 pt secondary when it is
+/// news (tertiary read too faint in dark), orange when a test proved
+/// something wrong, red when it could not connect.
 struct HostStatusLine: View {
     let text: String
     let summary: HostTestSummary?
@@ -285,7 +285,7 @@ struct HostStatusLine: View {
         Text(text)
             .font(.system(size: 11))
             .foregroundStyle(tone == .failure ? AnyShapeStyle(Color.red)
-                             : tone == .advisory ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.tertiary))
+                             : tone == .advisory ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.secondary))
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
     }

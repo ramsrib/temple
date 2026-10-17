@@ -417,6 +417,7 @@ final class SSHConfigHostsTests: XCTestCase {
         let tree = TempTree("ssh-config-options")
         let ssh = tree.directory(".ssh")
         tree.write(".ssh/config", """
+        Include extra
         Host box jetson-mentes
           HostName 10.0.0.2
           User=mentes
@@ -430,11 +431,11 @@ final class SSHConfigHostsTests: XCTestCase {
         Host github.com
         Host plain-name
           HostName Plain-Name
-        Include extra
         """)
         tree.write(".ssh/extra", "Host keyed\n  IdentityFile ~/.ssh/keyed\n")
-        let hosts = SSHConfigHosts.loadHosts(configURL: ssh.appendingPathComponent("config"), sshDirectory: ssh, home: tree.path)
-        XCTAssertEqual(hosts.map(\.alias), ["box", "jetson-mentes", "github.com", "plain-name", "keyed"])
+        let loaded = SSHConfigHosts.loadHosts(configURL: ssh.appendingPathComponent("config"), sshDirectory: ssh, home: tree.path)
+        XCTAssertEqual(loaded.map(\.alias), ["keyed", "box", "jetson-mentes", "github.com", "plain-name"])
+        let hosts = Array(loaded.dropFirst()) + [loaded[0]]
         XCTAssertEqual(hosts[0].options, ["hostname": "10.0.0.2", "user": "mentes"], "the first value wins")
         XCTAssertEqual(hosts[1].options["user"], "mentes")
         XCTAssertEqual(hosts[2].options, [:], "Host * and Match set nothing for an alias")
@@ -443,7 +444,67 @@ final class SSHConfigHostsTests: XCTestCase {
         XCTAssertEqual(hosts.map(\.isBare), [false, false, true, true, false])
         XCTAssertFalse(SSHConfigHost(alias: "build", options: ["hostname": "10.0.0.9"]).isBare, "it goes somewhere else")
         XCTAssertEqual(SSHConfigHosts.load(configURL: ssh.appendingPathComponent("config"), sshDirectory: ssh, home: tree.path),
-                       hosts.map(\.alias))
+                       loaded.map(\.alias))
+    }
+
+    /// The statements are read in order as ssh reads them for each name,
+    /// through Include: an included file continues the block it appears
+    /// in, the block is back after it, the first value wins wherever it
+    /// was, and a file included where nothing applies matches nothing.
+    func testIncludesKeepTheirBlockAndTheFirstValueWins() throws {
+        let tree = TempTree("ssh-config-include-order")
+        let ssh = tree.directory(".ssh")
+        tree.write(".ssh/config", """
+        Include early
+        Host box
+          Include login
+          HostName late.example
+        Host other
+          Include login
+        Host side
+          User side-user
+        Match all
+          Include inactive
+        Host *
+          Include wild
+        """)
+        tree.write(".ssh/early", "Host box\n  HostName early.example\n")
+        tree.write(".ssh/login", "User me\n")
+        tree.write(".ssh/inactive", "Host side\n  HostName never.example\n")
+        tree.write(".ssh/wild", "Host side\n  Port 2222\n")
+        let hosts = SSHConfigHosts.loadHosts(configURL: ssh.appendingPathComponent("config"), sshDirectory: ssh, home: tree.path)
+        let byName = Dictionary(uniqueKeysWithValues: hosts.map { ($0.alias, $0.options) })
+        XCTAssertEqual(hosts.map(\.alias), ["box", "other", "side"])
+        XCTAssertEqual(byName["box"], ["hostname": "early.example", "user": "me"],
+                       "Host box then an included User; an early included HostName beats a later one")
+        XCTAssertEqual(byName["other"], ["user": "me"])
+        XCTAssertEqual(byName["side"], ["user": "side-user", "port": "2222"],
+                       "included under a Match nothing matches; under Host * it does")
+    }
+
+    /// ssh's Host matching: wildcards, negation wins, ignoring case.
+    func testHostPatternsMatchAsSSHMatchesThem() {
+        XCTAssertTrue(SSHConfigHosts.hostMatches("box", ["*"]))
+        XCTAssertTrue(SSHConfigHosts.hostMatches("Box.lan", ["*.LAN"]))
+        XCTAssertTrue(SSHConfigHosts.hostMatches("box1", ["box?"]))
+        XCTAssertFalse(SSHConfigHosts.hostMatches("box", ["box?"]))
+        XCTAssertFalse(SSHConfigHosts.hostMatches("secret", ["*", "!secret"]))
+        XCTAssertFalse(SSHConfigHosts.hostMatches("box", ["!secret"]), "a negation alone matches nothing")
+        XCTAssertTrue(SSHConfigHosts.hostMatches("a-b-c", ["a*c"]))
+    }
+
+    /// What the Add host sheet shows beside an alias: its own User and
+    /// HostName as far as they are set, `%h` expanded; nothing otherwise.
+    func testTheDestinationIsTheAliasesOwnUserAndHostName() {
+        XCTAssertEqual(SSHConfigHost(alias: "box", options: ["user": "mentes", "hostname": "10.0.0.4"]).destination,
+                       "mentes@10.0.0.4")
+        XCTAssertEqual(SSHConfigHost(alias: "box", options: ["hostname": "box.lan"]).destination, "box.lan")
+        XCTAssertEqual(SSHConfigHost(alias: "box", options: ["user": "me"]).destination, "me@box")
+        XCTAssertEqual(SSHConfigHost(alias: "box", options: ["hostname": "%h.example.com"]).destination, "box.example.com")
+        XCTAssertNil(SSHConfigHost(alias: "box", options: ["hostname": "%n.example"]).destination)
+        XCTAssertEqual(SSHConfigHost(alias: "box", options: ["user": "%u", "hostname": "h"]).destination, "h")
+        XCTAssertNil(SSHConfigHost(alias: "github.com").destination)
+        XCTAssertTrue(SSHConfigHost(alias: "box", options: ["hostname": "%h"]).isBare)
     }
 
     func testIncludeIsFollowedOneLevel() throws {

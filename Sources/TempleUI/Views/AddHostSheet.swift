@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import TempleCore
 
@@ -12,26 +13,23 @@ enum AddHostOutcome: Equatable {
 }
 
 /// The Add host sheet's model (docs/designs/remote-ssh.md section 7): the
-/// config's unused aliases, ranked, filtered by the field, and what `ssh -G`
-/// says each resolves to. The aliases are a snapshot of the config read as
-/// the sheet opened; `ssh -G` runs only for the rows shown, a few at a time,
-/// once each, and stops with the sheet.
+/// config's unused aliases, ranked and filtered by the field, each with the
+/// `user@hostname` its own blocks set. A snapshot of the config read as the
+/// sheet opens. Nothing is run to show it: `ssh -G` would evaluate a
+/// config's `Match exec` commands for aliases nobody chose, so it runs only
+/// where it already did, for a host being tested or used.
 @MainActor
 final class AddHostSheetModel: ObservableObject, Identifiable {
-    /// Rows shown before "Show all N…".
+    /// Rows shown before "Show N more".
     static let pageSize = 6
-    /// `ssh -G` runs at most this many at once.
-    static let maxConcurrentResolutions = 4
 
     /// What the field holds.
     @Published var text = "" {
-        didSet { if text != oldValue { note = nil; resolveShown() } }
+        didSet { if text != oldValue { note = nil } }
     }
-    /// "Show all N…" was chosen: every match is shown.
+    /// "Show N more" was chosen: every match is shown.
     @Published private(set) var expanded = false
-    /// `user@hostname` per alias, from `ssh -G`.
-    @Published private(set) var destinations: [String: String] = [:]
-    /// A line under the field: the typed name is a host already in use.
+    /// A line under the field: the typed name is in use, or can't be read.
     @Published private(set) var note: String?
     private(set) var outcome: AddHostOutcome?
 
@@ -41,24 +39,15 @@ final class AddHostSheetModel: ObservableObject, Identifiable {
     let configIsEmpty: Bool
 
     private let hosts: RemoteHostsModel
-    private let resolve: @Sendable (String) async -> ConnectionTest.Resolution
-    private var queue: [String] = []
-    private var running: [String: Task<Void, Never>] = [:]
-    /// Aliases `ssh -G` could not answer for: shown without a destination.
-    private(set) var unresolved: Set<String> = []
-    private var closed = false
 
-    /// Reads `~/.ssh/config` (the sheet is opening) and starts resolving
-    /// the first rows.
+    /// Reads `~/.ssh/config`: the sheet is opening.
     init(hosts: RemoteHostsModel) {
         self.hosts = hosts
-        resolve = hosts.resolveAlias
         hosts.loadConfigAliases()
         let configHosts = hosts.configHosts ?? []
         let names = Set(hosts.records.map(\.name))
         configIsEmpty = configHosts.isEmpty
         offered = Self.ranked(configHosts.filter { !names.contains($0.alias) })
-        resolveShown()
     }
 
     // MARK: What is shown
@@ -85,16 +74,16 @@ final class AddHostSheetModel: ObservableObject, Identifiable {
 
     var matches: [SSHConfigHost] { Self.matching(offered, query: text) }
 
-    /// The rows under the field: the first `pageSize` matches until Show all.
+    /// The rows under the field: the first `pageSize` matches until Show more.
     var shown: [SSHConfigHost] {
         let matches = matches
         return expanded ? matches : Array(matches.prefix(Self.pageSize))
     }
 
-    /// How many matches "Show all N…" would show, nil when all are shown.
-    var showAllCount: Int? {
-        let count = matches.count
-        return !expanded && count > Self.pageSize ? count : nil
+    /// How many matches are not shown, nil when all are.
+    var hiddenCount: Int? {
+        let hidden = matches.count - shown.count
+        return hidden > 0 ? hidden : nil
     }
 
     /// Why no alias is offered, with none to offer.
@@ -105,10 +94,7 @@ final class AddHostSheetModel: ObservableObject, Identifiable {
 
     var trimmedText: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
 
-    func showAll() {
-        expanded = true
-        resolveShown()
-    }
+    func showAll() { expanded = true }
 
     // MARK: Ending
 
@@ -116,20 +102,35 @@ final class AddHostSheetModel: ObservableObject, Identifiable {
     func choose(_ alias: String) {
         guard outcome == nil else { return }
         hosts.setConfigHost(alias, enabled: true)
-        finish(.added(alias))
+        outcome = .added(alias)
     }
 
-    /// Return or Add: an offered alias turns on; a host already in use says
-    /// so and stays; anything else is an address for the full form.
+    /// Return or Add. A name is looked up exactly first, then ignoring case
+    /// when that finds just one (the list filters ignoring case): an offered
+    /// alias turns on, a host in use says so and the sheet stays. Anything
+    /// else is an address for the full form, or, unreadable as one, stays
+    /// in the field with a note.
     func submit() {
         let typed = trimmedText
         guard outcome == nil, !typed.isEmpty else { return }
-        if hosts.record(named: typed) != nil {
+        let inUse = hosts.records.map(\.name)
+        let aliases = offered.map(\.alias)
+        func unique(_ names: [String]) -> String? {
+            let found = names.filter { $0.lowercased() == typed.lowercased() }
+            return found.count == 1 ? found[0] : nil
+        }
+        if inUse.contains(typed) {
             note = RemoteCopy.addHostAlreadyInUse(typed)
-        } else if offered.contains(where: { $0.alias == typed }) {
+        } else if aliases.contains(typed) {
             choose(typed)
+        } else if let alias = unique(aliases) {
+            choose(alias)
+        } else if let name = unique(inUse) {
+            note = RemoteCopy.addHostAlreadyInUse(name)
+        } else if let form = Self.form(for: typed) {
+            outcome = .details(form)
         } else {
-            finish(.details(Self.form(for: typed)))
+            note = RemoteCopy.addHostUnreadable
         }
     }
 
@@ -140,103 +141,68 @@ final class AddHostSheetModel: ObservableObject, Identifiable {
     private func finish(_ outcome: AddHostOutcome) {
         guard self.outcome == nil else { return }
         self.outcome = outcome
-        dismissed()
     }
 
-    /// `user@address[:port]` or an address, as the form's fields. The name
-    /// is the address's first label for a host name (the form says it
-    /// can't be changed later, and checks it); empty for an IP address.
-    static func form(for text: String) -> RemoteHostForm {
+    /// `user@address[:port]` or an address, as the form's fields; nil when
+    /// it can't be read as one (the form then checks each field itself). An
+    /// IPv6 address takes brackets for a port, and the bracket must end the
+    /// text or come right before the `:port`. The name is the address's
+    /// first label for a host name (the form says it can't be changed
+    /// later); empty for an IP address.
+    static func form(for text: String) -> RemoteHostForm? {
+        guard !text.contains(where: \.isWhitespace), text.filter({ $0 == "@" }).count <= 1 else { return nil }
         var form = RemoteHostForm()
         var rest = Substring(text)
-        if let at = rest.lastIndex(of: "@") {
+        if let at = rest.firstIndex(of: "@") {
             form.user = String(rest[..<at])
+            guard !form.user.isEmpty else { return nil }
             rest = rest[rest.index(after: at)...]
         }
-        if rest.hasPrefix("["), let close = rest.firstIndex(of: "]") {
+        func isPort(_ text: Substring) -> Bool { !text.isEmpty && text.allSatisfy { $0.isASCII && $0.isNumber } }
+        if rest.hasPrefix("[") {
+            guard let close = rest.firstIndex(of: "]") else { return nil }
             form.address = String(rest[rest.index(after: rest.startIndex)..<close])
             let after = rest[rest.index(after: close)...]
-            if after.hasPrefix(":") { form.port = String(after.dropFirst()) }
-        } else if rest.filter({ $0 == ":" }).count == 1, let colon = rest.firstIndex(of: ":") {
-            form.address = String(rest[..<colon])
-            form.port = String(rest[rest.index(after: colon)...])
+            if !after.isEmpty {
+                guard after.hasPrefix(":"), isPort(after.dropFirst()) else { return nil }
+                form.port = String(after.dropFirst())
+            }
         } else {
-            form.address = String(rest)
+            guard !rest.contains("["), !rest.contains("]") else { return nil }
+            if rest.filter({ $0 == ":" }).count == 1, let colon = rest.firstIndex(of: ":") {
+                let port = rest[rest.index(after: colon)...]
+                guard isPort(port) else { return nil }
+                form.address = String(rest[..<colon])
+                form.port = String(port)
+            } else {
+                form.address = String(rest)
+            }
         }
+        guard !form.address.isEmpty, !form.address.contains("[") else { return nil }
         let isIP = form.address.contains(":") || form.address.allSatisfy { $0.isNumber || $0 == "." }
         if !isIP, let label = form.address.split(separator: ".").first {
             form.name = String(label)
         }
         return form
     }
-
-    // MARK: ssh -G
-
-    /// Queues `ssh -G` for the rows shown that have no answer yet (a row no
-    /// longer shown leaves the queue) and starts what the bound allows.
-    private func resolveShown() {
-        guard !closed else { return }
-        let shown = shown.map(\.alias)
-        let visible = Set(shown)
-        queue = queue.filter(visible.contains)
-        for alias in shown where destinations[alias] == nil && !unresolved.contains(alias)
-            && running[alias] == nil && !queue.contains(alias) {
-            queue.append(alias)
-        }
-        pump()
-    }
-
-    private func pump() {
-        while !closed, running.count < Self.maxConcurrentResolutions, !queue.isEmpty {
-            let alias = queue.removeFirst()
-            let resolve = resolve
-            running[alias] = Task { [weak self] in
-                // Off the main actor: `resolve` is nonisolated.
-                let answer = await resolve(alias)
-                guard let self, !Task.isCancelled, !self.closed else { return }
-                self.running[alias] = nil
-                if case .resolved(let values) = answer, let destination = Self.destination(values) {
-                    self.destinations[alias] = destination
-                } else {
-                    self.unresolved.insert(alias)
-                }
-                self.pump()
-            }
-        }
-    }
-
-    /// `user@hostname` from `ssh -G`'s answer.
-    static func destination(_ values: [String: String]) -> String? {
-        guard let host = values["hostname"], !host.isEmpty else { return nil }
-        guard let user = values["user"], !user.isEmpty else { return host }
-        return "\(user)@\(host)"
-    }
-
-    /// The sheet is gone: every `ssh -G` still running is cancelled (and
-    /// with it its process), and nothing more starts.
-    func dismissed() {
-        closed = true
-        queue = []
-        for task in running.values { task.cancel() }
-        running = [:]
-    }
-
-    /// For tests: resolutions running or waiting.
-    var pendingResolutions: Int { running.count + queue.count }
 }
 
 /// Add host… (section 7): the folder sheet's shape. One field, the config's
-/// unused aliases as links under it (each with where ssh says it goes), the
-/// full form and the config behind two links. A row adds its alias at
-/// once; Return adds what the field holds.
+/// unused aliases as links under it (each with the `user@hostname` its own
+/// blocks set), the full form and the config behind two links. A row adds
+/// its alias at once; Return adds what the field holds.
 ///
 /// Layout as for the rest of the app's sheets (AGENTS.md): no `.fixedSize`,
-/// `List` or `Form`, no scroll view (Show all grows the sheet).
+/// `List` or `Form`, no scroll view (Show more grows the sheet).
 struct AddHostSheet: View {
     @ObservedObject var sheet: AddHostSheetModel
     let onFinish: (AddHostOutcome) -> Void
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focused: Bool
+
+    /// The alias column: fixed, so the destinations stay put whichever rows
+    /// show (sized to the widest alias shown, it moved as the list filtered).
+    static let aliasColumn: CGFloat = 200
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -285,8 +251,6 @@ struct AddHostSheet: View {
         .padding(20)
         .frame(width: 520)
         .onAppear { focused = true }
-        // Closed any way at all: every ssh -G still running stops.
-        .onDisappear { sheet.dismissed() }
     }
 
     @ViewBuilder
@@ -297,37 +261,41 @@ struct AddHostSheet: View {
                 .foregroundStyle(.secondary)
         } else {
             let shown = sheet.shown
-            if !shown.isEmpty || sheet.showAllCount != nil {
+            if !shown.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
-                    Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 2) {
-                        ForEach(shown, id: \.alias) { host in
-                            GridRow {
-                                Button(host.alias) { act { sheet.choose(host.alias) } }
-                                    .buttonStyle(.link)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                // The same click: the whole row adds the alias.
-                                Button { act { sheet.choose(host.alias) } } label: {
-                                    Text(sheet.destinations[host.alias] ?? "")
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(.secondary)
-                                .accessibilityHidden(sheet.destinations[host.alias] == nil)
-                            }
-                        }
-                    }
-                    .font(.system(size: 12, design: .monospaced))
-                    if let count = sheet.showAllCount {
-                        Button(RemoteCopy.addHostShowAll(count)) { sheet.showAll() }
+                    ForEach(shown, id: \.alias) { host in row(host) }
+                    if let hidden = sheet.hiddenCount {
+                        Button(RemoteCopy.addHostShowMore(hidden)) { sheet.showAll() }
                             .buttonStyle(.link)
                             .font(.system(size: 12))
                     }
                 }
             }
         }
+    }
+
+    /// One click target across the row: the alias in the link colour, its
+    /// destination in secondary, no gap between that doesn't add it.
+    private func row(_ host: SSHConfigHost) -> some View {
+        Button { act { sheet.choose(host.alias) } } label: {
+            HStack(spacing: 0) {
+                Text(host.alias)
+                    .foregroundStyle(Color(nsColor: .linkColor))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(width: Self.aliasColumn, alignment: .leading)
+                Text(host.destination ?? "")
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.leading, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 12, design: .monospaced))
+        .accessibilityLabel(host.destination.map { "\(host.alias), \($0)" } ?? host.alias)
     }
 
     /// Runs a sheet action; if it ended the sheet, says how and closes,

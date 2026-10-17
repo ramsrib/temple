@@ -1,9 +1,11 @@
 import Foundation
 
 /// One alias an ssh config names, with what its own `Host` blocks set
-/// (first value of each keyword, lowercased; a pattern's block, `Host *`
-/// included, is not the alias's own). Only for ordering what Add host
-/// offers: ssh resolves the host itself (`ssh -G`).
+/// (keyword lowercased to its first value, as ssh takes it). Only a block
+/// whose `Host` line names the alias itself counts: a pattern's block
+/// (`Host *` included) and a `Match` block are not the alias's own. For
+/// ordering and labelling what Add host offers, never for connecting: ssh
+/// resolves the host itself when it is used.
 public struct SSHConfigHost: Equatable, Sendable, ExpressibleByStringLiteral {
     public let alias: String
     /// Keyword (lowercased) to its first value, from the alias's own blocks.
@@ -18,11 +20,41 @@ public struct SSHConfigHost: Equatable, Sendable, ExpressibleByStringLiteral {
     /// It names how to log in: a `User` or an `IdentityFile`.
     public var setsLogin: Bool { options["user"] != nil || options["identityfile"] != nil }
 
+    /// The alias's own `HostName`, `%h` and `%%` expanded as ssh does
+    /// there; nil when unset or carrying another token.
+    public var hostName: String? {
+        guard let value = options["hostname"] else { return nil }
+        var result = ""
+        var scalars = value.unicodeScalars.makeIterator()
+        while let scalar = scalars.next() {
+            guard scalar == "%" else { result.unicodeScalars.append(scalar); continue }
+            switch scalars.next() {
+            case "h": result += alias
+            case "%": result += "%"
+            default: return nil
+            }
+        }
+        return result.isEmpty ? nil : result
+    }
+
     /// A bare name: no login set, and it goes where it says (`Host
     /// github.com` with no `HostName`, or one equal to the alias). Other
     /// options (a `ProxyJump`, a `Port`) don't count either way.
     public var isBare: Bool {
-        !setsLogin && (options["hostname"] ?? alias).lowercased() == alias.lowercased()
+        !setsLogin && (hostName ?? alias).lowercased() == alias.lowercased()
+    }
+
+    /// `user@hostname` from the alias's own `User` and `HostName`, as far
+    /// as they are set (the hostname is the alias when only `User` is);
+    /// nil when neither is, or the user carries a `%` token.
+    public var destination: String? {
+        let user = options["user"].flatMap { $0.isEmpty || $0.contains("%") ? nil : $0 }
+        switch (user, hostName) {
+        case let (user?, host?): return "\(user)@\(host)"
+        case let (nil, host?): return host
+        case let (user?, nil): return "\(user)@\(alias)"
+        case (nil, nil): return nil
+        }
     }
 }
 
@@ -31,56 +63,52 @@ public struct SSHConfigHost: Equatable, Sendable, ExpressibleByStringLiteral {
 /// (`*`, `?`), negations (`!name`) and `Match` blocks are skipped: they
 /// match hosts rather than name one, so there is nothing to pick.
 ///
-/// Temple never writes an ssh config. It lists aliases so the user can turn
+/// Temple never writes an ssh config, and never runs anything a config
+/// says (a `Match exec` included). It lists aliases so the user can turn
 /// one on; ssh resolves everything else about it when it connects.
 public enum SSHConfigHosts {
-    enum Entry: Equatable {
+    /// One line that matters here, in file order.
+    enum Statement: Equatable {
+        /// A `Host` line's patterns as written (nil words: none).
         case host([String])
+        case match
         case include([String])
+        /// Any other keyword (lowercased) and its first value.
+        case option(String, String)
     }
 
-    /// Every alias `text` names directly, and its `Include` arguments, in order.
-    static func entries(in text: String) -> [Entry] {
-        scan(text).entries
-    }
-
-    /// The entries, and each alias's own options (first value wins, as
-    /// ssh's does): a line after `Host a b` belongs to a and b, one after
-    /// `Match` or a `Host` of patterns only to no alias.
-    private static func scan(_ text: String) -> (entries: [Entry], options: [String: [String: String]]) {
-        var entries: [Entry] = []
-        var options: [String: [String: String]] = [:]
-        var current: [String] = []
+    static func statements(in text: String) -> [Statement] {
+        var statements: [Statement] = []
         for rawLine in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             guard let first = line.unicodeScalars.first, first != "#" else { continue }
             guard let (keyword, rest) = splitKeyword(line) else { continue }
             switch keyword.lowercased() {
             case "host":
-                let names = (words(rest) ?? []).filter(isAlias)
-                current = names
-                if !names.isEmpty { entries.append(.host(names)) }
+                statements.append(.host(words(rest) ?? []))
             case "match":
-                current = []
+                statements.append(.match)
             case "include":
                 let paths = words(rest) ?? []
-                if !paths.isEmpty { entries.append(.include(paths)) }
+                if !paths.isEmpty { statements.append(.include(paths)) }
             default:
-                guard let value = words(rest)?.first else { continue }
-                for name in current where options[name]?[keyword.lowercased()] == nil {
-                    options[name, default: [:]][keyword.lowercased()] = value
-                }
+                if let value = words(rest)?.first { statements.append(.option(keyword.lowercased(), value)) }
             }
         }
-        return (entries, options)
+        return statements
+    }
+
+    /// The aliases a statement list names directly, in order.
+    private static func names(_ statements: [Statement]) -> [String] {
+        statements.flatMap { statement -> [String] in
+            if case .host(let patterns) = statement { return patterns.filter(isAlias) }
+            return []
+        }
     }
 
     /// Aliases in `text` alone (no includes followed).
     public static func aliases(in text: String) -> [String] {
-        unique(entries(in: text).flatMap { entry -> [String] in
-            if case .host(let names) = entry { return names }
-            return []
-        })
+        unique(names(statements(in: text)))
     }
 
     /// Aliases in the config at `configURL`, with the files it includes read
@@ -94,39 +122,109 @@ public enum SSHConfigHosts {
         loadHosts(configURL: configURL, sshDirectory: sshDirectory, home: home, read: read).map(\.alias)
     }
 
-    /// `load`'s aliases, each with what its own blocks set (the top file's
-    /// first, then each included file's, as ssh reads them).
+    /// `load`'s aliases, each with what its own blocks set, read as ssh
+    /// reads the file for that name (`walk`).
     public static func loadHosts(configURL: URL, sshDirectory: URL,
                                  home: String = NSHomeDirectory(),
                                  read: (URL) -> String? = { try? String(contentsOf: $0, encoding: .utf8) }) -> [SSHConfigHost] {
         guard let text = read(configURL) else { return [] }
-        let top = scan(text)
-        var names: [String] = []
-        var options = top.options
-        func merge(_ found: [String: [String: String]]) {
-            for (name, values) in found {
-                options[name, default: [:]].merge(values) { first, _ in first }
-            }
-        }
-        for entry in top.entries {
-            switch entry {
-            case .host(let aliases):
-                names += aliases
+        let top = statements(in: text)
+        // Each included file read once, in the order ssh reads them.
+        var included: [String: [[Statement]]] = [:]
+        var found: [String] = []
+        for statement in top {
+            switch statement {
+            case .host(let patterns):
+                found += patterns.filter(isAlias)
             case .include(let patterns):
-                for pattern in patterns {
-                    for path in expand(pattern, sshDirectory: sshDirectory, home: home) {
-                        guard let included = read(URL(fileURLWithPath: path)) else { continue }
-                        let scanned = scan(included)
-                        names += scanned.entries.flatMap { entry -> [String] in
-                            if case .host(let names) = entry { return names }
-                            return []
-                        }
-                        merge(scanned.options)
-                    }
-                }
+                let key = patterns.joined(separator: "\u{0}")
+                let files = patterns.flatMap { expand($0, sshDirectory: sshDirectory, home: home) }
+                    .compactMap { read(URL(fileURLWithPath: $0)).map(statements(in:)) }
+                included[key] = files
+                found += files.flatMap(names)
+            case .match, .option:
+                continue
             }
         }
-        return unique(names).map { SSHConfigHost(alias: $0, options: options[$0] ?? [:]) }
+        return unique(found).map { alias in
+            var options: [String: String] = [:]
+            var state = WalkState(active: true, own: false)
+            walk(top, alias: alias, state: &state, neverMatch: false, included: included, into: &options)
+            return SSHConfigHost(alias: alias, options: options)
+        }
+    }
+
+    /// Where ssh is in a file for one name: whether the lines apply to it
+    /// (`active`, as ssh's) and whether they are the alias's own (a `Host`
+    /// line naming it, not only a pattern matching it). The top of the file,
+    /// before any `Host`, applies to every name and is no one's own.
+    struct WalkState: Equatable {
+        var active: Bool
+        var own: Bool
+    }
+
+    /// The statements in order as ssh reads them for `alias` (readconf.c):
+    /// a `Host` line sets whether what follows applies; an `Include` reads
+    /// each file with the state it appears in, which is restored after each
+    /// file, and a file included where nothing applies can match nothing
+    /// (`SSHCONF_NEVERMATCH`); the first value of a keyword wins. A `Match`
+    /// is never evaluated (its `exec` would run a command): what follows
+    /// it is taken as not applying.
+    private static func walk(_ statements: [Statement], alias: String, state: inout WalkState, neverMatch: Bool,
+                             included: [String: [[Statement]]]?, into options: inout [String: String]) {
+        for statement in statements {
+            switch statement {
+            case .host(let patterns):
+                let matches = !neverMatch && hostMatches(alias, patterns)
+                state = WalkState(active: matches,
+                                  own: matches && patterns.contains { isAlias($0) && $0.lowercased() == alias.lowercased() })
+            case .match:
+                state = WalkState(active: false, own: false)
+            case .include(let patterns):
+                // One level: an included file's own Include is not followed.
+                guard let files = included?[patterns.joined(separator: "\u{0}")] else { continue }
+                let saved = state
+                for file in files {
+                    walk(file, alias: alias, state: &state, neverMatch: neverMatch || !saved.active,
+                         included: nil, into: &options)
+                    state = saved
+                }
+            case .option(let keyword, let value):
+                if state.own, options[keyword] == nil { options[keyword] = value }
+            }
+        }
+    }
+
+    /// ssh's `Host` matching (match_hostname_list): no negated pattern may
+    /// match, and some plain one must; `*` and `?` wildcards; ignoring case.
+    static func hostMatches(_ name: String, _ patterns: [String]) -> Bool {
+        let name = Array(name.lowercased().unicodeScalars)
+        var matched = false
+        for pattern in patterns {
+            if pattern.hasPrefix("!") {
+                if wildcard(name, Array(pattern.dropFirst().lowercased().unicodeScalars)) { return false }
+            } else if wildcard(name, Array(pattern.lowercased().unicodeScalars)) {
+                matched = true
+            }
+        }
+        return matched
+    }
+
+    private static func wildcard(_ name: [Unicode.Scalar], _ pattern: [Unicode.Scalar]) -> Bool {
+        var n = 0, p = 0, star = -1, mark = 0
+        while n < name.count {
+            if p < pattern.count, pattern[p] == "?" || pattern[p] == name[n] {
+                n += 1; p += 1
+            } else if p < pattern.count, pattern[p] == "*" {
+                star = p; mark = n; p += 1
+            } else if star >= 0 {
+                p = star + 1; mark += 1; n = mark
+            } else {
+                return false
+            }
+        }
+        while p < pattern.count, pattern[p] == "*" { p += 1 }
+        return p == pattern.count
     }
 
     /// `~` and relative paths as ssh reads them in a user config, then glob.

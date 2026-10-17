@@ -961,29 +961,43 @@ unknown, proof is unproven, adoption is inconclusive.
   placeholder "alias from ~/.ssh/config, or user@address"). Under it, the
   config's aliases not in use (every `Host` entry, one level of `Include`,
   wildcards and `Match` skipped; a host added in Temple under an alias's
-  name takes that alias out too) as link rows, mono 12: the alias, then in
-  secondary the `user@hostname` of its `ssh -G`. Ranked: an alias whose own
+  name takes that alias out too) as rows, mono 12, each one click target:
+  the alias in the link colour in a fixed 200 pt column (middle truncation,
+  so the next column stays put as rows filter or expand), then in
+  secondary the `user@hostname` the alias's own `User` and `HostName` set
+  (`%h` expanded; the alias as hostname when only `User` is; nothing when
+  neither is). "Own" is read as ssh reads the file for that name: statements
+  in order through `Include` (an included file continues the block it
+  appears in, which is restored after it; one included where nothing
+  applies matches nothing), first value wins, and only a `Host` line
+  naming the alias makes its lines the alias's own (`Host *` and `Match`
+  don't; a `Match` is never evaluated). Ranked: an alias whose own
   blocks set `User` or `IdentityFile` first, a bare one (no login set, its
   `HostName` absent or the alias itself, like `github.com`) last, the rest
   between, the config's order within each; nothing is hidden. The field
   filters live, ignoring case (aliases it starts, then those it is inside
-  of). Six rows (filtered or not), then **Show all N…**, which shows every match (the sheet
+  of). Six rows (filtered or not), then **Show N more** (the number
+  hidden, as the sidebar says it), which shows every match (the sheet
   grows; no scroll view). A row turns its alias on at once and closes the
   sheet. Return (or **Add**, disabled while the field is empty) adds what
-  the field holds: an offered alias turns on; a host already in use says
+  the field holds, a name matched exactly first, then ignoring case when
+  only one matches: an offered alias turns on; a host already in use says
   "<name> is already in use." and the sheet stays; anything else is read as
-  `user@address[:port]` (an IPv6 address in brackets for a port) and opens
-  the form below prefilled, the name from a host name's first label. Esc
+  `user@address[:port]` (an IPv6 address in brackets for a port; the
+  bracket must end the text or come right before the port) and opens the
+  form below prefilled, the name from a host name's first label. Text that
+  can't be read so stays in the field with a note. Esc
   cancels. Under the list: "Not in ~/.ssh/config? **Enter details…**" (the
   form, empty) and **Edit ~/.ssh/config** (the file, in the user's editor;
   the sheet closes, and reopening it reads the file again). With no alias
   to offer: "No hosts in ~/.ssh/config." or "Every host in ~/.ssh/config is
   in use.", field and footer only. The config is read when the card is
-  shown and again as the sheet opens, never at launch. `ssh -G` (local,
-  `-o ForkAfterAuthentication=no`, five-second deadline) runs only for the
-  rows shown, at most four at once, once per alias per sheet, off the main
-  actor, and is cancelled with the sheet; an alias it can't answer for is
-  shown without a destination. **Superseded**: the AppKit menu at the
+  shown and again as the sheet opens, never at launch. **Opening the sheet
+  runs nothing.** A first build ran `ssh -G` per row shown; Sol's review
+  pointed out that `ssh -G` evaluates a config's `Match exec` commands, so
+  merely opening the chooser ran them for aliases nobody chose. `ssh -G`
+  runs only where it did before: a Test connection, or a host in use.
+  **Superseded**: the AppKit menu at the
   click (UX round 2: the unused aliases, or disabled why there were none,
   a divider, Enter details… and Edit ~/.ssh/config); the owner found it
   looked bad.
@@ -2838,7 +2852,8 @@ changed, by finding:
   open nothing had applied it: white in a dark sheet) and again when the
   sheet's colour scheme changes; it is 160 pt tall. An enabled host's links
   read "Test connection" and "Sessions…" (the row names the host) in one
-  trailing group, its status line is an 11 pt tertiary caption (orange and
+  trailing group, its status line is an 11 pt secondary caption (tertiary
+  until the Add host sheet's visual review: too faint in dark; orange and
   red still mark a proven fault). The config switches keep the app's
   neutral tint (a `.tint(.accentColor)` tried in round 1 resolved to that
   same neutral inside `RootView` and was removed in the fix round) and are

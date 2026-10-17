@@ -613,11 +613,14 @@ Changes apply live where applicable.
   field ("alias from ~/.ssh/config, or user@address"). Under it are the
   config's aliases not in use yet (`Host` entries, one level of `Include`;
   patterns and `Match` blocks are skipped), each beside the `user@hostname`
-  ssh resolves it to. Those that set a `User` or `IdentityFile` come first
-  and bare names such as `github.com` last. Typing filters them; six show
-  until **Show all N…**. Clicking one turns it on at once. Return adds what
-  the field holds: an alias turns on, and `user@address[:port]` or an
-  address opens the full form filled in. Under the list, "Not in
+  its own `User` and `HostName` lines set (nothing when they set neither).
+  Those that set a `User` or `IdentityFile` come first and bare names such
+  as `github.com` last. Typing filters them; six show until **Show N
+  more**. Clicking anywhere on a row turns it on at once. Return adds what
+  the field holds: an alias turns on (matched exactly, else ignoring case
+  when only one matches), and `user@address[:port]` or an address opens
+  the full form filled in; text that is neither stays in the field with a
+  note. Under the list, "Not in
   ~/.ssh/config? **Enter details…**" opens that form directly (a name,
   fixed once saved, an address, and optionally a user, port, identity file
   and jump host, with **Copy as ssh config**), and **Edit ~/.ssh/config**
@@ -634,8 +637,8 @@ Changes apply live where applicable.
   say that the arguments above apply on hosts and that `--no-daemon` in
   Codex's arguments lets Temple identify new Codex sessions there on its
   own. `~/.ssh/config` is read when the card is shown and again when Add
-  host… opens, never before; `ssh -G` (local, it connects nowhere) runs
-  only for the aliases the sheet shows.
+  host… opens, never before. Opening the sheet runs nothing (not even
+  `ssh -G`, which would run a config's `Match exec` commands).
 
 Agent arguments apply to both new and resumed sessions, on hosts too
 (`--dangerously-skip-permissions` included, as the Hosts card says). Command paths are

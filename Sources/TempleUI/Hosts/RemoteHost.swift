@@ -396,19 +396,6 @@ enum RemoteHostComposition {
         return SSHConfigHosts.loadHosts(configURL: ssh.appendingPathComponent("config"), sshDirectory: ssh)
     }
 
-    /// `ssh -G` for a config alias, run locally (no connection, no
-    /// network) with the user's ssh: what the Add host sheet shows beside it.
-    nonisolated static func resolveAlias(_ alias: String) async -> ConnectionTest.Resolution {
-        await ConnectionTest.sshResolve(aliasResolutionArgv(alias, sshPath: sshPath))
-    }
-
-    /// The Test connection's `ssh -G` for a config alias (no options of
-    /// Temple's own; the socket path is not used by `-G`).
-    nonisolated static func aliasResolutionArgv(_ alias: String, sshPath: String) -> [String] {
-        SSHConnection(record: .config(alias), stateDirectory: URL(fileURLWithPath: NSTemporaryDirectory()),
-                      sshPath: sshPath).resolutionArgv
-    }
-
     /// The user's ssh: the login shell's, else the system's.
     static var sshPath: String { LoginShellEnvironment.locate("ssh") ?? "/usr/bin/ssh" }
 
