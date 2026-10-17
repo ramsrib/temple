@@ -86,9 +86,9 @@ private struct SessionTerminalView: View {
             }
             if let remote = tab.remote, remote.phase == .endedPending {
                 // tmux's exit leaves the client's screen as it was before
-                // tmux drew (blank), so the pane's own last lines stand in
-                // for the terminal: never a blank pane.
-                endedOutput(remote)
+                // tmux drew (blank), and the pane's last screen is not kept:
+                // one line says so where the terminal was, never a blank pane.
+                endedScreen
             } else if let surface = tab.surface {
                 TerminalSurfaceHost(surface: surface)
                     // ⌘F. Floats over the terminal's top-right corner, so the
@@ -216,31 +216,16 @@ private struct SessionTerminalView: View {
         .band()
     }
 
-    /// Where an ended session's terminal was: what its pane printed, the
-    /// last lines that say something, or why there is nothing to show.
-    private func endedOutput(_ remote: RemoteTabState) -> some View {
-        ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 2) {
-                if remote.diagnostics.isEmpty {
-                    if remote.outputChecked {
-                        Text(RemoteCopy.endedOutputUnavailable(tab.host.rawValue, agent: tab.agent))
-                            .font(.system(size: 12))
-                            .foregroundStyle(.tertiary)
-                    }
-                } else {
-                    ForEach(Array(remote.diagnostics.enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-            }
+    /// Where an ended session's terminal was: the pane's last screen is not
+    /// kept, and one line says so, at once (nothing is fetched).
+    private var endedScreen: some View {
+        Text(RemoteCopy.endedScreenNotKept(tab.host.rawValue, agent: tab.agent))
+            .font(.system(size: 12))
+            .foregroundStyle(.tertiary)
+            .textSelection(.enabled)
             .padding(.horizontal, 22)
             .padding(.vertical, 14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     /// What a remote tab's header says, by phase; nil for none.

@@ -335,9 +335,6 @@ public struct RemoteTabState: Equatable {
     /// What the pane showed, for an agent that ended at once: the last
     /// lines, plain text.
     public var diagnostics: [String] = []
-    /// The pane's output was asked for (an ended pending run): nothing in
-    /// `diagnostics` now means nothing could be had.
-    public var outputChecked = false
     /// A sign of life arrived for this open (the pane's record, a title).
     public var evidenceSeen = false
     /// The owned operation staging this open's launch after the spawn.
@@ -558,10 +555,11 @@ public enum RemoteCopy {
         return codexEndedPending(host) + " Is it \(subject) (\(startStamp(suggestion.startedAt, now: now)))?"
     }
 
-    /// Where an ended session's terminal was, when nothing its pane printed
-    /// could be fetched.
-    public static func endedOutputUnavailable(_ host: String, agent: Agent) -> String {
-        "Temple couldn't get what \(agent.displayName) showed on \(host)."
+    /// Where an ended session's terminal was: tmux's exit leaves the
+    /// client's screen blank, and the pane's last screen is not kept. A
+    /// fact, not a failure: there is nothing to try again.
+    public static func endedScreenNotKept(_ host: String, agent: Agent) -> String {
+        "\(agent.displayName)'s last screen on \(host) isn't kept after it ends."
     }
 
     /// The question about one candidate: never a fact.

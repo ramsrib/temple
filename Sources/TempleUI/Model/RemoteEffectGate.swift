@@ -90,10 +90,6 @@ public enum RemoteCompletion: String, CaseIterable, Sendable {
     case identityResult
     /// The suggestions to ask about reached the tab.
     case suggestionsLoaded
-    /// What an ended pending run's pane printed reached the tab, which
-    /// shows it in place of its terminal. No run evidence: the run has
-    /// ended, so no other client can attach to it.
-    case endedOutput
     /// A yes for an ended session closed its tab and selected its row; the
     /// close's activation of a neighbour wrote that tab's row a turn later,
     /// and the row is selected again over it (never over a selection made

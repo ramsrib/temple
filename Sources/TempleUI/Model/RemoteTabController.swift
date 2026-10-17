@@ -398,7 +398,6 @@ public final class RemoteTabController {
                     if tab.inputSubmitted {
                         tab.remote?.phase = .endedPending
                         self.loadSuggestions(tab, host: host, handle: handle)
-                        self.loadEndedOutput(tab, host: host, handle: handle)
                     } else {
                         self.model.removeTab(tab.id)
                         self.pendingWrite(host, tab.host) { try await host.dismissRun(handle) }
@@ -841,12 +840,6 @@ public final class RemoteTabController {
         var state = RemoteTabState(phase: .opening)
         state.handle = handle
         state.suggestions = startNew ? [] : (tab.remote?.suggestions ?? [])
-        // What an ended run's pane printed stays on screen while the tab
-        // reopens (the run's copy is kept by `loadEndedOutput`).
-        if !startNew, let previous = tab.remote, previous.outputChecked {
-            state.diagnostics = previous.diagnostics
-            state.outputChecked = true
-        }
         // A refusal this launch remembers for the run is said again whenever
         // it reopens, with Try again (round 3).
         if let handle, let refusal = refusedClaims[handle] {
@@ -875,10 +868,7 @@ public final class RemoteTabController {
             case .success(.ended):
                 tab.remote?.phase = .endedPending
                 tab.activity = .exited(status: 0)
-                if let handle {
-                    self.loadSuggestions(tab, host: host, handle: handle)
-                    self.loadEndedOutput(tab, host: host, handle: handle)
-                }
+                if let handle { self.loadSuggestions(tab, host: host, handle: handle) }
             case .success(.identified(let id, let directory)):
                 // Another Temple learned its id meanwhile: this tab is that
                 // session now (joined like any claim), then opened as any
@@ -1101,13 +1091,7 @@ public final class RemoteTabController {
     /// A tab went (closed, detached, discarded, on any host): every hand-over
     /// whose tab is gone is finished, and every one that failed is tried
     /// again.
-    func tabRemoved(_ tab: SessionTab) {
-        if let handle = tab.remote?.handle,
-           !model.tabs.contains(where: { $0.host == tab.host && $0.remote?.handle == handle }) {
-            endedOutputs[RunKey(host: tab.host, handle: handle)] = nil
-        }
-        settleHandOvers()
-    }
+    func tabRemoved(_ tab: SessionTab) { settleHandOvers() }
 
     /// Finishes each hand-over whose tab is gone, or whose tab set has been
     /// written since it was owed (an acknowledged save the model made
@@ -1255,64 +1239,6 @@ public final class RemoteTabController {
         if case .candidates(let found) = answer { tab.remote?.suggestions = found.filter { $0.sessionID != refused } }
     }
 
-    /// How many of the pane's last lines stand in for an ended run's
-    /// terminal.
-    static let endedOutputLines = 40
-
-    /// A run, by its host and handle.
-    struct RunKey: Hashable { let host: HostID; let handle: String }
-    /// What each ended pending run's pane printed, by run: the host hands
-    /// it over once, so it is kept here, apart from any tab's ticket, and
-    /// a later empty answer never replaces it. Dropped when no tab holds
-    /// the run any more.
-    private var endedOutputs: [RunKey: [String]] = [:]
-    /// A fetch in flight: its run, over one launcher (a host removed or
-    /// edited gets a new one, whose reopen never joins the old fetch).
-    struct FetchKey: Hashable { let run: RunKey; let launcher: ObjectIdentifier }
-    /// Fetches in flight, with every tab presentation waiting on each: one
-    /// fetch per run and launcher, however many times its tab reopens.
-    private var endedOutputWaiters: [FetchKey: [RemoteTicket]] = [:]
-
-    /// What an ended pending run's pane printed (its record's output, as
-    /// the early-exit header has it), shown where its terminal was: tmux's
-    /// exit leaves the client's screen blank. The fetch is the run's, not
-    /// the tab's: its answer is kept whatever the gate says, and only the
-    /// presentation passes it.
-    private func loadEndedOutput(_ tab: SessionTab, host: RemoteSessionHost, handle: String) {
-        let key = RunKey(host: tab.host, handle: handle)
-        if let kept = endedOutputs[key] {
-            tab.remote?.diagnostics = kept
-            tab.remote?.outputChecked = true
-            return
-        }
-        let ticket = gate.ticket(for: tab)
-        let fetch = FetchKey(run: key, launcher: ObjectIdentifier(host))
-        if endedOutputWaiters[fetch] != nil {
-            endedOutputWaiters[fetch]?.append(ticket)
-            return
-        }
-        endedOutputWaiters[fetch] = [ticket]
-        operations.run(host: tab.host, .query) { [weak self] in
-            let raw = await host.diagnostics(handle)
-            guard let self else { return }
-            let lines = raw.map { RemoteCopy.diagnosticLines($0, limit: Self.endedOutputLines) } ?? []
-            if !lines.isEmpty, self.endedOutputs[key] == nil,
-               self.model.tabs.contains(where: { $0.host == key.host && $0.remote?.handle == handle }) {
-                self.endedOutputs[key] = lines
-            }
-            let shown = self.endedOutputs[key] ?? lines
-            for ticket in self.endedOutputWaiters.removeValue(forKey: fetch) ?? [] {
-                guard self.gate.admit(.endedOutput, ticket), let tab = ticket.tab,
-                      tab.remote?.phase == .endedPending else { continue }
-                if !shown.isEmpty { tab.remote?.diagnostics = shown }
-                tab.remote?.outputChecked = true
-            }
-        }
-    }
-
-    /// Whether a run's ended output is kept (tests).
-    func keepsEndedOutput(host: HostID, handle: String) -> Bool { endedOutputs[RunKey(host: host, handle: handle)] != nil }
-
     /// "Yes, that's it": the claim is durable work (owned through close and
     /// quit); what the tab shows passes the gate.
     public func confirm(_ suggestion: RemoteSuggestion, in tab: SessionTab) {
@@ -1360,11 +1286,6 @@ public final class RemoteTabController {
     public func startNewPending(_ tab: SessionTab) {
         guard isPending(tab), let host = remoteHost(for: tab), !tab.hasLiveProcess, !isQuitting else { return }
         if let old = tab.remote?.handle {
-            // The tab leaves that run: so does its copy of what it printed,
-            // unless another tab still holds the run.
-            if !model.tabs.contains(where: { $0 !== tab && $0.host == tab.host && $0.remote?.handle == old }) {
-                endedOutputs[RunKey(host: tab.host, handle: old)] = nil
-            }
             let ended = tab.remote?.phase == .endedPending
             pendingWrite(host, tab.host) {
                 if ended { try await host.dismissRun(old) } else { try await host.closePendingTab(old) }
@@ -1471,7 +1392,6 @@ public final class RemoteTabController {
                 } else {
                     tab.remote?.phase = .endedPending
                     self.loadSuggestions(tab, host: host, handle: handle)
-                    self.loadEndedOutput(tab, host: host, handle: handle)
                 }
             case .leftRunning:
                 self.model.removeTab(tab.id)

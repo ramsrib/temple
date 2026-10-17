@@ -344,123 +344,27 @@ final class RemoteCodexIdentityTests: XCTestCase {
     }
 
     /// An ended, unidentified session asks in one sentence, question
-    /// first, and shows what its pane printed where its terminal was
-    /// (tmux's exit left that blank); kept when the tab opens again.
-    func testAnEndedSessionAsksInOneSentenceAndShowsWhatItPrinted() async throws {
+    /// first; where its terminal was, one line says its last screen is not
+    /// kept, at once: nothing the pane printed is fetched (Fable, simplify
+    /// round: the preserved output was a flattened TUI stream nobody could
+    /// read).
+    func testAnEndedSessionAsksInOneSentenceAndFetchesNoOutput() async throws {
         remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
         remote.suggestionsResult = .candidates([suggestion("c7")])
-        remote.diagnosticsText = "\u{1b}[1mOpenAI Codex\u{1b}[0m\r\n> reply with the word ok\r\n\r\nok\r\n"
+        remote.diagnosticsText = "\u{1b}[1mOpenAI Codex\u{1b}[0m\r\n> reply with the word ok\r\n"
         model.remoteTabs.restorePending(hosts: [hostID])
         await settle(self.model.tabs.count == 1)
         let tab = try XCTUnwrap(model.tabs.first)
         model.activate(tab)
-        await settle(tab.remote?.outputChecked == true && tab.remote?.suggestions.count == 1)
+        await settle(tab.remote?.suggestions.count == 1)
         XCTAssertEqual(tab.remote?.phase, .endedPending)
-        XCTAssertEqual(tab.remote?.diagnostics, ["OpenAI Codex", "> reply with the word ok", "ok"])
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(tab.remote?.diagnostics, [], "nothing fetched for an ended run")
         let question = RemoteCopy.codexEndedQuestion("box", suggestion: try XCTUnwrap(tab.remote?.suggestions.first))
         XCTAssertTrue(question.hasPrefix("Codex ended on box before Temple learned which session this was. "
                                          + "Is it \u{201C}reply with the word ok\u{201D} ("), question)
         XCTAssertTrue(question.hasSuffix(")?"), question)
-        // Opened again: the host hands the output over once; the tab keeps it.
-        remote.diagnosticsText = nil
-        model.remoteTabs.ensurePending(tab, on: remote, startNew: false)
-        await settle(tab.remote?.phase == .endedPending)
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertEqual(tab.remote?.diagnostics.count, 3)
-    }
-
-    /// The ended output is the run's, not the tab's (sol round 1): a
-    /// reopen while it is being fetched waits on the same fetch (the host
-    /// hands the output over once, so a second fetch would find nothing),
-    /// the answer reaches the reopened tab though the first open's ticket
-    /// is gone, and a later reopen shows it again without asking.
-    func testAReopenDuringTheEndedOutputFetchKeepsTheOutput() async throws {
-        remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
-        remote.diagnosticsText = "what codex said\r\n"
-        remote.diagnosticsHandOverOnce = true
-        let hold = Gate()
-        remote.diagnosticsGate = { await hold.wait() }
-        model.remoteTabs.restorePending(hosts: [hostID])
-        await settle(self.model.tabs.count == 1)
-        let tab = try XCTUnwrap(model.tabs.first)
-        model.activate(tab)
-        await settle(self.remote.diagnosticsCalls.count == 1, "the fetch is held")
-        // Reopened while it is held: a new open, the first one's ticket void.
-        model.remoteTabs.ensurePending(tab, on: remote, startNew: false)
-        await settle(tab.remote?.phase == .endedPending)
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertEqual(remote.diagnosticsCalls.count, 1, "one fetch per run")
-        await hold.open()
-        await settle(tab.remote?.outputChecked == true)
-        XCTAssertEqual(tab.remote?.diagnostics, ["what codex said"])
-        XCTAssertTrue(model.remoteTabs.keepsEndedOutput(host: hostID, handle: "p7"))
-        // Once more: shown from the run's copy, nothing asked.
-        model.remoteTabs.ensurePending(tab, on: remote, startNew: false)
-        await settle(tab.remote?.phase == .endedPending)
-        await settle(tab.remote?.outputChecked == true)
-        XCTAssertEqual(tab.remote?.diagnostics, ["what codex said"])
-        XCTAssertEqual(remote.diagnosticsCalls.count, 1)
-        // The tab goes: so does the run's copy.
-        model.remoteTabs.discardPending(tab)
-        XCTAssertFalse(model.remoteTabs.keepsEndedOutput(host: hostID, handle: "p7"))
-    }
-
-    /// A reopen after the host was replaced never joins the retired host's
-    /// fetch (sol round 2): that fetch was cancelled, so its completion
-    /// passes no gate, and the reopened tab would wait on it forever. The
-    /// new host's fetch answers it, and the old one, released later,
-    /// changes nothing.
-    func testAReopenAfterTheHostIsReplacedFetchesTheOutputAnew() async throws {
-        remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
-        remote.diagnosticsText = "old host's words\r\n"
-        let hold = Gate()
-        remote.diagnosticsGate = { await hold.wait() }
-        model.remoteTabs.restorePending(hosts: [hostID])
-        await settle(self.model.tabs.count == 1)
-        let tab = try XCTUnwrap(model.tabs.first)
-        model.activate(tab)
-        await settle(self.remote.diagnosticsCalls.count == 1, "the old host's fetch is held")
-        // The host is edited: a new connection context.
-        model.remoteTabs.retireHost(hostID)
-        let edited = FakeRemoteHost("box")
-        edited.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
-        edited.diagnosticsText = "new host's words\r\n"
-        replacement = edited
-        model.remoteTabs.ensurePending(tab, on: edited, startNew: false)
-        await settle(tab.remote?.outputChecked == true, "answered by the new host's own fetch")
-        XCTAssertEqual(edited.diagnosticsCalls.count, 1)
-        XCTAssertEqual(tab.remote?.diagnostics, ["new host's words"])
-        await hold.open()
-        try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(tab.remote?.diagnostics, ["new host's words"], "the old fetch changes nothing")
-    }
-
-    /// Start a new session leaves the ended run: its copy of what the pane
-    /// printed goes with it (sol round 2).
-    func testStartingANewSessionReleasesTheEndedRunsOutput() async throws {
-        remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
-        remote.diagnosticsText = "what codex said\r\n"
-        model.remoteTabs.restorePending(hosts: [hostID])
-        await settle(self.model.tabs.count == 1)
-        let tab = try XCTUnwrap(model.tabs.first)
-        model.activate(tab)
-        await settle(tab.remote?.outputChecked == true)
-        XCTAssertTrue(model.remoteTabs.keepsEndedOutput(host: hostID, handle: "p7"))
-        model.remoteTabs.startNewPending(tab)
-        XCTAssertFalse(model.remoteTabs.keepsEndedOutput(host: hostID, handle: "p7"))
-        await settle(tab.hasLiveProcess, "the new run starts")
-    }
-
-    /// Nothing the pane printed could be had: the pane says so, never blank.
-    func testAnEndedSessionWithNoOutputSaysSo() async throws {
-        remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
-        model.remoteTabs.restorePending(hosts: [hostID])
-        await settle(self.model.tabs.count == 1)
-        let tab = try XCTUnwrap(model.tabs.first)
-        model.activate(tab)
-        await settle(tab.remote?.outputChecked == true)
-        XCTAssertEqual(tab.remote?.diagnostics, [])
-        XCTAssertEqual(RemoteCopy.endedOutputUnavailable("box", agent: .codex), "Temple couldn't get what Codex showed on box.")
+        XCTAssertEqual(RemoteCopy.endedScreenNotKept("box", agent: .codex), "Codex's last screen on box isn't kept after it ends.")
         let unread = RemoteSuggestion(rolloutPath: "/r", sessionID: "x", firstPrompt: nil, startedAt: Date(),
                                       directory: "/w", promptKnown: false)
         XCTAssertTrue(RemoteCopy.codexEndedQuestion("box", suggestion: unread)
@@ -969,7 +873,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertFalse(RemoteCopy.suggestionQuestion(unread).contains("No prompt yet"))
         let copy = [RemoteCopy.codexEndedPending("box"), RemoteCopy.couldNotTell, RemoteCopy.noDaemonHint,
                     RemoteCopy.codexEndedQuestion("box", suggestion: suggestion()),
-                    RemoteCopy.endedOutputUnavailable("box", agent: .codex), RemoteCopy.sessionsOn("box"),
+                    RemoteCopy.endedScreenNotKept("box", agent: .codex), RemoteCopy.sessionsOn("box"),
                     RemoteCopy.stillWorking("box", agent: .codex), RemoteCopy.stillWorkingMessage,
                     RemoteCopy.resumeAnyway("box"),
                     RemoteCopy.startNewPending("box"), RemoteCopy.stopHint("box"), RemoteCopy.discardHelp(archives: true),
