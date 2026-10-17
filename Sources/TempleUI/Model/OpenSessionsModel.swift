@@ -1208,9 +1208,13 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
     }
 
     public func surface(_ surface: TerminalSurface, didUpdateTitle title: String) {
-        guard !isQuitting, let tab = tab(for: surface), !title.isEmpty else { return }
-        // A title from a tab on a host is tmux drawing: the connection is up.
+        guard !isQuitting, let tab = tab(for: surface) else { return }
+        // A title from a tab on a host is tmux drawing: the connection is up,
+        // the empty title tmux sends while the agent has set none included.
         if tab.remote != nil { remoteTabs.titleArrived(tab) }
+        // No title (a program resetting its own, tmux's while untitled) is no
+        // title: the tab and the row keep what they have.
+        guard !title.isEmpty else { return }
         if tab.title != title, let sid = tab.sessionID { touchHandler?(sid, tab.host, nil) }
         tab.title = title
         // Agents retitle themselves as the work moves on, and record that title

@@ -74,6 +74,22 @@ final class RemoteCodexIdentityTests: XCTestCase {
                          sessionID: id, firstPrompt: prompt, startedAt: Date(), directory: "/home/u/project")
     }
 
+    /// B1 again: until Codex titles itself, tmux sends an empty title (the
+    /// terminal reports it empty, never this Mac's folder): the pending tab
+    /// keeps "New Codex session", and the title still counts as tmux
+    /// drawing (no "Still connecting").
+    func testAPendingTabKeepsItsTitleThroughTmuxsEmptyOne() async throws {
+        model.remoteTabs.startupEvidenceDeadline = 0.2
+        let tab = await newCodex()
+        let surface = try XCTUnwrap(factory.created.last)
+        surface.simulateTitle("")
+        XCTAssertEqual(tab.title, Agent.codex.newSessionTitle)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(tab.remote?.stillConnecting, false, "an empty title from tmux is a sign of life")
+        surface.simulateTitle("project")
+        XCTAssertEqual(tab.title, "project", "Codex's own title")
+    }
+
     // MARK: Starting and identifying
 
     /// A new Codex session is a pending run: no id, nothing in core, the

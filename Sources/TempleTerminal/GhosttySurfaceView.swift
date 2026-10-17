@@ -82,6 +82,9 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         }
         let token = UUID()
         spawnToken = token
+        // libghostty starts the terminal's pwd at the child's working
+        // directory (termio Exec), as this view must know it to read titles.
+        terminalPwd = workingDirectory
         var failedNow = false
         app.spawn { [weak self] deferred in
             guard let self, self.spawnToken == token else { return }   // closed meanwhile
@@ -361,7 +364,29 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
 
     // MARK: Event callbacks (from GhosttyApp action dispatch)
 
-    func handleTitle(_ title: String) { onTitle?(title) }
+    /// The terminal's working directory as libghostty holds it: the child's
+    /// launch directory, then whatever OSC 7 reported.
+    var terminalPwd: String?
+
+    func handlePwd(_ pwd: String) { terminalPwd = pwd.isEmpty ? nil : pwd }
+
+    /// A title is the program's, never libghostty's stand-in for one: when
+    /// the program sets an empty title (it resets its own; tmux sends one
+    /// while the pane is untitled), or reports a pwd before any title,
+    /// libghostty titles the terminal with its pwd. That is this Mac's
+    /// launch directory (for a tab on a host, the home its ssh runs in),
+    /// never anything the program said, so it is passed on as no title.
+    func handleTitle(_ title: String) { onTitle?(Self.programTitle(title, pwd: terminalPwd)) }
+
+    static func programTitle(_ title: String, pwd: String?) -> String {
+        guard let pwd, !pwd.isEmpty else { return title }
+        func trimmed(_ path: String) -> String {
+            var path = path
+            while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+            return path
+        }
+        return trimmed(title) == trimmed(pwd) ? "" : title
+    }
     func handleBell() { onBell?() }
     func handleNotification(title: String, body: String) { onNotification?(title, body) }
 

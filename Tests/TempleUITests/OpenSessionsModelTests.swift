@@ -659,6 +659,21 @@ final class OpenSessionsModelTests: XCTestCase {
                        "the sidebar/palette can only track a live title if it is handed up")
     }
 
+    /// No title is no title: an empty one (what the terminal reports when a
+    /// program resets its own, or tmux's while the agent has set none)
+    /// changes neither the tab nor the row.
+    func testAnEmptyTitleChangesNothing() {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.openSession(Fixture.session("a", project: "/p/a"))
+        var recorded: [String: String] = [:]
+        model.titleHandler = { recorded[$0] = $2 }
+        let surface = try! XCTUnwrap(model.tabs.first?.surface)
+        model.surface(surface, didUpdateTitle: "Agent title")
+        model.surface(surface, didUpdateTitle: "")
+        XCTAssertEqual(model.tabs.first?.title, "Agent title")
+        XCTAssertEqual(recorded, ["a": "Agent title"])
+    }
+
     func testSwitchingProjectReturnsToItsLastActiveSession() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.openSession(Fixture.session("a1", project: "/p/a"))

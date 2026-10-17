@@ -2501,6 +2501,22 @@ its own.
   Codex session" until then; Codex then titles itself with its folder's
   name (and a spinner while it works), which is the agent's own title, as
   it is locally.
+  - **The empty title became this Mac's home** (re-check): libghostty
+    treats an empty title as a reset and titles the terminal with its pwd
+    instead (`termio/stream_handler.zig` `windowTitle`), and the pwd starts
+    as the child's working directory (`termio/Exec.zig`), which for a tab
+    on a host is this Mac's home: "/Users/sriram" reached the tab and the
+    row. The same reset gives a local tab its folder path when its agent
+    clears its title, or reports a pwd (OSC 7) before any title. The view
+    now tracks the terminal's pwd (the launch directory, then
+    `GHOSTTY_ACTION_PWD`) and passes a title equal to it on as no title;
+    the model ignores an empty title for the tab and the row, but still
+    counts it as tmux drawing (the startup-evidence deadline), as the
+    host-name title counted before. A row that already took such a title
+    keeps it until the agent retitles itself (generated titles overwrite;
+    transcript fills are NULL-only and never replace it) or the user
+    renames it; only dev and acceptance stores ran a build with the
+    regression, so no repair is shipped.
 - **B2, working at close.** A spawn (a launch, a reopen, an attach) boots
   into running and only the 15 s settle timer took it back, so ⌘W soon
   after a reopen asked Detach or Stop. Measured on masterblaster: Codex

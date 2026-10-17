@@ -102,4 +102,36 @@ final class GhosttyInputEvidenceTests: XCTestCase {
         view.deliverClipboard("rm -rf x\n", state: nil, confirmed: true)
         XCTAssertEqual(recorder.inputs, 2)
     }
+
+    /// libghostty titles a terminal with its pwd when the program sets an
+    /// empty title (tmux does, while the pane is untitled) or reports a pwd
+    /// before any title: that is this Mac's launch folder (for a tab on a
+    /// host, the home its ssh runs in), never the program's. It reaches
+    /// Temple as no title.
+    func testATitleThatIsThePwdIsNoTitle() {
+        final class Titles: TerminalSurfaceDelegate {
+            var titles: [String] = []
+            func surface(_ surface: TerminalSurface, didChangeState state: TerminalProcessState) {}
+            func surface(_ surface: TerminalSurface, didUpdateTitle title: String) { titles.append(title) }
+            func surfaceDidRing(_ surface: TerminalSurface) {}
+            func surface(_ surface: TerminalSurface, didPostNotification title: String, body: String) {}
+        }
+        let surface = GhosttyTerminalSurface(app: GhosttyApp.shared, appearance: .default)
+        let recorder = Titles()
+        surface.delegate = recorder
+        let view = try! XCTUnwrap(surface.view as? GhosttySurfaceView)
+        view.terminalPwd = "/Users/me"
+        view.handleTitle("/Users/me")          // tmux's empty title, as libghostty reports it
+        view.handleTitle("Agent title")
+        view.handleTitle("/Users/me/")
+        view.handlePwd("/Users/me/project")   // OSC 7, then a title before any: the pwd
+        view.handleTitle("/Users/me/project")
+        view.handleTitle("/Users/me")          // not the pwd any more: a real title
+        view.handlePwd("")
+        view.handleTitle("/Users/me/project")
+        view.handleTitle("")
+        XCTAssertEqual(recorder.titles, ["", "Agent title", "", "", "/Users/me", "/Users/me/project", ""])
+        XCTAssertEqual(GhosttySurfaceView.programTitle("/", pwd: "/"), "")
+        XCTAssertEqual(GhosttySurfaceView.programTitle("x", pwd: nil), "x")
+    }
 }

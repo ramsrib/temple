@@ -423,6 +423,10 @@ public final class GhosttyApp {
             }
             return true
 
+        case GHOSTTY_ACTION_PWD:
+            view.handlePwd(action.action.pwd.pwd.map { String(cString: $0) } ?? "")
+            return true
+
         case GHOSTTY_ACTION_RING_BELL:
             view.handleBell()
             return true
