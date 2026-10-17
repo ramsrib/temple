@@ -158,7 +158,6 @@ public final class RemoteTabController {
         let spawnedAt = model.now()
         tab.attach(surface: surface, at: spawnedAt)
         tab.remote?.phase = .connected
-        tab.remote?.attachedThisLaunch = true
         do {
             try surface.start(TerminalIdentity.apply(to: plan.command))
         } catch {
@@ -309,7 +308,6 @@ public final class RemoteTabController {
         let pending = isPending(tab)
         if let identity = state.identityOperation { operations.cancel(id: identity) }
         let age = tab.spawnedAt.map { Date().timeIntervalSince($0) } ?? .infinity
-        tab.remote?.lastSeenWorking = tab.activity == .running
         model.cancelSettle(for: tab.id)
         tab.remote?.phase = .checking
         tab.activity = .exited(status: status)
@@ -717,71 +715,24 @@ public final class RemoteTabController {
     // MARK: Quit
 
     /// The quit began: what only looks (opens, polls, checks, queries) is
-    /// cancelled; stops already running carry on inside the window.
+    /// cancelled; stops a close already started carry on inside the window.
     func quitBegan() {
         operations.cancelForQuit()
         // The frozen tab set is written now: what it holds is handed over.
         settleHandOvers()
     }
 
-    /// The quit's plan for one tab on a host: a working agent is detached
-    /// at once (no exit input, which would reach it through tmux), so its
-    /// surface is returned; an idle one, or one whose client had already
-    /// ended while it was idle, is stopped by the one-command stop when its
-    /// host has a live master, and left running when it has none or the
-    /// window closes first. No completion touches a tab from here on: the
-    /// gate refuses everything while quitting.
-    func quitPlan(for tab: SessionTab, state: RemoteTabState) -> TerminalSurface? {
-        // A pending Codex run follows the same policy (round 1): a working
-        // agent is detached, an idle one stopped. Stopped, one that was typed
-        // into keeps its ended run, so the next launch asks about it; one
-        // that never was is no longer tracked. A stop that fails is left
-        // running, as any, and never retried.
-        let dismissIfStopped = isPending(tab) && !tab.inputSubmitted
-        guard let host = remoteHost(for: tab), let handle = state.handle else {
-            if let surface = tab.surface, tab.hasLiveProcess { return surface }
-            return nil
-        }
-        if let surface = tab.surface, tab.hasLiveProcess {
-            if tab.activity == .running { return surface }
-            startQuitStop(host: host, hostID: tab.host, handle: handle, surface: surface, dismissIfStopped: dismissIfStopped)
-            return nil
-        }
-        // Only what this launch attached to and saw idle is stopped: a chip
-        // restored at launch and never opened says nothing about whether its
-        // agent works (it may have been detached while working, or left
-        // running by a stop that failed), so it is never stopped (round 2).
-        guard state.attachedThisLaunch else { return nil }
-        switch state.phase {
-        case .disconnected, .unknown, .checking:
-            if !state.lastSeenWorking {
-                startQuitStop(host: host, hostID: tab.host, handle: handle, surface: nil, dismissIfStopped: dismissIfStopped)
-            }
-        default:
-            break
-        }
-        return nil
-    }
-
-    private func startQuitStop(host: RemoteSessionHost, hostID: HostID, handle: String, surface: TerminalSurface?,
-                               dismissIfStopped: Bool = false) {
-        operations.run(host: hostID, .stop, onCancel: { reason in
-            surface?.terminate()
-            await host.leaveRunning(handle, reason: reason)
-        }) {
-            guard await host.hasLiveMaster() else {
-                surface?.terminate()
-                await host.leaveRunning(handle, reason: .hostDidNotAnswer)
-                return
-            }
-            surface?.terminate()
-            let result = try? await host.stop(handle, fromAttachedTab: surface != nil)
-            if dismissIfStopped, result == .stopped {
-                do { try await host.dismissRun(handle) } catch {
-                    TempleUILog.db.error("an unused pending run not dismissed at quit: \(error.localizedDescription, privacy: .public)")
-                }
-            }
-        }
+    /// The quit's plan for one tab on a host: Temple stops no agent there,
+    /// working or idle (owner's decision). A live client is detached at once
+    /// (no exit input, which tmux would deliver to the agent), so its
+    /// surface is returned; a tab with no live client needs nothing. Every
+    /// run, a pending Codex one included, is left as it is and comes back
+    /// as a tab next launch, where closing it stops it as any close does.
+    /// No completion touches a tab from here on: the gate refuses
+    /// everything while quitting.
+    func quitPlan(for tab: SessionTab) -> TerminalSurface? {
+        guard tab.remote != nil, let surface = tab.surface, tab.hasLiveProcess else { return nil }
+        return surface
     }
 
     // MARK: Codex identity (docs/designs/remote-ssh.md section 3, phase 1b)

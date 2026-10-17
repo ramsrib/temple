@@ -16,8 +16,8 @@ public final class TempleAppDelegate: NSObject, NSApplicationDelegate {
     /// The quit prompt's words last asked (tests read them).
     private(set) var lastQuitPrompt: (title: String, message: String)?
 
-    /// Counts this Mac's working agents; agents working on hosts keep
-    /// running, and the prompt says so in one line.
+    /// Counts this Mac's working agents; agents on hosts keep running,
+    /// working or idle, and the prompt says so in one line.
     static func quitPrompt(workingCount: Int, remoteHosts: [String]) -> (title: String, message: String) {
         let title = workingCount == 1 ? "An agent is still working." : "\(workingCount) agents are still working."
         var message = "Quitting interrupts them. Their sessions reopen next launch, "
@@ -121,11 +121,11 @@ public final class TempleAppDelegate: NSObject, NSApplicationDelegate {
     /// so the drain below does not ask the same question a second time.
     func approveCloseForQuit(_ window: NSWindow? = nil) -> Bool {
         guard let model else { return true }
-        // Only this Mac's agents are interrupted by a quit: one working on a
+        // Only this Mac's agents are interrupted by a quit: every agent on a
         // host keeps running there (docs/designs/remote-ssh.md section 5).
         let working = model.openSessions.localWorkingTabs.count
         guard working > 0 else { return true }
-        guard confirmQuit(workingCount: working, remoteHosts: model.openSessions.remoteWorkingHosts) else { return false }
+        guard confirmQuit(workingCount: working, remoteHosts: model.openSessions.remoteConnectedHosts) else { return false }
         approvedCloseWindow = window.map(ObjectIdentifier.init) ?? ObjectIdentifier(self)
         // If this close does not turn into the last-window termination, the
         // approval must not survive to be spent by some later quit.
@@ -184,7 +184,7 @@ public final class TempleAppDelegate: NSObject, NSApplicationDelegate {
         let working = model.openSessions.localWorkingTabs.count
         let asked = consumeCloseApproval()
         if working > 0, !asked, hasCancellableWindow(),
-           !confirmQuit(workingCount: working, remoteHosts: model.openSessions.remoteWorkingHosts) {
+           !confirmQuit(workingCount: working, remoteHosts: model.openSessions.remoteConnectedHosts) {
             return .terminateCancel
         }
         model.drainForQuit { [self] in

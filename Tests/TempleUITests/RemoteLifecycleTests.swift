@@ -27,7 +27,6 @@ final class FakeRemoteHost: RemoteSessionHost {
     var collectResult: RemoteLaunchOutcome = .ok(directory: "/home/u/project")
     var liveness: RemoteLiveness = .present
     var stopResult: RemoteStopResult = .stopped
-    var master = true
     /// Holds a stop until released (a quit's hung query), by handle; a
     /// held stop that is cancelled throws, as one with no answer does.
     var stopGate: ((String) async -> Void)?
@@ -155,7 +154,6 @@ final class FakeRemoteHost: RemoteSessionHost {
 
     func hasLiveRun(sessionID: String) -> Bool { live(sessionID) != nil }
     func liveRunHandle(sessionID: String) async -> String? { live(sessionID).map { runs[$0].handle } }
-    func hasLiveMaster() async -> Bool { master }
     func manualStopCommand(handle: String) -> String { "tmux -L temple kill-session -t temple-\(handle)" }
     var tracked: (sessions: [RemoteTrackedSession], checked: Bool) = ([], true)
     var trackedGate: (() async -> Void)?
@@ -691,8 +689,8 @@ final class RemoteLifecycleTests: XCTestCase {
         // Quit keeps the timer's reading: the answered, quiet tab is
         // detached (its surface returned), not stopped.
         let stopsBefore = remote.stops.count
-        XCTAssertNotNil(model.remoteTabs.quitPlan(for: answered, state: try XCTUnwrap(answered.remote)))
-        XCTAssertNotNil(model.remoteTabs.quitPlan(for: tool, state: try XCTUnwrap(tool.remote)))
+        XCTAssertNotNil(model.remoteTabs.quitPlan(for: answered))
+        XCTAssertNotNil(model.remoteTabs.quitPlan(for: tool))
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(remote.stops.count, stopsBefore, "quit stops nothing that ran this spawn")
     }
@@ -750,7 +748,7 @@ final class RemoteLifecycleTests: XCTestCase {
         model.requestClose(tabID: tab.id)
         XCTAssertEqual(model.pendingRemoteCloseTabID, tab.id)
         model.remoteTabs.cancelClose()
-        XCTAssertNotNil(model.remoteTabs.quitPlan(for: tab, state: try XCTUnwrap(tab.remote)), "quit detaches it")
+        XCTAssertNotNil(model.remoteTabs.quitPlan(for: tab), "quit detaches it")
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertTrue(remote.stops.isEmpty)
     }
@@ -875,37 +873,39 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertTrue(finished)
     }
 
-    func testTheQuitDrainDetachesWorkingStopsIdleAndBoundsHungStops() async throws {
+    /// Quit stops no agent on a host, working or idle: every live client
+    /// is detached at once with no exit input, nothing is stopped or
+    /// flagged, and with only hosts' tabs the drain does not wait out the
+    /// window. The tab set is frozen for the next launch, where each comes
+    /// back as a tab.
+    func testTheQuitDetachesEveryAgentOnAHostWorkingOrIdle() async throws {
         let working = await openRow("w")
         working.activity = .running
         let idle = await openRow("i")
         idle.activity = .idle
-        let hung = await openRow("h")
-        hung.activity = .idle
-        let workingSurface = try XCTUnwrap(working.surface as? FakeTerminalSurface)
-        let gate = Gate()
-        remote.stopGate = { handle in
-            if handle == "h3" { await gate.wait() }
-        }
+        let attention = await openRow("a")
+        attention.activity = .needsAttention
+        let surfaces = try [working, idle, attention].map { try XCTUnwrap($0.surface as? FakeTerminalSurface) }
         model.prepareForQuit()
-        let elapsed = await drain()
-        XCTAssertTrue(workingSurface.didTerminate, "a working agent's client goes at once, with no exit input")
-        XCTAssertFalse(workingSurface.didRequestGracefulExit)
-        XCTAssertLessThan(elapsed, 1.5)
-        XCTAssertEqual(remote.stops.map(\.handle).sorted(), ["h2", "h3"])
-        XCTAssertTrue(remote.stops.allSatisfy(\.fromAttachedTab))
-        await settle(self.remote.leftRunningCalls.count == 1)
-        XCTAssertEqual(remote.leftRunningCalls.map(\.reason), [.quitDeadline])
-        XCTAssertEqual(remote.leftRunningCalls.first?.handle, "h3")
-        XCTAssertTrue(remote.runs.first { $0.handle == "h2" }!.ended)
-        XCTAssertTrue(model.tabs.count == 3, "the tab set is frozen for the next launch")
-        await gate.open()
+        let plan = model.quitDrainPlan()
+        XCTAssertEqual(plan.detach.count, 3, "every live client is detached")
+        XCTAssertTrue(plan.graceful.isEmpty)
+        let elapsed = await drain(timeout: 2)
+        for surface in surfaces {
+            XCTAssertTrue(surface.didTerminate, "its client goes at once")
+            XCTAssertFalse(surface.didRequestGracefulExit, "no exit input reaches the agent through tmux")
+        }
+        XCTAssertLessThan(elapsed, 1, "nothing to wait for on a host")
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(remote.stops.isEmpty, "nothing is stopped, idle included")
+        XCTAssertTrue(remote.leftRunningCalls.isEmpty, "nothing is flagged left running: it was not a stop")
+        XCTAssertTrue(remote.runs.allSatisfy { !$0.ended })
+        XCTAssertEqual(model.tabs.count, 3, "the tab set is frozen for the next launch")
     }
 
-    /// Planned from the run and the tab, not only from a live client: an
-    /// agent whose client had already ended while it was idle is stopped
-    /// too (with no Temple client attached); one last seen working is not.
-    func testAQuitStopsADisconnectedIdleAgentButNotADisconnectedWorkingOne() async throws {
+    /// A client that had already ended (the agent idle or working there)
+    /// is left as it is: no stop, no query.
+    func testAQuitLeavesADisconnectedAgentAlone() async throws {
         let idle = await openRow("i")
         idle.activity = .idle
         let working = await openRow("w")
@@ -915,20 +915,28 @@ final class RemoteLifecycleTests: XCTestCase {
         working.surface.map { ($0 as? FakeTerminalSurface)?.simulateExit(status: 0) }
         await settle(idle.remote?.phase == .disconnected && working.remote?.phase == .disconnected)
         model.prepareForQuit()
+        XCTAssertTrue(model.quitDrainPlan().detach.isEmpty)
         _ = await drain()
-        XCTAssertEqual(remote.stops.map(\.handle), [idle.remote!.handle!])
-        XCTAssertEqual(remote.stops.first?.fromAttachedTab, false)
+        XCTAssertTrue(remote.stops.isEmpty)
+        XCTAssertTrue(remote.leftRunningCalls.isEmpty)
     }
 
-    func testAQuitDoesNotAskAHostWithoutALiveMaster() async throws {
-        let idle = await openRow("i")
-        idle.activity = .idle
-        remote.master = false
+    /// Local agents keep their whole graceful window, exactly as before
+    /// remote, with hosts' clients detached beside them.
+    func testLocalAgentsKeepTheWholeWindowBesideDetachedHosts() async throws {
+        let remote = self.remote!, host = hostID
+        let local = LocalHostLauncher(binaryPath: { "/bin/" + $0.binaryName }, folderEvidence: { _ in .unknown })
+        makeModel(launcher: { $0 == host ? remote : $0.isLocal ? local : nil })
+        let onHost = await openRow("w")
+        onHost.activity = .running
+        let localTab = model.newSession(agent: .claude, project: Fixture.key("/p/local"))
+        let localSurface = try XCTUnwrap(localTab.surface as? FakeTerminalSurface)
         model.prepareForQuit()
-        _ = await drain()
-        await settle(!self.remote.leftRunningCalls.isEmpty)
+        let elapsed = await drain(timeout: 0.6)
+        XCTAssertTrue(localSurface.didRequestGracefulExit)
+        XCTAssertGreaterThanOrEqual(elapsed, 0.55, "the local window is not cut short, as in v0.5.2")
+        XCTAssertTrue((onHost.surface as? FakeTerminalSurface)?.didTerminate == true)
         XCTAssertTrue(remote.stops.isEmpty)
-        XCTAssertEqual(remote.leftRunningCalls.map(\.reason), [.hostDidNotAnswer])
     }
 
     func testAQuitWithNothingStillCompletesAsynchronously() {
@@ -1120,10 +1128,12 @@ final class RemoteLifecycleTests: XCTestCase {
         tab.activity = .running
         XCTAssertEqual(model.workingTabs.count, 1)
         XCTAssertEqual(model.localWorkingTabs.count, 0)
-        XCTAssertEqual(model.remoteWorkingHosts, ["box"])
+        XCTAssertEqual(model.remoteConnectedHosts, ["box"])
+        tab.activity = .idle
+        XCTAssertEqual(model.remoteConnectedHosts, ["box"], "an idle one keeps running too")
         let prompt = TempleAppDelegate.quitPrompt(workingCount: 1, remoteHosts: ["box", "jet"])
         XCTAssertEqual(prompt.title, "An agent is still working.")
-        XCTAssertTrue(prompt.message.hasSuffix("Sessions working on box and jet keep running; Temple will reconnect to them."))
+        XCTAssertTrue(prompt.message.hasSuffix("Sessions on box and jet keep running; Temple will reconnect to them."))
         XCTAssertFalse(TempleAppDelegate.quitPrompt(workingCount: 2, remoteHosts: []).message.contains("keep running"))
     }
 

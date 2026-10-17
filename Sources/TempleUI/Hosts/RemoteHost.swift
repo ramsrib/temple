@@ -175,7 +175,6 @@ final class RemoteHostLauncher: RemoteSessionHost {
 
     func liveRunHandle(sessionID: String) async -> String? { await sessions.liveRun(sessionID: sessionID)?.handle }
 
-    func hasLiveMaster() async -> Bool { await sessions.hasLiveMaster() }
 
     func manualStopCommand(handle: String) -> String { RemoteSessions.manualStopCommand(handle: handle) }
 

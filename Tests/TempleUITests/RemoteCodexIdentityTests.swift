@@ -285,11 +285,11 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertNil(reopened.sessionID)
     }
 
-    /// A quit treats a pending run as any (round 1): a working agent is
-    /// detached, an idle one stopped. Stopped, one that was typed into keeps
-    /// its ended run for the next launch's question; one never typed into
-    /// is no longer tracked.
-    func testAQuitDetachesWorkingAndStopsIdlePendingRuns() async throws {
+    /// A quit stops no pending run either (owner's decision): working,
+    /// idle, typed into or not, each client is detached and its run left as
+    /// it is, so each comes back as a chip next launch. Nothing is stopped
+    /// or dismissed.
+    func testAQuitDetachesEveryPendingRunAndStopsNone() async throws {
         let working = await newCodex()
         let typed = await newCodex()
         let untouched = await newCodex()
@@ -297,26 +297,14 @@ final class RemoteCodexIdentityTests: XCTestCase {
         model.surfaceDidSubmitInput(try XCTUnwrap(typed.surface))
         typed.activity = .idle
         untouched.activity = .idle
+        await settle(self.remote.inputs == ["p2"])
         model.prepareForQuit()
         let plan = model.quitDrainPlan()
-        XCTAssertEqual(plan.detach.count, 1, "the working one is detached")
-        await settle(Set(self.remote.stops.map(\.handle)) == ["p2", "p3"], "the idle ones are stopped")
-        await settle(self.remote.dismissedRuns == ["p3"], "only the one never typed into is let go")
-        XCTAssertEqual(remote.inputs, ["p2"])
-    }
-
-    /// A stop at the quit that fails leaves it running, as any, and is never
-    /// tried again.
-    func testAFailedQuitStopIsNotRetried() async throws {
-        let tab = await newCodex()
-        tab.activity = .idle
-        remote.stopResult = .leftRunning(.hostDidNotAnswer, detail: nil)
-        model.prepareForQuit()
-        _ = model.quitDrainPlan()
-        await settle(self.remote.stops.count == 1)
+        XCTAssertEqual(plan.detach.count, 3, "every client is detached")
         try await Task.sleep(for: .milliseconds(200))
-        XCTAssertEqual(remote.stops.count, 1)
-        XCTAssertTrue(remote.dismissedRuns.isEmpty)
+        XCTAssertTrue(remote.stops.isEmpty, "nothing is stopped")
+        XCTAssertTrue(remote.dismissedRuns.isEmpty, "nothing is let go: each comes back next launch")
+        XCTAssertTrue(remote.closedPending.isEmpty, "no run is marked closed: its chip is restored")
     }
 
     // MARK: Round 1 fixes
@@ -696,9 +684,8 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertTrue(persistence.load().contains { $0.sessionID == "c5" })
     }
 
-    /// A chip restored at launch and never opened is never stopped by the
-    /// quit (round 2): a stop that failed before the relaunch, or a session
-    /// detached while working, keeps running.
+    /// A chip restored at launch and never opened is left alone by the quit
+    /// too: no client to detach, nothing stopped.
     func testARestoredChipNeverOpenedIsNotStoppedAtQuit() async throws {
         remote.pending = [.init(handle: "p7", directory: "/home/u/project"),
                           .init(handle: "p8", directory: "/home/u/other", typed: true)]

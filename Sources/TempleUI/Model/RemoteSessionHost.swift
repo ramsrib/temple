@@ -247,8 +247,6 @@ public protocol RemoteSessionHost: HostLauncher {
     func hasLiveRun(sessionID: String) -> Bool
     /// The session's live run's handle, read now.
     func liveRunHandle(sessionID: String) async -> String?
-    /// Whether a master answers on Temple's socket for this host now.
-    func hasLiveMaster() async -> Bool
     func manualStopCommand(handle: String) -> String
     /// The tracked sessions, each checked on its own server; `checked`:
     /// whether the host answered at all.
@@ -329,9 +327,6 @@ public struct RemoteTabState: Equatable {
     public var creating = false
     /// This Open already turned an attach that found nothing into a resume.
     public var resumedAfterAbsence = false
-    /// Whether the agent was working when its client ended (the quit stops
-    /// only an agent last seen idle).
-    public var lastSeenWorking = false
     /// What the pane showed, for an agent that ended at once: the last
     /// lines, plain text.
     public var diagnostics: [String] = []
@@ -352,9 +347,6 @@ public struct RemoteTabState: Equatable {
     public var confirming: [UInt8]?
     /// The owned identity schedule of this open.
     var identityOperation: UUID?
-    /// This launch attached a client to the run (a restored chip never
-    /// opened has not): only then does the quit stop it when idle.
-    var attachedThisLaunch = false
     /// Core refused the id this run's check found: Try again is offered.
     public var identityRefused = false
 
@@ -492,8 +484,10 @@ public enum RemoteCopy {
         "Its agent is working on \(host). Pass --force to detach, or stop it in Temple."
     }
 
+    /// The quit prompt's line: every session on those hosts keeps running,
+    /// working or idle.
     public static func quitLine(_ hosts: [String]) -> String {
-        "Sessions working on \(list(hosts)) keep running; Temple will reconnect to them."
+        "Sessions on \(list(hosts)) keep running; Temple will reconnect to them."
     }
 
     public static func noFolder(_ path: String, host: String) -> String { "No folder \(path) on \(host)." }

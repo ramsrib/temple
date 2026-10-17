@@ -224,15 +224,16 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         tabs.filter { $0.kind == .session && $0.hasSurface && $0.activity == .running }
     }
 
-    /// Working tabs on this Mac: what quitting interrupts. A working agent
-    /// on a host keeps running there (section 5), so the quit prompt counts
+    /// Working tabs on this Mac: what quitting interrupts. Every agent on a
+    /// host keeps running there (section 5), so the quit prompt counts
     /// these only.
     public var localWorkingTabs: [SessionTab] { workingTabs.filter { $0.remote == nil } }
 
-    /// Hosts with an agent working in an attached tab, in tab order.
-    public var remoteWorkingHosts: [String] {
+    /// Hosts with a session in a connected tab, working or idle, in tab
+    /// order: a quit leaves every one of them running there.
+    public var remoteConnectedHosts: [String] {
         var seen = Set<String>()
-        return workingTabs.filter { $0.remote != nil && $0.hasLiveProcess }.compactMap { tab in
+        return tabs.filter { $0.kind == .session && $0.remote != nil && $0.hasLiveProcess }.compactMap { tab in
             seen.insert(tab.host.rawValue).inserted ? tab.host.rawValue : nil
         }
     }
@@ -1414,17 +1415,17 @@ extension OpenSessionsModel {
     }
 
     /// The quit's drain, planned from each tab: local agents get the
-    /// graceful exit; a tab on a host is planned by `RemoteTabController`
-    /// (a working agent detached, an idle one stopped, or left running).
+    /// graceful exit; a tab on a host has its client detached and its agent
+    /// left running, working or idle (`RemoteTabController.quitPlan`).
     public func quitDrainPlan() -> (graceful: [TerminalSurface], detach: [TerminalSurface]) {
         remoteTabs.quitBegan()
         var graceful: [TerminalSurface] = [], detach: [TerminalSurface] = []
         for tab in tabs where tab.kind == .session {
-            guard let state = tab.remote else {
+            guard tab.remote != nil else {
                 if let surface = tab.surface, tab.hasLiveProcess { graceful.append(surface) }
                 continue
             }
-            if let surface = remoteTabs.quitPlan(for: tab, state: state) { detach.append(surface) }
+            if let surface = remoteTabs.quitPlan(for: tab) { detach.append(surface) }
         }
         return (graceful, detach)
     }
