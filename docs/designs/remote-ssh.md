@@ -2086,6 +2086,9 @@ apart from the name; every Test connection row has Show output.
    records who it was and leaves its tab at rest ("This Codex session
    ended on <host>. Resume it to continue the conversation." with
    Resume); nothing starts until the user asks.
+   Superseded by the remote UX round 1 (below): the tab closes instead,
+   as a local tab does when its agent exits, and the row is selected;
+   still nothing starts until the user opens it.
 7. **Input evidence is kept** (ruling 5, persisted): `r5-input` adds
    `runs.input_seen_at`, written the first time a pending tab is typed
    into, so a restored chip still asks and a close keeps it.
@@ -2643,3 +2646,18 @@ spellings apart (ext4 does):
 Pinned by `RemoteSourceTests.testTwoSpellingsOfOneSessionsFileInOneStoreAreOneCandidateReadByItsOwnBytes`.
 Revisit if an agent starts writing non-ASCII names below its store, or if
 remote gains a change stream.
+
+## Remote UX round 1 (Fable's UX-flow and visual reviews)
+
+Owner constraints unchanged (ADR-036): closing stops, Temple never stops
+anything later, nothing is discovered, the feature stays removable. What
+changed, by finding:
+
+- **No ended-identified state** (UX 3). "Yes, that's it" for a Codex
+  session that ended before Temple learned its id records the claim (and
+  the core join) as before, then closes the tab exactly as a local exit
+  does and selects the now-identified row (`selectRowHandler`, set again
+  after the activation the close caused). The run is handed over as any
+  identified tab's is. The `endedIdentified` phase, its banner and its
+  Resume are gone; opening the row resumes, nothing resumes on its own.
+

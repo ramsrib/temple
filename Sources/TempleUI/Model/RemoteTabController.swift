@@ -1007,10 +1007,11 @@ public final class RemoteTabController {
         if !tab.title.isEmpty, tab.title != tab.agent.newSessionTitle { model.titleHandler?(id, hostID, tab.title) }
         if ended {
             // Its run ended: the yes records who it was, nothing more. The
-            // tab is that session's, at rest; resuming it is the user's
-            // Resume (or opening its chip), never this answer's (round 1).
-            tab.remote?.phase = .endedIdentified
-            tab.activity = .idle
+            // tab closes, as a local tab does when its agent exits, and the
+            // now-identified row is selected: opening it is the way back,
+            // and resuming is the user's act, never this answer's (round 1).
+            model.removeTab(tab.id)
+            model.selectRowHandler?(id, hostID)
         }
     }
 

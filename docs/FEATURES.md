@@ -348,6 +348,8 @@ then relaunch, turns it on.
   in Codex's arguments (Settings), Temple identifies the session on its own.
   A Codex session that ended before Temple learned its ID says so and offers
   the question, **Start a new session** and **Discard**.
+  Answering yes for one that ended closes its tab, as a local exit does, and
+  selects its row; opening the row resumes it.
 - **Scrolling and find.** tmux keeps a session's history. The wheel scrolls
   it, and the first key you type returns to the prompt. A drag selects and
   copies (to the Mac clipboard with tmux 3.3 or newer); `⇧`-drag selects in

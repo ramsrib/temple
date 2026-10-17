@@ -343,9 +343,12 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await settle(restored.remote?.suggestions.count == 1, "typed before the relaunch: asked")
     }
 
-    /// Confirming an ended session records who it was and nothing else: an
-    /// inert tab of that session; Resume (the user's) resumes it.
-    func testAYesForAnEndedSessionNeverResumesByItself() async throws {
+    /// Confirming an ended session records who it was and nothing else:
+    /// the tab closes, as a local tab does when its agent exits, its run is
+    /// handed over, and the row is selected; nothing starts or resumes.
+    func testAYesForAnEndedSessionClosesItsTabAndSelectsTheRow() async throws {
+        var selected: [(String, HostID)] = []
+        model.selectRowHandler = { selected.append(($0, $1)) }
         remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
         remote.suggestionsResult = .candidates([suggestion("c7")])
         model.remoteTabs.restorePending(hosts: [hostID])
@@ -355,15 +358,15 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await settle(tab.remote?.suggestions.count == 1)
         let created = factory.created.count
         model.remoteTabs.confirm(try XCTUnwrap(tab.remote?.suggestions.first), in: tab)
-        await settle(tab.sessionID == "c7")
-        XCTAssertEqual(tab.remote?.phase, .endedIdentified)
+        await settle(!self.model.tabs.contains { $0 === tab }, "the tab closes like a local exit")
+        XCTAssertEqual(tab.sessionID, "c7")
+        XCTAssertEqual(joins.map(\.id), ["c7"])
+        XCTAssertEqual(selected.map(\.0), ["c7"])
+        XCTAssertEqual(selected.map(\.1), [hostID])
+        await settle(self.remote.closedPending == ["p7"], "its run is handed over, not restored again")
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(factory.created.count, created, "nothing started")
-        XCTAssertTrue(remote.opens.isEmpty)
-        model.remoteTabs.reconnect(tab)
-        await settle(tab.hasLiveProcess)
-        XCTAssertEqual(remote.opens.last?.sessionID, "c7")
-        XCTAssertEqual(remote.opens.last?.resume, true)
+        XCTAssertTrue(remote.opens.isEmpty, "nothing resumed")
     }
 
     /// A pending run another Temple identified meanwhile opens as that
@@ -776,7 +779,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertTrue(RemoteCopy.suggestionQuestion(unread).hasPrefix("Is this the session? First prompt unreadable, started "))
         XCTAssertFalse(RemoteCopy.suggestionQuestion(unread).contains("No prompt yet"))
         let copy = [RemoteCopy.codexEndedPending("box"), RemoteCopy.couldNotTell, RemoteCopy.noDaemonHint,
-                    RemoteCopy.endedIdentified("box"), RemoteCopy.resumeAnyway("box"),
+                    RemoteCopy.resumeAnyway("box"),
                     RemoteCopy.startNewPending("box"), RemoteCopy.stopHint("box"), RemoteCopy.discardHelp(archives: true),
                     RemoteCopy.discardHelp(archives: false), RemoteCopy.discardPendingHelp("box"),
                     RemoteCopy.suggestionQuestion(suggestion()), RemoteCopy.noTrackedSessions,

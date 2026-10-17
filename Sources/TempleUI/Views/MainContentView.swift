@@ -173,7 +173,6 @@ private struct SessionTerminalView: View {
         case exitedEarly
         case decision(checked: Bool)
         case endedPending
-        case endedIdentified
 
         static func make(_ phase: RemoteTabState.Phase) -> RemoteHeader? {
             switch phase {
@@ -185,7 +184,6 @@ private struct SessionTerminalView: View {
             case .exitedEarly: .exitedEarly
             case .needsDecision(let checked): .decision(checked: checked)
             case .endedPending: .endedPending
-            case .endedIdentified: .endedIdentified
             }
         }
     }
@@ -225,10 +223,6 @@ private struct SessionTerminalView: View {
                     question(remote).background(Palette.surfaceFill)
                         .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairline).frame(height: 1) }
                 }
-            }
-        case .endedIdentified:
-            notice(symbol: "checkmark.circle", text: RemoteCopy.endedIdentified(host)) {
-                Button("Resume") { model.openSessions.remoteTabs.reconnect(tab) }
             }
         case .disconnected:
             notice(symbol: "bolt.horizontal.circle", text: RemoteCopy.disconnected(host)) {

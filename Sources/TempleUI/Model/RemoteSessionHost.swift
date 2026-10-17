@@ -319,11 +319,9 @@ public struct RemoteTabState: Equatable {
         /// Discard (and Resume, unchecked); never a blind resume.
         case needsDecision(checked: Bool)
         /// A new Codex session ended before Temple learned its id: the
-        /// suggestions (if any), Start a new session and Discard.
+        /// suggestions (if any), Start a new session and Discard. A yes
+        /// closes the tab, as a local exit does; the row is the way back.
         case endedPending
-        /// It ended, and the user's yes said which session it was: at rest,
-        /// resumed only when the user asks.
-        case endedIdentified
     }
     public var phase: Phase
     public var handle: String?
@@ -366,7 +364,7 @@ public struct RemoteTabState: Equatable {
     var mayBeRunning: Bool {
         switch phase {
         case .connected, .checking, .disconnected, .unknown, .stopping, .stopFailed: handle != nil
-        case .opening, .failedToStart, .exitedEarly, .needsDecision, .endedPending, .endedIdentified: false
+        case .opening, .failedToStart, .exitedEarly, .needsDecision, .endedPending: false
         }
     }
 }
@@ -550,10 +548,6 @@ public enum RemoteCopy {
 
     /// Under the question: how Temple can tell by itself (Fable, round 1).
     public static let noDaemonHint = "With --no-daemon in Codex's arguments (Settings), Temple identifies the session on its own."
-
-    public static func endedIdentified(_ host: String) -> String {
-        "This Codex session ended on \(host). Resume it to continue the conversation."
-    }
 
     /// What Discard does, for its help tag.
     public static func discardHelp(archives: Bool) -> String {
