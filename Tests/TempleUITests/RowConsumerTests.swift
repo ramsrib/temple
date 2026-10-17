@@ -709,6 +709,24 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(app.openSessions.activeTab?.sessionID, "remote")
     }
 
+    /// A provisional tab says it is starting; on a host, one that ended
+    /// before Temple learned its id says it ended, and one typed into while
+    /// its band asks which session it is shows its title plain.
+    func testATabOnAHostSaysEndedOrPlainInsteadOfStarting() throws {
+        let app = try model([Fixture.row("local", project: "/same", title: "Local row")])
+        app.openSessions.openSession(app.sessions.first { $0.id == "local" }!)
+        let tab = try XCTUnwrap(app.openSessions.activeTab)
+        tab.isProvisional = true
+        let title = app.sessionTabTitle(tab)
+        XCTAssertEqual(app.tabDisplayTitle(tab), "\(title) (starting…)")
+        tab.remote = RemoteTabState(phase: .disconnected)
+        XCTAssertEqual(app.tabDisplayTitle(tab), "\(title) (starting…)")
+        tab.inputSubmitted = true
+        XCTAssertEqual(app.tabDisplayTitle(tab), title)
+        tab.remote = RemoteTabState(phase: .endedPending)
+        XCTAssertEqual(app.tabDisplayTitle(tab), "\(title) (ended)")
+    }
+
     func testRowTitlesAndProjectArchiveStateStayHostAware() throws {
         let remote = HostID(rawValue: "remote")
         let app = try model([Fixture.row("local", project: "/same", title: "Local row"),

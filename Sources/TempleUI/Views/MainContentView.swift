@@ -172,14 +172,14 @@ private struct SessionTerminalView: View {
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.leading, 20)
+            .padding(.leading, 22)
         }
         if !remote.identityRefused {
             Text(MainContentView.noDaemonHint)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 20)
+                .padding(.leading, 22)
         }
     }
 
@@ -244,9 +244,10 @@ private struct SessionTerminalView: View {
     private var endedScreen: some View {
         Text(RemoteCopy.endedScreenNotKept(displayHost, agent: tab.agent))
             .font(.system(size: 12))
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(.secondary)
             .textSelection(.enabled)
-            .padding(.horizontal, 22)
+            .padding(.leading, 36)
+            .padding(.trailing, 22)
             .padding(.vertical, 14)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }

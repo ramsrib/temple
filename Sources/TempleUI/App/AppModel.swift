@@ -1191,9 +1191,14 @@ public final class AppModel: ObservableObject {
 
     /// A tab's display title everywhere chrome shows one (chips, ⌃⇥ switcher):
     /// the user's custom name wins; provisional tabs say they are starting.
+    /// A session on a host that ended before Temple learned its id says it
+    /// ended; one typed into while Temple asks which session it is shows its
+    /// title plain, since the tab's band carries that question.
     public func tabDisplayTitle(_ tab: SessionTab) -> String {
         if let utility = tab.kind.utilityTitle { return utility }
         let title = sessionTabTitle(tab)
+        if tab.remote?.phase == .endedPending { return "\(title) (ended)" }
+        if tab.remote != nil, tab.inputSubmitted { return title }
         return tab.isProvisional ? "\(title) (starting…)" : title
     }
 
