@@ -183,20 +183,21 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertTrue(catcher.handle(returnKey(), app))
     }
 
-    /// A host's project heading: its first line is exactly a local one (the
-    /// name, nothing else), and the host goes on a second line behind the
-    /// globe, as the host spells it; the row grows from 28 to 44. This
-    /// Mac's projects are unchanged.
-    func testAHostsProjectHeadingPutsTheHostOnASecondLine() {
-        let remote = ProjectHeaderTitle(ProjectKey(host: hostID, path: "/home/u/temple-cu-1a"))
-        XCTAssertEqual(remote, ProjectHeaderTitle(name: "TEMPLE-CU-1A", hostLine: .init(glyph: "network", host: "box")))
-        XCTAssertEqual(remote.rowHeight, 44)
+    /// A host's project heading is one line, like a local one: the name,
+    /// then `@host` as the host spells it (never uppercased, never part of
+    /// the name), at the local heading's 28pt. This Mac's projects are
+    /// unchanged and carry no host.
+    func testAHostsProjectHeadingPutsTheHostOnTheHeadingLine() {
+        let remote = ProjectHeaderTitle(ProjectKey(host: HostID(rawValue: "Box-Mentes"), path: "/home/u/temple-cu-1a"))
+        XCTAssertEqual(remote, ProjectHeaderTitle(name: "TEMPLE-CU-1A", host: "Box-Mentes"))
+        XCTAssertEqual(remote.hostLabel, "@Box-Mentes", "as typed, not uppercased")
+        XCTAssertEqual(ProjectHeaderTitle(ProjectKey(host: hostID, path: "/home/u/temple-cu-1a")).hostLabel, "@box")
         XCTAssertEqual(ProjectHeaderTitle.help(ProjectKey(host: hostID, path: "/home/u/temple-cu-1a")), "box:/home/u/temple-cu-1a")
         let local = ProjectHeaderTitle(ProjectKey(host: .local, path: "/Users/me/temple"))
-        XCTAssertEqual(local, ProjectHeaderTitle(name: "TEMPLE", hostLine: nil))
-        XCTAssertEqual(local.rowHeight, 28)
+        XCTAssertEqual(local, ProjectHeaderTitle(name: "TEMPLE", host: nil))
+        XCTAssertNil(local.hostLabel)
+        XCTAssertEqual(ProjectHeaderTitle.lineHeight, 28, "one height for every heading")
         XCTAssertEqual(ProjectHeaderTitle.help(ProjectKey(host: .local, path: "/Users/me/temple")), "")
-        XCTAssertEqual(ProjectHeaderTitle.nameIndent, 18, "the host line starts under the name")
     }
 
     /// The sidebar's selection follows the active tab: a new Codex session

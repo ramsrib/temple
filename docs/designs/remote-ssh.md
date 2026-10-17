@@ -1023,9 +1023,13 @@ test did not prove tmux missing.
 
 ### How a remote row and tab look
 
-Sidebar section (as built, hands-on T1): line 1 is exactly a local
-project's heading; line 2, under the name, is the globe and the host as it
-spells itself; tooltip `name:/absolute/path`. Remote tab headers: the exit table's lines, "Claude
+Sidebar section (as built, UX round 2): one 28pt line for every heading,
+local or not. After the name (unchanged), `@host` as the host spells
+itself, 11pt regular, tertiary, no tracking, never uppercased, truncated in
+the middle and yielding before the name; then the rule. Tooltip
+`host:/absolute/path`. The hands-on T1 design (a second line under the
+name with the globe and the host) is **superseded**: the owner found the
+host line read like a session row. Remote tab headers: the exit table's lines, "Claude
 Code failed to start on <host>." with the agent's argv (never the wrapper),
 the pending-Codex lines. A row whose host was removed: "Host <name> is not
 set up. Add it in Settings to open this session."; no query goes to a host
@@ -2105,7 +2109,8 @@ the diagnostics header), which the pane now creates under `umask 077`;
 Return in the folder sheet starts the session (the window's key catcher
 took it for the sidebar while no tab was active: a sheet now owns every
 key); a host's project heading leads with the globe and keeps the host
-apart from the name; every Test connection row has Show output.
+apart from the name (the globe and the second line are **superseded** by UX
+round 2: `@host` on the heading's own line, section 7); every Test connection row has Show output.
 
 ## Phase 1b round 1 (sol and astra review; Fable's decisions; the coordinator's rulings)
 

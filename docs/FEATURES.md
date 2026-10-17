@@ -130,8 +130,10 @@ open tabs; any other session returns the next time it is opened
   Restore is not archived again until it has seen new activity.
 - A session on another machine ([Sessions on a host](#sessions-on-a-host))
   belongs to the project of its folder on that host. That project's heading
-  is a local heading with a second line under the name: a globe and the
-  host's name. A session's missing title, folder or date fills from its
+  is one line, like a local one, with the host after the name:
+  `› TEMPLE-DEMO  @masterblaster-mentes ───`, the host lowercase as it is
+  spelled and quieter than the name, giving way first on a narrow sidebar;
+  hover it for `host:/path`. A session's missing title, folder or date fills from its
   transcript on the host, looked up by its id when Temple starts and when you
   open it. Temple never dims, tags or archives a session on a host because
   its transcript seems to be gone: over ssh it cannot prove that, so only

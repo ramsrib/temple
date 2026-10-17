@@ -992,8 +992,7 @@ private struct ProjectDisclosure: View {
         .contextMenu { headerContextMenu }
         .overlay(alignment: .topTrailing) {
             // Quiet until the pointer is on the row, like Finder's "Hide".
-            // Placed on the first line (the gap above it, then the line), so
-            // a host's second line leaves it where a local heading has it.
+            // Placed on the heading's line (the gap above it, then the line).
             NewSessionMenu(project: project.key)
                 .opacity(headerHovering ? 1 : 0)
                 .animation(.easeOut(duration: 0.12), value: headerHovering)
@@ -1040,38 +1039,26 @@ private struct ProjectDisclosure: View {
         }
     }
 
-    /// A project on a host: line 1 is exactly the local heading; line 2,
-    /// under the name (past the chevron's 12 and the 6 between), says the
-    /// host: the globe of ⌘N's host rows, then the host as it spells
-    /// itself, truncated in the middle so "-mentes" survives a narrow rail.
-    private func hostLine(_ line: ProjectHeaderTitle.HostLine) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: line.glyph)
-                .font(.system(size: 9))
-                .foregroundStyle(.secondary)
-            Text(line.host)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .padding(.leading, ProjectHeaderTitle.nameIndent)
-    }
-
     /// The group heading, in the launcher's section language: an uppercase,
     /// letter-spaced label trailed by a hairline rule — one vocabulary across
     /// the rail and the home pane. A small chevron leads it and rotates with
     /// the disclosure. No folder glyph: every entry here is a folder. A
-    /// project on a host adds a second line for the host, collapsed or not.
+    /// project on a host says the host on the same line, after the name:
+    /// one line for every heading, local or not.
     private var headerLabel: some View {
         let title = ProjectHeaderTitle(project.key)
-        return VStack(alignment: .leading, spacing: 2) {
+        return HStack(spacing: 6) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .rotationEffect(.degrees(expanded ? 90 : 0))
+                .frame(width: 12)
+            // The name and, on a host, the host after it. Grouped so the
+            // host yields to the name inside the group while the group as a
+            // whole meets the rule exactly as the name alone always has: a
+            // lower priority against the rule would hand the rule the host's
+            // room and the host would never show.
             HStack(spacing: 6) {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .rotationEffect(.degrees(expanded ? 90 : 0))
-                    .frame(width: 12)
                 // Hand-rolled, not Label(_, systemImage:): a Label picks up the
                 // sidebar label style, which dims with window key-state — making
                 // project titles the ONLY thing in the app that reacts to focus
@@ -1081,17 +1068,27 @@ private struct ProjectDisclosure: View {
                     .tracking(1.4)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                Rectangle()
-                    .fill(Palette.hairline)
-                    .frame(height: 1)
-                    .padding(.leading, 4)
-                    // The `+` lands over the rule's end on hover; leave it room.
-                    .padding(.trailing, headerHovering ? 22 : 0)
+                if let host = title.hostLabel {
+                    // A tag, not a title: lowercase as the host spells it,
+                    // unspaced, a step quieter than the name, and the first
+                    // to give way on a narrow rail, from the middle so
+                    // "-mentes" survives.
+                    Text(host)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .layoutPriority(-1)
+                }
             }
-            .frame(height: ProjectHeaderTitle.lineHeight)
-            if let line = title.hostLine { hostLine(line) }
+            Rectangle()
+                .fill(Palette.hairline)
+                .frame(height: 1)
+                .padding(.leading, 4)
+                // The `+` lands over the rule's end on hover; leave it room.
+                .padding(.trailing, headerHovering ? 22 : 0)
         }
-        .frame(height: title.rowHeight, alignment: .top)
+        .frame(height: ProjectHeaderTitle.lineHeight)
         // A project on a host says where it is: `host:/absolute/path`. A
         // project on this Mac has no tooltip, as before remote.
         .helpIfAny(ProjectHeaderTitle.help(project.key))
@@ -1186,34 +1183,29 @@ private struct NewSessionMenu: View {
     }
 }
 
-/// What a project's heading says: the folder's name, uppercase in the
-/// section language, on a first line identical for every project; and for
-/// a project on a host, a second line with the globe of ⌘N's host rows and
-/// the host as it spells itself (never uppercased, never folded into the
-/// name, where truncation would cut it off first).
+/// What a project's heading says, on one line for every project: the
+/// folder's name, uppercase in the section language; and for a project on a
+/// host, `@host` after it, as the host spells itself (never uppercased,
+/// never folded into the name, where truncation would cut it off first).
+/// The owner found an earlier second line for the host read like a session
+/// row under the heading.
 struct ProjectHeaderTitle: Equatable {
-    struct HostLine: Equatable {
-        let glyph: String
-        let host: String
-    }
     let name: String
-    let hostLine: HostLine?
+    /// The host as it spells itself, or nil for this Mac.
+    let host: String?
 
-    /// The first line's height, the whole local heading's.
+    /// The heading's height, local or not.
     static let lineHeight: CGFloat = 28
-    /// A host's heading: the first line, 2 between, the host line.
-    static let remoteRowHeight: CGFloat = 44
-    /// Where the name starts: past the chevron (12) and the spacing (6).
-    static let nameIndent: CGFloat = 18
 
-    init(name: String, hostLine: HostLine?) { self.name = name; self.hostLine = hostLine }
+    init(name: String, host: String?) { self.name = name; self.host = host }
 
     init(_ key: ProjectKey) {
         name = key.name.uppercased()
-        hostLine = key.host.isLocal ? nil : HostLine(glyph: "network", host: key.host.rawValue)
+        host = key.host.isLocal ? nil : key.host.rawValue
     }
 
-    var rowHeight: CGFloat { hostLine == nil ? Self.lineHeight : Self.remoteRowHeight }
+    /// What follows the name: `@host`, or nothing on this Mac.
+    var hostLabel: String? { host.map { "@" + $0 } }
 
     /// The tooltip: `host:/path` on a host, nothing here.
     static func help(_ key: ProjectKey) -> String { key.host.isLocal ? "" : "\(key.host.rawValue):\(key.path)" }
