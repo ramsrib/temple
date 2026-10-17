@@ -90,6 +90,11 @@ public extension TerminalSurface {
 public protocol TerminalSurfaceDelegate: AnyObject {
     func surface(_ surface: TerminalSurface, didChangeState state: TerminalProcessState)
     func surface(_ surface: TerminalSurface, didUpdateTitle title: String)
+    /// The terminal titled itself with its own pwd (libghostty's stand-in
+    /// when the program sets an empty title, or reports a pwd before any
+    /// title): a title change for every activity signal, but not the
+    /// program's title, so nothing shows or keeps it. Defaults to nothing.
+    func surface(_ surface: TerminalSurface, didUpdateStandInTitle title: String)
 
     // Attention signals → activity dots + native notifications (UX "Notifications").
     /// Terminal bell.
@@ -124,6 +129,7 @@ public protocol TerminalSurfaceDelegate: AnyObject {
 
 public extension TerminalSurfaceDelegate {
     func surfaceDidSubmitInput(_ surface: TerminalSurface) {}
+    func surface(_ surface: TerminalSurface, didUpdateStandInTitle title: String) {}
     func surfaceDidReceiveInput(_ surface: TerminalSurface) {}
     func surface(_ surface: TerminalSurface, didStartSearch needle: String?) {}
     func surfaceDidEndSearch(_ surface: TerminalSurface) {}

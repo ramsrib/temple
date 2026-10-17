@@ -712,6 +712,29 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertNil(model.pendingRemoteCloseTabID)
     }
 
+    /// On a host: a wake with a stand-in title (this Mac's home, from
+    /// tmux's empty title) runs the tab again, a close asks, and quit
+    /// detaches it rather than stopping it; the tab's title is untouched.
+    func testAStandInTitleWakeOnAHostIsWork() async throws {
+        model.titleQuietWindow = 0.15
+        model.ringGraceSeconds = -1
+        let tab = await openRow("s1")
+        let surface = try XCTUnwrap(factory.created.last)
+        surface.simulateTitle("Agent title")
+        surface.simulateBell()
+        XCTAssertEqual(tab.activity, .idle)
+        surface.simulateStandInTitle(NSHomeDirectory())
+        XCTAssertEqual(tab.activity, .running)
+        XCTAssertEqual(tab.title, "Agent title")
+        try await Task.sleep(for: .milliseconds(250))
+        model.requestClose(tabID: tab.id)
+        XCTAssertEqual(model.pendingRemoteCloseTabID, tab.id)
+        model.remoteTabs.cancelClose()
+        XCTAssertNotNil(model.remoteTabs.quitPlan(for: tab, state: try XCTUnwrap(tab.remote)), "quit detaches it")
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(remote.stops.isEmpty)
+    }
+
     /// A reattach is no evidence of rest: detached while working, then
     /// reopened (an attach to the run, which still runs), a static title
     /// quiet past the window: ⌘W asks, as before the early rule.

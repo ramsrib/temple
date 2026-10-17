@@ -103,16 +103,18 @@ final class GhosttyInputEvidenceTests: XCTestCase {
         XCTAssertEqual(recorder.inputs, 2)
     }
 
-    /// libghostty titles a terminal with its pwd when the program sets an
-    /// empty title (tmux does, while the pane is untitled) or reports a pwd
-    /// before any title: that is this Mac's launch folder (for a tab on a
-    /// host, the home its ssh runs in), never the program's. It reaches
-    /// Temple as no title.
-    func testATitleThatIsThePwdIsNoTitle() {
+    /// libghostty titles a terminal with its pwd, byte for byte, when the
+    /// program sets an empty title (tmux does, while the pane is untitled)
+    /// or reports a pwd before any title: that is this Mac's launch folder
+    /// (for a tab on a host, the home its ssh runs in). It reaches Temple as
+    /// a stand-in title (activity, not display). Exactly the pwd's bytes:
+    /// another trailing slash or another Unicode spelling is the program's.
+    func testATitleThatIsExactlyThePwdIsAStandIn() {
         final class Titles: TerminalSurfaceDelegate {
-            var titles: [String] = []
+            var shown: [String] = [], standIns: [String] = []
             func surface(_ surface: TerminalSurface, didChangeState state: TerminalProcessState) {}
-            func surface(_ surface: TerminalSurface, didUpdateTitle title: String) { titles.append(title) }
+            func surface(_ surface: TerminalSurface, didUpdateTitle title: String) { shown.append(title) }
+            func surface(_ surface: TerminalSurface, didUpdateStandInTitle title: String) { standIns.append(title) }
             func surfaceDidRing(_ surface: TerminalSurface) {}
             func surface(_ surface: TerminalSurface, didPostNotification title: String, body: String) {}
         }
@@ -120,18 +122,20 @@ final class GhosttyInputEvidenceTests: XCTestCase {
         let recorder = Titles()
         surface.delegate = recorder
         let view = try! XCTUnwrap(surface.view as? GhosttySurfaceView)
-        view.terminalPwd = "/Users/me"
-        view.handleTitle("/Users/me")          // tmux's empty title, as libghostty reports it
+        let nfc = "/Users/caf\u{E9}", nfd = "/Users/cafe\u{301}"
+        view.terminalPwd = nfc
+        view.handleTitle(nfc)               // tmux's empty title, as libghostty reports it
+        view.handleTitle(nfc + "/")         // another trailing slash: the program's
+        view.handleTitle(nfd)               // another spelling (equal as Swift Strings): the program's
         view.handleTitle("Agent title")
-        view.handleTitle("/Users/me/")
-        view.handlePwd("/Users/me/project")   // OSC 7, then a title before any: the pwd
+        view.handlePwd("/Users/me/project") // OSC 7, then a title before any: the pwd
         view.handleTitle("/Users/me/project")
-        view.handleTitle("/Users/me")          // not the pwd any more: a real title
+        view.handleTitle(nfc)               // no longer the pwd: the program's
         view.handlePwd("")
         view.handleTitle("/Users/me/project")
-        view.handleTitle("")
-        XCTAssertEqual(recorder.titles, ["", "Agent title", "", "", "/Users/me", "/Users/me/project", ""])
-        XCTAssertEqual(GhosttySurfaceView.programTitle("/", pwd: "/"), "")
-        XCTAssertEqual(GhosttySurfaceView.programTitle("x", pwd: nil), "x")
+        XCTAssertEqual(recorder.standIns.map { Array($0.utf8) }, [Array(nfc.utf8), Array("/Users/me/project".utf8)])
+        XCTAssertEqual(recorder.shown.map { Array($0.utf8) },
+                       [nfc + "/", nfd, "Agent title", nfc, "/Users/me/project"].map { Array($0.utf8) })
+        XCTAssertFalse(GhosttySurfaceView.isStandIn("x", pwd: nil))
     }
 }

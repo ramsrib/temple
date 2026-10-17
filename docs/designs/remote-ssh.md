@@ -2509,10 +2509,13 @@ its own.
     row. The same reset gives a local tab its folder path when its agent
     clears its title, or reports a pwd (OSC 7) before any title. The view
     now tracks the terminal's pwd (the launch directory, then
-    `GHOSTTY_ACTION_PWD`) and passes a title equal to it on as no title;
-    the model ignores an empty title for the tab and the row, but still
-    counts it as tmux drawing (the startup-evidence deadline), as the
-    host-name title counted before. A row that already took such a title
+    `GHOSTTY_ACTION_PWD`) and reports a title whose UTF-8 bytes are exactly
+    the pwd's as a stand-in (`didUpdateStandInTitle`): the model treats it
+    as a title change for every activity, settle and early-close input,
+    exactly as before, and only the tab's and row's title ignore it. An
+    empty title is ignored for the tab and the row but still counts as
+    tmux drawing (the startup-evidence deadline), as the host-name title
+    counted before. A row that already took such a title
     keeps it until the agent retitles itself (generated titles overwrite;
     transcript fills are NULL-only and never replace it) or the user
     renames it; only dev and acceptance stores ran a build with the

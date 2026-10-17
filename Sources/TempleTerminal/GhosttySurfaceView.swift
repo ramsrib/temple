@@ -370,22 +370,24 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
 
     func handlePwd(_ pwd: String) { terminalPwd = pwd.isEmpty ? nil : pwd }
 
-    /// A title is the program's, never libghostty's stand-in for one: when
-    /// the program sets an empty title (it resets its own; tmux sends one
-    /// while the pane is untitled), or reports a pwd before any title,
-    /// libghostty titles the terminal with its pwd. That is this Mac's
-    /// launch directory (for a tab on a host, the home its ssh runs in),
-    /// never anything the program said, so it is passed on as no title.
-    func handleTitle(_ title: String) { onTitle?(Self.programTitle(title, pwd: terminalPwd)) }
+    /// libghostty's stand-in titles: when the program sets an empty title
+    /// (it resets its own; tmux sends one while the pane is untitled), or
+    /// reports a pwd before any title, libghostty titles the terminal with
+    /// its pwd, byte for byte. That is this Mac's launch directory (for a
+    /// tab on a host, the home its ssh runs in), never anything the program
+    /// said: it is reported apart (`onStandInTitle`), as a title change for
+    /// activity but not one to show.
+    var onStandInTitle: ((String) -> Void)?
 
-    static func programTitle(_ title: String, pwd: String?) -> String {
-        guard let pwd, !pwd.isEmpty else { return title }
-        func trimmed(_ path: String) -> String {
-            var path = path
-            while path.count > 1, path.hasSuffix("/") { path.removeLast() }
-            return path
-        }
-        return trimmed(title) == trimmed(pwd) ? "" : title
+    func handleTitle(_ title: String) {
+        if Self.isStandIn(title, pwd: terminalPwd) { onStandInTitle?(title) } else { onTitle?(title) }
+    }
+
+    /// Exactly the pwd's bytes, as libghostty copies them: no trimming, no
+    /// canonical equivalence (a title spelled another way is the program's).
+    static func isStandIn(_ title: String, pwd: String?) -> Bool {
+        guard let pwd, !pwd.isEmpty else { return false }
+        return title.utf8.elementsEqual(pwd.utf8)
     }
     func handleBell() { onBell?() }
     func handleNotification(title: String, body: String) { onNotification?(title, body) }

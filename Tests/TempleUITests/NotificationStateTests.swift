@@ -173,6 +173,31 @@ final class NotificationStateTests: XCTestCase {
         XCTAssertNil(model.pendingCloseTabID, "a focus click is not input")
     }
 
+    /// A stand-in title (libghostty's pwd for an empty one) is never shown
+    /// or kept, but it is a title change: an idle agent that wakes with one
+    /// is running again, and a close then asks (no early rest).
+    func testAStandInTitleIsActivityButNotATitle() async {
+        let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
+        model.ringGraceSeconds = -1
+        model.titleQuietWindow = 0.1
+        var recorded: [String: String] = [:]
+        model.titleHandler = { recorded[$0] = $2 }
+        model.openSession(Fixture.row("a", project: "/p/a"))
+        let tab = model.activeTab!
+        let surface = tab.surface as? FakeTerminalSurface
+        surface?.simulateTitle("Agent title")
+        surface?.simulateBell()
+        XCTAssertEqual(tab.activity, .idle)
+        surface?.simulateStandInTitle("/p/a")
+        XCTAssertEqual(tab.activity, .running, "a wake is a wake, whatever the title says")
+        XCTAssertEqual(tab.title, "Agent title")
+        XCTAssertEqual(recorded, ["a": "Agent title"])
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        model.requestClose(tabID: tab.id)
+        XCTAssertEqual(model.pendingCloseTabID, tab.id, "work it took up on its own: no early rest")
+        XCTAssertTrue(model.workingTabs.contains { $0 === tab }, "quit counts it working")
+    }
+
     func testTitleMovementPromotesIdleBackToRunning() {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.ringGraceSeconds = -1  // out of grace immediately

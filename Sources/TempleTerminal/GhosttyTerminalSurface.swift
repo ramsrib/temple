@@ -35,6 +35,10 @@ public final class GhosttyTerminalSurface: TerminalSurface {
             guard let self else { return }
             self.delegate?.surface(self, didUpdateTitle: title)
         }
+        ghosttyView.onStandInTitle = { [weak self] title in
+            guard let self else { return }
+            self.delegate?.surface(self, didUpdateStandInTitle: title)
+        }
         ghosttyView.onBell = { [weak self] in
             guard let self else { return }
             self.delegate?.surfaceDidRing(self)

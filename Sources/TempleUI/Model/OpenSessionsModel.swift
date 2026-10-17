@@ -595,6 +595,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Enter, a key that answers a prompt, a paste. It only bars an early
     /// close as at rest; it changes no activity.
     var inputSinceSpawn: Set<SessionTab.ID> = []
+    /// The last title each terminal reported, shown or not, for recency.
+    var lastReportedTitle: [SessionTab.ID: String] = [:]
     /// Last bell/notification per tab — guards the idle→running promotion.
     private var lastRing: [SessionTab.ID: Date] = [:]
     /// Pending settle timers, keyed by tab, so they can be cancelled/replaced.
@@ -882,6 +884,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         cancelSettle(for: tabID)
         activeSinceSpawn.remove(tabID)
         inputSinceSpawn.remove(tabID)
+        lastReportedTitle.removeValue(forKey: tabID)
         // Nothing a closed tab's launch reports later can reach anyone.
         tab.launchResult?.cancel()
         tab.launchResult = nil
@@ -1209,17 +1212,31 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
 
     public func surface(_ surface: TerminalSurface, didUpdateTitle title: String) {
         guard !isQuitting, let tab = tab(for: surface) else { return }
+        titleChanged(tab, raw: title, shown: true)
+    }
+
+    /// libghostty's pwd stand-in for a title (the program set an empty one,
+    /// or reported a pwd before any): a title change for every activity
+    /// signal, exactly as before, but never shown on the tab or kept on the
+    /// row (for a tab on a host it is this Mac's home).
+    public func surface(_ surface: TerminalSurface, didUpdateStandInTitle title: String) {
+        guard !isQuitting, let tab = tab(for: surface) else { return }
+        titleChanged(tab, raw: title, shown: false)
+    }
+
+    private func titleChanged(_ tab: SessionTab, raw title: String, shown: Bool) {
         // A title from a tab on a host is tmux drawing: the connection is up,
         // the empty title tmux sends while the agent has set none included.
         if tab.remote != nil { remoteTabs.titleArrived(tab) }
-        // No title (a program resetting its own, tmux's while untitled) is no
-        // title: the tab and the row keep what they have.
         guard !title.isEmpty else { return }
-        if tab.title != title, let sid = tab.sessionID { touchHandler?(sid, tab.host, nil) }
-        tab.title = title
-        // Agents retitle themselves as the work moves on, and record that title
-        // nowhere on disk — hand it up so the sidebar and ⌘K can keep it.
-        if let sid = tab.sessionID { titleHandler?(sid, tab.host, title) }
+        if (lastReportedTitle[tab.id] ?? tab.title) != title, let sid = tab.sessionID { touchHandler?(sid, tab.host, nil) }
+        lastReportedTitle[tab.id] = title
+        if shown {
+            tab.title = title
+            // Agents retitle themselves as the work moves on, and record that
+            // title nowhere on disk — hand it up so the sidebar and ⌘K can keep it.
+            if let sid = tab.sessionID { titleHandler?(sid, tab.host, title) }
+        }
         // Item E: a live-updating title means the agent is working — keep the
         // settle heuristic from prematurely idling it.
         lastTitleChange[tab.id] = Date()

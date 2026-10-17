@@ -94,6 +94,9 @@ final class FakeTerminalSurface: TerminalSurface {
         delegate?.surface(self, didPostNotification: title, body: body)
     }
     func simulateTitle(_ t: String) { delegate?.surface(self, didUpdateTitle: t) }
+    /// libghostty's pwd stand-in for a title (what the real view reports
+    /// when the title is exactly the terminal's pwd).
+    func simulateStandInTitle(_ t: String) { delegate?.surface(self, didUpdateStandInTitle: t) }
     func simulateSubmitInput() { delegate?.surfaceDidReceiveInput(self); delegate?.surfaceDidSubmitInput(self) }
     /// Input other than a plain Return (keypad Enter, a key, a paste, IME
     /// text, a drop): what the real view reports for it.
