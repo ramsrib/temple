@@ -330,7 +330,7 @@ then relaunch, turns it on.
   says so once. It never stops anything later on its own. **Sessions on
   <host>** (in Settings ▸ Hosts, in a host project heading's context menu,
   and offered by every such notice) lists every session Temple started on
-  that host and still tracks, with its state (**Open in Temple** when a tab
+  that host and still tracks, with its state (**In a tab** when a tab
   in this Temple is connected to it, **Running** when it runs without one,
   even if a terminal or another Temple is attached, or **Unknown**; the
   tmux session's name is its tooltip) and **Stop** and
@@ -359,11 +359,12 @@ then relaunch, turns it on.
   sentence, "Codex ended on <host> before Temple learned which session this
   was. Is it "<first prompt>" (<time>)?", with **Yes, that's it**, **Not
   this one** and **Start a new session** after it and **Discard** at the
-  edge; where its terminal was, the tab shows the last lines its pane
-  printed, when Temple has all of what it printed (a long session's
-  output is captured only up to 64 KiB, so its end is not known; the tab
-  then says it couldn't get what Codex showed). Answering yes closes its tab, as a local exit does, and selects
-  its row; opening the row resumes it.
+  edge (in a narrow window the answers sit on a row under the sentence);
+  where its terminal was, one line says "Codex's last screen on <host>
+  isn't kept after it ends." Answering yes closes its tab, as a local exit
+  does, and the selection follows the tab that becomes active. The
+  session's row sits at the top of its project, titled with that first
+  prompt until Codex's own title arrives; opening it resumes it.
 - **Banners.** A tab's banner puts its answers (Reconnect, Resume anyway,
   Start a new session, Yes and No) right after its sentence as small
   buttons; only Discard and Cancel sit at the trailing edge.

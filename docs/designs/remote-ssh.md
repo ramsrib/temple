@@ -655,7 +655,8 @@ and the launch-failure header apply as today when a `failed` record exists.
   the tab stays with one band, "Codex ended on <host> before Temple learned
   which session this was. Is it "<first prompt>" (<time>)?", Yes, Not this
   one and Start a new session after it and Discard at the edge (remote UX
-  round 1), the pane's last lines where its terminal was; never typed into,
+  round 1), and where its terminal was one line, "Codex's last screen on
+  <host> isn't kept after it ends." (simplification round); never typed into,
   Temple stops tracking it. The decision is made from what
   Temple observed on the connected tab; nothing on the host is asked to
   judge idleness.
@@ -691,7 +692,7 @@ heading's context menu → "Sessions on <host>…", and
 offered by every notice above): per enabled host, the sessions **Temple
 started and still tracks** there (runs not Ended), each with its row's
 title (the tmux name `temple-<handle>` as its tooltip), each asked about on
-its own pinned server, its state in a slot of its own ("Open in Temple"
+its own pinned server, its state in a slot of its own ("In a tab"
 when this Temple has a connected tab of it, "Running" otherwise, even with
 another client attached, or "Unknown"; remote UX round 1), with
 Stop / Keep (Keep clears a left-running flag, Fable's must-fix 6; a
@@ -1675,8 +1676,7 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
 3. **An agent that fails at once** (decision 3). No `remain-on-exit`. The
    pane pipes what it shows (its first 64 KiB, `pipe-pane`, started from
    inside the pane before the `exec`) to `<record>.out`; the tail comes
-   back with the records (only from a capture that never reached the cap:
-   a capped one's end is mid-session text, fix round), and a tab whose agent ended within the early
+   back with the records, and a tab whose agent ended within the early
    window shows "<agent> exited immediately on <host>." with those lines
    and the argv. The agent keeps its terminal for stdout and stderr, the
    pane pid stays the agent's, and liveness is unchanged. Measured on tmux
@@ -2046,11 +2046,7 @@ What the boxes showed, which shaped the build:
 
 Also folded in from the on-screen check of 1a: an acknowledged stop and a
 proven absence remove the run's pane output (`.out`, kept in memory for
-the diagnostics header), which the pane now creates under `umask 077`
-(except for a new Codex session that was typed into and never
-identified: its output stays on the host, 0600, until its ended question
-takes it or the run is dismissed, so that question shows what the pane
-printed even after a stop or a relaunch; remote UX round 1, fix round);
+the diagnostics header), which the pane now creates under `umask 077`;
 Return in the folder sheet starts the session (the window's key catcher
 took it for the sidebar while no tab was active: a sheet now owns every
 key); a host's project heading leads with the globe and keeps the host
@@ -2103,8 +2099,9 @@ apart from the name; every Test connection row has Show output.
    ended on <host>. Resume it to continue the conversation." with
    Resume); nothing starts until the user asks.
    Superseded by the remote UX round 1 (below): the tab closes instead,
-   as a local tab does when its agent exits, and the row is selected;
-   still nothing starts until the user opens it.
+   as a local tab does when its agent exits; still nothing starts until
+   the user opens the row (the row selection that round added was
+   removed in the simplification round).
 7. **Input evidence is kept** (ruling 5, persisted): `r5-input` adds
    `runs.input_seen_at`, written the first time a pending tab is typed
    into, so a restored chip still asks and a close keeps it.
@@ -2672,9 +2669,8 @@ changed, by finding:
 - **No ended-identified state** (UX 3). "Yes, that's it" for a Codex
   session that ended before Temple learned its id records the claim (and
   the core join) as before, then closes the tab exactly as a local exit
-  does and selects the now-identified row (`selectRowHandler`, set again
-  after the activation the close caused, as the gated completion
-  `.endedRowSelection`). The tab never becomes the
+  does. (It also selected the now-identified row; superseded by the
+  simplification round, below.) The tab never becomes the
   session's tab, so no save of the tab set holds it; the run's own
   restoration is retired once the pending tab is gone (fix round). The `endedIdentified` phase, its banner and its
   Resume are gone; opening the row resumes, nothing resumes on its own.
@@ -2685,12 +2681,10 @@ changed, by finding:
   this one bringing the next; the identity note and the `--no-daemon` hint
   stay as its captions (the hint's place waits on the owner). The pane is
   never blank: tmux's exit leaves the client's screen as it was before tmux
-  drew, so the band's tab shows, where the terminal was, the last 40 lines
-  of what the pane printed (its record's output, the end of the pane's
-  first 64 KiB, as the early-exit header has it), fetched once
-  (`.endedOutput`, a new gated completion with no run evidence: the run has
-  ended) and kept while the tab reopens; if none could be had it says
-  "Temple couldn't get what Codex showed on <host>."
+  drew, so where the terminal was the tab says so in one line. (This
+  round showed the last 40 lines of what the pane printed there instead,
+  fetched as `.endedOutput`; superseded by the simplification round,
+  below, with the reason.)
 - **Banner answers sit by their sentence** (visual 5). Every remote band
   puts its answers right after the sentence as small bordered buttons
   (Reconnect, Resume, Resume anyway, Start a new session, Sessions on
@@ -2722,7 +2716,8 @@ changed, by finding:
   tab moves to it, the row records it, and the hint goes.
 - **Copy and the Sessions sheet** (UX 7, UX 8 in part, visual 8). The
   folder sheet's field reads "Folder" (its title names the host). Sessions
-  on <host> says "Open in Temple" / "Running" / "Unknown" (nothing local
+  on <host> says "In a tab" (was "Open in Temple", which read as a button;
+  simplification round) / "Running" / "Unknown" (nothing local
   says attached), in a capsule apart from Stop and Keep; the tmux name
   `temple-<handle>` moved from a line to the title's tooltip. A host
   project heading's context menu has "Sessions on <host>…". Folding the
@@ -2746,6 +2741,10 @@ changed, by finding:
 
 
 ### Fix round (sol's review, the on-screen check, Fable's visual re-check)
+
+Superseded: the first, second and sixth bullets below (the ended output,
+its retention on the host, its cap rule) and the fourth (the row selection
+after a yes) were removed in the simplification round that follows.
 
 - **The ended output is the run's** (sol 3). The host hands a pane's
   output over once, so the fetch is kept by run (host and handle) in
@@ -2779,7 +2778,7 @@ changed, by finding:
   row selected meanwhile stays selected, even the neighbour's own row
   selected again (sol round 2: ownership by `selectionRevision`, which
   every selection but the follower's bumps, not by comparing values).
-- **"Open in Temple" is this Temple's** (sol 4). It came from tmux's
+- **"Open in Temple" (now "In a tab") is this Temple's** (sol 4). It came from tmux's
   attachment count, which counts a terminal or another Temple too. It now
   means this Temple has a connected tab of the run
   (`RemoteTabController.hasLiveTab`); any other attachment reads Running.
@@ -2796,3 +2795,65 @@ changed, by finding:
   read the segments, and it needs a reader of the pipe that never reads
   past its chunk (BSD `head -c` reads through stdio and can drop bytes at
   a boundary), proven against real tmux on macOS and Linux.
+
+### Simplification round (Fable's altitude call after three review rounds)
+
+Three review rounds (sol r1 to r3) found new problems in the same three
+places each time, and the count was not dropping: the ended band's output
+fetch (`RemoteTabController`), the host's retention of a run's `.out` for
+its question (`RemoteSessions`), and the row selection after a yes for an
+ended session (`AppModel`). Fable judged the mechanisms, not the next
+patch, and two were removed rather than fixed again.
+
+- **The preserved output is gone** (superseded: the fetch, its run-keyed
+  cache and coalescing, `.endedOutput`, `outputChecked`, the 64 KiB cap
+  rule, and on the host the keep-for-question retention and the removals
+  in Close and Discard). Reason: three review rounds of races were spent
+  keeping output nobody could read. The `pipe-pane` stream of an
+  alt-screen TUI has no lines to keep, only cursor moves, so what reached
+  the band was a run-on paragraph of spinner frames, status fragments and
+  repeated JSON (Fable's visual round 3). Where the terminal was, the band's
+  tab now says, at once and with nothing fetched, "Codex's last screen on
+  <host> isn't kept after it ends." (12 pt, tertiary, top-leading at the
+  band's 22 pt inset): a fact, not a failure, since there is nothing to try
+  again. A run's `.out` is handled for every run as it was before: an
+  acknowledged stop or a proven absence removes it, kept in memory only
+  for phase 1a's early-exit diagnostics, which are unchanged.
+- **The row selection after a yes is gone** (superseded:
+  `selectRowHandler`, `.endedRowSelection`, `selectionRevision`, the
+  follower's write flag). Reason: the highlight means "the active tab's
+  session" since the follower (visual 7). A yes that closes its tab leaves
+  no session for it to follow, so selecting the identified row gave the
+  highlight a second meaning, and each fix was a fight with the follower.
+  The tab closes and the selection follows the tab that becomes active, as
+  after a local exit; the identified row sits at the top of its project,
+  under the heading the folder hint already showed.
+- **The row's title until its own arrives.** The yes knows the candidate's
+  first prompt, so `AppModel.titleHints` holds it by session id and
+  `displayTitle` shows it while the row has no name and no title fact, so
+  the sidebar never flashes "New Codex session". Display only, never
+  written; dropped once the fill writes the title. The ended tab's terminal
+  title (for example "Reply ok | temple-ux3") is no longer pushed as the
+  session's generated title, since the fill titles the row.
+- **The ended band fits a narrow window.** `ViewThatFits` on the band row:
+  the sentence and its answers on one line when they fit, else the
+  sentence at the band's width and the answers on a leading row beneath
+  it, Discard at that row's trailing edge (no `fixedSize` or
+  `layoutPriority`, per the split view's inset rule). Host names in the
+  tab's bands carry non-breaking hyphens (U+2011, `RemoteCopy.displayHost`,
+  display only), so "masterblaster-mentes" wraps whole.
+- **"In a tab"** replaces "Open in Temple" in Sessions on <host>'s capsule:
+  a state, not an imperative. The `--no-daemon` hint was already set in
+  monospace (an attributed run), so its dashes are SF Mono's hyphens and
+  were left.
+
+Later, not now:
+
+- **A rendered last screen.** If the ended band should show what the pane
+  showed, capture the rendered screen, not the stream: either
+  `remain-on-exit on` with a `pane-died` hook that runs
+  `capture-pane -p -S -40` into the run's marker directory, fetched once,
+  or a replay through the Test connection's read-only terminal. Pick then.
+- Stripping glyphs and suffixes from terminal-derived titles (a heuristic
+  one TUI change behind; the title hint already covers ended rows), and
+  the look of an ended row over the launcher.
