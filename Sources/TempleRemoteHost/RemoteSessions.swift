@@ -1423,4 +1423,11 @@ public final class RemoteSessions {
         let now = now()
         try await write { try $0.dismissRun(handle, at: now) }
     }
+
+    /// Discard of a linked session after its run's stop: that run alone,
+    /// and only while no other run of the session is live or newer.
+    public func dismissStoppedRun(_ handle: String, sessionID: String) async throws -> Bool {
+        let now = now()
+        return try await write { try $0.dismissStoppedRun(handle, sessionID: sessionID, at: now) }
+    }
 }

@@ -304,7 +304,8 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertFalse(model.tabs.contains { $0 === tab })
         XCTAssertTrue(surface.didTerminate, "Temple's client goes first")
         await settle(self.remote.stops.map(\.handle) == ["p1"], "the agent is stopped")
-        await settle(self.remote.discarded == ["c7"])
+        await settle(self.remote.stoppedRunDismissals == ["p1"], "that run alone is dismissed")
+        XCTAssertTrue(remote.discarded.isEmpty, "never every run of the session")
         await settle(discards == ["c7"], "the row is let go (or archived) under its membership")
 
         remote.stopResult = .leftRunning(.anotherClientAttached, detail: nil)
@@ -315,7 +316,50 @@ final class RemoteCodexIdentityTests: XCTestCase {
         model.remoteTabs.discard(second)
         await settle(self.notices.count == 1, "left running, said")
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(remote.discarded, ["c7"], "kept and listed: nothing discarded")
+        XCTAssertEqual(remote.stoppedRunDismissals, ["p1"], "kept and listed: nothing dismissed")
+        XCTAssertEqual(discards, ["c7"])
+    }
+
+    /// The session is reopened while Discard's stop completes: a newer live
+    /// run exists, so nothing is dismissed and the row stays (the store
+    /// checks in the dismissal's own transaction).
+    func testDiscardKeepsASessionReopenedDuringItsStop() async throws {
+        var discards: [String] = []
+        model.remoteTabs.discardHandler = { id, _, _ in discards.append(id) }
+        model.remoteTabs.rowIncarnation = { _ in "inc" }
+        remote.suggestionsResult = .candidates([suggestion()])
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(tab.remote?.linkedOnItsOwn == true)
+        let hold = Gate()
+        remote.stopGate = { _ in await hold.wait() }
+        model.remoteTabs.discard(tab)
+        await settle(self.remote.stops.count == 1)
+        // Reopened from its row meanwhile: a new live run of c7.
+        remote.runs.append(.init(handle: "h9", sessionID: "c7", resume: true))
+        await hold.open()
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(remote.stoppedRunDismissals.isEmpty, "the newer run keeps the session")
+        XCTAssertTrue(discards.isEmpty, "its row stays")
+    }
+
+    /// An automatic yes that can't be written says why and asks: it is not
+    /// tried again on its own, and a yes then works.
+    func testAnAutomaticYesThatCannotBeWrittenAsksAndRecovers() async throws {
+        remote.identityResult = .inconclusive("shared server", lasting: true, ended: false)
+        remote.confirmResult = .storage("disk full")
+        remote.suggestionsResult = .candidates([suggestion()])
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(tab.remote?.suggestions.count == 1, "the question")
+        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.unrecorded("box", detail: "disk full"), "the failure is said")
+        let lookups = remote.suggestionLookups.count
+        await settle(self.remote.suggestionLookups.count > lookups + 1)
+        XCTAssertEqual(remote.automaticConfirms.count, 1, "not tried again on its own")
+        remote.confirmResult = nil
+        model.remoteTabs.confirm(try XCTUnwrap(tab.remote?.suggestions.first), in: tab)
+        await settle(tab.sessionID == "c7", "the user's yes recovers")
+        XCTAssertNotEqual(tab.remote?.linkedOnItsOwn, true, "a yes of the user's: no note")
     }
 
     /// Once asked, the tab is never bare: with the last candidate declined
@@ -1010,8 +1054,13 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertTrue(RemoteCopy.suggestionQuestion(unread).hasPrefix("Is this the session? First prompt unreadable, started "))
         XCTAssertFalse(RemoteCopy.suggestionQuestion(unread).contains("No prompt yet"))
         XCTAssertEqual(RemoteCopy.linkedOnItsOwn(suggestion()),
-                       "Linked on its own to \u{201C}reply with the word ok\u{201D}. Use Discard if it\u{2019}s the wrong session.")
-        XCTAssertTrue(RemoteCopy.linkedOnItsOwn(unread).hasPrefix("Linked on its own to the Codex session started "))
+                       "Linked to \u{201C}reply with the word ok\u{201D}, the only Codex session started in this folder. "
+                       + "If that\u{2019}s wrong, Discard stops it and removes it from Temple.")
+        let noon = Calendar.current.date(bySettingHour: 15, minute: 12, second: 0, of: Date())!
+        let timed = RemoteSuggestion(rolloutPath: "/r", sessionID: "x", firstPrompt: nil, startedAt: noon, directory: "/w")
+        XCTAssertEqual(RemoteCopy.linkedOnItsOwn(timed, now: noon),
+                       "Linked to the Codex session started \(RemoteCopy.startTime(noon, now: noon)), the only one started in this folder. "
+                       + "If that\u{2019}s wrong, Discard stops it and removes it from Temple.")
         XCTAssertEqual(RemoteCopy.noDaemonHint,
                        "Add --no-daemon to Codex's arguments above and Temple identifies each new Codex session on a host on its own.")
         let copy = [RemoteCopy.codexEndedPending("box"), RemoteCopy.couldNotTell, RemoteCopy.noDaemonHint,

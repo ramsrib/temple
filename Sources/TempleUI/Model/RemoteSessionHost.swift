@@ -286,6 +286,10 @@ public protocol RemoteSessionHost: HostLauncher {
     func closePendingTab(_ handle: String) async throws
     /// Discard of a pending run.
     func dismissRun(_ handle: String) async throws
+    /// Discard of a session Temple linked on its own, after its run's
+    /// confirmed stop: that run alone, and only while no other run of the
+    /// session is live or newer (checked in one transaction). Whether it was.
+    func dismissStoppedRun(_ handle: String, sessionID: String) async throws -> Bool
     /// Something was typed into the run's tab.
     func recordInput(_ handle: String) async throws
     /// The run store itself, for an obligation to hold (nil when it can't
@@ -604,11 +608,14 @@ public enum RemoteCopy {
     public static let suggestionNo = "Not this one"
 
     /// The note a tab shows when Temple said yes on its own to the lone
-    /// candidate: display only; Discard corrects a wrong one.
+    /// candidate: why (the only one), and what Discard does (Fable's copy).
     public static func linkedOnItsOwn(_ suggestion: RemoteSuggestion, now: Date = Date()) -> String {
-        let subject = suggestion.firstPrompt.map { "\u{201C}\($0)\u{201D}" }
-            ?? "the Codex session started \(startTime(suggestion.startedAt, now: now))"
-        return "Linked on its own to \(subject). Use Discard if it\u{2019}s the wrong session."
+        let fix = "If that\u{2019}s wrong, Discard stops it and removes it from Temple."
+        if let prompt = suggestion.firstPrompt {
+            return "Linked to \u{201C}\(prompt)\u{201D}, the only Codex session started in this folder. \(fix)"
+        }
+        return "Linked to the Codex session started \(startTime(suggestion.startedAt, now: now)), "
+            + "the only one started in this folder. \(fix)"
     }
 
     /// A run whose id another session started from Temple already holds.

@@ -359,9 +359,10 @@ it. What follows appears for an enabled host only.
   matches, you have typed into the tab, and Temple has not asked about it
   (nor have you declined a candidate for it, even before a relaunch),
   Temple says yes on its own, exactly as you would, and the tab says so
-  in one line: "Linked on its own to “<first prompt>”. Use Discard if
-  it’s the wrong session.", with **Discard**, which stops the session on
-  the host and removes it from Temple, as a Discard does. With two or more,
+  in one line: "Linked to “<first prompt>”, the only Codex session started
+  in this folder. If that’s wrong, Discard stops it and removes it from
+  Temple.", with **Discard**, which stops the session on the host and
+  removes it from Temple (to History, if you named, pinned or colored it). With two or more,
   or once it has asked, the tab asks: "Is this the session?" with the first
   prompt, the time and the folder, and **Yes, that's it** or **Not this
   one**; with the last one declined, it says Temple couldn't tell which

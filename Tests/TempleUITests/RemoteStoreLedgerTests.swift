@@ -49,4 +49,31 @@ final class RemoteStoreLedgerTests: XCTestCase {
         XCTAssertEqual(try store.claim("p2", sessionID: "c8", how: .confirmed, rolloutPath: "/r/c8.jsonl"), .claimed,
                        "the user's own yes still claims")
     }
+
+    /// Discard of a linked session dismisses the stopped run alone, and
+    /// nothing while another run of the session is live or newer.
+    func testDismissingAStoppedRunSparesANewerOne() throws {
+        let directory = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("temple-dismiss-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let box = HostID(rawValue: "box")
+        let store = try RemoteStateStore(directory: directory)
+        func insert(_ handle: String, at seconds: TimeInterval, ended: Bool) throws {
+            var run = RemoteRun(handle: handle, host: box, agent: .codex, mode: .resume, directoryIntent: "~", sessionID: "c7",
+                                recordPath: RecordDirectory.locator(marker: "r-\(handle)"),
+                                startedAt: Date(timeIntervalSince1970: seconds))
+            if ended { run.endedAt = Date(timeIntervalSince1970: seconds + 1) }
+            try store.insert(run)
+        }
+        try insert("old", at: 100, ended: true)
+        try insert("p1", at: 200, ended: true)
+        try insert("h9", at: 300, ended: false)
+        XCTAssertFalse(try store.dismissStoppedRun("p1", sessionID: "c7", at: Date()), "a newer live run keeps it")
+        XCTAssertNil(try store.run("p1")?.dismissedAt)
+        try store.dismissRun("h9", at: Date())
+        XCTAssertTrue(try store.dismissStoppedRun("p1", sessionID: "c7", at: Date()))
+        XCTAssertNotNil(try store.run("p1")?.dismissedAt)
+        XCTAssertNil(try store.run("old")?.dismissedAt, "only the stopped run")
+    }
 }

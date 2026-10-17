@@ -399,12 +399,17 @@ claim `how: .automatic`, the same recheck at decision time, uniqueness and
 core join; a run that ended meanwhile concludes as a yes does, `.known` is
 simply the session, and a failed claim asks the question). The only
 addition is a display-only note in the tab, gated with the rest of the
-tab's part ("Linked on its own to “<first prompt>”. Use Discard if it’s
-the wrong session."). A wrong one is corrected by Discard: the agent is
-stopped first (Temple's client, then the one-command stop), and a
-confirmed stop goes on to the existing Discard (runs dismissed, the row let
-go or archived under its incarnation); a stop Temple can't confirm leaves
-it running and listed, nothing discarded. "Asked" is the question shown
+tab's part ("Linked to “<first prompt>”, the only Codex session started
+in this folder. If that’s wrong, Discard stops it and removes it from
+Temple.", or "the Codex session started <time>, the only one started in
+this folder" with no prompt). A wrong one is corrected by Discard: the
+agent is stopped first (Temple's client, then the one-command stop), and
+a confirmed stop dismisses that run alone (`dismissStoppedRun`, one
+immediate transaction, refused while another run of the session is live
+or newer, as after a reopen during the stop) before the row is let go or
+archived under its incarnation; a stop Temple can't confirm leaves it
+running and listed, nothing discarded. An automatic yes that can't be
+written says why and asks; it is not tried again on its own. "Asked" is the question shown
 this launch (memory, per handle) or any declined candidate for the run,
 which the claim's own transaction checks: the only durable decline is a
 decline. An ended tab, two or more candidates, an untyped run, or a run

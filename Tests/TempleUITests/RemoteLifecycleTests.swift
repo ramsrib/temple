@@ -354,6 +354,19 @@ final class FakeRemoteHost: RemoteSessionHost {
     var dismissRunError: Error?
     var dismissRunGate: (() async -> Void)?
     private(set) var dismissedRuns: [String] = []
+    /// As the store's transaction: the stopped run alone, refused while
+    /// another run of the session is live.
+    private(set) var stoppedRunDismissals: [String] = []
+    func dismissStoppedRun(_ handle: String, sessionID: String) async throws -> Bool {
+        if runs.contains(where: { $0.sessionID == sessionID && $0.handle != handle && !$0.dismissed && !$0.ended }) {
+            return false
+        }
+        stoppedRunDismissals.append(handle)
+        if let index = runs.firstIndex(where: { $0.handle == handle }) { runs[index].dismissed = true }
+        if let index = pending.firstIndex(where: { $0.handle == handle }) { pending[index].dismissed = true }
+        return true
+    }
+
     func dismissRun(_ handle: String) async throws {
         dismissedRuns.append(handle)
         if let dismissRunGate { await dismissRunGate() }

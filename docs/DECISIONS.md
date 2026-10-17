@@ -2208,10 +2208,12 @@ rows ("Removing remote", below).
   says yes on its own (owner, round 2), through the yes's exact path
   (`confirm`, a claim `how: .automatic`, the same recheck, uniqueness and
   core join; a run that ended meanwhile concludes as a yes does). The only
-  addition is a display-only note in the tab, "Linked on its own to
-  “<first prompt>”. Use Discard if it’s the wrong session.", and a wrong
-  one is corrected by **Discard** (the agent stopped first, then the
-  session's runs dismissed and its row let go or archived as a Discard
+  addition is a display-only note in the tab, "Linked to “<first
+  prompt>”, the only Codex session started in this folder. If that’s
+  wrong, Discard stops it and removes it from Temple.", and a wrong one
+  is corrected by **Discard** (the agent stopped first; then that run
+  alone is dismissed, in one transaction and only while no newer or live
+  run of the session exists, and the row let go or archived as a Discard
   does). "Asked" is the question shown this launch, or any declined
   candidate for the run, which the claim's own transaction checks, so a
   decline holds across relaunches. Two or more, an ended tab, or once

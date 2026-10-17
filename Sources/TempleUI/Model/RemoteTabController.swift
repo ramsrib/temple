@@ -519,7 +519,22 @@ public final class RemoteTabController {
                 if self.gate.admit(.closeStopNotice, ticket) { self.notice(result, host: host, hostID: hostID, agent: agent) }
                 return
             }
-            self.operations.run(host: hostID, .write) { await discardSession() }
+            // Only the run whose stop was proven is dismissed, and only
+            // while the session has no other live or newer run (a reopen
+            // during the stop): then the session is the user's again and
+            // its row stays.
+            self.operations.run(host: hostID, .write) { [weak self] in
+                do {
+                    guard try await host.dismissStoppedRun(handle, sessionID: sid) else {
+                        TempleUILog.remote.notice("Discard of \(sid, privacy: .public) kept: a newer run is open")
+                        return
+                    }
+                    if let incarnation { try disposition?(sid, hostID, incarnation) }
+                } catch {
+                    guard let self, self.gate.admit(.discardNotice, ticket) else { return }
+                    self.noticeHandler?(hostID, RemoteCopy.unrecorded(host.hostName, detail: error.localizedDescription))
+                }
+            }
         }
     }
 
@@ -1296,6 +1311,12 @@ public final class RemoteTabController {
                 guard self.gate.admit(.confirmResult, ticket), let tab = ticket.tab else { return }
                 tab.remote?.confirming = nil
                 tab.remote?.identityNote = RemoteCopy.unrecorded(host.hostName, detail: detail)
+                // Temple's own yes is not tried again: the question, with
+                // the failure said above it.
+                if automatic {
+                    self.asked.insert(handle)
+                    await self.loadSuggestions(ticket, host: host, handle: handle)
+                }
             }
         }
     }
