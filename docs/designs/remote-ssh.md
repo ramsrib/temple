@@ -556,8 +556,10 @@ temple-check-<nonce> -f /dev/null <the same configure commands> \;
 new-session -d -s check -c "$HOME" -e PATH="$PATH" 'exit 0' \;
 kill-server`, stderr captured. Attached (as built, the Linux acceptance's,
 not the sheet's; phase 0 note 2): the acceptance launches and attaches a
-real session through Temple's own chain and checks, inside the pane, `TERM`
-and `tput -T "$TERM" colors`, so an attached client under
+real session through Temple's own chain, reads the attached client's
+`client_termname` from tmux and the pane's `TERM` from its
+`/proc/<pid>/environ`, and runs `tput -T xterm-256color colors` and
+`tput -T tmux-256color colors` on the host, so an attached client under
 `TERM=xterm-256color` outside and `tmux-256color` inside is proven on that
 host; it then stops the session. The detached check passes only when
 every command the launcher will send is accepted; the row shows tmux's own
@@ -2481,8 +2483,9 @@ its own.
   folders differ only in normalization are two suggestions: declining one
   leaves the other and declines only its bytes.
 - **Approved for push** (Fable, final read) with one wording change: a
-  read over the budget says "this session's <part> are larger than Temple
-  reads: <n> bytes, limit <budget>".
+  read over the budget says "this session is larger than Temple reads (at
+  its <part>): <n> bytes in all, limit <budget>" (the total so far, not the
+  part's own size; Opus's review).
 - **To decide in phase 3, not leave to a later round:** core's
   `TranscriptLocator` equality and `TranscriptCandidates.assign` still
   compare `String`s. Rounds 2 to 4 all landed on path comparison; the
