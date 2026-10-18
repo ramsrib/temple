@@ -1087,7 +1087,7 @@ public final class RemoteTabController {
             return
         }
         if !tab.title.isEmpty, tab.title != tab.agent.newSessionTitle { model.titleHandler?(id, hostID, tab.title) }
-        becomeSession(tab, id: id, host: host)
+        guard becomeSession(tab, id: id, host: host) else { return }
         // Temple's own yes says so, in the tab only.
         if let linked {
             tab.remote?.identityNote = RemoteCopy.linkedOnItsOwn(linked)
@@ -1117,7 +1117,20 @@ public final class RemoteTabController {
 
     /// The tab is that session from here on: in `open_tabs`, so its run is
     /// no longer restored from the runs (handed over, durably).
-    private func becomeSession(_ tab: SessionTab, id: String, host: RemoteSessionHost) {
+    private func becomeSession(_ tab: SessionTab, id: String, host: RemoteSessionHost) -> Bool {
+        if let canonical = model.tabs.first(where: { $0 !== tab && $0.kind == .session && $0.host == tab.host && $0.sessionID == id }) {
+            // The session was opened while this claim was out. That newer tab
+            // owns its attachment and recovery; only this redundant client goes.
+            if let operation = tab.remote?.identityOperation { operations.cancel(id: operation) }
+            tab.remote?.identityOperation = nil
+            if tab.hasLiveProcess, let surface = tab.surface {
+                model.closingTabIDs.insert(tab.id)
+                surface.terminate()
+            }
+            model.removeTab(tab.id)
+            model.activate(canonical)
+            return false
+        }
         tab.sessionID = id
         tab.isProvisional = false
         // A claimed id has a conversation (a session file): a later open
@@ -1133,6 +1146,7 @@ public final class RemoteTabController {
         // Handed over only once the tab set is written: until then the run
         // is what restores this tab (round 2).
         if let handle = tab.remote?.handle { handOver(tab, handle: handle, host: host) }
+        return true
     }
 
     /// The run now restores through `open_tabs`: its own restoration is

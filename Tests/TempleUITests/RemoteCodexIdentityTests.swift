@@ -1079,6 +1079,33 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertTrue(store.saved.contains { $0.sessionID == "c9" })
     }
 
+    func testV11TheNewerSessionTabIsCanonicalWhenAnOldClaimArrives() async throws {
+        let pending = try await askingTab()
+        let client = try XCTUnwrap(pending.surface as? FakeTerminalSurface)
+        let hold = Gate()
+        remote.confirmGate = { await hold.wait() }
+        model.remoteTabs.confirm(suggestion(), in: pending)
+        await settle(self.remote.confirms.count == 1)
+        let row = Fixture.row("c7", agent: .codex, project: "/home/u/project", host: hostID)
+        model.openSession(row)
+        let canonical = try XCTUnwrap(model.tabs.first { $0.sessionID == "c7" })
+        await settle(canonical.hasLiveProcess)
+        let currentClient = try XCTUnwrap(canonical.surface as? FakeTerminalSurface)
+        await hold.open()
+        let finished = await model.remoteTabs.operations.waitForAll(until: Date().addingTimeInterval(3))
+        // The pending tab's schedule is cancelled once its claim settles.
+        XCTAssertTrue(finished)
+        XCTAssertEqual(model.tabs.filter { $0.sessionID == "c7" }.count, 1)
+        XCTAssertFalse(model.tabs.contains { $0 === pending })
+        XCTAssertEqual(model.activeTabID, canonical.id)
+        XCTAssertTrue(client.didTerminate)
+        XCTAssertFalse(currentClient.didTerminate)
+        XCTAssertTrue(remote.stops.isEmpty, "only the redundant client goes")
+        XCTAssertFalse(model.remoteTabs.owesHandOver("p1"))
+        XCTAssertFalse(remote.ledgerWrites.contains("p1"))
+        XCTAssertEqual(persistence.load().filter { $0.sessionID == "c7" }.count, 1)
+    }
+
     func testV8RetiringAHostClearsAnEndedQuestionsBusyState() async throws {
         remote.pending = [.init(handle: "p8", directory: "/home/u/project", ended: true, typed: true)]
         remote.suggestionsResult = .candidates([suggestion()])
