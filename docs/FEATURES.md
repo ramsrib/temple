@@ -418,11 +418,11 @@ it. What follows appears for an enabled host only.
   (nor have you declined a candidate for it, even before a relaunch), and
   no other new Codex session Temple started in that folder is still
   unidentified, Temple says yes on its own, exactly as you would, and the
-  tab says so in one line: "Linked this tab to “<first prompt>”, the only
-  Codex session started in this folder since the tab opened." If that is the
-  wrong session, close the tab: an idle agent is stopped,
-  a working one asks Detach, Stop or Cancel, and the session's row stays in
-  the sidebar until you archive it. With two or more, or once it has asked, the tab
+  tab says: "Linked this tab to “<first prompt>”, the only Codex session
+  started in this folder since the tab opened. If that's the wrong session,
+  close this tab; the session keeps its row in the sidebar." Closing the tab
+  works as usual: an idle agent is stopped, a working one asks Detach, Stop
+  or Cancel, and the session's row stays in the sidebar until you archive it. With two or more, or once it has asked, the tab
   says "Codex picks its own session id, so Temple can't tell which session
   this tab is." and asks: "Is this the session?" with the first prompt, the
   folder's full path and when it started (relative to the tab, "4 s after

@@ -401,16 +401,14 @@ claim `how: .automatic`, the same recheck at decision time, uniqueness and
 core join; a run that ended meanwhile concludes as a yes does, `.known` is
 simply the session, and a failed claim asks the question). The only
 addition is a display-only note in the tab, gated with the rest of the
-tab's part ("Linked to “<first prompt>”, the only Codex session started
-in this folder since this tab opened. If that’s wrong, Discard stops it and
-removes it from Temple.", or "the Codex session started <time>, the only
-one started in this folder since this tab opened" with no prompt). A wrong one is corrected by Discard: the
-agent is stopped first (Temple's client, then the one-command stop), and
-a confirmed stop dismisses that run alone (`dismissStoppedRun`, one
-immediate transaction, refused while another run of the session is live
-or newer, as after a reopen during the stop) before the row is let go or
-archived under its incarnation; a stop Temple can't confirm leaves it
-running and listed, nothing discarded. An automatic yes that can't be
+tab's part ("Linked this tab to “<first prompt>”, the only Codex session
+started in this folder since the tab opened.", or "the Codex session
+started <time>, the only one started in this folder since the tab opened"
+with no prompt). Both variants add: "If that's the wrong session, close
+this tab; the session keeps its row in the sidebar." There is no undo or
+special dismissal. Closing the tab works as usual: an idle agent is
+stopped, a working one asks Detach, Stop or Cancel, and the row stays in
+the sidebar until a person archives it. An automatic yes that can't be
 written says why and asks; it is not tried again on its own. "Asked" is the question shown
 this launch (memory, per handle) or any declined candidate for the run,
 which the claim's own transaction checks: the only durable decline is a
@@ -2132,7 +2130,7 @@ What the boxes showed, which shaped the build:
     makes two claims of one id impossible; runs of one session that are
     its resumes stay allowed (astra's implementation note 1). The core
     join follows the claim; it is durable work like the claim (only the
-    quit defers it); a refusal (`hostConflict`, `agentConflict`) releases
+    quit defers it); a refusal (`hostConflict`, `agentConflict`) keeps
     the claim and the tab shows core's reason; a join is marked
     (`joined_at`), and the next launch joins every claim that was not
     (reconciliation step one). A session whose runs all ended resumes on
@@ -2213,9 +2211,10 @@ round 2: `@host` on the heading's own line, section 7); every Test connection ro
    own transaction. The home keeps a trailing newline (`pwd -P` with a
    sentinel).
 4. **Joins by outcome.** Only a join core wrote is marked (`joined_at`); a
-   refusal releases the claim with core's reason; a failed write leaves the
-   claim unjoined for the next check and the next launch, and the schedule
-   keeps checking until the tab is the session.
+   refusal keeps the claim with core's reason and is remembered for this
+   launch, without retrying the join on schedule. Try again or removal of
+   the conflicting row permits another attempt. A failed write leaves the
+   claim unjoined for the next check and the next launch.
 5. **Quit** (ruling 3): pending runs follow phase 1a (working detached,
    idle stopped). Stopped, a run typed into keeps its ended record for the
    question after relaunch; one never typed into is let go. A failed stop
@@ -2266,8 +2265,8 @@ the dark-mode tmux contrast check is for the hands-on pass (Fable 7).
 3. **Restore follows reconciliation.** At launch the unjoined claims are
    joined first; a claimed run comes back as that session's chip only when
    core holds it (joined now or before), and otherwise by its handle as a
-   pending chip (a refusal released it; a failed write left it claimed,
-   joined again when it is opened). A run is handed over (`tab_closed_at`)
+   pending chip (a refusal or a failed write left it claimed; a refusal
+   is remembered for this launch). A run is handed over (`tab_closed_at`)
    only once the tab set is acknowledged as written
    (`TabPersistence.saveAcknowledged`; local saves behave as before).
 4. **Input evidence.** `r5-input` marks runs from before it with the epoch:
@@ -3040,8 +3039,9 @@ and the sections above say so where they changed.
 
 ### Round 2 visual review (Fable and Opus on the screenshots)
 
-- The linked band's Discard sits right after its sentence as a small
-  bordered button, as the question's answers do.
+- **Superseded (2026-10-18):** the linked band's Discard button was removed.
+  The linked note now says to close a wrong link as any tab; its session
+  keeps its row in the sidebar.
 - A candidate's start reads relative to the tab's open ("started 4 s after
   this tab opened", whole minutes past one; the start, on the host's
   clock, is moved by the offset the lookup measured (Sol round 6); the
@@ -3392,24 +3392,25 @@ archived row's chip; the person's next activation brings that row back.
 The cut removes the four archive/restore/notice callbacks, declined
 candidate lines, undo copy and tests covering only those paths.
 `dismissStoppedRun`, already unused by Discard, is removed separately.
-There is no attachment fence: after the cut, a claim can be released only
-when core refuses its join. That refusal now awaits release before it is
-recorded or shown. A small in-memory set excludes identity checks, new
-confirmations and already-outstanding acquisition results while release
-is in flight: final review found that an independent `.known` could
-otherwise join the held id if its core conflict disappeared before the
-release committed. A transient acquisition epoch also invalidates results
-that started before refusal but arrive after release, even if Try again
-has since cleared the refusal. Exit, Stop and pending-open adoption carry
-the same snapshot. This closes V5r's overlapping-check window without a
-durable claim fence. Joined claims cannot cycle through unlink/relink, so
-no durable claim generation, hand-over id or remote schema field is needed. The migrations still end at `r5-input`.
+
+**V5r simplified (owner, 2026-10-18):** core refusing a join leaves the
+remote claim in place, both during adoption and launch reconciliation.
+The tab says core's existing conflict reason and its confirmation is no
+longer busy. Reconciliation remembers the refusal, so it does not loop
+on it this launch. This session-id conflict with an incompatible row is
+practically impossible for real Codex ids. The release-on-refusal calls,
+`releasingClaims` and `acquisitionEpoch` are deleted, replacing the
+release exclusion/epoch design previously described here. There is no
+later release to clobber an acquisition. Joined claims cannot cycle
+through unlink/relink, so no durable claim generation, hand-over id or
+remote schema field is needed. The migrations still end at `r5-input`.
 
 The retained fixes each have one focused regression in an existing
 suite: V1 passes the verified rollout path to the claim's decline check;
 V7 retires an ended joined answer without restoring a resumable chip;
 V8 clears pending busy state at host retirement; V9 shows the first
-unavailable lookup using the existing failure text; V10 rejects a stale
+unavailable lookup and offers Try again through explicit tab state,
+independent of displayed copy; V10 rejects a stale
 open before assigning a lookup generation; V12 distinguishes an unreadable run from a missing
 row when looking for candidates. A successfully persisted decline holds
 even if Codex's process later proves that rollout's identity.
