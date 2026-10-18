@@ -3371,3 +3371,16 @@ cold read of the real screens, as built:
   adoption passing no time) and #3 (`restorePending` recreating an
   archived row's chip) are closed by construction; #2 (two reads) and #4
   (millisecond against fractional-second times) went with the column.
+- *Region I frozen* (2026-10-18, after Sol round 8). Region I, the remote
+  Codex identity lifecycle (Not this one, unlink, claim, decline, archive,
+  saved-tab restore, lookup), had review findings in eight consecutive
+  rounds, and the ledger's pre-committed bound fired. Region I is under a
+  design change, decided in
+  /private/tmp/temple-remote-work/ux3/rev/consult-fable.md (cut the
+  automatic archive and Link it after all, fence the durable effects with
+  the run's `attachment`, then fix what remains locally). No point fixes
+  go into region I until the model test (`RemoteIdentityModelTests`, the
+  enumeration's section 7) exists and its targeted traces fail on the
+  current code. The ledger is
+  /private/tmp/temple-remote-work/ux3/rev/ledger.md and the enumeration
+  /private/tmp/temple-remote-work/ux3/rev/enum/table.md.
