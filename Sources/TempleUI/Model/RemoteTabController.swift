@@ -1632,9 +1632,16 @@ public final class RemoteTabController {
                 guard let self else { return }
                 let joined = await self.reconcile(host: host, hostID: hostID)
                 let runs = await host.pendingRuns()
-                guard !runs.isEmpty, self.gate.admit(.pendingRestore, ticket) else { return }
                 for run in runs where !self.model.tabs.contains(where: { $0.host == hostID && $0.remote?.handle == run.handle }) {
+                    guard self.gate.admit(.pendingRestore, ticket) else { return }
                     if let id = run.sessionID, run.joined || joined.contains(run.handle) {
+                        if run.ended {
+                            // An ended answer records the row, never intent to resume it.
+                            do { try await host.runLedger()?.markTabClosed(run.handle, sessionID: id) } catch {
+                                TempleUILog.db.error("ended claim restoration not retired: \(error.localizedDescription, privacy: .public)")
+                            }
+                            continue
+                        }
                         let chip = self.model.tabs.first(where: { $0.sessionID == id })
                             ?? self.model.appendClaimedChip(host: hostID, sessionID: id, directory: run.directory)
                         self.handOver(chip, handle: run.handle, host: host)

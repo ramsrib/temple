@@ -1039,6 +1039,33 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertTrue(store.saved.contains { $0.sessionID == "c9" })
     }
 
+    func testV7AnEndedJoinedAnswerRetiresItsRestorationWithoutAChip() async throws {
+        let store = try RemoteStateStore()
+        var run = RemoteRun(handle: "p7", host: hostID, agent: .codex, mode: .new,
+                            directoryIntent: "/home/u/project", sessionID: nil, recordPath: "r-p7", startedAt: Date())
+        run.creation = .proven
+        run.endedAt = Date()
+        try store.insert(run)
+        _ = try store.claim("p7", sessionID: "c7", how: .confirmed)
+        try store.markJoined("p7", at: Date())
+        remote.ledgerOverride = RemoteStoreLedger(store: store)
+        remote.pendingRunsAnswer = {
+            (try! store.pendingRuns(host: self.hostID)).map {
+                RemotePendingRun(handle: $0.handle, directory: $0.directoryIntent, ended: $0.isEnded,
+                                 sessionID: $0.sessionID, typed: true, joined: $0.joinedAt != nil)
+            }
+        }
+        model.remoteTabs.restorePending(hosts: [hostID])
+        await settle((try? store.run("p7")?.tabClosedAt) != nil)
+        XCTAssertTrue(model.tabs.isEmpty, "an ended answer must not become a resumable chip")
+        XCTAssertTrue(persistence.load().isEmpty)
+        makeModel()
+        model.remoteTabs.restorePending(hosts: [hostID])
+        let drained = await model.remoteTabs.operations.waitForAll(until: Date().addingTimeInterval(3))
+        XCTAssertTrue(drained)
+        XCTAssertTrue(model.tabs.isEmpty, "the durable mark also covers the next launch")
+    }
+
     /// At launch, reconciliation decides each claimed run's chip (round 2):
     /// joined, that session's chip, then handed over; refused, released and
     /// restored by its handle as pending; failed, claimed but unjoined,

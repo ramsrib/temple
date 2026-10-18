@@ -273,7 +273,8 @@ final class FakeRemoteHost: RemoteSessionHost {
             if let index = host.pending.firstIndex(where: { $0.handle == handle }) { host.pending[index].tabClosed = true }
         }
     }
-    func runLedger() -> RemoteRunLedger? { Ledger(self) }
+    var ledgerOverride: RemoteRunLedger?
+    func runLedger() -> RemoteRunLedger? { ledgerOverride ?? Ledger(self) }
 
     private(set) var inputs: [String] = []
     /// How many input writes fail before one is written.
@@ -360,9 +361,11 @@ final class FakeRemoteHost: RemoteSessionHost {
     var unjoined: [(handle: String, sessionID: String, directory: String?)] = []
     func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)] { unjoined }
 
+    var pendingRunsAnswer: (() -> [RemotePendingRun])?
     var pendingRunsGate: (() async -> Void)?
     func pendingRuns() async -> [RemotePendingRun] {
         if let pendingRunsGate { await pendingRunsGate() }
+        if let pendingRunsAnswer { return pendingRunsAnswer() }
         return pending.filter { ($0.sessionID == nil || $0.claimed) && !$0.dismissed && !$0.tabClosed }
             .map { RemotePendingRun(handle: $0.handle, directory: $0.directory, ended: $0.ended,
                                     sessionID: $0.claimed ? $0.sessionID : nil, typed: $0.typed, joined: $0.joined) }
