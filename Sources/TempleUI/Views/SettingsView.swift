@@ -488,16 +488,8 @@ struct SettingsView: View {
                 .accessibilityLabel("Clear")
             }
         }
-        .padding(.leading, centered ? 6 : 9)
-        .padding(.trailing, centered ? 6 : 8)
-        .frame(height: 28)
-        .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(Palette.accent.opacity(0.5), lineWidth: 2)
-                .padding(-2)
-                .opacity(focused == field ? 1 : 0)
-        }
+        // The one field chrome, shared with the remote sheets.
+        .templeFieldChrome(focused: focused == field, leading: centered ? 6 : 9, trailing: centered ? 6 : 8)
     }
 
     /// Whether the field's placeholder is what Temple will use (the detected
