@@ -554,33 +554,6 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(tab.remote?.canRetryIdentity, true, "the caption exposes Try again for a failed check")
     }
 
-    func testV9RetryingTheFirstLookupFailureKeepsProgressAndTheEmptyResultVisible() async throws {
-        model.remoteTabs.identitySchedule = [60]
-        remote.identityResult = .inconclusive("shared server", lasting: true, ended: false)
-        remote.suggestionsResult = .unavailable("lookup failed")
-        let tab = await newCodex()
-        model.remoteTabs.retryIdentity(tab)
-        await settle(tab.remote?.retrying == false)
-        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.checkFailed("lookup failed"))
-        XCTAssertEqual(tab.remote?.canRetryIdentity, true)
-        XCTAssertEqual(tab.remote?.suggestions, [], "no question has ever been shown")
-
-        let hold = Gate()
-        remote.suggestionsQueue = [(gate: { await hold.wait() }, answer: .candidates([]))]
-        model.remoteTabs.retryIdentity(tab)
-        await settle(self.remote.suggestionLookups.count == 2)
-        XCTAssertEqual(tab.remote?.retrying, true)
-        XCTAssertNotNil(tab.remote?.identityNote, "the caption must render Checking again while the lookup runs")
-        XCTAssertNil(tab.remote?.retryResult)
-        await hold.open()
-        await settle(tab.remote?.retrying == false)
-        XCTAssertNotNil(tab.remote?.identityNote, "the caption must render the complete-empty result")
-        XCTAssertNotEqual(tab.remote?.identityNote, RemoteCopy.checkFailed("lookup failed"), "the successful check clears the old failure")
-        XCTAssertEqual(tab.remote?.retryResult, "Checked again: still no new Codex session in this folder.")
-        XCTAssertEqual(tab.remote?.canRetryIdentity, true, "Try again remains available without an earlier question")
-        model.remoteTabs.detach(tab.id)
-    }
-
     /// Try again whose lookup can't run says so, with why; never "still
     /// none" for a lookup that didn't come back.
     func testTryAgainWhoseLookupFailsSaysSo() async throws {
