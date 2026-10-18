@@ -173,7 +173,8 @@ public final class RemoteEffectGate {
         return ok
     }
 
-    private func valid(_ ticket: RemoteTicket, runAttachment: Int??) -> Bool {
+    /// Check admission before starting work without counting a completion.
+    func valid(_ ticket: RemoteTicket, runAttachment: Int?? = nil) -> Bool {
         guard !isQuitting(), !Task.isCancelled else { return false }
         guard launcher(ticket.host).map(ObjectIdentifier.init) == ticket.launcher, ticket.launcher != nil else { return false }
         if let sheet = ticket.sheet, !sheetIsActive(sheet) { return false }

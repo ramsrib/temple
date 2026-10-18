@@ -605,6 +605,41 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(tab.remote?.suggestions.map(\.sessionID), ["c7", "c8"])
     }
 
+    func testV10ADetachedTabCannotSuppressTheReopenedRunsLookup() async throws {
+        model.remoteTabs.identitySchedule = [60]
+        model.remoteTabs.activationRecheck = 0
+        remote.identityResult = .inconclusive("shared server", lasting: true, ended: false)
+        let tab = await newCodex()
+        let handle = try XCTUnwrap(tab.remote?.handle)
+        let token = tab.remote?.openToken
+        let oldIdentity = Gate(), currentLookup = Gate()
+        remote.identityGate = { await oldIdentity.wait() }
+        model.remoteTabs.activated(tab)
+        await settle(self.remote.identifies.count == 1)
+
+        model.remoteTabs.detach(tab.id)
+        XCTAssertFalse(model.tabs.contains { $0 === tab })
+        XCTAssertEqual(tab.remote?.openToken, token, "detach leaves the old object's token intact")
+        remote.identityGate = nil
+        model.remoteTabs.openPendingRun(handle: handle, host: hostID, directory: "/home/u/project", typed: false)
+        let reopened = try XCTUnwrap(model.tabs.first { $0.remote?.handle == handle })
+        await settle(reopened.hasLiveProcess)
+        remote.suggestionsQueue = [
+            (gate: { await currentLookup.wait() }, answer: .candidates([suggestion("c7"), suggestion("c8")])),
+            (gate: nil, answer: .candidates([])),
+        ]
+        model.remoteTabs.retryIdentity(reopened)
+        await settle(self.remote.suggestionLookups.count == 1)
+        let identities = model.remoteTabs.operations.count(.identity)
+        await oldIdentity.open()
+        await settle(self.model.remoteTabs.operations.count(.identity) < identities)
+        XCTAssertEqual(remote.suggestionLookups.count, 1, "the detached ticket must not start a lookup")
+        await currentLookup.open()
+        await settle(reopened.remote?.retrying == false)
+        XCTAssertEqual(reopened.remote?.suggestions.map(\.sessionID), ["c7", "c8"])
+        model.remoteTabs.detach(reopened.id)
+    }
+
     /// Only the newest lookup reaches the tab: an older one that comes back
     /// later, and empty, never erases a candidate the newer one found, and
     /// a lookup with candidates takes the empty-state line down with it.
