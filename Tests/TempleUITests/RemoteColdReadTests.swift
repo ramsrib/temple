@@ -156,9 +156,9 @@ final class RemoteColdReadTests: XCTestCase {
         XCTAssertEqual(failures?.lines, ["\u{201C}New Claude session\u{201D}: another terminal outside Temple is attached to it, "
                                          + "so it is still running. Close that terminal (or end its connection to box), then remove box again."])
         XCTAssertEqual(RemoteCopy.notRemoved("box"), "box was not removed because Temple couldn't confirm that every session on it stopped:")
-        XCTAssertEqual(RemoteCopy.removeAgain("box", count: 2), "Then choose Remove again. To remove box and leave its sessions "
+        XCTAssertEqual(RemoteCopy.removeAgain("box", count: 2), "To try again, choose Remove. To remove box and leave its sessions "
                        + "running, choose \u{201C}Remove, leave them running\u{201D} when Remove asks; a host that can't be "
-                       + "reached is removed without asking.")
+                       + "reached is removed without asking, and anything on it keeps running.")
         XCTAssertNotNil(app.remoteHosts.record(named: "box"), "a failed stop cancels the removal")
 
         // Unreachable, unconfirmed, and an outcome that couldn't be saved.
@@ -359,7 +359,8 @@ final class RemoteColdReadTests: XCTestCase {
                        + "The session is still running. Stop it here, or attach to it yourself: in a terminal, connect to box "
                        + "with ssh, then run:")
         XCTAssertEqual(RemoteCopy.attachFooter, "To leave it running, close that terminal window; tmux's usual detach keys "
-                       + "are off in Temple's sessions. While you are attached, Stop and Remove in Temple won't stop it.")
+                       + "are off in Temple's sessions. While you are attached, Temple can't stop it, from Stop here or when "
+                       + "you remove the host.")
         XCTAssertEqual(sheet.commands["h8"], "tmux -L temple attach -t temple-h8", "the command on its own line")
         XCTAssertNil(app.openSessions.openTab(forSessionID: "s8"))
     }

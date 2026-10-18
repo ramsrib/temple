@@ -493,7 +493,7 @@ public enum RemoteCopy {
         switch resumable {
         case .kept: return state + stop + " Its conversation is kept: resume it later from its row in the sidebar."
         case .absent: return state + stop + " It can't be resumed afterwards: no transcript of it was found on the host."
-        case .unknown: return state + stop + " Temple doesn't know yet whether it can be resumed afterwards."
+        case .unknown: return state + stop + " Temple doesn't know whether it can be resumed afterwards."
         }
     }
 
@@ -582,7 +582,7 @@ public enum RemoteCopy {
     /// server binds no prefix, so tmux's own detach keys do nothing), and
     /// that an attached terminal keeps Stop from stopping it.
     public static let attachFooter = "To leave it running, close that terminal window; tmux's usual detach keys are off "
-        + "in Temple's sessions. While you are attached, Stop and Remove in Temple won't stop it."
+        + "in Temple's sessions. While you are attached, Temple can't stop it, from Stop here or when you remove the host."
     public static func attachCommand(_ handle: String) -> String { "tmux -L temple attach -t temple-\(handle)" }
     public static let openTrackedHelp = "Opens a tab attached to this running session."
     public static let showTab = "Show tab"
@@ -753,8 +753,9 @@ public enum RemoteCopy {
 
     /// The list's last line.
     public static func removeAgain(_ host: String, count: Int) -> String {
-        "Then choose Remove again. To remove \(host) and leave its sessions running, choose "
-            + "\u{201C}\(removalLeave(count))\u{201D} when Remove asks; a host that can't be reached is removed without asking."
+        "To try again, choose Remove. To remove \(host) and leave its sessions running, choose "
+            + "\u{201C}\(removalLeave(count))\u{201D} when Remove asks; a host that can't be reached is removed without "
+            + "asking, and anything on it keeps running."
     }
 
     /// One session Stop them and remove could not stop, by why.

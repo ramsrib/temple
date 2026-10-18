@@ -1341,7 +1341,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
                        "Codex is working on it. Stopping ends it, interrupting anything it is doing, and closes its tab. Its conversation is kept: resume it later from its row in the sidebar.")
         XCTAssertEqual(RemoteCopy.stopWorkingMessage(agent: .claude, uncertain: true, tabOpen: false, resumable: .unknown),
                        "Claude Code may still be working on it; Temple reconnected a moment ago and can't tell yet. Stopping ends it, interrupting anything it is doing. "
-                       + "Temple doesn't know yet whether it can be resumed afterwards.")
+                       + "Temple doesn't know whether it can be resumed afterwards.")
         XCTAssertEqual(RemoteCopy.stopWorkingMessage(agent: .codex, uncertain: false, tabOpen: false, resumable: .absent),
                        "Codex is working on it. Stopping ends it, interrupting anything it is doing. "
                        + "It can't be resumed afterwards: no transcript of it was found on the host.")

@@ -866,7 +866,7 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertEqual(model.remoteTabs.stopQuestion(host: hostID, agent: .claude, title: "Title", handle: "kept",
                                                      resumable: .unknown).message,
                        "Claude Code may still be working on it; Temple reconnected a moment ago and can't tell yet. "
-                       + "Stopping ends it, interrupting anything it is doing, and closes its tab. Temple doesn't know yet whether it can be resumed afterwards.", "unknown: said so, not claimed either way")
+                       + "Stopping ends it, interrupting anything it is doing, and closes its tab. Temple doesn't know whether it can be resumed afterwards.", "unknown: said so, not claimed either way")
         model.surfaceDidReceiveInput(try XCTUnwrap(tab.surface))
         XCTAssertFalse(model.workingIsUncertain(tab), "input since: the usual reading")
         XCTAssertEqual(model.remoteTabs.stopQuestion(host: hostID, agent: .claude, title: "Title", sessionID: "s1",
