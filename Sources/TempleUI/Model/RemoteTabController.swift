@@ -364,12 +364,11 @@ public final class RemoteTabController {
             // A pending Codex run is checked once more at its exit: its agent
             // may still be running there (a dropped connection).
             if pending, let self {
-                let epoch = self.acquisitionTicket(handle)
                 let identity = await host.identify(handle)
                 if case .adopted(let id, let directory) = identity {
-                    await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket, epoch: epoch)
+                    await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
                 } else if case .known(let id, let directory) = identity {
-                    await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket, epoch: epoch)
+                    await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
                 }
             }
             let liveness = await host.exitCheck(handle)
@@ -839,15 +838,6 @@ public final class RemoteTabController {
     /// claimed again on schedule (round 2), only on the user's Try again or
     /// once the conflicting row has gone.
     private var refusedClaims: [String: (id: String, reason: String)] = [:]
-    /// No acquisition may join this run's held claim while its release is out.
-    private var releasingClaims: Set<String> = []
-    /// A release invalidates acquisitions already out, including after a later retry.
-    private var acquisitionEpoch: [String: Int] = [:]
-
-    private func acquisitionTicket(_ handle: String) -> Int? {
-        releasingClaims.contains(handle) ? nil : acquisitionEpoch[handle, default: 0]
-    }
-
     /// Runs handed over to `open_tabs` whose mark (`tab_closed_at`) is not
     /// written yet, by handle (round 4). Each holds the run store itself, so
     /// it is finished whatever becomes of its host; it is kept until the
@@ -900,7 +890,6 @@ public final class RemoteTabController {
         tab.remote = state
         let ticket = gate.ticket(for: tab)
         let directory = tab.projectPath
-        let epoch = handle.flatMap { acquisitionTicket($0) }
         operations.run(host: tab.host, .open) { [weak self] in
             let result: Result<RemotePendingOpenResult, Error>
             do { result = .success(try await host.openPending(handle: handle, directory: directory)) } catch {
@@ -927,7 +916,7 @@ public final class RemoteTabController {
                 // session is. The open this answered is over.
                 tab.remote?.phase = .disconnected
                 guard let handle else { return }
-                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket, epoch: epoch)
+                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
                 guard tab.sessionID == id, self.model.tabs.contains(where: { $0 === tab }) else { return }
                 tab.remote = nil
                 self.model.ensureSurface(for: tab)
@@ -971,7 +960,6 @@ public final class RemoteTabController {
     /// One check; true when the tab's identity is settled (it has its id).
     @discardableResult
     private func checkIdentity(_ ticket: RemoteTicket, host: RemoteSessionHost, handle: String) async -> Bool {
-        guard !releasingClaims.contains(handle) else { return false }
         if let id = ticket.tab?.id { lastIdentityCheck[id] = Date() }
         // Core refused this run's id: the walk would find and claim it again,
         // and core would refuse again. The question still comes.
@@ -979,14 +967,12 @@ public final class RemoteTabController {
             await loadSuggestions(ticket, host: host, handle: handle)
             return false
         }
-        let epoch = acquisitionEpoch[handle, default: 0]
         let identity = await host.identify(handle)
-        guard acquisitionEpoch[handle, default: 0] == epoch else { return false }
         switch identity {
         case .adopted(let id, let directory), .known(let id, let directory):
-            await adopted(id, directory: directory, handle: handle, host: host, ticket: ticket, epoch: epoch)
-            // Settled only once the tab is that session: a join that core
-            // refused or failed to write is tried again on schedule.
+            await adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
+            // Settled only once the tab is that session. A failed write is
+            // tried again on schedule; a refusal is remembered above.
             guard let tab = ticket.tab else { return true }
             return !isPending(tab)
         case .taken:
@@ -1026,13 +1012,12 @@ public final class RemoteTabController {
     /// A claimed id (verified, or the user's yes). The claim is written;
     /// the core join and the row's folder are durable work too (only the
     /// quit defers them, to the next launch's reconciliation). A join core
-    /// refuses releases the claim and the tab says why. The tab becomes the
+    /// refuses leaves the claim in place and the tab says why. The tab becomes the
     /// session through the gate. `titleHint`: the first prompt of the
     /// candidate the user said yes to, which the row shows until its
     /// transcript's title arrives (display only, through the gate).
     private func adopted(_ id: String, directory: String?, handle: String, host: RemoteSessionHost,
-                         ticket: RemoteTicket, epoch: Int?, titleHint: String? = nil, linked: RemoteSuggestion? = nil) async {
-        guard let epoch, acquisitionEpoch[handle, default: 0] == epoch, !releasingClaims.contains(handle) else { return }
+                         ticket: RemoteTicket, titleHint: String? = nil, linked: RemoteSuggestion? = nil) async {
         let hostID = ticket.host
         // While quitting the join waits for the next launch (the claim
         // stays unjoined); the gate below refuses the tab's part.
@@ -1049,13 +1034,6 @@ public final class RemoteTabController {
                 }
             case .refused(let conflict):
                 TempleUILog.launch.notice("remote Codex id refused by core: \(conflict.message, privacy: .public)")
-                // Independent checks must not join the held id if its conflict goes away.
-                releasingClaims.insert(handle)
-                acquisitionEpoch[handle, default: 0] += 1
-                await reportWrite(host, gate.ticket(host: hostID)) {
-                    try await host.releaseClaim(handle, sessionID: id)
-                }
-                releasingClaims.remove(handle)
                 refusedClaims[handle] = (id, conflict.message)
                 guard gate.admit(.identityResult, ticket), let tab = ticket.tab else { return }
                 tab.remote?.identityNote = conflict.message
@@ -1442,13 +1420,12 @@ public final class RemoteTabController {
     /// asks the question.
     private func claim(_ suggestion: RemoteSuggestion, in tab: SessionTab, automatic: Bool) {
         guard isPending(tab), let handle = tab.remote?.handle, let host = remoteHost(for: tab),
-              tab.remote?.confirming == nil, !releasingClaims.contains(handle), !isQuitting else { return }
+              tab.remote?.confirming == nil, !isQuitting else { return }
         tab.remote?.confirming = suggestion.id
-        let epoch = acquisitionEpoch[handle, default: 0]
         let ticket = gate.ticket(for: tab)
         operations.run(host: tab.host, .write) { [weak self] in
             let identity = await host.confirm(handle, suggestion: suggestion, automatic: automatic)
-            guard let self, self.acquisitionEpoch[handle, default: 0] == epoch else { return }
+            guard let self else { return }
             switch identity {
             case .adopted(let id, let directory), .known(let id, let directory):
                 // The candidate's prompt titles only the candidate: a claim
@@ -1457,7 +1434,7 @@ public final class RemoteTabController {
                 let same = id.utf8.elementsEqual(suggestion.sessionID.utf8)
                 var linked = false
                 if automatic, case .adopted = identity, same { linked = true }
-                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket, epoch: epoch,
+                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket,
                                    titleHint: same ? suggestion.firstPrompt : nil,
                                    linked: linked ? suggestion : nil)
             case .taken, .inconclusive:
@@ -1593,14 +1570,13 @@ public final class RemoteTabController {
             await host.leaveRunning(handle, reason: reason)
         }) { [weak self] in
             // The last chance to learn its id: its agent still runs.
-            let epoch = self?.acquisitionTicket(handle)
             let identity = await host.identify(handle)
             var identified = false
             if case .adopted(let id, let directory) = identity, let self {
-                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket, epoch: epoch)
+                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
                 identified = true
             } else if case .known(let id, let directory) = identity, let self {
-                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket, epoch: epoch)
+                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
                 identified = true
             }
             guard let result = try? await host.stop(handle, fromAttachedTab: live) else { return }
@@ -1635,11 +1611,11 @@ public final class RemoteTabController {
     }
 
     /// At launch, for each host: first the claims whose core join never
-    /// happened are joined again (a refusal releases its claim, a failed
+    /// happened are joined again (a refusal is remembered, a failed
     /// write leaves it for later), then the pending Codex runs come back as
     /// chips, each by that outcome (round 2): a claim core holds becomes
     /// that session's chip, handed over once the tab set is written; any
-    /// other run (pending, released, or claimed but not joined) comes back
+    /// other run (pending or claimed but not joined) comes back
     /// by its handle, inert until activated (which attaches; an ended one
     /// asks).
     public func restorePending(hosts: [HostID]) {
@@ -1684,12 +1660,12 @@ public final class RemoteTabController {
     }
 
     /// Joins every claim whose core join never happened (a quit or crash
-    /// between the two writes); core's refusal releases it; a failed write
+    /// between the two writes); core's refusal keeps it; a failed write
     /// leaves it for the next launch. Durable work, outside the gate (see
     /// `RemoteCompletion`). The handles joined now.
     private func reconcile(host: RemoteSessionHost, hostID: HostID) async -> Set<String> {
         var joined = Set<String>()
-        for claim in await host.unjoinedClaims() {
+        for claim in await host.unjoinedClaims() where refusedClaims[claim.handle] == nil {
             guard !isQuitting, !Task.isCancelled else { return joined }
             let open = SessionOpen(id: claim.sessionID, host: hostID, via: .created, agent: .codex, locator: nil)
             switch model.openedHandler?(open) ?? .joined {
@@ -1699,10 +1675,8 @@ public final class RemoteTabController {
                 do { try await host.markJoined(claim.handle) } catch {
                     TempleUILog.db.error("claim not marked joined: \(error.localizedDescription, privacy: .public)")
                 }
-            case .refused:
-                do { try await host.releaseClaim(claim.handle, sessionID: claim.sessionID) } catch {
-                    TempleUILog.db.error("refused claim not released: \(error.localizedDescription, privacy: .public)")
-                }
+            case .refused(let conflict):
+                refusedClaims[claim.handle] = (claim.sessionID, conflict.message)
             case .failed(let error):
                 TempleUILog.db.error("reconciliation join failed: \(error.localizedDescription, privacy: .public)")
             }

@@ -8,7 +8,7 @@ import TempleRemoteHost
 /// New Codex sessions on a host (docs/designs/remote-ssh.md section 3,
 /// phase 1b), from the tab's side: a pending run, identified by its process
 /// tree or by the user's yes, never guessed; a claim reaches core, or is
-/// released with core's reason; a pending tab closes, quits, restores and
+/// kept with core's reason; a pending tab closes, quits, restores and
 /// is discarded without a row ever being made from a handle.
 @MainActor
 final class RemoteCodexIdentityTests: XCTestCase {
@@ -155,60 +155,48 @@ final class RemoteCodexIdentityTests: XCTestCase {
     }
 
     /// Core refuses the id (another host's, or another agent's): the claim
-    /// is released, the tab stays pending and says core's reason.
-    func testACoreRefusalReleasesTheClaimAndSaysWhy() async throws {
+    /// stays in place, the tab stays pending and says core's reason.
+    func testACoreRefusalKeepsTheClaimAndSaysWhy() async throws {
         joinAnswer = .refused(.host(HostID(rawValue: "jet")))
         remote.identityResult = .adopted("c9", directory: "/home/u/project")
         let tab = await newCodex()
         await settle(tab.remote?.identityNote != nil)
         XCTAssertNil(tab.sessionID)
         XCTAssertEqual(tab.remote?.identityNote, JoinConflict.host(HostID(rawValue: "jet")).message)
-        await settle(self.remote.released.map(\.sessionID).contains("c9"))
+        XCTAssertTrue(remote.released.isEmpty)
         XCTAssertTrue(remote.joinedMarks.isEmpty)
     }
 
-    func testV5rCoreRefusalWaitsForTheDurableRelease() async throws {
+    func testV5rCoreRefusalKeepsTheClaimWithoutClobberingALaterAcquisition() async throws {
         let store = try RemoteStateStore()
         try store.insert(RemoteRun(handle: "p1", host: hostID, agent: .codex, mode: .new,
                                    directoryIntent: "~/project", sessionID: nil, recordPath: "r-p1", startedAt: Date()))
-        _ = try store.claim("p1", sessionID: "c9", how: .verified)
-        let release = Gate(), stale = Gate()
-        remote.releaseAction = { handle, id in
-            await release.wait()
-            try store.releaseClaim(handle, sessionID: id)
-        }
-        model.remoteTabs.identitySchedule = [60]
-        model.remoteTabs.activationRecheck = 0
+        _ = try store.claim("p1", sessionID: "c7", how: .verified)
+        remote.releaseAction = { handle, id in try store.releaseClaim(handle, sessionID: id) }
+        remote.identityResult = .inconclusive("shared server", lasting: true, ended: false)
+        remote.suggestionsResult = .candidates([suggestion(), suggestion("c8")])
         let tab = await newCodex()
-        await settle(tab.remote?.identityOperation != nil)
-        model.remoteTabs.operations.cancel(id: try XCTUnwrap(tab.remote?.identityOperation))
-        remote.identityResult = .known("c9", directory: "/home/u/project")
-        remote.identityGate = { await stale.wait() }
-        model.remoteTabs.activated(tab)
-        await settle(self.remote.identifies.count == 1)
-        remote.identityGate = nil
+        await settle(tab.remote?.suggestions.count == 2)
         joinAnswer = .refused(.agent(.claude))
-        model.remoteTabs.retryIdentity(tab)
-        await settle(!self.remote.released.isEmpty)
-        XCTAssertEqual(try store.run("p1")?.sessionID, "c9")
-        XCTAssertNil(tab.remote?.identityNote, "a refusal cannot invite a retry before release commits")
-        joinAnswer = .joined
-        model.remoteTabs.activated(tab)
-        await settle(self.model.remoteTabs.operations.count(.identity) <= 2)
-        XCTAssertNil(tab.sessionID, "an independent check must not join during release")
-        await release.open()
+        model.remoteTabs.confirm(suggestion(), in: tab)
         await settle(tab.remote?.identityRefused == true)
-        XCTAssertNil(try store.run("p1")?.sessionID)
-        // A new retry clears the refusal, but cannot authorize the earlier known result.
-        remote.identityResult = .inconclusive("not found", lasting: false, ended: false)
+        XCTAssertNil(tab.remote?.confirming, "the refused answer is no longer busy")
+        XCTAssertNil(tab.sessionID)
+        XCTAssertEqual(try store.run("p1")?.sessionID, "c7")
+        XCTAssertTrue(remote.released.isEmpty)
+        let attempts = joins.count
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(joins.count, attempts, "the schedule does not retry a refused join")
+
+        joinAnswer = .joined
+        remote.identityResult = .known("c7", directory: "/home/u/project")
         model.remoteTabs.retryIdentity(tab)
-        await settle(tab.remote?.retrying == false)
-        await stale.open()
+        await settle(tab.sessionID == "c7")
         let drained = await model.remoteTabs.operations.waitForAll(until: Date().addingTimeInterval(3))
         XCTAssertTrue(drained)
-        XCTAssertNil(tab.sessionID, "a pre-release result is stale even after the refusal is cleared")
-        XCTAssertEqual(joins.count, 1)
-        XCTAssertNil(try store.run("p1")?.sessionID)
+        XCTAssertNil(tab.remote?.confirming)
+        XCTAssertEqual(try store.run("p1")?.sessionID, "c7", "no delayed release clears the later acquisition")
+        XCTAssertTrue(remote.released.isEmpty)
     }
 
     /// Two rollouts whose paths differ only in normalization (a precomposed
@@ -1161,7 +1149,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
     }
 
     /// At launch, reconciliation decides each claimed run's chip (round 2):
-    /// joined, that session's chip, then handed over; refused, released and
+    /// joined, that session's chip, then handed over; refused, kept and
     /// restored by its handle as pending; failed, claimed but unjoined,
     /// restored by its handle too (and joined when it is opened).
     func testRestoreFollowsReconciliation() async throws {
@@ -1186,7 +1174,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertNil(failed.sessionID)
         XCTAssertEqual(failed.remote?.handle, "p7")
         await settle(Set(self.remote.closedPending) == ["p5", "p8"], "only accepted claims are handed over")
-        XCTAssertEqual(remote.released.map(\.sessionID), ["c6"])
+        XCTAssertTrue(remote.released.isEmpty)
         XCTAssertTrue(persistence.load().contains { $0.sessionID == "c5" })
     }
 
@@ -1224,7 +1212,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
     }
 
     /// A core refusal is remembered (round 2): the schedule doesn't claim
-    /// and release the same id every minute; Try again, or the conflicting
+    /// the same id every minute; Try again, or the conflicting
     /// row going away, lets it be claimed once more.
     func testACoreRefusalIsRememberedUntilTryAgain() async throws {
         joinAnswer = .refused(.host(HostID(rawValue: "jet")))
@@ -1235,7 +1223,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         let asked = remote.identifies.count
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(remote.identifies.count, asked, "not claimed again on schedule")
-        XCTAssertEqual(remote.released.count, 1)
+        XCTAssertTrue(remote.released.isEmpty)
         await settle(tab.remote?.suggestions.map(\.sessionID) == ["c8"], "the refused id is not offered")
         joinAnswer = .joined
         model.remoteTabs.retryIdentity(tab)
@@ -1257,7 +1245,8 @@ final class RemoteCodexIdentityTests: XCTestCase {
         factory.created.last?.simulateExit(status: 0)
         await settle(tab.remote?.phase == .disconnected)
         model.remoteTabs.reconnect(tab)
-        await settle(tab.hasLiveProcess)
+        await settle(tab.remote?.phase == .disconnected)
+        XCTAssertFalse(tab.hasLiveProcess, "the held claim is still refused")
         XCTAssertEqual(tab.remote?.identityNote, note)
         XCTAssertEqual(tab.remote?.identityRefused, true)
         // Detach, then Open from Sessions on the host.
@@ -1267,7 +1256,8 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await settle(!self.model.tabs.contains { $0 === tab })
         model.remoteTabs.openPendingRun(handle: "p1", host: hostID, directory: "/home/u/project")
         let reopened = try XCTUnwrap(model.activeTab)
-        await settle(reopened.hasLiveProcess)
+        await settle(reopened.remote?.phase == .disconnected)
+        XCTAssertFalse(reopened.hasLiveProcess)
         XCTAssertEqual(reopened.remote?.identityNote, note)
         XCTAssertEqual(reopened.remote?.identityRefused, true)
     }
@@ -1351,7 +1341,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
     }
 
     /// At launch, a claim whose join never happened joins core (and its
-    /// folder is recorded); one core refuses is released.
+    /// folder is recorded); one core refuses stays claimed.
     func testReconciliationJoinsClaimsThatNeverReachedCore() async throws {
         remote.unjoined = [("p1", "c1", "/home/u/a"), ("p2", "c2", nil)]
         var answers: [String: JoinResult] = ["c2": .refused(.agent(.claude))]
@@ -1360,9 +1350,18 @@ final class RemoteCodexIdentityTests: XCTestCase {
             return answers.removeValue(forKey: open.id) ?? .joined
         }
         model.remoteTabs.reconcileClaims(hosts: [hostID])
-        await settle(self.remote.joinedMarks == ["p1"] && self.remote.released.map(\.sessionID) == ["c2"])
+        let drained = await model.remoteTabs.operations.waitForAll(until: Date().addingTimeInterval(3))
+        XCTAssertTrue(drained)
+        XCTAssertEqual(remote.joinedMarks, ["p1"])
+        XCTAssertTrue(remote.released.isEmpty)
         XCTAssertEqual(joins.map(\.id), ["c1", "c2"])
         XCTAssertEqual(directories.map(\.0), ["c1"])
+        remote.unjoined = [("p2", "c2", nil)]
+        model.remoteTabs.reconcileClaims(hosts: [hostID])
+        let settled = await model.remoteTabs.operations.waitForAll(until: Date().addingTimeInterval(3))
+        XCTAssertTrue(settled)
+        XCTAssertEqual(joins.map(\.id), ["c1", "c2"], "no retry loop for the launch's refused claim")
+        XCTAssertTrue(remote.released.isEmpty)
     }
 
     // MARK: Copy
