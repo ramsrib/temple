@@ -130,7 +130,8 @@ final class CodexIdentityTests: XCTestCase {
         let answer = await sessions.suggestions("a")
         XCTAssertEqual(attempts, 1)
         XCTAssertNotNil(try store.run("a"))
-        guard case .unavailable = answer else { return XCTFail("failed read reported as complete: \(answer)") }
+        guard case .unavailable(let reason) = answer else { return XCTFail("failed read reported as complete: \(answer)") }
+        XCTAssertEqual(reason, "Temple couldn't read its records for this session on this Mac: \(CocoaError(.fileReadNoPermission).localizedDescription)")
         let retry = await sessions.suggestions("a")
         guard case .candidates = retry else { return XCTFail("the next read must recover: \(retry)") }
     }

@@ -1351,7 +1351,7 @@ public final class RemoteSessions {
         guard !retired else { return .unavailable(Retired().localizedDescription) }
         let found: RemoteRun?
         do { found = try await checkedRun(handle) } catch {
-            return .unavailable("Temple couldn't read what it knows about this session: \(error.localizedDescription)")
+            return .unavailable("Temple couldn't read its records for this session on this Mac: \(error.localizedDescription)")
         }
         guard let run = found, run.isPending, run.dismissedAt == nil else { return .candidates([]) }
         guard let okAt = run.okAt, let directory = run.directory else {
@@ -1379,7 +1379,7 @@ public final class RemoteSessions {
             declined = try await write { try $0.declined(handle) }
             held = try await write { try $0.sessionIDs(host: host) }
         } catch {
-            return .unavailable("Temple couldn't read what it knows about this session: \(error.localizedDescription)")
+            return .unavailable("Temple couldn't read its records for this session on this Mac: \(error.localizedDescription)")
         }
         // Each candidate carries the offset just measured, so its start can
         // be said relative to this Mac's clock (display only).

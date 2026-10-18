@@ -999,10 +999,10 @@ public enum RemoteCopy {
     /// candidate: why (the only one). Display only; close a wrong link as any tab.
     public static func linkedOnItsOwn(_ suggestion: RemoteSuggestion, now: Date = Date()) -> String {
         if let prompt = suggestion.firstPrompt {
-            return "Linked this tab to \u{201C}\(prompt)\u{201D}, the only Codex session started in this folder since the tab opened."
+            return "Linked this tab to \u{201C}\(prompt)\u{201D}, the only Codex session started in this folder since the tab opened. If that's the wrong session, close this tab; the session keeps its row in the sidebar."
         }
         return "Linked this tab to the Codex session started \(startTime(suggestion.startedAt, now: now)), "
-            + "the only one started in this folder since the tab opened."
+            + "the only one started in this folder since the tab opened. If that's the wrong session, close this tab; the session keeps its row in the sidebar."
     }
 
     /// Temple asked and has nothing left to ask about (every candidate

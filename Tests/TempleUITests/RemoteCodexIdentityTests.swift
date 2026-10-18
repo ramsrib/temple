@@ -1408,12 +1408,14 @@ final class RemoteCodexIdentityTests: XCTestCase {
                                       directory: "/w", promptKnown: false)
         XCTAssertTrue(RemoteCopy.suggestionQuestion(unread).hasPrefix("Is this the session? First prompt unreadable, started "))
         XCTAssertFalse(RemoteCopy.suggestionQuestion(unread).contains("No prompt yet"))
+        XCTAssertEqual(RemoteCopy.checkFailed("Temple couldn't read its records for this session on this Mac: disk error"),
+                       "Couldn't check again: Temple couldn't read its records for this session on this Mac: disk error.")
         XCTAssertEqual(RemoteCopy.linkedOnItsOwn(suggestion()),
-                       "Linked this tab to \u{201C}reply with the word ok\u{201D}, the only Codex session started in this folder since the tab opened.")
+                       "Linked this tab to \u{201C}reply with the word ok\u{201D}, the only Codex session started in this folder since the tab opened. If that's the wrong session, close this tab; the session keeps its row in the sidebar.")
         let noon = Calendar.current.date(bySettingHour: 15, minute: 12, second: 0, of: Date())!
         let timed = RemoteSuggestion(rolloutPath: "/r", sessionID: "x", firstPrompt: nil, startedAt: noon, directory: "/w")
         XCTAssertEqual(RemoteCopy.linkedOnItsOwn(timed, now: noon),
-                       "Linked this tab to the Codex session started \(RemoteCopy.startTime(noon, now: noon)), the only one started in this folder since the tab opened.")
+                       "Linked this tab to the Codex session started \(RemoteCopy.startTime(noon, now: noon)), the only one started in this folder since the tab opened. If that's the wrong session, close this tab; the session keeps its row in the sidebar.")
         XCTAssertTrue(RemoteCopy.noDaemonHint(enabled: false).hasPrefix("Add --no-daemon to Codex's arguments above"))
         XCTAssertTrue(RemoteCopy.noDaemonHint(enabled: true).hasPrefix("Codex's arguments include --no-daemon"))
         XCTAssertEqual(RemoteCopy.stillWorking("box", agent: .codex), "Codex is working on box.")
