@@ -315,7 +315,8 @@ it. What follows appears for an enabled host only.
   earlier folders. When the host does not answer, it offers **Test
   connection** (the host's own test, over the folder sheet; closing it comes
   back with the path as typed, and a test that passed checks the folder
-  again) and **Start without checking**. A host whose last test proved tmux
+  again, as advice: nothing starts until **Start**) and **Start without
+  checking**. A host whose last test proved tmux
   missing or older than 3.2 is left out of the launcher and `⌘N`, greyed in
   the `+` menu, and the folder sheet says why and won't start, all with the
   same line. The project's heading shows in the sidebar at once, from the
@@ -334,7 +335,9 @@ it. What follows appears for an enabled host only.
   resumes it from its transcript. A working one asks "Claude Code is working
   on <host>." ("Detach leaves it running on <host>; Stop ends it.") with
   **Detach** (the default: it keeps working, and you can open it again),
-  **Stop** and **Cancel**. The tab's ×, its menu, the sidebar row's menu and
+  **Stop** and **Cancel**; a tab reattached a moment ago, before anything
+  has said whether its agent works, asks "Claude Code may still be working
+  on <host>." instead. The tab's ×, its menu, the sidebar row's menu and
   File say this where you act: on a tab on a host the menus read **Detach
   from <host> (keeps running)** directly above **Close tab (stops the agent
   if it is waiting for input)** (File: **Detach from <host> (keeps
@@ -357,7 +360,9 @@ it. What follows appears for an enabled host only.
   tab** when a tab in this Temple is connected to it, **Running** when it
   runs without one, even if a terminal or another Temple is attached, or
   **Status unknown**; the tmux session's name is its tooltip). Each row has
-  **Open** (a tab attached to it, as its sidebar row opens it) or, when it
+  **Open** (a tab attached to it, as its sidebar row opens it; one with no
+  row opens by its run, and one with no folder on record says what to do
+  instead) or, when it
   is open in a tab here, **Show tab**, and **Stop** (its sidebar row stays,
   so you can resume it later); a row that was left running says why in
   orange and has **Dismiss**, which clears that note (it keeps running
@@ -374,7 +379,7 @@ it. What follows appears for an enabled host only.
   "Sessions on <host> keep running; their tabs reconnect when you open them
   next launch." (with no host, it reads as it always did). After relaunch
   each comes back as a tab that attaches when opened; a host that answers
-  says once, in the sidebar, how many sessions from before the quit are
+  says once, in the sidebar, how many sessions from before the quit it found
   still running there and not open in a tab, with **Running sessions on
   <host>…**; that or × marks them seen.
 - **When Temple can't tell.** If Temple cannot tell whether a session is
@@ -395,8 +400,11 @@ it. What follows appears for an enabled host only.
   and says why) and **Cancel**. With none, or no answer, the host is removed
   at once. `~/.ssh/config` is never changed. Editing a host added by address
   disconnects its open tabs (their agents keep running; Reconnect in each).
-  A tab on a host Temple no longer has says so, with **Open Settings**, which
-  opens Settings at Hosts.
+  A connected tab counts as running for that question even when the host's
+  probe can't tell. A tab still open for a host just removed says so at
+  once ("<host> was removed from Temple. Its agent may still be running
+  there; add the host again to reconnect.") with **Open Settings**, which
+  opens Settings at Hosts; a tab on a host Temple doesn't have says so too.
 - **New Codex sessions.** Codex picks its own session ID, so a new Codex
   session on a host reads "New Codex session" until Temple learns the ID;
   it reopens and restores like any tab meanwhile. Temple identifies it on
@@ -409,7 +417,8 @@ it. What follows appears for an enabled host only.
   unidentified, Temple says yes on its own, exactly as you would, and the
   tab says so in one line: "Linked this tab to “<first prompt>”, the only
   Codex session started in this folder since the tab opened.", with **Not
-  this one**, which undoes the link: the agent keeps running, the row the
+  this one**, which undoes the link once its record is written (a write that
+  fails changes nothing and says so): the agent keeps running, the row the
   link made is archived (restore it from History), and the tab asks again
   without that candidate. With two or more, or once it has asked, the tab
   says "Codex picks its own session id, so Temple can't tell which session
@@ -417,7 +426,9 @@ it. What follows appears for an enabled host only.
   folder's full path and when it started (relative to the tab, "4 s after
   this tab opened", when that is known), earliest first, and **Yes, that's
   it** or **Not this one**; with nothing left to ask about, it says Temple
-  couldn't tell (the tab keeps working) with **Try again**. With
+  couldn't tell (the tab keeps working; it gets a sidebar row once Temple
+  can tell) with **Try again**, which never offers a declined candidate
+  again. With
   `--no-daemon` in Codex's arguments, Temple identifies the session on its
   own; the Hosts card says which, from the arguments.
   A Codex session that ended before Temple learned its ID asks in one

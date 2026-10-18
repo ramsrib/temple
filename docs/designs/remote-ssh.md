@@ -3237,3 +3237,47 @@ none, and its failed write); `RemoteAppTests.testNotThisOneArchivesTheLinkedRowR
 `CodexIdentityTests.testUnlinkReleasesTheClaimDeclinesAndRestoresTheRun`;
 the gate walk's two new completions. Computer-use passes check tasks, not
 labels (docs/copy-review.md).
+
+### Cold-read round: review fixes
+
+Sol's code review (seven should-fixes), Fable's visual review (items 1 to
+4; item 5, shortening "Close tab (stops the agent if it is waiting for
+input)", was overruled by the coordinator per docs/copy-review.md) and a
+cold read of the real screens, as built:
+
+- *Not this one commits first.* `unlink` writes the store first; only a
+  committed write drops the owed hand-over, archives the row and (through
+  the new gated completion `.unlinkResult`) makes the tab unidentified. A
+  failed write changes nothing, is said once, and the button can be used
+  again (`RemoteTabState.unlinking` holds it while the write is out).
+- *A late hand-over can't undo it.* `RemoteStateStore.markTabClosed` marks
+  the run only while it still holds the session id the hand-over was owed
+  for, in the statement itself (`RemoteRunLedger.markTabClosed(_:sessionID:)`).
+- *Never a bare tab.* After Not this one the tab says Temple couldn't tell
+  until a lookup brings candidates (`unlinkFallback`); a failed lookup and
+  Try again keep it. Try again never re-offers a candidate declined in this
+  tab (`declinedHere`), even before the host's record is written. The line
+  now reads "…; it gets a sidebar row once Temple can tell."
+- *Remove* counts a session with a connected tab here as running, whatever
+  the host's probe said, and adds one the listing lacks
+  (`runningForRemoval`); Stop them and remove stops it too.
+- *The launch notice* is built from handles the host proved present
+  (`contactLeftRunningByCause`: an unknown probe counts for neither cause),
+  minus any open in a live tab here when the answer arrives.
+- *Open on a rowless session* opens a Codex run through the pending path
+  (which rejoins an identified run whose core join failed) and any other by
+  its session id; with no folder on record the row says what to do and the
+  sheet stays open.
+- *The folder sheet's post-test check is advice*: it shows where the path
+  resolved; only Start starts.
+- *A just-reattached tab's close prompt* says "<Agent> may still be working
+  on <host>." ("Temple reattached to it a moment ago and can't tell yet.")
+  until input, a wake or the settle timer's first reading
+  (`OpenSessionsModel.unsettledReattach`, `workingIsUncertain`).
+- *A removed host's open tabs* say so at once, in place of their other
+  headers, with Open Settings at Hosts (`AppModel.removedRemoteHosts`; an
+  edit keeps the name and is not a removal).
+- *Visual*: remote hints and problems wrap (the Name hint was cut); Add
+  host hides its "Add host by address…" link while the default button reads
+  the same; the folder sheet's title is "New <Agent> session" with the host
+  in mono after it; every `--flag` in the Hosts notes is code.
