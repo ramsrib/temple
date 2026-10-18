@@ -86,7 +86,7 @@ final class RemoteSessionsSheetModel: ObservableObject {
             return true
         }
         guard let directory = session.directory else {
-            results[session.handle] = RemoteCopy.cannotOpenTracked
+            results[session.handle] = RemoteCopy.cannotOpenTracked(host)
             commands[session.handle] = RemoteCopy.attachCommand(session.handle)
             return false
         }
@@ -95,7 +95,7 @@ final class RemoteSessionsSheetModel: ObservableObject {
         } else if let id = session.sessionID {
             openSessions.remoteTabs.openSession(id, agent: session.agent, host: request.host, directory: directory)
         } else {
-            results[session.handle] = RemoteCopy.cannotOpenTracked
+            results[session.handle] = RemoteCopy.cannotOpenTracked(host)
             commands[session.handle] = RemoteCopy.attachCommand(session.handle)
             return false
         }

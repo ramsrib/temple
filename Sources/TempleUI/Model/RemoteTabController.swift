@@ -41,7 +41,7 @@ public final class RemoteTabController {
     public var unlinkHandler: ((_ sessionID: String, _ host: HostID) -> Void)?
     /// Not this one detached the tab: the notice, whose Open reopens the
     /// run by its handle in that folder.
-    public var unlinkedHandler: ((_ host: HostID, _ handle: String, _ directory: String) -> Void)?
+    public var unlinkedHandler: ((_ host: HostID, _ handle: String, _ directory: String, _ session: String) -> Void)?
     /// A row's open state (`last_opened_at`), read when Discard is chosen:
     /// an Open after that keeps the row.
     public var rowLastOpened: (_ sessionID: String) -> Date? = { _ in nil }
@@ -536,6 +536,9 @@ public final class RemoteTabController {
               let sid = tab.sessionID, let handle = tab.remote?.handle, let host = remoteHost(for: tab),
               !isQuitting else { return }
         let hostID = tab.host, directory = tab.launchObservation?.directory ?? tab.projectPath
+        // What the notice calls the session it archives: its prompt, else
+        // its row's title.
+        let name = linked.firstPrompt ?? model.sessionRow(sid)?.displayTitle ?? Agent.codex.newSessionTitle
         tab.remote?.unlinking = true
         let ticket = gate.ticket(for: tab)
         let noticeTicket = gate.ticket(host: hostID)
@@ -566,7 +569,7 @@ public final class RemoteTabController {
             }
             self.model.removeTab(tab.id)
             self.model.forgetClosedTabs(sessionID: sid)
-            self.unlinkedHandler?(hostID, handle, directory)
+            self.unlinkedHandler?(hostID, handle, directory, name)
         }
     }
 
@@ -1674,6 +1677,9 @@ public final class RemoteTabController {
             model.activate(tab)
             return
         }
+        // A run already asked about (a decline, or Not this one) was typed
+        // into: the question comes at once, from Running sessions too.
+        let typed = typed || asked.contains(handle) || declinedHere[handle] != nil
         if typed { inputEvidence[handle] = .committed }
         let tab = model.appendPendingChip(host: hostID, handle: handle, directory: directory, ended: false, typed: typed)
         model.activate(tab)

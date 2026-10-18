@@ -354,7 +354,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         var archived: [String] = []
         var unlinked: [(HostID, String, String)] = []
         model.remoteTabs.unlinkHandler = { id, _ in archived.append(id) }
-        model.remoteTabs.unlinkedHandler = { unlinked.append(($0, $1, $2)) }
+        model.remoteTabs.unlinkedHandler = { unlinked.append(($0, $1, $2)); XCTAssertEqual($3, "reply with the word ok") }
         remote.excludesDeclined = true
         remote.suggestionsResult = .candidates([suggestion()])
         let tab = await newCodex()
@@ -1205,9 +1205,10 @@ final class RemoteCodexIdentityTests: XCTestCase {
                        "Close tab. Stops Claude Code on box if it is waiting for input; asks first if it is working.")
         XCTAssertEqual(RemoteCopy.stopWorkingTitle("Fix it", host: "box"), "Stop \u{201C}Fix it\u{201D} on box?")
         XCTAssertEqual(RemoteCopy.stopWorkingMessage(agent: .codex, uncertain: false, tabOpen: true, resumable: true),
-                       "Codex is working on it. Stopping ends it and closes its tab. You can resume the conversation later.")
+                       "Codex is working on it. Stopping ends it and closes its tab. Resume it later from its row in the sidebar.")
         XCTAssertEqual(RemoteCopy.stopWorkingMessage(agent: .claude, uncertain: true, tabOpen: false, resumable: false),
-                       "Claude Code may still be working on it; Temple reconnected a moment ago and can't tell yet. Stopping ends it.")
+                       "Claude Code may still be working on it; Temple reconnected a moment ago and can't tell yet. Stopping ends it. "
+                       + "It can't be resumed afterwards.")
         XCTAssertEqual(RemoteCopy.workingCLIRefusal("box"),
                        "Its agent is working on box. Pass --force to detach it (it keeps running), or stop it in Temple.")
         // Remove, singular and plural.

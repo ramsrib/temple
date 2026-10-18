@@ -115,9 +115,12 @@ struct SessionRow: View {
         }
         .alert(stopQuestion.title,
                isPresented: $confirmingStop) {
-            Button("Stop") { model.openSessions.remoteTabs.stopSession(sessionID: session.id, host: session.host) }
-                .keyboardShortcut(.defaultAction)
+            // Cancel is the default; Stop ends the agent.
+            Button("Stop", role: .destructive) {
+                model.openSessions.remoteTabs.stopSession(sessionID: session.id, host: session.host)
+            }
             Button("Cancel", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: {
             Text(stopQuestion.message)
         }

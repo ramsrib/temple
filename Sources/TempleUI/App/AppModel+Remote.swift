@@ -241,14 +241,12 @@ extension AppModel {
         remoteHosts.remove(removal.name)
     }
 
-    /// Why "Stop them and remove" kept the host: sessions not stopped
-    /// (said under one heading), and sessions whose stop's outcome could
-    /// not be saved on this Mac (each its own line: Temple can't tell
-    /// whether they stopped).
+    /// Why "Stop them and remove" kept the host: every session it tried,
+    /// in the alert's order, each with its outcome (stopped, not stopped
+    /// and why, or not known), so none is unaccounted for. Empty: removed.
     public struct RemovalFailures: Equatable {
-        public var notStopped: [String] = []
-        public var unrecorded: [String] = []
-        public var isEmpty: Bool { notStopped.isEmpty && unrecorded.isEmpty }
+        public var lines: [String] = []
+        public var isEmpty: Bool { lines.isEmpty }
     }
 
     /// "Stop them and remove": each running session is stopped (no
@@ -260,24 +258,30 @@ extension AppModel {
         guard let record = remoteHosts.record(named: removal.name) else { return }
         let host = record.host
         var remaining = removal.live.count
-        var failures = RemovalFailures()
+        var outcomes = [String?](repeating: nil, count: removal.live.count)
+        var blocked = false
         let ticket = openSessions.remoteTabs.gate.ticket(host: host)
-        for session in removal.live {
+        for (index, session) in removal.live.enumerated() {
             let title = trackedTitle(session)
             openSessions.remoteTabs.stopTracked(handle: session.handle, host: host, agent: session.agent) { [weak self] result in
                 remaining -= 1
                 switch result {
                 case .stopped:
-                    break
+                    outcomes[index] = RemoteCopy.removalStopped(title)
                 case .leftRunning(let reason, let detail):
-                    failures.notStopped.append(RemoteCopy.removalNotStopped(title, host: host.rawValue, reason: reason,
-                                                                            detail: detail))
+                    blocked = true
+                    outcomes[index] = RemoteCopy.removalNotStopped(title, host: host.rawValue, reason: reason, detail: detail)
                 case .unrecorded(let detail):
-                    failures.unrecorded.append(RemoteCopy.removalUnrecorded(title, host: host.rawValue, detail: detail))
+                    blocked = true
+                    outcomes[index] = RemoteCopy.removalUnrecorded(title, host: host.rawValue, detail: detail)
                 }
                 guard remaining == 0, let self, self.openSessions.remoteTabs.gate.admit(.removalStopOutcome, ticket) else { return }
-                if failures.isEmpty { self.remoteHosts.remove(removal.name) }
-                completion(failures)
+                guard blocked else {
+                    self.remoteHosts.remove(removal.name)
+                    completion(RemovalFailures())
+                    return
+                }
+                completion(RemovalFailures(lines: outcomes.compactMap { $0 }))
             }
         }
     }

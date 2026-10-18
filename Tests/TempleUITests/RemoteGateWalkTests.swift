@@ -360,7 +360,7 @@ final class RemoteGateWalkTests: XCTestCase {
                 h.remote.unlinkGate = { await h.hold.wait() }
                 h.app.openSessions.remoteTabs.unlink(tab)
                 await self.settle { !h.remote.unlinks.isEmpty }
-            }, effect: { $0.app.remoteNotice?.message == RemoteCopy.unlinked($0.host.rawValue) }),
+            }, effect: { h in if case .unlinked? = h.app.remoteNotice?.kind { return true }; return false }),
 
             // Remove (the cold-read round): its question to the host, and
             // Stop them and remove's last stop.

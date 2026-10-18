@@ -27,6 +27,8 @@ final class FakeRemoteHost: RemoteSessionHost {
     var collectResult: RemoteLaunchOutcome = .ok(directory: "/home/u/project")
     var liveness: RemoteLiveness = .present
     var stopResult: RemoteStopResult = .stopped
+    /// Per run, over `stopResult`.
+    var stopResults: [String: RemoteStopResult] = [:]
     /// Holds a stop until released (a quit's hung query), by handle; a
     /// held stop that is cancelled throws, as one with no answer does.
     var stopGate: ((String) async -> Void)?
@@ -135,6 +137,7 @@ final class FakeRemoteHost: RemoteSessionHost {
     func stop(_ handle: String, fromAttachedTab: Bool) async throws -> RemoteStopResult {
         stops.append((handle, fromAttachedTab))
         if let stopGate { await stopGate(handle) }
+        let stopResult = stopResults[handle] ?? self.stopResult
         // An answer that arrives after a cancellation is still an answer
         // (the real stop writes it); the caller's gate decides what shows.
         if stopResult == .stopped, let index = pending.firstIndex(where: { $0.handle == handle }) { pending[index].ended = true }
@@ -851,16 +854,16 @@ final class RemoteLifecycleTests: XCTestCase {
                                                       resumable: true)
         XCTAssertEqual(uncertain.title, "Stop \u{201C}Title\u{201D} on box?")
         XCTAssertEqual(uncertain.message, "Claude Code may still be working on it; Temple reconnected a moment ago and can't tell yet. "
-                       + "Stopping ends it and closes its tab. You can resume the conversation later.")
+                       + "Stopping ends it and closes its tab. Resume it later from its row in the sidebar.")
         XCTAssertEqual(model.remoteTabs.stopQuestion(host: hostID, agent: .claude, title: "Title", handle: "kept",
                                                      resumable: false).message,
                        "Claude Code may still be working on it; Temple reconnected a moment ago and can't tell yet. "
-                       + "Stopping ends it and closes its tab.", "no resume promised without a transcript")
+                       + "Stopping ends it and closes its tab. It can't be resumed afterwards.", "said, without a transcript")
         model.surfaceDidReceiveInput(try XCTUnwrap(tab.surface))
         XCTAssertFalse(model.workingIsUncertain(tab), "input since: the usual reading")
         XCTAssertEqual(model.remoteTabs.stopQuestion(host: hostID, agent: .claude, title: "Title", sessionID: "s1",
                                                      resumable: true).message,
-                       "Claude Code is working on it. Stopping ends it and closes its tab. You can resume the conversation later.")
+                       "Claude Code is working on it. Stopping ends it and closes its tab. Resume it later from its row in the sidebar.")
 
         let created = await openRow("s2")
         XCTAssertEqual(remote.runs.last?.handle, created.remote?.handle)

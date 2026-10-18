@@ -405,9 +405,9 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertTrue(remote.stops.isEmpty, "the agent keeps running")
         XCTAssertEqual(remote.pending.first?.dismissed, false, "its run is kept: listed under Running sessions")
         let notice = try XCTUnwrap(app.remoteNotice)
-        XCTAssertEqual(notice.message, "Unlinked. The agent keeps running on box. Its tab is under Running sessions on box; "
-                       + "open it to pick the right session.")
-        XCTAssertEqual(app.remoteNoticeAction(notice), "Open")
+        XCTAssertEqual(notice.message, "Closed this tab and archived \u{201C}hi\u{201D}, the session Temple linked by mistake. "
+                       + "The Codex agent keeps running on box.")
+        XCTAssertEqual(app.remoteNoticeAction(notice), "Reopen tab")
         app.actOnRemoteNotice(notice)
         XCTAssertNil(app.remoteNotice)
         let reopened = try XCTUnwrap(app.openSessions.tabs.first { $0.remote?.handle == "p1" })
@@ -415,5 +415,17 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertEqual(reopened.remote?.suggestions.map(\.sessionID), ["c8"], "asks without the declined candidate")
         XCTAssertEqual(app.overlay.rows["c7"]?.archived, true, "reopening the run leaves the rejected row archived")
         XCTAssertEqual(app.overlay.rows["c7"]?.lastOpenedAt, lastOpened)
+
+        // The way back after the notice is gone: Running sessions lists the
+        // run, and Open there reopens it asking at once.
+        app.openSessions.remoteTabs.detach(reopened.id)
+        app.showRemoteSessions(hostID)
+        let sheet = app.sessionsSheetModel(try XCTUnwrap(app.remoteSessionsSheet))
+        XCTAssertTrue(sheet.open(RemoteTrackedSession(handle: "p1", sessionID: nil, agent: .codex,
+                                                      state: .present(attached: false), leftRunning: nil,
+                                                      directory: "/home/u/p"), rows: app.sessions))
+        let again = try XCTUnwrap(app.openSessions.tabs.first { $0.remote?.handle == "p1" })
+        await settle { again.remote?.suggestions.isEmpty == false }
+        XCTAssertEqual(again.remote?.suggestions.map(\.sessionID), ["c8"])
     }
 }

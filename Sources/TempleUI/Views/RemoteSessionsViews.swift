@@ -37,12 +37,13 @@ struct RemoteSessionsSheet: View {
         .onDisappear { sheet.dismissed() }
         .alert(confirmingStop.map { stopQuestion($0).title } ?? "",
                isPresented: Binding(get: { confirmingStop != nil }, set: { if !$0 { confirmingStop = nil } })) {
-            Button("Stop") {
+            // Cancel is the default; Stop ends the agent.
+            Button("Stop", role: .destructive) {
                 if let session = confirmingStop { sheet.stop(session) }
                 confirmingStop = nil
             }
-            .keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) { confirmingStop = nil }
+                .keyboardShortcut(.defaultAction)
         } message: {
             if let session = confirmingStop { Text(stopQuestion(session).message) }
         }
