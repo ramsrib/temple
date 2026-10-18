@@ -458,11 +458,11 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertNil(reopened.sessionID)
     }
 
-    /// The quit begins while Not this one's write is out: once it commits,
-    /// the saved tab set loses the rejected session all the same (the
-    /// detach is durable work; only the notice passes the gate), so the
-    /// next launch brings back neither the session nor, detached, its run.
-    func testNotThisOneDuringAQuitStillTakesTheSessionOutOfTheSavedTabs() async throws {
+    /// The quit begins while Not this one's write is out. Once it commits,
+    /// the frozen saved tab set is left alone (no partial save, no counter
+    /// moved); the next launch's restore leaves out the saved tab whose row
+    /// on a host is archived, then saves the set once without it.
+    func testNotThisOneDuringAQuitLeavesTheFrozenSetAloneAndTheNextLaunchSkipsTheSession() async throws {
         let store = ScriptedTabPersistence { _ in true }
         makeModel(persistence: store)
         remote.suggestionsResult = .candidates([suggestion()])
@@ -476,22 +476,26 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await settle(self.remote.unlinks.count == 1)
         model.prepareForQuit()
         _ = model.quitDrainPlan()
-        XCTAssertTrue(store.saved.contains { $0.sessionID == "c7" }, "frozen with it")
+        let attempts = store.attempted.count, saves = model.acknowledgedSaves
         await hold.open()
-        await settle(!store.saved.contains { $0.sessionID == "c7" }, "taken out once the write commits")
         await settle(self.remote.pending.first?.tabClosed == true, "its run detached")
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(store.saved.contains { $0.sessionID == "c7" }, "the frozen set is not edited")
+        XCTAssertEqual(store.attempted.count, attempts, "no partial save")
+        XCTAssertEqual(model.acknowledgedSaves, saves, "the save counter means a full save, still")
         XCTAssertTrue(notices.isEmpty)
 
-        // Relaunch: nothing of it comes back, nothing resumes.
+        // Relaunch, the row archived (as the app's unlink handler leaves it).
         remote.unlinkGate = nil
         makeModel(persistence: store)
-        let row = Fixture.row("c7", agent: .codex, project: "/home/u/project", host: hostID)
+        let row = Fixture.archived(Fixture.row("c7", agent: .codex, project: "/home/u/project", host: hostID))
         model.sessionRow = { $0 == "c7" ? row : nil }
         model.restore()
         model.remoteTabs.restorePending(hosts: [hostID])
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertFalse(model.tabs.contains { $0.sessionID == "c7" || $0.remote?.handle == "p1" })
         XCTAssertFalse(remote.opens.contains { $0.sessionID == "c7" }, "the rejected session never resumes")
+        XCTAssertFalse(store.saved.contains { $0.sessionID == "c7" }, "the restore's one save drops it")
     }
 
     /// Reopening a run whose input record never reached the run store

@@ -730,6 +730,11 @@ public final class AppModel: ObservableObject {
             TempleUILog.remote.notice("Archived \(id, privacy: .public): declined link")
             self.overlay.setArchived(true, sessionID: id)
         }
+        openSessions.remoteTabs.claimJoinedHandler = { [weak self] id, _ in
+            // A tab's claim is that tab's session: never left archived.
+            guard let self, self.overlay.rows[id]?.archived == true else { return }
+            self.overlay.setArchived(false, sessionID: id)
+        }
         openSessions.remoteTabs.tabTitleProvider = { [weak self] tab in
             self?.tabDisplayTitle(tab) ?? tab.title
         }

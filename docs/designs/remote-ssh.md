@@ -3286,3 +3286,13 @@ cold read of the real screens, as built:
   host hides its "Add host by address…" link while the default button reads
   the same; the folder sheet's title is "New <Agent> session" with the host
   in mono after it; every `--flag` in the Hosts notes is code.
+- *Not this one never edits the saved tab set* (Sol round 5 items 1 and 2;
+  Fable's decision, the second round with findings in that write). A quit
+  freezes the set with the rejected tab; the next launch's `restore()`
+  leaves out a saved tab on a host whose row is archived (the row is the
+  session; an archived row has no tab), finds the active tab on what it
+  restored, and saves the set once when it skipped anything. A claim that
+  joins (`adopted`, `reconcile`) unarchives its row, so a session another
+  tab claims later restores as that tab. `forgetSavedTab` and its
+  acknowledgement bump are gone; `acknowledgedSaves` again counts only
+  full saves of the live set.

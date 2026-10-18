@@ -92,6 +92,77 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertEqual(RemoteCopy.leftRunningCount(1, host: "box"), "A session you closed is still running on box.")
     }
 
+    /// End to end over one database: Not this one while a quit begins
+    /// archives the row; the next launch restores no tab of the rejected
+    /// session, opens nothing of it, and its run stays under Running
+    /// sessions (detached, not a chip).
+    func testNotThisOneDuringAQuitAndARelaunchOverOneDatabase() async throws {
+        let db = try TempleDB.inMemory()
+        let remote = FakeRemoteHost("box")
+        remote.suggestionsResult = .candidates([RemoteSuggestion(rolloutPath: "/r/c7.jsonl", sessionID: "c7", firstPrompt: "hi",
+                                                                 startedAt: Date(), directory: "/home/u/p")])
+        let app = try app(remote, db: db)
+        app.openSessions.remoteTabs.identitySchedule = [0.01]
+        app.openSessions.remoteTabs.identityInterval = 0.05
+        let tab = app.openSessions.newSession(agent: .codex, project: ProjectKey(host: hostID, path: "/home/u/p"))
+        await settle { tab.hasLiveProcess }
+        app.openSessions.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle { tab.remote?.linkedOnItsOwn == true }
+        await settle { DBTabPersistence(db: db).load().contains { $0.sessionID == "c7" } }
+        let hold = Gate()
+        remote.unlinkGate = { await hold.wait() }
+        app.openSessions.remoteTabs.unlink(tab)
+        await settle { remote.unlinks.count == 1 }
+        app.openSessions.prepareForQuit()
+        _ = app.openSessions.quitDrainPlan()
+        await hold.open()
+        await settle { app.overlay.rows["c7"]?.archived == true && remote.pending.first?.tabClosed == true }
+        remote.unlinkGate = nil
+        let opensBefore = remote.opens.count
+
+        let relaunched = try self.app(remote, db: db)
+        relaunched.openSessions.remoteTabs.restorePending(hosts: [hostID])
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertFalse(relaunched.openSessions.tabs.contains { $0.sessionID == "c7" }, "no tab of the rejected session")
+        XCTAssertEqual(relaunched.overlay.rows["c7"]?.archived, true)
+        XCTAssertEqual(remote.opens.count, opensBefore, "nothing of it opened")
+        XCTAssertFalse(relaunched.openSessions.tabs.contains { $0.remote?.handle == "p1" }, "detached: not a chip")
+        XCTAssertEqual(remote.pending.first?.dismissed, false, "kept: listed under Running sessions")
+    }
+
+    /// Another tab's claim of the rejected session (its lone candidate,
+    /// legitimately) unarchives the row: an archived row has no tab, and
+    /// the tab then restores as that session after a relaunch.
+    func testAClaimThatJoinsUnarchivesTheRow() async throws {
+        let db = try TempleDB.inMemory()
+        let remote = FakeRemoteHost("box")
+        remote.excludesDeclined = true
+        let c7 = RemoteSuggestion(rolloutPath: "/r/c7.jsonl", sessionID: "c7", firstPrompt: "hi", startedAt: Date(),
+                                  directory: "/home/u/p")
+        remote.suggestionsResult = .candidates([c7])
+        let app = try app(remote, db: db)
+        app.openSessions.remoteTabs.identitySchedule = [0.01]
+        app.openSessions.remoteTabs.identityInterval = 0.05
+        let tab = app.openSessions.newSession(agent: .codex, project: ProjectKey(host: hostID, path: "/home/u/p"))
+        await settle { tab.hasLiveProcess }
+        app.openSessions.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle { tab.remote?.linkedOnItsOwn == true }
+        app.openSessions.remoteTabs.unlink(tab)
+        await settle { app.overlay.rows["c7"]?.archived == true }
+        // Another tab in another folder: c7 is its lone candidate, never
+        // declined for its run.
+        let second = app.openSessions.newSession(agent: .codex, project: ProjectKey(host: hostID, path: "/home/u/q"))
+        await settle { second.hasLiveProcess }
+        app.openSessions.surfaceDidSubmitInput(try XCTUnwrap(second.surface))
+        await settle { second.sessionID == "c7" }
+        await settle { app.overlay.rows["c7"]?.archived == false }
+        XCTAssertEqual(app.overlay.rows["c7"]?.archived, false, "its tab's session is not left archived")
+        await settle { DBTabPersistence(db: db).load().contains { $0.sessionID == "c7" } }
+
+        let relaunched = try self.app(remote, db: db)
+        XCTAssertTrue(relaunched.openSessions.tabs.contains { $0.sessionID == "c7" }, "restores as that tab")
+    }
+
     func testRemoteProjectMasksLiveInTheRemoteStoreAndProjectStateIsUntouched() throws {
         let db = try TempleDB.inMemory()
         let remoteKey = ProjectKey(host: hostID, path: "/home/u/p")

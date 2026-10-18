@@ -248,6 +248,16 @@ enum Fixture {
             lastActiveAt: Date(timeIntervalSince1970: updated)))
     }
 
+    /// The same row, archived (a person's archive).
+    static func archived(_ row: Session) -> Session {
+        let s = row.state
+        return Session(state: SessionState(id: s.id, pinned: false, archived: true, customName: s.customName, color: s.color,
+            generatedTitle: s.generatedTitle, lastOpenedAt: s.lastOpenedAt, joinedVia: s.joinedVia, joinedAt: s.joinedAt,
+            agent: s.agent, transcriptPath: s.transcriptPath, host: s.host, directory: s.directory,
+            directorySource: s.directorySource, title: s.title, lastActiveAt: s.lastActiveAt, incarnation: s.incarnation),
+            resolution: row.resolution)
+    }
+
     static func join(_ rows: [Session], to database: TempleDB) {
         for row in rows {
             try! database.join(sessionID: row.id, via: .imported, agent: row.agent,

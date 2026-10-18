@@ -174,6 +174,56 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertEqual(model.activeTab?.title, "Row title")
     }
 
+    /// A local saved tab whose row is archived restores as an inert chip
+    /// exactly as before: the restore's skip is for sessions on hosts only.
+    func testALocalArchivedRowStillRestoresAsBefore() throws {
+        let factory = FakeTerminalSurfaceFactory()
+        let persistence = UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults())
+        persistence.save([PersistedTab(sessionID: "row", agent: .claude, projectPath: "/saved", title: "Saved")])
+        let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
+            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(), persistence: persistence)
+        let row = Fixture.archived(Fixture.row("row", project: "/row-directory"))
+        model.sessionRow = { _ in row }
+        model.restore()
+        XCTAssertEqual(model.tabs.map(\.sessionID), ["row"], "restored")
+        XCTAssertEqual(model.tabs.first?.host, .local)
+        XCTAssertTrue(factory.created.isEmpty, "inert")
+        XCTAssertNil(model.activeTabID)
+    }
+
+    /// A saved tab on a host whose row is archived (Not this one during a
+    /// quit) is left out; the active tab is found on what was restored, and
+    /// the saved set is written once without the skipped tab.
+    func testARemoteArchivedSavedTabIsSkippedAndTheActiveOneFoundOnTheRestoredList() throws {
+        let host = HostID(rawValue: "box")
+        func run(activeID: String) -> (OpenSessionsModel, UserDefaultsTabPersistence, FakeTerminalSurfaceFactory) {
+            let factory = FakeTerminalSurfaceFactory()
+            let persistence = UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults())
+            persistence.save(["a", "x", "b"].map {
+                PersistedTab(sessionID: $0, agent: .claude, projectPath: "/p/\($0)", title: $0, isActive: $0 == activeID)
+            })
+            let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
+                runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(), persistence: persistence)
+            let rows: [String: Session] = [
+                "a": Fixture.row("a", project: "/p/a"),
+                "x": Fixture.archived(Fixture.row("x", agent: .codex, project: "/home/u/x", host: host)),
+                "b": Fixture.row("b", project: "/p/b"),
+            ]
+            model.sessionRow = { rows[$0] }
+            model.restore()
+            return (model, persistence, factory)
+        }
+        let (skippedActive, persisted, factory) = run(activeID: "x")
+        XCTAssertEqual(skippedActive.tabs.map(\.sessionID), ["a", "b"])
+        XCTAssertNil(skippedActive.activeTabID, "the active one was skipped: nothing resumes")
+        XCTAssertTrue(factory.created.isEmpty)
+        XCTAssertEqual(persisted.load().map(\.sessionID), ["a", "b"], "saved once without it")
+
+        let (other, _, _) = run(activeID: "b")
+        XCTAssertEqual(other.tabs.map(\.sessionID), ["a", "b"])
+        XCTAssertEqual(other.activeTab?.sessionID, "b", "the right tab, though the indices shifted")
+    }
+
     func testCopyResumeCommandPrefersTheRowAndKeepsLegacyFallback() throws {
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "row", via: .imported, agent: .claude,

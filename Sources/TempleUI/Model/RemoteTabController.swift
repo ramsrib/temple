@@ -39,6 +39,11 @@ public final class RemoteTabController {
     /// created is archived, reversibly (a person's archive: History
     /// restores it).
     public var unlinkHandler: ((_ sessionID: String, _ host: HostID) -> Void)?
+    /// A claim joined core: the row is that tab's session, in front of the
+    /// person, so it is not archived (an earlier Not this one archived it
+    /// for another tab's link). Keeps "an archived row has no tab", which
+    /// `restore()` relies on.
+    public var claimJoinedHandler: ((_ sessionID: String, _ host: HostID) -> Void)?
     /// The title a tab's chip shows (the app's `tabDisplayTitle`).
     public var tabTitleProvider: (SessionTab) -> String = { $0.title.isEmpty ? $0.agent.newSessionTitle : $0.title }
     /// Not this one detached the tab: the notice, whose Open reopens the
@@ -573,11 +578,10 @@ public final class RemoteTabController {
             // Admitted now, after the last await and before the detach
             // below changes the tab: the notice is the gated part.
             let admitted = self.gate.admit(.unlinkResult, ticket)
-            // The detach itself is durable work too, whatever the gate says:
-            // the saved tab set loses the rejected session now (a quit has
-            // frozen it, and must not bring the session back next launch),
-            // and a tab still open is detached unless the app is quitting.
-            self.model.forgetSavedTab(sessionID: sid)
+            // The saved tab set is not edited here: the detach's `removeTab`
+            // saves the live set, and a quit has frozen it, in which case
+            // the next launch's `restore()` leaves out a saved tab on a host
+            // whose row is archived (Fable's decision, Sol round 5).
             self.model.forgetClosedTabs(sessionID: sid)
             if !self.isQuitting, let tab = self.model.tabs.first(where: { $0.id == tabID }), tab.sessionID == sid {
                 if tab.hasLiveProcess, let surface = tab.surface {
@@ -1086,6 +1090,7 @@ public final class RemoteTabController {
             let open = SessionOpen(id: id, host: hostID, via: .created, agent: .codex, locator: nil)
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
+                claimJoinedHandler?(id, hostID)
                 if let directory { model.launchDirectoryHandler?(id, hostID, directory) }
                 operations.run(host: hostID, .write) {
                     do { try await host.markJoined(handle) } catch {
@@ -1701,6 +1706,7 @@ public final class RemoteTabController {
             let open = SessionOpen(id: claim.sessionID, host: hostID, via: .created, agent: .codex, locator: nil)
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
+                claimJoinedHandler?(claim.sessionID, hostID)
                 if let directory = claim.directory { model.launchDirectoryHandler?(claim.sessionID, hostID, directory) }
                 joined.insert(claim.handle)
                 do { try await host.markJoined(claim.handle) } catch {
