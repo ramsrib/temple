@@ -288,8 +288,6 @@ public protocol RemoteSessionHost: HostLauncher {
     func confirm(_ handle: String, suggestion: RemoteSuggestion, automatic: Bool) async -> RemoteIdentity
     /// "Not this one": never offered again for this run.
     func decline(_ handle: String, rolloutPath: String) async throws
-    /// The core join refused the id: the run is pending again.
-    func releaseClaim(_ handle: String, sessionID: String) async throws
     func markJoined(_ handle: String) async throws
     /// Claims whose core join never happened, with their folders.
     func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)]

@@ -284,11 +284,6 @@ final class RemoteHostLauncher: RemoteSessionHost {
         try await sessions.decline(handle, rolloutPath: rolloutPath)
     }
 
-    func releaseClaim(_ handle: String, sessionID: String) async throws {
-        try await sessions.releaseClaim(handle, sessionID: sessionID)
-        await refreshLiveSessions()
-    }
-
     func markJoined(_ handle: String) async throws { try await sessions.markJoined(handle) }
 
     func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)] {

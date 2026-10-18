@@ -1418,11 +1418,6 @@ public final class RemoteSessions {
         try await write { try $0.decline(handle, rolloutPath: rolloutPath) }
     }
 
-    /// The core join refused the id (another host's, or another agent's).
-    public func releaseClaim(_ handle: String, sessionID: String) async throws {
-        try await write { try $0.releaseClaim(handle, sessionID: sessionID) }
-    }
-
     public func markJoined(_ handle: String) async throws {
         let now = now()
         try await write { try $0.markJoined(handle, at: now) }
