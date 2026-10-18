@@ -543,6 +543,33 @@ final class RemoteCodexIdentityTests: XCTestCase {
                      "a lookup that came back empty")
     }
 
+    func testV10AnOldOpenCannotSuppressTheCurrentOpensLookup() async throws {
+        model.remoteTabs.identitySchedule = [60]
+        model.remoteTabs.activationRecheck = 0
+        remote.identityResult = .inconclusive("shared server", lasting: true, ended: false)
+        let tab = await newCodex()
+        await settle(tab.remote?.identityOperation != nil)
+        model.remoteTabs.operations.cancel(id: try XCTUnwrap(tab.remote?.identityOperation))
+        let oldIdentity = Gate(), currentLookup = Gate()
+        remote.identityGate = { await oldIdentity.wait() }
+        model.remoteTabs.activated(tab)
+        await settle(self.remote.identifies.count == 1)
+        // The next open owns a new token while the independent activation check remains out.
+        tab.remote?.openToken = UUID()
+        remote.identityGate = nil
+        remote.suggestionsQueue = [
+            (gate: { await currentLookup.wait() }, answer: .candidates([suggestion("c7"), suggestion("c8")])),
+            (gate: nil, answer: .candidates([])),
+        ]
+        model.remoteTabs.retryIdentity(tab)
+        await settle(self.remote.suggestionLookups.count == 1)
+        await oldIdentity.open()
+        await settle(self.model.remoteTabs.operations.count(.identity) == 1)
+        await currentLookup.open()
+        await settle(tab.remote?.retrying == false)
+        XCTAssertEqual(tab.remote?.suggestions.map(\.sessionID), ["c7", "c8"])
+    }
+
     /// Only the newest lookup reaches the tab: an older one that comes back
     /// later, and empty, never erases a candidate the newer one found, and
     /// a lookup with candidates takes the empty-state line down with it.

@@ -1339,6 +1339,7 @@ public final class RemoteTabController {
     private var lookupGeneration: [String: Int] = [:]
 
     private func loadSuggestions(_ ticket: RemoteTicket, host: RemoteSessionHost, handle: String) async {
+        guard let tab = ticket.tab, tab.remote?.openToken == ticket.openToken, isPending(tab) else { return }
         let generation = (lookupGeneration[handle] ?? 0) + 1
         lookupGeneration[handle] = generation
         let answer = await host.suggestions(handle)
