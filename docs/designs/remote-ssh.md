@@ -3405,14 +3405,12 @@ the same snapshot. This closes V5r's overlapping-check window without a
 durable claim fence. Joined claims cannot cycle through unlink/relink, so
 no durable claim generation, hand-over id or remote schema field is needed. The migrations still end at `r5-input`.
 
-The seven retained fixes each have one focused regression in an existing
+The retained fixes each have one focused regression in an existing
 suite: V1 passes the verified rollout path to the claim's decline check;
 V7 retires an ended joined answer without restoring a resumable chip;
 V8 clears pending busy state at host retirement; V9 shows the first
 unavailable lookup using the existing failure text; V10 rejects a stale
-open before assigning a lookup generation; V11 keeps the newer existing
-session tab and terminates only the redundant client, without a host stop
-or another hand-over; V12 distinguishes an unreadable run from a missing
+open before assigning a lookup generation; V12 distinguishes an unreadable run from a missing
 row when looking for candidates. A successfully persisted decline holds
 even if Codex's process later proves that rollout's identity.
 
@@ -3424,3 +3422,11 @@ reviews with no region-I findings, and the tenth cold read of the
 surviving note. Cold-read input is prepared separately; no cold read is
 claimed by code or test review. This work is committed locally on main
 and is not pushed.
+
+### Known limitation: V11, concurrent pending claim and row open (2026-10-18)
+
+If a pending Codex claim arrives at the same moment its session row is
+opened, both tabs can remain attached to the same tmux session. This is
+rare and harmless. The owner accepts the duplicate tabs rather than a
+canonical-tab mechanism with recovery hand-over obligations. Commit
+`cb40209` and its test are reverted; either tab can be closed as usual.
