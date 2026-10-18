@@ -3444,5 +3444,5 @@ is connected, tries again. Three rounds of fixes to show the failure with a
 Try again each left a stale or missing message somewhere (fresh reviews
 r4 and r5), so per the pre-committed bound in the review ledger they are
 reverted (`155d49f`, `4bffa79`, `6fec8a2`) and this stays as pushed in
-phase 1b. A failure after the tab has asked still shows its reason with
-Try again.
+phase 1b. A failed Try again still shows its reason; a scheduled check that
+fails while candidates are listed stays quiet too, as before.
