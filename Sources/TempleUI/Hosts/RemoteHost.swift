@@ -294,6 +294,14 @@ final class RemoteHostLauncher: RemoteSessionHost {
         await refreshLiveSessions()
     }
 
+    func handBacks() async -> [(run: RemotePendingRun, sessionID: String)] {
+        await sessions.handBacks().map { owed in
+            (RemotePendingRun(handle: owed.run.handle, directory: owed.run.directory ?? owed.run.directoryIntent,
+                              ended: owed.run.isEnded, sessionID: nil, typed: owed.run.inputSeenAt != nil, joined: false),
+             owed.sessionID)
+        }
+    }
+
     func markJoined(_ handle: String) async throws { try await sessions.markJoined(handle) }
 
     func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)] {
@@ -336,6 +344,14 @@ final class RemoteStoreLedger: RemoteRunLedger {
     func markTabClosed(_ handle: String, sessionID: String) async throws {
         let now = Date()
         _ = try await store.perform { try $0.markTabClosed(handle, sessionID: sessionID, at: now) }
+    }
+
+    func finishHandBack(_ handle: String, sessionID: String) async throws {
+        _ = try await store.perform { try $0.finishHandBack(handle, sessionID: sessionID) }
+    }
+
+    func dropHandBack(_ handle: String, sessionID: String) async throws {
+        try await store.perform { try $0.dropHandBack(handle, sessionID: sessionID) }
     }
 }
 

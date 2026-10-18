@@ -556,10 +556,23 @@ final class CodexIdentityTests: XCTestCase {
         XCTAssertNil(run.sessionID)
         XCTAssertNil(run.claim)
         XCTAssertNil(run.joinedAt)
-        XCTAssertNil(run.tabClosedAt)
-        XCTAssertEqual(try store.pendingRuns(host: HostID(rawValue: "box")).map(\.handle), ["a"], "restorable again")
+        XCTAssertNotNil(run.tabClosedAt, "not restorable by its handle until handed back")
+        XCTAssertEqual(try store.handBacks(host: HostID(rawValue: "box")).map(\.sessionID), ["c1"])
         XCTAssertEqual(try store.declined("a"), ["/r/c1"])
         XCTAssertEqual(try store.claim("a", sessionID: "c1", how: .verified, rolloutPath: "/r/c1"), .declined)
+        // A hand-back for another id changes nothing; its own reopens it.
+        XCTAssertFalse(try store.finishHandBack("a", sessionID: "zz"))
+        XCTAssertTrue(try store.finishHandBack("a", sessionID: "c1"))
+        XCTAssertNil(try store.run("a")?.tabClosedAt)
+        XCTAssertEqual(try store.pendingRuns(host: HostID(rawValue: "box")).map(\.handle), ["a"], "restorable again")
+        XCTAssertEqual(try store.handBacks(host: HostID(rawValue: "box")).count, 0)
+        // Unlinked once more and its tab closed first: the close stands.
+        XCTAssertEqual(try store.claim("a", sessionID: "c2", how: .verified, rolloutPath: "/r/c2"), .claimed)
+        try store.unlink("a", sessionID: "c2", rolloutPath: "/r/c2")
+        try store.dropHandBack("a", sessionID: "c2")
+        XCTAssertNotNil(try store.run("a")?.tabClosedAt)
+        XCTAssertEqual(try store.pendingRuns(host: HostID(rawValue: "box")), [])
+        XCTAssertEqual(try store.handBacks(host: HostID(rawValue: "box")).count, 0)
     }
 
     func testDeclinedCandidatesAndPendingRestore() throws {

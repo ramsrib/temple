@@ -509,9 +509,109 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await settle(tab.sessionID == nil)
         XCTAssertFalse(model.remoteTabs.owesHandOver("p1"), "the obligation is dropped")
         await hold.open()
+        // Handed back once a save without c7 is acknowledged.
+        await settle(self.remote.handBackWrites == ["finish p1"])
+        await settle(self.remote.pending.first?.tabClosed == false, "restorable by its handle")
+        XCTAssertTrue(remote.closedPending.isEmpty, "the late hand-over marked nothing")
+        XCTAssertFalse(model.remoteTabs.owesHandBack("p1"))
+    }
+
+    // MARK: Not this one across a relaunch (the hand-back)
+
+    /// A linked new Codex session, its hand-over written, with the tab set
+    /// saved through `store`.
+    private func linkedTab(_ store: ScriptedTabPersistence) async throws -> SessionTab {
+        makeModel(persistence: store)
+        remote.suggestionsResult = .candidates([suggestion()])
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(tab.remote?.linkedOnItsOwn == true)
+        await settle(self.remote.closedPending == ["p1"], "handed over")
+        XCTAssertTrue(store.saved.contains { $0.sessionID == "c7" })
+        return tab
+    }
+
+    /// Relaunch on the same tab store and host: what comes back.
+    private func relaunch(_ store: ScriptedTabPersistence) async throws {
+        makeModel(persistence: store)
+        // c7's row (archived by Not this one) still says where it lives.
+        let row = Fixture.row("c7", agent: .codex, project: "/home/u/project", host: hostID)
+        model.sessionRow = { $0 == "c7" ? row : nil }
+        model.restore()
+        model.remoteTabs.restorePending(hosts: [hostID])
+        try await Task.sleep(for: .milliseconds(200))
+    }
+
+    /// The quit begins before Not this one's write commits: the frozen tab
+    /// set still holds the rejected session. Next launch, that saved tab is
+    /// the run's (unidentified), never both it and the run, and the run's
+    /// restoration comes back once a save without the session is written.
+    func testNotThisOneThenQuitBeforeItCommitsRestoresTheRunOnce() async throws {
+        let store = ScriptedTabPersistence { _ in true }
+        let tab = try await linkedTab(store)
+        let hold = Gate()
+        remote.unlinkGate = { await hold.wait() }
+        model.remoteTabs.unlink(tab)
+        await settle(self.remote.unlinks.count == 1)
+        model.prepareForQuit()
+        _ = model.quitDrainPlan()
+        await hold.open()
+        await settle(self.remote.pending.first?.handBackFrom == "c7", "committed during the quit, owed back")
+        XCTAssertTrue(store.saved.contains { $0.sessionID == "c7" }, "the frozen set still holds it")
+        remote.unlinkGate = nil
+
+        try await relaunch(store)
+        XCTAssertFalse(model.tabs.contains { $0.sessionID == "c7" }, "the rejected session is not restored")
+        XCTAssertEqual(model.tabs.filter { $0.remote?.handle == "p1" }.count, 1, "the run comes back once")
+        XCTAssertNil(model.tabs.first?.sessionID)
+        await settle(self.remote.pending.first?.handBackFrom == nil && self.remote.pending.first?.tabClosed == false,
+                     "handed back after the relaunch's save")
+        XCTAssertFalse(store.saved.contains { $0.sessionID == "c7" })
+        XCTAssertFalse(remote.opens.contains { $0.sessionID == "c7" }, "nothing resumed the rejected session")
+    }
+
+    /// The tab set's save after Not this one fails: the run's restoration
+    /// stays off (the saved tab still holds the session), and a relaunch
+    /// brings back one tab, the run's.
+    func testNotThisOneWhoseSaveFailsRestoresTheRunOnce() async throws {
+        let store = ScriptedTabPersistence { _ in true }
+        let tab = try await linkedTab(store)
+        let failingFrom = store.saves + 1
+        store.succeeds = { $0 < failingFrom }
+        model.remoteTabs.unlink(tab)
+        await settle(tab.sessionID == nil)
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(remote.pending.first?.tabClosed, false, "still restorable by its handle")
-        XCTAssertTrue(remote.closedPending.isEmpty)
+        XCTAssertTrue(model.remoteTabs.owesHandBack("p1"), "no acknowledged save: still owed")
+        XCTAssertEqual(remote.pending.first?.tabClosed, true, "not restorable by its handle while the save holds c7")
+        XCTAssertTrue(store.saved.contains { $0.sessionID == "c7" })
+
+        store.succeeds = { _ in true }
+        try await relaunch(store)
+        XCTAssertFalse(model.tabs.contains { $0.sessionID == "c7" })
+        XCTAssertEqual(model.tabs.filter { $0.remote?.handle == "p1" }.count, 1)
+        await settle(self.remote.pending.first?.tabClosed == false, "handed back once a save is written")
+    }
+
+    /// The tab is detached (or closed) before Not this one's write commits:
+    /// that decision stands. The hand-back is dropped, the run's restoration
+    /// stays off, and a relaunch brings back neither the session nor the run.
+    func testNotThisOneAfterTheTabWentLeavesTheCloseStanding() async throws {
+        let store = ScriptedTabPersistence { _ in true }
+        let tab = try await linkedTab(store)
+        let hold = Gate()
+        remote.unlinkGate = { await hold.wait() }
+        model.remoteTabs.unlink(tab)
+        await settle(self.remote.unlinks.count == 1)
+        model.remoteTabs.detach(tab.id)
+        XCTAssertFalse(model.tabs.contains { $0 === tab })
+        await hold.open()
+        await settle(self.remote.handBackWrites == ["drop p1"], "the close stands")
+        XCTAssertEqual(remote.pending.first?.tabClosed, true)
+        XCTAssertNil(remote.pending.first?.handBackFrom)
+        XCTAssertTrue(remote.stops.isEmpty, "detached: still running, listed under Running sessions")
+
+        try await relaunch(store)
+        XCTAssertFalse(model.tabs.contains { $0.sessionID == "c7" || $0.remote?.handle == "p1" }, "neither comes back")
     }
 
     /// An automatic yes that can't be written says why and asks: it is not

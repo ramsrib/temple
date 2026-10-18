@@ -3250,6 +3250,22 @@ cold read of the real screens, as built:
   the new gated completion `.unlinkResult`) makes the tab unidentified. A
   failed write changes nothing, is said once, and the button can be used
   again (`RemoteTabState.unlinking` holds it while the write is out).
+- *The undo is a hand-back, the hand-over's reverse* (Sol round 2; the
+  second finding in this path, so the mechanism, not a patch). The unlink
+  write releases the claim but keeps the run's own restoration off
+  (`tab_closed_at`, set if not already) and records `hand_back_from` (the
+  session id a saved tab set may still hold; remote store migration
+  `r6-hand-back`). A `HandBack` obligation holds the run store like a
+  hand-over: it is finished (`finishHandBack`: restoration back on) only by
+  an acknowledged save after the tab became the run's, dropped
+  (`dropHandBack`) when the tab went first (a close or detach stands),
+  retried, and settled at the quit; the UI gate decides only what the tab
+  shows. At the next launch `restorePending` turns a saved tab still holding
+  the session into the run's tab (or brings the run back by its handle when
+  none does) and owes the hand-back again; an open of such a saved tab (the
+  restored active one opens at once) does the same before it would ever
+  open the rejected session. Relaunch tests: the quit before the write
+  commits, a failed tab save, and a detach before the commit.
 - *A late hand-over can't undo it.* `RemoteStateStore.markTabClosed` marks
   the run only while it still holds the session id the hand-over was owed
   for, in the statement itself (`RemoteRunLedger.markTabClosed(_:sessionID:)`).

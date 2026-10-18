@@ -198,6 +198,8 @@ final class FakeRemoteHost: RemoteSessionHost {
         var typed = false
         var claimed = false
         var joined = false
+        /// Not this one released its claim on this id; owed a hand-back.
+        var handBackFrom: String?
     }
     var pending: [Pending] = []
     private var pendingCounter = 0
@@ -269,8 +271,22 @@ final class FakeRemoteHost: RemoteSessionHost {
             host.closedPending.append(handle)
             if let index = host.pending.firstIndex(where: { $0.handle == handle }) { host.pending[index].tabClosed = true }
         }
+        func finishHandBack(_ handle: String, sessionID: String) async throws {
+            await host?.handBack(handle, sessionID: sessionID, reopen: true)
+        }
+        func dropHandBack(_ handle: String, sessionID: String) async throws {
+            await host?.handBack(handle, sessionID: sessionID, reopen: false)
+        }
     }
     func runLedger() -> RemoteRunLedger? { Ledger(self) }
+
+    fileprivate func handBack(_ handle: String, sessionID: String, reopen: Bool) async {
+        handBackWrites.append((reopen ? "finish " : "drop ") + handle)
+        if let handBackGate { await handBackGate() }
+        guard let index = pending.firstIndex(where: { $0.handle == handle }), pending[index].handBackFrom == sessionID else { return }
+        if reopen, pending[index].sessionID == nil, !pending[index].dismissed { pending[index].tabClosed = false }
+        pending[index].handBackFrom = nil
+    }
 
     private(set) var inputs: [String] = []
     /// How many input writes fail before one is written.
@@ -348,9 +364,21 @@ final class FakeRemoteHost: RemoteSessionHost {
             pending[index].sessionID = nil
             pending[index].claimed = false
             pending[index].joined = false
-            pending[index].tabClosed = false
+            // As the store: its own restoration stays off, owed back.
+            pending[index].tabClosed = true
+            pending[index].handBackFrom = sessionID
         }
     }
+
+    func handBacks() async -> [(run: RemotePendingRun, sessionID: String)] {
+        pending.filter { $0.handBackFrom != nil && !$0.dismissed }.map {
+            (RemotePendingRun(handle: $0.handle, directory: $0.directory, ended: $0.ended, typed: $0.typed), $0.handBackFrom!)
+        }
+    }
+
+    /// Hand-back writes, in order: "finish p1" or "drop p1".
+    private(set) var handBackWrites: [String] = []
+    var handBackGate: (() async -> Void)?
 
     private(set) var joinedMarks: [String] = []
     func markJoined(_ handle: String) async throws {

@@ -124,6 +124,14 @@ public final class RemoteTabController {
         // id is used again, never resumed.
         let resume = (tab.isResume || tab.inputSubmitted || resumeAnyway || resumeUnconfirmed) && !startNew
         operations.run(host: tab.host, .open) { [weak self] in
+            // A saved tab of a session Not this one released (the quit came
+            // before the tab set was saved without it): it is that run's tab,
+            // never an open of the rejected session.
+            if agent == .codex, let back = await host.handBacks().first(where: { $0.sessionID == sid }) {
+                guard let self, self.gate.admit(.openResult, ticket), let tab = ticket.tab else { return }
+                self.takeBack(tab, back.run, from: sid, host: host)
+                return
+            }
             let result: Result<RemoteOpenResult, Error>
             do {
                 result = .success(try await host.open(agent: agent, sessionID: sid, resume: resume, directory: directory,
@@ -517,21 +525,24 @@ public final class RemoteTabController {
 
     /// "Not this one" on a link Temple made on its own (B11): the link is
     /// undone and the agent keeps running. The durable part comes first,
-    /// in one write: the claim on that session id is released, the
-    /// candidate declined for this run and the run made restorable by its
-    /// handle again. Only once it has committed is anything else touched:
-    /// the hand-over the link owed is dropped (and a late retry of it can
-    /// no longer mark the run, `markTabClosed`), the row the link created
-    /// is archived (reversibly), and, through the gate, the tab becomes
-    /// unidentified again, saying Temple couldn't tell (with Try again)
-    /// until the question's candidates arrive. A write that fails changes
-    /// nothing: the tab is still that session, said once in a notice, and
-    /// Not this one can be tried again.
+    /// in one write: the claim on that session id is released and the
+    /// candidate declined for this run; the run's own restoration stays off
+    /// and is owed back (a hand-back, the hand-over's reverse). Only once
+    /// that has committed: the hand-over the link owed is dropped (a late
+    /// retry of it can't mark the run, `markTabClosed`), the row the link
+    /// created is archived (reversibly), and, through the gate, the tab
+    /// becomes unidentified again, saying Temple couldn't tell (with Try
+    /// again) until the question's candidates arrive. The hand-back is
+    /// settled like a hand-over, whatever the gate says: by an acknowledged
+    /// save of a tab set without the session (the run's restoration comes
+    /// back), by the tab going first (a close or detach stands), or at the
+    /// next launch (`restorePending`). A write that fails changes nothing:
+    /// the tab is still that session, said once, and it can be tried again.
     public func unlink(_ tab: SessionTab) {
         guard tab.remote?.linkedOnItsOwn == true, tab.remote?.unlinking != true, let linked = tab.remote?.linkedSuggestion,
               let sid = tab.sessionID, let handle = tab.remote?.handle, let host = remoteHost(for: tab),
               !isQuitting else { return }
-        let hostID = tab.host
+        let hostID = tab.host, tabID = tab.id
         tab.remote?.unlinking = true
         let ticket = gate.ticket(for: tab)
         let noticeTicket = gate.ticket(host: hostID)
@@ -548,12 +559,14 @@ public final class RemoteTabController {
                 return
             }
             // Committed: durable from here, whatever the tab does.
-            self?.handOvers[handle] = nil
-            self?.declinedHere[handle, default: []].insert(linked.id)
+            guard let self else { return }
+            self.handOvers[handle] = nil
+            self.oweHandBack(handle: handle, sessionID: sid, tabID: tabID, host: host, hostID: hostID)
+            self.declinedHere[handle, default: []].insert(linked.id)
             archive?(sid, hostID)
-            guard let self, self.gate.admit(.unlinkResult, ticket), let tab = ticket.tab, tab.sessionID == sid else { return }
-            tab.sessionID = nil
-            tab.isProvisional = true
+            defer { self.settleHandOvers() }
+            guard self.gate.admit(.unlinkResult, ticket), let tab = ticket.tab, tab.sessionID == sid else { return }
+            self.becomePending(tab, handle: handle, from: sid)
             tab.remote?.unlinking = false
             tab.remote?.linkedOnItsOwn = false
             tab.remote?.linkedSuggestion = nil
@@ -563,10 +576,40 @@ public final class RemoteTabController {
             tab.remote?.identityNote = RemoteCopy.couldNotTell
             tab.remote?.unlinkFallback = true
             self.asked.insert(handle)
-            self.model.forgetClosedTabs(sessionID: sid)
-            self.model.persist()
+            self.settleHandOvers()
             await self.loadSuggestions(ticket, host: host, handle: handle)
         }
+    }
+
+    /// A saved tab of a session whose run Not this one handed back: it is
+    /// that run's tab again (unidentified, by its handle), owed the
+    /// hand-back from the next acknowledged save; `open` attaches it.
+    private func takeBack(_ tab: SessionTab, _ run: RemotePendingRun, from sessionID: String, host: RemoteSessionHost,
+                          open: Bool = true) {
+        model.makePendingChip(tab, handle: run.handle, ended: run.ended, typed: run.typed)
+        if run.typed { inputEvidence[run.handle] = .committed }
+        asked.insert(run.handle)
+        model.forgetClosedTabs(sessionID: sessionID)
+        oweHandBack(handle: run.handle, sessionID: sessionID, tabID: tab.id, host: host, hostID: tab.host,
+                    savesBefore: model.acknowledgedSaves)
+        model.persist()
+        settleHandOvers()
+        guard open else { return }
+        if run.ended {
+            loadSuggestions(tab, host: host, handle: run.handle)
+        } else {
+            model.ensureSurface(for: tab)
+        }
+    }
+
+    /// The tab is its run's again, unidentified: out of the saved tab set
+    /// from the next save, which is what its hand-back waits for.
+    private func becomePending(_ tab: SessionTab, handle: String, from sessionID: String) {
+        tab.sessionID = nil
+        tab.isProvisional = true
+        model.forgetClosedTabs(sessionID: sessionID)
+        handBacks[handle]?.savesBefore = model.acknowledgedSaves
+        model.persist()
     }
 
     /// Cancel, on a tab still connecting past the startup deadline: its
@@ -1185,6 +1228,7 @@ public final class RemoteTabController {
     /// written since it was owed (an acknowledged save the model made
     /// anyway); one already being written is left to finish. Never saves.
     func settleHandOvers() {
+        settleHandBacks()
         guard handOvers.values.contains(where: { !$0.inFlight }) else { return }
         let open = Set(model.tabs.map(\.id))
         let saves = model.acknowledgedSaves
@@ -1232,6 +1276,94 @@ public final class RemoteTabController {
 
     /// Whether a run still owes its hand-over (tests).
     func owesHandOver(_ handle: String) -> Bool { handOvers[handle] != nil }
+
+    // MARK: Hand-backs (Not this one), the hand-over's reverse
+
+    /// A run whose claim Not this one released, while a saved tab set may
+    /// still hold the session it was claimed as. Like a hand-over it holds
+    /// the run store itself, is settled only by an acknowledged save (here
+    /// of a tab set without the session, its tab now the run's) or by its
+    /// tab going, is retried, and is finished at the quit or the next
+    /// launch. A close or detach in between stands: the hand-back is
+    /// dropped and the run's restoration stays as that close left it.
+    private struct HandBack {
+        let ledger: RemoteRunLedger
+        let sessionID: String
+        let hostID: HostID
+        let hostName: String
+        let tabID: SessionTab.ID
+        /// The acknowledged saves when the tab became the run's; `.max`
+        /// until then (no save counts while the tab is still the session).
+        var savesBefore: Int = .max
+        var inFlight = false
+        var said = false
+    }
+    private var handBacks: [String: HandBack] = [:]
+
+    private func oweHandBack(handle: String, sessionID: String, tabID: SessionTab.ID, host: RemoteSessionHost,
+                             hostID: HostID, savesBefore: Int = .max) {
+        guard let ledger = host.runLedger() else {
+            TempleUILog.db.error("no run store to hand a run back with; the next launch reconciles it")
+            return
+        }
+        handBacks[handle] = HandBack(ledger: ledger, sessionID: sessionID, hostID: hostID, hostName: host.hostName,
+                                     tabID: tabID, savesBefore: savesBefore)
+    }
+
+    /// Whether a run still owes its hand-back (tests).
+    func owesHandBack(_ handle: String) -> Bool { handBacks[handle] != nil }
+
+    /// Each hand-back whose tab is gone is dropped; each whose tab is the
+    /// run's and whose tab set has been saved since is finished.
+    private func settleHandBacks() {
+        guard handBacks.values.contains(where: { !$0.inFlight }) else { return }
+        let saves = model.acknowledgedSaves
+        for (handle, owed) in handBacks where !owed.inFlight {
+            guard let tab = model.tabs.first(where: { $0.id == owed.tabID }) else {
+                finishHandBack(handle, reopen: false)
+                continue
+            }
+            if tab.sessionID == nil, saves > owed.savesBefore { finishHandBack(handle, reopen: true) }
+        }
+    }
+
+    private func finishHandBack(_ handle: String, reopen: Bool) {
+        guard var owed = handBacks[handle] else { return }
+        owed.inFlight = true
+        handBacks[handle] = owed
+        let retries = handOverRetries
+        let ticket = gate.ticket(host: owed.hostID)
+        operations.run(host: owed.hostID, .write) { [weak self] in
+            var failure: Error?
+            for delay in [0] + retries {
+                if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+                do {
+                    if reopen {
+                        try await owed.ledger.finishHandBack(handle, sessionID: owed.sessionID)
+                    } else {
+                        try await owed.ledger.dropHandBack(handle, sessionID: owed.sessionID)
+                    }
+                    failure = nil
+                    break
+                } catch {
+                    failure = error
+                }
+            }
+            guard let self else { return }
+            guard let failure else {
+                self.handBacks[handle] = nil
+                return
+            }
+            // Kept for the next save, close, quit or launch; said once.
+            self.handBacks[handle]?.inFlight = false
+            guard self.handBacks[handle]?.said == false else { return }
+            self.handBacks[handle]?.said = true
+            TempleUILog.remote.notice("hand-back of \(handle, privacy: .public) not written: \(failure.localizedDescription, privacy: .public)")
+            if self.gate.admit(.pendingWriteNotice, ticket) {
+                self.noticeHandler?(owed.hostID, RemoteCopy.unrecorded(owed.hostName, detail: failure.localizedDescription))
+            }
+        }
+    }
 
     /// A pending run's durable write, owned through close and quit; one
     /// that fails is said once (never swallowed).
@@ -1600,8 +1732,33 @@ public final class RemoteTabController {
             operations.run(host: hostID, .query) { [weak self] in
                 guard let self else { return }
                 let joined = await self.reconcile(host: host, hostID: hostID)
+                let backs = await host.handBacks()
                 let runs = await host.pendingRuns()
-                guard !runs.isEmpty, self.gate.admit(.pendingRestore, ticket) else { return }
+                guard !runs.isEmpty || !backs.isEmpty, self.gate.admit(.pendingRestore, ticket) else { return }
+                // Hand-backs first (Not this one, settled before the quit or
+                // not): a saved tab still holding the session is that run's
+                // tab; with none, the run comes back by its handle. Either
+                // way the hand-back is owed until a save without the session.
+                for back in backs {
+                    if let saved = self.model.tabs.first(where: {
+                        $0.kind == .session && $0.host == hostID && $0.sessionID == back.sessionID
+                    }) {
+                        self.takeBack(saved, back.run, from: back.sessionID, host: host, open: false)
+                        continue
+                    }
+                    let tab = self.model.tabs.first(where: { $0.host == hostID && $0.remote?.handle == back.run.handle })
+                        ?? self.model.appendPendingChip(host: hostID, handle: back.run.handle,
+                                                        directory: back.run.directory, ended: back.run.ended,
+                                                        typed: back.run.typed)
+                    if back.run.typed { self.inputEvidence[back.run.handle] = .committed }
+                    self.asked.insert(back.run.handle)
+                    self.oweHandBack(handle: back.run.handle, sessionID: back.sessionID, tabID: tab.id, host: host,
+                                     hostID: hostID, savesBefore: self.model.acknowledgedSaves)
+                }
+                if !backs.isEmpty {
+                    self.model.persist()
+                    self.settleHandOvers()
+                }
                 for run in runs where !self.model.tabs.contains(where: { $0.host == hostID && $0.remote?.handle == run.handle }) {
                     if let id = run.sessionID, run.joined || joined.contains(run.handle) {
                         let chip = self.model.tabs.first(where: { $0.sessionID == id })

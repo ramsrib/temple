@@ -1411,7 +1411,14 @@ public final class RemoteSessions {
     /// "Not this one" on a link Temple made on its own (the store's
     /// `unlink`).
     public func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws {
-        try await write { try $0.unlink(handle, sessionID: sessionID, rolloutPath: rolloutPath) }
+        let now = now()
+        try await write { try $0.unlink(handle, sessionID: sessionID, rolloutPath: rolloutPath, at: now) }
+    }
+
+    /// Runs owed a hand-back (the launch's reconciliation).
+    public func handBacks() async -> [(run: RemoteRun, sessionID: String)] {
+        let host = host
+        return await read { try $0.handBacks(host: host) } ?? []
     }
 
     /// The core join refused the id (another host's, or another agent's).

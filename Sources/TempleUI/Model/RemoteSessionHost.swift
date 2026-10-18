@@ -225,6 +225,11 @@ public protocol RemoteRunLedger: AnyObject {
     /// Marks the run handed over, only while it still holds `sessionID`
     /// (the claim the hand-over was owed for).
     func markTabClosed(_ handle: String, sessionID: String) async throws
+    /// The reverse, after Not this one: no saved tab set holds `sessionID`
+    /// any more and the run's tab is open; its restoration comes back.
+    func finishHandBack(_ handle: String, sessionID: String) async throws
+    /// The run's tab went before the hand-back: that close stands.
+    func dropHandBack(_ handle: String, sessionID: String) async throws
 }
 
 @MainActor
@@ -294,6 +299,9 @@ public protocol RemoteSessionHost: HostLauncher {
     /// claim on `sessionID` is released, `rolloutPath` declined for the
     /// run, and the run made restorable by its handle again.
     func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws
+    /// Runs owed a hand-back, each with the session id a saved tab may
+    /// still hold for it (the launch's reconciliation).
+    func handBacks() async -> [(run: RemotePendingRun, sessionID: String)]
     func markJoined(_ handle: String) async throws
     /// Claims whose core join never happened, with their folders.
     func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)]

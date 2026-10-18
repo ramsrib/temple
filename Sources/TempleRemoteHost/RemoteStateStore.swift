@@ -241,6 +241,13 @@ public final class RemoteStateStore: @unchecked Sendable {
             try database.execute(sql: "ALTER TABLE runs ADD COLUMN input_seen_at DOUBLE")
             try database.execute(sql: "UPDATE runs SET input_seen_at = \(RemoteRun.inputBeforeRecorded.timeIntervalSince1970)")
         }
+        // The cold-read round's Not this one: a run whose claim was released
+        // while a saved tab set may still hold that session (the session id
+        // it was claimed as) is handed back to its own restoration only
+        // once the tab set is known not to: the reverse of a hand-over.
+        migrator.registerMigration("r6-hand-back") { database in
+            try database.execute(sql: "ALTER TABLE runs ADD COLUMN hand_back_from TEXT")
+        }
         return migrator
     }
 
@@ -552,15 +559,19 @@ public final class RemoteStateStore: @unchecked Sendable {
     }
 
     /// "Not this one" on a link Temple made on its own, in one write: the
-    /// claim on `sessionID` goes (the run is pending again), the candidate
-    /// is declined for the run, and a hand-over already written is undone
-    /// (`tab_closed_at`), so the run restores by its handle again.
-    public func unlink(_ handle: String, sessionID: String, rolloutPath: String) throws {
+    /// claim on `sessionID` goes (the run is pending again) and the
+    /// candidate is declined for the run. The run's own restoration stays
+    /// off (`tab_closed_at`, set if a hand-over had not set it yet) and is
+    /// owed back (`hand_back_from`): until a saved tab set no longer holds
+    /// that session, the saved tab is what restores it (`finishHandBack`,
+    /// `dropHandBack`, and the next launch's reconciliation).
+    public func unlink(_ handle: String, sessionID: String, rolloutPath: String, at date: Date = Date()) throws {
         try queue.write { database in
             try database.execute(sql: """
-                UPDATE runs SET session_id = NULL, claim = NULL, joined_at = NULL, tab_closed_at = NULL
+                UPDATE runs SET session_id = NULL, claim = NULL, joined_at = NULL,
+                    tab_closed_at = COALESCE(tab_closed_at, ?), hand_back_from = ?
                 WHERE handle = ? AND session_id = ? AND claim IS NOT NULL
-                """, arguments: [handle, sessionID])
+                """, arguments: [date.timeIntervalSince1970, sessionID, handle, sessionID])
             try database.execute(sql: "INSERT OR IGNORE INTO declined_candidates (handle, rollout_path) VALUES (?, ?)",
                                  arguments: [handle, rolloutPath])
         }
@@ -578,6 +589,43 @@ public final class RemoteStateStore: @unchecked Sendable {
                                  arguments: [date.timeIntervalSince1970, handle, sessionID])
             return database.changesCount > 0
         }
+    }
+
+    /// The hand-back is due: no saved tab set holds the session any more,
+    /// and the run's tab is still open. Its restoration comes back (while
+    /// it is still unclaimed and not dismissed), in one write.
+    @discardableResult
+    public func finishHandBack(_ handle: String, sessionID: String) throws -> Bool {
+        try queue.write { database in
+            try database.execute(sql: """
+                UPDATE runs SET tab_closed_at = NULL
+                WHERE handle = ? AND hand_back_from = ? AND session_id IS NULL AND dismissed_at IS NULL
+                """, arguments: [handle, sessionID])
+            let reopened = database.changesCount > 0
+            try database.execute(sql: "UPDATE runs SET hand_back_from = NULL WHERE handle = ? AND hand_back_from = ?",
+                                 arguments: [handle, sessionID])
+            return reopened
+        }
+    }
+
+    /// The run's tab went (closed or detached) before the hand-back: that
+    /// decision stands; its restoration stays as the close left it.
+    public func dropHandBack(_ handle: String, sessionID: String) throws {
+        try queue.write { database in
+            try database.execute(sql: "UPDATE runs SET hand_back_from = NULL WHERE handle = ? AND hand_back_from = ?",
+                                 arguments: [handle, sessionID])
+        }
+    }
+
+    /// Runs owed a hand-back, with the session id a saved tab may still
+    /// hold for each (for the launch's reconciliation).
+    public func handBacks(host: HostID) throws -> [(run: RemoteRun, sessionID: String)] {
+        let owed: [(String, String)] = try queue.read { database in
+            try Row.fetchAll(database, sql: """
+                SELECT handle, hand_back_from FROM runs WHERE host = ? AND hand_back_from IS NOT NULL AND dismissed_at IS NULL
+                """, arguments: [host.rawValue]).map { ($0["handle"], $0["hand_back_from"]) }
+        }
+        return try owed.compactMap { handle, sessionID in try run(handle).map { ($0, sessionID) } }
     }
 
     /// The claim reached core (joined, or found joined).

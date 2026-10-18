@@ -2220,8 +2220,10 @@ rows ("Removing remote", below).
   “<first prompt>”, the only Codex session started in this folder since
   the tab opened.", and a wrong one is undone by **Not this one** (the
   cold-read round; it no longer stops anything): in one remote-store write
-  the claim on that id is released, the candidate declined for the run and
-  any hand-over undone (the run restores by its handle again); the row the
+  the claim on that id is released and the candidate declined for the run;
+  the run's own restoration comes back only through a hand-back, the
+  hand-over's reverse, finished by an acknowledged tab save without the
+  session (a close or detach first stands; the next launch reconciles); the row the
   link created is archived as a person's archive (History restores it);
   the tab returns to the question without that candidate, or says Temple
   couldn't tell, with Try again. The agent keeps running. "Asked" is the question shown this launch, or any declined
