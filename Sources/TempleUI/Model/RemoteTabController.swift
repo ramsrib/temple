@@ -35,28 +35,6 @@ public final class RemoteTabController {
     /// while the row is still the membership Discard was chosen for.
     public var discardHandler: ((_ sessionID: String, _ host: HostID, _ incarnation: String,
                                  _ lastOpenedAt: Date?) throws -> Void)?
-    /// "Not this one" on a link Temple made on its own: the row the link
-    /// created is archived, reversibly (a person's archive: History
-    /// restores it).
-    public var unlinkHandler: ((_ sessionID: String, _ host: HostID) -> Void)?
-    /// A person's yes (Yes, that's it; Link it after all) whose claim has
-    /// committed, with the id the claim answered: the app brings that
-    /// session's row back if it is archived, as opening it would (ADR-017:
-    /// a person went to it). Durable, like `unlinkHandler`'s archive: not
-    /// the tab's part. Never for Temple's own yes, a verified identity or
-    /// the launch's reconciliation; those leave every archive as it is.
-    public var confirmedHandler: ((_ sessionID: String, _ host: HostID) -> Void)?
-    /// A claim's core join happened (`adopted`, `reconcile`): the Not this
-    /// one notice about that run no longer holds. Never touches the row's
-    /// archive: a person's yes does that (`confirmedHandler`), a join never.
-    public var claimJoinedHandler: ((_ sessionID: String, _ host: HostID, _ handle: String) -> Void)?
-    /// The title a tab's chip shows (the app's `tabDisplayTitle`).
-    public var tabTitleProvider: (SessionTab) -> String = { $0.title.isEmpty ? $0.agent.newSessionTitle : $0.title }
-    /// Not this one detached the tab: the notice, whose Open reopens the
-    /// run by its handle in that folder.
-    /// `unsaved`: why the tab's close could not be written (said with it).
-    public var unlinkedHandler: ((_ host: HostID, _ handle: String, _ directory: String, _ session: String,
-                                  _ tabTitle: String, _ unsaved: String?) -> Void)?
     /// A row's open state (`last_opened_at`), read when Discard is chosen:
     /// an Open after that keeps the row.
     public var rowLastOpened: (_ sessionID: String) -> Date? = { _ in nil }
@@ -538,78 +516,6 @@ public final class RemoteTabController {
         }
     }
 
-    /// "Not this one" on a link Temple made on its own (B11): the link is
-    /// undone and the agent keeps running (Fable's decision after three
-    /// review rounds found races in converting the tab in place). The
-    /// durable part comes first, in one write: the claim on that session id
-    /// is released and the candidate declined for this run. Only once it
-    /// has committed: the hand-over the link owed is dropped (a late retry
-    /// of it can no longer mark the run, `markTabClosed`), the row the link
-    /// created is archived (reversibly), and the tab is detached as any tab
-    /// is (the ordinary detach write, so the run is listed under Running
-    /// sessions and not restored as a tab), with a notice whose Open
-    /// reopens it by its run: unidentified, asking without the declined
-    /// candidate. A write that fails changes nothing: the tab is still that
-    /// session, said once in a notice, and it can be tried again.
-    public func unlink(_ tab: SessionTab) {
-        guard tab.remote?.linkedOnItsOwn == true, tab.remote?.unlinking != true, let linked = tab.remote?.linkedSuggestion,
-              let sid = tab.sessionID, let handle = tab.remote?.handle, let host = remoteHost(for: tab),
-              !isQuitting else { return }
-        let hostID = tab.host, tabID = tab.id, directory = tab.launchObservation?.directory ?? tab.projectPath
-        // What the notice calls the session it archives: its prompt, else
-        // its row's title.
-        let name = linked.firstPrompt ?? model.sessionRow(sid)?.displayTitle ?? Agent.codex.newSessionTitle
-        // And the tab, by the title its chip shows (the notice outlives it).
-        let tabTitle = tabTitleProvider(tab)
-        tab.remote?.unlinking = true
-        let ticket = gate.ticket(for: tab)
-        let noticeTicket = gate.ticket(host: hostID)
-        let archive = unlinkHandler
-        operations.run(host: hostID, .write) { [weak self] in
-            do {
-                try await host.unlink(handle, sessionID: sid, rolloutPath: linked.rolloutPath)
-            } catch {
-                guard let self else { return }
-                if self.gate.admit(.unlinkResult, ticket), let tab = ticket.tab { tab.remote?.unlinking = false }
-                if self.gate.admit(.identityNotice, noticeTicket) {
-                    self.noticeHandler?(hostID, RemoteCopy.unrecorded(host.hostName, detail: error.localizedDescription))
-                }
-                return
-            }
-            // Committed: durable from here, whatever the tab does.
-            guard let self else { return }
-            self.handOvers[handle] = nil
-            self.declinedHere[handle, default: []].insert(linked.id)
-            self.asked.insert(handle)
-            archive?(sid, hostID)
-            // The ordinary detach write: its tab is closed, the run kept.
-            // Its failure is kept for the notice, never replaced by it.
-            var unsaved: String?
-            do { try await host.closePendingTab(handle) } catch { unsaved = error.localizedDescription }
-            // Admitted now, after the last await and before the detach
-            // below changes the tab: the notice is the gated part.
-            let admitted = self.gate.admit(.unlinkResult, ticket)
-            // The saved tab set is not edited here: the detach's `removeTab`
-            // saves the live set, and a quit has frozen it, in which case
-            // the next launch's `restore()` leaves out a saved tab on a host
-            // whose row is archived (Fable's decision, Sol round 5).
-            self.model.forgetClosedTabs(sessionID: sid)
-            if !self.isQuitting, let tab = self.model.tabs.first(where: { $0.id == tabID }), tab.sessionID == sid {
-                if tab.hasLiveProcess, let surface = tab.surface {
-                    self.model.closingTabIDs.insert(tab.id)
-                    surface.terminate()
-                }
-                self.model.removeTab(tab.id)
-            }
-            // Only what it says passes the gate.
-            if admitted {
-                self.unlinkedHandler?(hostID, handle, directory, name, tabTitle, unsaved)
-            } else if let unsaved, self.gate.admit(.pendingWriteNotice, noticeTicket) {
-                self.noticeHandler?(hostID, RemoteCopy.unrecorded(host.hostName, detail: unsaved))
-            }
-        }
-    }
-
     /// Cancel, on a tab still connecting past the startup deadline: its
     /// client goes; the exit check decides what is known; nothing is
     /// created in its place.
@@ -940,7 +846,7 @@ public final class RemoteTabController {
     private struct HandOver {
         let ledger: RemoteRunLedger
         /// The claim it is owed for: the mark is written only while the
-        /// run still holds it (Not this one may release it meanwhile).
+        /// run still holds it in the write's own statement.
         let sessionID: String
         let hostID: HostID
         let hostName: String
@@ -1117,7 +1023,6 @@ public final class RemoteTabController {
             let open = SessionOpen(id: id, host: hostID, via: .created, agent: .codex, locator: nil)
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
-                claimJoinedHandler?(id, hostID, handle)
                 if let directory { model.launchDirectoryHandler?(id, hostID, directory) }
                 operations.run(host: hostID, .write) {
                     do { try await host.markJoined(handle) } catch {
@@ -1160,11 +1065,10 @@ public final class RemoteTabController {
         }
         if !tab.title.isEmpty, tab.title != tab.agent.newSessionTitle { model.titleHandler?(id, hostID, tab.title) }
         becomeSession(tab, id: id, host: host)
-        // Temple's own yes says so, in the tab only, with Not this one.
+        // Temple's own yes says so, in the tab only.
         if let linked {
             tab.remote?.identityNote = RemoteCopy.linkedOnItsOwn(linked)
             tab.remote?.linkedOnItsOwn = true
-            tab.remote?.linkedSuggestion = linked
         }
     }
 
@@ -1197,7 +1101,6 @@ public final class RemoteTabController {
         // resumes it, never starts it again.
         tab.inputSubmitted = true
         tab.remote?.suggestions = []
-        tab.remote?.declined = []
         tab.remote?.identityNote = nil
         tab.remote?.confirming = nil
         tab.remote?.identityRefused = false
@@ -1429,11 +1332,8 @@ public final class RemoteTabController {
         // Never one the user declined for this run, even before the host's
         // own record of the decline is written (Try again included).
         let declinedPaths = declinedHere[handle] ?? []
-        let isDeclined: (RemoteSuggestion) -> Bool = { $0.declined || declinedPaths.contains($0.id) }
+        let isDeclined: (RemoteSuggestion) -> Bool = { declinedPaths.contains($0.id) }
         let offered = found.filter { $0.sessionID != refused && !isDeclined($0) }
-        // The declined ones, offered back on their own lines (Link it after
-        // all), in the question's order; never in the question itself.
-        let declinedOnes = found.filter { $0.sessionID != refused && isDeclined($0) }
         // Exactly one eligible candidate for a connected run that was typed
         // into and never asked about: Temple says yes on its own, through
         // the yes's own path (owner, round 2; Fable's decision). Two or
@@ -1449,7 +1349,6 @@ public final class RemoteTabController {
             $0.startedAt != $1.startedAt ? $0.startedAt < $1.startedAt : $0.id.lexicographicallyPrecedes($1.id)
         }
         tab.remote?.suggestions = offered.sorted(by: earliestFirst)
-        tab.remote?.declined = declinedOnes.sorted(by: earliestFirst)
         lastLookup[handle] = .candidates(offered.count)
         if retryAwaitingLookup.remove(handle) != nil {
             tab.remote?.retryResult = offered.isEmpty ? RemoteCopy.checkedStillNone : nil
@@ -1505,17 +1404,13 @@ public final class RemoteTabController {
     private func claim(_ suggestion: RemoteSuggestion, in tab: SessionTab, automatic: Bool) {
         guard isPending(tab), let handle = tab.remote?.handle, let host = remoteHost(for: tab),
               tab.remote?.confirming == nil, !isQuitting else { return }
-        let hostID = tab.host
         tab.remote?.confirming = suggestion.id
         let ticket = gate.ticket(for: tab)
         operations.run(host: tab.host, .write) { [weak self] in
-            let identity = await host.confirm(handle, suggestion: suggestion, automatic: automatic, relink: false)
+            let identity = await host.confirm(handle, suggestion: suggestion, automatic: automatic)
             guard let self else { return }
             switch identity {
             case .adopted(let id, let directory), .known(let id, let directory):
-                // A person's yes, committed: their session's row comes back
-                // (ungated, the row's part). Temple's own yes never.
-                if !automatic { self.confirmedHandler?(id, hostID) }
                 // The candidate's prompt titles only the candidate: a claim
                 // that answers with another id (a concurrent `.known`) gets
                 // none. Compared by bytes, as ids are everywhere else.
@@ -1554,62 +1449,12 @@ public final class RemoteTabController {
     /// record of a decline is the durable one, across launches).
     private var declinedHere: [String: Set<[UInt8]>] = [:]
 
-    /// "Link it after all", on a candidate the user declined for this run:
-    /// the ordinary yes, except that the host's claim withdraws the decline
-    /// in its own transaction (a refused claim keeps it). Once the claim
-    /// commits, the row Not this one archived comes back
-    /// (`confirmedHandler`). A person's yes: no "linked on its own" note.
-    /// Never Temple's own.
-    public func relink(_ suggestion: RemoteSuggestion, in tab: SessionTab) {
-        guard isPending(tab), let handle = tab.remote?.handle, let host = remoteHost(for: tab),
-              tab.remote?.confirming == nil, !isQuitting else { return }
-        let hostID = tab.host
-        tab.remote?.confirming = suggestion.id
-        let ticket = gate.ticket(for: tab)
-        operations.run(host: tab.host, .write) { [weak self] in
-            let identity = await host.confirm(handle, suggestion: suggestion, automatic: false, relink: true)
-            guard let self else { return }
-            switch identity {
-            case .adopted(let id, let directory), .known(let id, let directory):
-                self.declinedHere[handle]?.remove(suggestion.id)
-                // Always a person's yes: their session's row comes back.
-                self.confirmedHandler?(id, hostID)
-                let same = id.utf8.elementsEqual(suggestion.sessionID.utf8)
-                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket,
-                                   titleHint: same ? suggestion.firstPrompt : nil)
-            case .taken:
-                guard self.gate.admit(.confirmResult, ticket), let tab = ticket.tab else { return }
-                tab.remote?.confirming = nil
-                tab.remote?.declined.removeAll { $0.id == suggestion.id }
-                tab.remote?.identityNote = RemoteCopy.relinkTaken(suggestion, host: host.hostName,
-                                                                  stillLooking: tab.remote?.phase == .connected)
-            case .inconclusive(let reason, _, let ended):
-                guard self.gate.admit(.confirmResult, ticket), let tab = ticket.tab else { return }
-                tab.remote?.confirming = nil
-                tab.remote?.declined.removeAll { $0.id == suggestion.id }
-                tab.remote?.identityNote = RemoteCopy.relinkRefused(
-                    suggestion, reason: reason, stillLooking: !ended && tab.remote?.phase == .connected)
-            case .storage(let detail):
-                guard self.gate.admit(.confirmResult, ticket), let tab = ticket.tab else { return }
-                tab.remote?.confirming = nil
-                tab.remote?.identityNote = RemoteCopy.unrecorded(host.hostName, detail: detail)
-            }
-        }
-    }
-
     /// "Not this one": gone from the tab at once, and never offered again
     /// for this run (durable).
     public func decline(_ suggestion: RemoteSuggestion, in tab: SessionTab) {
         guard isPending(tab), let handle = tab.remote?.handle, let host = remoteHost(for: tab) else { return }
         declinedHere[handle, default: []].insert(suggestion.id)
         tab.remote?.suggestions.removeAll { $0.id == suggestion.id }
-        // Offered back at once on its own line (the next lookup brings the
-        // list from the host's record).
-        if tab.remote?.declined.contains(where: { $0.id == suggestion.id }) == false {
-            var declined = suggestion
-            declined.declined = true
-            tab.remote?.declined.append(declined)
-        }
         asked.insert(handle)
         // The last one declined, on a running tab: it says no other session
         // has started there (with Try again), never goes bare.
@@ -1767,14 +1612,6 @@ public final class RemoteTabController {
                 guard !runs.isEmpty, self.gate.admit(.pendingRestore, ticket) else { return }
                 for run in runs where !self.model.tabs.contains(where: { $0.host == hostID && $0.remote?.handle == run.handle }) {
                     if let id = run.sessionID, run.joined || joined.contains(run.handle) {
-                        // The rule restore() applies to a saved tab, applied to a run: an
-                        // archived row has no tab. Who archived it is not asked (a person
-                        // did, or a crash left a yes half done); the run stays listed under
-                        // Running sessions, where Open brings the row back.
-                        if let row = self.model.sessionRow(id), row.host == hostID, row.state.archived {
-                            TempleUILog.launch.notice("claimed run not restored: session \(id, privacy: .public) on \(hostID.rawValue, privacy: .public) is archived")
-                            continue
-                        }
                         let chip = self.model.tabs.first(where: { $0.sessionID == id })
                             ?? self.model.appendClaimedChip(host: hostID, sessionID: id, directory: run.directory)
                         self.handOver(chip, handle: run.handle, host: host)
@@ -1809,7 +1646,6 @@ public final class RemoteTabController {
             let open = SessionOpen(id: claim.sessionID, host: hostID, via: .created, agent: .codex, locator: nil)
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
-                claimJoinedHandler?(claim.sessionID, hostID, claim.handle)
                 if let directory = claim.directory { model.launchDirectoryHandler?(claim.sessionID, hostID, directory) }
                 joined.insert(claim.handle)
                 do { try await host.markJoined(claim.handle) } catch {
@@ -1846,7 +1682,7 @@ public final class RemoteTabController {
             model.activate(tab)
             return
         }
-        // A run already asked about (a decline, or Not this one) was typed
+        // A run already asked about (a decline) was typed
         // into: the question comes at once, from Running sessions too. Only
         // the tab's own flag: what the run store has of its input is
         // written (and retried) by `inputSubmitted`, never assumed here.

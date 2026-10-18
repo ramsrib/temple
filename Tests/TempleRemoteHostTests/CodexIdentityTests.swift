@@ -360,9 +360,7 @@ final class CodexIdentityTests: XCTestCase {
         let all = CodexSuggestionLookup.eligible(files, directory: f.folder, since: since,
                                                  until: Date(timeIntervalSince1970: TimeInterval(since + 3600)),
                                                  declined: [RemotePath(declined.path)], held: [held.id])
-        // A declined one comes back flagged (offered back on its own line).
-        XCTAssertEqual(all.filter(\.declined).map(\.rolloutPath), [declined.path])
-        let eligible = all.filter { !$0.declined }
+        let eligible = all
         XCTAssertEqual(eligible.map(\.sessionID), [blank.id, mine.id])
         let fetched = await CodexSuggestionLookup.heads(eligible.map(\.rolloutPath), using: f.exec)
         let heads = try XCTUnwrap(fetched)
@@ -543,57 +541,11 @@ final class CodexIdentityTests: XCTestCase {
         XCTAssertThrowsError(try store.update("a") { $0.sessionID = "c1"; $0.claim = .verified })
     }
 
-    /// Not this one on a link Temple made on its own (the cold-read
-    /// round), in one write: the claim goes and the candidate is declined,
-    /// so the claim's own transaction refuses it from then on. The tab's
-    /// restoration is left as it was (the tab is then detached).
-    func testUnlinkReleasesTheClaimAndDeclinesAndLeavesTheTabsRestorationAlone() throws {
+    func testAVerifiedClaimRefusesADeclinedPath() throws {
         let store = try RemoteStateStore()
         try pendingRun(store, "a")
-        XCTAssertEqual(try store.claim("a", sessionID: "c1", how: .verified, rolloutPath: "/r/c1"), .claimed)
-        try store.markJoined("a", at: Date())
-        try store.update("a") { $0.tabClosedAt = Date() }
-        XCTAssertEqual(try store.pendingRuns(host: HostID(rawValue: "box")).map(\.handle), [], "handed over")
-        try store.unlink("a", sessionID: "c1", rolloutPath: "/r/c1")
-        let run = try XCTUnwrap(store.run("a"))
-        XCTAssertNil(run.sessionID)
-        XCTAssertNil(run.claim)
-        XCTAssertNil(run.joinedAt)
-        XCTAssertNotNil(run.tabClosedAt, "its tab's restoration is the detach's business, not the unlink's")
-        XCTAssertEqual(try store.pendingRuns(host: HostID(rawValue: "box")), [], "detached: not restored as a tab")
-        XCTAssertEqual(try store.declined("a"), ["/r/c1"])
+        try store.decline("a", rolloutPath: "/r/c1")
         XCTAssertEqual(try store.claim("a", sessionID: "c1", how: .verified, rolloutPath: "/r/c1"), .declined)
-    }
-
-    /// Link it after all: a decline is withdrawn only with the claim that
-    /// replaces it, in the claim's own transaction.
-    func testAWithdrawnDeclineGoesOnlyWithTheClaimThatReplacesIt() throws {
-        let store = try RemoteStateStore()
-        try pendingRun(store, "a")
-        try store.decline("a", rolloutPath: "/r/1")
-        XCTAssertEqual(try store.claim("a", sessionID: "z1", how: .confirmed, rolloutPath: "/r/1"), .declined)
-        XCTAssertEqual(try store.claim("a", sessionID: "z1", how: .confirmed, rolloutPath: "/r/1", withdrawingDecline: true),
-                       .claimed)
-        XCTAssertEqual(try store.declined("a"), [])
-        XCTAssertEqual(try store.run("a")?.sessionID, "z1")
-        XCTAssertEqual(try store.run("a")?.claim, .confirmed)
-    }
-
-    /// A withdrawal whose claim is refused keeps the decline; Temple's own
-    /// yes never withdraws one.
-    func testAWithdrawalRefusedKeepsTheDecline() throws {
-        let store = try RemoteStateStore()
-        try pendingRun(store, "a")
-        try pendingRun(store, "b")
-        XCTAssertEqual(try store.claim("b", sessionID: "z1", how: .verified), .claimed)
-        try store.decline("a", rolloutPath: "/r/1")
-        XCTAssertEqual(try store.claim("a", sessionID: "z1", how: .confirmed, rolloutPath: "/r/1", withdrawingDecline: true),
-                       .taken)
-        XCTAssertEqual(try store.declined("a"), ["/r/1"])
-        XCTAssertEqual(try store.claim("a", sessionID: "z2", how: .automatic, rolloutPath: "/r/1", withdrawingDecline: true),
-                       .declined)
-        XCTAssertEqual(try store.declined("a"), ["/r/1"])
-        XCTAssertNil(try store.run("a")?.sessionID)
     }
 
     func testDeclinedCandidatesAndPendingRestore() throws {

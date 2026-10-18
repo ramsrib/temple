@@ -408,8 +408,7 @@ final class RemoteSourceTests: XCTestCase {
         XCTAssertEqual(Set(both.map { Array($0.rolloutPath.utf8) }), [Array(nfcPath.utf8), Array(nfdPath.utf8)], "two files, not one")
         let one = CodexSuggestionLookup.eligible(files, directory: Self.decomposed, since: since, until: until,
                                                  declined: [RemotePath(nfcPath)], held: [])
-        XCTAssertEqual(one.filter { !$0.declined }.map { Array($0.rolloutPath.utf8) }, [Array(nfdPath.utf8)])
-        XCTAssertEqual(one.filter(\.declined).map { Array($0.rolloutPath.utf8) }, [Array(nfcPath.utf8)], "by bytes, flagged")
+        XCTAssertEqual(one.map { Array($0.rolloutPath.utf8) }, [Array(nfdPath.utf8)])
         let store = try RemoteStateStore()
         try store.insert(RemoteRun(handle: "h", host: Self.host, agent: .codex, mode: .new, directoryIntent: "/w",
                                    sessionID: nil, recordPath: RecordDirectory.locator(marker: "r-h"), startedAt: Date()))

@@ -1169,30 +1169,15 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         // it spawns. Where the row lacks a fact (a legacy row has no
         // directory until a transcript or a spawn supplies one), the tab's
         // own persisted fact stands in; `activate` re-reads the row first.
-        var restoredTabs: [(tab: SessionTab, isActive: Bool)] = []
-        var skipped = 0
-        for p in saved {
+        tabs = saved.map { p in
             let row = sessionRow(p.sessionID)
-            // A saved tab on a host whose session is archived is not
-            // restored: Not this one archives the mistaken session after
-            // detaching its tab, and a quit in between keeps the tab in the
-            // frozen set. The row is the session (ADR-029); an archived one
-            // has no tab. Local rows are left as they were (a local archive
-            // never leaves a tab).
-            if let row, !row.host.isLocal, row.state.archived {
-                TempleUILog.launch.notice("saved tab not restored: session \(p.sessionID, privacy: .public) on \(row.host.rawValue, privacy: .public) is archived")
-                skipped += 1
-                continue
-            }
             let agent = row?.agent ?? p.resolvedAgent
             let directory = row?.directory ?? p.projectPath
-            let tab = SessionTab(kind: .session, sessionID: p.sessionID, agent: agent,
-                                 projectPath: directory,
-                                 title: row.flatMap { $0.state.customName ?? $0.state.title } ?? p.title,
-                                 isResume: true, host: row?.host ?? .local)
-            restoredTabs.append((tab, p.isActive))
+            return SessionTab(kind: .session, sessionID: p.sessionID, agent: agent,
+                              projectPath: directory,
+                              title: row.flatMap { $0.state.customName ?? $0.state.title } ?? p.title,
+                              isResume: true, host: row?.host ?? .local)
         }
-        tabs = restoredTabs.map(\.tab)
         // The order ⌘P walked at quit, for the projects that came back. One
         // whose tabs did not is dropped, as closing its last tab would have.
         let restored = Set(openProjectKeys)
@@ -1203,19 +1188,12 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         // user was looking at when they quit is the exception: reopening to the
         // launcher after a quit reads as "Temple lost my session", so that one
         // tab is activated — which resumes exactly one agent, not the whole set.
-        // Found on the restored list (a skipped tab shifts the indices).
-        guard let active = restoredTabs.first(where: \.isActive)?.tab else {
+        guard let activeIndex = saved.firstIndex(where: \.isActive) else {
             activeTabID = nil
-            // The saved set matches the window again: one ordinary full
-            // save, so the open_tabs guards see the truth and the skip is
-            // not repeated.
-            if skipped > 0 { persist() }
             return
         }
+        let active = tabs[activeIndex]
         activate(active)
-        // The same save, once the surviving active tab is the active one, so
-        // the set keeps which tab that is.
-        if skipped > 0 { persist() }
         if !active.hasSurface, active.launchPreparationError == Self.unknownDirectoryMessage {
             pendingRestoreActivation = active.id
         }

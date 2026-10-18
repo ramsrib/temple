@@ -146,20 +146,17 @@ public struct RemoteSuggestion: Equatable, Identifiable {
     /// How far the host's clock was ahead of this Mac's when the lookup
     /// asked (negative: behind); nil when unknown. Display only.
     public let hostClockOffset: TimeInterval?
-    /// The user declined it for this run (offered back on its own line).
-    public var declined: Bool
     public init(rolloutPath: String, sessionID: String, firstPrompt: String?, startedAt: Date, directory: String,
-                promptKnown: Bool = true, hostClockOffset: TimeInterval? = nil, declined: Bool = false) {
+                promptKnown: Bool = true, hostClockOffset: TimeInterval? = nil) {
         self.rolloutPath = rolloutPath; self.sessionID = sessionID; self.firstPrompt = firstPrompt
         self.startedAt = startedAt; self.directory = directory; self.promptKnown = promptKnown
-        self.hostClockOffset = hostClockOffset; self.declined = declined
+        self.hostClockOffset = hostClockOffset
     }
 
     public static func == (lhs: RemoteSuggestion, rhs: RemoteSuggestion) -> Bool {
         lhs.id == rhs.id && Array(lhs.sessionID.utf8) == Array(rhs.sessionID.utf8)
             && lhs.firstPrompt == rhs.firstPrompt && lhs.startedAt == rhs.startedAt
             && Array(lhs.directory.utf8) == Array(rhs.directory.utf8) && lhs.promptKnown == rhs.promptKnown
-            && lhs.declined == rhs.declined
     }
 }
 
@@ -288,17 +285,11 @@ public protocol RemoteSessionHost: HostLauncher {
     /// claimed under the same uniqueness as a verified id; an automatic
     /// one only while it is still the only candidate and the run has no
     /// declined candidate.
-    /// `relink`: the user's "Link it after all" on a candidate they
-    /// declined; the claim withdraws the decline with itself.
-    func confirm(_ handle: String, suggestion: RemoteSuggestion, automatic: Bool, relink: Bool) async -> RemoteIdentity
+    func confirm(_ handle: String, suggestion: RemoteSuggestion, automatic: Bool) async -> RemoteIdentity
     /// "Not this one": never offered again for this run.
     func decline(_ handle: String, rolloutPath: String) async throws
     /// The core join refused the id: the run is pending again.
     func releaseClaim(_ handle: String, sessionID: String) async throws
-    /// Not this one, on a link Temple made on its own: in one write, the
-    /// claim on `sessionID` is released and `rolloutPath` declined for the
-    /// run.
-    func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws
     func markJoined(_ handle: String) async throws
     /// Claims whose core join never happened, with their folders.
     func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)]
@@ -378,15 +369,8 @@ public struct RemoteTabState: Equatable {
     /// Core refused the id this run's check found: Try again is offered.
     public var identityRefused = false
     /// Temple said yes on its own to the lone candidate in this connection:
-    /// `identityNote` says so, and Not this one undoes it.
+    /// `identityNote` says so (display only).
     public var linkedOnItsOwn = false
-    /// The candidate that link was to (what Not this one declines).
-    public var linkedSuggestion: RemoteSuggestion?
-    /// Not this one's write is out: the button waits for it.
-    public var unlinking = false
-    /// Candidates the user declined for this run, offered back on their
-    /// own lines ("Link it after all").
-    public var declined: [RemoteSuggestion] = []
     /// Try again is checking; what it found when that was nothing new.
     public var retrying = false
     public var retryResult: String?
@@ -859,22 +843,6 @@ public enum RemoteCopy {
 
     public static let openSettings = "Open Settings"
 
-    /// Not this one closed the tab: what happened, and Reopen tab. The way
-    /// back is in the reopened tab (Link it after all); the session alone
-    /// comes back from Archived sessions. One paragraph per line (the
-    /// notice lays each out on its own).
-    public static func unlinked(_ session: String, tab: String, host: String) -> String {
-        "Closed \u{201C}\(tab)\u{201D} and archived \u{201C}\(session)\u{201D}. Its Codex agent is still running on \(host).\n"
-            + "Clicked by mistake? Choose \u{201C}\(unlinkedOpen)\u{201D}, then \u{201C}\(relink)\u{201D} in that tab.\n"
-            + "Want only the session back, not the tab? Restore it from Archived sessions (\u{2318}\u{21E7}Y)."
-    }
-    public static let unlinkedOpen = "Reopen tab"
-
-    /// Said with it when the tab's close could not be written.
-    public static func unlinkedUnsaved(_ detail: String) -> String {
-        "Couldn't save on this Mac that this tab was closed (\(lowercasedFirst(trimmed(detail)))), so it may reopen "
-            + "at the next launch."
-    }
 
     /// A tab still open for a host just removed from Temple, at once (not
     /// only when it is opened again).
@@ -1026,48 +994,11 @@ public enum RemoteCopy {
         return formatter.string(from: date)
     }
 
-    /// A declined candidate, offered back on its own line: its prompt in
-    /// quotes, else when it started.
-    public static func declinedLine(_ suggestion: RemoteSuggestion, now: Date = Date()) -> String {
-        "You said \(declinedSubject(suggestion, now: now)) wasn't this tab's session."
-    }
-
-    static func declinedSubject(_ suggestion: RemoteSuggestion, now: Date) -> String {
-        if let prompt = suggestion.firstPrompt { return "\u{201C}\(prompt)\u{201D}" }
-        let note = suggestion.promptKnown ? "no prompt yet" : "first prompt unreadable"
-        return "the session started \(startTime(suggestion.startedAt, now: now)) (\(note))"
-    }
-
-    public static let relink = "Link it after all"
-    public static let relinkHelp = "Links this tab to that session, as \u{201C}\(suggestionYes)\u{201D} would have. "
-        + "If \u{201C}\(suggestionNo)\u{201D} archived the session, this restores it from Archived sessions."
-
-    /// Link it after all, refused: another run holds the session (a claim
-    /// is held until that run's own Not this one, so trying again here
-    /// can't succeed; the session is that run's row). `stillLooking`: the
-    /// tab is connected and still unidentified, so Temple's checks go on.
-    public static func relinkTaken(_ suggestion: RemoteSuggestion, host: String, stillLooking: Bool,
-                                   now: Date = Date()) -> String {
-        "Couldn't link \(declinedSubject(suggestion, now: now)) to this tab: another tab on \(host) has that session now. "
-            + "To go to that session, use its row in the sidebar." + (stillLooking ? " " + relinkStillLooking : "")
-    }
-
-    /// Link it after all, refused for a reason the host gave. The line
-    /// comes back at the next check if the session is still a candidate.
-    public static func relinkRefused(_ suggestion: RemoteSuggestion, reason: String, stillLooking: Bool,
-                                     now: Date = Date()) -> String {
-        "Couldn't link \(declinedSubject(suggestion, now: now)) to this tab: \(lowercasedFirst(sentence(reason))) "
-            + "If \u{201C}\(suggestionNo)\u{201D} archived it, it is still in Archived sessions (\u{2318}\u{21E7}Y)."
-            + (stillLooking ? " " + relinkStillLooking : "")
-    }
-    static let relinkStillLooking = "This tab keeps working, and Temple keeps looking for its session."
-
     public static let suggestionYes = "Yes, that's it"
     public static let suggestionNo = "Not this one"
 
     /// The note a tab shows when Temple said yes on its own to the lone
-    /// candidate: why (the only one); "Not this one" beside it undoes the
-    /// link, and the agent keeps running.
+    /// candidate: why (the only one). Display only; close a wrong link as any tab.
     public static func linkedOnItsOwn(_ suggestion: RemoteSuggestion, now: Date = Date()) -> String {
         if let prompt = suggestion.firstPrompt {
             return "Linked this tab to \u{201C}\(prompt)\u{201D}, the only Codex session started in this folder since the tab opened."

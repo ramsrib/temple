@@ -343,67 +343,21 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(joins.map(\.id), ["c7"])
     }
 
-    /// A wrong link is undone with Not this one (Fable's decision): the
-    /// write comes first (until the claim is released and the candidate
-    /// declined, nothing changes). Once it commits, the row the link made is
-    /// archived (reversibly) and the tab is detached as any tab is: its
-    /// agent keeps running, its run is kept and not restored as a tab, and
-    /// a notice offers Open, which reopens the run by its handle asking
-    /// without the declined candidate.
-    func testNotThisOneDetachesTheTabAndItsRunReopensAskingWithoutTheCandidate() async throws {
-        var archived: [String] = []
-        var unlinked: [(HostID, String, String)] = []
-        model.remoteTabs.unlinkHandler = { id, _ in archived.append(id) }
-        model.remoteTabs.unlinkedHandler = {
-            unlinked.append(($0, $1, $2))
-            XCTAssertEqual($3, "reply with the word ok")
-            XCTAssertFalse($4.isEmpty, "the tab named by its title")
-            XCTAssertNil($5)
-        }
-        remote.excludesDeclined = true
+    /// An automatic link is said in the tab; ordinary close stops an idle agent.
+    func testTemplesOwnYesSaysSoAndTheTabHasNoUndo() async throws {
         remote.suggestionsResult = .candidates([suggestion()])
         let tab = await newCodex()
         model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
         await settle(tab.remote?.linkedOnItsOwn == true)
-        let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
-        // A second candidate turned up meanwhile.
-        remote.suggestionsResult = .candidates([suggestion(), suggestion("c8")])
-        let hold = Gate()
-        remote.unlinkGate = { await hold.wait() }
-        model.remoteTabs.unlink(tab)
-        await settle(self.remote.unlinks.count == 1)
-        XCTAssertEqual(tab.sessionID, "c7", "nothing changes before the write commits")
-        XCTAssertTrue(model.tabs.contains { $0 === tab })
-        XCTAssertEqual(tab.remote?.unlinking, true, "Not this one waits for it")
-        XCTAssertEqual(archived, [])
-        model.remoteTabs.unlink(tab)
-        XCTAssertEqual(remote.unlinks.count, 1, "one write at a time")
-        await hold.open()
-        await settle(!self.model.tabs.contains { $0 === tab }, "detached")
-        XCTAssertTrue(surface.didTerminate, "Temple's client goes, as a detach's does")
-        XCTAssertEqual(archived, ["c7"], "the row the link made is archived (History restores it)")
-        XCTAssertEqual(unlinked.map(\.1), ["p1"], "the notice, with Open")
-        XCTAssertEqual(remote.unlinks.first?.path, suggestion().rolloutPath)
-        XCTAssertTrue(remote.stops.isEmpty, "the agent keeps running")
-        XCTAssertEqual(remote.pending.first?.sessionID, nil, "the run is pending again")
-        await settle(self.remote.pending.first?.tabClosed == true, "detached: not restored as a tab")
-        XCTAssertFalse(remote.pending.first?.dismissed ?? true, "kept: listed under Running sessions")
-        XCTAssertFalse(persistence.load().contains { $0.sessionID == "c7" }, "no saved tab of c7")
-
-        // Open: the run, by its handle, asking without c7.
-        model.remoteTabs.openPendingRun(handle: "p1", host: hostID, directory: try XCTUnwrap(unlinked.first?.2), typed: true)
-        let reopened = try XCTUnwrap(model.tabs.first { $0.remote?.handle == "p1" })
-        await settle(reopened.remote?.suggestions.map(\.sessionID) == ["c8"], "asks without the declined candidate")
-        XCTAssertNil(reopened.sessionID)
-        XCTAssertEqual(remote.automaticConfirms.count, 1, "never linked on its own again for this run")
-        // The way back: the declined one on its own line, Link it after all.
-        XCTAssertEqual(reopened.remote?.declined.map(\.sessionID), ["c7"])
-        model.remoteTabs.relink(try XCTUnwrap(reopened.remote?.declined.first), in: reopened)
-        await settle(reopened.sessionID == "c7", "linked after all")
-        XCTAssertEqual(remote.automaticConfirms.count, 1, "the user's yes, not Temple's")
+        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.linkedOnItsOwn(suggestion()))
+        XCTAssertEqual(tab.sessionID, "c7")
+        tab.activity = .idle
+        model.closeTab(tab.id)
+        await settle(!self.model.tabs.contains { $0 === tab })
+        await settle(self.remote.stops.count == 1)
+        XCTAssertEqual(joins.map(\.id), ["c7"], "closing leaves the session's row")
     }
 
-    // MARK: Link it after all
 
     /// A pending tab asking about c7 and c8 (two, so Temple asks).
     private func askingTab() async throws -> SessionTab {
@@ -418,152 +372,9 @@ final class RemoteCodexIdentityTests: XCTestCase {
         return tab
     }
 
-    /// Declined by hand, the candidate is offered back at once on its own
-    /// line; Link it after all is the ordinary yes, and the decline goes
-    /// with the claim.
-    func testLinkItAfterAllRelinksACandidateDeclinedByHand() async throws {
-        let tab = try await askingTab()
-        let c7 = try XCTUnwrap(tab.remote?.suggestions.first { $0.sessionID == "c7" })
-        model.remoteTabs.decline(c7, in: tab)
-        XCTAssertEqual(tab.remote?.declined.map(\.sessionID), ["c7"], "offered back at once")
-        XCTAssertEqual(tab.remote?.suggestions.map(\.sessionID), ["c8"])
-        await settle(self.remote.declines.count == 1)
-        model.remoteTabs.relink(try XCTUnwrap(tab.remote?.declined.first), in: tab)
-        await settle(tab.sessionID == "c7")
-        XCTAssertEqual(remote.relinks.map(\.sessionID), ["c7"])
-        XCTAssertTrue(joins.contains { $0.id == "c7" })
-        XCTAssertTrue(remote.declines.isEmpty, "the decline went with the claim")
-        XCTAssertEqual(tab.remote?.declined, [])
-        XCTAssertEqual(tab.remote?.suggestions, [])
-        XCTAssertNotEqual(tab.remote?.linkedOnItsOwn, true, "a person's yes")
-    }
-
-    /// Another tab holds the session now: the line comes down, and why.
-    func testLinkItAfterAllRefusedByAnotherTabsClaimSaysSo() async throws {
-        let tab = try await askingTab()
-        let c7 = try XCTUnwrap(tab.remote?.suggestions.first { $0.sessionID == "c7" })
-        model.remoteTabs.decline(c7, in: tab)
-        await settle(self.remote.declines.count == 1)
-        remote.confirmResult = .taken
-        model.remoteTabs.relink(try XCTUnwrap(tab.remote?.declined.first), in: tab)
-        await settle(tab.remote?.confirming == nil && tab.remote?.declined.isEmpty == true)
-        var declinedC7 = c7
-        declinedC7.declined = true
-        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.relinkTaken(declinedC7, host: "box", stillLooking: true))
-        XCTAssertNil(tab.sessionID)
-        XCTAssertEqual(remote.declines.count, 1, "the decline is kept")
-    }
-
-    /// Refused for a reason the host gave: the note says where the session
-    /// is and that the connected tab goes on looking; one that says the run
-    /// has ended doesn't promise the looking.
-    /// A person's yes (Yes, that's it; Link it after all) reports its
-    /// session once the claim has committed, and only then; Temple's own
-    /// yes, a refused or unwritten claim and a verified identity never do.
-    func testAPersonsYesReportsTheSessionOnceItsClaimCommitsAndTemplesOwnNever() async throws {
-        var restored: [String] = []
-        model.remoteTabs.confirmedHandler = { id, _ in restored.append(id) }
-        // Temple's own yes to a lone candidate.
-        remote.suggestionsResult = .candidates([suggestion("c1")])
-        let own = await newCodex()
-        model.surfaceDidSubmitInput(try XCTUnwrap(own.surface))
-        await settle(own.remote?.linkedOnItsOwn == true)
-        XCTAssertEqual(restored, [], "Temple's own yes")
-
-        // Yes, that's it: nothing until the claim commits.
-        let tab = try await askingTab()
-        let hold = Gate()
-        remote.confirmGate = { await hold.wait() }
-        model.remoteTabs.confirm(try XCTUnwrap(tab.remote?.suggestions.first { $0.sessionID == "c7" }), in: tab)
-        await settle(self.remote.confirms.count == 1)
-        try await Task.sleep(for: .milliseconds(30))
-        XCTAssertEqual(restored, [], "nothing before the commit")
-        await hold.open()
-        await settle(tab.sessionID == "c7")
-        XCTAssertEqual(restored, ["c7"])
-        remote.confirmGate = nil
-
-        // Link it after all.
-        let second = try await askingTab()
-        model.remoteTabs.decline(try XCTUnwrap(second.remote?.suggestions.first { $0.sessionID == "c8" }), in: second)
-        await settle(self.remote.declines.count == 1)
-        model.remoteTabs.relink(try XCTUnwrap(second.remote?.declined.first), in: second)
-        await settle(second.sessionID == "c8")
-        XCTAssertEqual(restored, ["c7", "c8"])
-
-        // Refused, then unwritten: nothing.
-        let third = try await askingTab()
-        let c7 = try XCTUnwrap(third.remote?.suggestions.first { $0.sessionID == "c7" })
-        let c8 = try XCTUnwrap(third.remote?.suggestions.first { $0.sessionID == "c8" })
-        model.remoteTabs.decline(c7, in: third)
-        model.remoteTabs.decline(c8, in: third)
-        await settle(third.remote?.declined.count == 2)
-        remote.confirmResult = .taken
-        model.remoteTabs.relink(try XCTUnwrap(third.remote?.declined.first { $0.sessionID == "c7" }), in: third)
-        await settle(third.remote?.confirming == nil && third.remote?.identityNote != nil)
-        remote.confirmResult = .storage("disk full")
-        model.remoteTabs.relink(try XCTUnwrap(third.remote?.declined.first { $0.sessionID == "c8" }), in: third)
-        await settle(third.remote?.confirming == nil
-                     && third.remote?.identityNote == RemoteCopy.unrecorded("box", detail: "disk full"))
-        XCTAssertNil(third.sessionID)
-        XCTAssertEqual(restored, ["c7", "c8"], "a refused or unwritten claim reports nothing")
-        remote.confirmResult = nil
-
-        // A verified identity.
-        model.remoteTabs.identitySchedule = [0.02]
-        remote.identityResult = .adopted("c9", directory: "/home/u/project")
-        let verified = await newCodex()
-        await settle(verified.sessionID == "c9")
-        XCTAssertEqual(restored, ["c7", "c8"], "a verified identity reports nothing")
-    }
-
-    /// A yes the claim answers with another id (a concurrent `.known`):
-    /// the tab is that id, and that id is what's reported.
-    func testAYesAnsweredWithAnotherIdReportsThatId() async throws {
-        var restored: [String] = []
-        model.remoteTabs.confirmedHandler = { id, _ in restored.append(id) }
-        let tab = try await askingTab()
-        remote.confirmResult = .known("c9", directory: "/home/u/project")
-        model.remoteTabs.confirm(try XCTUnwrap(tab.remote?.suggestions.first { $0.sessionID == "c7" }), in: tab)
-        await settle(tab.sessionID == "c9")
-        XCTAssertEqual(restored, ["c9"])
-    }
-
-    func testLinkItAfterAllRefusedSaysWhatIsLeft() async throws {
-        let tab = try await askingTab()
-        let c7 = try XCTUnwrap(tab.remote?.suggestions.first { $0.sessionID == "c7" })
-        model.remoteTabs.decline(c7, in: tab)
-        await settle(self.remote.declines.count == 1)
-        var declinedC7 = c7
-        declinedC7.declined = true
-        remote.confirmResult = .inconclusive("that session no longer matches this tab", lasting: false, ended: false)
-        model.remoteTabs.relink(try XCTUnwrap(tab.remote?.declined.first), in: tab)
-        await settle(tab.remote?.confirming == nil && tab.remote?.declined.isEmpty == true)
-        XCTAssertEqual(tab.remote?.identityNote,
-                       RemoteCopy.relinkRefused(declinedC7, reason: "that session no longer matches this tab",
-                                                stillLooking: true))
-        XCTAssertTrue(tab.remote?.identityNote?.hasSuffix("Temple keeps looking for its session.") == true)
-        XCTAssertFalse(RemoteCopy.relinkRefused(declinedC7, reason: "Temple no longer tracks this session", stillLooking: false)
-            .contains("keeps looking"))
-    }
-
-    /// A relink that can't be written keeps the line, and works next time.
-    func testLinkItAfterAllThatCannotBeWrittenKeepsTheLine() async throws {
-        let tab = try await askingTab()
-        model.remoteTabs.decline(try XCTUnwrap(tab.remote?.suggestions.first { $0.sessionID == "c7" }), in: tab)
-        remote.confirmResult = .storage("disk full")
-        model.remoteTabs.relink(try XCTUnwrap(tab.remote?.declined.first), in: tab)
-        await settle(tab.remote?.confirming == nil && tab.remote?.identityNote != nil)
-        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.unrecorded("box", detail: "disk full"))
-        XCTAssertEqual(tab.remote?.declined.map(\.sessionID), ["c7"], "the line stays")
-        remote.confirmResult = nil
-        model.remoteTabs.relink(try XCTUnwrap(tab.remote?.declined.first), in: tab)
-        await settle(tab.sessionID == "c7")
-    }
-
     /// The decline is the host's record: across a relaunch the reopened
-    /// run offers it back, and Link it after all works there.
-    func testADeclinedCandidateIsOfferedBackAcrossARelaunch() async throws {
+    /// run excludes it from the question.
+    func testADeclinedCandidateIsNotOfferedAfterARelaunch() async throws {
         let tab = try await askingTab()
         let handle = try XCTUnwrap(tab.remote?.handle)
         model.remoteTabs.decline(try XCTUnwrap(tab.remote?.suggestions.first { $0.sessionID == "c7" }), in: tab)
@@ -577,48 +388,8 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await settle(self.model.tabs.contains { $0.remote?.handle == handle })
         let chip = try XCTUnwrap(model.tabs.first { $0.remote?.handle == handle })
         model.activate(chip)
-        await settle(chip.remote?.declined.map(\.sessionID) == ["c7"], "offered back from the host's record")
+        await settle(chip.remote?.suggestions.map(\.sessionID) == ["c8"])
         XCTAssertFalse(chip.remote?.suggestions.contains { $0.sessionID == "c7" } ?? true)
-        model.remoteTabs.relink(try XCTUnwrap(chip.remote?.declined.first), in: chip)
-        await settle(chip.sessionID == "c7")
-    }
-
-    /// A run that ended before Temple learned its id relinks as a yes for
-    /// it does: the tab closes, the row is the way back, titled.
-    func testAnEndedRunRelinksAsAYesDoes() async throws {
-        var hints: [(String, String)] = []
-        model.titleHintHandler = { hints.append(($0, $1)) }
-        remote.excludesDeclined = true
-        remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
-        remote.declines = [("p7", suggestion("c7").rolloutPath)]
-        remote.suggestionsResult = .candidates([suggestion("c7")])
-        model.remoteTabs.restorePending(hosts: [hostID])
-        await settle(self.model.tabs.count == 1)
-        let tab = try XCTUnwrap(model.tabs.first)
-        model.activate(tab)
-        await settle(tab.remote?.declined.map(\.sessionID) == ["c7"])
-        model.remoteTabs.relink(try XCTUnwrap(tab.remote?.declined.first), in: tab)
-        await settle(!self.model.tabs.contains { $0 === tab }, "closed, as a yes for an ended session closes it")
-        XCTAssertTrue(joins.contains { $0.id == "c7" })
-        XCTAssertEqual(hints.map(\.0), ["c7"])
-    }
-
-    /// Temple never relinks on its own: a lone declined candidate stays a
-    /// line however many lookups run.
-    func testLinkItAfterAllNeverHappensOnItsOwn() async throws {
-        model.remoteTabs.identitySchedule = [0.01, 0.02]
-        model.remoteTabs.identityInterval = 0.03
-        remote.excludesDeclined = true
-        remote.suggestionsResult = .candidates([suggestion("c7")])
-        let tab = await newCodex()
-        remote.declines = [(try XCTUnwrap(tab.remote?.handle), suggestion("c7").rolloutPath)]
-        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
-        await settle(tab.remote?.declined.map(\.sessionID) == ["c7"])
-        let lookups = remote.suggestionLookups.count
-        await settle(self.remote.suggestionLookups.count > lookups + 2)
-        XCTAssertTrue(remote.relinks.isEmpty)
-        XCTAssertNil(tab.sessionID)
-        XCTAssertTrue(remote.automaticConfirms.isEmpty || remote.automaticConfirms.allSatisfy { $0.sessionID != "c7" })
     }
 
     /// Declining the last candidate by hand: the tab says no other session
@@ -637,8 +408,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
 
     /// Try again never brings back a candidate declined in this tab, even
     /// where the host's lookup still returns it (its own record of the
-    /// decline not written yet): neither one declined by hand nor the one a
-    /// link was undone for, when its run is reopened.
+    /// decline not written yet).
     func testTryAgainNeverReoffersADeclinedCandidate() async throws {
         remote.identityResult = .inconclusive("shared server", lasting: true, ended: false)
         remote.suggestionsResult = .candidates([suggestion("c7"), suggestion("c8")])
@@ -665,60 +435,6 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.noOtherCandidate)
         model.remoteTabs.detach(tab.id)
 
-        // After Not this one, the reopened run the same.
-        remote.identityResult = .inconclusive("no session file is open right now", lasting: false, ended: false)
-        remote.suggestionsResult = .candidates([suggestion("c9")])
-        let linked = await newCodex()
-        model.surfaceDidSubmitInput(try XCTUnwrap(linked.surface))
-        await settle(linked.remote?.linkedOnItsOwn == true)
-        let handle = try XCTUnwrap(linked.remote?.handle)
-        model.remoteTabs.unlink(linked)
-        await settle(!self.model.tabs.contains { $0 === linked })
-        model.remoteTabs.openPendingRun(handle: handle, host: hostID, directory: "/home/u/project", typed: true)
-        let reopened = try XCTUnwrap(model.tabs.first { $0.remote?.handle == handle })
-        await settle(reopened.remote?.identityNote == RemoteCopy.noOtherCandidate, "nothing left to ask about")
-        XCTAssertEqual(reopened.remote?.suggestions, [], "the unlinked candidate is not offered again")
-        XCTAssertNil(reopened.sessionID)
-    }
-
-    /// The quit begins while Not this one's write is out. Once it commits,
-    /// the frozen saved tab set is left alone (no partial save, no counter
-    /// moved); the next launch's restore leaves out the saved tab whose row
-    /// on a host is archived, then saves the set once without it.
-    func testNotThisOneDuringAQuitLeavesTheFrozenSetAloneAndTheNextLaunchSkipsTheSession() async throws {
-        let store = ScriptedTabPersistence { _ in true }
-        makeModel(persistence: store)
-        remote.suggestionsResult = .candidates([suggestion()])
-        let tab = await newCodex()
-        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
-        await settle(tab.remote?.linkedOnItsOwn == true)
-        await settle(store.saved.contains { $0.sessionID == "c7" })
-        let hold = Gate()
-        remote.unlinkGate = { await hold.wait() }
-        model.remoteTabs.unlink(tab)
-        await settle(self.remote.unlinks.count == 1)
-        model.prepareForQuit()
-        _ = model.quitDrainPlan()
-        let attempts = store.attempted.count, saves = model.acknowledgedSaves
-        await hold.open()
-        await settle(self.remote.pending.first?.tabClosed == true, "its run detached")
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertTrue(store.saved.contains { $0.sessionID == "c7" }, "the frozen set is not edited")
-        XCTAssertEqual(store.attempted.count, attempts, "no partial save")
-        XCTAssertEqual(model.acknowledgedSaves, saves, "the save counter means a full save, still")
-        XCTAssertTrue(notices.isEmpty)
-
-        // Relaunch, the row archived (as the app's unlink handler leaves it).
-        remote.unlinkGate = nil
-        makeModel(persistence: store)
-        let row = Fixture.archived(Fixture.row("c7", agent: .codex, project: "/home/u/project", host: hostID))
-        model.sessionRow = { $0 == "c7" ? row : nil }
-        model.restore()
-        model.remoteTabs.restorePending(hosts: [hostID])
-        try await Task.sleep(for: .milliseconds(200))
-        XCTAssertFalse(model.tabs.contains { $0.sessionID == "c7" || $0.remote?.handle == "p1" })
-        XCTAssertFalse(remote.opens.contains { $0.sessionID == "c7" }, "the rejected session never resumes")
-        XCTAssertFalse(store.saved.contains { $0.sessionID == "c7" }, "the restore's one save drops it")
     }
 
     /// Reopening a run whose input record never reached the run store
@@ -727,14 +443,13 @@ final class RemoteCodexIdentityTests: XCTestCase {
     func testReopeningDoesNotAssumeTheInputRecordIsWritten() async throws {
         model.remoteTabs.inputWriteRetries = []
         remote.inputFailures = 1
-        remote.suggestionsResult = .candidates([suggestion()])
+        remote.suggestionsResult = .candidates([])
         let tab = await newCodex()
         let handle = try XCTUnwrap(tab.remote?.handle)
         model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
-        await settle(tab.remote?.linkedOnItsOwn == true)
         await settle(self.remote.inputs == [handle] && self.notices.count == 1, "the input record failed, said once")
         XCTAssertFalse(model.remoteTabs.inputCommitted(handle))
-        model.remoteTabs.unlink(tab)
+        model.remoteTabs.detach(tab.id)
         await settle(!self.model.tabs.contains { $0 === tab })
         model.remoteTabs.openPendingRun(handle: handle, host: hostID, directory: "/home/u/project", typed: true)
         let reopened = try XCTUnwrap(model.tabs.first { $0.remote?.handle == handle })
@@ -796,32 +511,6 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await hold.open()
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(tab.remote?.suggestions.map(\.sessionID), ["c8"], "the older, empty answer changes nothing")
-    }
-
-    /// Not this one's write that fails changes nothing: the tab is still
-    /// the linked session (its saved tab and row as they were), the failure
-    /// is said once, and Not this one can be tried again.
-    func testNotThisOneThatCannotBeWrittenChangesNothingAndCanBeRetried() async throws {
-        var archived: [String] = []
-        model.remoteTabs.unlinkHandler = { id, _ in archived.append(id) }
-        remote.suggestionsResult = .candidates([suggestion()])
-        remote.unlinkError = CocoaError(.fileWriteUnknown)
-        let tab = await newCodex()
-        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
-        await settle(tab.remote?.linkedOnItsOwn == true)
-        model.remoteTabs.unlink(tab)
-        await settle(self.notices.count == 1)
-        XCTAssertTrue(notices.first?.hasPrefix("Temple couldn't save its record of this session on box") == true)
-        XCTAssertEqual(tab.sessionID, "c7", "still that session")
-        XCTAssertTrue(model.tabs.contains { $0 === tab }, "not detached")
-        XCTAssertEqual(tab.remote?.linkedOnItsOwn, true)
-        XCTAssertEqual(tab.remote?.unlinking, false, "ready to try again")
-        XCTAssertEqual(archived, [])
-        XCTAssertTrue(persistence.load().contains { $0.sessionID == "c7" }, "its saved tab is kept")
-        remote.unlinkError = nil
-        model.remoteTabs.unlink(tab)
-        await settle(!self.model.tabs.contains { $0 === tab }, "tried again, it goes through")
-        XCTAssertEqual(archived, ["c7"])
     }
 
     /// An automatic yes that can't be written says why and asks: it is not
@@ -1634,37 +1323,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
                     RemoteCopy.leftRunningLine("box", reason: .quitDeadline), RemoteCopy.disconnected("box"),
                     RemoteCopy.unknown("box", agent: .codex, reason: "x"), RemoteCopy.stillConnecting("box"),
                     RemoteCopy.removalMessage(1, fromConfig: true), RemoteCopy.closeHostTabHelp("box", agent: .codex),
-                    RemoteCopy.declinedLine(suggestion()), RemoteCopy.relink, RemoteCopy.relinkHelp,
-                    RemoteCopy.relinkTaken(suggestion(), host: "box", stillLooking: true),
-                    RemoteCopy.relinkRefused(suggestion(), reason: "That session no longer matches this tab",
-                                             stillLooking: true),
-                    RemoteCopy.unlinkedUnsaved("disk I/O error"),
-                    RemoteCopy.unlinked("hi", tab: "Reply ok", host: "box")]
-        XCTAssertEqual(RemoteCopy.declinedLine(suggestion()), "You said \u{201C}reply with the word ok\u{201D} wasn't this tab's session.")
-        let noPrompt = RemoteSuggestion(rolloutPath: "/r", sessionID: "x", firstPrompt: nil, startedAt: Date(), directory: "/w")
-        XCTAssertTrue(RemoteCopy.declinedLine(noPrompt).hasPrefix("You said the session started at "))
-        XCTAssertTrue(RemoteCopy.declinedLine(noPrompt).hasSuffix(" (no prompt yet) wasn't this tab's session."))
-        XCTAssertEqual(RemoteCopy.relink, "Link it after all")
-        XCTAssertEqual(RemoteCopy.relinkHelp, "Links this tab to that session, as \u{201C}Yes, that's it\u{201D} would have. "
-                       + "If \u{201C}Not this one\u{201D} archived the session, this restores it from Archived sessions.")
-        XCTAssertEqual(RemoteCopy.relinkTaken(suggestion(), host: "box", stillLooking: true),
-                       "Couldn't link \u{201C}reply with the word ok\u{201D} to this tab: another tab on box has that session now. "
-                       + "To go to that session, use its row in the sidebar. This tab keeps working, and Temple keeps looking "
-                       + "for its session.")
-        XCTAssertEqual(RemoteCopy.relinkTaken(suggestion(), host: "box", stillLooking: false),
-                       "Couldn't link \u{201C}reply with the word ok\u{201D} to this tab: another tab on box has that session now. "
-                       + "To go to that session, use its row in the sidebar.")
-        XCTAssertEqual(RemoteCopy.relinkRefused(suggestion(), reason: "That session no longer matches this tab",
-                                                stillLooking: true),
-                       "Couldn't link \u{201C}reply with the word ok\u{201D} to this tab: that session no longer matches this "
-                       + "tab. If \u{201C}Not this one\u{201D} archived it, it is still in Archived sessions (\u{2318}\u{21E7}Y). "
-                       + "This tab keeps working, and Temple keeps looking for its session.")
-        XCTAssertEqual(RemoteCopy.unlinked("hi", tab: "Reply ok", host: "box"),
-                       "Closed \u{201C}Reply ok\u{201D} and archived \u{201C}hi\u{201D}. Its Codex agent is still running on box.\n"
-                       + "Clicked by mistake? Choose \u{201C}Reopen tab\u{201D}, then \u{201C}Link it after all\u{201D} in that tab.\n"
-                       + "Want only the session back, not the tab? Restore it from Archived sessions (\u{2318}\u{21E7}Y).")
-        XCTAssertEqual(RemoteCopy.unlinkedUnsaved("Disk I/O error."),
-                       "Couldn't save on this Mac that this tab was closed (disk I/O error), so it may reopen at the next launch.")
+                    RemoteCopy.checkFailed("read failed")]
         for line in copy { XCTAssertFalse(line.contains("\u{2014}"), line) }
     }
 }

@@ -350,18 +350,6 @@ final class RemoteGateWalkTests: XCTestCase {
                 await self.settle { !h.remote.declines.isEmpty }
             }, effect: { $0.app.remoteNotice != nil }),
 
-            // Not this one on a link Temple made on its own (the cold-read
-            // round): the tab's part once the write has committed.
-            Scenario(completion: .unlinkResult, disruptions: tabDisruptions, arm: { h in
-                h.remote.suggestionsResult = .candidates([Self.candidate])
-                let tab = await self.pendingTab(h)
-                h.app.openSessions.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
-                await self.settle { tab.remote?.linkedOnItsOwn == true }
-                h.remote.unlinkGate = { await h.hold.wait() }
-                h.app.openSessions.remoteTabs.unlink(tab)
-                await self.settle { !h.remote.unlinks.isEmpty }
-            }, effect: { h in if case .unlinked? = h.app.remoteNotice?.kind { return true }; return false }),
-
             // Remove (the cold-read round): its question to the host, and
             // Stop them and remove's last stop.
             Scenario(completion: .removalCheck, disruptions: noClose, arm: { h in

@@ -305,13 +305,8 @@ final class FakeRemoteHost: RemoteSessionHost {
         }
         if let suggestionsGate { await suggestionsGate() }
         guard excludesDeclined, case .candidates(let found) = suggestionsResult else { return suggestionsResult }
-        // As the host does: a declined candidate comes back flagged.
         let declined = Set(declines.filter { $0.handle == handle }.map(\.path))
-        return .candidates(found.map { candidate in
-            var flagged = candidate
-            flagged.declined = declined.contains(candidate.rolloutPath)
-            return flagged
-        })
+        return .candidates(found.filter { !declined.contains($0.rolloutPath) })
     }
 
     var confirmResult: RemoteIdentity?
@@ -319,24 +314,13 @@ final class FakeRemoteHost: RemoteSessionHost {
     private(set) var confirms: [(handle: String, sessionID: String)] = []
     /// Temple's own yeses (`automatic`), apart from the user's.
     private(set) var automaticConfirms: [(handle: String, sessionID: String)] = []
-    /// The user's Link it after all, in order.
-    private(set) var relinks: [(handle: String, sessionID: String)] = []
-    func confirm(_ handle: String, suggestion: RemoteSuggestion, automatic: Bool, relink: Bool) async -> RemoteIdentity {
-        if relink {
-            relinks.append((handle, suggestion.sessionID))
-        } else if automatic {
+    func confirm(_ handle: String, suggestion: RemoteSuggestion, automatic: Bool) async -> RemoteIdentity {
+        if automatic {
             automaticConfirms.append((handle, suggestion.sessionID))
         } else {
             confirms.append((handle, suggestion.sessionID))
         }
         if let confirmGate { await confirmGate() }
-        if relink, !automatic {
-            let answer = confirmResult ?? .adopted(suggestion.sessionID, directory: suggestion.directory)
-            // As the store's claim: the decline goes only with the claim.
-            if case .adopted = answer { declines.removeAll { $0.handle == handle && $0.path == suggestion.rolloutPath } }
-            claim(answer, handle)
-            return answer
-        }
         // As the store's claim: never automatic for a run with a decline.
         if automatic, declines.contains(where: { $0.handle == handle }) {
             return .inconclusive("that session was declined for this one", lasting: false, ended: false)
@@ -363,24 +347,6 @@ final class FakeRemoteHost: RemoteSessionHost {
             pending[index].claimed = false
         }
         unjoined.removeAll { $0.handle == handle }
-    }
-
-    /// Not this one on a link Temple made on its own: the claim released,
-    /// the candidate declined and the run restorable again, in one write.
-    private(set) var unlinks: [(handle: String, sessionID: String, path: String)] = []
-    var unlinkError: Error?
-    var unlinkGate: (() async -> Void)?
-    func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws {
-        unlinks.append((handle, sessionID, rolloutPath))
-        if let unlinkGate { await unlinkGate() }
-        if let unlinkError { throw unlinkError }
-        declines.append((handle, rolloutPath))
-        if let index = pending.firstIndex(where: { $0.handle == handle }) {
-            pending[index].sessionID = nil
-            pending[index].claimed = false
-            pending[index].joined = false
-            pending[index].tabClosed = false
-        }
     }
 
     private(set) var joinedMarks: [String] = []

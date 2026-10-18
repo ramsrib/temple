@@ -723,38 +723,6 @@ public final class AppModel: ObservableObject {
         }
         openSessions.remoteTabs.rowIncarnation = { [weak self] id in self?.overlay.rows[id]?.incarnation }
         openSessions.remoteTabs.rowLastOpened = { [weak self] id in self?.overlay.rows[id]?.lastOpenedAt }
-        openSessions.remoteTabs.unlinkHandler = { [weak self] id, _ in
-            // A person's archive, reversible from History: the row the link
-            // Temple made on its own created (its agent keeps running).
-            guard let self, self.overlay.isTempleSession(id) else { return }
-            TempleUILog.remote.notice("Archived \(id, privacy: .public): declined link")
-            self.overlay.setArchived(true, sessionID: id)
-        }
-        openSessions.remoteTabs.confirmedHandler = { [weak self] id, _ in
-            // A person's yes is a person's open of that session (ADR-017): the
-            // row Not this one archived comes back, as the activation sink
-            // brings back any opened row. Not on the undo stack, like the sink.
-            guard let self, self.overlay.isArchived(id) else { return }
-            TempleUILog.remote.notice("Restored \(id, privacy: .public): a person's yes")
-            _ = self.overlay.restoreSessions([id])
-        }
-        openSessions.remoteTabs.claimJoinedHandler = { [weak self] _, host, handle in
-            guard let self else { return }
-            // A Not this one notice about that run no longer holds.
-            if case .unlinked(let unlinked, _)? = self.remoteNotice?.kind, unlinked == handle,
-               self.remoteNotice?.host == host {
-                self.remoteNotice = nil
-            }
-        }
-        openSessions.remoteTabs.tabTitleProvider = { [weak self] tab in
-            self?.tabDisplayTitle(tab) ?? tab.title
-        }
-        openSessions.remoteTabs.unlinkedHandler = { [weak self] host, handle, directory, session, tabTitle, unsaved in
-            let message = RemoteCopy.unlinked(session, tab: tabTitle, host: host.rawValue)
-                + (unsaved.map { "\n" + RemoteCopy.unlinkedUnsaved($0) } ?? "")
-            self?.remoteNotice = RemoteNotice(host: host, message: message,
-                                              kind: .unlinked(handle: handle, directory: directory))
-        }
         openSessions.remoteTabs.discardHandler = { [weak self] id, host, incarnation, lastOpenedAt in
             // One transaction under (id, host, incarnation): the row goes,
             // or (the user made it theirs: named, pinned, colored) is

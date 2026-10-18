@@ -480,16 +480,8 @@ public final class RemoteStateStore: @unchecked Sendable {
     /// transaction across processes: refused when any other run on the
     /// host already holds that id (a claim, or a run of that session).
     /// Written before the core join; a claimed conversation exists.
-    /// `withdrawingDecline`: the user's "Link it after all" on a candidate
-    /// they declined for this run. The decline of `rolloutPath` does not
-    /// refuse it, and is deleted in this transaction, after every other
-    /// check and right before the claim: a withdrawn decline leaves only
-    /// with the claim that replaces it (a refused claim keeps it). Never
-    /// for Temple's own yes.
-    public func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim, rolloutPath: String? = nil,
-                      withdrawingDecline: Bool = false) throws -> ClaimOutcome {
-        let withdrawing = withdrawingDecline && how != .automatic
-        return try queue.writeWithoutTransaction { database in
+    public func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim, rolloutPath: String? = nil) throws -> ClaimOutcome {
+        try queue.writeWithoutTransaction { database in
             var outcome = ClaimOutcome.gone
             try database.inTransaction(.immediate) {
                 guard let run = try Row.fetchOne(database, sql: "SELECT * FROM runs WHERE handle = ?",
@@ -500,7 +492,7 @@ public final class RemoteStateStore: @unchecked Sendable {
                     outcome = .alreadyKnown(known)
                     return .commit
                 }
-                if !withdrawing, let rolloutPath, try Int.fetchOne(database, sql: """
+                if let rolloutPath, try Int.fetchOne(database, sql: """
                     SELECT COUNT(*) FROM declined_candidates WHERE handle = ? AND rollout_path = ?
                     """, arguments: [handle, rolloutPath]) ?? 0 > 0 {
                     outcome = .declined
@@ -538,10 +530,6 @@ public final class RemoteStateStore: @unchecked Sendable {
                     outcome = .taken
                     return .commit
                 }
-                if withdrawing, let rolloutPath {
-                    try database.execute(sql: "DELETE FROM declined_candidates WHERE handle = ? AND rollout_path = ?",
-                                         arguments: [handle, rolloutPath])
-                }
                 try database.execute(sql: """
                     UPDATE runs SET session_id = ?, claim = ?, conversation = ?, joined_at = NULL WHERE handle = ?
                     """, arguments: [sessionID, how.rawValue, RemoteRun.Conversation.confirmed.rawValue, handle])
@@ -563,26 +551,10 @@ public final class RemoteStateStore: @unchecked Sendable {
         }
     }
 
-    /// "Not this one" on a link Temple made on its own, in one write: the
-    /// claim on `sessionID` goes (the run is pending again) and the
-    /// candidate is declined for the run. Its tab is then detached, by the
-    /// ordinary detach write (`tab_closed_at`).
-    public func unlink(_ handle: String, sessionID: String, rolloutPath: String) throws {
-        try queue.write { database in
-            try database.execute(sql: """
-                UPDATE runs SET session_id = NULL, claim = NULL, joined_at = NULL
-                WHERE handle = ? AND session_id = ? AND claim IS NOT NULL
-                """, arguments: [handle, sessionID])
-            try database.execute(sql: "INSERT OR IGNORE INTO declined_candidates (handle, rollout_path) VALUES (?, ?)",
-                                 arguments: [handle, rolloutPath])
-        }
-    }
-
     /// A hand-over's mark: the run restores through `open_tabs` from now
     /// on. Written only while the run still holds the claim the hand-over
     /// was owed for (`sessionID`), in the write's own statement: a retry
-    /// that lands after Not this one released it (and cleared the mark)
-    /// changes nothing. Whether it was written.
+    /// that lands after the claim was released changes nothing. Whether it was written.
     @discardableResult
     public func markTabClosed(_ handle: String, sessionID: String, at date: Date) throws -> Bool {
         try queue.write { database in

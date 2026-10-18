@@ -239,16 +239,12 @@ public struct CodexSuggestion: Sendable, Equatable, Identifiable {
     /// Display only (a start said relative to the tab's open); never part
     /// of a candidate's identity.
     public var hostClockOffset: TimeInterval?
-    /// The user declined it for this run: offered back on its own line
-    /// ("Link it after all"), never in the question, never claimed on
-    /// Temple's own.
-    public var declined: Bool
 
     public init(rolloutPath: String, sessionID: String, firstPrompt: String?, startedAt: Date, directory: String,
-                promptKnown: Bool = true, hostClockOffset: TimeInterval? = nil, declined: Bool = false) {
+                promptKnown: Bool = true, hostClockOffset: TimeInterval? = nil) {
         self.rolloutPath = rolloutPath; self.sessionID = sessionID; self.firstPrompt = firstPrompt
         self.startedAt = startedAt; self.directory = directory; self.promptKnown = promptKnown
-        self.hostClockOffset = hostClockOffset; self.declined = declined
+        self.hostClockOffset = hostClockOffset
     }
 
     public static func == (lhs: CodexSuggestion, rhs: CodexSuggestion) -> Bool {
@@ -444,15 +440,14 @@ public enum CodexSuggestionLookup {
         var seen = Set<RemotePath>()
         return candidates.compactMap { file -> CodexSuggestion? in
             let path = RemotePath(file.path)
-            guard seen.insert(path).inserted else { return nil }
+            guard !declined.contains(path), seen.insert(path).inserted else { return nil }
             guard let named = format.name(path: file.path)?.threadID,
                   let candidate = (try? format.header(firstLine: file.header)) ?? nil,
                   candidate.id.lowercased() == named, RemotePath(candidate.cwd) == folder,
                   candidate.createdAt >= from, candidate.createdAt <= until,
                   !held.contains(candidate.id) else { return nil }
             return CodexSuggestion(rolloutPath: file.path, sessionID: candidate.id, firstPrompt: nil,
-                                   startedAt: candidate.createdAt, directory: candidate.cwd,
-                                   declined: declined.contains(path))
+                                   startedAt: candidate.createdAt, directory: candidate.cwd)
         }
         .sorted { $0.startedAt > $1.startedAt }
     }
@@ -468,7 +463,7 @@ public enum CodexSuggestionLookup {
             let known = head.map { prompt != nil || $0.count < headBytes } ?? false
             return CodexSuggestion(rolloutPath: $0.rolloutPath, sessionID: $0.sessionID, firstPrompt: prompt,
                                    startedAt: $0.startedAt, directory: $0.directory, promptKnown: known,
-                                   hostClockOffset: $0.hostClockOffset, declined: $0.declined)
+                                   hostClockOffset: $0.hostClockOffset)
         }
     }
 }

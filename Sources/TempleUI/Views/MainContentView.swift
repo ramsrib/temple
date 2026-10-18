@@ -89,18 +89,14 @@ private struct SessionTerminalView: View {
                 // A new Codex session Temple has not identified yet asks,
                 // while it runs, whether one of its candidates is it.
                 if remote.phase == .connected, tab.sessionID == nil,
-                   !remote.suggestions.isEmpty || remote.identityNote != nil || !remote.declined.isEmpty {
+                   !remote.suggestions.isEmpty || remote.identityNote != nil {
                     question(remote).band()
                 }
-                // Temple said yes on its own to the lone candidate: one
-                // line, and Not this one if it is the wrong session (the
-                // link is undone; the agent keeps running).
+                // Temple said yes on its own to the lone candidate.
                 if remote.phase == .connected, remote.linkedOnItsOwn, tab.sessionID != nil,
                    let note = remote.identityNote {
                     notice(symbol: "link", text: note) {
-                        // Right after the sentence, as the question's answers sit.
-                        Button(RemoteCopy.suggestionNo) { model.openSessions.remoteTabs.unlink(tab) }
-                            .disabled(remote.unlinking)
+                        EmptyView()
                     } dismiss: {
                         EmptyView()
                     }
@@ -216,27 +212,6 @@ private struct SessionTerminalView: View {
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.leading, 22)
-        }
-        // Each candidate the user declined for this run, offered back on
-        // its own quieter line: the way back from Not this one.
-        ForEach(remote.declined) { suggestion in
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(RemoteCopy.declinedLine(suggestion))
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                if remote.confirming == suggestion.id {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Button(RemoteCopy.relink) { model.openSessions.remoteTabs.relink(suggestion, in: tab) }
-                        .help(RemoteCopy.relinkHelp)
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(remote.confirming != nil)
                 }
                 Spacer(minLength: 0)
             }

@@ -1299,11 +1299,9 @@ public final class RemoteSessions {
         }
     }
 
-    private func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim, rolloutPath: String? = nil,
-                       withdrawingDecline: Bool = false) async -> Identity {
+    private func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim, rolloutPath: String? = nil) async -> Identity {
         do {
-            switch try await write({ try $0.claim(handle, sessionID: sessionID, how: how, rolloutPath: rolloutPath,
-                                                  withdrawingDecline: withdrawingDecline) }) {
+            switch try await write({ try $0.claim(handle, sessionID: sessionID, how: how, rolloutPath: rolloutPath) }) {
             case .claimed: return .adopted(sessionID)
             case .alreadyKnown(let id): return .known(id)
             case .taken: return .taken
@@ -1333,9 +1331,7 @@ public final class RemoteSessions {
         case .unavailable(let reason):
             return .unavailable(reason)
         case .candidates(let found):
-            // The undeclined ones up to the limit, then every declined one
-            // (offered back on their own lines).
-            let offered = Array(found.filter { !$0.declined }.prefix(CodexSuggestionLookup.limit)) + found.filter(\.declined)
+            let offered = Array(found.prefix(CodexSuggestionLookup.limit))
             guard !offered.isEmpty else { return .candidates([]) }
             let exec: RemoteExec
             do { exec = try await queryExec() } catch { return .unavailable(error.localizedDescription) }
@@ -1391,11 +1387,7 @@ public final class RemoteSessions {
     /// `automatic`: Temple's own yes to a lone candidate (owner, round 2),
     /// through this same path: still the only candidate now, and refused in
     /// the claim's transaction for a run with a declined candidate.
-    /// `withdrawingDecline`: the user's "Link it after all" on a candidate
-    /// they declined (the store's claim withdraws the decline with the
-    /// claim); ignored for Temple's own yes.
-    public func confirm(_ handle: String, suggestion: CodexSuggestion, automatic: Bool = false,
-                        withdrawingDecline: Bool = false) async -> Identity {
+    public func confirm(_ handle: String, suggestion: CodexSuggestion, automatic: Bool = false) async -> Identity {
         switch await eligible(handle) {
         case .unavailable(let reason):
             return .inconclusive(.retry(reason))
@@ -1403,23 +1395,17 @@ public final class RemoteSessions {
             guard current.contains(where: { $0.id == suggestion.id && Array($0.sessionID.utf8) == Array(suggestion.sessionID.utf8) }) else {
                 return .inconclusive(.retry("that session no longer matches this tab"))
             }
-            if automatic, current.filter({ !$0.declined }).count != 1 {
+            if automatic, current.count != 1 {
                 return .inconclusive(.retry("more than one session is a candidate for this one"))
             }
             return await claim(handle, sessionID: suggestion.sessionID, how: automatic ? .automatic : .confirmed,
-                               rolloutPath: suggestion.rolloutPath, withdrawingDecline: withdrawingDecline && !automatic)
+                               rolloutPath: suggestion.rolloutPath)
         }
     }
 
     /// "Not this one": never offered again for this run.
     public func decline(_ handle: String, rolloutPath: String) async throws {
         try await write { try $0.decline(handle, rolloutPath: rolloutPath) }
-    }
-
-    /// "Not this one" on a link Temple made on its own (the store's
-    /// `unlink`).
-    public func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws {
-        try await write { try $0.unlink(handle, sessionID: sessionID, rolloutPath: rolloutPath) }
     }
 
     /// The core join refused the id (another host's, or another agent's).
