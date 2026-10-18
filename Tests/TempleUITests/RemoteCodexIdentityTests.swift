@@ -506,6 +506,19 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(remote.inputs, [handle, handle])
     }
 
+    func testV9TheFirstUnavailableLookupShowsWhyAndCanBeRetried() async throws {
+        model.remoteTabs.identitySchedule = [0.01]
+        model.remoteTabs.identityInterval = 60
+        remote.identityResult = .inconclusive("shared server", lasting: true, ended: false)
+        remote.suggestionsResult = .unavailable("lookup failed")
+        let tab = await newCodex()
+        await settle(self.model.remoteTabs.gate.admitted[.suggestionsLoaded, default: 0] > 0)
+        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.checkFailed("lookup failed"))
+        remote.suggestionsResult = .candidates([suggestion("c7"), suggestion("c8")])
+        model.remoteTabs.retryIdentity(tab)
+        await settle(tab.remote?.suggestions.count == 2)
+    }
+
     /// Try again whose lookup can't run says so, with why; never "still
     /// none" for a lookup that didn't come back.
     func testTryAgainWhoseLookupFailsSaysSo() async throws {
