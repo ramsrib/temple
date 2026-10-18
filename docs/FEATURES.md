@@ -306,52 +306,97 @@ note, no sidebar notices; local tabs behave exactly as they would without
 it. What follows appears for an enabled host only.
 
 - **Starting one.** `⌘N` lists **Folder on <host>…** under **Choose
-  folder…** for each host, the launcher has **New session on <host>…**, and a
-  host project's `+` and `⌘T` start there. The folder sheet takes a path on
-  the host (`~/…` works), checks it there and shows where it resolved; when
-  the host does not answer, it offers **Start anyway** and **Test
-  connection**. The project's heading shows in the sidebar at once, from the
+  folder…** for each host, the launcher has one row per host naming the
+  agent it starts ("New Claude Code session on <host>…", the default
+  agent), and a host project's `+` and `⌘T` start there (Codex on a host:
+  the `+` menu or `⌘N`). The folder sheet takes a path on the host (`~/…`
+  works), checks it there and shows where it resolved; under the field,
+  "Recent folders on this host. Click one to start there." lists the host's
+  earlier folders. When the host does not answer, it offers **Test
+  connection** (the host's own test, over the folder sheet; closing it comes
+  back with the path as typed, and a test that passed checks the folder
+  again) and **Start without checking**. A host whose last test proved tmux
+  missing or older than 3.2 is left out of the launcher and `⌘N`, greyed in
+  the `+` menu, and the folder sheet says why and won't start, all with the
+  same line. The project's heading shows in the sidebar at once, from the
   folder you typed, and moves to the folder the session reports it entered;
   only that one is recorded.
 - **It keeps running.** The agent runs inside a hidden tmux server of
   Temple's own on the host (`tmux -L temple`, tmux 3.2 or newer), so it
   survives a dropped connection, a sleeping Mac and a Temple quit while it
   works. A tab that loses its connection says "Disconnected from <host>.
-  Open the session again to reconnect."; opening it attaches to the same
-  agent.
-- **Closing a tab** means what it means locally. An idle agent is stopped,
-  at once and without asking, and opening the session later resumes it from
-  its transcript. A working one asks "Claude Code is running on
-  <host>." ("Detach leaves it running; Stop ends it.") with
+  The session is still running there." with **Reconnect**, which attaches to
+  the same agent.
+- **Working and waiting.** An agent on a host is working while it is busy
+  with a task and waiting otherwise; only a working one is ever asked about.
+- **Closing a tab** means what it means locally: closing a tab whose agent
+  is waiting for input stops it, at once, and opening the session later
+  resumes it from its transcript. A working one asks "Claude Code is working
+  on <host>." ("Detach leaves it running on <host>; Stop ends it.") with
   **Detach** (the default: it keeps working, and you can open it again),
-  **Stop** and **Cancel**. On a host, a tab whose agent has just started (a
-  new session or a resume) and has received nothing from you since counts
-  as idle once its title has been quiet for a few seconds, without waiting
-  for the settle timer; any key, paste, or click it takes in since means
-  the usual rule, so `⌘W` soon after an answer still asks. Tabs on this Mac
-  keep the settle timer's reading.
+  **Stop** and **Cancel**. The tab's ×, its menu, the sidebar row's menu and
+  File say this where you act: on a tab on a host the menus read **Detach
+  from <host> (keeps running)** directly above **Close tab (stops the agent
+  if it is waiting for input)** (File: **Detach from <host> (keeps
+  running)** above **Close Tab**), and the × says what closing does there.
+  Detach closes the tab and leaves the agent running, working or waiting.
+  On a host, a tab whose agent has just started (a new session or a resume)
+  and has received nothing from you since counts as waiting once its title
+  has been quiet for a few seconds, without waiting for the settle timer;
+  any key, paste, or click it takes in since means the usual rule, so `⌘W`
+  soon after an answer still asks. Tabs on this Mac keep the settle timer's
+  reading.
 - **Left running.** When the host does not answer as you close a tab, or
   another terminal is attached to the session, Temple leaves it running and
-  says so once. It never stops anything later on its own. **Sessions on
-  <host>** (in Settings ▸ Hosts, in a host project heading's context menu,
-  and offered by every such notice) lists every session Temple started on
-  that host and still tracks, with its state (**In a tab** when a tab
-  in this Temple is connected to it, **Running** when it runs without one,
-  even if a terminal or another Temple is attached, or **Unknown**; the
-  tmux session's name is its tooltip) and **Stop** and
-  **Keep**. Temple never lists or stops a session it did not
-  start, and never touches your own tmux sessions.
+  says so once, in orange, naming the session ("“<title>” wasn't stopped:
+  <host> didn't answer when you closed its tab. It may still be running.").
+  It never stops anything later on its own. **Running sessions on <host>…**
+  (in Settings ▸ Hosts, in a host project heading's context menu, on a tab
+  whose stop failed, and on every such notice) lists every session Temple
+  started on that host and still tracks, with its state (**Running in a
+  tab** when a tab in this Temple is connected to it, **Running** when it
+  runs without one, even if a terminal or another Temple is attached, or
+  **Status unknown**; the tmux session's name is its tooltip). Each row has
+  **Open** (a tab attached to it, as its sidebar row opens it) or, when it
+  is open in a tab here, **Show tab**, and **Stop** (its sidebar row stays,
+  so you can resume it later); a row that was left running says why in
+  orange and has **Dismiss**, which clears that note (it keeps running
+  either way). Stopping a working agent, here or with a row's **Stop on
+  <host>**, asks first ("Claude Code is working on <host>. Stop it?"); one
+  waiting for input stops at once. A row whose agent still runs on its host
+  can't be archived until it is stopped ("Stop it on <host> to archive").
+  Temple never lists or stops a session it did not start, and never touches
+  your own tmux sessions.
 - **Quitting.** Temple stops no agent on a host when it quits, working or
-  idle: each tab's connection is detached and the agent keeps running there.
-  The quit prompt asks about local working agents only and adds "Sessions on
-  <host> keep running; Temple will reconnect to them." After relaunch each
-  comes back as a tab that attaches to it; closing that tab stops an idle
-  agent, as any close does.
+  waiting: each tab's connection is detached and the agent keeps running
+  there. When a host has a connected tab, the quit prompt says "An agent on
+  this Mac is still working." about local working agents and adds
+  "Sessions on <host> keep running; their tabs reconnect when you open them
+  next launch." (with no host, it reads as it always did). After relaunch
+  each comes back as a tab that attaches when opened; a host that answers
+  says once, in the sidebar, how many sessions from before the quit are
+  still running there and not open in a tab, with **Running sessions on
+  <host>…**; that or × marks them seen.
 - **When Temple can't tell.** If Temple cannot tell whether a session is
   still running on its host, opening it only tries to attach. **Resume
-  anyway** starts it again from its transcript; the sheet says that the
+  anyway…** starts it again from its transcript; the sheet says that the
   original, if it is running, keeps running, and gives the tmux command that
-  stops it on the host.
+  stops it on the host. A session stopped before it had a conversation offers
+  **Start a new session here**; one whose conversation Temple couldn't check
+  offers **Try to resume** too. Either removes it with a link that says
+  which: **Remove from Temple**, or **Archive session** when it is named,
+  pinned, colored or has a transcript (restore it from History). Nothing is
+  stopped by it.
+- **Removing a host.** **Remove** (either kind of host) asks the host what
+  Temple started there first. With sessions still running, it asks: "2
+  sessions are still running on <host>." with **Remove, leave them
+  running** (the default; Temple can't list or stop them until the host is
+  added again), **Stop them and remove** (a stop that fails keeps the host
+  and says why) and **Cancel**. With none, or no answer, the host is removed
+  at once. `~/.ssh/config` is never changed. Editing a host added by address
+  disconnects its open tabs (their agents keep running; Reconnect in each).
+  A tab on a host Temple no longer has says so, with **Open Settings**, which
+  opens Settings at Hosts.
 - **New Codex sessions.** Codex picks its own session ID, so a new Codex
   session on a host reads "New Codex session" until Temple learns the ID;
   it reopens and restores like any tab meanwhile. Temple identifies it on
@@ -361,35 +406,37 @@ it. What follows appears for an enabled host only.
   matches, you have typed into the tab, and Temple has not asked about it
   (nor have you declined a candidate for it, even before a relaunch), and
   no other new Codex session Temple started in that folder is still
-  unidentified,
-  Temple says yes on its own, exactly as you would, and the tab says so
-  in one line: "Linked to “<first prompt>”, the only Codex session started
-  in this folder since this tab opened. If that’s wrong, Discard stops it and removes it from
-  Temple.", with **Discard**, which stops the session on the host and
-  removes it from Temple (to History, if you named, pinned or colored it). With two or more,
-  or once it has asked, the tab asks: "Is this the session?" with the first
-  prompt, when it started (relative to the tab, "4 s after this tab
-  opened", when that is known) and the folder, earliest first, and **Yes,
-  that's it** or **Not this one**; with the last one declined, it says Temple couldn't tell which
-  session it is. With
+  unidentified, Temple says yes on its own, exactly as you would, and the
+  tab says so in one line: "Linked this tab to “<first prompt>”, the only
+  Codex session started in this folder since the tab opened.", with **Not
+  this one**, which undoes the link: the agent keeps running, the row the
+  link made is archived (restore it from History), and the tab asks again
+  without that candidate. With two or more, or once it has asked, the tab
+  says "Codex picks its own session id, so Temple can't tell which session
+  this tab is." and asks: "Is this the session?" with the first prompt, the
+  folder's full path and when it started (relative to the tab, "4 s after
+  this tab opened", when that is known), earliest first, and **Yes, that's
+  it** or **Not this one**; with nothing left to ask about, it says Temple
+  couldn't tell (the tab keeps working) with **Try again**. With
   `--no-daemon` in Codex's arguments, Temple identifies the session on its
-  own; the Hosts card says so.
+  own; the Hosts card says which, from the arguments.
   A Codex session that ended before Temple learned its ID asks in one
   sentence, "Codex ended on <host> before Temple learned which session this
   was. Is it “<first prompt>” (<time>)?", with **Yes, that's it**, **Not
-  this one** and **Start a new session** after it and **Discard** at the
-  edge (in a narrow window the answers sit on a row under the sentence);
-  where its terminal was, one line says "Codex's last screen on <host>
-  isn't kept after it ends." Answering yes closes its tab, as a local exit
-  does, and the selection follows the tab that becomes active. The
-  session's row sits at the top of its project, titled with that first
+  this one** and **Start a new session here** after it and **Remove from
+  Temple** at the edge (in a narrow window the answers sit on a row under
+  the sentence); where its terminal was, one line says "Codex's last screen
+  on <host> isn't kept after it ends." Answering yes closes its tab, as a
+  local exit does, and the selection follows the tab that becomes active.
+  The session's row sits at the top of its project, titled with that first
   prompt until Codex's own title arrives; opening it resumes it.
-- **Banners.** A tab's banner puts its answers (Reconnect, Resume anyway,
-  Start a new session, Yes and No) right after its
-  sentence as small buttons; only Discard and Cancel sit at the trailing
-  edge.
+- **Banners.** A tab's banner puts its answers (Reconnect, Resume anyway…,
+  Start a new session here, Yes and No) right after its sentence as small
+  buttons; only a dismiss-type link (Remove from Temple, Archive session,
+  Cancel connecting) sits at the trailing edge.
 - **Scrolling and find.** tmux keeps a session's history. The wheel scrolls
-  it, and the first key you type returns to the prompt. A drag selects and
+  the terminal's scrollback, and the first key you type returns to the
+  prompt (the shortcuts panel says so, with the close and Detach rule). A drag selects and
   copies (to the Mac clipboard with tmux 3.3 or newer); `⇧`-drag selects in
   Temple's own terminal. `⌘F` searches what the tab has shown since it
   connected, and its bar says so.
@@ -602,43 +649,56 @@ Changes apply live where applicable.
 - **Appearance:** System, Light, or Dark theme.
 
 - **Hosts:** the machines you can start sessions on
-  ([Sessions on a host](#sessions-on-a-host)). **In use** lists every host
-  Temple uses, by name, wherever it came from: beside the name, the address
-  for a host added in Temple, `~/.ssh/config` for one of the config's
-  aliases (in orange, "No longer in ~/.ssh/config" when the config stopped
-  naming it). Each has **Test connection** and **Sessions…**, then **Edit**
-  and **Remove** for a host added in Temple or **Turn off** for an alias,
-  with its status line under it; with none, "No hosts in use." Hosts not in
-  use are not listed. **Add host…** opens a small sheet with one **Host**
-  field ("alias from ~/.ssh/config, or user@address"). Under it are the
-  config's aliases not in use yet (`Host` entries, one level of `Include`;
-  patterns and `Match` blocks are skipped), each beside the `user@hostname`
-  its own `User` and `HostName` lines set (nothing when they set neither).
-  Those that set a `User` or `IdentityFile` come first and bare names such
-  as `github.com` last. Typing filters them; six show until **Show N
-  more**. Clicking anywhere on a row turns it on at once. Return adds what
-  the field holds: an alias turns on (matched exactly, else ignoring case
-  when only one matches), and `user@address[:port]` or an address opens
-  the full form filled in; text that is neither stays in the field with a
-  note. Under the list, "Not in
-  ~/.ssh/config? **Enter details…**" opens that form directly (a name,
-  fixed once saved, an address, and optionally a user, port, identity file
-  and jump host, with **Copy as ssh config**), and **Edit ~/.ssh/config**
-  opens the file. With no alias to offer the sheet says why: "No hosts in
-  ~/.ssh/config." or "Every host in ~/.ssh/config is in use." Test connection opens a
-  small terminal, in the app's light or dark, where your own ssh
-  connects and asks what it needs (a host key, a password, a second factor),
-  then checks the login shell's PATH, `claude`, `codex`, tmux (by running
-  the exact commands a launch sends) and whether the host ends your
-  processes when you log out (`KillUserProcesses`), each with **Show
-  output**. A host that was never tested can still start sessions; only a
-  test that ran and found a CLI or tmux unusable rules it out. The card is
-  always there, with no host yet too (it is how one is added); its notes
-  say that the arguments above apply on hosts and that `--no-daemon` in
-  Codex's arguments lets Temple identify new Codex sessions there on its
-  own. `~/.ssh/config` is read when the card is shown and again when Add
-  host… opens, never before. Opening the sheet runs nothing (not even
-  `ssh -G`, which would run a config's `Match exec` commands).
+  ([Sessions on a host](#sessions-on-a-host)). **Added hosts** lists every
+  host Temple has, by name, wherever it came from: beside the name, the
+  address for a host added by address, "from ~/.ssh/config" for one of the
+  config's aliases (and, in orange under it, "No longer in ~/.ssh/config:
+  ssh may not reach it by this name. Add it back to the file, or remove the
+  host." when the config stopped naming it). Under the name, on a line of
+  their own so no label is cut short: **Test connection**, **Running
+  sessions on <host>…**, then **Open ~/.ssh/config** for a config alias or
+  **Edit** for a host added by address, and **Remove** (its tag says
+  `~/.ssh/config` is not changed), with the host's status line under them;
+  with none, "No hosts yet." **Add host…** opens a small sheet with one
+  **Host** field ("alias from ~/.ssh/config, or user@address"). Under it,
+  "Click a host to add it at once." heads the config's aliases not added yet
+  (`Host` entries, one level of `Include`; patterns and `Match` blocks are
+  skipped), each beside the `user@hostname` its own `User` and `HostName`
+  lines set ("no User or HostName set" when they set neither). Those that
+  set a `User` or `IdentityFile` come first and bare names such as
+  `github.com` last. Typing filters them; six show until **Show N more**.
+  Clicking anywhere on a row adds it at once. Return adds what the field
+  holds: an alias is added (matched exactly, else ignoring case when only
+  one matches), and `user@address[:port]` or an address opens the form for
+  an address filled in (the default button reads **Add**, or **Add host by
+  address…** while the text reads as an address); text that is neither
+  stays in the field with a note. Return while the config is still being
+  read says "Reading ~/.ssh/config…" and waits for it. Under the list,
+  "Not in ~/.ssh/config? **Add host by address…**" opens that form
+  directly (a name, which Temple uses as the host's ssh name too and which
+  can't be changed later, an address, and optionally a user, port, identity
+  file and jump host, with **Copy as ssh config**), and **Open
+  ~/.ssh/config** opens the file. With no alias to offer the sheet says
+  why: "No hosts in ~/.ssh/config." or "Every host in ~/.ssh/config is
+  already added." Test connection opens a small terminal, in the app's
+  light or dark, where your own ssh connects and asks what it needs (a
+  host key, a password, a second factor), then checks the login shell's
+  PATH, Claude Code, Codex, whether tmux can start a session (by running the
+  exact commands a launch sends) and whether the host ends your processes
+  when you log out (`KillUserProcesses`), each with **Show output**. The
+  status line says what it found ("Connected as <user@address>. Found
+  Claude Code 2.1.283, Codex 0.48.0, tmux 3.4."), each problem in a
+  sentence, and that it did not check whether Claude Code and Codex are
+  signed in; until a test runs it says "Not tested since Temple started."
+  (results are kept for this run only). A host that was never tested can
+  still start sessions; only a test that ran and found a CLI unusable, or
+  tmux missing or too old, rules it out. The card is always there, with no
+  host yet too (it is how one is added); its notes say that the arguments
+  above apply on hosts, and whether Codex's arguments include `--no-daemon`
+  (which lets Temple tell new Codex sessions there apart without asking).
+  `~/.ssh/config` is read when the card is shown and again when Add host…
+  opens, never before. Opening the sheet runs nothing (not even `ssh -G`,
+  which would run a config's `Match exec` commands).
 
 Agent arguments apply to both new and resumed sessions, on hosts too
 (`--dangerously-skip-permissions` included, as the Hosts card says). Command paths are

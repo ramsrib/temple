@@ -2084,7 +2084,7 @@ needing a grant. Two reasons against, from review:
 ---
 
 ## ADR-036 — Sessions on another machine, through the user's own ssh
-**Date:** 2026-10-16 · **Status:** Accepted; amends ADR-010, ADR-029 and ADR-034. Detail, review history and the as-built notes: [designs/remote-ssh.md](./designs/remote-ssh.md)
+**Date:** 2026-10-16 · **Status:** Accepted; amends ADR-010, ADR-029 and ADR-034; revised 2026-10-17 by the cold-read round (a wrong link is undone, not stopped; Discard never stops; Remove asks; the launch notice after a quit). Detail, review history and the as-built notes: [designs/remote-ssh.md](./designs/remote-ssh.md)
 
 The owner's goal, verbatim: "I have a remote machine that runs Claude and
 Codex. I want to connect to it and run from that machine." What matters is
@@ -2171,21 +2171,29 @@ rows ("Removing remote", below).
   attached; no answer means unconfirmed. A stop Temple could not carry out
   and confirm at that moment leaves the session **left running**: the tab
   closes with one notice, the reason is on the run, and a row waits in
-  **Sessions on <host>**
-  with Stop and Keep (Keep clears the flag, and the sidebar's "N sessions
-  left running on <host>" line shows once per flag). There is no deferred
+  **Running sessions on <host>**
+  with Open (or Show tab) and Stop, and Dismiss on a flagged row (it clears
+  the flag; the session keeps running either way); the sidebar's "N
+  sessions you closed are still running on <host>." line shows once per
+  flag. Stopping a working agent from that sheet or a row's menu asks
+  first; one waiting for input stops at once. There is no deferred
   stop, sweep, lock or retry: two review rounds found that any kill decided
   after the fact needs idle evidence Temple cannot get remotely. Temple
   never stops anything without a live user action.
 - **Quit stops nothing on a host and never waits on one.** The question in
-  `windowShouldClose` counts local working agents and adds "Sessions on
-  <host> keep running; Temple will reconnect to them." Inside the existing
+  `windowShouldClose` counts local working agents ("An agent on this Mac
+  is still working.") and adds "Sessions on <host> keep running; their tabs
+  reconnect when you open them next launch." Inside the existing
   3 s drain every live client of a tab on a host is detached (no exit
   input, which tmux would deliver to the agent), working or idle (owner,
   round 2: an idle stop at quit could only be decided from the settle
   timer's reading, which can take a long, quiet tool call for idle). Every
   run, pending Codex ones included, is left as it is and comes back as a
-  tab next launch, where closing it stops it. Only a stop a close started
+  tab next launch, where closing it stops it. Each run whose tab was
+  connected is flagged `detached at quit` (a left-running reason in the
+  remote store, no migration), so the next launch says once, for a host
+  that answers, how many sessions from before the quit still run there and
+  are not open in a tab (cleared by attaching, Running sessions… or ×). Only a stop a close started
   before the quit runs inside the window; one unacknowledged at the
   deadline is left running (`quit deadline`). Remote store writes share
   the engine barrier's 2 s. So agents on hosts outlive Temple, by design.
@@ -2208,13 +2216,15 @@ rows ("Removing remote", below).
   says yes on its own (owner, round 2), through the yes's exact path
   (`confirm`, a claim `how: .automatic`, the same recheck, uniqueness and
   core join; a run that ended meanwhile concludes as a yes does). The only
-  addition is a display-only note in the tab, "Linked to “<first
-  prompt>”, the only Codex session started in this folder since this tab
-  opened. If that’s wrong, Discard stops it and removes it from Temple.", and a wrong one
-  is corrected by **Discard** (the agent stopped first; then that run
-  alone is dismissed, in one transaction and only while no newer or live
-  run of the session exists, and the row let go or archived as a Discard
-  does). "Asked" is the question shown this launch, or any declined
+  addition is a display-only note in the tab, "Linked this tab to
+  “<first prompt>”, the only Codex session started in this folder since
+  the tab opened.", and a wrong one is undone by **Not this one** (the
+  cold-read round; it no longer stops anything): in one remote-store write
+  the claim on that id is released, the candidate declined for the run and
+  any hand-over undone (the run restores by its handle again); the row the
+  link created is archived as a person's archive (History restores it);
+  the tab returns to the question without that candidate, or says Temple
+  couldn't tell, with Try again. The agent keeps running. "Asked" is the question shown this launch, or any declined
   candidate for the run, which the claim's own transaction checks, so a
   decline holds across relaunches. Nor while another new Codex session
   Temple started on the host in the same folder is still unidentified and
@@ -2234,7 +2244,10 @@ rows ("Removing remote", below).
   stops it; identified, the tab closes; unidentified and typed into, the
   tab stays with "Codex ended on <host> before Temple learned which session
   this was." and
-  the question, **Start a new session** and **Discard**; never typed into,
+  the question, **Start a new session here** and **Remove from Temple**
+  (Discard: one meaning, a session that is not running; it never stops
+  anything, and its link says whether the row is removed or archived);
+  never typed into,
   Temple stops tracking it. Quit treats pending runs like any: detached,
   left running, back as chips next launch. Saying yes to an ended session
   records which session it was and closes the tab, as a local exit does;
@@ -2331,16 +2344,20 @@ the socket files in `<state dir>/ssh/` and the fallbacks for a long path,
 `$TMPDIR/temple-ssh-<uid>/` and `/tmp/temple-ssh-<uid>/` (masters expire on
 their own). Agents still on a
 host are not stopped by removing anything, and must not be stopped silently:
-Sessions on <host> before an uninstall, per session Stop or Keep; or on the
+Running sessions on <host> before an uninstall, per session Stop; or on the
 host, `tmux -L temple ls`, `tmux -L temple kill-session -t temple-<handle>`,
 `tmux -L temple attach -t temple-<handle>`. Core rows a user keeps stay
-(History's In Temple, search, rename, archive) and open to "Host <name> is
-not set up". `open_tabs` and `project_state` never changed, so nothing
+(History's In Temple, search, rename, archive) and open to "<name> is not
+in Temple's hosts, so this session can't open. Add the host in Settings."
+Removing a host asks first when sessions Temple started still run there:
+leave them running (out of Temple's reach until the host is added again)
+or stop them, then remove; a stop that fails keeps the host. `open_tabs` and `project_state` never changed, so nothing
 migrates back. What stays in core by design: `host` in `session_state`,
 `HostID`, `ProjectKey`, and the `HostSessionSource`/`HostLauncher` seams.
 
 **Out of v1, said so:** a host without tmux 3.2 (Test connection says so,
-and it cannot start sessions); tmux before 3.3 has no OSC 52 passthrough and
+and, one rule everywhere, it leaves the launcher and ⌘N, is greyed in the
+`+` menu and the folder sheet won't start); tmux before 3.3 has no OSC 52 passthrough and
 no colour reports (Codex there uses its default palette); importing or
 listing sessions Temple did not start; per-host arguments (Settings'
 arguments apply on hosts too, `--dangerously-skip-permissions` included, as
@@ -2353,6 +2370,6 @@ every unarchived remote row with a transcript costs one read at startup.
 bundled ssh library, a generated ssh config, a Temple-shipped helper daemon,
 dtach and abduco (no screen on reattach), mosh, and screen; adopting a Codex
 rollout by folder and time, or by uniqueness of a match, without saying so
-(Temple's own yes to a lone candidate is said in the tab, with Discard);
+(Temple's own yes to a lone candidate is said in the tab, with Not this one);
 deferred stops of any kind; stopping anything at quit; listing the private server's sessions as "Not in Temple";
 `open_tabs.host`; Temple passing `--no-daemon`; a byte-exact core locator.

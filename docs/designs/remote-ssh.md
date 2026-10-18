@@ -3108,3 +3108,132 @@ line (for the last declined candidate) and the retired host fix.
   asked for it go with it, and Sessions on <host> or the folder sheet open
   only for an enabled host.
 
+
+## Cold-read round (wording, behaviour and visual design)
+
+**Why.** The owner found the Hosts card's `Test connection  Sessions…  Turn
+off` unreadable after every design review had passed it. A cold read of
+every remote string, by a reviewer with no context, and a task walk found
+43 mismatches between what a label made people expect and what it did
+(docs/copy-review.md now makes that procedure a rule). Fable decided each
+fix and a second cold read refined them; the decisions, the string index
+and the second read are kept outside the repo with the round's working
+files. The coordinator's rulings: no local label or behaviour changes (so
+the local "New Claude session" row stays; Fable's proposal to rename it was
+not built), closing a waiting host tab still stops its agent, a quit still
+leaves every agent on a host running, and there is no flag.
+
+**Words, as built.** One name per thing, never shortened for a row's
+rhythm: the sheet is "Running sessions on <host>" everywhere (the Hosts
+card, a project heading's menu, a failed stop's band and the sidebar
+notice, each with "…"), adding by hand is "Add host by address", Detach is
+the user closing a tab and leaving the agent running (P4, P6, X1, File),
+Disconnect is the connection ending (B2, B3, F13). Running = alive on the
+host; working = busy with a task, and only a working agent is asked about
+("Claude Code is working on <host>."). Prose names the products ("Found
+Claude Code 2.1.283, Codex 0.48.0, tmux 3.4."); a command's name appears
+only as what was looked for ("No codex command on PATH."). Every status
+line ends "Not checked whether Claude Code and Codex are signed in." (Temple
+never asks). Every line that says something may still be running is
+orange. The copy lives in `RemoteCopy` and `HostTestSummary`; the unit test
+is `RemoteCodexIdentityTests.testTheCopyIsOneSourceAndHasNoEmDash`.
+
+**Behaviour, as built.**
+
+1. *Detach* (`RemoteTabController.detach`): on a tab on a host, the row's
+   menu and the tab's menu read "Detach from <host> (keeps running)"
+   directly above "Close tab (stops the agent if it is waiting for
+   input)", and File has Detach above Close Tab (no shortcut). The tab's ×
+   says what closing does there. The row menu's Close tab on a host goes
+   through the close prompt, as ⌘W does.
+2. *Remove* (`AppModel.requestRemoveHost`): both kinds of host read
+   Remove. The host is asked for Temple's tracked sessions first; any
+   running (in a tab here or not) shows the alert ("2 sessions are still
+   running on <host>." / the singular), with "Remove, leave them running"
+   (default: retiring the host detaches its tabs), "Stop them and remove"
+   (each stopped through `stopTracked`, no per-session question; a failure
+   keeps the host and is said under its row) and Cancel. None running, or
+   no answer: removed at once. Two new gated completions:
+   `.removalCheck`, `.removalStopOutcome`.
+3. *Discard* has one meaning, a session that is not running here (B4, B5,
+   B12), and never stops anything. Its link says which: "Remove from
+   Temple", or "Archive session" when the row is named, pinned, colored or
+   has a transcript. A stop is "Stop on <host>" in the row's menu.
+4. *Not this one on a link Temple made on its own* (`unlink`): one
+   remote-store write (`RemoteStateStore.unlink`) releases the claim,
+   declines the candidate and clears `tab_closed_at` (a hand-over already
+   written is undone, so the run restores by its handle again); the
+   hand-over still owed is dropped. The row the link created is archived as
+   a person's archive (History restores it; the reason "declined link" is
+   the remote store's declined candidate and a log line, not a new core
+   `archive_reason`, so core's archive semantics are unchanged). The tab
+   becomes pending again and loads the question without that candidate;
+   none left, it says Temple couldn't tell, with Try again. The agent keeps
+   running and its client stays attached.
+5. *Dismiss* (S11) is only on a row with a left-running note and clears
+   the flag; "Kept" is gone.
+6. *The folder sheet's Test connection* opens the host's own Test
+   connection sheet over the folder sheet (`RemoteFolderSheetModel.
+   testConnection`); closing it returns with the typed path, and a test
+   that passed checks the folder again (`testClosed`). "Start without
+   checking" replaces "Start anyway".
+7. *Open ~/.ssh/config* replaces Edit on a config row (A12's action).
+8. *Open / Show tab* on every Running sessions row: Open opens the session
+   as its sidebar row does (an unidentified Codex run opens by handle);
+   Show tab focuses its tab; both close the sheet.
+9. *The launch notice*: the quit's plan flags each connected tab's run
+   `detached at quit` (a `RemoteLeftRunningReason`, stored in the existing
+   `left_running_reason` column, so no migration; it never shows as an S7
+   line). The launch contact splits its count (`contactLeftRunning` now
+   answers `(closed, quit)`), and the notice says "3 sessions from before
+   you quit are running on <host>." once; Running sessions… or × marks it
+   seen, and attaching clears a run's flag as before.
+10. *One tmux rule* (`HostTestSummary.provesTmuxUnusable`, missing or older
+    than 3.2): such a host leaves the launcher and ⌘N, is greyed in the `+`
+    menu (its availability already said so), and the folder sheet says the
+    host's line and won't start. A refusal (`tmux 3.4 couldn't start a
+    session`) is said, not the rule.
+11. *Stopping a working agent asks* (S12, `workingTab`): from Running
+    sessions and from "Stop on <host>". "<Agent> is working on <host>. Stop
+    it?", "Its tab closes." when a tab is open. An agent waiting for input,
+    or with no tab here, stops at once.
+12. A row whose agent still runs on its host can't be archived: "Stop it on
+    <host> to archive" (`AppModel.archiveBlocker`), as "Close tab to
+    archive" already did.
+
+**Visual, as built.** One chrome (`RemoteSheetChrome.swift`): 20pt padding,
+520 wide (Test connection stays 680), a leading VStack 12pt apart, a 15pt
+title, the 96pt leading label column for the host form, the Add host sheet
+and the folder sheet, Settings' field chrome (`templeFieldChrome`, now also
+what `SettingsView.textField` uses, unchanged there), hints 11 secondary,
+problems in Settings' triangle-and-red shape, lists under a field as plain
+full-row buttons washed on hover (never the link colour), links
+`.neutralLink`. The Hosts card's links sit on their own line under the
+name, wrapping (`WrappingRow`) rather than cutting a label: "Running
+sessions on masterblaster-mentes…" does not fit beside a name in Settings'
+column. No measuring view (`ViewThatFits`, `fixedSize`) was added under
+the detail pane.
+
+**Not built, with reasons.** The `.link` buttons in the launch-failure
+header, `LauncherView` and `HistoryTabView` are local surfaces (AGENTS.md:
+remote must not change a local tab's looks), so they keep the system link
+style. The local "New Claude session" label, and the untitled-session title
+Running sessions shares with the sidebar, stay as they are. The `+` menu's
+"Codex — <reason>" separator is the shared local format and keeps its dash.
+"No `codex` command on PATH." is plain text ("No codex command on PATH."):
+a status line is one string, also used as a greyed menu item. H5's long
+sentence is an orange line under the row, not the caption slot. The
+`--no-daemon` hint's mechanism clause was checked against Codex's own
+`--help` ("Run without the shared background server, even if it is already
+running") and reads "Codex then runs each session in its own process
+instead of a shared background server".
+
+**Tests.** `RemoteColdReadTests` (Remove and both choices, a failed stop
+keeping the host, the row actions, Detach, the working-agent question, the
+archive blocker, Open / Show tab / Dismiss, a failed sheet stop, the folder
+sheet's test, the tmux rule, the launch notice and which runs the quit
+flags); `RemoteCodexIdentityTests` (Not this one, with candidates left and
+none, and its failed write); `RemoteAppTests.testNotThisOneArchivesTheLinkedRowReversibly`;
+`CodexIdentityTests.testUnlinkReleasesTheClaimDeclinesAndRestoresTheRun`;
+the gate walk's two new completions. Computer-use passes check tasks, not
+labels (docs/copy-review.md).
