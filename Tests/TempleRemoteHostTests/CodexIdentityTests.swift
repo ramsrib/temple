@@ -73,6 +73,50 @@ final class CodexIdentityTests: XCTestCase {
         }
     }
 
+    private func sessions(_ fixture: Fixture,
+                          store: @escaping () throws -> RemoteStateStore) -> RemoteSessions {
+        let environment = fixture.host.environment
+        let sessions = RemoteSessions(record: .config("box"), stateDirectory: fixture.host.tree.url,
+                                      sshPath: "/never-execute-ssh", store: store,
+                                      resolve: { _ in .resolved(["hostname": "fixture.invalid"]) },
+                                      makeExec: { _, path, _ in LocalShellExec(path: path, environment: environment) },
+                                      masterCheck: { _ in true })
+        sessions.procRoot = fixture.proc
+        return sessions
+    }
+
+    private func insert(_ store: RemoteStateStore, folder: String) throws {
+        var run = RemoteRun(handle: "a", host: .init(rawValue: "box"), agent: .codex, mode: .new,
+                            directoryIntent: folder, sessionID: nil, recordPath: "r-a", startedAt: Date())
+        run.creation = .proven
+        run.directory = folder
+        run.okAt = 0
+        run.panePID = 100
+        run.paneStart = "1000"
+        run.codexHome = .unset
+        try store.insert(run)
+    }
+
+    func testV1VerifiedIdentityHonorsAPersistedCandidateDecline() async throws {
+        let fixture = Fixture()
+        let rollout = fixture.rollout()
+        fixture.process(100, parent: 1, start: 1000, argv: ["codex", "--no-daemon"],
+                        files: [(rollout.path, Self.writing)])
+        let store = try RemoteStateStore()
+        try insert(store, folder: fixture.folder)
+        try store.decline("a", rolloutPath: rollout.path)
+        // Prove the transport can verify this exact rollout. A broken fixture
+        // must fail outside the expected-failure block.
+        let proof = await fixture.check()
+        guard case .found(let path, _) = proof else { return XCTFail("fixture cannot prove identity: \(proof)") }
+        XCTAssertEqual(path, rollout.path)
+        let answer = await sessions(fixture, store: { store }).identify("a")
+        XCTAssertTrue(try store.declined("a").contains(RemotePath(rollout.path)))
+        let actual = try store.run("a")
+        XCTAssertNil(actual?.claim)
+        guard case .inconclusive = answer else { return XCTFail("declined identity was acquired: \(answer)") }
+    }
+
     static let writing = "02102002", appending = "0102001", reading = "0100000"
 
     private func inconclusive(_ answer: CodexIdentityCheck.Answer, file: StaticString = #filePath, line: UInt = #line)

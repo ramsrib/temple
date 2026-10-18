@@ -1295,7 +1295,7 @@ public final class RemoteSessions {
             guard let id = CodexIdentityCheck.verify(path: path, header: header, directory: directory) else {
                 return .inconclusive(.retry("the open session file doesn't name this session's folder or its own id"))
             }
-            return await claim(handle, sessionID: id, how: .verified)
+            return await claim(handle, sessionID: id, how: .verified, rolloutPath: path)
         }
     }
 
