@@ -1119,8 +1119,18 @@ struct ProjectHeadingLine: View {
                 .frame(height: 1)
                 .frame(minWidth: remote ? Self.ruleMinimum : 0)
                 .padding(.leading, 4)
-                // The `+` lands over the rule's end on hover; leave it room.
-                .padding(.trailing, hovering ? 22 : 0)
+                // A host's heading never changes width on hover: making room
+                // for the `+` squeezed the host and re-truncated it
+                // mid-animation. The `+` sits over the rule's end, and the
+                // rule's last 18 pt are masked out under it instead.
+                .mask(alignment: .trailing) {
+                    HStack(spacing: 0) {
+                        Rectangle()
+                        Color.clear.frame(width: hovering && remote ? 18 : 0)
+                    }
+                }
+                // A local heading leaves the `+` room on hover, as before.
+                .padding(.trailing, hovering && !remote ? 22 : 0)
                 .layoutPriority(remote ? -2 : 0)
         }
         .frame(height: ProjectHeaderTitle.lineHeight)
