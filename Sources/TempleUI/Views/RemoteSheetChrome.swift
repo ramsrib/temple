@@ -85,7 +85,12 @@ extension View {
     }
 }
 
-/// A hint under a field: 11 secondary.
+/// A hint under a field: 11 secondary, wrapping to as many lines as it
+/// needs (the host form's Name hint was cut to "It can't be chang…", the
+/// one warning that mattered). Its height is its own: a sheet is its own
+/// window, sized from its content, never under the split view's detail
+/// pane (AGENTS.md's titlebar inset trap does not reach it), so
+/// `fixedSize(vertical:)` is safe here and nowhere this is used in Settings.
 struct RemoteHint: View {
     let text: String
     init(_ text: String) { self.text = text }
@@ -94,6 +99,8 @@ struct RemoteHint: View {
         Text(text)
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
+            .lineLimit(nil)
+            .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -111,6 +118,9 @@ struct RemoteProblem: View {
                 .font(.system(size: 10))
             Text(text)
                 .textSelection(.enabled)
+                .lineLimit(nil)
+                // As `RemoteHint`: sheets only, never cut.
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .font(.system(size: 11))

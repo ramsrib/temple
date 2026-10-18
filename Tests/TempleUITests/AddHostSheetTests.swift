@@ -324,3 +324,25 @@ final class AddHostSheetTests: XCTestCase {
 private func numberedHosts(_ count: Int) -> [SSHConfigHost] {
     (1...count).map { SSHConfigHost(alias: "host-\($0)") }
 }
+
+extension AddHostSheetTests {
+    /// The default button says what Return will do: Add for nothing typed,
+    /// an added host or an alias; Add host by address… for an address (the
+    /// sheet then hides its own "Add host by address…" link, which would
+    /// read as a second action).
+    func testTheDefaultButtonSaysWhatReturnDoes() {
+        let sheet = open(hosts(records: [.config("box")]) { ["spare"] })
+        XCTAssertEqual(sheet.defaultActionTitle, RemoteCopy.addHostAdd)
+        XCTAssertFalse(sheet.readsAsAddress)
+        for alias in ["spare", "Spare", "box"] {
+            sheet.text = alias
+            XCTAssertFalse(sheet.readsAsAddress, alias)
+            XCTAssertEqual(sheet.defaultActionTitle, RemoteCopy.addHostAdd, alias)
+        }
+        sheet.text = "me@10.0.0.2:2222"
+        XCTAssertTrue(sheet.readsAsAddress)
+        XCTAssertEqual(sheet.defaultActionTitle, RemoteCopy.addHostByAddress)
+        sheet.text = "two words"
+        XCTAssertFalse(sheet.readsAsAddress, "unreadable: Return says so, the button stays Add")
+    }
+}

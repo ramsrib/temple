@@ -212,7 +212,8 @@ struct RemoteFolderSheet: View {
 
     var body: some View {
         RemoteSheetChrome {
-            RemoteSheetTitle(title: "New \(sheet.request.agent.displayName) session on \(host)")
+            // The host after the title, in mono, as Test connection's.
+            RemoteSheetTitle(title: RemoteCopy.folderSheetTitle(sheet.request.agent), host: host)
             RemoteFormRow(label: RemoteCopy.folderFieldLabel) {
                 // A path: monospaced, as Settings' Command field is.
                 TextField("", text: $sheet.path, prompt: Text(placeholder))

@@ -319,6 +319,15 @@ final class RemoteAppTests: XCTestCase {
             let flagged = hint.runs.filter { $0.font != nil }.map { String(hint[$0.range].characters) }
             XCTAssertEqual(flagged, ["--no-daemon"])
         }
+        // Every flag in the Hosts notes is code, the arguments note's too.
+        let note = HostsSettingsSection.flagsAsCode(HostsSettingsSection.argumentsNote)
+        XCTAssertEqual(String(note.characters), HostsSettingsSection.argumentsNote)
+        XCTAssertEqual(note.runs.filter { $0.font != nil }.map { String(note[$0.range].characters) },
+                       ["--dangerously-skip-permissions"])
+        let two = HostsSettingsSection.flagsAsCode("Use --a-b and --c, not -d.")
+        XCTAssertEqual(two.runs.filter { $0.font != nil }.map { String(two[$0.range].characters) }, ["--a-b", "--c"])
+        // The folder sheet's title leaves the host to its mono slot.
+        XCTAssertEqual(RemoteCopy.folderSheetTitle(.claude), "New Claude Code session")
     }
 
     /// Discard's row disposition acts only on the membership it was chosen

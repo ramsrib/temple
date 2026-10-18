@@ -660,6 +660,9 @@ public enum RemoteCopy {
         "New \(agent.displayName) session on \(host)\u{2026}"
     }
 
+    /// The folder sheet's title; the host follows it in mono.
+    public static func folderSheetTitle(_ agent: Agent) -> String { "New \(agent.displayName) session" }
+
     /// The folder sheet's field label (the sheet's title names the host).
     public static let folderFieldLabel = "Folder"
     public static let recentFoldersCaption = "Recent folders on this host. Click one to start there."

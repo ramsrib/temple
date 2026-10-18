@@ -47,7 +47,7 @@ struct HostsSettingsSection: View {
             SectionRule("Hosts")
             HostsRow(RemoteCopy.hostsLabel) { addedHosts }
             hairline
-            Text("Temple reaches these hosts with your own ssh. The arguments set above apply there too, --dangerously-skip-permissions included.")
+            Text(Self.flagsAsCode(Self.argumentsNote))
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -109,13 +109,29 @@ struct HostsSettingsSection: View {
         }
     }
 
-    /// The `--no-daemon` note, the flag set as code (monospaced, same size),
-    /// the rest as it reads. Here rather than in a tab's band (owner, round
-    /// 2); it follows Codex's arguments.
+    static let argumentsNote =
+        "Temple reaches these hosts with your own ssh. The arguments set above apply there too, --dangerously-skip-permissions included."
+
+    /// The `--no-daemon` note, the flag set as code, the rest as it reads.
+    /// Here rather than in a tab's band (owner, round 2); it follows
+    /// Codex's arguments.
     static func noDaemonHint(enabled: Bool) -> AttributedString {
-        var text = AttributedString(RemoteCopy.noDaemonHint(enabled: enabled))
-        if let range = text.range(of: "--no-daemon") {
-            text[range].font = .system(size: 11, design: .monospaced)
+        flagsAsCode(RemoteCopy.noDaemonHint(enabled: enabled))
+    }
+
+    /// Every `--flag` in a note set as code (monospaced, same size), as
+    /// every other flag on the page is.
+    static func flagsAsCode(_ note: String) -> AttributedString {
+        var text = AttributedString(note)
+        var start = text.startIndex
+        while let found = text[start...].range(of: "--") {
+            var end = found.upperBound
+            while end < text.endIndex, let character = text.characters[end...].first,
+                  character.isLetter || character.isNumber || character == "-" {
+                end = text.characters.index(after: end)
+            }
+            text[found.lowerBound..<end].font = .system(size: 11, design: .monospaced)
+            start = end
         }
         return text
     }

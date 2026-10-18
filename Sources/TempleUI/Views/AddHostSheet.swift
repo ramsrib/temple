@@ -271,9 +271,13 @@ struct AddHostSheet: View {
             }
             aliases
             HStack(spacing: 6) {
-                Text(RemoteCopy.addHostNotInConfig).foregroundStyle(.secondary)
-                Button(RemoteCopy.addHostEnterDetails) { act { sheet.enterDetails() } }
-                    .buttonStyle(.neutralLink)
+                // While the default button reads "Add host by address…", the
+                // same words here would read as a second, different action.
+                if !sheet.readsAsAddress {
+                    Text(RemoteCopy.addHostNotInConfig).foregroundStyle(.secondary)
+                    Button(RemoteCopy.addHostEnterDetails) { act { sheet.enterDetails() } }
+                        .buttonStyle(.neutralLink)
+                }
                 Spacer(minLength: 12)
                 Button(RemoteCopy.addHostEditConfig) { act { sheet.editConfig() } }
                     .buttonStyle(.neutralLink)
