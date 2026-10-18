@@ -298,8 +298,13 @@ final class RemoteHostLauncher: RemoteSessionHost {
 
     func markJoined(_ handle: String) async throws { try await sessions.markJoined(handle) }
 
-    func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)] {
-        await sessions.unjoinedClaims().compactMap { run in run.sessionID.map { (run.handle, $0, run.directory) } }
+    func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?, claimedAt: Date?)] {
+        var claims: [(handle: String, sessionID: String, directory: String?, claimedAt: Date?)] = []
+        for run in await sessions.unjoinedClaims() {
+            guard let id = run.sessionID else { continue }
+            claims.append((run.handle, id, run.directory, await sessions.claimedAt(run.handle)))
+        }
+        return claims
     }
 
     func pendingRuns() async -> [RemotePendingRun] {

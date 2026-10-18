@@ -219,9 +219,31 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertTrue(factory.created.isEmpty)
         XCTAssertEqual(persisted.load().map(\.sessionID), ["a", "b"], "saved once without it")
 
-        let (other, _, _) = run(activeID: "b")
+        XCTAssertEqual(persisted.load().filter(\.isActive).map(\.sessionID), [], "no active tab saved")
+
+        let (other, otherSaved, _) = run(activeID: "b")
         XCTAssertEqual(other.tabs.map(\.sessionID), ["a", "b"])
         XCTAssertEqual(other.activeTab?.sessionID, "b", "the right tab, though the indices shifted")
+        XCTAssertEqual(Set(otherSaved.load().map(\.sessionID)), ["a", "b"], "saved without the skipped one")
+        XCTAssertEqual(otherSaved.load().filter(\.isActive).map(\.sessionID), ["b"],
+                       "the cleanup save keeps which tab was active, a local one included")
+    }
+
+    /// All local: nothing is skipped, nothing is written, and the saved
+    /// active flag is as it was.
+    func testAnAllLocalRestoreWritesNothingAndKeepsTheActiveFlag() throws {
+        let persistence = UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults())
+        persistence.save(["a", "b"].map {
+            PersistedTab(sessionID: $0, agent: .claude, projectPath: "/p/\($0)", title: $0, isActive: $0 == "b")
+        })
+        let model = OpenSessionsModel(surfaceFactory: FakeTerminalSurfaceFactory(), appearanceProvider: { .default },
+            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(), persistence: persistence)
+        let rows = ["a": Fixture.archived(Fixture.row("a", project: "/p/a")), "b": Fixture.row("b", project: "/p/b")]
+        model.sessionRow = { rows[$0] }
+        model.restore()
+        XCTAssertEqual(model.tabs.map(\.sessionID), ["a", "b"], "a local archived row still restores")
+        XCTAssertEqual(model.activeTab?.sessionID, "b")
+        XCTAssertEqual(persistence.load().filter(\.isActive).map(\.sessionID), ["b"])
     }
 
     func testCopyResumeCommandPrefersTheRowAndKeepsLegacyFallback() throws {

@@ -402,9 +402,12 @@ it. What follows appears for an enabled host only.
   disconnects its open tabs (their agents keep running; Reconnect in each).
   A connected tab counts as running for that question even when the host's
   probe can't tell. A tab still open for a host just removed says so at
-  once ("<host> was removed from Temple. Its agent may still be running
-  there; add the host again to reconnect.") with **Open Settings**, which
-  opens Settings at Hosts; a tab on a host Temple doesn't have says so too.
+  once, with **Open Hosts in Settings**, and says what brings it back for
+  the state it is in: a tab that was connected or connecting is left
+  disconnected and gets Reconnect once the host is added again; a tab not
+  yet opened opens when clicked; a tab already showing its own question
+  (a stopped or ended session) only says to add the host again. A tab on a
+  host Temple doesn't have says so too.
 - **New Codex sessions.** Codex picks its own session ID, so a new Codex
   session on a host reads "New Codex session" until Temple learns the ID;
   it reopens and restores like any tab meanwhile. Temple identifies it on

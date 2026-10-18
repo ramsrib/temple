@@ -150,8 +150,31 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertNil(app.remoteNotice, "the join took it down")
         // Another run's notice is left alone.
         app.remoteNotice = RemoteNotice(host: hostID, message: "x", kind: .unlinked(handle: "p9", directory: "/home/u/p"))
-        app.openSessions.remoteTabs.claimJoinedHandler?("c7", hostID, "p1")
+        app.openSessions.remoteTabs.claimJoinedHandler?("c7", hostID, "p1", nil)
         XCTAssertNotNil(app.remoteNotice)
+    }
+
+    /// The launch's reconciliation of a claim whose join already happened
+    /// (its mark failed): an archive the user made after the claim is kept;
+    /// one from before it (an earlier Not this one, then Link it after all
+    /// with a quit before the join) is undone.
+    func testReconciliationKeepsAnArchiveMadeAfterTheClaim() async throws {
+        for archiveAfterClaim in [true, false] {
+            let db = try TempleDB.inMemory()
+            Fixture.join([Fixture.row("c5", agent: .codex, project: "/home/u/p", host: hostID)], to: db)
+            let remote = FakeRemoteHost("box")
+            remote.unjoined = [("p5", "c5", "/home/u/p")]
+            let app = try app(remote, db: db)
+            app.overlay.setArchived(true, sessionID: "c5")
+            let archivedAt = try XCTUnwrap(app.overlay.rows["c5"]?.archivedAt)
+            remote.unjoinedClaimedAt["p5"] = archiveAfterClaim ? archivedAt.addingTimeInterval(-60)
+                                                               : archivedAt.addingTimeInterval(60)
+            app.openSessions.remoteTabs.reconcileClaims(hosts: [hostID])
+            await settle { remote.joinedMarks == ["p5"] }
+            try await Task.sleep(for: .milliseconds(50))
+            XCTAssertEqual(app.overlay.rows["c5"]?.archived, archiveAfterClaim,
+                           archiveAfterClaim ? "the user's later archive is kept" : "the earlier archive is the claim's to undo")
+        }
     }
 
     /// The user restored the row from Archived sessions before relinking:

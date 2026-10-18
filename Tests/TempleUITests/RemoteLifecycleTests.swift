@@ -390,7 +390,11 @@ final class FakeRemoteHost: RemoteSessionHost {
     }
 
     var unjoined: [(handle: String, sessionID: String, directory: String?)] = []
-    func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)] { unjoined }
+    /// When each unjoined claim was made, by handle (nil: unknown).
+    var unjoinedClaimedAt: [String: Date] = [:]
+    func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?, claimedAt: Date?)] {
+        unjoined.map { ($0.handle, $0.sessionID, $0.directory, unjoinedClaimedAt[$0.handle]) }
+    }
 
     var pendingRunsGate: (() async -> Void)?
     func pendingRuns() async -> [RemotePendingRun] {

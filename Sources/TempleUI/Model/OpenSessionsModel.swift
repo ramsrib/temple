@@ -1185,9 +1185,6 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         projectMRU = persistence.loadProjectRecency().filter(restored.contains)
         // Restore active project context without spawning anything.
         activeProjectKey = tabs.first?.projectKey
-        // The saved set matches the window again: one ordinary full save, so
-        // the open_tabs guards see the truth and the skip is not repeated.
-        if skipped > 0 { persist() }
         // Every other chip stays inert until clicked (lazy restore). The one the
         // user was looking at when they quit is the exception: reopening to the
         // launcher after a quit reads as "Temple lost my session", so that one
@@ -1195,9 +1192,16 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         // Found on the restored list (a skipped tab shifts the indices).
         guard let active = restoredTabs.first(where: \.isActive)?.tab else {
             activeTabID = nil
+            // The saved set matches the window again: one ordinary full
+            // save, so the open_tabs guards see the truth and the skip is
+            // not repeated.
+            if skipped > 0 { persist() }
             return
         }
         activate(active)
+        // The same save, once the surviving active tab is the active one, so
+        // the set keeps which tab that is.
+        if skipped > 0 { persist() }
         if !active.hasSurface, active.launchPreparationError == Self.unknownDirectoryMessage {
             pendingRestoreActivation = active.id
         }

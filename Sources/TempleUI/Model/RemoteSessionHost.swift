@@ -301,7 +301,8 @@ public protocol RemoteSessionHost: HostLauncher {
     func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws
     func markJoined(_ handle: String) async throws
     /// Claims whose core join never happened, with their folders.
-    func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)]
+    /// `claimedAt`: when the claim was made (nil: unknown).
+    func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?, claimedAt: Date?)]
     func pendingRuns() async -> [RemotePendingRun]
     /// A pending run's tab closed: no chip at the next launch.
     func closePendingTab(_ handle: String) async throws
@@ -878,9 +879,25 @@ public enum RemoteCopy {
 
     /// A tab still open for a host just removed from Temple, at once (not
     /// only when it is opened again).
-    public static func hostRemoved(_ host: String) -> String {
-        "This tab's host, \(host), was removed from Temple, so this tab is disconnected. The agent may still be running "
-            + "there. To reconnect, add \(host) again in Settings \u{25B8} Hosts, then use Reconnect in this tab."
+    /// What a tab on a removed host can do once the host is back: reconnect
+    /// (its band then offers Reconnect), open (it never connected, or was
+    /// still opening: clicking it opens it), or neither (its own band, a
+    /// question or an end, says what it offers).
+    public enum RemovedHostTab: Equatable { case reconnect, open, other }
+
+    public static func hostRemoved(_ host: String, tab: RemovedHostTab) -> String {
+        switch tab {
+        case .reconnect:
+            return "This tab's host, \(host), was removed from Temple, so this tab is disconnected. The agent may still be "
+                + "running there. To reconnect, add \(host) again in Settings \u{25B8} Hosts, then click Reconnect, "
+                + "which appears here once the host is back."
+        case .open:
+            return "This tab's host, \(host), was removed from Temple, so this tab can't open. Its agent may still be "
+                + "running there. To open it, add \(host) again in Settings \u{25B8} Hosts, then click this tab in the tab bar."
+        case .other:
+            return "This tab's host, \(host), was removed from Temple. To use this tab again, add \(host) again in "
+                + "Settings \u{25B8} Hosts."
+        }
     }
     public static let openHostsInSettings = "Open Hosts in Settings"
 

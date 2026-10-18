@@ -1438,6 +1438,11 @@ public final class RemoteSessions {
         return await read { try $0.unjoinedClaims(host: host) } ?? []
     }
 
+    /// When a run's claim was made (nil: unknown).
+    public func claimedAt(_ handle: String) async -> Date? {
+        await read { try $0.claimedAt(handle) } ?? nil
+    }
+
     /// The run's tab was typed into: kept, so a relaunch knows.
     public func recordInput(_ handle: String) async throws {
         let now = now()

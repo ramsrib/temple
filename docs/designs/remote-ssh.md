@@ -3315,3 +3315,19 @@ cold read of the real screens, as built:
   store still refuses an automatic claim for a run with a decline). The
   join unarchives the row Not this one archived and takes that run's
   notice down. Temple never relinks on its own.
+- *Sol round 6.* (1) Reconciliation repairs a join, it doesn't undo a
+  later archive: `r6-claimed-at` (additive, remote store) records when a
+  claim was made, and a launch's reconcile unarchives the joined row only
+  when it was archived no later than that claim (Not this one's archive,
+  or an older one); an archive the person made after the claim stays. A
+  claim from before the column (no time) is treated as older than any
+  archive. A live `adopted` join still unarchives, as Link it after all
+  needs. (2) `restore()` activates the surviving active tab before its one
+  cleanup save, so the saved set keeps its active flag; a restore that
+  skips nothing writes nothing, local or remote, as before. (3) A tab on a
+  removed host says what brings it back for its state: a connected,
+  connecting or opening tab is left disconnected (retiring a host now
+  disconnects an opening run too, instead of clearing it) and is told
+  Reconnect appears once the host is back; a tab never opened is told to
+  click it; a tab already showing its own question is told only to add the
+  host again. The button opens Settings at Hosts.

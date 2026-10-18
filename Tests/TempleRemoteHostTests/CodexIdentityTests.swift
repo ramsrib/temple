@@ -577,6 +577,10 @@ final class CodexIdentityTests: XCTestCase {
         XCTAssertEqual(try store.declined("a"), [])
         XCTAssertEqual(try store.run("a")?.sessionID, "z1")
         XCTAssertEqual(try store.run("a")?.claim, .confirmed)
+        // The claim's time is kept with it, and goes with it.
+        XCTAssertNotNil(try store.claimedAt("a"))
+        try store.releaseClaim("a", sessionID: "z1")
+        XCTAssertNil(try store.claimedAt("a"))
     }
 
     /// A withdrawal whose claim is refused keeps the decline; Temple's own

@@ -214,12 +214,44 @@ final class RemoteColdReadTests: XCTestCase {
         XCTAssertFalse(app.tabHostWasRemoved(tab), "an edit is not a removal")
         app.remoteHosts.remove("box")
         XCTAssertTrue(app.tabHostWasRemoved(tab), "said at once, in the tab")
-        XCTAssertEqual(RemoteCopy.hostRemoved("box"),
+        XCTAssertEqual(RemoteCopy.hostRemoved("box", tab: .reconnect),
                        "This tab's host, box, was removed from Temple, so this tab is disconnected. The agent may still be "
-                       + "running there. To reconnect, add box again in Settings \u{25B8} Hosts, then use Reconnect in this tab.")
+                       + "running there. To reconnect, add box again in Settings \u{25B8} Hosts, then click Reconnect, which "
+                       + "appears here once the host is back.")
+        XCTAssertEqual(RemoteCopy.hostRemoved("box", tab: .open),
+                       "This tab's host, box, was removed from Temple, so this tab can't open. Its agent may still be running "
+                       + "there. To open it, add box again in Settings \u{25B8} Hosts, then click this tab in the tab bar.")
+        XCTAssertEqual(RemoteCopy.hostRemoved("box", tab: .other),
+                       "This tab's host, box, was removed from Temple. To use this tab again, add box again in Settings \u{25B8} Hosts.")
         XCTAssertEqual(RemoteCopy.openHostsInSettings, "Open Hosts in Settings")
         app.remoteHosts.save(RemoteHostRecord(name: "box", source: .temple, address: "10.0.0.3"), editing: nil)
         XCTAssertFalse(app.tabHostWasRemoved(tab), "added again")
+    }
+
+    /// The removed host's band says what the tab can do once the host is
+    /// back, by its state, and each promise holds: a connected tab is
+    /// disconnected (its band then offers Reconnect); a decision or an end
+    /// keeps its own band; a tab with no run opens when clicked.
+    func testARemovedHostsBandMatchesWhatTheTabCanDo() async throws {
+        let remote = FakeRemoteHost("box")
+        let app = try app(remote)
+        let tab = try await connectedTab(app)
+        XCTAssertEqual(RemoteTabController.removedHostTab(tab.remote), .reconnect)
+        app.openSessions.remoteTabs.retireHost(hostID)
+        await settle { tab.remote?.phase == .disconnected }
+        XCTAssertEqual(tab.remote?.phase, .disconnected, "Reconnect is the disconnected band's own button")
+        XCTAssertEqual(RemoteTabController.removedHostTab(tab.remote), .reconnect)
+        XCTAssertEqual(RemoteTabController.removedHostTab(nil), .open)
+        XCTAssertEqual(RemoteTabController.removedHostTab(RemoteTabState(phase: .needsDecision(checked: true))), .other)
+        XCTAssertEqual(RemoteTabController.removedHostTab(RemoteTabState(phase: .endedPending)), .other)
+        // A run being opened when the host went is left disconnected, never
+        // stuck opening.
+        var opening = RemoteTabState(phase: .opening)
+        opening.handle = "p9"
+        let chip = app.openSessions.appendPendingChip(host: hostID, handle: "p9", directory: "/home/u/p", ended: false)
+        chip.remote = opening
+        app.openSessions.remoteTabs.retireHost(hostID)
+        XCTAssertEqual(chip.remote?.phase, .disconnected)
     }
 
     /// Both kinds of host offer the same four actions; a config host opens

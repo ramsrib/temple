@@ -68,7 +68,9 @@ private struct SessionTerminalView: View {
             if model.tabHostWasRemoved(tab) {
                 // Its host was removed from Temple: said at once, in place of
                 // every other header (Reconnect can't work until it is back).
-                notice(symbol: "exclamationmark.triangle", text: RemoteCopy.hostRemoved(displayHost), stillRunning: true) {
+                let state = RemoteTabController.removedHostTab(tab.remote)
+                notice(symbol: "exclamationmark.triangle", text: RemoteCopy.hostRemoved(displayHost, tab: state),
+                       stillRunning: state != .other) {
                     Button(RemoteCopy.openHostsInSettings) { model.openSessions.openSettingsAtHosts() }
                 } dismiss: {
                     EmptyView()

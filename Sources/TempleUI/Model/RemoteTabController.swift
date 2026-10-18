@@ -43,7 +43,11 @@ public final class RemoteTabController {
     /// person, so it is not archived (an earlier Not this one archived it
     /// for another tab's link). Keeps "an archived row has no tab", which
     /// `restore()` relies on.
-    public var claimJoinedHandler: ((_ sessionID: String, _ host: HostID, _ handle: String) -> Void)?
+    /// `claimedAt`: nil for a claim made now (any archive predates it);
+    /// the claim's time for the launch's reconciliation, whose join may
+    /// repair one that already happened: an archive made after the claim
+    /// is the user's, and is kept.
+    public var claimJoinedHandler: ((_ sessionID: String, _ host: HostID, _ handle: String, _ claimedAt: Date?) -> Void)?
     /// The title a tab's chip shows (the app's `tabDisplayTitle`).
     public var tabTitleProvider: (SessionTab) -> String = { $0.title.isEmpty ? $0.agent.newSessionTitle : $0.title }
     /// Not this one detached the tab: the notice, whose Open reopens the
@@ -853,9 +857,25 @@ public final class RemoteTabController {
             if tab.hasLiveProcess, let surface = tab.surface {
                 hostRetiredTabs.insert(tab.id)
                 surface.terminate()
-            } else if tab.remote?.phase == .checking || tab.remote?.phase == .stopping {
+            } else if tab.remote?.phase == .checking || tab.remote?.phase == .stopping || tab.remote?.phase == .opening {
+                // An open of a run cancelled with the host: disconnected,
+                // so Reconnect is there once the host is back (left
+                // "opening", it would never open again).
                 tab.remote?.phase = .disconnected
             }
+        }
+    }
+
+    /// What a tab on a removed host can do once the host is back, by its
+    /// state: a run it was attached to (disconnected, or unknown) gets
+    /// Reconnect; no remote state (never opened, or retired while opening a
+    /// new run) opens when clicked; any other phase keeps its own band's
+    /// actions.
+    public static func removedHostTab(_ remote: RemoteTabState?) -> RemoteCopy.RemovedHostTab {
+        guard let remote else { return .open }
+        switch remote.phase {
+        case .connected, .disconnected, .unknown, .checking, .stopping, .opening: return .reconnect
+        case .needsDecision, .endedPending, .failedToStart, .exitedEarly, .stopFailed: return .other
         }
     }
 
@@ -1095,7 +1115,7 @@ public final class RemoteTabController {
             let open = SessionOpen(id: id, host: hostID, via: .created, agent: .codex, locator: nil)
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
-                claimJoinedHandler?(id, hostID, handle)
+                claimJoinedHandler?(id, hostID, handle, nil)
                 if let directory { model.launchDirectoryHandler?(id, hostID, directory) }
                 operations.run(host: hostID, .write) {
                     do { try await host.markJoined(handle) } catch {
@@ -1346,20 +1366,18 @@ public final class RemoteTabController {
         tab.remote?.retryResult = nil
         lastIdentityCheck[tab.id] = Date()
         let ticket = gate.ticket(for: tab)
-        lastLookup[handle] = nil
+        // Said only from what a lookup finds from here: "still none" after
+        // one that came back complete and empty, why when it couldn't look
+        // (`loadSuggestions`); nothing when no lookup runs.
+        retryAwaitingLookup.insert(handle)
+        let generation = lookupGeneration[handle] ?? 0
         operations.run(host: tab.host, .identity) { [weak self] in
             await self?.checkIdentity(ticket, host: host, handle: handle)
             guard let self, self.gate.admit(.identityResult, ticket), let tab = ticket.tab else { return }
             tab.remote?.retrying = false
-            guard self.isPending(tab) else { return }
-            // Said only from what this check's lookup found: "still none"
-            // after a lookup that came back complete and empty; why, when it
-            // couldn't look; nothing when no lookup ran.
-            switch self.lastLookup[handle] {
-            case .candidates(0)?: tab.remote?.retryResult = RemoteCopy.checkedStillNone
-            case .unavailable(let reason)?: tab.remote?.retryResult = RemoteCopy.checkFailed(reason)
-            default: tab.remote?.retryResult = nil
-            }
+            // No lookup began for this check (identity settled it, or it
+            // couldn't ask): nothing to say.
+            if self.lookupGeneration[handle] ?? 0 == generation { self.retryAwaitingLookup.remove(handle) }
         }
     }
 
@@ -1385,6 +1403,9 @@ public final class RemoteTabController {
     /// candidates (how many, after filtering), or why it couldn't look.
     enum LookupOutcome: Equatable { case candidates(Int), unavailable(String) }
     private var lastLookup: [String: LookupOutcome] = [:]
+    /// Runs whose Try again waits for a lookup's answer to say: the newest
+    /// lookup that reaches the tab says it, a scheduled one included.
+    private var retryAwaitingLookup: Set<String> = []
     /// Each run's lookups in the order they began: only the newest one's
     /// answer reaches the tab (an older, emptier answer never erases it).
     private var lookupGeneration: [String: Int] = [:]
@@ -1396,7 +1417,10 @@ public final class RemoteTabController {
         guard lookupGeneration[handle] == generation else { return }
         guard gate.admit(.suggestionsLoaded, ticket), let tab = ticket.tab, isPending(tab) else { return }
         guard case .candidates(let found) = answer else {
-            if case .unavailable(let reason) = answer { lastLookup[handle] = .unavailable(reason) }
+            if case .unavailable(let reason) = answer {
+                lastLookup[handle] = .unavailable(reason)
+                if retryAwaitingLookup.remove(handle) != nil { tab.remote?.retryResult = RemoteCopy.checkFailed(reason) }
+            }
             return
         }
         let refused = refusedClaims[handle]?.id
@@ -1425,6 +1449,9 @@ public final class RemoteTabController {
         tab.remote?.suggestions = offered.sorted(by: earliestFirst)
         tab.remote?.declined = declinedOnes.sorted(by: earliestFirst)
         lastLookup[handle] = .candidates(offered.count)
+        if retryAwaitingLookup.remove(handle) != nil {
+            tab.remote?.retryResult = offered.isEmpty ? RemoteCopy.checkedStillNone : nil
+        }
         // The candidates and what the tab says of them, together: with
         // some, no empty-state text stays up.
         if !offered.isEmpty {
@@ -1762,7 +1789,7 @@ public final class RemoteTabController {
             let open = SessionOpen(id: claim.sessionID, host: hostID, via: .created, agent: .codex, locator: nil)
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
-                claimJoinedHandler?(claim.sessionID, hostID, claim.handle)
+                claimJoinedHandler?(claim.sessionID, hostID, claim.handle, claim.claimedAt ?? .distantPast)
                 if let directory = claim.directory { model.launchDirectoryHandler?(claim.sessionID, hostID, directory) }
                 joined.insert(claim.handle)
                 do { try await host.markJoined(claim.handle) } catch {

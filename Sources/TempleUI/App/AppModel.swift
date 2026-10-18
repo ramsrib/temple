@@ -730,10 +730,15 @@ public final class AppModel: ObservableObject {
             TempleUILog.remote.notice("Archived \(id, privacy: .public): declined link")
             self.overlay.setArchived(true, sessionID: id)
         }
-        openSessions.remoteTabs.claimJoinedHandler = { [weak self] id, host, handle in
+        openSessions.remoteTabs.claimJoinedHandler = { [weak self] id, host, handle, claimedAt in
             guard let self else { return }
-            // A tab's claim is that tab's session: never left archived.
-            if self.overlay.rows[id]?.archived == true { self.overlay.setArchived(false, sessionID: id) }
+            // A tab's claim is that tab's session: never left archived by an
+            // archive from before the claim (an earlier Not this one). One
+            // the user made after it (a join repaired at launch) is kept.
+            if let row = self.overlay.rows[id], row.archived {
+                let beforeClaim = claimedAt.map { claimed in row.archivedAt.map { $0 <= claimed } ?? false } ?? true
+                if beforeClaim { self.overlay.setArchived(false, sessionID: id) }
+            }
             // A Not this one notice about that run no longer holds.
             if case .unlinked(let unlinked, _)? = self.remoteNotice?.kind, unlinked == handle,
                self.remoteNotice?.host == host {
