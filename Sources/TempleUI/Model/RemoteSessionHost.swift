@@ -379,6 +379,9 @@ public struct RemoteTabState: Equatable {
     public var linkedSuggestion: RemoteSuggestion?
     /// Not this one's write is out: the button waits for it.
     public var unlinking = false
+    /// Try again is checking; what it found when that was nothing new.
+    public var retrying = false
+    public var retryResult: String?
 
     public init(phase: Phase) { self.phase = phase }
 
@@ -992,6 +995,14 @@ public enum RemoteCopy {
     /// keeps working, unidentified, with Try again.
     public static let couldNotTell = "Temple couldn't tell which Codex session this is. "
         + "The tab keeps working; it gets a sidebar row once Temple can tell."
+
+    /// Asked, and nothing left to ask about: every candidate was declined
+    /// (or there was none), so no other session has started there.
+    public static let noOtherCandidate = "No other Codex session has started in this folder since the tab opened. "
+        + "The tab keeps working; it gets a sidebar row once Temple finds its session."
+    /// Try again, while it checks, and when it found nothing new.
+    public static let checkingAgain = "Checking again\u{2026}"
+    public static let checkedStillNone = "Checked again: still none."
 
     /// "Discard" said which, per row (one meaning: a session that is not
     /// running; nothing is stopped): removed, or archived when the row is

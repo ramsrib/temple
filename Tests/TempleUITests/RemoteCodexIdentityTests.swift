@@ -397,15 +397,17 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(remote.automaticConfirms.count, 1, "never linked on its own again for this run")
     }
 
-    /// Declining the last candidate by hand: the tab says Temple couldn't
-    /// tell (it keeps working, unidentified), with Try again.
-    func testDecliningTheLastCandidateSaysTempleCouldNotTell() async throws {
+    /// Declining the last candidate by hand: the tab says no other session
+    /// has started there (it keeps working, unidentified), with Try again.
+    func testDecliningTheLastCandidateSaysNoOtherSessionStarted() async throws {
         remote.suggestionsResult = .candidates([suggestion("c8"), suggestion("c9")])
         let second = await newCodex()
         model.surfaceDidSubmitInput(try XCTUnwrap(second.surface))
         await settle(second.remote?.suggestions.count == 2)
         for candidate in second.remote?.suggestions ?? [] { model.remoteTabs.decline(candidate, in: second) }
-        XCTAssertEqual(second.remote?.identityNote, RemoteCopy.couldNotTell)
+        XCTAssertEqual(second.remote?.identityNote, RemoteCopy.noOtherCandidate)
+        XCTAssertEqual(RemoteCopy.noOtherCandidate, "No other Codex session has started in this folder since the tab opened. "
+                       + "The tab keeps working; it gets a sidebar row once Temple finds its session.")
     }
 
     /// Try again never brings back a candidate declined in this tab, even
@@ -419,15 +421,23 @@ final class RemoteCodexIdentityTests: XCTestCase {
         model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
         await settle(tab.remote?.suggestions.count == 2)
         for candidate in tab.remote?.suggestions ?? [] { model.remoteTabs.decline(candidate, in: tab) }
-        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.couldNotTell)
+        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.noOtherCandidate)
         XCTAssertEqual(RemoteCopy.couldNotTell,
                        "Temple couldn't tell which Codex session this is. The tab keeps working; it gets a sidebar row once Temple can tell.")
         let lookups = remote.suggestionLookups.count
+        let hold = Gate()
+        remote.suggestionsGate = { await hold.wait() }
         model.remoteTabs.retryIdentity(tab)
+        // Try again shows that it runs, then what it found.
+        XCTAssertEqual(tab.remote?.retrying, true, "checking")
+        XCTAssertNil(tab.remote?.retryResult)
         await settle(self.remote.suggestionLookups.count > lookups)
-        try await Task.sleep(for: .milliseconds(50))
+        await hold.open()
+        remote.suggestionsGate = nil
+        await settle(tab.remote?.retrying == false)
+        XCTAssertEqual(tab.remote?.retryResult, "Checked again: still none.")
         XCTAssertEqual(tab.remote?.suggestions, [], "neither comes back")
-        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.couldNotTell)
+        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.noOtherCandidate)
         model.remoteTabs.detach(tab.id)
 
         // After Not this one, the reopened run the same.
@@ -441,7 +451,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await settle(!self.model.tabs.contains { $0 === linked })
         model.remoteTabs.openPendingRun(handle: handle, host: hostID, directory: "/home/u/project", typed: true)
         let reopened = try XCTUnwrap(model.tabs.first { $0.remote?.handle == handle })
-        await settle(reopened.remote?.identityNote == RemoteCopy.couldNotTell, "nothing left to ask about")
+        await settle(reopened.remote?.identityNote == RemoteCopy.noOtherCandidate, "nothing left to ask about")
         XCTAssertEqual(reopened.remote?.suggestions, [], "the unlinked candidate is not offered again")
         XCTAssertNil(reopened.sessionID)
     }
@@ -553,15 +563,15 @@ final class RemoteCodexIdentityTests: XCTestCase {
     }
 
     /// Once asked, the tab is never bare: with the last candidate declined
-    /// the host offers none, and the tab says Temple couldn't tell.
-    func testTheLastDeclineSaysTempleCouldNotTell() async throws {
+    /// the host offers none, and the tab says no other session started.
+    func testTheLastDeclineSaysNoOtherSessionStarted() async throws {
         remote.excludesDeclined = true
         remote.identityResult = .inconclusive("shared server", lasting: true, ended: false)
         remote.suggestionsResult = .candidates([suggestion()])
         let tab = await newCodex()
         await settle(tab.remote?.suggestions.count == 1)
         model.remoteTabs.decline(try XCTUnwrap(tab.remote?.suggestions.first), in: tab)
-        await settle(tab.remote?.identityNote == RemoteCopy.couldNotTell, "never a bare tab")
+        await settle(tab.remote?.identityNote == RemoteCopy.noOtherCandidate, "never a bare tab")
         XCTAssertNil(tab.sessionID)
     }
 

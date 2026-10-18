@@ -427,9 +427,12 @@ it. What follows appears for an enabled host only.
   this tab is." and asks: "Is this the session?" with the first prompt, the
   folder's full path and when it started (relative to the tab, "4 s after
   this tab opened", when that is known), earliest first, and **Yes, that's
-  it** or **Not this one**; with nothing left to ask about, it says Temple
-  couldn't tell (the tab keeps working; it gets a sidebar row once Temple
-  can tell) with **Try again**, which never offers a declined candidate
+  it** or **Not this one**; with nothing left to ask about, it says "No
+  other Codex session has started in this folder since the tab opened."
+  (the tab keeps working; it gets a sidebar row once Temple finds its
+  session; when the one it found is another tab's, it says Temple couldn't
+  tell), with **Try again**, which shows that it is checking and then "Checked again: still
+  none." when it finds nothing new, and never offers a declined candidate
   again. With
   `--no-daemon` in Codex's arguments, Temple identifies the session on its
   own; the Hosts card says which, from the arguments.

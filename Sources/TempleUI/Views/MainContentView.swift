@@ -199,10 +199,21 @@ private struct SessionTerminalView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
-                if remote.identityRefused || note == RemoteCopy.couldNotTell {
+                if remote.retrying {
+                    // Try again shows that it runs.
+                    ProgressView().controlSize(.mini)
+                    Text(RemoteCopy.checkingAgain)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                } else if remote.identityRefused || note == RemoteCopy.couldNotTell || note == RemoteCopy.noOtherCandidate {
                     Button(RemoteCopy.tryAgain) { model.openSessions.remoteTabs.retryIdentity(tab) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
+                    if let result = remote.retryResult {
+                        Text(result)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer(minLength: 0)
             }

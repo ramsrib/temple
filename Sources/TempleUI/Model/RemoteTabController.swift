@@ -1323,11 +1323,21 @@ public final class RemoteTabController {
         tab.remote?.identityRefused = false
         // "Couldn't tell" stays until candidates arrive (never a bare tab);
         // a refusal's reason goes with the refusal.
-        if tab.remote?.identityNote != RemoteCopy.couldNotTell { tab.remote?.identityNote = nil }
+        if let note = tab.remote?.identityNote, note != RemoteCopy.couldNotTell, note != RemoteCopy.noOtherCandidate {
+            tab.remote?.identityNote = nil
+        }
+        // It shows that it ran: checking, then what it found.
+        tab.remote?.retrying = true
+        tab.remote?.retryResult = nil
         lastIdentityCheck[tab.id] = Date()
         let ticket = gate.ticket(for: tab)
         operations.run(host: tab.host, .identity) { [weak self] in
             await self?.checkIdentity(ticket, host: host, handle: handle)
+            guard let self, self.gate.admit(.identityResult, ticket), let tab = ticket.tab else { return }
+            tab.remote?.retrying = false
+            if self.isPending(tab), tab.remote?.suggestions.isEmpty == true {
+                tab.remote?.retryResult = RemoteCopy.checkedStillNone
+            }
         }
     }
 
@@ -1372,11 +1382,14 @@ public final class RemoteTabController {
         tab.remote?.suggestions = offered.sorted {
             $0.startedAt != $1.startedAt ? $0.startedAt < $1.startedAt : $0.id.lexicographicallyPrecedes($1.id)
         }
-        if !offered.isEmpty { asked.insert(handle) }
+        if !offered.isEmpty {
+            asked.insert(handle)
+            tab.remote?.retryResult = nil
+        }
         // Once asked, the tab is never bare: with no candidate left (the
-        // last one declined), it says Temple couldn't tell.
+        // last one declined), it says no other session has started there.
         if offered.isEmpty, asked.contains(handle), tab.remote?.identityNote == nil {
-            tab.remote?.identityNote = RemoteCopy.couldNotTell
+            tab.remote?.identityNote = RemoteCopy.noOtherCandidate
         }
     }
 
@@ -1469,10 +1482,10 @@ public final class RemoteTabController {
         declinedHere[handle, default: []].insert(suggestion.id)
         tab.remote?.suggestions.removeAll { $0.id == suggestion.id }
         asked.insert(handle)
-        // The last one declined, on a running tab: it says Temple couldn't
-        // tell (with Try again), never goes bare.
+        // The last one declined, on a running tab: it says no other session
+        // has started there (with Try again), never goes bare.
         if tab.remote?.suggestions.isEmpty == true, tab.remote?.phase == .connected, tab.remote?.identityNote == nil {
-            tab.remote?.identityNote = RemoteCopy.couldNotTell
+            tab.remote?.identityNote = RemoteCopy.noOtherCandidate
         }
         let ticket = gate.ticket(host: tab.host)
         operations.run(host: tab.host, .write) { [weak self] in
