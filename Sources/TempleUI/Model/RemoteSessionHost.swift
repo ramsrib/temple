@@ -298,10 +298,6 @@ public protocol RemoteSessionHost: HostLauncher {
     func closePendingTab(_ handle: String) async throws
     /// Discard of a pending run.
     func dismissRun(_ handle: String) async throws
-    /// Discard of a session Temple linked on its own, after its run's
-    /// confirmed stop: that run alone, and only while no other run of the
-    /// session is live or newer (checked in one transaction). Whether it was.
-    func dismissStoppedRun(_ handle: String, sessionID: String) async throws -> Bool
     /// Something was typed into the run's tab.
     func recordInput(_ handle: String) async throws
     /// The run store itself, for an obligation to hold (nil when it can't

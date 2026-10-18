@@ -633,32 +633,6 @@ public final class RemoteStateStore: @unchecked Sendable {
         }
     }
 
-    /// Discard of a session Temple linked on its own, once its run's stop
-    /// was confirmed: in one immediate transaction, that run alone is
-    /// dismissed, and only while the session has no other run that is
-    /// live or newer (a reopen during the stop started one): then nothing
-    /// is dismissed and the caller keeps the session. Whether it was.
-    public func dismissStoppedRun(_ handle: String, sessionID: String, at date: Date) throws -> Bool {
-        try queue.writeWithoutTransaction { database in
-            var dismissed = false
-            try database.inTransaction(.immediate) {
-                guard let run = try Row.fetchOne(database, sql: "SELECT * FROM runs WHERE handle = ?",
-                                                 arguments: [handle]).map(Self.run),
-                      run.sessionID == sessionID else { return .commit }
-                let other = try Bool.fetchOne(database, sql: """
-                    SELECT EXISTS (SELECT 1 FROM runs WHERE host = ? AND session_id = ? AND handle != ?
-                        AND dismissed_at IS NULL AND (ended_at IS NULL OR started_at > ?))
-                    """, arguments: [run.host.rawValue, sessionID, handle, run.startedAt.timeIntervalSince1970]) ?? false
-                guard !other else { return .commit }
-                try database.execute(sql: "UPDATE runs SET dismissed_at = ? WHERE handle = ? AND dismissed_at IS NULL",
-                                     arguments: [date.timeIntervalSince1970, handle])
-                dismissed = true
-                return .commit
-            }
-            return dismissed
-        }
-    }
-
     /// What reopening a pending run found, decided in one transaction.
     public enum PendingReservation: Sendable, Equatable {
         /// Not Ended: attach (attachment incremented, flags cleared).

@@ -309,12 +309,6 @@ final class RemoteHostLauncher: RemoteSessionHost {
         await refreshLiveSessions()
     }
 
-    func dismissStoppedRun(_ handle: String, sessionID: String) async throws -> Bool {
-        let dismissed = try await sessions.dismissStoppedRun(handle, sessionID: sessionID)
-        await refreshLiveSessions()
-        return dismissed
-    }
-
     func recordInput(_ handle: String) async throws { try await sessions.recordInput(handle) }
 
     func runLedger() -> RemoteRunLedger? { (try? sessions.store()).map(RemoteStoreLedger.init) }
