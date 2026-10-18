@@ -1,6 +1,6 @@
 # Remote (SSH) sessions for Temple: design
 
-> **Decided in [ADR-036](../DECISIONS.md#adr-036--sessions-on-another-machine-through-the-users-own-ssh); built in phases 0 to 2, documented in phase 3.**
+> **Decided in [ADR-036](../DECISIONS.md#adr-036--sessions-on-another-machine-through-the-users-own-ssh); built in phases 0 to 2, documented in phase 3; shipped in v0.6.0 (2026-10-18).**
 > Sections 1 to 12 describe what is built: where the original design and the
 > implementation differed, the text there was corrected in place and says
 > "As built". Everything from "Review changes" on is history, kept as it was

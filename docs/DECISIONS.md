@@ -2084,7 +2084,7 @@ needing a grant. Two reasons against, from review:
 ---
 
 ## ADR-036 — Sessions on another machine, through the user's own ssh
-**Date:** 2026-10-16 · **Status:** Accepted; amends ADR-010, ADR-029 and ADR-034; revised 2026-10-18 (close a wrong link as any tab, with no undo; Discard never stops; Remove asks; the launch notice after a quit). Detail, review history and the as-built notes: [designs/remote-ssh.md](./designs/remote-ssh.md)
+**Date:** 2026-10-16 · **Status:** Accepted; amends ADR-010, ADR-029 and ADR-034; revised 2026-10-18 (close a wrong link as any tab, with no undo; Discard never stops; Remove asks; the launch notice after a quit); shipped in v0.6.0. Detail, review history and the as-built notes: [designs/remote-ssh.md](./designs/remote-ssh.md)
 
 The owner's goal, verbatim: "I have a remote machine that runs Claude and
 Codex. I want to connect to it and run from that machine." What matters is
