@@ -402,7 +402,7 @@ public final class AppModel: ObservableObject {
     /// A session on a host was left running (at a close, or found at
     /// launch): one line at the foot of the rail, with Show.
     @Published public var remoteNotice: RemoteNotice?
-    /// "Sessions on <host>", when shown.
+    /// "Running sessions on <host>", when shown.
     @Published public var remoteSessionsSheet: RemoteSessionsRequest?
     /// The folder sheet for a new session on a host, when shown.
     @Published public var remoteFolderSheet: RemoteFolderRequest?
@@ -714,6 +714,13 @@ public final class AppModel: ObservableObject {
         }
         openSessions.remoteTabs.rowIncarnation = { [weak self] id in self?.overlay.rows[id]?.incarnation }
         openSessions.remoteTabs.rowLastOpened = { [weak self] id in self?.overlay.rows[id]?.lastOpenedAt }
+        openSessions.remoteTabs.unlinkHandler = { [weak self] id, _ in
+            // A person's archive, reversible from History: the row the link
+            // Temple made on its own created (its agent keeps running).
+            guard let self, self.overlay.isTempleSession(id) else { return }
+            TempleUILog.remote.notice("Archived \(id, privacy: .public): declined link")
+            self.overlay.setArchived(true, sessionID: id)
+        }
         openSessions.remoteTabs.discardHandler = { [weak self] id, host, incarnation, lastOpenedAt in
             // One transaction under (id, host, incarnation): the row goes,
             // or (the user made it theirs: named, pinned, colored) is

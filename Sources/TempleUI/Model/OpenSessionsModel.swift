@@ -698,6 +698,14 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         openUtility(.settings)
     }
 
+    /// Open Settings at its Hosts section: a tab on a host that is not
+    /// added says so, with this.
+    public func openSettingsAtHosts() {
+        settingsFocusSerial += 1
+        settingsFocus = SettingsFocusRequest(agent: nil, serial: settingsFocusSerial, hosts: true)
+        openUtility(.settings)
+    }
+
     /// Where the Settings page should land next; nil once it has.
     @Published public private(set) var settingsFocus: SettingsFocusRequest?
     private var settingsFocusSerial = 0
@@ -1339,6 +1347,8 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
 public struct SettingsFocusRequest: Equatable, Sendable {
     public let agent: Agent?
     public let serial: Int
+    /// The Hosts section instead (a tab on a host Temple doesn't have).
+    public var hosts = false
 }
 
 // MARK: - The canonical folder a launch reported

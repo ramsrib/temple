@@ -72,7 +72,8 @@ private struct SessionTerminalView: View {
                     notice(symbol: "hourglass", text: RemoteCopy.stillConnecting(displayHost)) {
                         EmptyView()
                     } dismiss: {
-                        Button("Cancel") { model.openSessions.remoteTabs.cancelConnect(tab) }
+                        Button(RemoteCopy.cancelConnecting) { model.openSessions.remoteTabs.cancelConnect(tab) }
+                            .help(RemoteCopy.cancelConnectingHelp)
                     }
                 } else if let header = RemoteHeader.make(remote.phase) { remoteHeader(header) }
                 // A new Codex session Temple has not identified yet asks,
@@ -82,13 +83,13 @@ private struct SessionTerminalView: View {
                     question(remote).band()
                 }
                 // Temple said yes on its own to the lone candidate: one
-                // line, and Discard if it is the wrong session.
+                // line, and Not this one if it is the wrong session (the
+                // link is undone; the agent keeps running).
                 if remote.phase == .connected, remote.linkedOnItsOwn, tab.sessionID != nil,
                    let note = remote.identityNote {
                     notice(symbol: "link", text: note) {
                         // Right after the sentence, as the question's answers sit.
-                        Button("Discard") { model.openSessions.remoteTabs.discard(tab) }
-                            .help(RemoteCopy.discardLinkedHelp(displayHost))
+                        Button(RemoteCopy.suggestionNo) { model.openSessions.remoteTabs.unlink(tab) }
                     } dismiss: {
                         EmptyView()
                     }
@@ -134,6 +135,15 @@ private struct SessionTerminalView: View {
     /// tell when it couldn't.
     private func question(_ remote: RemoteTabState) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            if !remote.suggestions.isEmpty {
+                // Why Temple asks at all.
+                Text(RemoteCopy.codexQuestionLeadIn)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 22)
+            }
             ForEach(remote.suggestions) { suggestion in
                 HStack(alignment: .firstTextBaseline, spacing: 9) {
                     Image(systemName: "questionmark.circle")
@@ -168,9 +178,10 @@ private struct SessionTerminalView: View {
         }
     }
 
-    /// Under the question: why Temple couldn't tell (with Try again after
-    /// a refusal). How Temple could tell by itself (`--no-daemon`) is the
-    /// Hosts card's note, not the tab's.
+    /// Under the question: why Temple couldn't tell, with Try again (after
+    /// a refusal, or once nothing is left to ask about). How Temple could
+    /// tell by itself (`--no-daemon`) is the Hosts card's note, not the
+    /// tab's.
     @ViewBuilder
     private func identityCaptions(_ remote: RemoteTabState) -> some View {
         if let note = remote.identityNote {
@@ -179,8 +190,8 @@ private struct SessionTerminalView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
-                if remote.identityRefused {
-                    Button("Try again") { model.openSessions.remoteTabs.retryIdentity(tab) }
+                if remote.identityRefused || note == RemoteCopy.couldNotTell {
+                    Button(RemoteCopy.tryAgain) { model.openSessions.remoteTabs.retryIdentity(tab) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                 }
@@ -233,13 +244,14 @@ private struct SessionTerminalView: View {
     private func endedAnswers(_ host: String, _ candidate: RemoteSuggestion?, _ remote: RemoteTabState) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             if let candidate { answers(to: candidate, remote) }
-            Button("Start a new session") { model.openSessions.remoteTabs.startNewPending(tab) }
+            Button(RemoteCopy.startNewHere) { model.openSessions.remoteTabs.startNewPending(tab) }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(remote.confirming != nil)
             Spacer(minLength: 8)
-            Button("Discard") { model.openSessions.remoteTabs.discardPending(tab) }
-                .help(RemoteCopy.discardPendingHelp(host))
+            // No row yet: removed, never archived; Codex has already ended.
+            Button(RemoteCopy.discardLabel(archives: false)) { model.openSessions.remoteTabs.discardPending(tab) }
+                .help(RemoteCopy.discardHelp(archives: false))
                 .buttonStyle(.neutralLink)
                 .font(.system(size: 12))
                 .disabled(remote.confirming != nil)
@@ -300,15 +312,18 @@ private struct SessionTerminalView: View {
         case .exitedEarly:
             exitedEarly(host)
         case .decision(let checked):
+            let archives = tab.sessionID.map(model.discardArchives) ?? false
             notice(symbol: "questionmark.circle",
-                   text: checked ? RemoteCopy.unconfirmedConversation : RemoteCopy.uncheckedConversation) {
+                   text: checked ? RemoteCopy.unconfirmedConversation : RemoteCopy.uncheckedConversation(host)) {
                 if !checked {
-                    Button("Resume") { model.openSessions.remoteTabs.resumeUnconfirmed(tab) }
+                    Button(RemoteCopy.tryToResume) { model.openSessions.remoteTabs.resumeUnconfirmed(tab) }
+                        .help(RemoteCopy.tryToResumeHelp(tab.agent))
                 }
-                Button("Start a new session") { model.openSessions.remoteTabs.startNewSession(tab) }
+                Button(RemoteCopy.startNewHere) { model.openSessions.remoteTabs.startNewSession(tab) }
             } dismiss: {
-                Button("Discard") { model.openSessions.remoteTabs.discard(tab) }
-                    .help(RemoteCopy.discardHelp(archives: tab.sessionID.map(model.discardArchives) ?? false))
+                // The word is the action: removed, or archived.
+                Button(RemoteCopy.discardLabel(archives: archives)) { model.openSessions.remoteTabs.discard(tab) }
+                    .help(RemoteCopy.discardHelp(archives: archives))
             }
         case .endedPending:
             if let remote = tab.remote { endedBand(host, remote) }
@@ -323,9 +338,9 @@ private struct SessionTerminalView: View {
                 notice(symbol: "questionmark.circle", text: RemoteCopy.unknown(host, agent: tab.agent, reason: reason)) {
                     Button("Reconnect") { model.openSessions.remoteTabs.reconnect(tab) }
                     if tab.sessionID != nil {
-                        Button("Resume anyway") { confirmation = .resumeAnyway }
+                        Button(RemoteCopy.resumeAnywayButton) { confirmation = .resumeAnyway }
                     } else if tab.agent == .codex {
-                        Button("Start a new session") { confirmation = .startNewPending }
+                        Button(RemoteCopy.startNewPendingButton) { confirmation = .startNewPending }
                     }
                 } dismiss: {
                     EmptyView()
@@ -333,8 +348,9 @@ private struct SessionTerminalView: View {
                 if let lines = tab.remote?.diagnostics, !lines.isEmpty { diagnosticLines(lines) }
             }
         case .stopFailed(let message):
-            notice(symbol: "exclamationmark.triangle", text: message) {
-                Button(RemoteCopy.sessionsOn(host)) { model.showRemoteSessions(tab.host) }
+            notice(symbol: "exclamationmark.triangle", text: message,
+                   stillRunning: message.hasSuffix(RemoteCopy.mayStillBeRunning)) {
+                Button(RemoteCopy.sessionsOnMenuItem(host)) { model.showRemoteSessions(tab.host) }
             } dismiss: {
                 EmptyView()
             }
@@ -399,15 +415,18 @@ private struct SessionTerminalView: View {
     /// A remote band: the sentence, its answers right after it (small
     /// bordered buttons), and dismiss-type actions alone at the trailing
     /// edge (links).
-    private func notice<Answers: View, Dismiss: View>(symbol: String, text: String,
+    /// `stillRunning`: the sentence says the agent may still be running
+    /// there, orange as every such line is.
+    private func notice<Answers: View, Dismiss: View>(symbol: String, text: String, stillRunning: Bool = false,
                                                       @ViewBuilder answers: () -> Answers,
                                                       @ViewBuilder dismiss: () -> Dismiss) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 9) {
             Image(systemName: symbol)
                 .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(stillRunning ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.secondary))
             Text(text)
                 .font(.system(size: 12))
+                .foregroundStyle(stillRunning ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.primary))
                 .textSelection(.enabled)
             HStack(spacing: 6) { answers() }
                 .buttonStyle(.bordered)
@@ -507,7 +526,12 @@ private struct SessionTerminalView: View {
                 }
             }
             Spacer(minLength: 8)
-            if blameCommand && preparationError == nil {
+            if !tab.host.isLocal, preparationError == RemoteCopy.notSetUp(tab.host.rawValue) {
+                // A tab on a host Temple doesn't have: Settings, at Hosts.
+                Button(RemoteCopy.openSettings) { model.openSessions.openSettingsAtHosts() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            } else if blameCommand && preparationError == nil {
                 Button("Settings") { model.openSessions.openSettings(focusing: tab.agent) }
                     .buttonStyle(.link)
                     .font(.system(size: 12))
@@ -577,7 +601,7 @@ private struct RemoteConfirmationSheet: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 5)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Palette.surfaceFill, in: RoundedRectangle(cornerRadius: 5))
+                        .background(Palette.surfaceFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
             }
             HStack {
@@ -592,7 +616,7 @@ private struct RemoteConfirmationSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 460)
+        .frame(width: RemoteSheetMetrics.width)
     }
 }
 

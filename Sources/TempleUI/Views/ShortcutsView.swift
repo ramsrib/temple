@@ -51,8 +51,7 @@ struct ShortcutsView: View {
     /// there (tmux owns their scrollback). Absent otherwise.
     var remoteNote = false
 
-    static let remoteScrollingNote =
-        "In a session on a host, scrolling up shows history; the first key you type returns to the prompt."
+    static let remoteScrollingNote = RemoteCopy.scrollingNote
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {

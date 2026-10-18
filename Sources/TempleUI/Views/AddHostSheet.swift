@@ -126,6 +126,21 @@ final class AddHostSheetModel: ObservableObject, Identifiable {
 
     func showAll() { expanded = true }
 
+    /// What Return (and the default button) would do with the text now:
+    /// open the form for an address. False for nothing typed, an added
+    /// host, an alias, or text that can't be read as an address.
+    var readsAsAddress: Bool {
+        let typed = trimmedText
+        guard !typed.isEmpty else { return false }
+        let names = hosts.records.map(\.name) + offered.map(\.alias)
+        guard !names.contains(where: { $0.lowercased() == typed.lowercased() }) else { return false }
+        return Self.form(for: typed) != nil
+    }
+
+    /// The default button's label: Add for an alias (or nothing typed),
+    /// the form's name for an address (it opens the form, prefilled).
+    var defaultActionTitle: String { readsAsAddress ? RemoteCopy.addHostByAddress : RemoteCopy.addHostAdd }
+
     // MARK: Ending
 
     /// A row: the alias is turned on at once.
@@ -221,10 +236,12 @@ final class AddHostSheetModel: ObservableObject, Identifiable {
     }
 }
 
-/// Add host… (section 7): the folder sheet's shape. One field, the config's
-/// unused aliases as links under it (each with the `user@hostname` its own
-/// blocks set), the full form and the config behind two links. A row adds
-/// its alias at once; Return adds what the field holds.
+/// Add host… (section 7): the remote sheets' chrome. One field, a caption
+/// saying a row adds its host at once, the config's unused aliases under
+/// it (each with the `user@hostname` its own blocks set), then the form for
+/// an address and the config behind two links. Return adds what the field
+/// holds; the default button says which it will do (Add, or Add host by
+/// address…).
 ///
 /// Layout as for the rest of the app's sheets (AGENTS.md): no `.fixedSize`,
 /// `List` or `Form`, no scroll view (Show more grows the sheet).
@@ -240,55 +257,47 @@ struct AddHostSheet: View {
     static let aliasColumn: CGFloat = 200
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(RemoteCopy.addHostTitle)
-                .font(.system(size: 15, weight: .semibold))
-            VStack(alignment: .leading, spacing: 4) {
-                Text(RemoteCopy.addHostFieldLabel).font(.system(size: 12))
-                // The folder sheet's field: plain, on the control fill.
+        RemoteSheetChrome {
+            RemoteSheetTitle(title: RemoteCopy.addHostTitle)
+            RemoteFormRow(label: RemoteCopy.addHostFieldLabel) {
                 TextField("", text: $sheet.text, prompt: Text(RemoteCopy.addHostPlaceholder))
                     .accessibilityLabel(RemoteCopy.addHostFieldLabel)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 13, design: .monospaced))
-                    .padding(.horizontal, 9)
-                    .frame(height: 28)
-                    .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .font(.system(size: 13))
                     .focused($focused)
                     .onSubmit { act { sheet.submit() } }
-                if let note = sheet.note {
-                    Text(note)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                    .templeFieldChrome(focused: focused)
+                if let note = sheet.note { RemoteHint(note) }
             }
             aliases
             HStack(spacing: 6) {
                 Text(RemoteCopy.addHostNotInConfig).foregroundStyle(.secondary)
                 Button(RemoteCopy.addHostEnterDetails) { act { sheet.enterDetails() } }
-                    .buttonStyle(.link)
+                    .buttonStyle(.neutralLink)
                 Spacer(minLength: 12)
                 Button(RemoteCopy.addHostEditConfig) { act { sheet.editConfig() } }
-                    .buttonStyle(.link)
+                    .buttonStyle(.neutralLink)
             }
-            .font(.system(size: 12))
+            .font(.system(size: 11))
             .lineLimit(1)
             .padding(.top, 4)
             HStack(spacing: 8) {
-                Spacer()
-                Button("Cancel") { act { sheet.cancel() } }
-                    .keyboardShortcut(.cancelAction)
                 if sheet.waitingForConfig {
                     // Return waits for the config's read to end.
                     ProgressView().controlSize(.small)
+                    Text(RemoteCopy.addHostReadingConfig)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                 }
-                Button("Add") { act { sheet.submit() } }
+                Spacer()
+                Button("Cancel") { act { sheet.cancel() } }
+                    .keyboardShortcut(.cancelAction)
+                Button(sheet.defaultActionTitle) { act { sheet.submit() } }
                     .keyboardShortcut(.defaultAction)
                     .disabled(sheet.trimmedText.isEmpty || sheet.waitingForConfig)
             }
+            .padding(.top, 8)
         }
-        .padding(20)
-        .frame(width: 520)
         .onAppear { focused = true }
         // Ended now or, for a Return that waited for the config, later.
         .onChange(of: sheet.outcome) {
@@ -309,38 +318,51 @@ struct AddHostSheet: View {
             let shown = sheet.shown
             if !shown.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
+                    RemoteListCaption(RemoteCopy.addHostListCaption)
+                        .padding(.leading, 6)
+                        .padding(.bottom, 2)
                     ForEach(shown, id: \.alias) { host in row(host) }
                     if let hidden = sheet.hiddenCount {
                         Button(RemoteCopy.addHostShowMore(hidden)) { sheet.showAll() }
-                            .buttonStyle(.link)
-                            .font(.system(size: 12))
+                            .buttonStyle(.neutralLink)
+                            .font(.system(size: 11))
+                            .padding(.leading, 6)
+                            .padding(.top, 2)
                     }
                 }
             }
         }
     }
 
-    /// One click target across the row: the alias in the link colour, its
-    /// destination in secondary, no gap between that doesn't add it.
+    /// One click target across the row: the alias (12 medium, primary),
+    /// its destination (11 mono, secondary), or a tertiary note that its
+    /// blocks set neither.
     private func row(_ host: SSHConfigHost) -> some View {
-        Button { act { sheet.choose(host.alias) } } label: {
-            HStack(spacing: 0) {
+        RemoteListRow(action: { act { sheet.choose(host.alias) } }) {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
                 Text(host.alias)
-                    .foregroundStyle(Color(nsColor: .linkColor))
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(width: Self.aliasColumn, alignment: .leading)
-                Text(host.destination ?? "")
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .padding(.leading, 12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Group {
+                    if let destination = host.destination {
+                        Text(destination)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(RemoteCopy.addHostNoDestination)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .padding(.leading, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .font(.system(size: 12, design: .monospaced))
         .accessibilityLabel(host.destination.map { "\(host.alias), \($0)" } ?? host.alias)
     }
 

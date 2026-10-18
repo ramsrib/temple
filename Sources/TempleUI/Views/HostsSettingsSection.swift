@@ -5,15 +5,19 @@ import TempleTerminalAPI
 
 /// Settings' Hosts connection manager (docs/designs/remote-ssh.md section
 /// 7), always shown (the one remote surface with no host enabled, and the
-/// way to enable one; the ssh config is read when it appears). One "In use"
-/// list of every enabled host, whichever source it came from (a caption says
-/// which), each with Test connection, Sessions… and its status line; then
-/// Add host…, a sheet (`AddHostSheet`): one field, the `~/.ssh/config`
-/// aliases not in use under it (choosing one turns it on), the full form
-/// and Edit ~/.ssh/config behind links. The question the card answers is
-/// which hosts Temple uses: the owner read "Added in Temple: No hosts added
-/// yet." as none while a config host was on, and found a list of hosts not
-/// in use unnecessary.
+/// way to enable one; the ssh config is read when it appears). One "Added
+/// hosts" list of every host Temple has, whichever source it came from (a
+/// caption says which), each with Test connection, Running sessions on
+/// <host>…, Open ~/.ssh/config (a config host) or Edit (one added by
+/// address), Remove, and its status line; then Add host…, a sheet
+/// (`AddHostSheet`): one field, the `~/.ssh/config` aliases not added under
+/// it (choosing one adds it), the form for an address and the config
+/// behind links. Remove asks first when sessions Temple started are still
+/// running there.
+///
+/// Labels say what they do: where one doesn't fit on the row, the links
+/// move to a line of their own (the cold-read round: "Sessions…" and
+/// "Turn off" were cut down for the row's rhythm and read as nothing).
 ///
 /// Layout rules as for the rest of Settings (AGENTS.md, the split view's
 /// titlebar inset): no `.fixedSize`, `.allowsHitTesting`, `layoutPriority`,
@@ -21,6 +25,8 @@ import TempleTerminalAPI
 struct HostsSettingsSection: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var hosts: RemoteHostsModel
+    /// Codex's arguments as set above: whether they carry `--no-daemon`.
+    var codexArguments: [String] = []
 
     @State private var form: HostFormRequest?
     @State private var addHost: AddHostSheetModel?
@@ -29,18 +35,24 @@ struct HostsSettingsSection: View {
     @State private var test: ConnectionTest?
     /// "Save and test": the test opens once the form's sheet is gone.
     @State private var testAfterForm: String?
+    /// Remove found sessions still running on the host: the alert.
+    @State private var removal: RemoteRemoval?
+    /// Hosts whose Remove is asking the host, or stopping its sessions.
+    @State private var removing: Set<String> = []
+    /// A Stop them and remove that could not stop everything, by host.
+    @State private var removeProblems: [String: [String]] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionRule("Hosts")
-            HostsRow("In use") { inUseHosts }
+            HostsRow(RemoteCopy.hostsLabel) { addedHosts }
             hairline
             Text("Temple reaches these hosts with your own ssh. The arguments set above apply there too, --dangerously-skip-permissions included.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 12)
-            Text(Self.noDaemonHint)
+            Text(Self.noDaemonHint(enabled: codexArguments.contains("--no-daemon")))
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -48,6 +60,19 @@ struct HostsSettingsSection: View {
         }
         .padding(.top, 26)
         .onAppear { hosts.loadConfigAliases() }
+        .alert(removal.map { RemoteCopy.removalTitle($0.live.count, host: $0.name) } ?? "",
+               isPresented: Binding(get: { removal != nil }, set: { if !$0 { removal = nil } }),
+               presenting: removal) { removal in
+            Button(RemoteCopy.removalLeave(removal.live.count)) {
+                model.removeHostLeavingSessions(removal)
+                self.removal = nil
+            }
+            .keyboardShortcut(.defaultAction)
+            Button(RemoteCopy.removalStop(removal.live.count)) { stopAndRemove(removal) }
+            Button("Cancel", role: .cancel) { self.removal = nil }
+        } message: { removal in
+            Text(RemoteCopy.removalMessage(removal.live.count, fromConfig: removal.fromConfig))
+        }
         .background {
             // One sheet per anchor: SwiftUI keeps one presentation per view.
             Color.clear
@@ -64,7 +89,7 @@ struct HostsSettingsSection: View {
                     AddHostSheet(sheet: sheet) { outcome in
                         switch outcome {
                         case .details(let prefill): formAfterAddHost = HostFormRequest(editing: nil, prefill: prefill)
-                        case .editConfig: openSSHConfig()
+                        case .editConfig: Self.openSSHConfig()
                         case .added, .cancelled: break
                         }
                     }
@@ -85,39 +110,41 @@ struct HostsSettingsSection: View {
     }
 
     /// The `--no-daemon` note, the flag set as code (monospaced, same size),
-    /// the rest as it reads. Here rather than in a tab's band (owner, round 2).
-    static var noDaemonHint: AttributedString {
-        var text = AttributedString(RemoteCopy.noDaemonHint)
+    /// the rest as it reads. Here rather than in a tab's band (owner, round
+    /// 2); it follows Codex's arguments.
+    static func noDaemonHint(enabled: Bool) -> AttributedString {
+        var text = AttributedString(RemoteCopy.noDaemonHint(enabled: enabled))
         if let range = text.range(of: "--no-daemon") {
             text[range].font = .system(size: 11, design: .monospaced)
         }
         return text
     }
 
-    // MARK: In use
+    // MARK: Added hosts
 
-    /// Every enabled host, from either source, by name.
+    /// Every host Temple has, from either source, by name.
     static func inUse(_ records: [RemoteHostRecord]) -> [RemoteHostRecord] {
         records.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
-    static let inUseEmpty = "No hosts in use."
+    static let inUseEmpty = RemoteCopy.hostsEmpty
 
-    /// What an in-use row says beside the name: where the host came from.
+    /// What a row says beside the name: where the host came from.
     enum Caption: Equatable {
-        /// A host added in Temple: its address summary.
+        /// A host added by address: its address summary.
         case summary(String)
         /// An alias from `~/.ssh/config`.
         case sshConfig
-        /// An enabled alias the config no longer names (only once the config
-        /// has been read: while it is read nothing is known missing).
+        /// An added alias the config no longer names (only once the config
+        /// has been read: while it is read nothing is known missing). Said
+        /// as an orange line under the row, not in the caption's slot.
         case goneFromConfig
 
         var text: String {
             switch self {
             case .summary(let summary): summary
-            case .sshConfig: "~/.ssh/config"
-            case .goneFromConfig: "No longer in ~/.ssh/config"
+            case .sshConfig: "from ~/.ssh/config"
+            case .goneFromConfig: RemoteCopy.goneFromConfig
             }
         }
     }
@@ -130,7 +157,7 @@ struct HostsSettingsSection: View {
     }
 
     @ViewBuilder
-    private var inUseHosts: some View {
+    private var addedHosts: some View {
         let inUse = Self.inUse(hosts.records)
         VStack(alignment: .leading, spacing: 14) {
             if inUse.isEmpty {
@@ -140,43 +167,128 @@ struct HostsSettingsSection: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, 5)
             }
-            ForEach(inUse) { record in
-                let caption = Self.caption(for: record, configAliases: hosts.configAliases)
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        Text(record.name)
-                            .font(.system(size: 13, weight: .medium))
-                        Text(caption.text)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(caption == .goneFromConfig ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.secondary))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer(minLength: 8)
-                        HStack(spacing: 14) {
-                            HostLink("Test connection") { startTest(record.name) }
-                            HostLink(Self.sessionsLink) { model.showRemoteSessions(record.host) }
-                            switch record.source {
-                            case .temple:
-                                HostLink("Edit") { form = HostFormRequest(editing: record) }
-                                HostLink("Remove") { hosts.remove(record.name) }
-                            case .config:
-                                HostLink("Turn off") { hosts.setConfigHost(record.name, enabled: false) }
-                            }
-                        }
-                    }
-                    HostStatusLine(text: hosts.statusLine(for: record.name), summary: hosts.summaries[record.name])
-                }
-            }
+            ForEach(inUse) { record in hostRow(record) }
             HostLink("Add host…", systemImage: "plus") { addHost = AddHostSheetModel(hosts: hosts) }
                 .padding(.top, inUse.isEmpty ? 0 : 2)
         }
         .padding(.top, 5)
     }
 
+    private func hostRow(_ record: RemoteHostRecord) -> some View {
+        let caption = Self.caption(for: record, configAliases: hosts.configAliases)
+        return VStack(alignment: .leading, spacing: 4) {
+            // The links on a line of their own, under the name: "Running
+            // sessions on <host>…" names the host in full, and the words
+            // never shrink to fit beside it (no measuring view here: the
+            // titlebar inset trap, AGENTS.md).
+            nameAndCaption(record, caption)
+            links(record)
+                .padding(.top, 1)
+            if caption == .goneFromConfig {
+                Text(caption.text)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HostStatusLine(text: hosts.statusLine(for: record.name), summary: hosts.summaries[record.name])
+            if let problems = removeProblems[record.name], !problems.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(RemoteCopy.notRemoved(record.name))
+                    ForEach(problems, id: \.self) { Text($0) }
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(.orange)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private func nameAndCaption(_ record: RemoteHostRecord, _ caption: Caption) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(record.name)
+                .font(.system(size: 13, weight: .medium))
+            if caption != .goneFromConfig {
+                Text(caption.text)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// What a row offers, in order: the same four for both kinds of host,
+    /// but the file's own editor for a config host where one added by
+    /// address has Edit.
+    enum HostAction: Equatable {
+        case test, runningSessions, openConfig, edit, remove
+
+        func title(_ host: String) -> String {
+            switch self {
+            case .test: "Test connection"
+            case .runningSessions: RemoteCopy.sessionsOnMenuItem(host)
+            case .openConfig: RemoteCopy.openSSHConfig
+            case .edit: "Edit"
+            case .remove: RemoteCopy.removeHost
+            }
+        }
+    }
+
+    static func actions(for record: RemoteHostRecord) -> [HostAction] {
+        [.test, .runningSessions, record.source == .config ? .openConfig : .edit, .remove]
+    }
+
+    private func links(_ record: RemoteHostRecord) -> some View {
+        WrappingRow(spacing: 14) {
+            ForEach(Self.actions(for: record), id: \.self) { action in
+                if action == .remove, removing.contains(record.name) {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    HostLink(action.title(record.name)) { perform(action, record) }
+                        .help(action == .remove ? RemoteCopy.removeHostHelp(fromConfig: record.source == .config) : "")
+                }
+            }
+        }
+        .lineLimit(1)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func perform(_ action: HostAction, _ record: RemoteHostRecord) {
+        switch action {
+        case .test: startTest(record.name)
+        case .runningSessions: model.showRemoteSessions(record.host)
+        case .openConfig: Self.openSSHConfig()
+        case .edit: form = HostFormRequest(editing: record)
+        case .remove: remove(record)
+        }
+    }
+
     // MARK: Actions
 
     private func startTest(_ name: String) {
         test = hosts.startTest(for: name)
+    }
+
+    /// Remove asks the host first; with nothing of Temple's running there
+    /// (or no answer), the host goes at once.
+    private func remove(_ record: RemoteHostRecord) {
+        removeProblems[record.name] = nil
+        removing.insert(record.name)
+        model.requestRemoveHost(record.name) { found in
+            removing.remove(record.name)
+            removal = found
+        }
+    }
+
+    private func stopAndRemove(_ removal: RemoteRemoval) {
+        self.removal = nil
+        removing.insert(removal.name)
+        model.stopSessionsAndRemoveHost(removal) { failures in
+            removing.remove(removal.name)
+            removeProblems[removal.name] = failures.isEmpty ? nil : failures
+        }
     }
 
     private func openPendingForm() {
@@ -192,7 +304,7 @@ struct HostsSettingsSection: View {
     }
 
     /// The user's own editor for the file; Finder if nothing opens it.
-    private func openSSHConfig() {
+    static func openSSHConfig() {
         let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".ssh/config")
         guard FileManager.default.fileExists(atPath: url.path) else {
             NSWorkspace.shared.activateFileViewerSelecting([url.deletingLastPathComponent()])
@@ -206,10 +318,6 @@ struct HostsSettingsSection: View {
     private var hairline: some View {
         Rectangle().fill(Palette.hairline).frame(height: 1)
     }
-
-    /// The row already names the host: its link need not repeat it (a
-    /// long alias overflowed the column).
-    static let sessionsLink = "Sessions\u{2026}"
 }
 
 /// What the Add host / Edit sheet is for.
@@ -277,8 +385,7 @@ struct HostStatusLine: View {
     var tone: Tone {
         guard let summary else { return .caption }
         if summary.failure != nil { return .failure }
-        let proven = [Agent.claude, .codex].contains { summary.unavailableReason(for: $0) != nil }
-        return proven || summary.environment?.path == nil ? .advisory : .caption
+        return summary.isAdvisory ? .advisory : .caption
     }
 
     var body: some View {
@@ -303,6 +410,7 @@ struct HostFormSheet: View {
     @State private var form: RemoteHostForm
     @State private var problems: [RemoteHostFormField: String] = [:]
     @State private var copied = false
+    @FocusState private var focused: RemoteHostFormField?
 
     init(request: HostFormRequest, existing: Set<String>, configAliases: Set<String>,
          onSave: @escaping (RemoteHostRecord, Bool) -> Void) {
@@ -316,27 +424,30 @@ struct HostFormSheet: View {
     private var isEditing: Bool { request.editing != nil }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(isEditing ? "Edit \(request.editing?.name ?? "")" : "Add host")
-                .font(.system(size: 15, weight: .semibold))
-                .padding(.bottom, 16)
+        RemoteSheetChrome {
+            RemoteSheetTitle(title: isEditing ? "Edit \(request.editing?.name ?? "")" : RemoteCopy.hostFormAddTitle)
+                .padding(.bottom, 4)
+            VStack(alignment: .leading, spacing: 10) {
+                field(.name, "Name", text: $form.name, placeholder: "build-box",
+                      note: RemoteCopy.hostFormNameNote, disabled: isEditing)
+                field(.address, "Address", text: $form.address, placeholder: "build-box.local or 10.0.0.2")
+                field(.user, "User", text: $form.user, placeholder: RemoteCopy.hostFormUserPlaceholder)
+                field(.port, "Port", text: $form.port, placeholder: "22", width: 90)
+                field(.identityFile, "Identity file", text: $form.identityFile, placeholder: "Optional",
+                      note: "Adds this key to the ones ssh tries", trailing: AnyView(HostLink("Choose…") { chooseIdentity() }))
+                field(.proxyJump, "Jump host", text: $form.proxyJump, placeholder: "Optional")
+            }
 
-            field(.name, "Name", text: $form.name, placeholder: "build-box",
-                  note: "The name can't be changed later. Address, user and port can.", disabled: isEditing)
-            field(.address, "Address", text: $form.address, placeholder: "build-box.local or 10.0.0.2")
-            field(.user, "User", text: $form.user, placeholder: "Optional")
-            field(.port, "Port", text: $form.port, placeholder: "22", width: 90)
-            field(.identityFile, "Identity file", text: $form.identityFile, placeholder: "Optional",
-                  note: "Adds this key to the ones ssh tries", trailing: AnyView(HostLink("Choose…") { chooseIdentity() }))
-            field(.proxyJump, "Jump host", text: $form.proxyJump, placeholder: "Optional")
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Temple passes these to your own ssh. Passwords and keys are never stored; ssh asks for them when it connects.")
+                if isEditing { Text(RemoteCopy.hostFormEditHint) }
+            }
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 6)
 
-            Text("Temple passes these to your own ssh. Passwords and keys are never stored; ssh asks for them when it connects.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 6)
-
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 HostLink(copied ? "Copied" : "Copy as ssh config", systemImage: copied ? "checkmark" : "doc.on.doc") { copyConfig() }
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -345,49 +456,34 @@ struct HostFormSheet: View {
                 Button("Save and test") { save(thenTest: true) }
                     .keyboardShortcut(.defaultAction)
             }
-            .padding(.top, 20)
+            .padding(.top, 8)
         }
-        .padding(22)
-        .frame(width: 520)
+        .onAppear { focused = isEditing ? .address : .name }
     }
 
     private func field(_ field: RemoteHostFormField, _ label: String, text: Binding<String>, placeholder: String,
                        note: String? = nil, width: CGFloat? = nil, disabled: Bool = false,
                        trailing: AnyView? = nil) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text(label)
-                .font(.system(size: 13))
-                .frame(width: 96, alignment: .trailing)
-                .padding(.top, 6)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    TextField("", text: text, prompt: Text(placeholder))
-                        .accessibilityLabel(label)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13))
-                        .disabled(disabled)
-                        .foregroundStyle(disabled ? .secondary : .primary)
-                        .padding(.horizontal, 9)
-                        .frame(height: 28)
-                        .frame(maxWidth: width ?? .infinity)
-                        .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        .onChange(of: text.wrappedValue) { problems[field] = nil; copied = false }
-                    if let trailing { trailing }
-                }
-                if let problem = problems[field] {
-                    Text(problem)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.red)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else if let note {
-                    Text(note)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+        RemoteFormRow(label: label) {
+            HStack(spacing: 8) {
+                TextField("", text: text, prompt: Text(placeholder))
+                    .accessibilityLabel(label)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .disabled(disabled)
+                    .foregroundStyle(disabled ? .secondary : .primary)
+                    .focused($focused, equals: field)
+                    .templeFieldChrome(focused: focused == field)
+                    .frame(maxWidth: width ?? .infinity)
+                    .onChange(of: text.wrappedValue) { problems[field] = nil; copied = false }
+                if let trailing { trailing }
+            }
+            if let problem = problems[field] {
+                RemoteProblem(problem)
+            } else if let note {
+                RemoteHint(note)
             }
         }
-        .padding(.bottom, 10)
     }
 
     private func validated() -> RemoteHostRecord? {

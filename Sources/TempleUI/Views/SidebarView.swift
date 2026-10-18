@@ -27,6 +27,7 @@ struct SidebarView: View {
             }
             if let notice = model.remoteNotice {
                 RemoteNoticeBar(notice: notice,
+                                showTitle: RemoteCopy.sessionsOnMenuItem(notice.host.rawValue),
                                 show: { model.showRemoteSessions(notice.host) },
                                 dismiss: { model.dismissRemoteNotice() })
                     .padding(.horizontal, 8)
@@ -394,10 +395,13 @@ private struct AutoArchiveNoticeBar: View {
 }
 
 /// A session on a host was left running: said once, at the foot of the
-/// rail, with Show (the host's "Sessions on <host>") and dismiss. Not a
-/// timer; it stays until Show, × or the end of the run.
+/// rail, with a link to the host's "Running sessions on <host>" (named in
+/// full) and dismiss. Not a timer; it stays until the link, × or the end of
+/// the run. A line that says something is still running is orange, as
+/// every such line is.
 private struct RemoteNoticeBar: View {
     let notice: RemoteNotice
+    let showTitle: String
     let show: () -> Void
     let dismiss: () -> Void
 
@@ -406,8 +410,8 @@ private struct RemoteNoticeBar: View {
             HStack(alignment: .top, spacing: 6) {
                 Text(notice.message)
                     .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
+                    .foregroundStyle(notice.saysStillRunning ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.secondary))
+                    .lineLimit(4)
                 Spacer(minLength: 4)
                 Button(action: dismiss) {
                     Image(systemName: "xmark")
@@ -422,7 +426,10 @@ private struct RemoteNoticeBar: View {
             HStack(spacing: 12) {
                 Spacer(minLength: 0)
                 Button(action: show) {
-                    Text("Show").font(.system(size: 11.5, weight: .semibold))
+                    Text(showTitle)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.trailing)
                 }
                 .buttonStyle(.plain)
             }
@@ -946,8 +953,9 @@ private struct ProjectDisclosure: View {
         }
         Button("Show in History") { model.showInHistory(project: project.key) }
         if !project.key.host.isLocal, model.remoteHost(project.key.host) != nil {
-            // What Temple started on that host and still tracks, with Stop
-            // and Keep: reachable from the project, not only from Settings.
+            // What Temple started on that host and still runs there, with
+            // Open and Stop: reachable from the project, not only from
+            // Settings.
             // Only for an enabled host.
             Button(RemoteCopy.sessionsOnMenuItem(project.key.host.rawValue)) {
                 model.showRemoteSessions(project.key.host)

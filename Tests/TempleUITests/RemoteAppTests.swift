@@ -35,7 +35,7 @@ final class RemoteAppTests: XCTestCase {
 
         let refused = await app.handleControl(ControlRequest(.sessionsClose, id: id))
         XCTAssertEqual(refused.error?.code, .refused)
-        XCTAssertEqual(refused.error?.message, "Its agent is working on box. Pass --force to detach, or stop it in Temple.")
+        XCTAssertEqual(refused.error?.message, "Its agent is working on box. Pass --force to detach it (it keeps running), or stop it in Temple.")
         XCTAssertNotNil(app.openSessions.openTab(forSessionID: id))
 
         let detached = await app.handleControl(ControlRequest(.sessionsClose, id: id, force: true))
@@ -63,7 +63,8 @@ final class RemoteAppTests: XCTestCase {
         app.openSessions.closeTab(tab.id)
         await settle { app.remoteNotice != nil }
         XCTAssertEqual(app.remoteNotice?.message,
-                       "Left running: box didn't answer when you closed it. Stop it under Sessions on box.")
+                       "The new Claude Code session in p wasn't stopped: box didn't answer when you closed its tab. It may still be running.")
+        XCTAssertEqual(app.remoteNotice?.saysStillRunning, true, "orange")
         app.showRemoteSessions(hostID)
         XCTAssertEqual(app.remoteSessionsSheet?.host, hostID)
     }
@@ -82,13 +83,13 @@ final class RemoteAppTests: XCTestCase {
                            remoteHosts: RemoteHostsModel(defaults: defaults, readConfigAliases: { [] }))
         app.start()
         await settle { app.remoteNotice != nil }
-        XCTAssertEqual(app.remoteNotice?.message, "2 sessions left running on box")
+        XCTAssertEqual(app.remoteNotice?.message, "2 sessions you closed are still running on box.")
         XCTAssertTrue(remote.stops.isEmpty, "a contact lists; it never stops")
         app.dismissRemoteNotice()
         await settle { remote.unnoticed == 0 }
         XCTAssertEqual(remote.unnoticed, 0, "dismissed, it does not come back")
         XCTAssertNil(app.remoteNotice)
-        XCTAssertEqual(RemoteCopy.leftRunningCount(1, host: "box"), "1 session left running on box")
+        XCTAssertEqual(RemoteCopy.leftRunningCount(1, host: "box"), "A session you closed is still running on box.")
     }
 
     func testRemoteProjectMasksLiveInTheRemoteStoreAndProjectStateIsUntouched() throws {
@@ -312,10 +313,12 @@ final class RemoteAppTests: XCTestCase {
 
     /// The --no-daemon hint reads as the copy says, the flag set as code.
     func testTheNoDaemonHintSetsTheFlagAsCode() {
-        let hint = HostsSettingsSection.noDaemonHint
-        XCTAssertEqual(String(hint.characters), RemoteCopy.noDaemonHint)
-        let flagged = hint.runs.filter { $0.font != nil }.map { String(hint[$0.range].characters) }
-        XCTAssertEqual(flagged, ["--no-daemon"])
+        for enabled in [true, false] {
+            let hint = HostsSettingsSection.noDaemonHint(enabled: enabled)
+            XCTAssertEqual(String(hint.characters), RemoteCopy.noDaemonHint(enabled: enabled))
+            let flagged = hint.runs.filter { $0.font != nil }.map { String(hint[$0.range].characters) }
+            XCTAssertEqual(flagged, ["--no-daemon"])
+        }
     }
 
     /// Discard's row disposition acts only on the membership it was chosen
@@ -361,35 +364,31 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertNil(app.remoteFolderSheet)
     }
 
-    /// Discard on a session Temple linked on its own: an Open that lands
-    /// after its run's dismissal commits, before the row's disposition,
-    /// keeps the row as it is (Sol round 4); undisturbed, the row goes.
-    func testDiscardLeavesARowReopenedBeforeItsDisposition() async throws {
-        for reopen in [false, true] {
-            let remote = FakeRemoteHost("box")
-            remote.suggestionsResult = .candidates([RemoteSuggestion(rolloutPath: "/r/c7.jsonl", sessionID: "c7",
-                                                                     firstPrompt: "hi", startedAt: Date(),
-                                                                     directory: "/home/u/p")])
-            let app = try app(remote)
-            app.openSessions.remoteTabs.identitySchedule = [0.01]
-            app.openSessions.remoteTabs.identityInterval = 0.05
-            let tab = app.openSessions.newSession(agent: .codex, project: ProjectKey(host: hostID, path: "/home/u/p"))
-            await settle { tab.hasLiveProcess }
-            app.openSessions.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
-            await settle { tab.remote?.linkedOnItsOwn == true }
-            XCTAssertNotNil(app.overlay.rows["c7"])
-            if reopen {
-                remote.afterStoppedRunDismissal = { app.overlay.recordOpened("c7", host: self.hostID) }
-            }
-            app.openSessions.remoteTabs.discard(tab)
-            await settle { remote.stoppedRunDismissals == ["p1"] }
-            try await Task.sleep(for: .milliseconds(200))
-            if reopen {
-                XCTAssertNotNil(app.overlay.rows["c7"], "reopened meanwhile: the row stays")
-                XCTAssertEqual(app.overlay.rows["c7"]?.archived, false)
-            } else {
-                XCTAssertNil(app.overlay.rows["c7"], "undisturbed, the row goes")
-            }
-        }
+    /// Not this one on a session Temple linked on its own: the row the link
+    /// made is archived as a person's archive (History restores it), the
+    /// run is pending again, and nothing is stopped.
+    func testNotThisOneArchivesTheLinkedRowReversibly() async throws {
+        let remote = FakeRemoteHost("box")
+        remote.excludesDeclined = true
+        remote.suggestionsResult = .candidates([RemoteSuggestion(rolloutPath: "/r/c7.jsonl", sessionID: "c7",
+                                                                 firstPrompt: "hi", startedAt: Date(),
+                                                                 directory: "/home/u/p")])
+        let app = try app(remote)
+        app.openSessions.remoteTabs.identitySchedule = [0.01]
+        app.openSessions.remoteTabs.identityInterval = 0.05
+        let tab = app.openSessions.newSession(agent: .codex, project: ProjectKey(host: hostID, path: "/home/u/p"))
+        await settle { tab.hasLiveProcess }
+        app.openSessions.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle { tab.remote?.linkedOnItsOwn == true }
+        XCTAssertEqual(app.overlay.rows["c7"]?.archived, false)
+        app.openSessions.remoteTabs.unlink(tab)
+        await settle { app.overlay.rows["c7"]?.archived == true }
+        XCTAssertEqual(app.overlay.rows["c7"]?.archived, true, "archived, not deleted")
+        XCTAssertNil(app.overlay.rows["c7"]?.archiveReason, "a person's archive: History's Restore brings it back")
+        XCTAssertNil(tab.sessionID)
+        await settle { remote.unlinks.count == 1 }
+        XCTAssertTrue(remote.stops.isEmpty, "the agent keeps running")
+        app.overlay.setArchived(false, sessionID: "c7")
+        XCTAssertEqual(app.overlay.rows["c7"]?.archived, false, "restorable")
     }
 }

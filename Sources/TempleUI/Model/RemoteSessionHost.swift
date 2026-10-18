@@ -14,6 +14,10 @@ public enum RemoteLeftRunningReason: String, Sendable, Equatable {
     case stopNotAcknowledged = "stop not acknowledged"
     case anotherClientAttached = "another client attached"
     case quitDeadline = "quit deadline"
+    /// Its tab was connected when Temple quit: a quit leaves every agent on
+    /// a host running. Said once, at the next launch ("from before you
+    /// quit"), and never as a left-running line in Running sessions.
+    case detachedAtQuit = "detached at quit"
 }
 
 /// What an Open decided: the command for the tab, and the run it serves.
@@ -181,7 +185,7 @@ public struct RemotePendingRun: Equatable {
     }
 }
 
-/// A session Temple started on a host, as "Sessions on <host>" lists it.
+/// A session Temple started on a host, as "Running sessions on <host>" lists it.
 /// Only tracked runs are ever listed; nothing is discovered.
 public struct RemoteTrackedSession: Equatable, Identifiable {
     public enum State: Equatable {
@@ -256,9 +260,10 @@ public protocol RemoteSessionHost: HostLauncher {
     /// whether the host answered at all.
     func trackedSessions() async -> (sessions: [RemoteTrackedSession], checked: Bool)
     func keep(_ handle: String) async
-    /// At launch: nil when the host did not answer, else how many flagged
-    /// sessions are still left running there.
-    func contactLeftRunning() async -> Int?
+    /// At launch: how many flagged sessions are still running there and unnoticed:
+    /// those a close left running, and those whose tab was connected when
+    /// Temple quit. Nil when the host did not answer.
+    func contactLeftRunning() async -> (closed: Int, quit: Int)?
     func noticeLeftRunning() async
     func checkFolder(_ path: String) async -> RemoteFolderCheck
     /// The host was removed or edited: nothing queries it again.
@@ -282,6 +287,10 @@ public protocol RemoteSessionHost: HostLauncher {
     func decline(_ handle: String, rolloutPath: String) async throws
     /// The core join refused the id: the run is pending again.
     func releaseClaim(_ handle: String, sessionID: String) async throws
+    /// Not this one, on a link Temple made on its own: in one write, the
+    /// claim on `sessionID` is released, `rolloutPath` declined for the
+    /// run, and the run made restorable by its handle again.
+    func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws
     func markJoined(_ handle: String) async throws
     /// Claims whose core join never happened, with their folders.
     func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)]
@@ -361,8 +370,10 @@ public struct RemoteTabState: Equatable {
     /// Core refused the id this run's check found: Try again is offered.
     public var identityRefused = false
     /// Temple said yes on its own to the lone candidate in this connection:
-    /// `identityNote` says so, and Discard corrects it.
+    /// `identityNote` says so, and Not this one undoes it.
     public var linkedOnItsOwn = false
+    /// The candidate that link was to (what Not this one declines).
+    public var linkedSuggestion: RemoteSuggestion?
 
     public init(phase: Phase) { self.phase = phase }
 
@@ -375,10 +386,16 @@ public struct RemoteTabState: Equatable {
     }
 }
 
-/// What remote tabs say, in one place (copy from the design, no "run").
+/// What the remote surfaces say, in one place (copy from the design, no
+/// "run"; the cold-read round's decisions, docs/designs/remote-ssh.md).
+/// Every label says what it does; where one does not fit, the layout gives.
+/// Prose names the products (Claude Code, Codex); a command's name appears
+/// only as what was looked for.
 public enum RemoteCopy {
+    // MARK: Tab bands
+
     public static func disconnected(_ host: String) -> String {
-        "Disconnected from \(host). Open the session again to reconnect."
+        "Disconnected from \(host). The session is still running there."
     }
 
     public static func unknown(_ host: String, agent: Agent, reason: String) -> String {
@@ -393,24 +410,96 @@ public enum RemoteCopy {
         "Temple couldn't start this session on \(host): \(sentence(reason))"
     }
 
-    public static func couldNotPrepare(_ host: String, reason: String) -> String {
-        "Temple couldn't reconnect to \(host): \(sentence(reason))"
+    /// A reattach whose launch could not be staged: the sidebar's notice,
+    /// naming the session.
+    public static func couldNotReconnect(_ session: String, host: String, reason: String) -> String {
+        "Temple couldn't reconnect \(session) to \(host): \(sentence(reason))"
     }
 
     public static func cannotEnter(_ directory: String, host: String) -> String {
         "Temple couldn't enter the folder \(directory) on \(host)."
     }
 
-    /// The remote close alert's title: shown while the tab reads as
-    /// working, which for a reattached agent is before Temple can tell it is
-    /// idle, so it says running, not working (visual review, round 2).
-    public static func stillWorking(_ host: String, agent: Agent) -> String {
-        "\(agent.displayName) is running on \(host)."
+    /// B1: the link that ends this tab's connection attempt.
+    public static let cancelConnecting = "Cancel connecting"
+    public static let cancelConnectingHelp =
+        "Stops only this tab's connection attempt. An agent that already started on the host keeps running."
+
+    /// B3's answers: each opens a confirmation first.
+    public static let resumeAnywayButton = "Resume anyway\u{2026}"
+    public static let startNewPendingButton = "Start a new session\u{2026}"
+
+    /// B4, B5, B12: a fresh agent in this tab, same folder.
+    public static let startNewHere = "Start a new session here"
+    /// B5: resume without the transcript check.
+    public static let tryToResume = "Try to resume"
+    public static func tryToResumeHelp(_ agent: Agent) -> String {
+        "If there is nothing to resume, \(agent.displayName) exits and this band says so."
     }
 
-    /// The working prompt's message line, as local's has one (the title
-    /// names the host).
-    public static let stillWorkingMessage = "Detach leaves it running; Stop ends it."
+    // MARK: Working agents (X1, S12, the quit, O1, O3)
+
+    /// The close prompt's title, for a working agent on a host (working:
+    /// busy with a task; only a working agent is asked about).
+    public static func stillWorking(_ host: String, agent: Agent) -> String {
+        "\(agent.displayName) is working on \(host)."
+    }
+
+    /// The close prompt's message.
+    public static func stillWorkingMessage(_ host: String) -> String {
+        "Detach leaves it running on \(host); Stop ends it."
+    }
+
+    /// Stopping a working agent from Running sessions or a row's menu asks
+    /// first; an agent waiting for input stops at once.
+    public static func stopWorkingTitle(_ host: String, agent: Agent) -> String {
+        "\(agent.displayName) is working on \(host). Stop it?"
+    }
+
+    /// Said only when the session has a tab open here.
+    public static let stopWorkingMessage = "Its tab closes."
+
+    /// The quit prompt, when a host has a connected tab: this Mac's working
+    /// agents are what a quit interrupts. (With no host the prompt reads as
+    /// it always did.)
+    public static func quitTitle(workingCount: Int) -> String {
+        workingCount == 1 ? "An agent on this Mac is still working."
+            : "\(workingCount) agents on this Mac are still working."
+    }
+
+    public static func quitMessage(workingCount: Int) -> String {
+        workingCount == 1
+            ? "Quitting interrupts it; its session reopens next launch, but what it is doing right now stops here."
+            : "Quitting interrupts them; their sessions reopen next launch, but what they are doing right now stops here."
+    }
+
+    /// The quit prompt's last paragraph: every session on those hosts keeps
+    /// running, working or waiting.
+    public static func quitLine(_ hosts: [String]) -> String {
+        "Sessions on \(list(hosts)) keep running; their tabs reconnect when you open them next launch."
+    }
+
+    /// The command line's refusal to close a working tab on a host.
+    public static func workingCLIRefusal(_ host: String) -> String {
+        "Its agent is working on \(host). Pass --force to detach it (it keeps running), or stop it in Temple."
+    }
+
+    // MARK: Closing and detaching (P4, P6, the File menu, the tab's ×)
+
+    /// Closes a tab on a host and leaves its agent running there.
+    public static func detachMenuItem(_ host: String) -> String { "Detach from \(host) (keeps running)" }
+
+    /// "Close tab" on a tab on a host: what it does to the agent.
+    public static let closeHostTabMenuItem = "Close tab (stops the agent if it is waiting for input)"
+
+    /// The × of a tab on a host.
+    public static func closeHostTabHelp(_ host: String, agent: Agent) -> String {
+        "Close tab. Stops \(agent.displayName) on \(host) if it is waiting for input; asks first if it is working."
+    }
+
+    /// A row whose agent still runs on its host can't be archived (as
+    /// "Close tabs to archive").
+    public static func stopToArchive(_ host: String) -> String { "Stop it on \(host) to archive" }
 
     /// A host's name as a sentence shows it: each hyphen non-breaking
     /// (U+2011), so the name wraps whole, never at "-". Display only: never
@@ -419,21 +508,24 @@ public enum RemoteCopy {
         host.replacingOccurrences(of: "-", with: "\u{2011}")
     }
 
-    /// "Sessions on <host>": the sheet's title and the button that opens it.
-    public static func sessionsOn(_ host: String) -> String { "Sessions on \(host)" }
+    // MARK: Running sessions on <host>
 
-    /// The menu item that opens it (a host project heading's context menu).
-    public static func sessionsOnMenuItem(_ host: String) -> String { "Sessions on \(host)\u{2026}" }
+    /// The sheet's title. One name everywhere: the Hosts card, the project
+    /// heading's menu, a tab's band and the sidebar's notice all open it by
+    /// these words (`sessionsOnMenuItem`).
+    public static func sessionsOn(_ host: String) -> String { "Running sessions on \(host)" }
 
-    /// A tracked session's state in "Sessions on <host>", in the app's words
-    /// (nothing local says "attached"), a state and never an imperative.
-    /// `openHere`: this Temple has a live tab of the run ("In a tab").
+    /// The link, button or menu item that opens it.
+    public static func sessionsOnMenuItem(_ host: String) -> String { "Running sessions on \(host)\u{2026}" }
+
+    /// A tracked session's state, a state and never an imperative:
+    /// running (alive on the host), running in a tab here, or unknown.
     /// Another client attached (a terminal, another Temple) is still
     /// "Running": tmux's attachment count can't tell them apart.
     public static func trackedState(_ state: RemoteTrackedSession.State, openHere: Bool) -> String {
         switch state {
-        case .present: openHere ? "In a tab" : "Running"
-        case .unknown: "Unknown"
+        case .present: openHere ? "Running in a tab" : "Running"
+        case .unknown: "Status unknown"
         }
     }
 
@@ -441,23 +533,206 @@ public enum RemoteCopy {
     /// a tooltip, not a line.
     public static func trackedHandleHelp(_ handle: String) -> String { "tmux session temple-\(handle)" }
 
+    public static let openTracked = "Open"
+    public static let openTrackedHelp = "Opens a tab attached to this running session."
+    public static let showTab = "Show tab"
+    public static func stopTrackedHelp(_ host: String) -> String {
+        "Ends the agent on \(host). Its sidebar row stays, so you can resume it later."
+    }
+    /// Only on a row with a left-running note: clears the note.
+    public static let dismissNote = "Dismiss"
+    public static let dismissNoteHelp = "Clears this note. The session keeps running either way."
+
+    public static func couldNotCheck(_ reason: String) -> String {
+        "Temple couldn't check these sessions: \(sentence(reason))"
+    }
+
+    public static let tryAgain = "Try again"
+
+    public static let noTrackedSessions = "No running sessions started from Temple."
+
+    /// The line under a left-running session in Running sessions: why it
+    /// was left running (it explains; the sheet is already open).
+    public static func leftRunningLine(_ host: String, reason: RemoteLeftRunningReason) -> String {
+        switch reason {
+        case .hostDidNotAnswer: "Left running: \(host) didn't answer when you closed it."
+        case .anotherClientAttached: "Left running: another terminal is attached to it."
+        case .stopNotAcknowledged: "Left running: \(host) didn't confirm the stop."
+        case .quitDeadline: "Left running: \(host) didn't answer before Temple quit."
+        case .detachedAtQuit: ""
+        }
+    }
+
+    /// A Stop from the sheet that failed (S9), in the row it is about.
+    public static func notStoppedLine(_ reason: RemoteLeftRunningReason, detail: String?) -> String {
+        switch reason {
+        case .anotherClientAttached: "Not stopped: another terminal is attached to it."
+        default: "Not stopped: \(trimmed(detail ?? "the host didn't confirm the stop")). It may still be running."
+        }
+    }
+
+    /// What a failed stop says where the session is already in view (S9,
+    /// a tab's band, the Remove alert's outcome); nil when it stopped.
+    public static func stopFailure(_ result: RemoteStopResult, host: String, agent: Agent, title: String? = nil) -> String? {
+        switch result {
+        case .stopped: nil
+        case .leftRunning(let reason, let detail):
+            title.map { "\u{201C}\($0)\u{201D}: " + notStoppedLine(reason, detail: detail) } ?? notStoppedLine(reason, detail: detail)
+        case .unrecorded(let detail): unrecorded(host, detail: detail, session: title.map { "\u{201C}\($0)\u{201D}" })
+        }
+    }
+
+    // MARK: Failed stops and records (B6, P5)
+
+    /// A tab whose Stop failed (B6): the sentence; the band's button opens
+    /// Running sessions.
+    public static func couldNotStop(_ host: String, agent: Agent, reason: String) -> String {
+        "Temple couldn't stop \(agent.displayName) on \(host): \(trimmed(reason)). It may still be running."
+    }
+
+    /// How every line about a stop that may not have happened ends.
+    public static let mayStillBeRunning = "It may still be running."
+
+    /// B6 when another terminal held the session.
+    public static let notStoppedAttached = "Not stopped: another terminal is attached to it. It may still be running."
+
+    /// A session's name in a notice: its title in quotes, or what it is.
+    public static func sessionName(title: String?, agent: Agent, directory: String) -> String {
+        if let title, !title.isEmpty, title != agent.newSessionTitle { return "\u{201C}\(title)\u{201D}" }
+        let folder = URL(fileURLWithPath: directory).lastPathComponent
+        return "the new \(agent.displayName) session in \(folder.isEmpty ? directory : folder)"
+    }
+
+    /// The sidebar's notice when a close left a session running, naming it.
+    public static func leftRunning(_ host: String, session: String, reason: RemoteLeftRunningReason, detail: String?) -> String {
+        switch reason {
+        case .hostDidNotAnswer:
+            "\(capitalized(session)) wasn't stopped: \(host) didn't answer when you closed its tab. It may still be running."
+        case .anotherClientAttached:
+            "\(capitalized(session)) wasn't stopped: another terminal is attached to it. It may still be running."
+        case .stopNotAcknowledged, .quitDeadline, .detachedAtQuit:
+            "Temple couldn't stop \(session) on \(host): \(trimmed(detail ?? "the host didn't confirm the stop")). It may still be running."
+        }
+    }
+
+    /// Temple's own record could not be written. `session`: the session's
+    /// name as a notice gives it; nil where the session is in view ("this
+    /// session", in a band or the sheet).
+    public static func unrecorded(_ host: String, detail: String, session: String? = nil) -> String {
+        if let session {
+            return "Temple couldn't save its record of \(session) on \(host) (\(trimmed(detail))), "
+                + "so what it shows for that session may be out of date."
+        }
+        return "Temple couldn't save its record of this session on \(host) (\(trimmed(detail))), "
+            + "so what it shows for this session may be out of date."
+    }
+
+    /// The launch-time notice: sessions a close left running (flagged).
+    public static func leftRunningCount(_ count: Int, host: String) -> String {
+        count == 1 ? "A session you closed is still running on \(host)."
+            : "\(count) sessions you closed are still running on \(host)."
+    }
+
+    /// The launch-time notice: sessions whose tabs were connected when
+    /// Temple quit, still running and not open in a tab.
+    public static func quitCount(_ count: Int, host: String) -> String {
+        count == 1 ? "A session from before you quit is running on \(host)."
+            : "\(count) sessions from before you quit are running on \(host)."
+    }
+
+    // MARK: Entry points and the folder sheet
+
+    /// The start page's row for a host: the default agent's name.
+    public static func newSessionOn(_ host: String, agent: Agent) -> String {
+        "New \(agent.displayName) session on \(host)\u{2026}"
+    }
+
     /// The folder sheet's field label (the sheet's title names the host).
     public static let folderFieldLabel = "Folder"
+    public static let recentFoldersCaption = "Recent folders on this host. Click one to start there."
+    public static let startWithoutChecking = "Start without checking"
+    public static let startWithoutCheckingHelp =
+        "Starts the session without checking the folder; if the folder is missing, the tab says so."
+
+    public static func noFolder(_ path: String, host: String) -> String { "No folder \(path) on \(host)." }
+
+    // MARK: Settings, Hosts
+
+    public static let hostsLabel = "Added hosts"
+    public static let hostsEmpty = "No hosts yet."
+    public static let goneFromConfig =
+        "No longer in ~/.ssh/config: ssh may not reach it by this name. Add it back to the file, or remove the host."
+    public static let openSSHConfig = "Open ~/.ssh/config"
+    public static let removeHost = "Remove"
+    public static func removeHostHelp(fromConfig: Bool) -> String {
+        fromConfig ? "Removes it from Temple. ~/.ssh/config is not changed." : "Removes it from Temple."
+    }
+
+    /// Remove, with Temple-started sessions still running there.
+    public static func removalTitle(_ count: Int, host: String) -> String {
+        count == 1 ? "A session is still running on \(host)." : "\(count) sessions are still running on \(host)."
+    }
+
+    public static func removalMessage(_ count: Int, fromConfig: Bool) -> String {
+        let message = count == 1
+            ? "Removing the host leaves it running there, and Temple can't list or stop it until the host is added again."
+            : "Removing the host leaves them running there, and Temple can't list or stop them until the host is added again."
+        return fromConfig ? message + " ~/.ssh/config is not changed." : message
+    }
+
+    public static func removalLeave(_ count: Int) -> String {
+        count == 1 ? "Remove, leave it running" : "Remove, leave them running"
+    }
+
+    public static func removalStop(_ count: Int) -> String {
+        count == 1 ? "Stop it and remove" : "Stop them and remove"
+    }
+
+    /// A Stop them and remove that could not stop everything: the host
+    /// stays.
+    public static func notRemoved(_ host: String) -> String { "\(host) was not removed:" }
+
+    /// How Temple tells a new Codex tab's session apart: by Codex's
+    /// arguments (`--no-daemon`, Codex's "run without the shared
+    /// background server").
+    public static func noDaemonHint(enabled: Bool) -> String {
+        enabled
+            ? "Codex's arguments include --no-daemon, so Temple can tell which session a new Codex tab on a host is without asking you."
+            : "Add --no-daemon to Codex's arguments above and Temple won't have to ask you which session a new Codex tab on a host is: "
+                + "Codex then runs each session in its own process instead of a shared background server, which is what lets Temple tell them apart."
+    }
+
+    /// The host form.
+    public static let hostFormAddTitle = "Add host by address"
+    public static let hostFormNameNote =
+        "Temple uses this name as the host's ssh name too. It can't be changed later; address, user and port can."
+    public static let hostFormUserPlaceholder = "Optional (ssh's default)"
+    public static let hostFormEditHint =
+        "Saving disconnects this host's open tabs; their agents keep running. Use Reconnect in each."
 
     /// The Add host sheet (Settings, Hosts): one field, the config's unused
-    /// aliases under it, the full form behind a link.
+    /// aliases under it, the form for an address behind a link.
     public static let addHostTitle = "Add host"
     public static let addHostFieldLabel = "Host"
     public static let addHostPlaceholder = "alias from ~/.ssh/config, or user@address"
+    public static let addHostListCaption = "Click a host to add it at once."
+    /// An alias whose blocks set neither User nor HostName.
+    public static let addHostNoDestination = "no User or HostName set"
     /// The rows not shown yet, as the sidebar says it ("Show 3 more").
     public static func addHostShowMore(_ hidden: Int) -> String { "Show \(hidden) more" }
     public static let addHostUnreadable = "Enter an alias from ~/.ssh/config, or user@address with an optional :port."
     public static let addHostNoConfigHosts = "No hosts in ~/.ssh/config."
-    public static let addHostAllInUse = "Every host in ~/.ssh/config is in use."
-    public static func addHostAlreadyInUse(_ name: String) -> String { "\(name) is already in use." }
+    public static let addHostAllInUse = "Every host in ~/.ssh/config is already added."
+    public static func addHostAlreadyInUse(_ name: String) -> String { "\(name) is already added." }
     public static let addHostNotInConfig = "Not in ~/.ssh/config?"
-    public static let addHostEnterDetails = "Enter details\u{2026}"
-    public static let addHostEditConfig = "Edit ~/.ssh/config"
+    public static let addHostEnterDetails = "Add host by address\u{2026}"
+    public static let addHostEditConfig = openSSHConfig
+    /// The default button: Add for an alias (or nothing typed), the form
+    /// for an address.
+    public static let addHostAdd = "Add"
+    public static let addHostByAddress = "Add host by address\u{2026}"
+    /// Return or Add waits for the config's read.
+    public static let addHostReadingConfig = "Reading ~/.ssh/config\u{2026}"
 
     /// Resume anyway's confirmation (a sheet): a short title, why, and the
     /// command that stops the original on the host, apart, to copy.
@@ -479,72 +754,31 @@ public enum RemoteCopy {
             + "If it is, it keeps running, and a new session starts beside it."
     }
 
+    /// B9: a tab on a host Temple doesn't have.
     public static func notSetUp(_ host: String) -> String {
-        "Host \(host) is not set up. Add it in Settings to open this session."
+        "\(host) is not in Temple's hosts, so this session can't open. Add the host in Settings."
     }
 
-    public static func couldNotStop(_ host: String, agent: Agent, reason: String) -> String {
-        "Temple couldn't stop \(agent.displayName) on \(host): \(trimmed(reason)). It may still be running; see Sessions on \(host)."
-    }
-
-    /// The notice when a close left a session running: the sheet's line
-    /// for the same reason, and where to stop it.
-    public static func leftRunning(_ host: String, agent: Agent, reason: RemoteLeftRunningReason, detail: String?) -> String {
-        switch reason {
-        case .hostDidNotAnswer, .anotherClientAttached:
-            leftRunningLine(host, reason: reason) + " Stop it under Sessions on \(host)."
-        case .stopNotAcknowledged, .quitDeadline:
-            couldNotStop(host, agent: agent, reason: detail ?? "the host didn't confirm the stop")
-        }
-    }
-
-    /// The line under a left-running session in "Sessions on <host>".
-    public static func leftRunningLine(_ host: String, reason: RemoteLeftRunningReason) -> String {
-        switch reason {
-        case .hostDidNotAnswer: "Left running: \(host) didn't answer when you closed it."
-        case .anotherClientAttached: "Left running: another terminal is attached to it."
-        case .stopNotAcknowledged: "Left running: \(host) didn't confirm the stop."
-        case .quitDeadline: "Left running: \(host) didn't answer before Temple quit."
-        }
-    }
-
-    public static func leftRunningCount(_ count: Int, host: String) -> String {
-        count == 1 ? "1 session left running on \(host)" : "\(count) sessions left running on \(host)"
-    }
-
-    public static func workingCLIRefusal(_ host: String) -> String {
-        "Its agent is working on \(host). Pass --force to detach, or stop it in Temple."
-    }
-
-    /// The quit prompt's line: every session on those hosts keeps running,
-    /// working or idle.
-    public static func quitLine(_ hosts: [String]) -> String {
-        "Sessions on \(list(hosts)) keep running; Temple will reconnect to them."
-    }
-
-    public static func noFolder(_ path: String, host: String) -> String { "No folder \(path) on \(host)." }
-
-    public static func couldNotCheck(_ reason: String) -> String {
-        "Temple couldn't check these sessions: \(sentence(reason))"
-    }
-
-    public static let noTrackedSessions = "No sessions started from Temple."
-
-    public static func unrecorded(_ host: String, detail: String) -> String {
-        "Temple couldn't save what happened to this session on \(host): \(sentence(detail))"
-    }
+    public static let openSettings = "Open Settings"
 
     public static let unconfirmedConversation =
         "This session was stopped before it had a conversation on its host, so there is nothing to resume."
 
-    public static let uncheckedConversation =
-        "Temple couldn't check whether this session has a conversation to resume on its host."
+    public static func uncheckedConversation(_ host: String) -> String {
+        "Temple couldn't check whether this session has a conversation to resume on \(host)."
+    }
 
     public static func stillConnecting(_ host: String) -> String { "Still connecting to \(host)…" }
 
     public static func exitedImmediately(_ host: String, agent: Agent) -> String {
         "\(agent.displayName) exited immediately on \(host)."
     }
+
+    /// O1, the shortcuts panel's note when a host is added.
+    public static let scrollingNote =
+        "In a session on a host, scrolling up shows the terminal's scrollback; the first key you type returns to the prompt. "
+            + "A host agent is working while it is busy with a task and waiting otherwise; "
+            + "closing its tab while it waits stops it, and Detach in the tab's menu leaves it running."
 
     /// What the pane printed, for a header: escape sequences and carriage
     /// returns removed, the last few lines that say something.
@@ -596,23 +830,25 @@ public enum RemoteCopy {
         "\(agent.displayName)'s last screen on \(host) isn't kept after it ends."
     }
 
-    /// The question about one candidate: never a fact. When the tab's open
-    /// time and the host's clock offset are both known, the start (on the
-    /// host's clock) is moved to this Mac's and said relative to the open
-    /// ("4 s after this tab opened"), which tells apart candidates whose
-    /// prompts read the same; otherwise (or a start before it, or an hour
-    /// after) the clock time.
+    /// Above the candidates: why Temple asks at all.
+    public static let codexQuestionLeadIn = "Codex picks its own session id, so Temple can't tell which session this tab is."
+
+    /// The question about one candidate: never a fact. The folder is the
+    /// candidate's full path. When the tab's open time and the host's clock
+    /// offset are both known, the start (on the host's clock) is moved to
+    /// this Mac's and said relative to the open ("4 s after this tab
+    /// opened"), which tells apart candidates whose prompts read the same;
+    /// otherwise (or a start before it, or an hour after) the clock time.
     public static func suggestionQuestion(_ suggestion: RemoteSuggestion, tabOpenedAt: Date? = nil,
                                           now: Date = Date()) -> String {
         let prompt = suggestion.firstPrompt.map { "\u{201C}\($0)\u{201D}" }
             ?? (suggestion.promptKnown ? "No prompt yet" : "First prompt unreadable")
-        let folder = URL(fileURLWithPath: suggestion.directory).lastPathComponent
         var relative: String?
         if let tabOpenedAt, let offset = suggestion.hostClockOffset {
             relative = afterOpen(suggestion.startedAt.addingTimeInterval(-offset), openedAt: tabOpenedAt)
         }
         let when = relative ?? startTime(suggestion.startedAt, now: now)
-        return "Is this the session? \(prompt), started in \(folder) \(when)."
+        return "Is this the session? \(prompt), started in \(suggestion.directory) \(when)."
     }
 
     /// "as this tab opened", "4 s after this tab opened", "1 min after this
@@ -654,43 +890,42 @@ public enum RemoteCopy {
     public static let suggestionNo = "Not this one"
 
     /// The note a tab shows when Temple said yes on its own to the lone
-    /// candidate: why (the only one), and what Discard does (Fable's copy).
+    /// candidate: why (the only one); "Not this one" beside it undoes the
+    /// link, and the agent keeps running.
     public static func linkedOnItsOwn(_ suggestion: RemoteSuggestion, now: Date = Date()) -> String {
-        let fix = "If that\u{2019}s wrong, Discard stops it and removes it from Temple."
         if let prompt = suggestion.firstPrompt {
-            return "Linked to \u{201C}\(prompt)\u{201D}, the only Codex session started in this folder since this tab opened. \(fix)"
+            return "Linked this tab to \u{201C}\(prompt)\u{201D}, the only Codex session started in this folder since the tab opened."
         }
-        return "Linked to the Codex session started \(startTime(suggestion.startedAt, now: now)), "
-            + "the only one started in this folder since this tab opened. \(fix)"
+        return "Linked this tab to the Codex session started \(startTime(suggestion.startedAt, now: now)), "
+            + "the only one started in this folder since the tab opened."
     }
 
-    /// A run whose id another session started from Temple already holds.
-    public static let couldNotTell = "Temple couldn't tell which Codex session this is."
+    /// Temple asked and has nothing left to ask about (every candidate
+    /// declined, or the one it would claim is another session's): the tab
+    /// keeps working, unidentified, with Try again.
+    public static let couldNotTell = "Temple couldn't tell which Codex session this is. "
+        + "The tab keeps working; its row stays \u{201C}New Codex session\u{201D} until Temple can tell."
 
-    /// How Temple can tell by itself (Fable, round 1): one line in the
-    /// Hosts card's notes, never in a tab's band (owner, round 2).
-    public static let noDaemonHint = "With --no-daemon in Codex's arguments above, Temple identifies each new Codex session on a host by itself."
+    /// "Discard" said which, per row (one meaning: a session that is not
+    /// running; nothing is stopped): removed, or archived when the row is
+    /// the user's (named, pinned, colored) or has a transcript.
+    public static func discardLabel(archives: Bool) -> String { archives ? "Archive session" : "Remove from Temple" }
 
-    /// What Discard does, for its help tag.
     public static func discardHelp(archives: Bool) -> String {
         archives
-            ? "Archives this session, since you named, pinned or colored it. You can restore it from History."
-            : "Removes this session from Temple."
-    }
-
-    /// Discard on a session Temple linked on its own: what it does.
-    public static func discardLinkedHelp(_ host: String) -> String {
-        "Stops this session on \(host) and removes it from Temple."
-    }
-
-    public static func discardPendingHelp(_ host: String) -> String {
-        "Temple stops tracking this session. Its transcript, if it has one, stays on \(host)."
+            ? "Archives this session, since it is named, pinned, colored or has a transcript; restore it from History. "
+                + "Nothing is running on the host to stop."
+            : "Removes this session from Temple. Nothing is running on the host to stop."
     }
 
     public static func findNote(_ host: String) -> String {
         "Searching what this tab has shown since it connected to \(host)."
     }
 
+    static func capitalized(_ text: String) -> String {
+        guard let first = text.first else { return text }
+        return first.uppercased() + text.dropFirst()
+    }
     static func list(_ items: [String]) -> String {
         switch items.count {
         case 0: ""

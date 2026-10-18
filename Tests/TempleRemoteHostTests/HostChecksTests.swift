@@ -60,7 +60,8 @@ final class HostChecksTests: XCTestCase {
         """, executable: true)
         let check = await TmuxCheck.run(nonce: "abc", using: host(tree))
         XCTAssertEqual(check, .refused(version: "3.0a", command: "prefix None", line: "invalid key: None"))
-        XCTAssertEqual(HostTestSummary(tmux: check).statusLine, "Connected. tmux 3.0a refused the launch chain: invalid key: None")
+        XCTAssertEqual(HostTestSummary(tmux: check).statusLine,
+                       "Connected. tmux 3.0a couldn't start a session: invalid key: None. Not checked whether Claude Code and Codex are signed in.")
         let calls = try String(contentsOfFile: log, encoding: .utf8)
         XCTAssertTrue(calls.contains("-L temple-check-abc -f /dev/null start-server ; set -g default-shell /bin/sh ;"),
                       "the chain, one queue, on a throwaway socket: \(calls)")
@@ -78,7 +79,8 @@ final class HostChecksTests: XCTestCase {
         let check = await TmuxCheck.run(nonce: "n", using: exec)
         XCTAssertEqual(check, .missing)
         XCTAssertEqual(HostTestSummary(tmux: check).statusLine,
-                       "Connected. No tmux on this host. Install tmux 3.2 or newer to start sessions here.")
+                       "Connected. No tmux on this host: sessions can't start here until tmux 3.2 or newer is installed. Not checked whether Claude Code and Codex are signed in.")
+        XCTAssertTrue(HostTestSummary(tmux: check).provesTmuxUnusable, "the tmux rule: missing")
     }
 
     /// The real launch chain against this Mac's tmux, detached, on a
@@ -97,7 +99,7 @@ final class HostChecksTests: XCTestCase {
         XCTAssertTrue(shown.hasSuffix("exit status 0"), shown)
         XCTAssertEqual(ConnectionTest.row(check).showing(shown).output, shown, "the tmux row shows its output too")
         XCTAssertEqual(passthrough, TmuxVersion("tmux \(version)").map { $0 >= TmuxChain.passthroughSince } ?? true)
-        XCTAssertEqual(ConnectionTest.row(check).line.hasPrefix("tmux: \(version), detached tmux check passed"), true)
+        XCTAssertEqual(ConnectionTest.row(check).line.hasPrefix("tmux: \(version), can start sessions"), true)
         let leftovers = try FileManager.default.subpathsOfDirectory(atPath: tree.path).filter { $0.contains("temple-check") }
         XCTAssertEqual(leftovers, [], "the throwaway socket is removed")
     }
@@ -185,7 +187,9 @@ final class HostChecksTests: XCTestCase {
             claude: .runs(path: "/home/mentes/.local/bin/claude", version: "2.1.283 (Claude Code)", output: ""),
             codex: .runs(path: "/home/mentes/.local/bin/codex", version: "codex-cli 0.52.0", output: ""),
             tmux: .accepted(version: "3.4", passthrough: true), logind: .killsUserProcesses(false))
-        XCTAssertEqual(healthy.statusLine, "Connected as mentes@10.0.0.2. Claude Code 2.1.283, Codex 0.52.0, tmux 3.4.")
+        XCTAssertEqual(healthy.statusLine, "Connected as mentes@10.0.0.2. Found Claude Code 2.1.283, Codex 0.52.0, tmux 3.4. Not checked whether Claude Code and Codex are signed in.")
+        XCTAssertFalse(healthy.isAdvisory)
+        XCTAssertFalse(healthy.provesTmuxUnusable)
         XCTAssertNil(healthy.unavailableReason(for: .claude))
 
         var broken = healthy
@@ -193,16 +197,33 @@ final class HostChecksTests: XCTestCase {
         broken.codex = .fails(path: "/x/codex", status: 1, firstLine: "Error: something", output: "")
         broken.tmux = .accepted(version: "3.2a", passthrough: false)
         broken.environment = RemoteEnvironment(shell: "/bin/bash", path: nil, problem: "the login shell didn't answer within 5 seconds")
-        XCTAssertEqual(broken.statusLine, "Connected as mentes@10.0.0.2. tmux 3.2a. No claude on PATH. codex is there but didn't run: Error: something. tmux 3.2a: clipboard passthrough is off on this version. Couldn't read the login shell's PATH: the login shell didn't answer within 5 seconds; using ssh's default environment.")
-        XCTAssertEqual(broken.unavailableReason(for: .claude), "No claude on PATH.")
-        XCTAssertEqual(broken.unavailableReason(for: .codex), "codex is there but didn't run: Error: something.")
+        XCTAssertEqual(broken.statusLine, "Connected as mentes@10.0.0.2. Found tmux 3.2a. No claude command on PATH. "
+                       + "Codex is there but didn't run: Error: something. "
+                       + "Copying from the terminal won't reach your Mac's clipboard (needs tmux 3.3 or newer). "
+                       + "Couldn't read the login shell's PATH (the login shell didn't answer within 5 seconds), "
+                       + "so agents installed under your home folder may not be found. Not checked whether Claude Code and Codex are signed in.")
+        XCTAssertEqual(broken.unavailableReason(for: .claude), "No claude command on PATH.")
+        XCTAssertEqual(broken.unavailableReason(for: .codex), "Codex is there but didn't run: Error: something.")
+        XCTAssertTrue(broken.isAdvisory)
+
+        var lingering = healthy
+        lingering.logind = .killsUserProcesses(true)
+        XCTAssertEqual(lingering.statusLine, "Connected as mentes@10.0.0.2. Found Claude Code 2.1.283, Codex 0.52.0, tmux 3.4. "
+                       + "Sessions here end when you log out (logind KillUserProcesses=yes); run loginctl enable-linger on the host. Not checked whether Claude Code and Codex are signed in.")
+        XCTAssertTrue(lingering.isAdvisory, "the logind finding reads orange")
 
         var old = healthy
         old.tmux = .tooOld(version: "3.0a")
-        XCTAssertEqual(old.unavailableReason(for: .claude), "tmux 3.0a: Temple needs tmux 3.2 or newer to keep sessions running.")
+        XCTAssertEqual(old.unavailableReason(for: .claude), "tmux 3.0a: sessions can't start here until tmux is 3.2 or newer.")
+        XCTAssertTrue(old.provesTmuxUnusable, "the tmux rule: too old")
+        XCTAssertEqual(old.tmuxProblem, "tmux 3.0a: sessions can't start here until tmux is 3.2 or newer.")
+        var refused = healthy
+        refused.tmux = .refused(version: "3.4", command: "new-session", line: "no server")
+        XCTAssertFalse(refused.provesTmuxUnusable, "a refusal is not the tmux rule")
         let unreachable = HostTestSummary(failure: .other(firstLine: "ssh: connect to host box port 22: Operation timed out"))
         XCTAssertEqual(unreachable.statusLine, "Couldn't connect: ssh: connect to host box port 22: Operation timed out.")
         XCTAssertNil(unreachable.unavailableReason(for: .claude), "couldn't connect proves nothing")
-        XCTAssertEqual(HostTestSummary.notTested, "Not tested yet. Test the connection to check this host.")
+        XCTAssertEqual(HostTestSummary.notTested, "Not tested since Temple started. Test the connection to check this host.")
+        XCTAssertNil(unreachable.tmuxProblem)
     }
 }

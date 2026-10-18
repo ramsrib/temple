@@ -540,6 +540,28 @@ final class CodexIdentityTests: XCTestCase {
         XCTAssertThrowsError(try store.update("a") { $0.sessionID = "c1"; $0.claim = .verified })
     }
 
+    /// Not this one on a link Temple made on its own (the cold-read
+    /// round), in one write: the claim goes, a hand-over already written is
+    /// undone (the run restores by its handle again), and the candidate is
+    /// declined, so the claim's own transaction refuses it from then on.
+    func testUnlinkReleasesTheClaimDeclinesAndRestoresTheRun() throws {
+        let store = try RemoteStateStore()
+        try pendingRun(store, "a")
+        XCTAssertEqual(try store.claim("a", sessionID: "c1", how: .verified, rolloutPath: "/r/c1"), .claimed)
+        try store.markJoined("a", at: Date())
+        try store.update("a") { $0.tabClosedAt = Date() }
+        XCTAssertEqual(try store.pendingRuns(host: HostID(rawValue: "box")).map(\.handle), [], "handed over")
+        try store.unlink("a", sessionID: "c1", rolloutPath: "/r/c1")
+        let run = try XCTUnwrap(store.run("a"))
+        XCTAssertNil(run.sessionID)
+        XCTAssertNil(run.claim)
+        XCTAssertNil(run.joinedAt)
+        XCTAssertNil(run.tabClosedAt)
+        XCTAssertEqual(try store.pendingRuns(host: HostID(rawValue: "box")).map(\.handle), ["a"], "restorable again")
+        XCTAssertEqual(try store.declined("a"), ["/r/c1"])
+        XCTAssertEqual(try store.claim("a", sessionID: "c1", how: .verified, rolloutPath: "/r/c1"), .declined)
+    }
+
     func testDeclinedCandidatesAndPendingRestore() throws {
         let store = try RemoteStateStore()
         try pendingRun(store, "a")

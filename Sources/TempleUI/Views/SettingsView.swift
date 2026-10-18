@@ -39,6 +39,8 @@ struct SettingsView: View {
     private enum Anchor: Hashable {
         case top
         case agent(Agent)
+        /// The Hosts section (a remote tab whose host is not added).
+        case hosts
     }
 
     private var toolchain: ToolchainModel { model.toolchain }
@@ -56,7 +58,9 @@ struct SettingsView: View {
                     agentSection(.codex)
                     // Hosts: always shown, the one way to add a host. The
                     // ssh config is read only once it appears.
-                    HostsSettingsSection(hosts: model.remoteHosts)
+                    HostsSettingsSection(hosts: model.remoteHosts,
+                                         codexArguments: settings.extraArgs(for: .codex))
+                        .id(Anchor.hosts)
                     appearanceSection
                 }
                 .frame(maxWidth: Self.formWidth, alignment: .leading)
@@ -519,7 +523,7 @@ struct SettingsView: View {
         model.openSessions.consumeSettingsFocus(request)
         DispatchQueue.main.async {
             withAnimation(.easeOut(duration: 0.25)) {
-                proxy.scrollTo(request.agent.map(Anchor.agent) ?? .top, anchor: .top)
+                proxy.scrollTo(request.hosts ? .hosts : request.agent.map(Anchor.agent) ?? .top, anchor: .top)
             }
             guard let agent = request.agent else { return }
             washed = agent

@@ -163,13 +163,15 @@ final class FakeRemoteHost: RemoteSessionHost {
     }
     func keep(_ handle: String) async { kept.append(handle) }
     var unnoticed = 0
+    /// Unnoticed runs whose tab was connected when Temple quit.
+    var unnoticedQuit = 0
     var hostAnswers = true
     var contactGate: (() async -> Void)?
-    func contactLeftRunning() async -> Int? {
+    func contactLeftRunning() async -> (closed: Int, quit: Int)? {
         if let contactGate { await contactGate() }
-        return hostAnswers ? unnoticed : nil
+        return hostAnswers ? (unnoticed, unnoticedQuit) : nil
     }
-    func noticeLeftRunning() async { unnoticed = 0 }
+    func noticeLeftRunning() async { unnoticed = 0; unnoticedQuit = 0 }
     var folder: RemoteFolderCheck = .missing
     var folderGate: (() async -> Void)?
     func checkFolder(_ path: String) async -> RemoteFolderCheck {
@@ -326,6 +328,22 @@ final class FakeRemoteHost: RemoteSessionHost {
         unjoined.removeAll { $0.handle == handle }
     }
 
+    /// Not this one on a link Temple made on its own: the claim released,
+    /// the candidate declined and the run restorable again, in one write.
+    private(set) var unlinks: [(handle: String, sessionID: String, path: String)] = []
+    var unlinkError: Error?
+    func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws {
+        unlinks.append((handle, sessionID, rolloutPath))
+        if let unlinkError { throw unlinkError }
+        declines.append((handle, rolloutPath))
+        if let index = pending.firstIndex(where: { $0.handle == handle }) {
+            pending[index].sessionID = nil
+            pending[index].claimed = false
+            pending[index].joined = false
+            pending[index].tabClosed = false
+        }
+    }
+
     private(set) var joinedMarks: [String] = []
     func markJoined(_ handle: String) async throws {
         joinedMarks.append(handle)
@@ -428,7 +446,7 @@ final class RemoteLifecycleTests: XCTestCase {
         return tab
     }
 
-    /// "In a tab" in Sessions on <host> means this Temple has a live
+    /// "Running in a tab" in Running sessions on <host> means this Temple has a live
     /// tab of the run (sol round 1), not that tmux counts a client: the
     /// run of a connected tab is open here; another run, attached from a
     /// terminal or another Temple, is Running; once the tab goes, so does
@@ -440,7 +458,7 @@ final class RemoteLifecycleTests: XCTestCase {
             RemoteCopy.trackedState(.present(attached: true),
                                     openHere: model.remoteTabs.hasLiveTab(handle: handle, host: hostID))
         }
-        XCTAssertEqual(label(handle), "In a tab")
+        XCTAssertEqual(label(handle), "Running in a tab")
         XCTAssertEqual(label("elsewhere"), "Running", "attached, but not by this Temple")
         XCTAssertFalse(model.remoteTabs.hasLiveTab(handle: handle, host: HostID(rawValue: "other")))
         model.remoteTabs.detach(tab.id)
@@ -494,7 +512,7 @@ final class RemoteLifecycleTests: XCTestCase {
         rows["s1"] = row
         model.openSession(row)
         let tab = try XCTUnwrap(model.activeTab)
-        XCTAssertEqual(tab.launchPreparationError, "Host box is not set up. Add it in Settings to open this session.")
+        XCTAssertEqual(tab.launchPreparationError, "box is not in Temple's hosts, so this session can't open. Add the host in Settings.")
         XCTAssertTrue(factory.created.isEmpty)
         XCTAssertTrue(remote.opens.isEmpty)
     }
@@ -630,13 +648,14 @@ final class RemoteLifecycleTests: XCTestCase {
         tab.activity = .idle
         model.closeTab(tab.id)
         await settle(!self.notices.isEmpty)
-        XCTAssertEqual(notices, ["Left running: box didn't answer when you closed it. Stop it under Sessions on box."])
+        // The notice names the session (its tab is gone).
+        XCTAssertEqual(notices, ["\u{201C}Title\u{201D} wasn't stopped: box didn't answer when you closed its tab. It may still be running."])
         remote.stopResult = .leftRunning(.anotherClientAttached, detail: nil)
         let other = await openRow("s2")
         other.activity = .idle
         model.closeTab(other.id)
         await settle(self.notices.count == 2)
-        XCTAssertEqual(notices.last, "Left running: another terminal is attached to it. Stop it under Sessions on box.")
+        XCTAssertEqual(notices.last, "\u{201C}Title\u{201D} wasn't stopped: another terminal is attached to it. It may still be running.")
     }
 
     /// B2: ⌘W closes a running tab as at rest early only on positive
@@ -842,7 +861,7 @@ final class RemoteLifecycleTests: XCTestCase {
         model.remoteTabs.confirmStop()
         await settle({ if case .stopFailed = second.remote?.phase { return true }; return false }())
         XCTAssertEqual(second.remote?.phase, .stopFailed(
-            "Temple couldn't stop Claude Code on box: Didn't answer within 10 seconds. It may still be running; see Sessions on box."))
+            "Temple couldn't stop Claude Code on box: Didn't answer within 10 seconds. It may still be running."))
     }
 
     func testClosingADisconnectedTabStopsWithNoTempleClientAttached() async throws {
@@ -926,7 +945,10 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertLessThan(elapsed, 1, "nothing to wait for on a host")
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertTrue(remote.stops.isEmpty, "nothing is stopped, idle included")
-        XCTAssertTrue(remote.leftRunningCalls.isEmpty, "nothing is flagged left running: it was not a stop")
+        // Not a stop: each is flagged only as detached at the quit, for the
+        // next launch's notice ("from before you quit").
+        XCTAssertEqual(remote.leftRunningCalls.map(\.reason), [.detachedAtQuit, .detachedAtQuit, .detachedAtQuit])
+        XCTAssertEqual(Set(remote.leftRunningCalls.map(\.handle)), Set(remote.runs.map(\.handle)))
         XCTAssertTrue(remote.runs.allSatisfy { !$0.ended })
         XCTAssertEqual(model.tabs.count, 3, "the tab set is frozen for the next launch")
     }
@@ -1160,9 +1182,16 @@ final class RemoteLifecycleTests: XCTestCase {
         tab.activity = .idle
         XCTAssertEqual(model.remoteConnectedHosts, ["box"], "an idle one keeps running too")
         let prompt = TempleAppDelegate.quitPrompt(workingCount: 1, remoteHosts: ["box", "jet"])
-        XCTAssertEqual(prompt.title, "An agent is still working.")
-        XCTAssertTrue(prompt.message.hasSuffix("Sessions on box and jet keep running; Temple will reconnect to them."))
-        XCTAssertFalse(TempleAppDelegate.quitPrompt(workingCount: 2, remoteHosts: []).message.contains("keep running"))
+        XCTAssertEqual(prompt.title, "An agent on this Mac is still working.")
+        XCTAssertTrue(prompt.message.hasPrefix("Quitting interrupts it; its session reopens next launch"))
+        XCTAssertTrue(prompt.message.hasSuffix(
+            "Sessions on box and jet keep running; their tabs reconnect when you open them next launch."))
+        // With no host connected, the prompt reads as it always did.
+        let local = TempleAppDelegate.quitPrompt(workingCount: 2, remoteHosts: [])
+        XCTAssertEqual(local.title, "2 agents are still working.")
+        XCTAssertEqual(local.message, "Quitting interrupts them. Their sessions reopen next launch, "
+                       + "but whatever they are doing right now stops here.")
+        XCTAssertEqual(TempleAppDelegate.quitPrompt(workingCount: 1, remoteHosts: []).title, "An agent is still working.")
     }
 
     // MARK: Restore

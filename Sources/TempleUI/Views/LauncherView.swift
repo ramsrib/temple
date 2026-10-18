@@ -174,7 +174,10 @@ struct LauncherView: View {
                 openFolder()
             }
             ForEach(model.remoteLaunchHosts, id: \.self) { host in
-                LauncherRow(icon: .symbol("network"), title: "New session on \(host.rawValue)…") {
+                // One row per host, naming the agent it starts (the
+                // default); Codex there: the project's + menu, or ⌘N.
+                LauncherRow(icon: .symbol("network"),
+                            title: RemoteCopy.newSessionOn(host.rawValue, agent: model.settings.defaultAgent)) {
                     model.chooseRemoteFolder(host: host)
                 }
             }

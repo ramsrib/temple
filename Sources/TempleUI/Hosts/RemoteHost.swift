@@ -190,8 +190,11 @@ final class RemoteHostLauncher: RemoteSessionHost {
             }
             return RemoteTrackedSession(handle: tracked.run.handle, sessionID: tracked.run.sessionID, agent: tracked.run.agent,
                                         state: state,
+                                        // A run detached at the quit is not a
+                                        // close's left-running note.
                                         leftRunning: tracked.run.isLeftRunning
                                             ? tracked.run.leftRunningReason.flatMap { RemoteLeftRunningReason(rawValue: $0.rawValue) }
+                                                .flatMap { $0 == .detachedAtQuit ? nil : $0 }
                                             : nil,
                                         directory: tracked.run.directory ?? tracked.run.directoryIntent)
         }, answer.reachedHost)
@@ -203,7 +206,7 @@ final class RemoteHostLauncher: RemoteSessionHost {
         }
     }
 
-    func contactLeftRunning() async -> Int? { await sessions.contactLeftRunning() }
+    func contactLeftRunning() async -> (closed: Int, quit: Int)? { await sessions.contactLeftRunningByCause() }
 
     func noticeLeftRunning() async { try? await sessions.noticeLeftRunning() }
 
@@ -283,6 +286,11 @@ final class RemoteHostLauncher: RemoteSessionHost {
 
     func releaseClaim(_ handle: String, sessionID: String) async throws {
         try await sessions.releaseClaim(handle, sessionID: sessionID)
+        await refreshLiveSessions()
+    }
+
+    func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws {
+        try await sessions.unlink(handle, sessionID: sessionID, rolloutPath: rolloutPath)
         await refreshLiveSessions()
     }
 

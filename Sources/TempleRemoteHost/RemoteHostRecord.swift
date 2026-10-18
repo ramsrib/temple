@@ -155,9 +155,11 @@ public struct RemoteHostForm: Equatable, Sendable {
     public func validate(editing: String?, existing: Set<String>, configAliases: Set<String>)
         -> Result<RemoteHostRecord, Problems> {
         var problems: [Field: String] = [:]
-        let name = trimmed(self.name)
-        if let editing {
-            if name != editing { problems[.name] = "The name can't be changed later." }
+        // An edit keeps its name: the field is not editable, and nothing it
+        // holds is checked or used.
+        let name = editing ?? trimmed(self.name)
+        if editing != nil {
+            // Fixed: nothing to check.
         } else if name.isEmpty {
             problems[.name] = "Give the host a name."
         } else if name.hasPrefix("-") {

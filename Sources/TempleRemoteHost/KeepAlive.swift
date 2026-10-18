@@ -22,7 +22,7 @@ public protocol KeepAlive: Sendable {
     /// nothing.
     func attachScript(_ launch: RemoteLaunchPlan) -> String
     func liveness(session: String, socket: String?, using exec: RemoteExec) async -> Liveness
-    /// Liveness with the attached count, for "Sessions on <host>".
+    /// Liveness with the attached count, for "Running sessions on <host>".
     func probe(session: String, socket: String?, using exec: RemoteExec) async -> Probe
     /// The one-command, attached-checked stop. `waitTenths`: how long the
     /// host may wait for Temple's own client (already detached on this

@@ -133,7 +133,7 @@ public final class RemoteSessions {
         public var storageError: String?
     }
 
-    /// One tracked session as "Sessions on <host>" shows it.
+    /// One tracked session as "Running sessions on <host>" shows it.
     public struct Tracked: Sendable, Equatable {
         public enum State: Sendable, Equatable {
             case present(attached: Int)
@@ -1042,7 +1042,7 @@ public final class RemoteSessions {
         }
     }
 
-    /// Keep, in "Sessions on <host>": the flag goes; the session is an
+    /// Dismiss, in "Running sessions on <host>": the flag goes; the session is an
     /// ordinary detached one (fable must-fix 6).
     public func keep(_ handle: String) async throws {
         try await write {
@@ -1071,7 +1071,7 @@ public final class RemoteSessions {
 
     // MARK: Sessions on the host
 
-    /// "Sessions on <host>": the runs Temple tracks there that are not
+    /// "Running sessions on <host>": the runs Temple tracks there that are not
     /// Ended, each asked about on its own pinned server. A run that server
     /// says is gone is Ended and left out; one Temple can't check stays,
     /// with why. `reachedHost`: whether any answer came from the host.
@@ -1137,6 +1137,15 @@ public final class RemoteSessions {
         }
         guard reached else { return nil }
         return await unnoticedLeftRunning().count
+    }
+
+    /// The same contact, its answer split: flags a close left (`closed`),
+    /// and runs whose tab was connected when Temple quit (`quit`).
+    public func contactLeftRunningByCause() async -> (closed: Int, quit: Int)? {
+        guard await contactLeftRunning() != nil else { return nil }
+        let flagged = await unnoticedLeftRunning()
+        let quit = flagged.filter { $0.leftRunningReason == .detachedAtQuit }.count
+        return (flagged.count - quit, quit)
     }
 
     /// The folder sheet's advisory check.
@@ -1384,6 +1393,12 @@ public final class RemoteSessions {
     /// "Not this one": never offered again for this run.
     public func decline(_ handle: String, rolloutPath: String) async throws {
         try await write { try $0.decline(handle, rolloutPath: rolloutPath) }
+    }
+
+    /// "Not this one" on a link Temple made on its own (the store's
+    /// `unlink`).
+    public func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws {
+        try await write { try $0.unlink(handle, sessionID: sessionID, rolloutPath: rolloutPath) }
     }
 
     /// The core join refused the id (another host's, or another agent's).

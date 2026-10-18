@@ -17,13 +17,18 @@ public final class TempleAppDelegate: NSObject, NSApplicationDelegate {
     private(set) var lastQuitPrompt: (title: String, message: String)?
 
     /// Counts this Mac's working agents; agents on hosts keep running,
-    /// working or idle, and the prompt says so in one line.
+    /// working or idle, and the prompt says so in its last paragraph. With
+    /// no host connected it reads exactly as it did before remote; with
+    /// one, the title says "on this Mac" (what a quit interrupts).
     static func quitPrompt(workingCount: Int, remoteHosts: [String]) -> (title: String, message: String) {
-        let title = workingCount == 1 ? "An agent is still working." : "\(workingCount) agents are still working."
-        var message = "Quitting interrupts them. Their sessions reopen next launch, "
-            + "but whatever they are doing right now stops here."
-        if !remoteHosts.isEmpty { message += "\n\n" + RemoteCopy.quitLine(remoteHosts) }
-        return (title, message)
+        guard !remoteHosts.isEmpty else {
+            let title = workingCount == 1 ? "An agent is still working." : "\(workingCount) agents are still working."
+            let message = "Quitting interrupts them. Their sessions reopen next launch, "
+                + "but whatever they are doing right now stops here."
+            return (title, message)
+        }
+        return (RemoteCopy.quitTitle(workingCount: workingCount),
+                RemoteCopy.quitMessage(workingCount: workingCount) + "\n\n" + RemoteCopy.quitLine(remoteHosts))
     }
 
     /// Retains the close interceptors (`NSWindow.delegate` is weak), one per

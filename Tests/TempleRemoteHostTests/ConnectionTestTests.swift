@@ -106,13 +106,15 @@ final class ConnectionTestTests: XCTestCase {
                        "the environment query has no PATH; every check has the resolved one")
         XCTAssertEqual(test.rows.map(\.line), [
             "Login shell: /bin/bash, PATH read.",
-            "claude: 2.1.283 at /home/mentes/.local/bin/claude",
-            "codex: not on PATH",
-            "tmux: 3.4, detached tmux check passed",
-            "This host ends your processes when your last login ends (KillUserProcesses=yes). Sessions won't survive a disconnect unless lingering is enabled (loginctl enable-linger).",
+            "Claude Code: 2.1.283 at /home/mentes/.local/bin/claude",
+            "No codex command on PATH.",
+            "tmux: 3.4, can start sessions",
+            "logind: this host ends your processes when your last login ends (KillUserProcesses=yes). Run loginctl enable-linger to keep sessions alive.",
         ])
-        XCTAssertEqual(finished?.statusLine, "Connected as mentes@10.0.0.2. Claude Code 2.1.283, tmux 3.4. No codex on PATH.")
-        XCTAssertEqual(finished?.unavailableReason(for: .codex), "No codex on PATH.")
+        XCTAssertEqual(finished?.statusLine, "Connected as mentes@10.0.0.2. Found Claude Code 2.1.283, tmux 3.4. "
+                       + "No codex command on PATH. Sessions here end when you log out (logind KillUserProcesses=yes); "
+                       + "run loginctl enable-linger on the host. Not checked whether Claude Code and Codex are signed in.")
+        XCTAssertEqual(finished?.unavailableReason(for: .codex), "No codex command on PATH.")
         test.terminalExited()
         XCTAssertEqual(test.phase, .finished, "a later end changes nothing")
         let calls = try String(contentsOfFile: tree.path + "/calls", encoding: .utf8)
@@ -238,10 +240,11 @@ final class ConnectionTestTests: XCTestCase {
         try await Self.runTerminal(test)
         test.terminalExited()
         await Self.waitUntil { test.phase == .failed }
-        XCTAssertEqual(test.failure, .unconfirmed(line))
-        XCTAssertEqual(test.failure?.message, "Couldn't confirm the connection: \(line).")
-        XCTAssertEqual(finished?.statusLine, "Couldn't confirm the connection: \(line).")
-        XCTAssertFalse(finished?.statusLine.contains("Connected") ?? true)
+        XCTAssertEqual(test.failure, .unconfirmed(line, host: "box"))
+        XCTAssertEqual(test.failure?.message, "Connected, but box wouldn't run Temple's check: \(line).")
+        XCTAssertEqual(finished?.statusLine, "Connected, but box wouldn't run Temple's check: \(line).")
+        XCTAssertFalse(finished?.statusLine.contains("Connected as") ?? true, "nothing claims a confirmed connection")
+        XCTAssertFalse(finished?.statusLine.contains("Found") ?? true)
         XCTAssertEqual(failing.calls.count, 1, "only the first query; nothing after it")
         XCTAssertTrue(test.rows.isEmpty)
     }

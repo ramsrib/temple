@@ -51,6 +51,10 @@ public struct TempleCommands: Commands {
 
         // File: Close Tab replaces the window Close/Save group.
         CommandGroup(replacing: .saveItem) {
+            // A tab on a host: Detach, above Close Tab, no shortcut.
+            if let tab = model.openSessions.activeTab, tab.kind == .session, tab.remote != nil {
+                Button(RemoteCopy.detachMenuItem(tab.host.rawValue)) { model.openSessions.remoteTabs.detach(tab.id) }
+            }
             Button("Close Tab") { model.openSessions.requestCloseActiveTab() }
                 .keyboardShortcut("w")
         }

@@ -11,6 +11,8 @@ struct SessionRow: View {
 
     @State private var renaming = false
     @State private var draftName = ""
+    /// "Stop on <host>" for a working agent, waiting for its answer (S12).
+    @State private var confirmingStop = false
     @State private var rawHovering = false
     @Environment(\.overlayActive) private var overlayActive
     /// Mouse tracking fires by rect through a floating panel (⌘K etc.);
@@ -111,6 +113,30 @@ struct SessionRow: View {
             Button("Save") { model.overlay.rename(session.id, to: draftName) }
             Button("Cancel", role: .cancel) {}
         }
+        .alert(RemoteCopy.stopWorkingTitle(session.host.rawValue, agent: session.agent ?? .claude),
+               isPresented: $confirmingStop) {
+            Button("Stop") { model.openSessions.remoteTabs.stopSession(sessionID: session.id, host: session.host) }
+                .keyboardShortcut(.defaultAction)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if openTab != nil { Text(RemoteCopy.stopWorkingMessage) }
+        }
+    }
+
+    /// A session on a host whose agent still runs there: Stop on <host>,
+    /// and its archive waits for that.
+    private var runsOnHost: Bool {
+        !session.host.isLocal && model.openSessions.remoteTabs.hasRun(sessionID: session.id, host: session.host)
+    }
+
+    /// Stop on <host>: a working agent asks first; one waiting for input,
+    /// or with no tab here, stops at once.
+    private func stopOnHost() {
+        if model.openSessions.remoteTabs.workingTab(host: session.host, sessionID: session.id) != nil {
+            confirmingStop = true
+        } else {
+            model.openSessions.remoteTabs.stopSession(sessionID: session.id, host: session.host)
+        }
     }
 
     private func open() {
@@ -131,10 +157,11 @@ struct SessionRow: View {
             renaming = true
         }
         Button(isPinned ? "Unpin" : "Pin") { model.overlay.togglePin(session.id) }
-        if openTab != nil {
+        if let blocker = model.archiveBlocker(session) {
             // Named rather than merely greyed out, so the menu says what to do
-            // about it — the row would otherwise vanish from under its own tab.
-            Button("Close tab to archive") {}
+            // about it — the row would otherwise vanish from under its own tab
+            // (or, on a host, from under an agent still running there).
+            Button(blocker) {}
                 .disabled(true)
         } else {
             Button("Archive session") { model.archiveSession(session.id, undoManager: undoManager) }
@@ -151,15 +178,22 @@ struct SessionRow: View {
         }
         Button("Show in History") { model.showInHistory(sessionID: session.id) }
         // A session on a host with a live run there: the one-command stop.
-        if !session.host.isLocal, model.openSessions.remoteTabs.hasRun(sessionID: session.id, host: session.host) {
+        if runsOnHost {
             Divider()
-            Button("Stop on \(session.host.rawValue)") {
-                model.openSessions.remoteTabs.stopSession(sessionID: session.id, host: session.host)
-            }
+            Button("Stop on \(session.host.rawValue)") { stopOnHost() }
         }
         if let tab = openTab {
             Divider()
-            Button("Close tab") { model.openSessions.closeTab(tab.id) }
+            if tab.remote != nil {
+                // A tab on a host: Detach leaves the agent running; Close
+                // says what it does to it (a working one asks first).
+                Button(RemoteCopy.detachMenuItem(session.host.rawValue)) {
+                    model.openSessions.remoteTabs.detach(tab.id)
+                }
+                Button(RemoteCopy.closeHostTabMenuItem) { model.openSessions.requestClose(tabID: tab.id) }
+            } else {
+                Button("Close tab") { model.openSessions.closeTab(tab.id) }
+            }
         }
         Divider()
         Picker("", selection: Binding(

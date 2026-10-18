@@ -685,7 +685,9 @@ private struct TabChip: View {
         }
         .buttonStyle(.plain)
         .onHover { closeHovering = $0 }
-        .help("Close tab (⌘W)")
+        // On a host the tag says what closing does to the agent there.
+        .help(tab.kind == .session && tab.remote != nil
+              ? RemoteCopy.closeHostTabHelp(tab.host.rawValue, agent: tab.agent) : "Close tab (⌘W)")
     }
 
     @ViewBuilder
@@ -712,7 +714,14 @@ private struct TabChip: View {
             }
             Divider()
         }
-        Button("Close tab") { model.openSessions.requestClose(tabID: tab.id) }
+        if tab.kind == .session, tab.remote != nil {
+            // A tab on a host: Detach leaves the agent running; Close says
+            // what it does to it (a working one asks first).
+            Button(RemoteCopy.detachMenuItem(tab.host.rawValue)) { model.openSessions.remoteTabs.detach(tab.id) }
+            Button(RemoteCopy.closeHostTabMenuItem) { model.openSessions.requestClose(tabID: tab.id) }
+        } else {
+            Button("Close tab") { model.openSessions.requestClose(tabID: tab.id) }
+        }
         if tab.kind == .session {
             Divider()
             // Warp-style: the swatches ARE the menu row (palette pickers

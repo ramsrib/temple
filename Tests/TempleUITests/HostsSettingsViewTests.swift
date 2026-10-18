@@ -79,7 +79,7 @@ final class HostsSettingsViewTests: XCTestCase {
         window.close()
     }
 
-    /// One "In use" list, whichever source a host came from, by name; the
+    /// One "Added hosts" list, whichever source a host came from, by name; the
     /// caption says where it came from, and an enabled alias the config no
     /// longer names says so, but only once the config has been read. The
     /// owner read "Added in Temple: No hosts added yet." as no hosts while a
@@ -91,12 +91,15 @@ final class HostsSettingsViewTests: XCTestCase {
         XCTAssertEqual(HostsSettingsSection.caption(for: added, configAliases: nil), .summary(added.summary))
         let aliases = ["masterblaster-mentes"]
         XCTAssertEqual(HostsSettingsSection.caption(for: .config("masterblaster-mentes"), configAliases: aliases), .sshConfig)
-        XCTAssertEqual(HostsSettingsSection.Caption.sshConfig.text, "~/.ssh/config")
+        XCTAssertEqual(HostsSettingsSection.Caption.sshConfig.text, "from ~/.ssh/config")
         XCTAssertEqual(HostsSettingsSection.caption(for: .config("jetson-mentes"), configAliases: aliases), .goneFromConfig)
-        XCTAssertEqual(HostsSettingsSection.Caption.goneFromConfig.text, "No longer in ~/.ssh/config")
+        XCTAssertEqual(HostsSettingsSection.Caption.goneFromConfig.text, RemoteCopy.goneFromConfig)
         XCTAssertEqual(HostsSettingsSection.caption(for: .config("jetson-mentes"), configAliases: nil), .sshConfig,
                        "nothing is known missing while the config is read")
-        XCTAssertEqual(HostsSettingsSection.inUseEmpty, "No hosts in use.")
+        XCTAssertEqual(HostsSettingsSection.inUseEmpty, "No hosts yet.")
+        XCTAssertEqual(RemoteCopy.hostsLabel, "Added hosts")
+        XCTAssertEqual(RemoteCopy.removeHostHelp(fromConfig: true), "Removes it from Temple. ~/.ssh/config is not changed.")
+        XCTAssertEqual(RemoteCopy.removeHostHelp(fromConfig: false), "Removes it from Temple.")
     }
 
     /// The sheet's terminal runs the user's ssh itself, nothing wrapped
@@ -141,8 +144,8 @@ final class HostsSettingsViewTests: XCTestCase {
     /// The sheet's terminal is given the app's appearance and applies it
     /// (the terminal runtime's theme follows only an apply, and with no tab
     /// open nothing else had applied it: a white terminal in a dark sheet).
-    /// The terminal is 160 pt; the card's links do not repeat the host and
-    /// its status line is a tertiary caption until a test proves a fault.
+    /// The terminal is 160 pt; the card's sessions link names the host in
+    /// full, and its status line is a caption until a test proves a fault.
     func testTheTestSheetsTerminalAppliesTheAppsAppearance() throws {
         let (app, factory) = try app(records: [.config("box")]) { [] }
         let test = try XCTUnwrap(app.remoteHosts.startTest(for: "box"))
@@ -152,7 +155,7 @@ final class HostsSettingsViewTests: XCTestCase {
         let surface = try XCTUnwrap(factory.created.last)
         XCTAssertEqual(surface.appliedAppearances.first, light)
         XCTAssertEqual(ConnectionTestSheet.terminalHeight, 160)
-        XCTAssertEqual(HostsSettingsSection.sessionsLink, "Sessions\u{2026}")
+        XCTAssertEqual(RemoteCopy.sessionsOnMenuItem("box"), "Running sessions on box\u{2026}")
         XCTAssertEqual(HostStatusLine(text: "Not tested yet.", summary: nil).tone, .caption)
         window.contentView = nil
         window.close()

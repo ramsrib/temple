@@ -57,7 +57,7 @@ public enum RemoteCompletion: String, CaseIterable, Sendable {
     case storageNotice
     /// The working prompt's Stop: the tab closes, or keeps its header.
     case explicitStopOutcome
-    /// "Sessions on <host>" stopped a session with a connected tab.
+    /// "Running sessions on <host>" stopped a session with a connected tab.
     case trackedStopTabOutcome
     /// A close's stop was not confirmed: one notice.
     case closeStopNotice
@@ -75,12 +75,18 @@ public enum RemoteCompletion: String, CaseIterable, Sendable {
     case stageFailure
     /// The launch-time contact: the sidebar's left-running line.
     case contactNotice
-    /// "Sessions on <host>" received its list.
+    /// "Running sessions on <host>" received its list.
     case sheetLoad
-    /// "Sessions on <host>" received a stop's outcome.
+    /// "Running sessions on <host>" received a stop's outcome.
     case sheetStopOutcome
     /// The folder sheet received its check (and may start a session).
     case folderCheckResult
+    /// Remove asked the host what is still running there: the host goes,
+    /// or the alert asks.
+    case removalCheck
+    /// "Stop them and remove": the last stop answered; the host goes, or
+    /// the failures are said.
+    case removalStopOutcome
     // Codex identity (phase 1b)
     /// A new or pending Codex open's answer: spawn, the ended question, or
     /// the session it turned out to be.

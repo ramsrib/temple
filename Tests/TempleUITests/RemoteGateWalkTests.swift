@@ -31,6 +31,8 @@ final class RemoteGateWalkTests: XCTestCase {
         var sessionsSheet: RemoteSessionsSheetModel?
         var folderSheet: RemoteFolderSheetModel?
         var tab: SessionTab?
+        /// Remove's question or its stops answered.
+        var removalAnswered = false
         let hold = Gate()
 
         @MainActor init(host: HostID) throws {
@@ -347,6 +349,26 @@ final class RemoteGateWalkTests: XCTestCase {
                 h.app.openSessions.remoteTabs.decline(Self.candidate, in: tab)
                 await self.settle { !h.remote.declines.isEmpty }
             }, effect: { $0.app.remoteNotice != nil }),
+
+            // Remove (the cold-read round): its question to the host, and
+            // Stop them and remove's last stop.
+            Scenario(completion: .removalCheck, disruptions: noClose, arm: { h in
+                h.remote.tracked = ([RemoteTrackedSession(handle: "h9", sessionID: "s9", agent: .claude,
+                                                          state: .present(attached: false), leftRunning: nil)], true)
+                h.remote.trackedGate = { await h.hold.wait() }
+                h.app.requestRemoveHost(h.host.rawValue) { _ in h.removalAnswered = true }
+                try await Task.sleep(for: .milliseconds(50))
+            }, effect: { $0.removalAnswered }),
+
+            Scenario(completion: .removalStopOutcome, disruptions: noClose, arm: { h in
+                h.remote.runs.append(.init(handle: "h9", sessionID: "s9", resume: true))
+                h.remote.stopGate = { _ in await h.hold.wait() }
+                let removal = RemoteRemoval(name: h.host.rawValue, fromConfig: true, live: [
+                    RemoteTrackedSession(handle: "h9", sessionID: "s9", agent: .claude, state: .present(attached: false),
+                                         leftRunning: nil)])
+                h.app.stopSessionsAndRemoveHost(removal) { _ in h.removalAnswered = true }
+                await self.settle { !h.remote.stops.isEmpty }
+            }, effect: { $0.removalAnswered }),
 
             Scenario(completion: .folderCheckResult, disruptions: tabDisruptions, arm: { h in
                 h.remote.folder = .exists(resolved: "/home/u/new")

@@ -38,6 +38,9 @@ public struct RemoteRun: Equatable, Sendable {
         case stopNotAcknowledged = "stop not acknowledged"
         case anotherClientAttached = "another client attached"
         case quitDeadline = "quit deadline"
+        /// The run's tab was connected when Temple quit (the quit detaches
+        /// every agent on a host and stops none).
+        case detachedAtQuit = "detached at quit"
     }
 
     public var handle: String
@@ -95,7 +98,7 @@ public struct RemoteRun: Equatable, Sendable {
     /// a claim without it is joined again at the next launch.
     public var joinedAt: Date?
     /// The tab of a pending Codex run was closed: it is not restored as a
-    /// chip (it is still listed, and opened, from Sessions on <host>).
+    /// chip (it is still listed, and opened, from Running sessions on <host>).
     public var tabClosedAt: Date?
     /// Something was typed into the run's tab (Return): a pending run that
     /// ends unidentified keeps its question, across relaunches.
@@ -545,6 +548,21 @@ public final class RemoteStateStore: @unchecked Sendable {
                 UPDATE runs SET session_id = NULL, claim = NULL, joined_at = NULL
                 WHERE handle = ? AND session_id = ? AND claim IS NOT NULL
                 """, arguments: [handle, sessionID])
+        }
+    }
+
+    /// "Not this one" on a link Temple made on its own, in one write: the
+    /// claim on `sessionID` goes (the run is pending again), the candidate
+    /// is declined for the run, and a hand-over already written is undone
+    /// (`tab_closed_at`), so the run restores by its handle again.
+    public func unlink(_ handle: String, sessionID: String, rolloutPath: String) throws {
+        try queue.write { database in
+            try database.execute(sql: """
+                UPDATE runs SET session_id = NULL, claim = NULL, joined_at = NULL, tab_closed_at = NULL
+                WHERE handle = ? AND session_id = ? AND claim IS NOT NULL
+                """, arguments: [handle, sessionID])
+            try database.execute(sql: "INSERT OR IGNORE INTO declined_candidates (handle, rollout_path) VALUES (?, ?)",
+                                 arguments: [handle, rolloutPath])
         }
     }
 

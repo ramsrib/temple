@@ -18,12 +18,30 @@ public struct RemoteNotice: Equatable, Identifiable {
     public init(host: HostID, message: String, kind: Kind) {
         self.host = host; self.message = message; self.kind = kind
     }
+
+    /// The line says a session is (or may be) still running there: orange.
+    public var saysStillRunning: Bool {
+        if case .count = kind { return true }
+        return message.hasSuffix(RemoteCopy.mayStillBeRunning)
+    }
 }
 
-/// "Sessions on <host>" for one host.
+/// "Running sessions on <host>" for one host.
 public struct RemoteSessionsRequest: Identifiable, Equatable {
     public let id = UUID()
     public let host: HostID
+}
+
+/// Remove found Temple-started sessions still running on the host it is
+/// about to remove (either kind of host): the alert asks whether to leave
+/// them running or stop them first.
+public struct RemoteRemoval: Identifiable, Equatable {
+    public let id = UUID()
+    public let name: String
+    /// The host came from `~/.ssh/config` (the file is not changed).
+    public let fromConfig: Bool
+    /// Running, in a tab here or not.
+    public let live: [RemoteTrackedSession]
 }
 
 /// The folder sheet for a new session on a host.
@@ -53,11 +71,29 @@ extension AppModel {
             || row.transcriptPath != nil || row.joinedVia != .created
     }
 
+    /// Why a sidebar row's Archive is disabled, said in its place: its tab
+    /// is open, or (on a host) its agent still runs there. Nil: it can be
+    /// archived.
+    public func archiveBlocker(_ session: Session) -> String? {
+        if openSessions.openTab(forSessionID: session.id) != nil { return "Close tab to archive" }
+        if !session.host.isLocal, openSessions.remoteTabs.hasRun(sessionID: session.id, host: session.host) {
+            return RemoteCopy.stopToArchive(session.host.rawValue)
+        }
+        return nil
+    }
+
     /// Hosts a new session can start on: every enabled host whose last
-    /// test did not prove tmux missing, in the order they were added.
+    /// test did not prove tmux missing or older than 3.2 (the tmux rule),
+    /// in the order they were added.
     public var remoteLaunchHosts: [HostID] {
-        remoteHosts.registeredHosts.filter { !(remoteHosts.summaries[$0.name]?.provesTmuxMissing ?? false) }
+        remoteHosts.registeredHosts.filter { !(remoteHosts.summaries[$0.name]?.provesTmuxUnusable ?? false) }
             .map(\.host).filter { remoteHost($0) != nil }
+    }
+
+    /// The tmux rule's line for a host, when its last test proved no
+    /// session can start there; nil otherwise.
+    public func remoteTmuxProblem(_ host: HostID) -> String? {
+        remoteHosts.summaries[host.rawValue]?.tmuxProblem
     }
 
     /// The sidebar's Show: the sheet for that host. A count line is then
@@ -84,22 +120,92 @@ extension AppModel {
         }
     }
 
-    /// At launch, a host with sessions flagged left running (whose line has
-    /// not been shown) is asked about each of them, on its own pinned
-    /// server; when the host answers, the line says how many are still left
-    /// running. Nothing is stopped: a contact only asks.
+    /// At launch, a host with flagged sessions (whose line has not been
+    /// shown) is asked about each of them, on its own pinned server: those
+    /// a close left running, and those whose tab was connected when Temple
+    /// quit (the launch notice). When the host answers, the line says how
+    /// many of each are still running there, once; Running sessions… or ×
+    /// marks them seen. Nothing is stopped: a contact only asks.
     func contactHostsWithSessionsLeftRunning() {
         for host in remoteHosts.registeredHosts.map(\.host) {
             guard let launcher = remoteHost(host) else { continue }
             let ticket = openSessions.remoteTabs.gate.ticket(host: host)
             openSessions.remoteTabs.operations.run(host: host, .query) { [weak self] in
-                let count = await launcher.contactLeftRunning()
+                let counts = await launcher.contactLeftRunning()
                 guard let self, self.openSessions.remoteTabs.gate.admit(.contactNotice, ticket),
-                      let count, count > 0, self.remoteNotice == nil else { return }
-                self.remoteNotice = RemoteNotice(host: host, message: RemoteCopy.leftRunningCount(count, host: host.rawValue),
-                                                 kind: .count(count))
+                      let counts, counts.closed + counts.quit > 0, self.remoteNotice == nil else { return }
+                let lines = [counts.closed > 0 ? RemoteCopy.leftRunningCount(counts.closed, host: host.rawValue) : nil,
+                             counts.quit > 0 ? RemoteCopy.quitCount(counts.quit, host: host.rawValue) : nil]
+                self.remoteNotice = RemoteNotice(host: host, message: lines.compactMap { $0 }.joined(separator: " "),
+                                                 kind: .count(counts.closed + counts.quit))
             }
         }
+    }
+
+    // MARK: Removing a host
+
+    /// Remove, either kind of host: the host is asked what Temple started
+    /// there first. None running, or a host that doesn't answer: removed at
+    /// once (`completion(nil)`). Otherwise the running ones, for the alert.
+    /// Nothing is removed while the question is out.
+    public func requestRemoveHost(_ name: String, completion: @escaping @MainActor (RemoteRemoval?) -> Void) {
+        guard let record = remoteHosts.record(named: name) else { return }
+        guard let launcher = remoteHost(record.host) else {
+            remoteHosts.remove(name)
+            completion(nil)
+            return
+        }
+        let ticket = openSessions.remoteTabs.gate.ticket(host: record.host)
+        openSessions.remoteTabs.operations.run(host: record.host, .query) { [weak self] in
+            let answer = await launcher.trackedSessions()
+            guard let self, self.openSessions.remoteTabs.gate.admit(.removalCheck, ticket) else { return }
+            let live = answer.checked ? answer.sessions.filter { if case .present = $0.state { true } else { false } } : []
+            guard !live.isEmpty else {
+                self.remoteHosts.remove(name)
+                completion(nil)
+                return
+            }
+            completion(RemoteRemoval(name: name, fromConfig: record.source == .config, live: live))
+        }
+    }
+
+    /// "Remove, leave them running": the host goes; its connected tabs are
+    /// detached (retiring the host does that), and the agents keep running
+    /// there, out of Temple's reach until the host is added again.
+    public func removeHostLeavingSessions(_ removal: RemoteRemoval) {
+        remoteHosts.remove(removal.name)
+    }
+
+    /// "Stop them and remove": each running session is stopped (no
+    /// confirmation per session), then the host goes. A stop that fails
+    /// keeps the host, and `completion` gets what the failures say (empty:
+    /// removed).
+    public func stopSessionsAndRemoveHost(_ removal: RemoteRemoval,
+                                          completion: @escaping @MainActor ([String]) -> Void) {
+        guard let record = remoteHosts.record(named: removal.name) else { return }
+        let host = record.host
+        var remaining = removal.live.count
+        var failures: [String] = []
+        let ticket = openSessions.remoteTabs.gate.ticket(host: host)
+        for session in removal.live {
+            let title = trackedTitle(session)
+            openSessions.remoteTabs.stopTracked(handle: session.handle, host: host, agent: session.agent) { [weak self] result in
+                remaining -= 1
+                if let line = RemoteCopy.stopFailure(result, host: host.rawValue, agent: session.agent, title: title) {
+                    failures.append(line)
+                }
+                guard remaining == 0, let self, self.openSessions.remoteTabs.gate.admit(.removalStopOutcome, ticket) else { return }
+                if failures.isEmpty { self.remoteHosts.remove(removal.name) }
+                completion(failures)
+            }
+        }
+    }
+
+    /// A tracked session's name as Running sessions shows it: its row's
+    /// title, or the new-session title.
+    public func trackedTitle(_ session: RemoteTrackedSession) -> String {
+        guard let id = session.sessionID else { return session.agent.newSessionTitle }
+        return sessions.first(where: { $0.id == id })?.displayTitle ?? session.agent.newSessionTitle
     }
 
     func sessionsSheetModel(_ request: RemoteSessionsRequest) -> RemoteSessionsSheetModel {
@@ -110,6 +216,8 @@ extension AppModel {
     func folderSheetModel(_ request: RemoteFolderRequest) -> RemoteFolderSheetModel {
         RemoteFolderSheetModel(request: request, openSessions: openSessions,
                                launcher: { [weak self] in self?.remoteHost(request.host) },
+                               startTest: { [weak self] in self?.remoteHosts.startTest(for: request.host.rawValue) },
+                               tmuxProblem: { [weak self] in self?.remoteTmuxProblem(request.host) },
                                start: { [weak self] folder in
                                    guard let self, self.remoteFolderSheet?.id == request.id else { return }
                                    self.startRemoteSession(host: request.host, agent: request.agent, folder: folder)

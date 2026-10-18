@@ -127,7 +127,7 @@ final class AddHostSheetTests: XCTestCase {
         inUse.text = "box"
         inUse.submit()
         XCTAssertNil(inUse.outcome, "the sheet stays")
-        XCTAssertEqual(inUse.note, "box is already in use.")
+        XCTAssertEqual(inUse.note, "box is already added.")
         inUse.text = "box2"
         XCTAssertNil(inUse.note, "typing clears it")
 
@@ -171,7 +171,7 @@ final class AddHostSheetTests: XCTestCase {
         inUse.text = "jetson"
         inUse.submit()
         XCTAssertNil(inUse.outcome)
-        XCTAssertEqual(inUse.note, "Jetson is already in use.")
+        XCTAssertEqual(inUse.note, "Jetson is already added.")
     }
 
     /// Return while the config is still being read waits for the read, so
@@ -244,7 +244,7 @@ final class AddHostSheetTests: XCTestCase {
     }
 
     /// Esc is Cancel: nothing is added, and an ended sheet ends once.
-    /// Enter details… opens an empty form, Edit ~/.ssh/config the file.
+    /// Add host by address… opens an empty form, Open ~/.ssh/config the file.
     func testCancelAddsNothing() {
         let model = hosts { ["box"] }
         let sheet = open(model)
@@ -260,8 +260,8 @@ final class AddHostSheetTests: XCTestCase {
         edit.editConfig()
         XCTAssertEqual(edit.outcome, .editConfig)
         XCTAssertEqual(RemoteCopy.addHostNotInConfig, "Not in ~/.ssh/config?")
-        XCTAssertEqual(RemoteCopy.addHostEnterDetails, "Enter details\u{2026}")
-        XCTAssertEqual(RemoteCopy.addHostEditConfig, "Edit ~/.ssh/config")
+        XCTAssertEqual(RemoteCopy.addHostEnterDetails, "Add host by address\u{2026}")
+        XCTAssertEqual(RemoteCopy.addHostEditConfig, "Open ~/.ssh/config")
     }
 
     /// With no alias to offer the sheet says why, under the field: none in
@@ -272,7 +272,7 @@ final class AddHostSheetTests: XCTestCase {
         XCTAssertEqual(empty.shown, [])
 
         let all = open(hosts(records: [.config("box")]) { ["box"] })
-        XCTAssertEqual(all.emptyNote, "Every host in ~/.ssh/config is in use.")
+        XCTAssertEqual(all.emptyNote, "Every host in ~/.ssh/config is already added.")
     }
 
     /// Opening the sheet runs nothing: no `ssh -G`, whose `Match exec`

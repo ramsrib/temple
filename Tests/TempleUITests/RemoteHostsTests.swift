@@ -168,15 +168,15 @@ final class RemoteHostsTests: XCTestCase {
     func testAvailabilityComesOnlyFromAProvenFailure() throws {
         let defaults = enabledDefaults([added])
         let hosts = RemoteHostsModel(defaults: defaults, readConfigAliases: { [] })
-        XCTAssertEqual(hosts.statusLine(for: "added-box"), "Not tested yet. Test the connection to check this host.")
+        XCTAssertEqual(hosts.statusLine(for: "added-box"), HostTestSummary.notTested)
         hosts.recordSummary(HostTestSummary(failure: .other(firstLine: "ssh: connect to host 10.0.0.2 port 2222: Connection refused")),
                             for: "added-box")
         XCTAssertEqual(hosts.availability(of: "added-box", agent: .claude), .available, "couldn't connect proves nothing")
         XCTAssertEqual(hosts.statusLine(for: "added-box"), "Couldn't connect: ssh: connect to host 10.0.0.2 port 2222: Connection refused.")
         hosts.recordSummary(HostTestSummary(connectedAs: "me@10.0.0.2", claude: .missing, tmux: .missing), for: "added-box")
-        XCTAssertEqual(hosts.availability(of: "added-box", agent: .claude), .unavailable(reason: "No claude on PATH."))
+        XCTAssertEqual(hosts.availability(of: "added-box", agent: .claude), .unavailable(reason: "No claude command on PATH."))
         XCTAssertEqual(hosts.availability(of: "added-box", agent: .codex),
-                       .unavailable(reason: "No tmux on this host. Install tmux 3.2 or newer to start sessions here."))
+                       .unavailable(reason: "No tmux on this host: sessions can't start here until tmux 3.2 or newer is installed."))
         hosts.save(added, editing: "added-box")
         XCTAssertEqual(hosts.availability(of: "added-box", agent: .claude), .available)
         XCTAssertEqual(hosts.statusLine(for: "added-box"), HostTestSummary.notTested)

@@ -343,59 +343,75 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(joins.map(\.id), ["c7"])
     }
 
-    /// A wrong link is corrected with Discard: the agent is stopped first
-    /// (no orphan), then the session's runs are dismissed and its row let
-    /// go; a stop Temple can't confirm keeps everything and says so.
-    func testDiscardCorrectsAWrongLink() async throws {
-        var discards: [String] = []
-        model.remoteTabs.discardHandler = { id, _, _, _ in discards.append(id) }
-        model.remoteTabs.rowIncarnation = { _ in "inc" }
+    /// A wrong link is undone with Not this one (the cold-read round): the
+    /// claim on that id is released and the candidate declined in one
+    /// write, the row the link made is archived (reversibly), and the tab
+    /// goes back to the question without that candidate. Nothing is
+    /// stopped: the agent keeps running, its client attached.
+    func testNotThisOneOnALinkReturnsToTheQuestionAndKeepsTheAgentRunning() async throws {
+        var archived: [String] = []
+        model.remoteTabs.unlinkHandler = { id, _ in archived.append(id) }
+        remote.excludesDeclined = true
         remote.suggestionsResult = .candidates([suggestion()])
         let tab = await newCodex()
         model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
         await settle(tab.remote?.linkedOnItsOwn == true)
+        XCTAssertEqual(tab.sessionID, "c7")
+        XCTAssertEqual(tab.remote?.linkedSuggestion?.sessionID, "c7")
         let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
-        model.remoteTabs.discard(tab)
-        XCTAssertFalse(model.tabs.contains { $0 === tab })
-        XCTAssertTrue(surface.didTerminate, "Temple's client goes first")
-        await settle(self.remote.stops.map(\.handle) == ["p1"], "the agent is stopped")
-        await settle(self.remote.stoppedRunDismissals == ["p1"], "that run alone is dismissed")
-        XCTAssertTrue(remote.discarded.isEmpty, "never every run of the session")
-        await settle(discards == ["c7"], "the row is let go (or archived) under its membership")
-
-        remote.stopResult = .leftRunning(.anotherClientAttached, detail: nil)
-        remote.suggestionsResult = .candidates([suggestion("c9")])
-        let second = await newCodex()
-        model.surfaceDidSubmitInput(try XCTUnwrap(second.surface))
-        await settle(second.remote?.linkedOnItsOwn == true)
-        model.remoteTabs.discard(second)
-        await settle(self.notices.count == 1, "left running, said")
-        try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(remote.stoppedRunDismissals, ["p1"], "kept and listed: nothing dismissed")
-        XCTAssertEqual(discards, ["c7"])
+        // A second candidate turned up meanwhile.
+        remote.suggestionsResult = .candidates([suggestion(), suggestion("c8")])
+        model.remoteTabs.unlink(tab)
+        XCTAssertNil(tab.sessionID, "the tab is unidentified again")
+        XCTAssertTrue(tab.isProvisional)
+        XCTAssertEqual(tab.remote?.linkedOnItsOwn, false)
+        XCTAssertEqual(archived, ["c7"], "the row the link made is archived (History restores it)")
+        XCTAssertTrue(model.tabs.contains { $0 === tab }, "the tab stays")
+        XCTAssertFalse(surface.didTerminate, "its client stays attached")
+        await settle(self.remote.unlinks.map(\.sessionID) == ["c7"], "released and declined in one write")
+        XCTAssertEqual(remote.unlinks.first?.path, suggestion().rolloutPath)
+        await settle(tab.remote?.suggestions.map(\.sessionID) == ["c8"], "back to the question, without c7")
+        XCTAssertTrue(remote.stops.isEmpty, "the agent keeps running")
+        XCTAssertNil(tab.remote?.identityNote)
+        XCTAssertFalse(persistence.load().contains { $0.sessionID == "c7" }, "no saved tab of c7")
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(remote.automaticConfirms.count, 1, "never linked on its own again for this run")
     }
 
-    /// The session is reopened while Discard's stop completes: a newer live
-    /// run exists, so nothing is dismissed and the row stays (the store
-    /// checks in the dismissal's own transaction).
-    func testDiscardKeepsASessionReopenedDuringItsStop() async throws {
-        var discards: [String] = []
-        model.remoteTabs.discardHandler = { id, _, _, _ in discards.append(id) }
-        model.remoteTabs.rowIncarnation = { _ in "inc" }
+    /// Not this one with no candidate left: the tab says Temple couldn't
+    /// tell (it keeps working, unidentified), with Try again.
+    func testNotThisOneWithNothingLeftSaysTempleCouldNotTell() async throws {
+        remote.excludesDeclined = true
         remote.suggestionsResult = .candidates([suggestion()])
         let tab = await newCodex()
         model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
         await settle(tab.remote?.linkedOnItsOwn == true)
-        let hold = Gate()
-        remote.stopGate = { _ in await hold.wait() }
-        model.remoteTabs.discard(tab)
-        await settle(self.remote.stops.count == 1)
-        // Reopened from its row meanwhile: a new live run of c7.
-        remote.runs.append(.init(handle: "h9", sessionID: "c7", resume: true))
-        await hold.open()
-        try await Task.sleep(for: .milliseconds(200))
-        XCTAssertTrue(remote.stoppedRunDismissals.isEmpty, "the newer run keeps the session")
-        XCTAssertTrue(discards.isEmpty, "its row stays")
+        model.remoteTabs.unlink(tab)
+        await settle(tab.remote?.identityNote == RemoteCopy.couldNotTell, "couldn't tell, with Try again")
+        XCTAssertEqual(tab.remote?.suggestions, [])
+        XCTAssertTrue(tab.hasLiveProcess)
+        XCTAssertTrue(remote.stops.isEmpty)
+        // The last candidate declined by hand says the same.
+        remote.suggestionsResult = .candidates([suggestion("c8"), suggestion("c9")])
+        let second = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(second.surface))
+        await settle(second.remote?.suggestions.count == 2)
+        for candidate in second.remote?.suggestions ?? [] { model.remoteTabs.decline(candidate, in: second) }
+        XCTAssertEqual(second.remote?.identityNote, RemoteCopy.couldNotTell)
+    }
+
+    /// Not this one's write that fails is said once; the tab is still
+    /// unidentified (the run is checked again when it is activated).
+    func testNotThisOneThatCannotBeWrittenIsSaid() async throws {
+        remote.suggestionsResult = .candidates([suggestion()])
+        remote.unlinkError = CocoaError(.fileWriteUnknown)
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(tab.remote?.linkedOnItsOwn == true)
+        model.remoteTabs.unlink(tab)
+        await settle(self.notices.count == 1)
+        XCTAssertTrue(notices.first?.hasPrefix("Temple couldn't save its record of this session on box") == true)
+        XCTAssertNil(tab.sessionID)
     }
 
     /// An automatic yes that can't be written says why and asks: it is not
@@ -1016,7 +1032,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         remote.dismissRunError = CocoaError(.fileWriteUnknown)
         model.closeTab(try XCTUnwrap(model.tabs.first).id)
         await settle(self.notices.count == 1)
-        XCTAssertTrue(notices.first?.hasPrefix("Temple couldn't save what happened") == true)
+        XCTAssertTrue(notices.first?.hasPrefix("Temple couldn't save its record of") == true)
     }
 
     // MARK: Restore, Start a new session, Discard, reconciliation
@@ -1086,42 +1102,80 @@ final class RemoteCodexIdentityTests: XCTestCase {
 
     // MARK: Copy
 
-    /// The "left running" notice and the sheet's line come from one place;
-    /// no user-facing remote copy carries an em-dash.
+    /// The cold-read round's copy (docs/designs/remote-ssh.md, "Cold-read
+    /// round"): every label says what it does, one name per thing, and no
+    /// user-facing remote copy carries an em-dash.
     func testTheCopyIsOneSourceAndHasNoEmDash() {
-        for reason in [RemoteLeftRunningReason.hostDidNotAnswer, .anotherClientAttached] {
-            XCTAssertTrue(RemoteCopy.leftRunning("box", agent: .codex, reason: reason, detail: nil)
-                .hasPrefix(RemoteCopy.leftRunningLine("box", reason: reason)))
-        }
-        XCTAssertEqual(RemoteCopy.noTrackedSessions, "No sessions started from Temple.")
-        XCTAssertEqual(RemoteCopy.stillWorkingMessage, "Detach leaves it running; Stop ends it.")
-        // Sessions on <host> in the app's words; the tmux name is a tooltip.
-        XCTAssertEqual(RemoteCopy.trackedState(.present(attached: true), openHere: true), "In a tab")
+        // A notice names the session; the sheet's line explains.
+        XCTAssertEqual(RemoteCopy.leftRunning("box", session: "\u{201C}Fix it\u{201D}", reason: .hostDidNotAnswer, detail: nil),
+                       "\u{201C}Fix it\u{201D} wasn't stopped: box didn't answer when you closed its tab. It may still be running.")
+        XCTAssertEqual(RemoteCopy.leftRunning("box", session: "the new Codex session in temple", reason: .anotherClientAttached,
+                                              detail: nil),
+                       "The new Codex session in temple wasn't stopped: another terminal is attached to it. It may still be running.")
+        XCTAssertEqual(RemoteCopy.leftRunning("box", session: "\u{201C}Fix it\u{201D}", reason: .stopNotAcknowledged, detail: nil),
+                       "Temple couldn't stop \u{201C}Fix it\u{201D} on box: the host didn't confirm the stop. It may still be running.")
+        XCTAssertEqual(RemoteCopy.sessionName(title: "New Codex session", agent: .codex, directory: "/home/u/temple"),
+                       "the new Codex session in temple")
+        XCTAssertEqual(RemoteCopy.sessionName(title: "Fix it", agent: .codex, directory: "/home/u/temple"), "\u{201C}Fix it\u{201D}")
+        XCTAssertEqual(RemoteCopy.unrecorded("box", detail: "disk full."),
+                       "Temple couldn't save its record of this session on box (disk full), so what it shows for this session may be out of date.")
+        XCTAssertEqual(RemoteCopy.leftRunningLine("box", reason: .hostDidNotAnswer), "Left running: box didn't answer when you closed it.")
+        XCTAssertEqual(RemoteCopy.notStoppedLine(.hostDidNotAnswer, detail: "no answer"), "Not stopped: no answer. It may still be running.")
+        XCTAssertEqual(RemoteCopy.notStoppedLine(.anotherClientAttached, detail: nil), "Not stopped: another terminal is attached to it.")
+        XCTAssertEqual(RemoteCopy.noTrackedSessions, "No running sessions started from Temple.")
+        XCTAssertEqual(RemoteCopy.stillWorkingMessage("box"), "Detach leaves it running on box; Stop ends it.")
+        // Running sessions on <host>: states, never imperatives.
+        XCTAssertEqual(RemoteCopy.trackedState(.present(attached: true), openHere: true), "Running in a tab")
         XCTAssertEqual(RemoteCopy.trackedState(.present(attached: true), openHere: false), "Running",
                        "another client attached is not this Temple")
         XCTAssertEqual(RemoteCopy.trackedState(.present(attached: false), openHere: false), "Running")
-        XCTAssertEqual(RemoteCopy.trackedState(.unknown("no answer"), openHere: false), "Unknown")
+        XCTAssertEqual(RemoteCopy.trackedState(.unknown("no answer"), openHere: false), "Status unknown")
         XCTAssertEqual(RemoteCopy.trackedHandleHelp("f87e"), "tmux session temple-f87e")
-        XCTAssertEqual(RemoteCopy.sessionsOnMenuItem("box"), "Sessions on box\u{2026}")
+        // One name for the sheet everywhere, never shortened.
+        XCTAssertEqual(RemoteCopy.sessionsOn("box"), "Running sessions on box")
+        XCTAssertEqual(RemoteCopy.sessionsOnMenuItem("box"), "Running sessions on box\u{2026}")
         XCTAssertEqual(RemoteCopy.folderFieldLabel, "Folder")
+        XCTAssertEqual(RemoteCopy.leftRunningCount(1, host: "box"), "A session you closed is still running on box.")
+        XCTAssertEqual(RemoteCopy.leftRunningCount(3, host: "box"), "3 sessions you closed are still running on box.")
+        XCTAssertEqual(RemoteCopy.quitCount(3, host: "box"), "3 sessions from before you quit are running on box.")
+        XCTAssertEqual(RemoteCopy.quitCount(1, host: "box"), "A session from before you quit is running on box.")
+        // Discard says which, per row; nothing is stopped.
+        XCTAssertEqual(RemoteCopy.discardLabel(archives: false), "Remove from Temple")
+        XCTAssertEqual(RemoteCopy.discardLabel(archives: true), "Archive session")
+        XCTAssertTrue(RemoteCopy.discardHelp(archives: true).hasSuffix("Nothing is running on the host to stop."))
+        XCTAssertTrue(RemoteCopy.discardHelp(archives: false).hasSuffix("Nothing is running on the host to stop."))
+        // Detach and close, at the point of action.
+        XCTAssertEqual(RemoteCopy.detachMenuItem("box"), "Detach from box (keeps running)")
+        XCTAssertEqual(RemoteCopy.closeHostTabMenuItem, "Close tab (stops the agent if it is waiting for input)")
+        XCTAssertEqual(RemoteCopy.closeHostTabHelp("box", agent: .claude),
+                       "Close tab. Stops Claude Code on box if it is waiting for input; asks first if it is working.")
+        XCTAssertEqual(RemoteCopy.stopWorkingTitle("box", agent: .codex), "Codex is working on box. Stop it?")
+        XCTAssertEqual(RemoteCopy.workingCLIRefusal("box"),
+                       "Its agent is working on box. Pass --force to detach it (it keeps running), or stop it in Temple.")
+        // Remove, singular and plural.
+        XCTAssertEqual(RemoteCopy.removalTitle(1, host: "box"), "A session is still running on box.")
+        XCTAssertEqual(RemoteCopy.removalTitle(2, host: "box"), "2 sessions are still running on box.")
+        XCTAssertEqual(RemoteCopy.removalLeave(2), "Remove, leave them running")
+        XCTAssertEqual(RemoteCopy.removalStop(1), "Stop it and remove")
+        XCTAssertTrue(RemoteCopy.removalMessage(2, fromConfig: true).hasSuffix(" ~/.ssh/config is not changed."))
+        XCTAssertFalse(RemoteCopy.removalMessage(2, fromConfig: false).contains("ssh/config"))
         let unread = RemoteSuggestion(rolloutPath: "/r", sessionID: "x", firstPrompt: nil, startedAt: Date(),
                                       directory: "/w", promptKnown: false)
         XCTAssertTrue(RemoteCopy.suggestionQuestion(unread).hasPrefix("Is this the session? First prompt unreadable, started "))
         XCTAssertFalse(RemoteCopy.suggestionQuestion(unread).contains("No prompt yet"))
         XCTAssertEqual(RemoteCopy.linkedOnItsOwn(suggestion()),
-                       "Linked to \u{201C}reply with the word ok\u{201D}, the only Codex session started in this folder since this tab opened. "
-                       + "If that\u{2019}s wrong, Discard stops it and removes it from Temple.")
+                       "Linked this tab to \u{201C}reply with the word ok\u{201D}, the only Codex session started in this folder since the tab opened.")
         let noon = Calendar.current.date(bySettingHour: 15, minute: 12, second: 0, of: Date())!
         let timed = RemoteSuggestion(rolloutPath: "/r", sessionID: "x", firstPrompt: nil, startedAt: noon, directory: "/w")
         XCTAssertEqual(RemoteCopy.linkedOnItsOwn(timed, now: noon),
-                       "Linked to the Codex session started \(RemoteCopy.startTime(noon, now: noon)), the only one started in this folder since this tab opened. "
-                       + "If that\u{2019}s wrong, Discard stops it and removes it from Temple.")
-        XCTAssertEqual(RemoteCopy.noDaemonHint,
-                       "With --no-daemon in Codex's arguments above, Temple identifies each new Codex session on a host by itself.")
-        XCTAssertEqual(RemoteCopy.stillWorking("box", agent: .codex), "Codex is running on box.")
-        XCTAssertEqual(RemoteCopy.stillWorking("box", agent: .claude), "Claude Code is running on box.")
+                       "Linked this tab to the Codex session started \(RemoteCopy.startTime(noon, now: noon)), the only one started in this folder since the tab opened.")
+        XCTAssertTrue(RemoteCopy.noDaemonHint(enabled: false).hasPrefix("Add --no-daemon to Codex's arguments above"))
+        XCTAssertTrue(RemoteCopy.noDaemonHint(enabled: true).hasPrefix("Codex's arguments include --no-daemon"))
+        XCTAssertEqual(RemoteCopy.stillWorking("box", agent: .codex), "Codex is working on box.")
+        XCTAssertEqual(RemoteCopy.stillWorking("box", agent: .claude), "Claude Code is working on box.")
         // Candidates whose prompts read the same are told apart by when they
-        // started after the tab opened; the clock time otherwise.
+        // started after the tab opened; the clock time otherwise. The folder
+        // is the candidate's full path.
         let opened = Date(timeIntervalSince1970: 1_800_000_000)
         func started(_ seconds: TimeInterval, hostAhead: TimeInterval? = 0) -> RemoteSuggestion {
             RemoteSuggestion(rolloutPath: "/r/\(seconds)", sessionID: "x", firstPrompt: "hi",
@@ -1129,9 +1183,9 @@ final class RemoteCodexIdentityTests: XCTestCase {
                              hostClockOffset: hostAhead)
         }
         XCTAssertEqual(RemoteCopy.suggestionQuestion(started(4.2), tabOpenedAt: opened),
-                       "Is this the session? \u{201C}hi\u{201D}, started in temple-r2 4 s after this tab opened.")
+                       "Is this the session? \u{201C}hi\u{201D}, started in /w/temple-r2 4 s after this tab opened.")
         XCTAssertEqual(RemoteCopy.suggestionQuestion(started(-2), tabOpenedAt: opened),
-                       "Is this the session? \u{201C}hi\u{201D}, started in temple-r2 as this tab opened.",
+                       "Is this the session? \u{201C}hi\u{201D}, started in /w/temple-r2 as this tab opened.",
                        "a clock a little apart is not a start before the open")
         XCTAssertTrue(RemoteCopy.suggestionQuestion(started(70), tabOpenedAt: opened).contains("temple-r2 1 min after this tab opened"))
         XCTAssertTrue(RemoteCopy.suggestionQuestion(started(150), tabOpenedAt: opened).contains("temple-r2 3 min after this tab opened"))
@@ -1146,19 +1200,22 @@ final class RemoteCodexIdentityTests: XCTestCase {
             .contains("temple-r2 4 s after this tab opened"), "a host 10 min behind")
         XCTAssertFalse(RemoteCopy.suggestionQuestion(started(4, hostAhead: nil), tabOpenedAt: opened)
             .contains("after this tab opened"), "no offset: the clock time")
-        let copy = [RemoteCopy.codexEndedPending("box"), RemoteCopy.couldNotTell, RemoteCopy.noDaemonHint,
-                    RemoteCopy.linkedOnItsOwn(suggestion()), RemoteCopy.discardLinkedHelp("box"),
-                    RemoteCopy.quitLine(["box", "jet"]),
+        let copy = [RemoteCopy.codexEndedPending("box"), RemoteCopy.couldNotTell, RemoteCopy.noDaemonHint(enabled: true),
+                    RemoteCopy.noDaemonHint(enabled: false), RemoteCopy.codexQuestionLeadIn,
+                    RemoteCopy.linkedOnItsOwn(suggestion()), RemoteCopy.quitLine(["box", "jet"]),
+                    RemoteCopy.quitTitle(workingCount: 1), RemoteCopy.quitMessage(workingCount: 2),
                     RemoteCopy.codexEndedQuestion("box", suggestion: suggestion()),
                     RemoteCopy.endedScreenNotKept("box", agent: .codex), RemoteCopy.sessionsOn("box"),
-                    RemoteCopy.stillWorking("box", agent: .codex), RemoteCopy.stillWorkingMessage,
-                    RemoteCopy.resumeAnyway("box"),
+                    RemoteCopy.stillWorking("box", agent: .codex), RemoteCopy.stillWorkingMessage("box"),
+                    RemoteCopy.resumeAnyway("box"), RemoteCopy.scrollingNote, RemoteCopy.notSetUp("box"),
                     RemoteCopy.startNewPending("box"), RemoteCopy.stopHint("box"), RemoteCopy.discardHelp(archives: true),
-                    RemoteCopy.discardHelp(archives: false), RemoteCopy.discardPendingHelp("box"),
+                    RemoteCopy.discardHelp(archives: false), RemoteCopy.goneFromConfig, RemoteCopy.hostFormNameNote,
+                    RemoteCopy.hostFormEditHint, RemoteCopy.cancelConnectingHelp, RemoteCopy.startWithoutCheckingHelp,
                     RemoteCopy.suggestionQuestion(suggestion()), RemoteCopy.noTrackedSessions,
-                    RemoteCopy.leftRunning("box", agent: .codex, reason: .hostDidNotAnswer, detail: nil),
+                    RemoteCopy.leftRunning("box", session: "x", reason: .hostDidNotAnswer, detail: nil),
                     RemoteCopy.leftRunningLine("box", reason: .quitDeadline), RemoteCopy.disconnected("box"),
-                    RemoteCopy.unknown("box", agent: .codex, reason: "x"), RemoteCopy.stillConnecting("box")]
+                    RemoteCopy.unknown("box", agent: .codex, reason: "x"), RemoteCopy.stillConnecting("box"),
+                    RemoteCopy.removalMessage(1, fromConfig: true), RemoteCopy.closeHostTabHelp("box", agent: .codex)]
         for line in copy { XCTAssertFalse(line.contains("\u{2014}"), line) }
     }
 }

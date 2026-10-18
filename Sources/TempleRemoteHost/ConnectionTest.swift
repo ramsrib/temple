@@ -194,7 +194,7 @@ public final class ConnectionTest: ObservableObject, Identifiable {
         // the host is what proves the connection.
         guard environment.reachedHost else {
             rows.removeAll { $0.id == "shell" }
-            finish(failure: .unconfirmed(environment.problem ?? "no answer"))
+            finish(failure: .unconfirmed(environment.problem ?? "no answer", host: record.name))
             return
         }
         connectionConfirmed = true
@@ -204,24 +204,24 @@ public final class ConnectionTest: ObservableObject, Identifiable {
                     output: path))
         } else {
             set(Row(id: "shell", verdict: .problem,
-                    line: "Couldn't read the login shell's PATH: \(environment.problem ?? "no answer"); using ssh's default environment.",
+                    line: HostTestSummary.pathUnread(environment.problem),
                     output: environment.problem ?? "The login shell printed no PATH."))
         }
         let exec = makeExec(connection, environment.path)
 
-        set(Row(id: "claude", verdict: .running, line: "claude: checking…"))
+        set(Row(id: "claude", verdict: .running, line: "\(Agent.claude.displayName): checking…"))
         let claude = await ToolCheck.run("claude", using: exec)
         if Task.isCancelled { return }
         summaryDraft.claude = claude
         set(Self.row("claude", claude, path: environment.path))
 
-        set(Row(id: "codex", verdict: .running, line: "codex: checking…"))
+        set(Row(id: "codex", verdict: .running, line: "\(Agent.codex.displayName): checking…"))
         let codex = await ToolCheck.run("codex", using: exec)
         if Task.isCancelled { return }
         summaryDraft.codex = codex
         set(Self.row("codex", codex, path: environment.path))
 
-        set(Row(id: "tmux", verdict: .running, line: "tmux: running the detached check…"))
+        set(Row(id: "tmux", verdict: .running, line: "tmux: checking it can start a session…"))
         let (tmux, tmuxShown) = await TmuxCheck.runShowing(nonce: RemoteQuoting.nonce(), using: exec)
         if Task.isCancelled { return }
         summaryDraft.tmux = tmux
@@ -265,34 +265,39 @@ public final class ConnectionTest: ObservableObject, Identifiable {
     /// Every finished row carries its own words for "Show output": the
     /// tool's output, the PATH a missing one was looked for on, or why the
     /// check couldn't run.
+    /// Prose names the product ("Claude Code: 2.1.283 at …"); the command's
+    /// name appears only as what was looked for ("No claude command on
+    /// PATH.").
     nonisolated static func row(_ binary: String, _ check: ToolCheck, path: String? = nil) -> Row {
+        let product = Agent.allCases.first { $0.binaryName == binary }?.displayName ?? binary
         switch check {
         case .runs(let path, let version, let output):
-            Row(id: binary, verdict: .ok,
-                line: "\(binary): \(AgentInstall.versionNumber(in: version) ?? version) at \(path)",
-                output: output.isEmpty ? "\(path) --version printed nothing (exit status 0)" : output)
+            return Row(id: binary, verdict: .ok,
+                       line: "\(product): \(AgentInstall.versionNumber(in: version) ?? version) at \(path)",
+                       output: output.isEmpty ? "\(path) --version printed nothing (exit status 0)" : output)
         case .missing:
-            Row(id: binary, verdict: .problem, line: "\(binary): not on PATH",
-                output: "command -v \(binary) found nothing on " + (path.map { "this PATH:\n\($0)" } ?? "ssh's default PATH."))
+            return Row(id: binary, verdict: .problem, line: "No \(binary) command on PATH.",
+                       output: "command -v \(binary) found nothing on " + (path.map { "this PATH:\n\($0)" } ?? "ssh's default PATH."))
         case .fails(let path, let status, let line, let output):
-            Row(id: binary, verdict: .problem, line: "\(binary): at \(path), didn't run: \(line)",
-                output: output.isEmpty ? "\(path) --version printed nothing (exit status \(status))" : output)
+            return Row(id: binary, verdict: .problem, line: "\(product): at \(path), didn't run: \(line)",
+                       output: output.isEmpty ? "\(path) --version printed nothing (exit status \(status))" : output)
         case .notChecked(let reason):
-            Row(id: binary, verdict: .info, line: "\(binary): not checked: \(reason)", output: reason)
+            return Row(id: binary, verdict: .info, line: "\(product): not checked: \(reason)", output: reason)
         }
     }
 
     nonisolated static func row(_ check: TmuxCheck) -> Row {
         switch check {
         case .accepted(let version, true):
-            Row(id: "tmux", verdict: .ok, line: "tmux: \(version), detached tmux check passed")
+            Row(id: "tmux", verdict: .ok, line: "tmux: \(version), can start sessions")
         case .accepted(let version, false):
             Row(id: "tmux", verdict: .advisory,
-                line: "tmux: \(version), detached tmux check passed; allow-passthrough: not on this version, clipboard passthrough off")
+                line: "tmux: \(version), can start sessions; copying to the Mac clipboard needs 3.3 or newer")
         case .tooOld(let version):
-            Row(id: "tmux", verdict: .problem, line: "tmux: \(version): Temple needs tmux 3.2 or newer to keep sessions running")
-        case .refused(let version, let command, let line):
-            Row(id: "tmux", verdict: .problem, line: "tmux: \(version), " + (command.map { "`\($0)`: " } ?? "") + line)
+            Row(id: "tmux", verdict: .problem, line: "tmux: \(version), too old: sessions need tmux 3.2 or newer")
+        case .refused(let version, _, let line):
+            // The command tmux refused is in Show output.
+            Row(id: "tmux", verdict: .problem, line: "tmux: \(version) couldn't start a session: \(line)")
         case .missing:
             Row(id: "tmux", verdict: .problem, line: "tmux: not on PATH")
         case .notChecked(let reason):
@@ -304,11 +309,11 @@ public final class ConnectionTest: ObservableObject, Identifiable {
         switch check {
         case .killsUserProcesses(true):
             Row(id: "logind", verdict: .advisory,
-                line: "This host ends your processes when your last login ends (KillUserProcesses=yes). Sessions won't survive a disconnect unless lingering is enabled (loginctl enable-linger).")
+                line: "logind: this host ends your processes when your last login ends (KillUserProcesses=yes). Run loginctl enable-linger to keep sessions alive.")
         case .killsUserProcesses(false):
-            Row(id: "logind", verdict: .ok, line: "logind: KillUserProcesses=no")
+            Row(id: "logind", verdict: .ok, line: "logind: sessions survive logout (KillUserProcesses=no)")
         case .notAvailable(let reason):
-            Row(id: "logind", verdict: .info, line: "logind: not checked: \(reason)")
+            Row(id: "logind", verdict: .info, line: "logind: not checked (\(reason))")
         }
     }
 

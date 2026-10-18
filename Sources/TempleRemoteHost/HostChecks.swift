@@ -321,8 +321,9 @@ public enum SSHFailure: Sendable, Equatable {
     case connectFailed
     /// A master answered, but the first query over it did not run on the
     /// host (a dead connection behind a live master, a refused session):
-    /// ssh's line. Never reported as connected.
-    case unconfirmed(String)
+    /// ssh's line, and the host's name for the sentence. Never reported as
+    /// connected.
+    case unconfirmed(String, host: String)
     /// This Mac could not prepare the test (the socket directory).
     case localSetup(String)
 
@@ -351,8 +352,8 @@ public enum SSHFailure: Sendable, Equatable {
             "Couldn't connect: \(line.hasSuffix(".") ? String(line.dropLast()) : line)."
         case .connectFailed:
             "Couldn't connect. See ssh's message above."
-        case .unconfirmed(let line):
-            "Couldn't confirm the connection: \(line.hasSuffix(".") ? String(line.dropLast()) : line)."
+        case .unconfirmed(let line, let host):
+            "Connected, but \(host) wouldn't run Temple's check: \(line.hasSuffix(".") ? String(line.dropLast()) : line)."
         case .localSetup(let reason):
             "Temple couldn't prepare the test: \(reason.hasSuffix(".") ? String(reason.dropLast()) : reason)."
         }
@@ -390,47 +391,70 @@ public struct HostTestSummary: Sendable, Equatable {
         self.claude = claude; self.codex = codex; self.tmux = tmux; self.logind = logind
     }
 
-    public static let notTested = "Not tested yet. Test the connection to check this host."
+    public static let notTested = "Not tested since Temple started. Test the connection to check this host."
 
-    /// One status line: how it connected and what runs there, then each
-    /// problem in its own sentence.
+    /// The last sentence of every connected status line: Temple runs each
+    /// CLI's `--version` and never asks whether it is signed in (AGENTS.md:
+    /// no opinion on how a CLI works).
+    public static let loginsNotChecked = "Not checked whether Claude Code and Codex are signed in."
+
+    /// One status line: how it connected and what it found there, then each
+    /// problem in its own sentence, then what was not checked. Prose names
+    /// the products; a command's name appears only as what was looked for.
     public var statusLine: String {
         if let failure { return failure.listMessage }
         var sentences: [String] = []
         sentences.append(connectedAs.map { "Connected as \($0)." } ?? "Connected.")
-        var running: [String] = []
-        if case .runs(_, let version, _)? = claude { running.append("Claude Code \(AgentInstall.versionNumber(in: version) ?? version)") }
-        if case .runs(_, let version, _)? = codex { running.append("Codex \(AgentInstall.versionNumber(in: version) ?? version)") }
-        if case .accepted(let version, _)? = tmux { running.append("tmux \(version)") }
-        if !running.isEmpty { sentences.append(running.joined(separator: ", ") + ".") }
-        for (name, check) in [("claude", claude), ("codex", codex)] {
-            if let problem = check.flatMap({ Self.problem(name, $0) }) { sentences.append(problem) }
+        var found: [String] = []
+        if case .runs(_, let version, _)? = claude { found.append("Claude Code \(AgentInstall.versionNumber(in: version) ?? version)") }
+        if case .runs(_, let version, _)? = codex { found.append("Codex \(AgentInstall.versionNumber(in: version) ?? version)") }
+        if case .accepted(let version, _)? = tmux { found.append("tmux \(version)") }
+        if !found.isEmpty { sentences.append("Found " + found.joined(separator: ", ") + ".") }
+        for (agent, check) in [(Agent.claude, claude), (.codex, codex)] {
+            if let problem = check.flatMap({ Self.problem(agent, $0) }) { sentences.append(problem) }
         }
         if let problem = tmux.flatMap(Self.problem) { sentences.append(problem) }
-        if let environment, environment.path == nil {
-            sentences.append("Couldn't read the login shell's PATH: \(environment.problem ?? "no answer"); using ssh's default environment.")
+        if logind == .killsUserProcesses(true) {
+            sentences.append("Sessions here end when you log out (logind KillUserProcesses=yes); run loginctl enable-linger on the host.")
         }
+        if let environment, environment.path == nil {
+            sentences.append(Self.pathUnread(environment.problem))
+        }
+        sentences.append(Self.loginsNotChecked)
         return sentences.joined(separator: " ")
     }
 
-    static func problem(_ binary: String, _ check: ToolCheck) -> String? {
+    /// The login shell's PATH could not be read (status line and the test's
+    /// row alike).
+    public static func pathUnread(_ problem: String?) -> String {
+        "Couldn't read the login shell's PATH (\(problem.map(trimmed) ?? "no answer")), "
+            + "so agents installed under your home folder may not be found."
+    }
+
+    static func problem(_ agent: Agent, _ check: ToolCheck) -> String? {
         switch check {
         case .runs: nil
-        case .missing: "No \(binary) on PATH."
-        case .fails(_, _, let line, _): "\(binary) is there but didn't run: \(line)."
-        case .notChecked(let reason): "\(binary) wasn't checked: \(reason)"
+        case .missing: "No \(agent.binaryName) command on PATH."
+        case .fails(_, _, let line, _): "\(agent.displayName) is there but didn't run: \(trimmed(line))."
+        case .notChecked(let reason): "\(agent.displayName) wasn't checked: \(trimmed(reason))."
         }
     }
 
     static func problem(_ check: TmuxCheck) -> String? {
         switch check {
-        case .accepted(let version, let passthrough):
-            passthrough ? nil : "tmux \(version): clipboard passthrough is off on this version."
-        case .tooOld(let version): "tmux \(version): Temple needs tmux 3.2 or newer to keep sessions running."
-        case .refused(let version, _, let line): "tmux \(version) refused the launch chain: \(line)"
-        case .missing: "No tmux on this host. Install tmux 3.2 or newer to start sessions here."
-        case .notChecked(let reason): "tmux wasn't checked: \(reason)"
+        case .accepted(_, let passthrough):
+            passthrough ? nil : "Copying from the terminal won't reach your Mac's clipboard (needs tmux 3.3 or newer)."
+        case .tooOld(let version): "tmux \(version): sessions can't start here until tmux is 3.2 or newer."
+        case .refused(let version, _, let line): "tmux \(version) couldn't start a session: \(trimmed(line))."
+        case .missing: "No tmux on this host: sessions can't start here until tmux 3.2 or newer is installed."
+        case .notChecked(let reason): "tmux wasn't checked: \(trimmed(reason))."
         }
+    }
+
+    static func trimmed(_ text: String) -> String {
+        var line = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        while line.hasSuffix(".") { line.removeLast() }
+        return line
     }
 
     /// `.unavailable` only when a test connected and the CLI or tmux did not
@@ -438,11 +462,31 @@ public struct HostTestSummary: Sendable, Equatable {
     public func unavailableReason(for agent: Agent) -> String? {
         guard failure == nil else { return nil }
         let check = agent == .claude ? claude : codex
-        if let check, check.provesUnavailable, let problem = Self.problem(agent.binaryName, check) { return problem }
+        if let check, check.provesUnavailable, let problem = Self.problem(agent, check) { return problem }
         if let tmux, tmux.provesUnavailable { return Self.problem(tmux) }
         return nil
     }
 
-    /// Whether the last test proved tmux missing (⌘N leaves such hosts out).
-    public var provesTmuxMissing: Bool { tmux == .missing }
+    /// The tmux rule (one rule everywhere): the last test proved tmux
+    /// missing or older than 3.2, so no session can start on this host.
+    /// The launcher and ⌘N leave it out, the + menu greys it and the folder
+    /// sheet's Start is disabled, each with `tmuxProblem`.
+    public var provesTmuxUnusable: Bool {
+        switch tmux {
+        case .missing?, .tooOld?: failure == nil
+        default: false
+        }
+    }
+
+    /// The line the tmux rule shows with it.
+    public var tmuxProblem: String? { provesTmuxUnusable ? tmux.flatMap(Self.problem) : nil }
+
+    /// The status line reads as advisory (orange): a test proved a CLI or
+    /// tmux unusable, the login shell's PATH was not read, or logind ends a
+    /// user's processes at logout.
+    public var isAdvisory: Bool {
+        guard failure == nil else { return false }
+        let proven = [Agent.claude, .codex].contains { unavailableReason(for: $0) != nil }
+        return proven || environment?.path == nil || logind == .killsUserProcesses(true)
+    }
 }
