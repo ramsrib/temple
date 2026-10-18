@@ -483,8 +483,10 @@ public enum RemoteCopy {
         let state = uncertain
             ? "\(agent.displayName) may still be working on it; Temple reconnected a moment ago and can't tell yet."
             : "\(agent.displayName) is working on it."
-        let stop = tabOpen ? " Stopping ends it and closes its tab." : " Stopping ends it."
-        return state + stop + (resumable ? " Resume it later from its row in the sidebar." : " It can't be resumed afterwards.")
+        let stop = tabOpen ? " Stopping ends it, interrupting anything it is doing, and closes its tab."
+            : " Stopping ends it, interrupting anything it is doing."
+        return state + stop + (resumable ? " Its conversation is kept: resume it later from its row in the sidebar."
+                                         : " It can't be resumed afterwards, because Temple has no transcript of it.")
     }
 
     /// The quit prompt, when a host has a connected tab: this Mac's working
@@ -565,9 +567,14 @@ public enum RemoteCopy {
     /// Open, for a run Temple can't open (no folder on record): what to do,
     /// the command on a line of its own (`attachCommand`).
     public static func cannotOpenTracked(_ host: String) -> String {
-        "Temple can't reopen this session because it doesn't know which folder it ran in. The session is still running. "
-            + "Stop it here, or attach to it yourself from a terminal on \(host) with:"
+        "Temple can't open this session because it doesn't know which folder it ran in. The session is still running. "
+            + "Stop it here, or attach to it yourself: in a terminal, connect to \(host) with ssh, then run:"
     }
+    /// Under the command: how to leave without stopping it (Temple's tmux
+    /// server binds no prefix, so tmux's own detach keys do nothing), and
+    /// that an attached terminal keeps Stop from stopping it.
+    public static let attachFooter = "To leave it running, close that terminal window; tmux's usual detach keys are off "
+        + "in Temple's sessions. While you are attached, Stop and Remove in Temple won't stop it."
     public static func attachCommand(_ handle: String) -> String { "tmux -L temple attach -t temple-\(handle)" }
     public static let openTrackedHelp = "Opens a tab attached to this running session."
     public static let showTab = "Show tab"
@@ -729,7 +736,7 @@ public enum RemoteCopy {
     /// A Stop them and remove that could not stop everything: the host
     /// stays, and why, then one line per session not stopped.
     public static func notRemoved(_ host: String) -> String {
-        "\(host) was not removed because some sessions could not be stopped:"
+        "\(host) was not removed because Temple couldn't confirm that every session on it stopped:"
     }
 
     /// A session Stop them and remove did stop (listed, so none is
@@ -737,7 +744,10 @@ public enum RemoteCopy {
     public static func removalStopped(_ title: String) -> String { "\u{201C}\(title)\u{201D}: stopped." }
 
     /// The list's last line.
-    public static func removeAgain(_ host: String) -> String { "Fix the above, then remove \(host) again." }
+    public static func removeAgain(_ host: String, count: Int) -> String {
+        "Then choose Remove again. To remove \(host) and leave its sessions running, choose "
+            + "\u{201C}\(removalLeave(count))\u{201D} when Remove asks; a host that can't be reached is removed without asking."
+    }
 
     /// One session Stop them and remove could not stop, by why.
     public static func removalNotStopped(_ title: String, host: String, reason: RemoteLeftRunningReason,
@@ -747,7 +757,7 @@ public enum RemoteCopy {
         switch reason {
         case .anotherClientAttached:
             return "\(name): another terminal outside Temple is attached to it, so it is still running. "
-                + "Detach that terminal, then try again."
+                + "Close that terminal (or end its connection to \(host)), then remove \(host) again."
         case .stopNotAcknowledged:
             return "\(name): \(host) didn't confirm the stop\(because). It may still be running."
         case .hostDidNotAnswer, .quitDeadline, .detachedAtQuit:
@@ -758,8 +768,8 @@ public enum RemoteCopy {
     /// A session whose stop's outcome could not be saved on this Mac:
     /// Temple can't tell whether it stopped, and keeps the host.
     public static func removalUnrecorded(_ title: String, host: String, detail: String) -> String {
-        "\u{201C}\(title)\u{201D}: Temple couldn't save the result on this Mac (\(trimmed(detail))), "
-            + "so it can't tell whether the session stopped. Check Running sessions on \(host)."
+        "\u{201C}\(title)\u{201D}: Temple tried to stop it but couldn't record the outcome on this Mac (\(trimmed(detail))), "
+            + "so it doesn't know whether it stopped. Check \u{201C}\(sessionsOnMenuItem(host))\u{201D} for it."
     }
 
     /// How Temple tells a new Codex tab's session apart: by Codex's
@@ -833,23 +843,27 @@ public enum RemoteCopy {
 
     /// Not this one closed the tab: what happened, and Reopen tab. (The
     /// run stays under Running sessions on <host>, with Open.)
-    public static func unlinked(_ session: String, host: String) -> String {
-        "Closed this tab and archived \u{201C}\(session)\u{201D}, the session Temple linked by mistake. "
-            + "The Codex agent keeps running on \(host)."
+    public static func unlinked(_ session: String, tab: String, host: String) -> String {
+        "Closed the tab \u{201C}\(tab)\u{201D} and archived \u{201C}\(session)\u{201D}, the session Temple linked to it "
+            + "by mistake (restore it from Archived sessions). The Codex agent that was running in the tab keeps running on "
+            + "\(host). Reopen tab reconnects a tab to that agent; Temple then looks again for its session, leaving out "
+            + "\u{201C}\(session)\u{201D}."
     }
     public static let unlinkedOpen = "Reopen tab"
 
     /// Said with it when the tab's close could not be written.
     public static func unlinkedUnsaved(_ detail: String) -> String {
-        "Temple couldn't record on this Mac that the tab was closed (\(trimmed(detail))), so it may reopen at the next launch."
+        "Temple couldn't record on this Mac that the tab was closed (\(lowercasedFirst(trimmed(detail)))), "
+            + "so it may reopen at the next launch."
     }
 
     /// A tab still open for a host just removed from Temple, at once (not
     /// only when it is opened again).
     public static func hostRemoved(_ host: String) -> String {
-        "This tab's host, \(host), was removed from Temple. The agent may still be running there; "
-            + "add the host again to reconnect."
+        "This tab's host, \(host), was removed from Temple, so this tab is disconnected. The agent may still be running "
+            + "there. To reconnect, add \(host) again in Settings \u{25B8} Hosts, then use Reconnect in this tab."
     }
+    public static let openHostsInSettings = "Open Hosts in Settings"
 
     public static let unconfirmedConversation =
         "This session was stopped before it had a conversation on its host, so there is nothing to resume."
@@ -998,11 +1012,12 @@ public enum RemoteCopy {
 
     /// Asked, and nothing left to ask about: every candidate was declined
     /// (or there was none), so no other session has started there.
-    public static let noOtherCandidate = "No other Codex session has started in this folder since the tab opened. "
+    public static let noOtherCandidate = "No Codex session has started in this folder since the tab opened, apart from "
+        + "any you said weren't this tab's. Temple checks again every minute while the tab is connected; Try again checks now. "
         + "The tab keeps working; it gets a sidebar row once Temple finds its session."
     /// Try again, while it checks, and when it found nothing new.
     public static let checkingAgain = "Checking again\u{2026}"
-    public static let checkedStillNone = "Checked again: still none."
+    public static let checkedStillNone = "Checked again: still no new Codex session in this folder."
 
     /// "Discard" said which, per row (one meaning: a session that is not
     /// running; nothing is stopped): removed, or archived when the row is
@@ -1018,6 +1033,11 @@ public enum RemoteCopy {
 
     public static func findNote(_ host: String) -> String {
         "Searching what this tab has shown since it connected to \(host)."
+    }
+
+    static func lowercasedFirst(_ text: String) -> String {
+        guard let first = text.first else { return text }
+        return first.lowercased() + text.dropFirst()
     }
 
     static func capitalized(_ text: String) -> String {

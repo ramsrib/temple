@@ -730,8 +730,11 @@ public final class AppModel: ObservableObject {
             TempleUILog.remote.notice("Archived \(id, privacy: .public): declined link")
             self.overlay.setArchived(true, sessionID: id)
         }
-        openSessions.remoteTabs.unlinkedHandler = { [weak self] host, handle, directory, session, unsaved in
-            let message = RemoteCopy.unlinked(session, host: host.rawValue)
+        openSessions.remoteTabs.tabTitleProvider = { [weak self] tab in
+            self?.tabDisplayTitle(tab) ?? tab.title
+        }
+        openSessions.remoteTabs.unlinkedHandler = { [weak self] host, handle, directory, session, tabTitle, unsaved in
+            let message = RemoteCopy.unlinked(session, tab: tabTitle, host: host.rawValue)
                 + (unsaved.map { " " + RemoteCopy.unlinkedUnsaved($0) } ?? "")
             self?.remoteNotice = RemoteNotice(host: host, message: message,
                                               kind: .unlinked(handle: handle, directory: directory))

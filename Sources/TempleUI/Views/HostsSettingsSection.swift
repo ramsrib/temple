@@ -212,7 +212,7 @@ struct HostsSettingsSection: View {
                     Text(RemoteCopy.notRemoved(record.name))
                     // Every session the alert counted, each with its outcome.
                     ForEach(Array(problems.lines.enumerated()), id: \.offset) { _, line in Text(line) }
-                    Text(RemoteCopy.removeAgain(record.name)).padding(.top, 2)
+                    Text(RemoteCopy.removeAgain(record.name, count: problems.lines.count)).padding(.top, 2)
                 }
                 .font(.system(size: 11))
                 .foregroundStyle(.orange)

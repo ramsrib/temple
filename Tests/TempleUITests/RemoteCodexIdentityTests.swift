@@ -357,7 +357,8 @@ final class RemoteCodexIdentityTests: XCTestCase {
         model.remoteTabs.unlinkedHandler = {
             unlinked.append(($0, $1, $2))
             XCTAssertEqual($3, "reply with the word ok")
-            XCTAssertNil($4)
+            XCTAssertFalse($4.isEmpty, "the tab named by its title")
+            XCTAssertNil($5)
         }
         remote.excludesDeclined = true
         remote.suggestionsResult = .candidates([suggestion()])
@@ -406,8 +407,9 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await settle(second.remote?.suggestions.count == 2)
         for candidate in second.remote?.suggestions ?? [] { model.remoteTabs.decline(candidate, in: second) }
         XCTAssertEqual(second.remote?.identityNote, RemoteCopy.noOtherCandidate)
-        XCTAssertEqual(RemoteCopy.noOtherCandidate, "No other Codex session has started in this folder since the tab opened. "
-                       + "The tab keeps working; it gets a sidebar row once Temple finds its session.")
+        XCTAssertEqual(RemoteCopy.noOtherCandidate, "No Codex session has started in this folder since the tab opened, apart from "
+                       + "any you said weren't this tab's. Temple checks again every minute while the tab is connected; "
+                       + "Try again checks now. The tab keeps working; it gets a sidebar row once Temple finds its session.")
     }
 
     /// Try again never brings back a candidate declined in this tab, even
@@ -435,7 +437,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await hold.open()
         remote.suggestionsGate = nil
         await settle(tab.remote?.retrying == false)
-        XCTAssertEqual(tab.remote?.retryResult, "Checked again: still none.")
+        XCTAssertEqual(tab.remote?.retryResult, "Checked again: still no new Codex session in this folder.")
         XCTAssertEqual(tab.remote?.suggestions, [], "neither comes back")
         XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.noOtherCandidate)
         model.remoteTabs.detach(tab.id)
@@ -1280,10 +1282,10 @@ final class RemoteCodexIdentityTests: XCTestCase {
                        "Close tab. Stops Claude Code on box if it is waiting for input; asks first if it is working.")
         XCTAssertEqual(RemoteCopy.stopWorkingTitle("Fix it", host: "box"), "Stop \u{201C}Fix it\u{201D} on box?")
         XCTAssertEqual(RemoteCopy.stopWorkingMessage(agent: .codex, uncertain: false, tabOpen: true, resumable: true),
-                       "Codex is working on it. Stopping ends it and closes its tab. Resume it later from its row in the sidebar.")
+                       "Codex is working on it. Stopping ends it, interrupting anything it is doing, and closes its tab. Its conversation is kept: resume it later from its row in the sidebar.")
         XCTAssertEqual(RemoteCopy.stopWorkingMessage(agent: .claude, uncertain: true, tabOpen: false, resumable: false),
-                       "Claude Code may still be working on it; Temple reconnected a moment ago and can't tell yet. Stopping ends it. "
-                       + "It can't be resumed afterwards.")
+                       "Claude Code may still be working on it; Temple reconnected a moment ago and can't tell yet. Stopping ends it, interrupting anything it is doing. "
+                       + "It can't be resumed afterwards, because Temple has no transcript of it.")
         XCTAssertEqual(RemoteCopy.workingCLIRefusal("box"),
                        "Its agent is working on box. Pass --force to detach it (it keeps running), or stop it in Temple.")
         // Remove, singular and plural.

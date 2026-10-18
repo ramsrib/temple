@@ -69,7 +69,7 @@ private struct SessionTerminalView: View {
                 // Its host was removed from Temple: said at once, in place of
                 // every other header (Reconnect can't work until it is back).
                 notice(symbol: "exclamationmark.triangle", text: RemoteCopy.hostRemoved(displayHost), stillRunning: true) {
-                    Button(RemoteCopy.openSettings) { model.openSessions.openSettingsAtHosts() }
+                    Button(RemoteCopy.openHostsInSettings) { model.openSessions.openSettingsAtHosts() }
                 } dismiss: {
                     EmptyView()
                 }

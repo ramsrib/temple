@@ -177,6 +177,10 @@ struct RemoteSessionsSheet: View {
                     .padding(.vertical, 4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Palette.surfaceFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                Text(RemoteCopy.attachFooter)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .buttonStyle(.neutralLink)

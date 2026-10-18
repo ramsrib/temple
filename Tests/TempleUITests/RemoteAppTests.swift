@@ -405,8 +405,11 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertTrue(remote.stops.isEmpty, "the agent keeps running")
         XCTAssertEqual(remote.pending.first?.dismissed, false, "its run is kept: listed under Running sessions")
         let notice = try XCTUnwrap(app.remoteNotice)
-        XCTAssertEqual(notice.message, "Closed this tab and archived \u{201C}hi\u{201D}, the session Temple linked by mistake. "
-                       + "The Codex agent keeps running on box.")
+        // The tab by the title its chip showed (no terminal title here).
+        XCTAssertEqual(notice.message, "Closed the tab \u{201C}New Codex session\u{201D} and archived \u{201C}hi\u{201D}, the session "
+                       + "Temple linked to it by mistake (restore it from Archived sessions). The Codex agent that was running "
+                       + "in the tab keeps running on box. Reopen tab reconnects a tab to that agent; Temple then looks again "
+                       + "for its session, leaving out \u{201C}hi\u{201D}.")
         XCTAssertEqual(app.remoteNoticeAction(notice), "Reopen tab")
         app.actOnRemoteNotice(notice)
         XCTAssertNil(app.remoteNotice)
@@ -426,10 +429,10 @@ final class RemoteAppTests: XCTestCase {
         app.openSessions.surfaceDidSubmitInput(try XCTUnwrap(other.surface))
         await settle { other.remote?.linkedOnItsOwn == true }
         app.openSessions.remoteTabs.unlink(other)
-        await settle { app.remoteNotice?.message.hasPrefix("Closed this tab and archived \u{201C}third\u{201D}") == true }
+        await settle { app.remoteNotice?.message.contains("archived \u{201C}third\u{201D}") == true }
         let failed = try XCTUnwrap(app.remoteNotice)
         XCTAssertTrue(failed.message.hasSuffix(" Temple couldn't record on this Mac that the tab was closed "
-                                               + "(\(CocoaError(.fileWriteUnknown).localizedDescription.trimmingCharacters(in: CharacterSet(charactersIn: ".")))), "
+                                               + "(\(RemoteCopy.lowercasedFirst(CocoaError(.fileWriteUnknown).localizedDescription.trimmingCharacters(in: CharacterSet(charactersIn: "."))))), "
                                                + "so it may reopen at the next launch."), failed.message)
         XCTAssertEqual(app.remoteNoticeAction(failed), "Reopen tab")
         app.dismissRemoteNotice()

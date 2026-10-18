@@ -854,16 +854,16 @@ final class RemoteLifecycleTests: XCTestCase {
                                                       resumable: true)
         XCTAssertEqual(uncertain.title, "Stop \u{201C}Title\u{201D} on box?")
         XCTAssertEqual(uncertain.message, "Claude Code may still be working on it; Temple reconnected a moment ago and can't tell yet. "
-                       + "Stopping ends it and closes its tab. Resume it later from its row in the sidebar.")
+                       + "Stopping ends it, interrupting anything it is doing, and closes its tab. Its conversation is kept: resume it later from its row in the sidebar.")
         XCTAssertEqual(model.remoteTabs.stopQuestion(host: hostID, agent: .claude, title: "Title", handle: "kept",
                                                      resumable: false).message,
                        "Claude Code may still be working on it; Temple reconnected a moment ago and can't tell yet. "
-                       + "Stopping ends it and closes its tab. It can't be resumed afterwards.", "said, without a transcript")
+                       + "Stopping ends it, interrupting anything it is doing, and closes its tab. It can't be resumed afterwards, because Temple has no transcript of it.", "said, without a transcript")
         model.surfaceDidReceiveInput(try XCTUnwrap(tab.surface))
         XCTAssertFalse(model.workingIsUncertain(tab), "input since: the usual reading")
         XCTAssertEqual(model.remoteTabs.stopQuestion(host: hostID, agent: .claude, title: "Title", sessionID: "s1",
                                                      resumable: true).message,
-                       "Claude Code is working on it. Stopping ends it and closes its tab. Resume it later from its row in the sidebar.")
+                       "Claude Code is working on it. Stopping ends it, interrupting anything it is doing, and closes its tab. Its conversation is kept: resume it later from its row in the sidebar.")
 
         let created = await openRow("s2")
         XCTAssertEqual(remote.runs.last?.handle, created.remote?.handle)

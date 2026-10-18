@@ -39,11 +39,13 @@ public final class RemoteTabController {
     /// created is archived, reversibly (a person's archive: History
     /// restores it).
     public var unlinkHandler: ((_ sessionID: String, _ host: HostID) -> Void)?
+    /// The title a tab's chip shows (the app's `tabDisplayTitle`).
+    public var tabTitleProvider: (SessionTab) -> String = { $0.title.isEmpty ? $0.agent.newSessionTitle : $0.title }
     /// Not this one detached the tab: the notice, whose Open reopens the
     /// run by its handle in that folder.
     /// `unsaved`: why the tab's close could not be written (said with it).
     public var unlinkedHandler: ((_ host: HostID, _ handle: String, _ directory: String, _ session: String,
-                                  _ unsaved: String?) -> Void)?
+                                  _ tabTitle: String, _ unsaved: String?) -> Void)?
     /// A row's open state (`last_opened_at`), read when Discard is chosen:
     /// an Open after that keeps the row.
     public var rowLastOpened: (_ sessionID: String) -> Date? = { _ in nil }
@@ -541,6 +543,8 @@ public final class RemoteTabController {
         // What the notice calls the session it archives: its prompt, else
         // its row's title.
         let name = linked.firstPrompt ?? model.sessionRow(sid)?.displayTitle ?? Agent.codex.newSessionTitle
+        // And the tab, by the title its chip shows (the notice outlives it).
+        let tabTitle = tabTitleProvider(tab)
         tab.remote?.unlinking = true
         let ticket = gate.ticket(for: tab)
         let noticeTicket = gate.ticket(host: hostID)
@@ -584,7 +588,7 @@ public final class RemoteTabController {
             }
             // Only what it says passes the gate.
             if admitted {
-                self.unlinkedHandler?(hostID, handle, directory, name, unsaved)
+                self.unlinkedHandler?(hostID, handle, directory, name, tabTitle, unsaved)
             } else if let unsaved, self.gate.admit(.pendingWriteNotice, noticeTicket) {
                 self.noticeHandler?(hostID, RemoteCopy.unrecorded(host.hostName, detail: unsaved))
             }
