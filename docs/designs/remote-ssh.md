@@ -3434,3 +3434,15 @@ canonical-tab mechanism with recovery hand-over obligations. Commit
 `cb40209` and its test are reverted; either tab can be closed as usual.
 The window still saves: one descriptor is kept per folder and session id,
 with the active flag preserved if either duplicate is active.
+
+### Known limitation: V9, a first lookup that can't look stays quiet (2026-10-18)
+
+When a new Codex tab's very first candidate lookup cannot look (the host
+doesn't answer, or Temple can't read its records), the band shows nothing
+and the tab keeps working; the scheduled check, every minute while the tab
+is connected, tries again. Three rounds of fixes to show the failure with a
+Try again each left a stale or missing message somewhere (fresh reviews
+r4 and r5), so per the pre-committed bound in the review ledger they are
+reverted (`155d49f`, `4bffa79`, `6fec8a2`) and this stays as pushed in
+phase 1b. A failure after the tab has asked still shows its reason with
+Try again.
