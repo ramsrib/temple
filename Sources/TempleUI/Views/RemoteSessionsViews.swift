@@ -35,7 +35,9 @@ struct RemoteSessionsSheet: View {
         }
         .onAppear { sheet.load() }
         .onDisappear { sheet.dismissed() }
-        .alert(confirmingStop.map { RemoteCopy.stopWorkingTitle(host, agent: $0.agent) } ?? "",
+        .alert(confirmingStop.map {
+                   model.openSessions.remoteTabs.stopQuestionTitle(host: sheet.request.host, agent: $0.agent, handle: $0.handle)
+               } ?? "",
                isPresented: Binding(get: { confirmingStop != nil }, set: { if !$0 { confirmingStop = nil } })) {
             Button("Stop") {
                 if let session = confirmingStop { sheet.stop(session) }

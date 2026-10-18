@@ -846,8 +846,16 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertEqual(RemoteCopy.mayStillBeWorking("box", agent: .codex), "Codex may still be working on box.")
         XCTAssertEqual(RemoteCopy.mayStillBeWorkingMessage("box"),
                        "Temple reattached to it a moment ago and can't tell yet. Detach leaves it running on box; Stop ends it.")
+        // The Stop question says the same, by session and by run.
+        XCTAssertEqual(model.remoteTabs.stopQuestionTitle(host: hostID, agent: .claude, sessionID: "s1"),
+                       "Claude Code may still be working on box. Stop it?")
+        XCTAssertEqual(model.remoteTabs.stopQuestionTitle(host: hostID, agent: .claude, handle: "kept"),
+                       "Claude Code may still be working on box. Stop it?")
+        XCTAssertEqual(RemoteCopy.stopWorkingTitle("box", agent: .codex, uncertain: true), "Codex may still be working on box. Stop it?")
         model.surfaceDidReceiveInput(try XCTUnwrap(tab.surface))
         XCTAssertFalse(model.workingIsUncertain(tab), "input since: the usual reading")
+        XCTAssertEqual(model.remoteTabs.stopQuestionTitle(host: hostID, agent: .claude, sessionID: "s1"),
+                       "Claude Code is working on box. Stop it?")
 
         let created = await openRow("s2")
         XCTAssertEqual(remote.runs.last?.handle, created.remote?.handle)

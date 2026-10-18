@@ -471,8 +471,9 @@ public enum RemoteCopy {
 
     /// Stopping a working agent from Running sessions or a row's menu asks
     /// first; an agent waiting for input stops at once.
-    public static func stopWorkingTitle(_ host: String, agent: Agent) -> String {
-        "\(agent.displayName) is working on \(host). Stop it?"
+    public static func stopWorkingTitle(_ host: String, agent: Agent, uncertain: Bool = false) -> String {
+        uncertain ? "\(agent.displayName) may still be working on \(host). Stop it?"
+            : "\(agent.displayName) is working on \(host). Stop it?"
     }
 
     /// Said only when the session has a tab open here.

@@ -113,7 +113,8 @@ struct SessionRow: View {
             Button("Save") { model.overlay.rename(session.id, to: draftName) }
             Button("Cancel", role: .cancel) {}
         }
-        .alert(RemoteCopy.stopWorkingTitle(session.host.rawValue, agent: session.agent ?? .claude),
+        .alert(model.openSessions.remoteTabs.stopQuestionTitle(host: session.host, agent: session.agent ?? .claude,
+                                                               sessionID: session.id),
                isPresented: $confirmingStop) {
             Button("Stop") { model.openSessions.remoteTabs.stopSession(sessionID: session.id, host: session.host) }
                 .keyboardShortcut(.defaultAction)
