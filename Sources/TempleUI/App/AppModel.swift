@@ -730,15 +730,16 @@ public final class AppModel: ObservableObject {
             TempleUILog.remote.notice("Archived \(id, privacy: .public): declined link")
             self.overlay.setArchived(true, sessionID: id)
         }
-        openSessions.remoteTabs.claimJoinedHandler = { [weak self] id, host, handle, claimedAt in
+        openSessions.remoteTabs.confirmedHandler = { [weak self] id, _ in
+            // A person's yes is a person's open of that session (ADR-017): the
+            // row Not this one archived comes back, as the activation sink
+            // brings back any opened row. Not on the undo stack, like the sink.
+            guard let self, self.overlay.isArchived(id) else { return }
+            TempleUILog.remote.notice("Restored \(id, privacy: .public): a person's yes")
+            _ = self.overlay.restoreSessions([id])
+        }
+        openSessions.remoteTabs.claimJoinedHandler = { [weak self] _, host, handle in
             guard let self else { return }
-            // A tab's claim is that tab's session: never left archived by an
-            // archive from before the claim (an earlier Not this one). One
-            // the user made after it (a join repaired at launch) is kept.
-            if let row = self.overlay.rows[id], row.archived {
-                let beforeClaim = claimedAt.map { claimed in row.archivedAt.map { $0 <= claimed } ?? false } ?? true
-                if beforeClaim { self.overlay.setArchived(false, sessionID: id) }
-            }
             // A Not this one notice about that run no longer holds.
             if case .unlinked(let unlinked, _)? = self.remoteNotice?.kind, unlinked == handle,
                self.remoteNotice?.host == host {

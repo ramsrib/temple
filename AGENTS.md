@@ -361,7 +361,11 @@ deletable without touching core rows; keep it that way
   project masks) lives in `remote-state.sqlite` (its own migrator) and the
   host list in the `temple.settings.remoteHosts` key, never in
   `session_state`, `open_tabs` or `project_state`. A session on a host is
-  still an ordinary row and its tab an ordinary saved tab.
+  still an ordinary row and its tab an ordinary saved tab. Temple never
+  unarchives a row on its own: a person's open (the activation sink,
+  ADR-017) or a person's yes on a candidate brings a row back; a claim, a
+  join, a verified identity or a reconcile never does, and a run or a
+  saved tab whose row is archived gets no tab at launch.
 - **Two entry points.** The host list (`temple.settings.remoteHosts`) and
   the registry are built by `AppStartup`/`AppModel`, which both
   `TempleApp.swift` files share; anything remote added at launch goes

@@ -301,8 +301,7 @@ public protocol RemoteSessionHost: HostLauncher {
     func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws
     func markJoined(_ handle: String) async throws
     /// Claims whose core join never happened, with their folders.
-    /// `claimedAt`: when the claim was made (nil: unknown).
-    func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?, claimedAt: Date?)]
+    func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)]
     func pendingRuns() async -> [RemotePendingRun]
     /// A pending run's tab closed: no chip at the next launch.
     func closePendingTab(_ handle: String) async throws

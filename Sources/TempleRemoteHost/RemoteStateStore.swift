@@ -241,14 +241,6 @@ public final class RemoteStateStore: @unchecked Sendable {
             try database.execute(sql: "ALTER TABLE runs ADD COLUMN input_seen_at DOUBLE")
             try database.execute(sql: "UPDATE runs SET input_seen_at = \(RemoteRun.inputBeforeRecorded.timeIntervalSince1970)")
         }
-        // When a run's claim was made: the launch's reconciliation of a
-        // claim whose join may already have happened then leaves an archive
-        // the user made after it alone (an archive from before it, an
-        // earlier Not this one, is the claim's to undo). Unknown (NULL) for
-        // claims from before it: their row's archive is left as it is.
-        migrator.registerMigration("r6-claimed-at") { database in
-            try database.execute(sql: "ALTER TABLE runs ADD COLUMN claimed_at DOUBLE")
-        }
         return migrator
     }
 
@@ -551,10 +543,8 @@ public final class RemoteStateStore: @unchecked Sendable {
                                          arguments: [handle, rolloutPath])
                 }
                 try database.execute(sql: """
-                    UPDATE runs SET session_id = ?, claim = ?, conversation = ?, joined_at = NULL, claimed_at = ?
-                    WHERE handle = ?
-                    """, arguments: [sessionID, how.rawValue, RemoteRun.Conversation.confirmed.rawValue,
-                                     Date().timeIntervalSince1970, handle])
+                    UPDATE runs SET session_id = ?, claim = ?, conversation = ?, joined_at = NULL WHERE handle = ?
+                    """, arguments: [sessionID, how.rawValue, RemoteRun.Conversation.confirmed.rawValue, handle])
                 outcome = .claimed
                 return .commit
             }
@@ -567,7 +557,7 @@ public final class RemoteStateStore: @unchecked Sendable {
     public func releaseClaim(_ handle: String, sessionID: String) throws {
         try queue.write { database in
             try database.execute(sql: """
-                UPDATE runs SET session_id = NULL, claim = NULL, joined_at = NULL, claimed_at = NULL
+                UPDATE runs SET session_id = NULL, claim = NULL, joined_at = NULL
                 WHERE handle = ? AND session_id = ? AND claim IS NOT NULL
                 """, arguments: [handle, sessionID])
         }
@@ -580,7 +570,7 @@ public final class RemoteStateStore: @unchecked Sendable {
     public func unlink(_ handle: String, sessionID: String, rolloutPath: String) throws {
         try queue.write { database in
             try database.execute(sql: """
-                UPDATE runs SET session_id = NULL, claim = NULL, joined_at = NULL, claimed_at = NULL
+                UPDATE runs SET session_id = NULL, claim = NULL, joined_at = NULL
                 WHERE handle = ? AND session_id = ? AND claim IS NOT NULL
                 """, arguments: [handle, sessionID])
             try database.execute(sql: "INSERT OR IGNORE INTO declined_candidates (handle, rollout_path) VALUES (?, ?)",
@@ -599,15 +589,6 @@ public final class RemoteStateStore: @unchecked Sendable {
             try database.execute(sql: "UPDATE runs SET tab_closed_at = ? WHERE handle = ? AND session_id = ?",
                                  arguments: [date.timeIntervalSince1970, handle, sessionID])
             return database.changesCount > 0
-        }
-    }
-
-    /// When the run's current claim was made (nil: none, or from before
-    /// Temple kept it).
-    public func claimedAt(_ handle: String) throws -> Date? {
-        try queue.read { database in
-            try Double.fetchOne(database, sql: "SELECT claimed_at FROM runs WHERE handle = ?", arguments: [handle])
-                .map { Date(timeIntervalSince1970: $0) }
         }
     }
 

@@ -39,15 +39,17 @@ public final class RemoteTabController {
     /// created is archived, reversibly (a person's archive: History
     /// restores it).
     public var unlinkHandler: ((_ sessionID: String, _ host: HostID) -> Void)?
-    /// A claim joined core: the row is that tab's session, in front of the
-    /// person, so it is not archived (an earlier Not this one archived it
-    /// for another tab's link). Keeps "an archived row has no tab", which
-    /// `restore()` relies on.
-    /// `claimedAt`: nil for a claim made now (any archive predates it);
-    /// the claim's time for the launch's reconciliation, whose join may
-    /// repair one that already happened: an archive made after the claim
-    /// is the user's, and is kept.
-    public var claimJoinedHandler: ((_ sessionID: String, _ host: HostID, _ handle: String, _ claimedAt: Date?) -> Void)?
+    /// A person's yes (Yes, that's it; Link it after all) whose claim has
+    /// committed, with the id the claim answered: the app brings that
+    /// session's row back if it is archived, as opening it would (ADR-017:
+    /// a person went to it). Durable, like `unlinkHandler`'s archive: not
+    /// the tab's part. Never for Temple's own yes, a verified identity or
+    /// the launch's reconciliation; those leave every archive as it is.
+    public var confirmedHandler: ((_ sessionID: String, _ host: HostID) -> Void)?
+    /// A claim's core join happened (`adopted`, `reconcile`): the Not this
+    /// one notice about that run no longer holds. Never touches the row's
+    /// archive: a person's yes does that (`confirmedHandler`), a join never.
+    public var claimJoinedHandler: ((_ sessionID: String, _ host: HostID, _ handle: String) -> Void)?
     /// The title a tab's chip shows (the app's `tabDisplayTitle`).
     public var tabTitleProvider: (SessionTab) -> String = { $0.title.isEmpty ? $0.agent.newSessionTitle : $0.title }
     /// Not this one detached the tab: the notice, whose Open reopens the
@@ -1115,7 +1117,7 @@ public final class RemoteTabController {
             let open = SessionOpen(id: id, host: hostID, via: .created, agent: .codex, locator: nil)
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
-                claimJoinedHandler?(id, hostID, handle, nil)
+                claimJoinedHandler?(id, hostID, handle)
                 if let directory { model.launchDirectoryHandler?(id, hostID, directory) }
                 operations.run(host: hostID, .write) {
                     do { try await host.markJoined(handle) } catch {
@@ -1503,6 +1505,7 @@ public final class RemoteTabController {
     private func claim(_ suggestion: RemoteSuggestion, in tab: SessionTab, automatic: Bool) {
         guard isPending(tab), let handle = tab.remote?.handle, let host = remoteHost(for: tab),
               tab.remote?.confirming == nil, !isQuitting else { return }
+        let hostID = tab.host
         tab.remote?.confirming = suggestion.id
         let ticket = gate.ticket(for: tab)
         operations.run(host: tab.host, .write) { [weak self] in
@@ -1510,6 +1513,9 @@ public final class RemoteTabController {
             guard let self else { return }
             switch identity {
             case .adopted(let id, let directory), .known(let id, let directory):
+                // A person's yes, committed: their session's row comes back
+                // (ungated, the row's part). Temple's own yes never.
+                if !automatic { self.confirmedHandler?(id, hostID) }
                 // The candidate's prompt titles only the candidate: a claim
                 // that answers with another id (a concurrent `.known`) gets
                 // none. Compared by bytes, as ids are everywhere else.
@@ -1550,12 +1556,14 @@ public final class RemoteTabController {
 
     /// "Link it after all", on a candidate the user declined for this run:
     /// the ordinary yes, except that the host's claim withdraws the decline
-    /// in its own transaction (a refused claim keeps it). The join that
-    /// follows unarchives the row an earlier Not this one archived. A
-    /// person's yes: no "linked on its own" note. Never Temple's own.
+    /// in its own transaction (a refused claim keeps it). Once the claim
+    /// commits, the row Not this one archived comes back
+    /// (`confirmedHandler`). A person's yes: no "linked on its own" note.
+    /// Never Temple's own.
     public func relink(_ suggestion: RemoteSuggestion, in tab: SessionTab) {
         guard isPending(tab), let handle = tab.remote?.handle, let host = remoteHost(for: tab),
               tab.remote?.confirming == nil, !isQuitting else { return }
+        let hostID = tab.host
         tab.remote?.confirming = suggestion.id
         let ticket = gate.ticket(for: tab)
         operations.run(host: tab.host, .write) { [weak self] in
@@ -1564,6 +1572,8 @@ public final class RemoteTabController {
             switch identity {
             case .adopted(let id, let directory), .known(let id, let directory):
                 self.declinedHere[handle]?.remove(suggestion.id)
+                // Always a person's yes: their session's row comes back.
+                self.confirmedHandler?(id, hostID)
                 let same = id.utf8.elementsEqual(suggestion.sessionID.utf8)
                 await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket,
                                    titleHint: same ? suggestion.firstPrompt : nil)
@@ -1757,6 +1767,14 @@ public final class RemoteTabController {
                 guard !runs.isEmpty, self.gate.admit(.pendingRestore, ticket) else { return }
                 for run in runs where !self.model.tabs.contains(where: { $0.host == hostID && $0.remote?.handle == run.handle }) {
                     if let id = run.sessionID, run.joined || joined.contains(run.handle) {
+                        // The rule restore() applies to a saved tab, applied to a run: an
+                        // archived row has no tab. Who archived it is not asked (a person
+                        // did, or a crash left a yes half done); the run stays listed under
+                        // Running sessions, where Open brings the row back.
+                        if let row = self.model.sessionRow(id), row.host == hostID, row.state.archived {
+                            TempleUILog.launch.notice("claimed run not restored: session \(id, privacy: .public) on \(hostID.rawValue, privacy: .public) is archived")
+                            continue
+                        }
                         let chip = self.model.tabs.first(where: { $0.sessionID == id })
                             ?? self.model.appendClaimedChip(host: hostID, sessionID: id, directory: run.directory)
                         self.handOver(chip, handle: run.handle, host: host)
@@ -1791,7 +1809,7 @@ public final class RemoteTabController {
             let open = SessionOpen(id: claim.sessionID, host: hostID, via: .created, agent: .codex, locator: nil)
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
-                claimJoinedHandler?(claim.sessionID, hostID, claim.handle, claim.claimedAt ?? .distantPast)
+                claimJoinedHandler?(claim.sessionID, hostID, claim.handle)
                 if let directory = claim.directory { model.launchDirectoryHandler?(claim.sessionID, hostID, directory) }
                 joined.insert(claim.handle)
                 do { try await host.markJoined(claim.handle) } catch {

@@ -3291,9 +3291,14 @@ cold read of the real screens, as built:
   freezes the set with the rejected tab; the next launch's `restore()`
   leaves out a saved tab on a host whose row is archived (the row is the
   session; an archived row has no tab), finds the active tab on what it
-  restored, and saves the set once when it skipped anything. A claim that
-  joins (`adopted`, `reconcile`) unarchives its row, so a session another
-  tab claims later restores as that tab. `forgetSavedTab` and its
+  restored, and saves the set once when it skipped anything. A claim never
+  touches the row's archive. A person's yes (Yes, that's it; Link it after
+  all) brings the row back once its claim commits, through the primitive
+  ADR-017's activation sink uses, so a session a person claims in another
+  tab restores as that tab; Temple's own yes, a verified identity and the
+  launch's reconciliation leave every archive as it is, and the next
+  activation of such a tab brings its row back as any open does.
+  `forgetSavedTab` and its
   acknowledgement bump are gone; `acknowledgedSaves` again counts only
   full saves of the live set.
 - *A remote Discard during a quit does nothing* (the "seen, out of scope"
@@ -3312,17 +3317,18 @@ cold read of the real screens, as built:
   transaction as the claim, after every refusal check, so a refused claim
   keeps it. The lookup returns declined candidates flagged instead of
   dropping them, and Temple's own yes counts only the undeclined ones (the
-  store still refuses an automatic claim for a run with a decline). The
-  join unarchives the row Not this one archived and takes that run's
-  notice down. Temple never relinks on its own.
-- *Sol round 6.* (1) Reconciliation repairs a join, it doesn't undo a
-  later archive: `r6-claimed-at` (additive, remote store) records when a
-  claim was made, and a launch's reconcile unarchives the joined row only
-  when it was archived no later than that claim (Not this one's archive,
-  or an older one); an archive the person made after the claim stays. A
-  claim from before the column (no time) is treated as older than any
-  archive. A live `adopted` join still unarchives, as Link it after all
-  needs. (2) `restore()` activates the surviving active tab before its one
+  store still refuses an automatic claim for a run with a decline). Once
+  the claim commits, the row Not this one archived comes back
+  (`confirmedHandler`, the sink's `restoreSessions`); the join takes that
+  run's notice down. Temple never relinks on its own.
+- *Sol round 6.* (1) Withdrawn in the next round (Fable's decision,
+  /private/tmp/temple-remote-work/ux3/rev/fable-unarchive.md):
+  `r6-claimed-at` and the timestamp comparison are gone, never pushed and
+  never applied to a store outside tests. Reconciliation repairs a join
+  and nothing else; `restorePending` gives a joined run whose row is
+  archived no chip and no hand-over, the rule `restore()` applies to a
+  saved tab; a person's yes brings the row back once its claim commits,
+  and nothing Temple does on its own ever unarchives. (2) `restore()` activates the surviving active tab before its one
   cleanup save, so the saved set keeps its active flag; a restore that
   skips nothing writes nothing, local or remote, as before. (3) A tab on a
   removed host says what brings it back for its state: a connected,
@@ -3341,3 +3347,27 @@ cold read of the real screens, as built:
   stays archived if it was, and a connected tab says Temple goes on
   looking. A tab never opened on a removed host drops its "not set up"
   account when the host is added again, so it opens when next shown.
+- *Unarchive on join, dropped* (Sol round 7; Fable's decision,
+  /private/tmp/temple-remote-work/ux3/rev/fable-unarchive.md). All four
+  findings were in the claimed-at mechanism, so the mechanism went:
+  `r6-claimed-at`, `claimed_at`, `claimedAt()` and the comparison are
+  deleted (the store's migrations end at `r5-input` again; a store that had
+  applied the dropped one still opens, its column unread). A join (live or
+  the launch's reconcile) never touches the row's archive;
+  `claimJoinedHandler` only takes that run's Not this one notice down. A
+  person's yes (Yes, that's it; Link it after all) calls `confirmedHandler`
+  with the id the claim answered, after the claim commits and outside the
+  gate, and the app brings that row back through `restoreSessions`, the
+  activation sink's primitive (ADR-017: a person went to it). Temple's own
+  yes, a verified identity and reconcile never do; such a tab's row comes
+  back at the person's next activation of it, and a quit first leaves the
+  saved tab skipped and the run under Running sessions (the known
+  exception, unreachable by the lookup's window and the claim's
+  contention except for a row imported and archived by hand). A refused
+  or unwritten relink changes nothing, as the copy says.
+  `restorePending` applies `restore()`'s rule: a joined run whose row is
+  archived gets no chip and no hand-over (logged), and stays under
+  Running sessions, where Open brings the row back. Round 7's #1 (an
+  adoption passing no time) and #3 (`restorePending` recreating an
+  archived row's chip) are closed by construction; #2 (two reads) and #4
+  (millisecond against fractional-second times) went with the column.

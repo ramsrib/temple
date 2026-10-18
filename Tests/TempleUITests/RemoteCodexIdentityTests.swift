@@ -457,6 +457,78 @@ final class RemoteCodexIdentityTests: XCTestCase {
     /// Refused for a reason the host gave: the note says where the session
     /// is and that the connected tab goes on looking; one that says the run
     /// has ended doesn't promise the looking.
+    /// A person's yes (Yes, that's it; Link it after all) reports its
+    /// session once the claim has committed, and only then; Temple's own
+    /// yes, a refused or unwritten claim and a verified identity never do.
+    func testAPersonsYesReportsTheSessionOnceItsClaimCommitsAndTemplesOwnNever() async throws {
+        var restored: [String] = []
+        model.remoteTabs.confirmedHandler = { id, _ in restored.append(id) }
+        // Temple's own yes to a lone candidate.
+        remote.suggestionsResult = .candidates([suggestion("c1")])
+        let own = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(own.surface))
+        await settle(own.remote?.linkedOnItsOwn == true)
+        XCTAssertEqual(restored, [], "Temple's own yes")
+
+        // Yes, that's it: nothing until the claim commits.
+        let tab = try await askingTab()
+        let hold = Gate()
+        remote.confirmGate = { await hold.wait() }
+        model.remoteTabs.confirm(try XCTUnwrap(tab.remote?.suggestions.first { $0.sessionID == "c7" }), in: tab)
+        await settle(self.remote.confirms.count == 1)
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(restored, [], "nothing before the commit")
+        await hold.open()
+        await settle(tab.sessionID == "c7")
+        XCTAssertEqual(restored, ["c7"])
+        remote.confirmGate = nil
+
+        // Link it after all.
+        let second = try await askingTab()
+        model.remoteTabs.decline(try XCTUnwrap(second.remote?.suggestions.first { $0.sessionID == "c8" }), in: second)
+        await settle(self.remote.declines.count == 1)
+        model.remoteTabs.relink(try XCTUnwrap(second.remote?.declined.first), in: second)
+        await settle(second.sessionID == "c8")
+        XCTAssertEqual(restored, ["c7", "c8"])
+
+        // Refused, then unwritten: nothing.
+        let third = try await askingTab()
+        let c7 = try XCTUnwrap(third.remote?.suggestions.first { $0.sessionID == "c7" })
+        let c8 = try XCTUnwrap(third.remote?.suggestions.first { $0.sessionID == "c8" })
+        model.remoteTabs.decline(c7, in: third)
+        model.remoteTabs.decline(c8, in: third)
+        await settle(third.remote?.declined.count == 2)
+        remote.confirmResult = .taken
+        model.remoteTabs.relink(try XCTUnwrap(third.remote?.declined.first { $0.sessionID == "c7" }), in: third)
+        await settle(third.remote?.confirming == nil && third.remote?.identityNote != nil)
+        remote.confirmResult = .storage("disk full")
+        model.remoteTabs.relink(try XCTUnwrap(third.remote?.declined.first { $0.sessionID == "c8" }), in: third)
+        await settle(third.remote?.confirming == nil
+                     && third.remote?.identityNote == RemoteCopy.unrecorded("box", detail: "disk full"))
+        XCTAssertNil(third.sessionID)
+        XCTAssertEqual(restored, ["c7", "c8"], "a refused or unwritten claim reports nothing")
+        remote.confirmResult = nil
+
+        // A verified identity.
+        model.remoteTabs.identitySchedule = [0.02]
+        remote.identityResult = .adopted("c9", directory: "/home/u/project")
+        let verified = await newCodex()
+        await settle(verified.sessionID == "c9")
+        XCTAssertEqual(restored, ["c7", "c8"], "a verified identity reports nothing")
+    }
+
+    /// A yes the claim answers with another id (a concurrent `.known`):
+    /// the tab is that id, and that id is what's reported.
+    func testAYesAnsweredWithAnotherIdReportsThatId() async throws {
+        var restored: [String] = []
+        model.remoteTabs.confirmedHandler = { id, _ in restored.append(id) }
+        let tab = try await askingTab()
+        remote.confirmResult = .known("c9", directory: "/home/u/project")
+        model.remoteTabs.confirm(try XCTUnwrap(tab.remote?.suggestions.first { $0.sessionID == "c7" }), in: tab)
+        await settle(tab.sessionID == "c9")
+        XCTAssertEqual(restored, ["c9"])
+    }
+
     func testLinkItAfterAllRefusedSaysWhatIsLeft() async throws {
         let tab = try await askingTab()
         let c7 = try XCTUnwrap(tab.remote?.suggestions.first { $0.sessionID == "c7" })
