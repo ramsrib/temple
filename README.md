@@ -10,9 +10,11 @@ tabs to find the work you were doing.
 - Work in a full terminal, not a transcript.
 - Pick up where you left off. Temple reopens the sessions you had open.
 - See which agents are working and which are waiting on you.
+- Run sessions on another machine you reach with ssh, in tabs like local ones.
 
-Everything stays on your machine. Temple never edits your files, runs git, or
-changes your session history.
+Nothing goes to a server of Temple's. Sessions run on your Mac, or on a host
+you add, over your own ssh. Temple never edits your files, runs git, or changes
+your session history.
 
 ![Temple](assets/screenshot.png)
 
