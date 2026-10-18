@@ -1401,7 +1401,7 @@ public final class RemoteSessions {
             return .inconclusive(.retry(reason))
         case .candidates(let current):
             guard current.contains(where: { $0.id == suggestion.id && Array($0.sessionID.utf8) == Array(suggestion.sessionID.utf8) }) else {
-                return .inconclusive(.retry("that session is no longer a candidate for this one"))
+                return .inconclusive(.retry("that session no longer matches this tab"))
             }
             if automatic, current.filter({ !$0.declined }).count != 1 {
                 return .inconclusive(.retry("more than one session is a candidate for this one"))

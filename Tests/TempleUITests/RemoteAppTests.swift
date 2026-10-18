@@ -165,7 +165,7 @@ final class RemoteAppTests: XCTestCase {
     /// Not this one archived stays archived (the copy says so), the tab
     /// stays pending.
     func testARefusedLinkItAfterAllLeavesTheRowArchived() async throws {
-        let results: [RemoteIdentity] = [.taken, .inconclusive("that session is no longer a candidate for this one",
+        let results: [RemoteIdentity] = [.taken, .inconclusive("that session no longer matches this tab",
                                                                lasting: false, ended: false), .storage("disk full")]
         for result in results {
             let remote = FakeRemoteHost("box")
@@ -721,9 +721,9 @@ final class RemoteAppTests: XCTestCase {
         app.openSessions.remoteTabs.unlink(other)
         await settle { app.remoteNotice?.message.contains("archived \u{201C}third\u{201D}") == true }
         let failed = try XCTUnwrap(app.remoteNotice)
-        XCTAssertTrue(failed.message.hasSuffix("\nCouldn't save the tab's close on this Mac "
+        XCTAssertTrue(failed.message.hasSuffix("\nCouldn't save on this Mac that this tab was closed "
                                                + "(\(RemoteCopy.lowercasedFirst(CocoaError(.fileWriteUnknown).localizedDescription.trimmingCharacters(in: CharacterSet(charactersIn: "."))))), "
-                                               + "so the tab may reopen at the next launch."), failed.message)
+                                               + "so it may reopen at the next launch."), failed.message)
         XCTAssertEqual(failed.message.components(separatedBy: "\n").count, 4, "its own line, after the notice's three")
         XCTAssertEqual(app.remoteNoticeAction(failed), "Reopen tab")
         app.dismissRemoteNotice()

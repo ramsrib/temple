@@ -536,11 +536,11 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await settle(self.remote.declines.count == 1)
         var declinedC7 = c7
         declinedC7.declined = true
-        remote.confirmResult = .inconclusive("that session is no longer a candidate for this one", lasting: false, ended: false)
+        remote.confirmResult = .inconclusive("that session no longer matches this tab", lasting: false, ended: false)
         model.remoteTabs.relink(try XCTUnwrap(tab.remote?.declined.first), in: tab)
         await settle(tab.remote?.confirming == nil && tab.remote?.declined.isEmpty == true)
         XCTAssertEqual(tab.remote?.identityNote,
-                       RemoteCopy.relinkRefused(declinedC7, reason: "that session is no longer a candidate for this one",
+                       RemoteCopy.relinkRefused(declinedC7, reason: "that session no longer matches this tab",
                                                 stillLooking: true))
         XCTAssertTrue(tab.remote?.identityNote?.hasSuffix("Temple keeps looking for its session.") == true)
         XCTAssertFalse(RemoteCopy.relinkRefused(declinedC7, reason: "Temple no longer tracks this session", stillLooking: false)
@@ -1636,7 +1636,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
                     RemoteCopy.removalMessage(1, fromConfig: true), RemoteCopy.closeHostTabHelp("box", agent: .codex),
                     RemoteCopy.declinedLine(suggestion()), RemoteCopy.relink, RemoteCopy.relinkHelp,
                     RemoteCopy.relinkTaken(suggestion(), host: "box", stillLooking: true),
-                    RemoteCopy.relinkRefused(suggestion(), reason: "That session is no longer a candidate for this one",
+                    RemoteCopy.relinkRefused(suggestion(), reason: "That session no longer matches this tab",
                                              stillLooking: true),
                     RemoteCopy.unlinkedUnsaved("disk I/O error"),
                     RemoteCopy.unlinked("hi", tab: "Reply ok", host: "box")]
@@ -1654,17 +1654,17 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(RemoteCopy.relinkTaken(suggestion(), host: "box", stillLooking: false),
                        "Couldn't link \u{201C}reply with the word ok\u{201D} to this tab: another tab on box has that session now. "
                        + "To go to that session, use its row in the sidebar.")
-        XCTAssertEqual(RemoteCopy.relinkRefused(suggestion(), reason: "That session is no longer a candidate for this one",
+        XCTAssertEqual(RemoteCopy.relinkRefused(suggestion(), reason: "That session no longer matches this tab",
                                                 stillLooking: true),
-                       "Couldn't link \u{201C}reply with the word ok\u{201D} to this tab: that session is no longer a candidate "
-                       + "for this one. If \u{201C}Not this one\u{201D} archived it, it is still in Archived sessions. This tab "
-                       + "keeps working, and Temple keeps looking for its session.")
+                       "Couldn't link \u{201C}reply with the word ok\u{201D} to this tab: that session no longer matches this "
+                       + "tab. If \u{201C}Not this one\u{201D} archived it, it is still in Archived sessions (\u{2318}\u{21E7}Y). "
+                       + "This tab keeps working, and Temple keeps looking for its session.")
         XCTAssertEqual(RemoteCopy.unlinked("hi", tab: "Reply ok", host: "box"),
                        "Closed \u{201C}Reply ok\u{201D} and archived \u{201C}hi\u{201D}. Its Codex agent is still running on box.\n"
                        + "Clicked by mistake? Choose \u{201C}Reopen tab\u{201D}, then \u{201C}Link it after all\u{201D} in that tab.\n"
-                       + "Session only: restore it from Archived sessions on the start page (\u{2318}\u{21E7}Y).")
+                       + "Want only the session back, not the tab? Restore it from Archived sessions (\u{2318}\u{21E7}Y).")
         XCTAssertEqual(RemoteCopy.unlinkedUnsaved("Disk I/O error."),
-                       "Couldn't save the tab's close on this Mac (disk I/O error), so the tab may reopen at the next launch.")
+                       "Couldn't save on this Mac that this tab was closed (disk I/O error), so it may reopen at the next launch.")
         for line in copy { XCTAssertFalse(line.contains("\u{2014}"), line) }
     }
 }

@@ -590,7 +590,8 @@ public enum RemoteCopy {
     /// server binds no prefix, so tmux's own detach keys do nothing), and
     /// that an attached terminal keeps Stop from stopping it.
     public static let attachFooter = "To leave it running, close that terminal window; tmux's usual detach keys are off "
-        + "in Temple's sessions. While you are attached, Temple can't stop it: neither Stop here nor removing the host will end it."
+        + "in Temple's sessions. While you are attached, Temple can't stop it: neither Stop here nor removing the host will end it. "
+        + "To stop it from Temple, close that window first, then choose Stop."
     public static func attachCommand(_ handle: String) -> String { "tmux -L temple attach -t temple-\(handle)" }
     public static let openTrackedHelp = "Opens a tab attached to this running session."
     public static let showTab = "Show tab"
@@ -865,13 +866,13 @@ public enum RemoteCopy {
     public static func unlinked(_ session: String, tab: String, host: String) -> String {
         "Closed \u{201C}\(tab)\u{201D} and archived \u{201C}\(session)\u{201D}. Its Codex agent is still running on \(host).\n"
             + "Clicked by mistake? Choose \u{201C}\(unlinkedOpen)\u{201D}, then \u{201C}\(relink)\u{201D} in that tab.\n"
-            + "Session only: restore it from Archived sessions on the start page (\u{2318}\u{21E7}Y)."
+            + "Want only the session back, not the tab? Restore it from Archived sessions (\u{2318}\u{21E7}Y)."
     }
     public static let unlinkedOpen = "Reopen tab"
 
     /// Said with it when the tab's close could not be written.
     public static func unlinkedUnsaved(_ detail: String) -> String {
-        "Couldn't save the tab's close on this Mac (\(lowercasedFirst(trimmed(detail)))), so the tab may reopen "
+        "Couldn't save on this Mac that this tab was closed (\(lowercasedFirst(trimmed(detail)))), so it may reopen "
             + "at the next launch."
     }
 
@@ -1056,7 +1057,7 @@ public enum RemoteCopy {
     public static func relinkRefused(_ suggestion: RemoteSuggestion, reason: String, stillLooking: Bool,
                                      now: Date = Date()) -> String {
         "Couldn't link \(declinedSubject(suggestion, now: now)) to this tab: \(lowercasedFirst(sentence(reason))) "
-            + "If \u{201C}\(suggestionNo)\u{201D} archived it, it is still in Archived sessions."
+            + "If \u{201C}\(suggestionNo)\u{201D} archived it, it is still in Archived sessions (\u{2318}\u{21E7}Y)."
             + (stillLooking ? " " + relinkStillLooking : "")
     }
     static let relinkStillLooking = "This tab keeps working, and Temple keeps looking for its session."

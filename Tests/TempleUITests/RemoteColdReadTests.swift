@@ -419,7 +419,7 @@ final class RemoteColdReadTests: XCTestCase {
                        + "with ssh, then run:")
         XCTAssertEqual(RemoteCopy.attachFooter, "To leave it running, close that terminal window; tmux's usual detach keys "
                        + "are off in Temple's sessions. While you are attached, Temple can't stop it: neither Stop here nor "
-                       + "removing the host will end it.")
+                       + "removing the host will end it. To stop it from Temple, close that window first, then choose Stop.")
         XCTAssertEqual(sheet.commands["h8"], "tmux -L temple attach -t temple-h8", "the command on its own line")
         XCTAssertNil(app.openSessions.openTab(forSessionID: "s8"))
     }
