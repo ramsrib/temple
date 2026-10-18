@@ -157,6 +157,25 @@ final class RemoteColdReadTests: XCTestCase {
         XCTAssertNotNil(app.remoteHosts.record(named: "box"), "a failed stop cancels the removal")
     }
 
+    /// A tab still open for a host just removed says so at once (its host
+    /// was removed, the agent may still run there, add it again), not only
+    /// when it is opened again; an edit keeps the name and is not a
+    /// removal, and adding the host back ends it.
+    func testOpenTabsOfARemovedHostSaySoAtOnce() async throws {
+        let remote = FakeRemoteHost("box")
+        let app = try app(remote, records: [RemoteHostRecord(name: "box", source: .temple, address: "10.0.0.2")])
+        let tab = try await connectedTab(app)
+        XCTAssertFalse(app.tabHostWasRemoved(tab))
+        app.remoteHosts.save(RemoteHostRecord(name: "box", source: .temple, address: "10.0.0.3"), editing: "box")
+        XCTAssertFalse(app.tabHostWasRemoved(tab), "an edit is not a removal")
+        app.remoteHosts.remove("box")
+        XCTAssertTrue(app.tabHostWasRemoved(tab), "said at once, in the tab")
+        XCTAssertTrue(RemoteCopy.hostRemoved("box").hasPrefix("box was removed from Temple."))
+        XCTAssertTrue(RemoteCopy.hostRemoved("box").contains("may still be running"))
+        app.remoteHosts.save(RemoteHostRecord(name: "box", source: .temple, address: "10.0.0.3"), editing: nil)
+        XCTAssertFalse(app.tabHostWasRemoved(tab), "added again")
+    }
+
     /// Both kinds of host offer the same four actions; a config host opens
     /// ~/.ssh/config where one added by address has Edit.
     func testConfigRowsOpenTheConfigWhereAddedRowsEdit() {

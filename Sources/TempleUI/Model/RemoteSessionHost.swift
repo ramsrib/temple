@@ -788,6 +788,12 @@ public enum RemoteCopy {
 
     public static let openSettings = "Open Settings"
 
+    /// A tab still open for a host just removed from Temple, at once (not
+    /// only when it is opened again).
+    public static func hostRemoved(_ host: String) -> String {
+        "\(host) was removed from Temple. Its agent may still be running there; add the host again to reconnect."
+    }
+
     public static let unconfirmedConversation =
         "This session was stopped before it had a conversation on its host, so there is nothing to resume."
 

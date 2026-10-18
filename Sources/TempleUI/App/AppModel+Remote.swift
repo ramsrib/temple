@@ -198,6 +198,20 @@ extension AppModel {
         return live
     }
 
+    /// The host list changed: a host whose name went is removed (an edit
+    /// keeps its name); one added again is not.
+    func noteRemovedRemoteHosts() {
+        let names = Set(remoteHosts.records.map(\.name))
+        for gone in knownRemoteHostNames.subtracting(names) { removedRemoteHosts.insert(HostID(rawValue: gone)) }
+        for back in names { removedRemoteHosts.remove(HostID(rawValue: back)) }
+        knownRemoteHostNames = names
+    }
+
+    /// A tab on a host removed from Temple this run: it says so, at once.
+    public func tabHostWasRemoved(_ tab: SessionTab) -> Bool {
+        tab.kind == .session && !tab.host.isLocal && removedRemoteHosts.contains(tab.host)
+    }
+
     /// "Remove, leave them running": the host goes; its connected tabs are
     /// detached (retiring the host does that), and the agents keep running
     /// there, out of Temple's reach until the host is added again.

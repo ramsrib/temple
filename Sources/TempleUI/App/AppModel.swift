@@ -402,6 +402,11 @@ public final class AppModel: ObservableObject {
     /// A session on a host was left running (at a close, or found at
     /// launch): one line at the foot of the rail, with Show.
     @Published public var remoteNotice: RemoteNotice?
+    /// Hosts removed from Temple this run (by name): a tab still open for
+    /// one says so at once. Adding the host again takes it out.
+    @Published public internal(set) var removedRemoteHosts: Set<HostID> = []
+    /// The host names Temple had when the list last changed.
+    var knownRemoteHostNames: Set<String> = []
     /// "Running sessions on <host>", when shown.
     @Published public var remoteSessionsSheet: RemoteSessionsRequest?
     /// The folder sheet for a new session on a host, when shown.
@@ -661,7 +666,11 @@ public final class AppModel: ObservableObject {
             .store(in: &cancellables)
         wire()
         wireHistory(database: database)
-        self.remoteHosts.onChange = { [weak self] in self?.rebuildRemoteHosts() }
+        knownRemoteHostNames = Set(self.remoteHosts.records.map(\.name))
+        self.remoteHosts.onChange = { [weak self] in
+            self?.noteRemovedRemoteHosts()
+            self?.rebuildRemoteHosts()
+        }
         rebuildRemoteHosts()
         overlayFocus.focusActiveTerminal = { [weak self] in self?.openSessions.focusActiveTerminal() }
         // NB: detection is NOT started here. It runs real binaries (`claude --version`),

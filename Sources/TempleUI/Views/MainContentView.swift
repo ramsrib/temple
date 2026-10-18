@@ -65,7 +65,15 @@ private struct SessionTerminalView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let remote = tab.remote {
+            if model.tabHostWasRemoved(tab) {
+                // Its host was removed from Temple: said at once, in place of
+                // every other header (Reconnect can't work until it is back).
+                notice(symbol: "exclamationmark.triangle", text: RemoteCopy.hostRemoved(displayHost), stillRunning: true) {
+                    Button(RemoteCopy.openSettings) { model.openSessions.openSettingsAtHosts() }
+                } dismiss: {
+                    EmptyView()
+                }
+            } else if let remote = tab.remote {
                 // A tab on a host shows its own headers only: its ssh ending
                 // is not its agent ending (checking, stopping: nothing yet).
                 if remote.phase == .connected, remote.stillConnecting {
