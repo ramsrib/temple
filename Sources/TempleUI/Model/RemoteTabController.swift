@@ -1326,7 +1326,6 @@ public final class RemoteTabController {
         guard case .candidates(let found) = answer else {
             if case .unavailable(let reason) = answer {
                 lastLookup[handle] = .unavailable(reason)
-                if tab.remote?.identityNote == nil { tab.remote?.identityNote = RemoteCopy.checkFailed(reason) }
                 if retryAwaitingLookup.remove(handle) != nil { tab.remote?.retryResult = RemoteCopy.checkFailed(reason) }
             }
             return
