@@ -228,7 +228,6 @@ final class RemoteCodexIdentityTests: XCTestCase {
         model.remoteTabs.confirm(suggestion(), in: tab)
         await settle(tab.remote?.identityRefused == true)
         XCTAssertNil(tab.remote?.confirming, "the refused answer is no longer busy")
-        XCTAssertEqual(tab.remote?.canRetryIdentity, true)
         XCTAssertNil(tab.sessionID)
         XCTAssertEqual(try store.run("p1")?.sessionID, "c7")
         XCTAssertTrue(remote.released.isEmpty)
@@ -303,7 +302,6 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertFalse(tab.isProvisional)
         XCTAssertEqual(tab.remote?.suggestions, [], "no question")
         XCTAssertEqual(tab.remote?.linkedOnItsOwn, true)
-        XCTAssertEqual(tab.remote?.canRetryIdentity, false)
         XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.linkedOnItsOwn(suggestion()))
         XCTAssertEqual(persistence.load().map(\.sessionID), ["c7"])
     }
@@ -551,7 +549,9 @@ final class RemoteCodexIdentityTests: XCTestCase {
         let tab = await newCodex()
         await settle(self.model.remoteTabs.gate.admitted[.suggestionsLoaded, default: 0] > 0)
         XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.checkFailed("lookup failed"))
-        XCTAssertEqual(tab.remote?.canRetryIdentity, true, "the caption exposes Try again for a failed check")
+        remote.suggestionsResult = .candidates([suggestion("c7"), suggestion("c8")])
+        model.remoteTabs.retryIdentity(tab)
+        await settle(tab.remote?.suggestions.count == 2)
     }
 
     /// Try again whose lookup can't run says so, with why; never "still
