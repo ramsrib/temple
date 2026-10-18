@@ -405,7 +405,8 @@ tab's part ("Linked this tab to “<first prompt>”, the only Codex session
 started in this folder since the tab opened.", or "the Codex session
 started <time>, the only one started in this folder since the tab opened"
 with no prompt). Both variants add: "If that's the wrong session, close
-this tab; the session keeps its row in the sidebar." There is no undo or
+this tab; “<first prompt>” stays in the sidebar." (or "the session started <time>
+stays in the sidebar.") There is no undo or
 special dismissal. Closing the tab works as usual: an idle agent is
 stopped, a working one asks Detach, Stop or Cancel, and the row stays in
 the sidebar until a person archives it. An automatic yes that can't be
@@ -3040,8 +3041,8 @@ and the sections above say so where they changed.
 ### Round 2 visual review (Fable and Opus on the screenshots)
 
 - **Superseded (2026-10-18):** the linked band's Discard button was removed.
-  The linked note now says to close a wrong link as any tab; its session
-  keeps its row in the sidebar.
+  The linked note now says to close a wrong link as any tab; the linked
+  session stays in the sidebar.
 - A candidate's start reads relative to the tab's open ("started 4 s after
   this tab opened", whole minutes past one; the start, on the host's
   clock, is moved by the offset the lookup measured (Sol round 6); the
