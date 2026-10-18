@@ -2221,12 +2221,12 @@ rows ("Removing remote", below).
   the tab opened.", and a wrong one is undone by **Not this one** (the
   cold-read round; it no longer stops anything): in one remote-store write
   the claim on that id is released and the candidate declined for the run;
-  the run's own restoration comes back only through a hand-back, the
-  hand-over's reverse, finished by an acknowledged tab save without the
-  session (a close or detach first stands; the next launch reconciles); the row the
-  link created is archived as a person's archive (History restores it);
-  the tab returns to the question without that candidate, or says Temple
-  couldn't tell, with Try again. The agent keeps running. "Asked" is the question shown this launch, or any declined
+  once that has committed, the row the link created is archived as a
+  person's archive (History restores it) and the tab is detached as any
+  tab is (the agent keeps running; the run is listed under Running
+  sessions, not restored as a tab), with a notice whose Open reopens the
+  run asking without that candidate. (Converting the tab in place drew
+  races in three review rounds; Fable's decision.) "Asked" is the question shown this launch, or any declined
   candidate for the run, which the claim's own transaction checks, so a
   decline holds across relaunches. Nor while another new Codex session
   Temple started on the host in the same folder is still unidentified and

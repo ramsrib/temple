@@ -27,8 +27,8 @@ struct SidebarView: View {
             }
             if let notice = model.remoteNotice {
                 RemoteNoticeBar(notice: notice,
-                                showTitle: RemoteCopy.sessionsOnMenuItem(notice.host.rawValue),
-                                show: { model.showRemoteSessions(notice.host) },
+                                showTitle: model.remoteNoticeAction(notice),
+                                show: { model.actOnRemoteNotice(notice) },
                                 dismiss: { model.dismissRemoteNotice() })
                     .padding(.horizontal, 8)
                     .padding(.bottom, 8)

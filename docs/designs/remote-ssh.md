@@ -3160,16 +3160,22 @@ is `RemoteCodexIdentityTests.testTheCopyIsOneSourceAndHasNoEmDash`.
    Temple", or "Archive session" when the row is named, pinned, colored or
    has a transcript. A stop is "Stop on <host>" in the row's menu.
 4. *Not this one on a link Temple made on its own* (`unlink`): one
-   remote-store write (`RemoteStateStore.unlink`) releases the claim,
-   declines the candidate and clears `tab_closed_at` (a hand-over already
-   written is undone, so the run restores by its handle again); the
-   hand-over still owed is dropped. The row the link created is archived as
-   a person's archive (History restores it; the reason "declined link" is
-   the remote store's declined candidate and a log line, not a new core
-   `archive_reason`, so core's archive semantics are unchanged). The tab
-   becomes pending again and loads the question without that candidate;
-   none left, it says Temple couldn't tell, with Try again. The agent keeps
-   running and its client stays attached.
+   remote-store write (`RemoteStateStore.unlink`) releases the claim and
+   declines the candidate. Once it has committed, the hand-over still owed
+   is dropped, the row the link created is archived as a person's archive
+   (History restores it; the reason "declined link" is the remote store's
+   declined candidate and a log line, not a new core `archive_reason`), and
+   the tab is detached as any tab is: the ordinary detach write
+   (`closePendingTab`), the agent left running, the run listed under
+   Running sessions. A notice, "Unlinked. The agent keeps running on
+   <host>. Its tab is under Running sessions on <host>; open it to pick the
+   right session.", has Open, which reopens the run by its handle; the
+   question there leaves the declined candidate out (the store's decline,
+   and `declinedHere` before it is written). *As revised*: rounds 2 and 3
+   converted the tab in place (a hand-back obligation, the hand-over's
+   reverse, and a migration); each round found new races in that state, so
+   Fable chose the detach, which has none of them by construction, and the
+   hand-back and its never-pushed migration were deleted.
 5. *Dismiss* (S11) is only on a row with a left-running note and clears
    the flag; "Kept" is gone.
 6. *The folder sheet's Test connection* opens the host's own Test
@@ -3247,33 +3253,16 @@ cold read of the real screens, as built:
 
 - *Not this one commits first.* `unlink` writes the store first; only a
   committed write drops the owed hand-over, archives the row and (through
-  the new gated completion `.unlinkResult`) makes the tab unidentified. A
-  failed write changes nothing, is said once, and the button can be used
-  again (`RemoteTabState.unlinking` holds it while the write is out).
-- *The undo is a hand-back, the hand-over's reverse* (Sol round 2; the
-  second finding in this path, so the mechanism, not a patch). The unlink
-  write releases the claim but keeps the run's own restoration off
-  (`tab_closed_at`, set if not already) and records `hand_back_from` (the
-  session id a saved tab set may still hold; remote store migration
-  `r6-hand-back`). A `HandBack` obligation holds the run store like a
-  hand-over: it is finished (`finishHandBack`: restoration back on) only by
-  an acknowledged save after the tab became the run's, dropped
-  (`dropHandBack`) when the tab went first (a close or detach stands),
-  retried, and settled at the quit; the UI gate decides only what the tab
-  shows. At the next launch `restorePending` turns a saved tab still holding
-  the session into the run's tab (or brings the run back by its handle when
-  none does) and owes the hand-back again; an open of such a saved tab (the
-  restored active one opens at once) does the same before it would ever
-  open the rejected session. Relaunch tests: the quit before the write
-  commits, a failed tab save, and a detach before the commit.
+  the gated completion `.unlinkResult`) detaches the tab. A failed write
+  changes nothing, is said once, and the button can be used again
+  (`RemoteTabState.unlinking` holds it while the write is out).
 - *A late hand-over can't undo it.* `RemoteStateStore.markTabClosed` marks
   the run only while it still holds the session id the hand-over was owed
   for, in the statement itself (`RemoteRunLedger.markTabClosed(_:sessionID:)`).
-- *Never a bare tab.* After Not this one the tab says Temple couldn't tell
-  until a lookup brings candidates (`unlinkFallback`); a failed lookup and
-  Try again keep it. Try again never re-offers a candidate declined in this
-  tab (`declinedHere`), even before the host's record is written. The line
-  now reads "…; it gets a sidebar row once Temple can tell."
+- *Never a bare tab.* Try again keeps "couldn't tell" until candidates
+  come, and never re-offers a candidate declined for the run
+  (`declinedHere`), even before the host's record is written. The line now
+  reads "…; it gets a sidebar row once Temple can tell."
 - *Remove* counts a session with a connected tab here as running, whatever
   the host's probe said, and adds one the listing lacks
   (`runningForRemoval`); Stop them and remove stops it too.

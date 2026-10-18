@@ -373,15 +373,17 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertNil(app.remoteFolderSheet)
     }
 
-    /// Not this one on a session Temple linked on its own: the row the link
-    /// made is archived as a person's archive (History restores it), the
-    /// run is pending again, and nothing is stopped.
-    func testNotThisOneArchivesTheLinkedRowReversibly() async throws {
+    /// Not this one (Fable's decision): the row the link made is archived
+    /// as a person's archive (History restores it) with its last open left
+    /// as it was, the tab is detached (the run kept, listed under Running
+    /// sessions, nothing stopped), and the notice's Open reopens the run by
+    /// its handle, asking without the declined candidate.
+    func testNotThisOneArchivesTheRowDetachesTheTabAndOpenAsksAgain() async throws {
         let remote = FakeRemoteHost("box")
         remote.excludesDeclined = true
-        remote.suggestionsResult = .candidates([RemoteSuggestion(rolloutPath: "/r/c7.jsonl", sessionID: "c7",
-                                                                 firstPrompt: "hi", startedAt: Date(),
-                                                                 directory: "/home/u/p")])
+        let first = RemoteSuggestion(rolloutPath: "/r/c7.jsonl", sessionID: "c7", firstPrompt: "hi", startedAt: Date(),
+                                     directory: "/home/u/p")
+        remote.suggestionsResult = .candidates([first])
         let app = try app(remote)
         app.openSessions.remoteTabs.identitySchedule = [0.01]
         app.openSessions.remoteTabs.identityInterval = 0.05
@@ -390,14 +392,28 @@ final class RemoteAppTests: XCTestCase {
         app.openSessions.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
         await settle { tab.remote?.linkedOnItsOwn == true }
         XCTAssertEqual(app.overlay.rows["c7"]?.archived, false)
+        let lastOpened = app.overlay.rows["c7"]?.lastOpenedAt
+        remote.suggestionsResult = .candidates([first, RemoteSuggestion(rolloutPath: "/r/c8.jsonl", sessionID: "c8",
+                                                                         firstPrompt: "other", startedAt: Date(),
+                                                                         directory: "/home/u/p")])
         app.openSessions.remoteTabs.unlink(tab)
-        await settle { app.overlay.rows["c7"]?.archived == true }
+        await settle { app.overlay.rows["c7"]?.archived == true && app.remoteNotice != nil }
         XCTAssertEqual(app.overlay.rows["c7"]?.archived, true, "archived, not deleted")
         XCTAssertNil(app.overlay.rows["c7"]?.archiveReason, "a person's archive: History's Restore brings it back")
-        XCTAssertNil(tab.sessionID)
-        await settle { remote.unlinks.count == 1 }
+        XCTAssertEqual(app.overlay.rows["c7"]?.lastOpenedAt, lastOpened, "its last open is left as it was")
+        XCTAssertFalse(app.openSessions.tabs.contains { $0 === tab }, "detached")
         XCTAssertTrue(remote.stops.isEmpty, "the agent keeps running")
-        app.overlay.setArchived(false, sessionID: "c7")
-        XCTAssertEqual(app.overlay.rows["c7"]?.archived, false, "restorable")
+        XCTAssertEqual(remote.pending.first?.dismissed, false, "its run is kept: listed under Running sessions")
+        let notice = try XCTUnwrap(app.remoteNotice)
+        XCTAssertEqual(notice.message, "Unlinked. The agent keeps running on box. Its tab is under Running sessions on box; "
+                       + "open it to pick the right session.")
+        XCTAssertEqual(app.remoteNoticeAction(notice), "Open")
+        app.actOnRemoteNotice(notice)
+        XCTAssertNil(app.remoteNotice)
+        let reopened = try XCTUnwrap(app.openSessions.tabs.first { $0.remote?.handle == "p1" })
+        await settle { reopened.remote?.suggestions.isEmpty == false }
+        XCTAssertEqual(reopened.remote?.suggestions.map(\.sessionID), ["c8"], "asks without the declined candidate")
+        XCTAssertEqual(app.overlay.rows["c7"]?.archived, true, "reopening the run leaves the rejected row archived")
+        XCTAssertEqual(app.overlay.rows["c7"]?.lastOpenedAt, lastOpened)
     }
 }

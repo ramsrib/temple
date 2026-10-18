@@ -10,6 +10,8 @@ public struct RemoteNotice: Equatable, Identifiable {
         /// Found at launch: `count` sessions are flagged on a host that just
         /// answered (shown once per flag).
         case count(Int)
+        /// Not this one detached a tab: Open reopens its run by handle.
+        case unlinked(handle: String, directory: String)
     }
     public let id = UUID()
     public let host: HostID
@@ -110,6 +112,26 @@ extension AppModel {
             openSessions.remoteTabs.operations.run(host: host, .write) { await launcher.noticeLeftRunning() }
         }
         remoteSessionsSheet = RemoteSessionsRequest(host: host)
+    }
+
+    /// The notice's action: Open, for a tab Not this one detached (its run
+    /// reopens by handle, asking without the declined candidate); Running
+    /// sessions on <host> otherwise.
+    public func actOnRemoteNotice(_ notice: RemoteNotice) {
+        guard case .unlinked(let handle, let directory) = notice.kind else {
+            showRemoteSessions(notice.host)
+            return
+        }
+        if remoteNotice?.id == notice.id { remoteNotice = nil }
+        guard remoteHost(notice.host) != nil else { return }
+        // It was typed into (a link needs that): the question comes at once.
+        openSessions.remoteTabs.openPendingRun(handle: handle, host: notice.host, directory: directory, typed: true)
+    }
+
+    /// The notice's action's label.
+    public func remoteNoticeAction(_ notice: RemoteNotice) -> String {
+        if case .unlinked = notice.kind { return RemoteCopy.unlinkedOpen }
+        return RemoteCopy.sessionsOnMenuItem(notice.host.rawValue)
     }
 
     public func dismissRemoteNotice() {

@@ -730,6 +730,10 @@ public final class AppModel: ObservableObject {
             TempleUILog.remote.notice("Archived \(id, privacy: .public): declined link")
             self.overlay.setArchived(true, sessionID: id)
         }
+        openSessions.remoteTabs.unlinkedHandler = { [weak self] host, handle, directory in
+            self?.remoteNotice = RemoteNotice(host: host, message: RemoteCopy.unlinked(host.rawValue),
+                                              kind: .unlinked(handle: handle, directory: directory))
+        }
         openSessions.remoteTabs.discardHandler = { [weak self] id, host, incarnation, lastOpenedAt in
             // One transaction under (id, host, incarnation): the row goes,
             // or (the user made it theirs: named, pinned, colored) is

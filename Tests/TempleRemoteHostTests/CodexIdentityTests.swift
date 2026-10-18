@@ -541,10 +541,10 @@ final class CodexIdentityTests: XCTestCase {
     }
 
     /// Not this one on a link Temple made on its own (the cold-read
-    /// round), in one write: the claim goes, a hand-over already written is
-    /// undone (the run restores by its handle again), and the candidate is
-    /// declined, so the claim's own transaction refuses it from then on.
-    func testUnlinkReleasesTheClaimDeclinesAndRestoresTheRun() throws {
+    /// round), in one write: the claim goes and the candidate is declined,
+    /// so the claim's own transaction refuses it from then on. The tab's
+    /// restoration is left as it was (the tab is then detached).
+    func testUnlinkReleasesTheClaimAndDeclinesAndLeavesTheTabsRestorationAlone() throws {
         let store = try RemoteStateStore()
         try pendingRun(store, "a")
         XCTAssertEqual(try store.claim("a", sessionID: "c1", how: .verified, rolloutPath: "/r/c1"), .claimed)
@@ -556,23 +556,10 @@ final class CodexIdentityTests: XCTestCase {
         XCTAssertNil(run.sessionID)
         XCTAssertNil(run.claim)
         XCTAssertNil(run.joinedAt)
-        XCTAssertNotNil(run.tabClosedAt, "not restorable by its handle until handed back")
-        XCTAssertEqual(try store.handBacks(host: HostID(rawValue: "box")).map(\.sessionID), ["c1"])
+        XCTAssertNotNil(run.tabClosedAt, "its tab's restoration is the detach's business, not the unlink's")
+        XCTAssertEqual(try store.pendingRuns(host: HostID(rawValue: "box")), [], "detached: not restored as a tab")
         XCTAssertEqual(try store.declined("a"), ["/r/c1"])
         XCTAssertEqual(try store.claim("a", sessionID: "c1", how: .verified, rolloutPath: "/r/c1"), .declined)
-        // A hand-back for another id changes nothing; its own reopens it.
-        XCTAssertFalse(try store.finishHandBack("a", sessionID: "zz"))
-        XCTAssertTrue(try store.finishHandBack("a", sessionID: "c1"))
-        XCTAssertNil(try store.run("a")?.tabClosedAt)
-        XCTAssertEqual(try store.pendingRuns(host: HostID(rawValue: "box")).map(\.handle), ["a"], "restorable again")
-        XCTAssertEqual(try store.handBacks(host: HostID(rawValue: "box")).count, 0)
-        // Unlinked once more and its tab closed first: the close stands.
-        XCTAssertEqual(try store.claim("a", sessionID: "c2", how: .verified, rolloutPath: "/r/c2"), .claimed)
-        try store.unlink("a", sessionID: "c2", rolloutPath: "/r/c2")
-        try store.dropHandBack("a", sessionID: "c2")
-        XCTAssertNotNil(try store.run("a")?.tabClosedAt)
-        XCTAssertEqual(try store.pendingRuns(host: HostID(rawValue: "box")), [])
-        XCTAssertEqual(try store.handBacks(host: HostID(rawValue: "box")).count, 0)
     }
 
     func testDeclinedCandidatesAndPendingRestore() throws {

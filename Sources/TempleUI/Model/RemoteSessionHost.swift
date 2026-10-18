@@ -225,11 +225,6 @@ public protocol RemoteRunLedger: AnyObject {
     /// Marks the run handed over, only while it still holds `sessionID`
     /// (the claim the hand-over was owed for).
     func markTabClosed(_ handle: String, sessionID: String) async throws
-    /// The reverse, after Not this one: no saved tab set holds `sessionID`
-    /// any more and the run's tab is open; its restoration comes back.
-    func finishHandBack(_ handle: String, sessionID: String) async throws
-    /// The run's tab went before the hand-back: that close stands.
-    func dropHandBack(_ handle: String, sessionID: String) async throws
 }
 
 @MainActor
@@ -296,12 +291,9 @@ public protocol RemoteSessionHost: HostLauncher {
     /// The core join refused the id: the run is pending again.
     func releaseClaim(_ handle: String, sessionID: String) async throws
     /// Not this one, on a link Temple made on its own: in one write, the
-    /// claim on `sessionID` is released, `rolloutPath` declined for the
-    /// run, and the run made restorable by its handle again.
+    /// claim on `sessionID` is released and `rolloutPath` declined for the
+    /// run.
     func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws
-    /// Runs owed a hand-back, each with the session id a saved tab may
-    /// still hold for it (the launch's reconciliation).
-    func handBacks() async -> [(run: RemotePendingRun, sessionID: String)]
     func markJoined(_ handle: String) async throws
     /// Claims whose core join never happened, with their folders.
     func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)]
@@ -387,9 +379,6 @@ public struct RemoteTabState: Equatable {
     public var linkedSuggestion: RemoteSuggestion?
     /// Not this one's write is out: the button waits for it.
     public var unlinking = false
-    /// Not this one committed: "couldn't tell" shows until the question's
-    /// candidates arrive.
-    public var unlinkFallback = false
 
     public init(phase: Phase) { self.phase = phase }
 
@@ -829,6 +818,13 @@ public enum RemoteCopy {
     }
 
     public static let openSettings = "Open Settings"
+
+    /// Not this one detached the tab: where it went, and Open.
+    public static func unlinked(_ host: String) -> String {
+        "Unlinked. The agent keeps running on \(host). Its tab is under Running sessions on \(host); "
+            + "open it to pick the right session."
+    }
+    public static let unlinkedOpen = "Open"
 
     /// A tab still open for a host just removed from Temple, at once (not
     /// only when it is opened again).

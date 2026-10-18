@@ -1427,19 +1427,6 @@ extension OpenSessionsModel {
 
     /// A Codex session whose id was claimed after its pending tab was saved
     /// (the quit froze the tab set first): a resume chip of that session.
-    /// A restored tab of a session whose run Not this one handed back: it
-    /// is that run's tab again, unidentified (out of the next save).
-    func makePendingChip(_ tab: SessionTab, handle: String, ended: Bool, typed: Bool) {
-        tab.sessionID = nil
-        tab.isProvisional = true
-        tab.title = Agent.codex.newSessionTitle
-        var state = RemoteTabState(phase: ended ? .endedPending : .disconnected)
-        state.handle = handle
-        tab.remote = state
-        tab.inputSubmitted = typed
-        if ended { tab.activity = .exited(status: 0) }
-    }
-
     /// A tab of a session on a host opened by its id (Running sessions'
     /// Open, for a session with no row): it resumes, so it attaches.
     @discardableResult

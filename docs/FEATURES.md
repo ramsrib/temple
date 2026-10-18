@@ -418,9 +418,11 @@ it. What follows appears for an enabled host only.
   tab says so in one line: "Linked this tab to “<first prompt>”, the only
   Codex session started in this folder since the tab opened.", with **Not
   this one**, which undoes the link once its record is written (a write that
-  fails changes nothing and says so): the agent keeps running, the row the
-  link made is archived (restore it from History), and the tab asks again
-  without that candidate. With two or more, or once it has asked, the tab
+  fails changes nothing and says so): the row the link made is archived
+  (restore it from History) and the tab is detached, its agent still
+  running. A notice says "Unlinked. The agent keeps running on <host>. Its
+  tab is under Running sessions on <host>; open it to pick the right
+  session." with **Open**, which reopens it asking without that candidate. With two or more, or once it has asked, the tab
   says "Codex picks its own session id, so Temple can't tell which session
   this tab is." and asks: "Is this the session?" with the first prompt, the
   folder's full path and when it started (relative to the tab, "4 s after
