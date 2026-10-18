@@ -836,6 +836,11 @@ public enum RemoteCopy {
     }
     public static let unlinkedOpen = "Reopen tab"
 
+    /// Said with it when the tab's close could not be written.
+    public static func unlinkedUnsaved(_ detail: String) -> String {
+        "Temple couldn't record on this Mac that the tab was closed (\(trimmed(detail))), so it may reopen at the next launch."
+    }
+
     /// A tab still open for a host just removed from Temple, at once (not
     /// only when it is opened again).
     public static func hostRemoved(_ host: String) -> String {

@@ -1122,6 +1122,18 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         }
     }
 
+    /// A session's saved tab taken out of the saved tab set directly, as
+    /// durable work that must not wait on the window (Not this one during
+    /// a quit, when the tab set is frozen): the set as saved, less it.
+    func forgetSavedTab(sessionID: String) {
+        let saved = persistence.load()
+        guard saved.contains(where: { $0.sessionID == sessionID }) else { return }
+        if persistence.saveAcknowledged(saved.filter { $0.sessionID != sessionID }), !isQuitting {
+            acknowledgedSaves += 1
+            remoteTabs.tabSetSaved()
+        }
+    }
+
     /// How many saves of the tab set were acknowledged as written.
     private(set) var acknowledgedSaves = 0
 

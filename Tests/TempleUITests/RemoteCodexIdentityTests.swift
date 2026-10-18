@@ -354,7 +354,11 @@ final class RemoteCodexIdentityTests: XCTestCase {
         var archived: [String] = []
         var unlinked: [(HostID, String, String)] = []
         model.remoteTabs.unlinkHandler = { id, _ in archived.append(id) }
-        model.remoteTabs.unlinkedHandler = { unlinked.append(($0, $1, $2)); XCTAssertEqual($3, "reply with the word ok") }
+        model.remoteTabs.unlinkedHandler = {
+            unlinked.append(($0, $1, $2))
+            XCTAssertEqual($3, "reply with the word ok")
+            XCTAssertNil($4)
+        }
         remote.excludesDeclined = true
         remote.suggestionsResult = .candidates([suggestion()])
         let tab = await newCodex()
@@ -440,6 +444,67 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await settle(reopened.remote?.identityNote == RemoteCopy.couldNotTell, "nothing left to ask about")
         XCTAssertEqual(reopened.remote?.suggestions, [], "the unlinked candidate is not offered again")
         XCTAssertNil(reopened.sessionID)
+    }
+
+    /// The quit begins while Not this one's write is out: once it commits,
+    /// the saved tab set loses the rejected session all the same (the
+    /// detach is durable work; only the notice passes the gate), so the
+    /// next launch brings back neither the session nor, detached, its run.
+    func testNotThisOneDuringAQuitStillTakesTheSessionOutOfTheSavedTabs() async throws {
+        let store = ScriptedTabPersistence { _ in true }
+        makeModel(persistence: store)
+        remote.suggestionsResult = .candidates([suggestion()])
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(tab.remote?.linkedOnItsOwn == true)
+        await settle(store.saved.contains { $0.sessionID == "c7" })
+        let hold = Gate()
+        remote.unlinkGate = { await hold.wait() }
+        model.remoteTabs.unlink(tab)
+        await settle(self.remote.unlinks.count == 1)
+        model.prepareForQuit()
+        _ = model.quitDrainPlan()
+        XCTAssertTrue(store.saved.contains { $0.sessionID == "c7" }, "frozen with it")
+        await hold.open()
+        await settle(!store.saved.contains { $0.sessionID == "c7" }, "taken out once the write commits")
+        await settle(self.remote.pending.first?.tabClosed == true, "its run detached")
+        XCTAssertTrue(notices.isEmpty)
+
+        // Relaunch: nothing of it comes back, nothing resumes.
+        remote.unlinkGate = nil
+        makeModel(persistence: store)
+        let row = Fixture.row("c7", agent: .codex, project: "/home/u/project", host: hostID)
+        model.sessionRow = { $0 == "c7" ? row : nil }
+        model.restore()
+        model.remoteTabs.restorePending(hosts: [hostID])
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertFalse(model.tabs.contains { $0.sessionID == "c7" || $0.remote?.handle == "p1" })
+        XCTAssertFalse(remote.opens.contains { $0.sessionID == "c7" }, "the rejected session never resumes")
+    }
+
+    /// Reopening a run whose input record never reached the run store
+    /// asks at once (the tab's own flag) but doesn't take the record as
+    /// written: the next Return writes it, on the usual retried path.
+    func testReopeningDoesNotAssumeTheInputRecordIsWritten() async throws {
+        model.remoteTabs.inputWriteRetries = []
+        remote.inputFailures = 1
+        remote.suggestionsResult = .candidates([suggestion()])
+        let tab = await newCodex()
+        let handle = try XCTUnwrap(tab.remote?.handle)
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(tab.remote?.linkedOnItsOwn == true)
+        await settle(self.remote.inputs == [handle] && self.notices.count == 1, "the input record failed, said once")
+        XCTAssertFalse(model.remoteTabs.inputCommitted(handle))
+        model.remoteTabs.unlink(tab)
+        await settle(!self.model.tabs.contains { $0 === tab })
+        model.remoteTabs.openPendingRun(handle: handle, host: hostID, directory: "/home/u/project", typed: true)
+        let reopened = try XCTUnwrap(model.tabs.first { $0.remote?.handle == handle })
+        XCTAssertTrue(reopened.inputSubmitted, "the tab asks at once")
+        XCTAssertFalse(model.remoteTabs.inputCommitted(handle), "nothing assumed written")
+        await settle(reopened.hasLiveProcess)
+        model.surfaceDidSubmitInput(try XCTUnwrap(reopened.surface))
+        await settle(self.model.remoteTabs.inputCommitted(handle), "the next Return writes it")
+        XCTAssertEqual(remote.inputs, [handle, handle])
     }
 
     /// Not this one's write that fails changes nothing: the tab is still

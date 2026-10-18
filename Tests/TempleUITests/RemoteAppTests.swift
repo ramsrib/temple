@@ -416,6 +416,28 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertEqual(app.overlay.rows["c7"]?.archived, true, "reopening the run leaves the rejected row archived")
         XCTAssertEqual(app.overlay.rows["c7"]?.lastOpenedAt, lastOpened)
 
+        // The tab's close that couldn't be written is said with it, never
+        // replaced by the success text.
+        remote.closePendingError = CocoaError(.fileWriteUnknown)
+        remote.suggestionsResult = .candidates([RemoteSuggestion(rolloutPath: "/r/c9.jsonl", sessionID: "c9", firstPrompt: "third",
+                                                                 startedAt: Date(), directory: "/home/u/q")])
+        let other = app.openSessions.newSession(agent: .codex, project: ProjectKey(host: hostID, path: "/home/u/q"))
+        await settle { other.hasLiveProcess }
+        app.openSessions.surfaceDidSubmitInput(try XCTUnwrap(other.surface))
+        await settle { other.remote?.linkedOnItsOwn == true }
+        app.openSessions.remoteTabs.unlink(other)
+        await settle { app.remoteNotice?.message.hasPrefix("Closed this tab and archived \u{201C}third\u{201D}") == true }
+        let failed = try XCTUnwrap(app.remoteNotice)
+        XCTAssertTrue(failed.message.hasSuffix(" Temple couldn't record on this Mac that the tab was closed "
+                                               + "(\(CocoaError(.fileWriteUnknown).localizedDescription.trimmingCharacters(in: CharacterSet(charactersIn: ".")))), "
+                                               + "so it may reopen at the next launch."), failed.message)
+        XCTAssertEqual(app.remoteNoticeAction(failed), "Reopen tab")
+        app.dismissRemoteNotice()
+        remote.closePendingError = nil
+        remote.suggestionsResult = .candidates([first, RemoteSuggestion(rolloutPath: "/r/c8.jsonl", sessionID: "c8",
+                                                                         firstPrompt: "other", startedAt: Date(),
+                                                                         directory: "/home/u/p")])
+
         // The way back after the notice is gone: Running sessions lists the
         // run, and Open there reopens it asking at once.
         app.openSessions.remoteTabs.detach(reopened.id)

@@ -41,7 +41,9 @@ public final class RemoteTabController {
     public var unlinkHandler: ((_ sessionID: String, _ host: HostID) -> Void)?
     /// Not this one detached the tab: the notice, whose Open reopens the
     /// run by its handle in that folder.
-    public var unlinkedHandler: ((_ host: HostID, _ handle: String, _ directory: String, _ session: String) -> Void)?
+    /// `unsaved`: why the tab's close could not be written (said with it).
+    public var unlinkedHandler: ((_ host: HostID, _ handle: String, _ directory: String, _ session: String,
+                                  _ unsaved: String?) -> Void)?
     /// A row's open state (`last_opened_at`), read when Discard is chosen:
     /// an Open after that keeps the row.
     public var rowLastOpened: (_ sessionID: String) -> Date? = { _ in nil }
@@ -535,7 +537,7 @@ public final class RemoteTabController {
         guard tab.remote?.linkedOnItsOwn == true, tab.remote?.unlinking != true, let linked = tab.remote?.linkedSuggestion,
               let sid = tab.sessionID, let handle = tab.remote?.handle, let host = remoteHost(for: tab),
               !isQuitting else { return }
-        let hostID = tab.host, directory = tab.launchObservation?.directory ?? tab.projectPath
+        let hostID = tab.host, tabID = tab.id, directory = tab.launchObservation?.directory ?? tab.projectPath
         // What the notice calls the session it archives: its prompt, else
         // its row's title.
         let name = linked.firstPrompt ?? model.sessionRow(sid)?.displayTitle ?? Agent.codex.newSessionTitle
@@ -561,15 +563,31 @@ public final class RemoteTabController {
             self.asked.insert(handle)
             archive?(sid, hostID)
             // The ordinary detach write: its tab is closed, the run kept.
-            await self.reportWrite(host, noticeTicket) { try await host.closePendingTab(handle) }
-            guard self.gate.admit(.unlinkResult, ticket), let tab = ticket.tab, tab.sessionID == sid else { return }
-            if tab.hasLiveProcess, let surface = tab.surface {
-                self.model.closingTabIDs.insert(tab.id)
-                surface.terminate()
-            }
-            self.model.removeTab(tab.id)
+            // Its failure is kept for the notice, never replaced by it.
+            var unsaved: String?
+            do { try await host.closePendingTab(handle) } catch { unsaved = error.localizedDescription }
+            // Admitted now, after the last await and before the detach
+            // below changes the tab: the notice is the gated part.
+            let admitted = self.gate.admit(.unlinkResult, ticket)
+            // The detach itself is durable work too, whatever the gate says:
+            // the saved tab set loses the rejected session now (a quit has
+            // frozen it, and must not bring the session back next launch),
+            // and a tab still open is detached unless the app is quitting.
+            self.model.forgetSavedTab(sessionID: sid)
             self.model.forgetClosedTabs(sessionID: sid)
-            self.unlinkedHandler?(hostID, handle, directory, name)
+            if !self.isQuitting, let tab = self.model.tabs.first(where: { $0.id == tabID }), tab.sessionID == sid {
+                if tab.hasLiveProcess, let surface = tab.surface {
+                    self.model.closingTabIDs.insert(tab.id)
+                    surface.terminate()
+                }
+                self.model.removeTab(tab.id)
+            }
+            // Only what it says passes the gate.
+            if admitted {
+                self.unlinkedHandler?(hostID, handle, directory, name, unsaved)
+            } else if let unsaved, self.gate.admit(.pendingWriteNotice, noticeTicket) {
+                self.noticeHandler?(hostID, RemoteCopy.unrecorded(host.hostName, detail: unsaved))
+            }
         }
     }
 
@@ -1678,9 +1696,10 @@ public final class RemoteTabController {
             return
         }
         // A run already asked about (a decline, or Not this one) was typed
-        // into: the question comes at once, from Running sessions too.
+        // into: the question comes at once, from Running sessions too. Only
+        // the tab's own flag: what the run store has of its input is
+        // written (and retried) by `inputSubmitted`, never assumed here.
         let typed = typed || asked.contains(handle) || declinedHere[handle] != nil
-        if typed { inputEvidence[handle] = .committed }
         let tab = model.appendPendingChip(host: hostID, handle: handle, directory: directory, ended: false, typed: typed)
         model.activate(tab)
     }
