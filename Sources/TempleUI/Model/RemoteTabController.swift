@@ -885,6 +885,7 @@ public final class RemoteTabController {
         // it reopens, with Try again (round 3).
         if let handle, let refusal = refusedClaims[handle] {
             state.identityNote = refusal.reason
+            state.canRetryIdentity = true
             state.identityRefused = true
         }
         tab.remote = state
@@ -978,6 +979,7 @@ public final class RemoteTabController {
         case .taken:
             guard gate.admit(.identityResult, ticket), let tab = ticket.tab else { return false }
             tab.remote?.identityNote = RemoteCopy.couldNotTell
+            tab.remote?.canRetryIdentity = true
             await loadSuggestions(ticket, host: host, handle: handle)
             return false
         case .storage(let detail):
@@ -1037,6 +1039,7 @@ public final class RemoteTabController {
                 refusedClaims[handle] = (id, conflict.message)
                 guard gate.admit(.identityResult, ticket), let tab = ticket.tab else { return }
                 tab.remote?.identityNote = conflict.message
+                tab.remote?.canRetryIdentity = true
                 tab.remote?.identityRefused = true
                 tab.remote?.confirming = nil
                 return
@@ -1047,6 +1050,7 @@ public final class RemoteTabController {
                 TempleUILog.db.error("core join of a claimed Codex id failed: \(error.localizedDescription, privacy: .public)")
                 guard gate.admit(.identityResult, ticket), let tab = ticket.tab else { return }
                 tab.remote?.identityNote = RemoteCopy.unrecorded(host.hostName, detail: error.localizedDescription)
+                tab.remote?.canRetryIdentity = false
                 tab.remote?.confirming = nil
                 return
             }
@@ -1069,6 +1073,7 @@ public final class RemoteTabController {
         // Temple's own yes says so, in the tab only.
         if let linked {
             tab.remote?.identityNote = RemoteCopy.linkedOnItsOwn(linked)
+            tab.remote?.canRetryIdentity = false
             tab.remote?.linkedOnItsOwn = true
         }
     }
@@ -1103,6 +1108,7 @@ public final class RemoteTabController {
         tab.inputSubmitted = true
         tab.remote?.suggestions = []
         tab.remote?.identityNote = nil
+        tab.remote?.canRetryIdentity = false
         tab.remote?.confirming = nil
         tab.remote?.identityRefused = false
         if let operation = tab.remote?.identityOperation { operations.cancel(id: operation) }
@@ -1266,6 +1272,7 @@ public final class RemoteTabController {
         // a refusal's reason goes with the refusal.
         if let note = tab.remote?.identityNote, note != RemoteCopy.couldNotTell, note != RemoteCopy.noOtherCandidate {
             tab.remote?.identityNote = nil
+            tab.remote?.canRetryIdentity = false
         }
         // It shows that it ran: checking, then what it found.
         tab.remote?.retrying = true
@@ -1294,6 +1301,7 @@ public final class RemoteTabController {
             refusedClaims[handle] = nil
             for tab in model.tabs where tab.remote?.handle == handle {
                 tab.remote?.identityRefused = false
+                tab.remote?.canRetryIdentity = false
             }
         }
     }
@@ -1326,7 +1334,10 @@ public final class RemoteTabController {
         guard case .candidates(let found) = answer else {
             if case .unavailable(let reason) = answer {
                 lastLookup[handle] = .unavailable(reason)
-                if tab.remote?.identityNote == nil { tab.remote?.identityNote = RemoteCopy.checkFailed(reason) }
+                if tab.remote?.identityNote == nil {
+                    tab.remote?.identityNote = RemoteCopy.checkFailed(reason)
+                    tab.remote?.canRetryIdentity = true
+                }
                 if retryAwaitingLookup.remove(handle) != nil { tab.remote?.retryResult = RemoteCopy.checkFailed(reason) }
             }
             return
@@ -1361,12 +1372,16 @@ public final class RemoteTabController {
         if !offered.isEmpty {
             asked.insert(handle)
             tab.remote?.retryResult = nil
-            if tab.remote?.identityNote == RemoteCopy.noOtherCandidate { tab.remote?.identityNote = nil }
+            if tab.remote?.identityNote == RemoteCopy.noOtherCandidate {
+                tab.remote?.identityNote = nil
+                tab.remote?.canRetryIdentity = false
+            }
         }
         // Once asked, the tab is never bare: with no candidate left (the
         // last one declined), it says no other session has started there.
         if offered.isEmpty, asked.contains(handle), tab.remote?.identityNote == nil {
             tab.remote?.identityNote = RemoteCopy.noOtherCandidate
+            tab.remote?.canRetryIdentity = true
         }
     }
 
@@ -1433,10 +1448,12 @@ public final class RemoteTabController {
                 }
                 tab.remote?.suggestions.removeAll { $0.id == suggestion.id }
                 tab.remote?.identityNote = RemoteCopy.couldNotTell
+                tab.remote?.canRetryIdentity = true
             case .storage(let detail):
                 guard self.gate.admit(.confirmResult, ticket), let tab = ticket.tab else { return }
                 tab.remote?.confirming = nil
                 tab.remote?.identityNote = RemoteCopy.unrecorded(host.hostName, detail: detail)
+                tab.remote?.canRetryIdentity = false
                 // Temple's own yes is not tried again: the question, with
                 // the failure said above it.
                 if automatic {
@@ -1463,6 +1480,7 @@ public final class RemoteTabController {
         // has started there (with Try again), never goes bare.
         if tab.remote?.suggestions.isEmpty == true, tab.remote?.phase == .connected, tab.remote?.identityNote == nil {
             tab.remote?.identityNote = RemoteCopy.noOtherCandidate
+            tab.remote?.canRetryIdentity = true
         }
         let ticket = gate.ticket(host: tab.host)
         operations.run(host: tab.host, .write) { [weak self] in

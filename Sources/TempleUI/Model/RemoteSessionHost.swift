@@ -358,6 +358,8 @@ public struct RemoteTabState: Equatable {
     /// A line under the question: why Temple couldn't tell, or core's
     /// reason for refusing the id.
     public var identityNote: String?
+    /// The identity caption offers Try again, independently of its wording.
+    public var canRetryIdentity = false
     /// The suggestion whose yes is being written.
     public var confirming: [UInt8]?
     /// The owned identity schedule of this open.

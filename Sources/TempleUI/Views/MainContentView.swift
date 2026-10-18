@@ -203,7 +203,7 @@ private struct SessionTerminalView: View {
                     Text(RemoteCopy.checkingAgain)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
-                } else if remote.identityRefused || note == RemoteCopy.couldNotTell || note == RemoteCopy.noOtherCandidate {
+                } else if remote.canRetryIdentity {
                     Button(RemoteCopy.tryAgain) { model.openSessions.remoteTabs.retryIdentity(tab) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
