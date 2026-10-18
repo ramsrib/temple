@@ -362,10 +362,10 @@ deletable without touching core rows; keep it that way
   host list in the `temple.settings.remoteHosts` key, never in
   `session_state`, `open_tabs` or `project_state`. A session on a host is
   still an ordinary row and its tab an ordinary saved tab. Temple never
-  unarchives a row on its own: a person's open (the activation sink,
-  ADR-017) or a person's yes on a candidate brings a row back; a claim, a
-  join, a verified identity or a reconcile never does, and a run or a
-  saved tab whose row is archived gets no tab at launch.
+  archives or unarchives a row on its own, and never undoes a link it made:
+  a person's open (the activation sink, ADR-017) brings a row back, and a wrong automatic link is closed as any tab is; a claim, a join,
+  a verified identity and a reconcile leave every archive as it is. A saved
+  tab whose row is archived restores as an inert chip, local and remote alike.
 - **Two entry points.** The host list (`temple.settings.remoteHosts`) and
   the registry are built by `AppStartup`/`AppModel`, which both
   `TempleApp.swift` files share; anything remote added at launch goes

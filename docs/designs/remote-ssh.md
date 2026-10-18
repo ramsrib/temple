@@ -3159,23 +3159,15 @@ is `RemoteCodexIdentityTests.testTheCopyIsOneSourceAndHasNoEmDash`.
    B12), and never stops anything. Its link says which: "Remove from
    Temple", or "Archive session" when the row is named, pinned, colored or
    has a transcript. A stop is "Stop on <host>" in the row's menu.
-4. *Not this one on a link Temple made on its own* (`unlink`): one
-   remote-store write (`RemoteStateStore.unlink`) releases the claim and
-   declines the candidate. Once it has committed, the hand-over still owed
-   is dropped, the row the link created is archived as a person's archive
-   (History restores it; the reason "declined link" is the remote store's
-   declined candidate and a log line, not a new core `archive_reason`), and
-   the tab is detached as any tab is: the ordinary detach write
-   (`closePendingTab`), the agent left running, the run listed under
-   Running sessions. A notice, "Unlinked. The agent keeps running on
-   <host>. Its tab is under Running sessions on <host>; open it to pick the
-   right session.", has Open, which reopens the run by its handle; the
-   question there leaves the declined candidate out (the store's decline,
-   and `declinedHere` before it is written). *As revised*: rounds 2 and 3
-   converted the tab in place (a hand-back obligation, the hand-over's
-   reverse, and a migration); each round found new races in that state, so
-   Fable chose the detach, which has none of them by construction, and the
-   hand-back and its never-pushed migration were deleted.
+4. *Temple's own yes* is said in the tab: "Linked this tab to
+   “<first prompt>”, the only Codex session started in this folder since
+   the tab opened." The note is display only, with no undo button or
+   dismiss. If the link is wrong, close the tab as any tab: an idle agent
+   is stopped, a working one asks Detach, Stop or Cancel. The session's row
+   is a real session on the host and stays until a person archives it
+   (owner's decision, 2026-10-18). The question for several candidates
+   keeps Yes, that's it and a per-candidate Not this one; a verified
+   `--no-daemon` identity needs no note.
 5. *Dismiss* (S11) is only on a row with a left-running note and clears
    the flag; "Kept" is gone.
 6. *The folder sheet's Test connection* opens the host's own Test
@@ -3238,10 +3230,10 @@ instead of a shared background server".
 keeping the host, the row actions, Detach, the working-agent question, the
 archive blocker, Open / Show tab / Dismiss, a failed sheet stop, the folder
 sheet's test, the tmux rule, the launch notice and which runs the quit
-flags); `RemoteCodexIdentityTests` (Not this one, with candidates left and
-none, and its failed write); `RemoteAppTests.testNotThisOneArchivesTheLinkedRowReversibly`;
-`CodexIdentityTests.testUnlinkReleasesTheClaimDeclinesAndRestoresTheRun`;
-the gate walk's two new completions. Computer-use passes check tasks, not
+flags); `RemoteCodexIdentityTests` (the automatic link's note and ordinary
+close, candidate decline, lookup, claim ordering, ended answers, host
+retirement and canonical tabs); `CodexIdentityTests` (verified declines
+and unavailable run reads); the gate walk's two new completions. Computer-use passes check tasks, not
 labels (docs/copy-review.md).
 
 ### Cold-read round: review fixes
@@ -3251,12 +3243,12 @@ Sol's code review (seven should-fixes), Fable's visual review (items 1 to
 input)", was overruled by the coordinator per docs/copy-review.md) and a
 cold read of the real screens, as built:
 
-- *Not this one commits first.* `unlink` writes the store first; only a
+- **Superseded** (owner's decision 2026-10-18; ux3/rev/plan-v2.md). *Not this one commits first.* `unlink` writes the store first; only a
   committed write drops the owed hand-over, archives the row and (through
   the gated completion `.unlinkResult`) detaches the tab. A failed write
   changes nothing, is said once, and the button can be used again
   (`RemoteTabState.unlinking` holds it while the write is out).
-- *A late hand-over can't undo it.* `RemoteStateStore.markTabClosed` marks
+- **Superseded** (owner's decision 2026-10-18; ux3/rev/plan-v2.md). *A late hand-over can't undo it.* `RemoteStateStore.markTabClosed` marks
   the run only while it still holds the session id the hand-over was owed
   for, in the statement itself (`RemoteRunLedger.markTabClosed(_:sessionID:)`).
 - *Never a bare tab.* Try again keeps "couldn't tell" until candidates
@@ -3286,7 +3278,7 @@ cold read of the real screens, as built:
   host hides its "Add host by address…" link while the default button reads
   the same; the folder sheet's title is "New <Agent> session" with the host
   in mono after it; every `--flag` in the Hosts notes is code.
-- *Not this one never edits the saved tab set* (Sol round 5 items 1 and 2;
+- **Superseded** (owner's decision 2026-10-18; ux3/rev/plan-v2.md). *Not this one never edits the saved tab set* (Sol round 5 items 1 and 2;
   Fable's decision, the second round with findings in that write). A quit
   freezes the set with the rejected tab; the next launch's `restore()`
   leaves out a saved tab on a host whose row is archived (the row is the
@@ -3310,7 +3302,7 @@ cold read of the real screens, as built:
   it always did. Remote's only other row deletion that a saved tab could
   outlive would be the ADR-030 sweep, whose SQL already requires no saved
   tab.
-- *Link it after all* (Fable's decision on undoing Not this one). A
+- **Superseded** (owner's decision 2026-10-18; ux3/rev/plan-v2.md). *Link it after all* (Fable's decision on undoing Not this one). A
   declined candidate is offered back on its own line in the tab's question
   band ("You said “…” wasn't this tab's session.", Link it after all),
   through the yes path; the store's claim deletes the decline in the same
@@ -3321,7 +3313,7 @@ cold read of the real screens, as built:
   the claim commits, the row Not this one archived comes back
   (`confirmedHandler`, the sink's `restoreSessions`); the join takes that
   run's notice down. Temple never relinks on its own.
-- *Sol round 6.* (1) Withdrawn in the next round (Fable's decision,
+- **Superseded** (owner's decision 2026-10-18; ux3/rev/plan-v2.md). *Sol round 6.* (1) Withdrawn in the next round (Fable's decision,
   /private/tmp/temple-remote-work/ux3/rev/fable-unarchive.md):
   `r6-claimed-at` and the timestamp comparison are gone, never pushed and
   never applied to a store outside tests. Reconciliation repairs a join
@@ -3337,7 +3329,7 @@ cold read of the real screens, as built:
   Reconnect appears once the host is back; a tab never opened is told to
   click it; a tab already showing its own question is told only to add the
   host again. The button opens Settings at Hosts.
-- *Cold read 8.* Not this one's notice is three short paragraphs (what
+- **Superseded** (owner's decision 2026-10-18; ux3/rev/plan-v2.md). *Cold read 8.* Not this one's notice is three short paragraphs (what
   happened, the way back through Reopen tab and Link it after all, the
   session alone from Archived sessions), each laid out in full; the
   notice's four-line limit stays for one-paragraph notices. A refused
@@ -3347,7 +3339,7 @@ cold read of the real screens, as built:
   stays archived if it was, and a connected tab says Temple goes on
   looking. A tab never opened on a removed host drops its "not set up"
   account when the host is added again, so it opens when next shown.
-- *Unarchive on join, dropped* (Sol round 7; Fable's decision,
+- **Superseded** (owner's decision 2026-10-18; ux3/rev/plan-v2.md). *Unarchive on join, dropped* (Sol round 7; Fable's decision,
   /private/tmp/temple-remote-work/ux3/rev/fable-unarchive.md). All four
   findings were in the claimed-at mechanism, so the mechanism went:
   `r6-claimed-at`, `claimed_at`, `claimedAt()` and the comparison are
@@ -3371,7 +3363,7 @@ cold read of the real screens, as built:
   adoption passing no time) and #3 (`restorePending` recreating an
   archived row's chip) are closed by construction; #2 (two reads) and #4
   (millisecond against fractional-second times) went with the column.
-- *Region I frozen* (2026-10-18, after Sol round 8). Region I, the remote
+- **Superseded** (owner's decision 2026-10-18; ux3/rev/plan-v2.md). *Region I frozen* (2026-10-18, after Sol round 8). Region I, the remote
   Codex identity lifecycle (Not this one, unlink, claim, decline, archive,
   saved-tab restore, lookup), had review findings in eight consecutive
   rounds, and the ledger's pre-committed bound fired. Region I is under a
@@ -3384,3 +3376,51 @@ cold read of the real screens, as built:
   current code. The ledger is
   /private/tmp/temple-remote-work/ux3/rev/ledger.md and the enumeration
   /private/tmp/temple-remote-work/ux3/rev/enum/table.md.
+
+
+### Region I: the undo removed (2026-10-18)
+
+The owner's decision replaces the undo designs above
+(`/private/tmp/temple-remote-work/ux3/rev/plan-v2.md`). Temple keeps its
+lone-match automatic yes and its plain linked-tab note. There is no
+unlink, relink, automatic archive or automatic unarchive. A wrong link is
+closed as any tab is; its row stays until a person archives it. The
+multiple-candidate question and its per-candidate decline remain. Saved
+tabs restore as before this round, local and remote alike, including an
+archived row's chip; the person's next activation brings that row back.
+
+The cut removes the four archive/restore/notice callbacks, declined
+candidate lines, undo copy and tests covering only those paths.
+`dismissStoppedRun`, already unused by Discard, is removed separately.
+There is no attachment fence: after the cut, a claim can be released only
+when core refuses its join. That refusal now awaits release before it is
+recorded or shown. A small in-memory set excludes identity checks, new
+confirmations and already-outstanding acquisition results while release
+is in flight: final review found that an independent `.known` could
+otherwise join the held id if its core conflict disappeared before the
+release committed. A transient acquisition epoch also invalidates results
+that started before refusal but arrive after release, even if Try again
+has since cleared the refusal. Exit, Stop and pending-open adoption carry
+the same snapshot. This closes V5r's overlapping-check window without a
+durable claim fence. Joined claims cannot cycle through unlink/relink, so
+no durable claim generation, hand-over id or remote schema field is needed. The migrations still end at `r5-input`.
+
+The seven retained fixes each have one focused regression in an existing
+suite: V1 passes the verified rollout path to the claim's decline check;
+V7 retires an ended joined answer without restoring a resumable chip;
+V8 clears pending busy state at host retirement; V9 shows the first
+unavailable lookup using the existing failure text; V10 rejects a stale
+open before assigning a lookup generation; V11 keeps the newer existing
+session tab and terminates only the redundant client, without a host stop
+or another hand-over; V12 distinguishes an unreadable run from a missing
+row when looking for candidates. A successfully persisted decline holds
+even if Codex's process later proves that rollout's identity.
+
+The model/property harness was dropped by the owner because this scope
+no longer warrants it. The gate is a failing-then-passing targeted test
+for each retained violation, the full suite through the isolated `benv`
+(excluding SSHConnectionTests and Linux acceptance), two consecutive Sol
+reviews with no region-I findings, and the tenth cold read of the
+surviving note. Cold-read input is prepared separately; no cold read is
+claimed by code or test review. This work is committed locally on main
+and is not pushed.
