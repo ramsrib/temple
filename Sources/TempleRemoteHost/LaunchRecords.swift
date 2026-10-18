@@ -353,7 +353,7 @@ public enum ConversationCheck: Sendable, Equatable {
       exit 0
     fi
     { [ -d "$p" ] && [ -r "$p" ] && [ -x "$p" ]; } || { echo unknown; echo "$p can't be read"; exit 0; }
-    if f=$(find "$p" -mindepth 2 -maxdepth 2 -name "$id.jsonl" -print 2>/dev/null); then
+    if f=$(find -H "$p" -mindepth 2 -maxdepth 2 -name "$id.jsonl" -print 2>/dev/null); then
       if [ -n "$f" ]; then echo present; else echo absent; fi
     elif [ -n "$f" ]; then echo present
     else echo unknown; echo "part of $p couldn't be read"; fi

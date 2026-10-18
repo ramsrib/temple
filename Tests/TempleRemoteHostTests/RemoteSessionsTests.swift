@@ -711,6 +711,20 @@ final class RemoteSessionsTests: XCTestCase {
         XCTAssertEqual(missing, .absent)
     }
 
+    /// A projects root that is a symlink is followed, as transcript
+    /// enrichment follows it: otherwise find walks nothing and reports absent.
+    func testAConversationCheckFollowsASymlinkedProjectsRoot() async throws {
+        let host = StandIn()
+        let real = host.tree.directory("real-projects")
+        let folder = real.appendingPathComponent("-w")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("{}\n".utf8).write(to: folder.appendingPathComponent("s.jsonl"))
+        let config = host.tree.directory("cfg")
+        try FileManager.default.createSymbolicLink(atPath: config.path + "/projects", withDestinationPath: real.path)
+        let found = await ConversationCheck.run(sessionID: "s", config: .set(config.path), base: host.home, using: host.exec)
+        XCTAssertEqual(found, .present)
+    }
+
     func testAConversationTemplCantCheckIsUnknown() async throws {
         let host = StandIn()
         let store = try RemoteStateStore()
