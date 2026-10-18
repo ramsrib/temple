@@ -219,29 +219,52 @@ extension AppModel {
         remoteHosts.remove(removal.name)
     }
 
+    /// Why "Stop them and remove" kept the host: sessions not stopped
+    /// (said under one heading), and sessions whose stop's outcome could
+    /// not be saved on this Mac (each its own line: Temple can't tell
+    /// whether they stopped).
+    public struct RemovalFailures: Equatable {
+        public var notStopped: [String] = []
+        public var unrecorded: [String] = []
+        public var isEmpty: Bool { notStopped.isEmpty && unrecorded.isEmpty }
+    }
+
     /// "Stop them and remove": each running session is stopped (no
-    /// confirmation per session), then the host goes. A stop that fails
-    /// keeps the host, and `completion` gets what the failures say (empty:
-    /// removed).
+    /// confirmation per session), then the host goes. A stop that fails, or
+    /// whose outcome can't be saved, keeps the host, and `completion` gets
+    /// what the failures say (empty: removed).
     public func stopSessionsAndRemoveHost(_ removal: RemoteRemoval,
-                                          completion: @escaping @MainActor ([String]) -> Void) {
+                                          completion: @escaping @MainActor (RemovalFailures) -> Void) {
         guard let record = remoteHosts.record(named: removal.name) else { return }
         let host = record.host
         var remaining = removal.live.count
-        var failures: [String] = []
+        var failures = RemovalFailures()
         let ticket = openSessions.remoteTabs.gate.ticket(host: host)
         for session in removal.live {
             let title = trackedTitle(session)
             openSessions.remoteTabs.stopTracked(handle: session.handle, host: host, agent: session.agent) { [weak self] result in
                 remaining -= 1
-                if let line = RemoteCopy.stopFailure(result, host: host.rawValue, agent: session.agent, title: title) {
-                    failures.append(line)
+                switch result {
+                case .stopped:
+                    break
+                case .leftRunning(let reason, let detail):
+                    failures.notStopped.append(RemoteCopy.removalNotStopped(title, host: host.rawValue, reason: reason,
+                                                                            detail: detail))
+                case .unrecorded(let detail):
+                    failures.unrecorded.append(RemoteCopy.removalUnrecorded(title, host: host.rawValue, detail: detail))
                 }
                 guard remaining == 0, let self, self.openSessions.remoteTabs.gate.admit(.removalStopOutcome, ticket) else { return }
                 if failures.isEmpty { self.remoteHosts.remove(removal.name) }
                 completion(failures)
             }
         }
+    }
+
+    /// Whether a session's conversation can be resumed after a stop: it
+    /// has a row whose transcript Temple knows.
+    public func canResumeLater(_ sessionID: String?) -> Bool {
+        guard let sessionID, let row = overlay.rows[sessionID] else { return false }
+        return row.transcriptPath != nil
     }
 
     /// A tracked session's name as Running sessions shows it: its row's

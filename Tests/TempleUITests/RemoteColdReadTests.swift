@@ -103,10 +103,10 @@ final class RemoteColdReadTests: XCTestCase {
         var again: RemoteRemoval?
         other.requestRemoveHost("box") { again = $0 }
         await settle { again != nil }
-        var failures: [String]?
+        var failures: AppModel.RemovalFailures?
         other.stopSessionsAndRemoveHost(try XCTUnwrap(again)) { failures = $0 }
         await settle { failures != nil }
-        XCTAssertEqual(failures, [])
+        XCTAssertEqual(failures?.isEmpty, true)
         XCTAssertEqual(second.stops.map(\.handle).sorted(), ["h1", "h2"], "each stopped, none asked about")
         XCTAssertNil(other.remoteHosts.record(named: "box"), "then removed")
     }
@@ -132,7 +132,7 @@ final class RemoteColdReadTests: XCTestCase {
         var removal: RemoteRemoval?
         app.requestRemoveHost("box") { removal = $0 }
         await settle { removal != nil }
-        var failures: [String]?
+        var failures: AppModel.RemovalFailures?
         app.stopSessionsAndRemoveHost(try XCTUnwrap(removal)) { failures = $0 }
         await settle { failures != nil }
         XCTAssertEqual(remote.stops.map(\.handle), [handle], "Stop them and remove stops it too")
@@ -150,11 +150,37 @@ final class RemoteColdReadTests: XCTestCase {
         app.requestRemoveHost("box") { removal = $0 }
         await settle { removal != nil }
         XCTAssertEqual(removal?.fromConfig, false)
-        var failures: [String]?
+        var failures: AppModel.RemovalFailures?
         app.stopSessionsAndRemoveHost(try XCTUnwrap(removal)) { failures = $0 }
         await settle { failures != nil }
-        XCTAssertEqual(failures?.count, 1)
+        XCTAssertEqual(failures?.notStopped, ["\u{201C}New Claude session\u{201D}: another terminal outside Temple is attached to it. "
+                                              + "Close that terminal, then try again."])
+        XCTAssertEqual(RemoteCopy.notRemoved("box"), "box was not removed because these sessions could not be stopped:")
         XCTAssertNotNil(app.remoteHosts.record(named: "box"), "a failed stop cancels the removal")
+
+        // Unreachable, unconfirmed, and an outcome that couldn't be saved:
+        // the last is its own line, saying Temple can't tell.
+        for (result, expected) in [
+            (RemoteStopResult.leftRunning(.hostDidNotAnswer, detail: "ssh: connect to host box port 22: Operation timed out"),
+             "\u{201C}New Claude session\u{201D}: couldn't reach box (ssh: connect to host box port 22: Operation timed out). It may still be running."),
+            (.leftRunning(.stopNotAcknowledged, detail: "no answer within 10 seconds"),
+             "\u{201C}New Claude session\u{201D}: box didn't confirm the stop (no answer within 10 seconds). It may still be running."),
+        ] {
+            remote.stopResult = result
+            var again: AppModel.RemovalFailures?
+            app.stopSessionsAndRemoveHost(try XCTUnwrap(removal)) { again = $0 }
+            await settle { again != nil }
+            XCTAssertEqual(again?.notStopped, [expected])
+            XCTAssertEqual(again?.unrecorded, [])
+        }
+        remote.stopResult = .unrecorded(detail: "disk I/O error")
+        var unsaved: AppModel.RemovalFailures?
+        app.stopSessionsAndRemoveHost(try XCTUnwrap(removal)) { unsaved = $0 }
+        await settle { unsaved != nil }
+        XCTAssertEqual(unsaved?.notStopped, [], "not under the could-not-be-stopped heading")
+        XCTAssertEqual(unsaved?.unrecorded, ["box was not removed: Temple can't tell whether \u{201C}New Claude session\u{201D} "
+                                             + "was stopped, because saving the result on this Mac failed (disk I/O error)."])
+        XCTAssertNotNil(app.remoteHosts.record(named: "box"))
     }
 
     /// A tab still open for a host just removed says so at once (its host
@@ -170,8 +196,9 @@ final class RemoteColdReadTests: XCTestCase {
         XCTAssertFalse(app.tabHostWasRemoved(tab), "an edit is not a removal")
         app.remoteHosts.remove("box")
         XCTAssertTrue(app.tabHostWasRemoved(tab), "said at once, in the tab")
-        XCTAssertTrue(RemoteCopy.hostRemoved("box").hasPrefix("box was removed from Temple."))
-        XCTAssertTrue(RemoteCopy.hostRemoved("box").contains("may still be running"))
+        XCTAssertEqual(RemoteCopy.hostRemoved("box"),
+                       "This tab's host, box, was removed from Temple. The agent may still be running there; "
+                       + "add the host again to reconnect.")
         app.remoteHosts.save(RemoteHostRecord(name: "box", source: .temple, address: "10.0.0.3"), editing: nil)
         XCTAssertFalse(app.tabHostWasRemoved(tab), "added again")
     }
@@ -309,7 +336,9 @@ final class RemoteColdReadTests: XCTestCase {
         let nowhere = RemoteTrackedSession(handle: "h8", sessionID: "s8", agent: .claude, state: .present(attached: false),
                                            leftRunning: nil)
         XCTAssertFalse(sheet.open(nowhere, rows: app.sessions), "the sheet stays")
-        XCTAssertEqual(sheet.results["h8"], RemoteCopy.cannotOpenTracked("h8"))
+        XCTAssertEqual(sheet.results["h8"], "Temple can't reopen this session because it doesn't know which folder it ran in. "
+                       + "Stop it here, or connect to the host and run:")
+        XCTAssertEqual(sheet.commands["h8"], "tmux -L temple attach -t temple-h8", "the command on its own line")
         XCTAssertNil(app.openSessions.openTab(forSessionID: "s8"))
     }
 

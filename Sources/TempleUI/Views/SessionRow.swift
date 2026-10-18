@@ -113,15 +113,21 @@ struct SessionRow: View {
             Button("Save") { model.overlay.rename(session.id, to: draftName) }
             Button("Cancel", role: .cancel) {}
         }
-        .alert(model.openSessions.remoteTabs.stopQuestionTitle(host: session.host, agent: session.agent ?? .claude,
-                                                               sessionID: session.id),
+        .alert(stopQuestion.title,
                isPresented: $confirmingStop) {
             Button("Stop") { model.openSessions.remoteTabs.stopSession(sessionID: session.id, host: session.host) }
                 .keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) {}
         } message: {
-            if openTab != nil { Text(RemoteCopy.stopWorkingMessage) }
+            Text(stopQuestion.message)
         }
+    }
+
+    /// The Stop question for this row's working agent, naming it.
+    private var stopQuestion: (title: String, message: String) {
+        model.openSessions.remoteTabs.stopQuestion(host: session.host, agent: session.agent ?? .claude,
+                                                   title: model.displayTitle(session), sessionID: session.id,
+                                                   resumable: model.canResumeLater(session.id))
     }
 
     /// A session on a host whose agent still runs there: Stop on <host>,

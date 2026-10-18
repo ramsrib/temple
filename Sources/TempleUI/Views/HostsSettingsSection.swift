@@ -40,7 +40,7 @@ struct HostsSettingsSection: View {
     /// Hosts whose Remove is asking the host, or stopping its sessions.
     @State private var removing: Set<String> = []
     /// A Stop them and remove that could not stop everything, by host.
-    @State private var removeProblems: [String: [String]] = [:]
+    @State private var removeProblems: [String: AppModel.RemovalFailures] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -209,8 +209,12 @@ struct HostsSettingsSection: View {
             HostStatusLine(text: hosts.statusLine(for: record.name), summary: hosts.summaries[record.name])
             if let problems = removeProblems[record.name], !problems.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(RemoteCopy.notRemoved(record.name))
-                    ForEach(problems, id: \.self) { Text($0) }
+                    if !problems.notStopped.isEmpty {
+                        Text(RemoteCopy.notRemoved(record.name))
+                        ForEach(problems.notStopped, id: \.self) { Text($0) }
+                    }
+                    // Not "could not be stopped": each says what it is.
+                    ForEach(problems.unrecorded, id: \.self) { Text($0).padding(.top, 2) }
                 }
                 .font(.system(size: 11))
                 .foregroundStyle(.orange)

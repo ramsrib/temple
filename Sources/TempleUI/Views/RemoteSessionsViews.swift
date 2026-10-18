@@ -35,9 +35,7 @@ struct RemoteSessionsSheet: View {
         }
         .onAppear { sheet.load() }
         .onDisappear { sheet.dismissed() }
-        .alert(confirmingStop.map {
-                   model.openSessions.remoteTabs.stopQuestionTitle(host: sheet.request.host, agent: $0.agent, handle: $0.handle)
-               } ?? "",
+        .alert(confirmingStop.map { stopQuestion($0).title } ?? "",
                isPresented: Binding(get: { confirmingStop != nil }, set: { if !$0 { confirmingStop = nil } })) {
             Button("Stop") {
                 if let session = confirmingStop { sheet.stop(session) }
@@ -46,7 +44,7 @@ struct RemoteSessionsSheet: View {
             .keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) { confirmingStop = nil }
         } message: {
-            if let session = confirmingStop, isInTab(session) { Text(RemoteCopy.stopWorkingMessage) }
+            if let session = confirmingStop { Text(stopQuestion(session).message) }
         }
     }
 
@@ -91,6 +89,12 @@ struct RemoteSessionsSheet: View {
     private func firstReason(_ sessions: [RemoteTrackedSession]) -> String? {
         for session in sessions { if case .unknown(let reason) = session.state { return reason } }
         return nil
+    }
+
+    private func stopQuestion(_ session: RemoteTrackedSession) -> (title: String, message: String) {
+        model.openSessions.remoteTabs.stopQuestion(host: sheet.request.host, agent: session.agent,
+                                                   title: model.trackedTitle(session), handle: session.handle,
+                                                   resumable: model.canResumeLater(session.sessionID))
     }
 
     /// Open here: a live tab of the run in this Temple ("Running in a tab").
@@ -162,6 +166,16 @@ struct RemoteSessionsSheet: View {
                     .foregroundStyle(.orange)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if let command = sheet.commands[session.handle] {
+                // The command on its own line, to copy.
+                Text(command)
+                    .font(.system(size: 11, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Palette.surfaceFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             }
         }
         .buttonStyle(.neutralLink)

@@ -478,14 +478,22 @@ public enum RemoteCopy {
     }
 
     /// Stopping a working agent from Running sessions or a row's menu asks
-    /// first; an agent waiting for input stops at once.
-    public static func stopWorkingTitle(_ host: String, agent: Agent, uncertain: Bool = false) -> String {
-        uncertain ? "\(agent.displayName) may still be working on \(host). Stop it?"
-            : "\(agent.displayName) is working on \(host). Stop it?"
+    /// first, naming the session; an agent waiting for input stops at once.
+    public static func stopWorkingTitle(_ title: String, host: String) -> String {
+        "Stop \u{201C}\(title)\u{201D} on \(host)?"
     }
 
-    /// Said only when the session has a tab open here.
-    public static let stopWorkingMessage = "Its tab closes."
+    /// The question's message: whether Temple knows the agent is working
+    /// (`uncertain`: reconnected a moment ago), what Stop does (its tab
+    /// closes only when one is open), and that the conversation can be
+    /// resumed only when it can (`resumable`: a session with a transcript).
+    public static func stopWorkingMessage(agent: Agent, uncertain: Bool, tabOpen: Bool, resumable: Bool) -> String {
+        let state = uncertain
+            ? "\(agent.displayName) may still be working on it; Temple reconnected a moment ago and can't tell yet."
+            : "\(agent.displayName) is working on it."
+        let stop = tabOpen ? " Stopping ends it and closes its tab." : " Stopping ends it."
+        return state + stop + (resumable ? " You can resume the conversation later." : "")
+    }
 
     /// The quit prompt, when a host has a connected tab: this Mac's working
     /// agents are what a quit interrupts. (With no host the prompt reads as
@@ -562,11 +570,12 @@ public enum RemoteCopy {
     public static func trackedHandleHelp(_ handle: String) -> String { "tmux session temple-\(handle)" }
 
     public static let openTracked = "Open"
-    /// Open, for a run Temple can't open (no folder on record): what to do.
-    public static func cannotOpenTracked(_ handle: String) -> String {
-        "Temple can't open this session: it has no folder on record. Stop it here, "
-            + "or attach from a terminal on the host with tmux -L temple attach -t temple-\(handle)."
-    }
+    /// Open, for a run Temple can't open (no folder on record): what to do,
+    /// the command on a line of its own (`attachCommand`).
+    public static let cannotOpenTracked =
+        "Temple can't reopen this session because it doesn't know which folder it ran in. "
+            + "Stop it here, or connect to the host and run:"
+    public static func attachCommand(_ handle: String) -> String { "tmux -L temple attach -t temple-\(handle)" }
     public static let openTrackedHelp = "Opens a tab attached to this running session."
     public static let showTab = "Show tab"
     public static func stopTrackedHelp(_ host: String) -> String {
@@ -725,8 +734,32 @@ public enum RemoteCopy {
     }
 
     /// A Stop them and remove that could not stop everything: the host
-    /// stays.
-    public static func notRemoved(_ host: String) -> String { "\(host) was not removed:" }
+    /// stays, and why, then one line per session not stopped.
+    public static func notRemoved(_ host: String) -> String {
+        "\(host) was not removed because these sessions could not be stopped:"
+    }
+
+    /// One session Stop them and remove could not stop, by why.
+    public static func removalNotStopped(_ title: String, host: String, reason: RemoteLeftRunningReason,
+                                         detail: String?) -> String {
+        let name = "\u{201C}\(title)\u{201D}"
+        let because = detail.map { " (\(trimmed($0)))" } ?? ""
+        switch reason {
+        case .anotherClientAttached:
+            return "\(name): another terminal outside Temple is attached to it. Close that terminal, then try again."
+        case .stopNotAcknowledged:
+            return "\(name): \(host) didn't confirm the stop\(because). It may still be running."
+        case .hostDidNotAnswer, .quitDeadline, .detachedAtQuit:
+            return "\(name): couldn't reach \(host)\(because). It may still be running."
+        }
+    }
+
+    /// A session whose stop's outcome could not be saved on this Mac:
+    /// Temple can't tell whether it stopped, and keeps the host.
+    public static func removalUnrecorded(_ title: String, host: String, detail: String) -> String {
+        "\(host) was not removed: Temple can't tell whether \u{201C}\(title)\u{201D} was stopped, "
+            + "because saving the result on this Mac failed (\(trimmed(detail)))."
+    }
 
     /// How Temple tells a new Codex tab's session apart: by Codex's
     /// arguments (`--no-daemon`, Codex's "run without the shared
@@ -800,7 +833,8 @@ public enum RemoteCopy {
     /// A tab still open for a host just removed from Temple, at once (not
     /// only when it is opened again).
     public static func hostRemoved(_ host: String) -> String {
-        "\(host) was removed from Temple. Its agent may still be running there; add the host again to reconnect."
+        "This tab's host, \(host), was removed from Temple. The agent may still be running there; "
+            + "add the host again to reconnect."
     }
 
     public static let unconfirmedConversation =

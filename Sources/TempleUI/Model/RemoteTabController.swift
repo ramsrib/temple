@@ -777,15 +777,20 @@ public final class RemoteTabController {
         return tab.activity == .running ? tab : nil
     }
 
-    /// The Stop question's title for a working agent: "may still be
-    /// working" for a tab reattached a moment ago (the close prompt's rule,
-    /// `workingIsUncertain`), "is working" once that is known.
-    public func stopQuestionTitle(host hostID: HostID, agent: Agent, sessionID: String? = nil, handle: String? = nil) -> String {
+    /// The Stop question for a working agent, naming the session: "may
+    /// still be working" for a tab reattached a moment ago (the close
+    /// prompt's rule, `workingIsUncertain`), "is working" once that is
+    /// known; its tab closes only when one is open; resuming later is said
+    /// only when `resumable`.
+    public func stopQuestion(host hostID: HostID, agent: Agent, title: String, sessionID: String? = nil,
+                             handle: String? = nil, resumable: Bool) -> (title: String, message: String) {
         let tab = model.tabs.first { tab in
             tab.kind == .session && tab.host == hostID && tab.remote != nil
                 && ((sessionID != nil && tab.sessionID == sessionID) || (handle != nil && tab.remote?.handle == handle))
         }
-        return RemoteCopy.stopWorkingTitle(hostID.rawValue, agent: agent, uncertain: tab.map(model.workingIsUncertain) ?? false)
+        let message = RemoteCopy.stopWorkingMessage(agent: agent, uncertain: tab.map(model.workingIsUncertain) ?? false,
+                                                    tabOpen: tab?.hasLiveProcess ?? false, resumable: resumable)
+        return (RemoteCopy.stopWorkingTitle(title, host: hostID.rawValue), message)
     }
 
     /// "Stop on <host>" from a row's menu: through its tab when it has a

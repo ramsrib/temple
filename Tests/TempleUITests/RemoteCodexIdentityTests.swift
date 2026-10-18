@@ -1349,7 +1349,11 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(RemoteCopy.closeHostTabMenuItem, "Close tab (stops the agent if it is waiting for input)")
         XCTAssertEqual(RemoteCopy.closeHostTabHelp("box", agent: .claude),
                        "Close tab. Stops Claude Code on box if it is waiting for input; asks first if it is working.")
-        XCTAssertEqual(RemoteCopy.stopWorkingTitle("box", agent: .codex), "Codex is working on box. Stop it?")
+        XCTAssertEqual(RemoteCopy.stopWorkingTitle("Fix it", host: "box"), "Stop \u{201C}Fix it\u{201D} on box?")
+        XCTAssertEqual(RemoteCopy.stopWorkingMessage(agent: .codex, uncertain: false, tabOpen: true, resumable: true),
+                       "Codex is working on it. Stopping ends it and closes its tab. You can resume the conversation later.")
+        XCTAssertEqual(RemoteCopy.stopWorkingMessage(agent: .claude, uncertain: true, tabOpen: false, resumable: false),
+                       "Claude Code may still be working on it; Temple reconnected a moment ago and can't tell yet. Stopping ends it.")
         XCTAssertEqual(RemoteCopy.workingCLIRefusal("box"),
                        "Its agent is working on box. Pass --force to detach it (it keeps running), or stop it in Temple.")
         // Remove, singular and plural.

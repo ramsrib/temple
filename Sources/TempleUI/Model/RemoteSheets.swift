@@ -15,6 +15,9 @@ final class RemoteSessionsSheetModel: ObservableObject {
     @Published private(set) var dismissedNotes: Set<String> = []
     /// What a failed Stop said, under its row (S9).
     @Published private(set) var results: [String: String] = [:]
+    /// A command to run on the host, on a line of its own under a row's
+    /// result (an Open that can't open the session).
+    @Published private(set) var commands: [String: String] = [:]
 
     private let openSessions: OpenSessionsModel
     private let launcher: () -> RemoteSessionHost?
@@ -53,6 +56,7 @@ final class RemoteSessionsSheetModel: ObservableObject {
     func stop(_ session: RemoteTrackedSession) {
         stopping.insert(session.handle)
         results[session.handle] = nil
+        commands[session.handle] = nil
         let ticket = openSessions.remoteTabs.gate.ticket(host: request.host, sheet: request.id)
         // The stop survives the sheet: the app owns it until its outcome is
         // written. Only what the sheet shows is gated.
@@ -82,7 +86,8 @@ final class RemoteSessionsSheetModel: ObservableObject {
             return true
         }
         guard let directory = session.directory else {
-            results[session.handle] = RemoteCopy.cannotOpenTracked(session.handle)
+            results[session.handle] = RemoteCopy.cannotOpenTracked
+            commands[session.handle] = RemoteCopy.attachCommand(session.handle)
             return false
         }
         if session.agent == .codex {
@@ -90,7 +95,8 @@ final class RemoteSessionsSheetModel: ObservableObject {
         } else if let id = session.sessionID {
             openSessions.remoteTabs.openSession(id, agent: session.agent, host: request.host, directory: directory)
         } else {
-            results[session.handle] = RemoteCopy.cannotOpenTracked(session.handle)
+            results[session.handle] = RemoteCopy.cannotOpenTracked
+            commands[session.handle] = RemoteCopy.attachCommand(session.handle)
             return false
         }
         return true
