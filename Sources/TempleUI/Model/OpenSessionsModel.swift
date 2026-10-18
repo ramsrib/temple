@@ -445,6 +445,20 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         activeTabID = nil
     }
 
+    /// A host just registered (added, or added again after a removal): a
+    /// tab of it that never opened, and only said its host was not set up,
+    /// drops that and opens as any restored tab does, when it is next shown
+    /// (at once, if it is on screen). Only such remote tabs; a tab that ran
+    /// keeps its own account.
+    func hostAvailable(_ host: HostID) {
+        guard !host.isLocal else { return }
+        for tab in tabs where tab.kind == .session && tab.host == host && tab.surface == nil && tab.remote == nil
+            && tab.launchPreparationError == RemoteCopy.notSetUp(host.rawValue) {
+            tab.launchPreparationError = nil
+            tab.activity = .idle
+        }
+    }
+
     /// Spawn the surface for a session tab on first activation (lazy restore).
     func ensureSurface(for tab: SessionTab) {
         guard !isQuitting, tab.kind == .session, tab.surface == nil else { return }

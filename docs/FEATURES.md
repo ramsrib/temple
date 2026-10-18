@@ -405,7 +405,7 @@ it. What follows appears for an enabled host only.
   once, with **Open Hosts in Settings**, and says what brings it back for
   the state it is in: a tab that was connected or connecting is left
   disconnected and gets Reconnect once the host is added again; a tab not
-  yet opened opens when clicked; a tab already showing its own question
+  yet opened opens once the host is back, when it is next shown; a tab already showing its own question
   (a stopped or ended session) only says to add the host again. A tab on a
   host Temple doesn't have says so too.
 - **New Codex sessions.** Codex picks its own session ID, so a new Codex

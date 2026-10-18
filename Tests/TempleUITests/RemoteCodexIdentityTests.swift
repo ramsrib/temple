@@ -449,9 +449,30 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await settle(tab.remote?.confirming == nil && tab.remote?.declined.isEmpty == true)
         var declinedC7 = c7
         declinedC7.declined = true
-        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.relinkTaken(declinedC7, host: "box"))
+        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.relinkTaken(declinedC7, host: "box", stillLooking: true))
         XCTAssertNil(tab.sessionID)
         XCTAssertEqual(remote.declines.count, 1, "the decline is kept")
+    }
+
+    /// Refused for a reason the host gave: the note says where the session
+    /// is and that the connected tab goes on looking; one that says the run
+    /// has ended doesn't promise the looking.
+    func testLinkItAfterAllRefusedSaysWhatIsLeft() async throws {
+        let tab = try await askingTab()
+        let c7 = try XCTUnwrap(tab.remote?.suggestions.first { $0.sessionID == "c7" })
+        model.remoteTabs.decline(c7, in: tab)
+        await settle(self.remote.declines.count == 1)
+        var declinedC7 = c7
+        declinedC7.declined = true
+        remote.confirmResult = .inconclusive("that session is no longer a candidate for this one", lasting: false, ended: false)
+        model.remoteTabs.relink(try XCTUnwrap(tab.remote?.declined.first), in: tab)
+        await settle(tab.remote?.confirming == nil && tab.remote?.declined.isEmpty == true)
+        XCTAssertEqual(tab.remote?.identityNote,
+                       RemoteCopy.relinkRefused(declinedC7, reason: "that session is no longer a candidate for this one",
+                                                stillLooking: true))
+        XCTAssertTrue(tab.remote?.identityNote?.hasSuffix("Temple keeps looking for its session.") == true)
+        XCTAssertFalse(RemoteCopy.relinkRefused(declinedC7, reason: "Temple no longer tracks this session", stillLooking: false)
+            .contains("keeps looking"))
     }
 
     /// A relink that can't be written keeps the line, and works next time.
@@ -1542,24 +1563,36 @@ final class RemoteCodexIdentityTests: XCTestCase {
                     RemoteCopy.unknown("box", agent: .codex, reason: "x"), RemoteCopy.stillConnecting("box"),
                     RemoteCopy.removalMessage(1, fromConfig: true), RemoteCopy.closeHostTabHelp("box", agent: .codex),
                     RemoteCopy.declinedLine(suggestion()), RemoteCopy.relink, RemoteCopy.relinkHelp,
-                    RemoteCopy.relinkTaken(suggestion(), host: "box"),
-                    RemoteCopy.relinkRefused(suggestion(), reason: "That session is no longer a candidate for this one"),
+                    RemoteCopy.relinkTaken(suggestion(), host: "box", stillLooking: true),
+                    RemoteCopy.relinkRefused(suggestion(), reason: "That session is no longer a candidate for this one",
+                                             stillLooking: true),
+                    RemoteCopy.unlinkedUnsaved("disk I/O error"),
                     RemoteCopy.unlinked("hi", tab: "Reply ok", host: "box")]
         XCTAssertEqual(RemoteCopy.declinedLine(suggestion()), "You said \u{201C}reply with the word ok\u{201D} wasn't this tab's session.")
         let noPrompt = RemoteSuggestion(rolloutPath: "/r", sessionID: "x", firstPrompt: nil, startedAt: Date(), directory: "/w")
         XCTAssertTrue(RemoteCopy.declinedLine(noPrompt).hasPrefix("You said the session started at "))
         XCTAssertTrue(RemoteCopy.declinedLine(noPrompt).hasSuffix(" (no prompt yet) wasn't this tab's session."))
         XCTAssertEqual(RemoteCopy.relink, "Link it after all")
-        XCTAssertEqual(RemoteCopy.relinkTaken(suggestion(), host: "box"),
-                       "Couldn't link \u{201C}reply with the word ok\u{201D} to this tab: another tab on box has that session now.")
-        XCTAssertEqual(RemoteCopy.relinkRefused(suggestion(), reason: "That session is no longer a candidate for this one"),
-                       "Couldn't link \u{201C}reply with the word ok\u{201D} to this tab: that session is no longer a candidate for this one.")
+        XCTAssertEqual(RemoteCopy.relinkHelp, "Links this tab to that session, as \u{201C}Yes, that's it\u{201D} would have. "
+                       + "If \u{201C}Not this one\u{201D} archived the session, this restores it from Archived sessions.")
+        XCTAssertEqual(RemoteCopy.relinkTaken(suggestion(), host: "box", stillLooking: true),
+                       "Couldn't link \u{201C}reply with the word ok\u{201D} to this tab: another tab on box has that session now. "
+                       + "To go to that session, use its row in the sidebar. This tab keeps working, and Temple keeps looking "
+                       + "for its session.")
+        XCTAssertEqual(RemoteCopy.relinkTaken(suggestion(), host: "box", stillLooking: false),
+                       "Couldn't link \u{201C}reply with the word ok\u{201D} to this tab: another tab on box has that session now. "
+                       + "To go to that session, use its row in the sidebar.")
+        XCTAssertEqual(RemoteCopy.relinkRefused(suggestion(), reason: "That session is no longer a candidate for this one",
+                                                stillLooking: true),
+                       "Couldn't link \u{201C}reply with the word ok\u{201D} to this tab: that session is no longer a candidate "
+                       + "for this one. If \u{201C}Not this one\u{201D} archived it, it is still in Archived sessions. This tab "
+                       + "keeps working, and Temple keeps looking for its session.")
         XCTAssertEqual(RemoteCopy.unlinked("hi", tab: "Reply ok", host: "box"),
-                       "Closed the tab \u{201C}Reply ok\u{201D} and archived \u{201C}hi\u{201D}, the session you said wasn't that tab's. "
-                       + "The Codex agent that was running in the tab keeps running on box. Reopen tab reconnects a tab to that agent "
-                       + "and asks again which session it is; if \u{201C}hi\u{201D} was that tab's after all, the reopened tab has "
-                       + "Link it after all, which also brings the session back from Archived sessions. To bring back the session "
-                       + "alone, without a tab, restore it from Archived sessions on the start page (\u{2318}\u{21E7}Y).")
+                       "Closed \u{201C}Reply ok\u{201D} and archived \u{201C}hi\u{201D}. Its Codex agent is still running on box.\n"
+                       + "Clicked by mistake? Choose \u{201C}Reopen tab\u{201D}, then \u{201C}Link it after all\u{201D} in that tab.\n"
+                       + "Session only: restore it from Archived sessions on the start page (\u{2318}\u{21E7}Y).")
+        XCTAssertEqual(RemoteCopy.unlinkedUnsaved("Disk I/O error."),
+                       "Couldn't save the tab's close on this Mac (disk I/O error), so the tab may reopen at the next launch.")
         for line in copy { XCTAssertFalse(line.contains("\u{2014}"), line) }
     }
 }

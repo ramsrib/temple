@@ -610,9 +610,10 @@ final class RemoteAppTests: XCTestCase {
         app.openSessions.remoteTabs.unlink(other)
         await settle { app.remoteNotice?.message.contains("archived \u{201C}third\u{201D}") == true }
         let failed = try XCTUnwrap(app.remoteNotice)
-        XCTAssertTrue(failed.message.hasSuffix(" Temple couldn't record on this Mac that the tab was closed "
+        XCTAssertTrue(failed.message.hasSuffix("\nCouldn't save the tab's close on this Mac "
                                                + "(\(RemoteCopy.lowercasedFirst(CocoaError(.fileWriteUnknown).localizedDescription.trimmingCharacters(in: CharacterSet(charactersIn: "."))))), "
-                                               + "so it may reopen at the next launch."), failed.message)
+                                               + "so the tab may reopen at the next launch."), failed.message)
+        XCTAssertEqual(failed.message.components(separatedBy: "\n").count, 4, "its own line, after the notice's three")
         XCTAssertEqual(app.remoteNoticeAction(failed), "Reopen tab")
         app.dismissRemoteNotice()
         remote.closePendingError = nil

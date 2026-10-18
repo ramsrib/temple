@@ -408,10 +408,17 @@ private struct RemoteNoticeBar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 6) {
-                Text(notice.message)
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(notice.saysStillRunning ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.secondary))
-                    .lineLimit(4)
+                // A message of several paragraphs (Not this one's) shows each
+                // on its own, in full; a one-line message as before.
+                let paragraphs = notice.message.components(separatedBy: "\n")
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(paragraphs.enumerated()), id: \.offset) { _, paragraph in
+                        Text(paragraph)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(notice.saysStillRunning ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.secondary))
+                            .lineLimit(paragraphs.count > 1 ? nil : 4)
+                    }
+                }
                 Spacer(minLength: 4)
                 Button(action: dismiss) {
                     Image(systemName: "xmark")

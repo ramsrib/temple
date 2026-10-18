@@ -750,7 +750,7 @@ public final class AppModel: ObservableObject {
         }
         openSessions.remoteTabs.unlinkedHandler = { [weak self] host, handle, directory, session, tabTitle, unsaved in
             let message = RemoteCopy.unlinked(session, tab: tabTitle, host: host.rawValue)
-                + (unsaved.map { " " + RemoteCopy.unlinkedUnsaved($0) } ?? "")
+                + (unsaved.map { "\n" + RemoteCopy.unlinkedUnsaved($0) } ?? "")
             self?.remoteNotice = RemoteNotice(host: host, message: message,
                                               kind: .unlinked(handle: handle, directory: directory))
         }
@@ -1036,6 +1036,7 @@ public final class AppModel: ObservableObject {
             hostBox.value = hostBox.value.adding(entry)
             engineSet.add(makeEngine(entry.source))
             managedRemoteHosts[record.host] = record
+            openSessions.hostAvailable(record.host)
         }
         attachRemoteProjectState()
     }

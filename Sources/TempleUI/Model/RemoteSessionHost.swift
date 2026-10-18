@@ -591,7 +591,7 @@ public enum RemoteCopy {
     /// server binds no prefix, so tmux's own detach keys do nothing), and
     /// that an attached terminal keeps Stop from stopping it.
     public static let attachFooter = "To leave it running, close that terminal window; tmux's usual detach keys are off "
-        + "in Temple's sessions. While you are attached, Temple can't stop it, from Stop here or when you remove the host."
+        + "in Temple's sessions. While you are attached, Temple can't stop it: neither Stop here nor removing the host will end it."
     public static func attachCommand(_ handle: String) -> String { "tmux -L temple attach -t temple-\(handle)" }
     public static let openTrackedHelp = "Opens a tab attached to this running session."
     public static let showTab = "Show tab"
@@ -763,8 +763,8 @@ public enum RemoteCopy {
     /// The list's last line.
     public static func removeAgain(_ host: String, count: Int) -> String {
         "To try again, choose Remove. To remove \(host) and leave its sessions running, choose "
-            + "\u{201C}\(removalLeave(count))\u{201D} when Remove asks; a host that can't be reached is removed without "
-            + "asking, and anything on it keeps running."
+            + "\u{201C}\(removalLeave(count))\u{201D} when Remove asks. If Temple can't reach \(host) when you choose "
+            + "Remove and no tab here is connected to it, it removes \(host) without asking, and its sessions keep running."
     }
 
     /// One session Stop them and remove could not stop, by why.
@@ -861,20 +861,19 @@ public enum RemoteCopy {
 
     /// Not this one closed the tab: what happened, and Reopen tab. The way
     /// back is in the reopened tab (Link it after all); the session alone
-    /// comes back from Archived sessions.
+    /// comes back from Archived sessions. One paragraph per line (the
+    /// notice lays each out on its own).
     public static func unlinked(_ session: String, tab: String, host: String) -> String {
-        "Closed the tab \u{201C}\(tab)\u{201D} and archived \u{201C}\(session)\u{201D}, the session you said wasn't that tab's. "
-            + "The Codex agent that was running in the tab keeps running on \(host). Reopen tab reconnects a tab to that "
-            + "agent and asks again which session it is; if \u{201C}\(session)\u{201D} was that tab's after all, the reopened "
-            + "tab has Link it after all, which also brings the session back from Archived sessions. To bring back the "
-            + "session alone, without a tab, restore it from Archived sessions on the start page (\u{2318}\u{21E7}Y)."
+        "Closed \u{201C}\(tab)\u{201D} and archived \u{201C}\(session)\u{201D}. Its Codex agent is still running on \(host).\n"
+            + "Clicked by mistake? Choose \u{201C}\(unlinkedOpen)\u{201D}, then \u{201C}\(relink)\u{201D} in that tab.\n"
+            + "Session only: restore it from Archived sessions on the start page (\u{2318}\u{21E7}Y)."
     }
     public static let unlinkedOpen = "Reopen tab"
 
     /// Said with it when the tab's close could not be written.
     public static func unlinkedUnsaved(_ detail: String) -> String {
-        "Temple couldn't record on this Mac that the tab was closed (\(lowercasedFirst(trimmed(detail)))), "
-            + "so it may reopen at the next launch."
+        "Couldn't save the tab's close on this Mac (\(lowercasedFirst(trimmed(detail)))), so the tab may reopen "
+            + "at the next launch."
     }
 
     /// A tab still open for a host just removed from Temple, at once (not
@@ -893,7 +892,8 @@ public enum RemoteCopy {
                 + "which appears here once the host is back."
         case .open:
             return "This tab's host, \(host), was removed from Temple, so this tab can't open. Its agent may still be "
-                + "running there. To open it, add \(host) again in Settings \u{25B8} Hosts, then click this tab in the tab bar."
+                + "running there. To open it, add \(host) again in Settings \u{25B8} Hosts; this tab opens when you come "
+                + "back to it."
         case .other:
             return "This tab's host, \(host), was removed from Temple. To use this tab again, add \(host) again in "
                 + "Settings \u{25B8} Hosts."
@@ -1039,18 +1039,28 @@ public enum RemoteCopy {
     }
 
     public static let relink = "Link it after all"
-    public static let relinkHelp = "Links this tab to that session, as Yes, that's it would have. "
-        + "If Not this one archived the session, it comes back from Archived sessions."
+    public static let relinkHelp = "Links this tab to that session, as \u{201C}\(suggestionYes)\u{201D} would have. "
+        + "If \u{201C}\(suggestionNo)\u{201D} archived the session, this restores it from Archived sessions."
 
-    /// Link it after all, refused: another run holds the session.
-    public static func relinkTaken(_ suggestion: RemoteSuggestion, host: String, now: Date = Date()) -> String {
-        "Couldn't link \(declinedSubject(suggestion, now: now)) to this tab: another tab on \(host) has that session now."
+    /// Link it after all, refused: another run holds the session (a claim
+    /// is held until that run's own Not this one, so trying again here
+    /// can't succeed; the session is that run's row). `stillLooking`: the
+    /// tab is connected and still unidentified, so Temple's checks go on.
+    public static func relinkTaken(_ suggestion: RemoteSuggestion, host: String, stillLooking: Bool,
+                                   now: Date = Date()) -> String {
+        "Couldn't link \(declinedSubject(suggestion, now: now)) to this tab: another tab on \(host) has that session now. "
+            + "To go to that session, use its row in the sidebar." + (stillLooking ? " " + relinkStillLooking : "")
     }
 
-    /// Link it after all, refused for a reason the host gave.
-    public static func relinkRefused(_ suggestion: RemoteSuggestion, reason: String, now: Date = Date()) -> String {
-        "Couldn't link \(declinedSubject(suggestion, now: now)) to this tab: \(lowercasedFirst(sentence(reason)))"
+    /// Link it after all, refused for a reason the host gave. The line
+    /// comes back at the next check if the session is still a candidate.
+    public static func relinkRefused(_ suggestion: RemoteSuggestion, reason: String, stillLooking: Bool,
+                                     now: Date = Date()) -> String {
+        "Couldn't link \(declinedSubject(suggestion, now: now)) to this tab: \(lowercasedFirst(sentence(reason))) "
+            + "If \u{201C}\(suggestionNo)\u{201D} archived it, it is still in Archived sessions."
+            + (stillLooking ? " " + relinkStillLooking : "")
     }
+    static let relinkStillLooking = "This tab keeps working, and Temple keeps looking for its session."
 
     public static let suggestionYes = "Yes, that's it"
     public static let suggestionNo = "Not this one"

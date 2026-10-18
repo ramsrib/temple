@@ -157,8 +157,9 @@ final class RemoteColdReadTests: XCTestCase {
                                          + "so it is still running. Close that terminal (or end its connection to box), then remove box again."])
         XCTAssertEqual(RemoteCopy.notRemoved("box"), "box was not removed because Temple couldn't confirm that every session on it stopped:")
         XCTAssertEqual(RemoteCopy.removeAgain("box", count: 2), "To try again, choose Remove. To remove box and leave its sessions "
-                       + "running, choose \u{201C}Remove, leave them running\u{201D} when Remove asks; a host that can't be "
-                       + "reached is removed without asking, and anything on it keeps running.")
+                       + "running, choose \u{201C}Remove, leave them running\u{201D} when Remove asks. If Temple can't reach box "
+                       + "when you choose Remove and no tab here is connected to it, it removes box without asking, and its "
+                       + "sessions keep running.")
         XCTAssertNotNil(app.remoteHosts.record(named: "box"), "a failed stop cancels the removal")
 
         // Unreachable, unconfirmed, and an outcome that couldn't be saved.
@@ -220,7 +221,7 @@ final class RemoteColdReadTests: XCTestCase {
                        + "appears here once the host is back.")
         XCTAssertEqual(RemoteCopy.hostRemoved("box", tab: .open),
                        "This tab's host, box, was removed from Temple, so this tab can't open. Its agent may still be running "
-                       + "there. To open it, add box again in Settings \u{25B8} Hosts, then click this tab in the tab bar.")
+                       + "there. To open it, add box again in Settings \u{25B8} Hosts; this tab opens when you come back to it.")
         XCTAssertEqual(RemoteCopy.hostRemoved("box", tab: .other),
                        "This tab's host, box, was removed from Temple. To use this tab again, add box again in Settings \u{25B8} Hosts.")
         XCTAssertEqual(RemoteCopy.openHostsInSettings, "Open Hosts in Settings")
@@ -252,6 +253,32 @@ final class RemoteColdReadTests: XCTestCase {
         chip.remote = opening
         app.openSessions.remoteTabs.retireHost(hostID)
         XCTAssertEqual(chip.remote?.phase, .disconnected)
+    }
+
+    /// A tab that never opened and only said its host isn't set up opens
+    /// when it is next shown once the host is back ("this tab opens when
+    /// you come back to it"); a tab that ran, a local tab and another
+    /// host's tab keep what they say.
+    func testATabThatNeverOpenedOpensWhenItsHostIsBack() throws {
+        let remote = FakeRemoteHost("box")
+        let app = try app(remote)
+        let gone = HostID(rawValue: "gone-box")
+        let chip = app.openSessions.appendSessionChip(host: gone, sessionID: "g1", agent: .claude, directory: "/home/u/g")
+        app.openSessions.ensureSurface(for: chip)
+        XCTAssertEqual(chip.launchPreparationError, RemoteCopy.notSetUp("gone-box"), "said while the host is gone")
+        let other = app.openSessions.appendSessionChip(host: HostID(rawValue: "else"), sessionID: "g2", agent: .claude,
+                                                       directory: "/home/u/g")
+        app.openSessions.ensureSurface(for: other)
+        var ran = RemoteTabState(phase: .disconnected)
+        ran.handle = "g3"
+        let ranTab = app.openSessions.appendSessionChip(host: gone, sessionID: "g3", agent: .claude, directory: "/home/u/g")
+        ranTab.remote = ran
+        ranTab.launchPreparationError = RemoteCopy.notSetUp("gone-box")
+        app.openSessions.hostAvailable(gone)
+        XCTAssertNil(chip.launchPreparationError)
+        XCTAssertEqual(chip.activity, .idle, "shown again, it opens as any restored tab does")
+        XCTAssertEqual(other.launchPreparationError, RemoteCopy.notSetUp("else"), "another host's tab is unchanged")
+        XCTAssertEqual(ranTab.launchPreparationError, RemoteCopy.notSetUp("gone-box"), "a tab with a run keeps its own band")
     }
 
     /// Both kinds of host offer the same four actions; a config host opens
@@ -391,8 +418,8 @@ final class RemoteColdReadTests: XCTestCase {
                        + "The session is still running. Stop it here, or attach to it yourself: in a terminal, connect to box "
                        + "with ssh, then run:")
         XCTAssertEqual(RemoteCopy.attachFooter, "To leave it running, close that terminal window; tmux's usual detach keys "
-                       + "are off in Temple's sessions. While you are attached, Temple can't stop it, from Stop here or when "
-                       + "you remove the host.")
+                       + "are off in Temple's sessions. While you are attached, Temple can't stop it: neither Stop here nor "
+                       + "removing the host will end it.")
         XCTAssertEqual(sheet.commands["h8"], "tmux -L temple attach -t temple-h8", "the command on its own line")
         XCTAssertNil(app.openSessions.openTab(forSessionID: "s8"))
     }

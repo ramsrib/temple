@@ -3331,3 +3331,13 @@ cold read of the real screens, as built:
   Reconnect appears once the host is back; a tab never opened is told to
   click it; a tab already showing its own question is told only to add the
   host again. The button opens Settings at Hosts.
+- *Cold read 8.* Not this one's notice is three short paragraphs (what
+  happened, the way back through Reopen tab and Link it after all, the
+  session alone from Archived sessions), each laid out in full; the
+  notice's four-line limit stays for one-paragraph notices. A refused
+  Link it after all says what is left: another tab's claim is held until
+  that run's own Not this one, so it points at the session's row instead
+  of offering the button again; a refusal the host gave says the session
+  stays archived if it was, and a connected tab says Temple goes on
+  looking. A tab never opened on a removed host drops its "not set up"
+  account when the host is added again, so it opens when next shown.

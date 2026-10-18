@@ -1571,12 +1571,14 @@ public final class RemoteTabController {
                 guard self.gate.admit(.confirmResult, ticket), let tab = ticket.tab else { return }
                 tab.remote?.confirming = nil
                 tab.remote?.declined.removeAll { $0.id == suggestion.id }
-                tab.remote?.identityNote = RemoteCopy.relinkTaken(suggestion, host: host.hostName)
-            case .inconclusive(let reason, _, _):
+                tab.remote?.identityNote = RemoteCopy.relinkTaken(suggestion, host: host.hostName,
+                                                                  stillLooking: tab.remote?.phase == .connected)
+            case .inconclusive(let reason, _, let ended):
                 guard self.gate.admit(.confirmResult, ticket), let tab = ticket.tab else { return }
                 tab.remote?.confirming = nil
                 tab.remote?.declined.removeAll { $0.id == suggestion.id }
-                tab.remote?.identityNote = RemoteCopy.relinkRefused(suggestion, reason: reason)
+                tab.remote?.identityNote = RemoteCopy.relinkRefused(
+                    suggestion, reason: reason, stillLooking: !ended && tab.remote?.phase == .connected)
             case .storage(let detail):
                 guard self.gate.admit(.confirmResult, ticket), let tab = ticket.tab else { return }
                 tab.remote?.confirming = nil
