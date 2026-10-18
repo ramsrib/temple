@@ -832,6 +832,28 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertTrue(remote.stops.isEmpty)
     }
 
+    /// A tab reattached a moment ago reads as running before anything has
+    /// said whether its agent works: its close prompt says it "may still be
+    /// working" (Temple can't tell yet), until input, a wake or the settle
+    /// timer's reading. A tab whose spawn started the agent never does.
+    func testAJustReattachedTabMayStillBeWorking() async throws {
+        remote.runs = [.init(handle: "kept", sessionID: "s1", resume: true)]
+        let tab = await openRow()
+        XCTAssertEqual(tab.remote?.handle, "kept", "attached to the running agent")
+        XCTAssertEqual(tab.activity, .running)
+        XCTAssertTrue(model.workingIsUncertain(tab))
+        XCTAssertEqual(RemoteCopy.mayStillBeWorking("box", agent: .claude), "Claude Code may still be working on box.")
+        XCTAssertEqual(RemoteCopy.mayStillBeWorking("box", agent: .codex), "Codex may still be working on box.")
+        XCTAssertEqual(RemoteCopy.mayStillBeWorkingMessage("box"),
+                       "Temple reattached to it a moment ago and can't tell yet. Detach leaves it running on box; Stop ends it.")
+        model.surfaceDidReceiveInput(try XCTUnwrap(tab.surface))
+        XCTAssertFalse(model.workingIsUncertain(tab), "input since: the usual reading")
+
+        let created = await openRow("s2")
+        XCTAssertEqual(remote.runs.last?.handle, created.remote?.handle)
+        XCTAssertFalse(model.workingIsUncertain(created), "a spawn that started the agent is not a reattach")
+    }
+
     func testClosingAWorkingTabAsksDetachOrStop() async throws {
         let tab = await openRow()
         tab.activity = .running

@@ -458,6 +458,17 @@ public enum RemoteCopy {
         "Detach leaves it running on \(host); Stop ends it."
     }
 
+    /// The close prompt for a tab reattached a moment ago, before anything
+    /// has said whether its agent is working: never a claim Temple can't
+    /// back.
+    public static func mayStillBeWorking(_ host: String, agent: Agent) -> String {
+        "\(agent.displayName) may still be working on \(host)."
+    }
+
+    public static func mayStillBeWorkingMessage(_ host: String) -> String {
+        "Temple reattached to it a moment ago and can't tell yet. Detach leaves it running on \(host); Stop ends it."
+    }
+
     /// Stopping a working agent from Running sessions or a row's menu asks
     /// first; an agent waiting for input stops at once.
     public static func stopWorkingTitle(_ host: String, agent: Agent) -> String {

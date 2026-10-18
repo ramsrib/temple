@@ -600,6 +600,11 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Enter, a key that answers a prompt, a paste. It only bars an early
     /// close as at rest; it changes no activity.
     var inputSinceSpawn: Set<SessionTab.ID> = []
+    /// Tabs on a host reattached to an agent already running (the spawn
+    /// started nothing) whose state Temple can't read yet: no input since,
+    /// no wake, and the settle timer's first reading not taken. A close
+    /// meanwhile says the agent may still be working, not that it is.
+    var unsettledReattach: Set<SessionTab.ID> = []
     /// The last title each terminal reported, shown or not, for recency.
     var lastReportedTitle: [SessionTab.ID: String] = [:]
     /// Last bell/notification per tab — guards the idle→running promotion.
@@ -661,9 +666,20 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     func markSpawned(_ tab: SessionTab, startsAgent: Bool = true) {
         inputSinceSpawn.remove(tab.id)
         if startsAgent { activeSinceSpawn.remove(tab.id) } else { activeSinceSpawn.insert(tab.id) }
+        if startsAgent || tab.remote == nil { unsettledReattach.remove(tab.id) } else { unsettledReattach.insert(tab.id) }
+    }
+
+    /// The close prompt for a tab on a host just reattached: Temple can't
+    /// tell yet whether its agent is working (it was reattached a moment
+    /// ago and nothing since has said). Working once evidence arrives.
+    public func workingIsUncertain(_ tab: SessionTab) -> Bool {
+        tab.remote != nil && tab.activity == .running && unsettledReattach.contains(tab.id)
+            && !inputSinceSpawn.contains(tab.id)
     }
 
     private func settleIfQuiet(_ tab: SessionTab) {
+        // The timer's reading is taken: whatever it says is evidence.
+        unsettledReattach.remove(tab.id)
         // Only a still-booting/working session decays; a bell (→ idle/attention),
         // input (→ running, reschedules), or exit will have moved it on already.
         guard tab.activity == .running else { return }
@@ -901,6 +917,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         cancelSettle(for: tabID)
         activeSinceSpawn.remove(tabID)
         inputSinceSpawn.remove(tabID)
+        unsettledReattach.remove(tabID)
         lastReportedTitle.removeValue(forKey: tabID)
         // Nothing a closed tab's launch reports later can reach anyone.
         tab.launchResult?.cancel()
@@ -1272,6 +1289,7 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
            Date().timeIntervalSince(lastRing[tab.id] ?? .distantPast) > ringGraceSeconds {
             tab.activity = .running
             activeSinceSpawn.insert(tab.id)
+            unsettledReattach.remove(tab.id)
             scheduleSettle(for: tab)
         }
         schedulePersistForTitleChurn()
@@ -1293,6 +1311,7 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
     public func surfaceDidReceiveInput(_ surface: TerminalSurface) {
         guard let tab = tab(for: surface) else { return }
         inputSinceSpawn.insert(tab.id)
+        unsettledReattach.remove(tab.id)
     }
 
     /// The user submitted a prompt (Return) → the agent is now working (Item E).
@@ -1305,6 +1324,7 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
         // Restart the settle clock so it can decay again once work finishes.
         lastTitleChange[tab.id] = Date()
         activeSinceSpawn.insert(tab.id)
+        unsettledReattach.remove(tab.id)
         scheduleSettle(for: tab)
     }
 
