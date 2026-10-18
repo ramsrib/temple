@@ -275,7 +275,13 @@ public final class RemoteSessions {
         return await read { try $0.liveRun(host: host, sessionID: sessionID) } ?? nil
     }
 
-    public func run(_ handle: String) async -> RemoteRun? { await read { try $0.run(handle) } ?? nil }
+    /// A run lookup that preserves a failed read separately from a missing row.
+    private func checkedRun(_ handle: String) async throws -> RemoteRun? {
+        guard openedStore != nil || storeExists() else { return nil }
+        return try await store().perform { try $0.run(handle) }
+    }
+
+    public func run(_ handle: String) async -> RemoteRun? { try? await checkedRun(handle) }
 
     public func runs() async -> [RemoteRun] {
         let host = host
@@ -1343,7 +1349,11 @@ public final class RemoteSessions {
     /// Every eligible candidate for the run, read now (no prompts).
     private func eligible(_ handle: String) async -> Suggestions {
         guard !retired else { return .unavailable(Retired().localizedDescription) }
-        guard let run = await run(handle), run.isPending, run.dismissedAt == nil else { return .candidates([]) }
+        let found: RemoteRun?
+        do { found = try await checkedRun(handle) } catch {
+            return .unavailable("Temple couldn't read what it knows about this session: \(error.localizedDescription)")
+        }
+        guard let run = found, run.isPending, run.dismissedAt == nil else { return .candidates([]) }
         guard let okAt = run.okAt, let directory = run.directory else {
             return .unavailable("Temple hasn't seen this session start yet")
         }

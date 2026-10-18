@@ -117,6 +117,24 @@ final class CodexIdentityTests: XCTestCase {
         guard case .inconclusive = answer else { return XCTFail("declined identity was acquired: \(answer)") }
     }
 
+    func testV12FailedRunReadIsUnavailableRatherThanACompleteEmptySearch() async throws {
+        let fixture = Fixture()
+        let store = try RemoteStateStore()
+        try insert(store, folder: fixture.folder)
+        var attempts = 0
+        let sessions = sessions(fixture) {
+            attempts += 1
+            if attempts == 1 { throw CocoaError(.fileReadNoPermission) }
+            return store
+        }
+        let answer = await sessions.suggestions("a")
+        XCTAssertEqual(attempts, 1)
+        XCTAssertNotNil(try store.run("a"))
+        guard case .unavailable = answer else { return XCTFail("failed read reported as complete: \(answer)") }
+        let retry = await sessions.suggestions("a")
+        guard case .candidates = retry else { return XCTFail("the next read must recover: \(retry)") }
+    }
+
     static let writing = "02102002", appending = "0102001", reading = "0100000"
 
     private func inconclusive(_ answer: CodexIdentityCheck.Answer, file: StaticString = #filePath, line: UInt = #line)
