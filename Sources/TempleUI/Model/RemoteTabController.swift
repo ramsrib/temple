@@ -504,8 +504,13 @@ public final class RemoteTabController {
     /// row is let go (or archived) if it is still the membership Discard
     /// was chosen for. Quit, retirement or a closed window change nothing
     /// of that; only the failure notice passes the gate.
+    ///
+    /// Never while quitting: the tab set is frozen then, so the tab would
+    /// stay saved while its row went, and a saved tab with no row restores
+    /// as a tab on this Mac (`restore`'s `row?.host ?? .local`). Its band
+    /// comes back next launch instead.
     public func discard(_ tab: SessionTab) {
-        guard let host = remoteHost(for: tab), let sid = tab.sessionID, decisionPending(tab) else { return }
+        guard !isQuitting, let host = remoteHost(for: tab), let sid = tab.sessionID, decisionPending(tab) else { return }
         let hostID = tab.host
         let ticket = gate.ticket(host: hostID)
         let incarnation = rowIncarnation(sid)

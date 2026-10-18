@@ -3296,3 +3296,12 @@ cold read of the real screens, as built:
   tab claims later restores as that tab. `forgetSavedTab` and its
   acknowledgement bump are gone; `acknowledgedSaves` again counts only
   full saves of the live set.
+- *A remote Discard during a quit does nothing* (the "seen, out of scope"
+  state #7 of Fable's saved-tabs decision): the frozen tab set would keep
+  the tab while `discardRemoteSession` deleted its row, and a saved tab
+  with no row restores as a tab on this Mac (`row?.host ?? .local`).
+  Refusing it keeps both; the band is there again next launch. Scoped to
+  `RemoteTabController.discard`: a local saved tab with no row restores as
+  it always did. Remote's only other row deletion that a saved tab could
+  outlive would be the ADR-030 sweep, whose SQL already requires no saved
+  tab.

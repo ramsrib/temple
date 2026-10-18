@@ -1158,6 +1158,29 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertEqual(remote.discarded, ["v"])
     }
 
+    /// Discard does nothing once a quit has begun: the frozen tab set would
+    /// keep the tab while its row went, and a saved tab with no row comes
+    /// back as a tab on this Mac. The band is there again next launch.
+    func testDiscardDoesNothingOnceAQuitHasBegun() async throws {
+        remote.decision = true
+        var discardedRows: [String] = []
+        model.remoteTabs.rowIncarnation = { "inc-\($0)" }
+        model.remoteTabs.discardHandler = { id, _, _, _ in discardedRows.append(id) }
+        let row = Fixture.row("v", project: "/p", host: hostID)
+        rows["v"] = row
+        model.openSession(row)
+        let tab = try XCTUnwrap(model.activeTab)
+        await settle(tab.remote?.phase == .needsDecision(checked: true))
+        model.prepareForQuit()
+        _ = model.quitDrainPlan()
+        model.remoteTabs.discard(tab)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(model.tabs.contains { $0 === tab }, "the frozen set keeps it, and so does the window")
+        XCTAssertTrue(discardedRows.isEmpty, "the row stays")
+        XCTAssertTrue(remote.discarded.isEmpty)
+        XCTAssertTrue(persistence.load().contains { $0.sessionID == "v" })
+    }
+
     /// The row's disposition is durable work too: a write that fails is
     /// said, never swallowed.
     func testADispositionThatFailsIsSaid() async throws {
