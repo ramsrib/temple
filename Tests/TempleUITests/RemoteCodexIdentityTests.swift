@@ -1039,6 +1039,33 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertTrue(store.saved.contains { $0.sessionID == "c9" })
     }
 
+    func testV8RetiringAHostClearsAnEndedQuestionsBusyState() async throws {
+        remote.pending = [.init(handle: "p8", directory: "/home/u/project", ended: true, typed: true)]
+        remote.suggestionsResult = .candidates([suggestion()])
+        model.remoteTabs.restorePending(hosts: [hostID])
+        await settle(self.model.tabs.count == 1)
+        let tab = try XCTUnwrap(model.tabs.first)
+        model.activate(tab)
+        await settle(tab.remote?.suggestions.count == 1)
+        let hold = Gate()
+        remote.confirmGate = { await hold.wait() }
+        remote.confirmResult = .storage("disk full")
+        model.remoteTabs.confirm(suggestion(), in: tab)
+        await settle(self.remote.confirms.count == 1)
+        remote.identityGate = { await hold.wait() }
+        model.remoteTabs.retryIdentity(tab)
+        await settle(!self.remote.identifies.isEmpty)
+        model.remoteTabs.retireHost(hostID)
+        hostEnabled = false
+        await hold.open()
+        let drained = await model.remoteTabs.operations.waitForAll(until: Date().addingTimeInterval(3))
+        XCTAssertTrue(drained)
+        hostEnabled = true
+        XCTAssertEqual(tab.remote?.phase, .endedPending)
+        XCTAssertNil(tab.remote?.confirming)
+        XCTAssertEqual(tab.remote?.retrying, false)
+    }
+
     func testV7AnEndedJoinedAnswerRetiresItsRestorationWithoutAChip() async throws {
         let store = try RemoteStateStore()
         var run = RemoteRun(handle: "p7", host: hostID, agent: .codex, mode: .new,

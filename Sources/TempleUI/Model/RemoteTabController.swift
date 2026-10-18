@@ -759,6 +759,8 @@ public final class RemoteTabController {
         operations.cancel(host: hostID)
         for tab in model.tabs where tab.kind == .session && tab.host == hostID && tab.remote != nil {
             tab.remote?.openToken = UUID()
+            tab.remote?.confirming = nil
+            tab.remote?.retrying = false
             if tab.remote?.handle == nil {
                 tab.remote = nil
                 continue
