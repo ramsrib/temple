@@ -1268,11 +1268,11 @@ public final class RemoteTabController {
         guard isPending(tab), let handle = tab.remote?.handle, let host = remoteHost(for: tab) else { return }
         refusedClaims[handle] = nil
         tab.remote?.identityRefused = false
-        // "Couldn't tell" stays until candidates arrive (never a bare tab);
-        // a refusal's reason goes with the refusal.
+        // A refusal or failed check's reason goes with that attempt;
+        // "Couldn't tell" keeps checking, its result and Try again visible.
         if let note = tab.remote?.identityNote, note != RemoteCopy.couldNotTell, note != RemoteCopy.noOtherCandidate {
-            tab.remote?.identityNote = nil
-            tab.remote?.canRetryIdentity = false
+            tab.remote?.identityNote = RemoteCopy.couldNotTell
+            tab.remote?.canRetryIdentity = true
         }
         // It shows that it ran: checking, then what it found.
         tab.remote?.retrying = true
