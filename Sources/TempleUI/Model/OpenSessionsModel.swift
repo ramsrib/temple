@@ -1140,12 +1140,19 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     private(set) var acknowledgedSaves = 0
 
     private func restorableTabs() -> [PersistedTab] {
+        let activeTab = self.activeTab
+        var seen: [String: Set<String>] = [:]
         var restorable = tabs
             .filter { $0.kind == .session && !$0.isProvisional }
             .compactMap { tab -> PersistedTab? in
-                guard let sid = tab.sessionID else { return nil }
+                // Concurrent remote adoption can leave two live tabs for the
+                // same saved key. Keep the first descriptor so the whole-set
+                // transaction can still save, including unrelated local tabs.
+                guard let sid = tab.sessionID,
+                      seen[tab.projectPath, default: []].insert(sid).inserted else { return nil }
                 return PersistedTab(sessionID: sid, agent: tab.agent, projectPath: tab.projectPath,
-                                    title: tab.title, isActive: tab.id == activeTabID)
+                                    title: tab.title, isActive: activeTab?.sessionID == sid
+                                        && activeTab?.projectPath == tab.projectPath)
             }
         // The ACTIVE project's tabs go first (within-project order preserved):
         // restore() derives the launch-time active project from the first

@@ -93,6 +93,53 @@ final class RemoteCodexIdentityTests: XCTestCase {
 
     // MARK: Starting and identifying
 
+    func testDuplicateRemoteTabsStillSaveAndRestoreAnUnrelatedLocalTabChange() async throws {
+        let db = try TempleDB.inMemory()
+        let store = DBTabPersistence(db: db)
+        makeModel(persistence: store)
+        let oldLocal = Fixture.row("local-old", project: "/local")
+        let newLocal = Fixture.row("local-new", project: "/local")
+        let remoteRow = Fixture.row("c9", agent: .codex, project: "/home/u/project", host: hostID)
+        model.openSession(oldLocal)
+        let oldLocalTab = try XCTUnwrap(model.activeTab)
+
+        // Hold the pending claim while the same session is opened from its row.
+        let hold = Gate()
+        remote.identityResult = .adopted("c9", directory: "/home/u/project")
+        remote.identityGate = { await hold.wait() }
+        let pending = await newCodex()
+        await settle(!self.remote.identifies.isEmpty)
+        model.openSession(remoteRow)
+        let opened = try XCTUnwrap(model.activeTab)
+        await hold.open()
+        await settle(pending.sessionID == "c9")
+        XCTAssertEqual(model.tabs.filter { $0.sessionID == "c9" }.count, 2)
+        XCTAssertEqual(pending.projectPath, opened.projectPath)
+
+        // Either duplicate being active must select the retained descriptor.
+        for active in [pending, opened] {
+            model.activate(active)
+            model.persist()
+            let saved = store.load().filter { $0.sessionID == "c9" }
+            XCTAssertEqual(saved.count, 1)
+            XCTAssertEqual(saved.first?.title, pending.title, "keep the first tab's descriptor")
+            XCTAssertEqual(saved.first?.isActive, true)
+        }
+
+        model.closeTab(oldLocalTab.id)
+        model.openSession(newLocal)
+        XCTAssertEqual(Set(store.load().map(\.sessionID)), ["c9", "local-new"])
+        XCTAssertEqual(store.load().first(where: \.isActive)?.sessionID, "local-new")
+
+        makeModel(persistence: DBTabPersistence(db: db))
+        model.sessionRow = { id in id == "c9" ? remoteRow : id == "local-new" ? newLocal : nil }
+        model.restore()
+        XCTAssertEqual(Set(model.tabs.compactMap(\.sessionID)), ["c9", "local-new"])
+        XCTAssertEqual(model.tabs.first { $0.sessionID == "c9" }?.host, hostID)
+        XCTAssertEqual(model.activeTab?.sessionID, "local-new")
+        XCTAssertEqual(model.activeTab?.host, .local)
+    }
+
     /// A new Codex session is a pending run: no id, nothing in core, the
     /// agent's argv without one. Once its `ok` arrives the schedule checks
     /// its process tree; a verified id joins core (created, Codex), records
