@@ -130,7 +130,7 @@ struct SessionRow: View {
     private var stopQuestion: (title: String, message: String) {
         model.openSessions.remoteTabs.stopQuestion(host: session.host, agent: session.agent ?? .claude,
                                                    title: model.displayTitle(session), sessionID: session.id,
-                                                   resumable: model.canResumeLater(session.id))
+                                                   resumable: model.resumability(session.id))
     }
 
     /// A session on a host whose agent still runs there: Stop on <host>,

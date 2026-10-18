@@ -519,6 +519,58 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(remote.inputs, [handle, handle])
     }
 
+    /// Try again whose lookup can't run says so, with why; never "still
+    /// none" for a lookup that didn't come back.
+    func testTryAgainWhoseLookupFailsSaysSo() async throws {
+        model.remoteTabs.identitySchedule = [60]
+        remote.identityResult = .inconclusive("shared server", lasting: true, ended: false)
+        // Two, so Temple asks rather than linking on its own.
+        remote.suggestionsResult = .candidates([suggestion("c6"), suggestion("c7")])
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        model.remoteTabs.retryIdentity(tab)
+        await settle(tab.remote?.suggestions.count == 2)
+        for candidate in tab.remote?.suggestions ?? [] { model.remoteTabs.decline(candidate, in: tab) }
+        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.noOtherCandidate)
+        remote.suggestionsResult = .unavailable("ssh: connect to host box port 22: Connection refused")
+        model.remoteTabs.retryIdentity(tab)
+        await settle(tab.remote?.retrying == false)
+        XCTAssertEqual(tab.remote?.retryResult,
+                       "Couldn't check again: ssh: connect to host box port 22: Connection refused.")
+        remote.suggestionsResult = .candidates([])
+        model.remoteTabs.retryIdentity(tab)
+        await settle(tab.remote?.retrying == false && tab.remote?.retryResult == RemoteCopy.checkedStillNone,
+                     "a lookup that came back empty")
+    }
+
+    /// Only the newest lookup reaches the tab: an older one that comes back
+    /// later, and empty, never erases a candidate the newer one found, and
+    /// a lookup with candidates takes the empty-state line down with it.
+    func testAnOlderEmptyLookupNeverErasesANewerCandidate() async throws {
+        model.remoteTabs.identitySchedule = [60]
+        remote.identityResult = .inconclusive("shared server", lasting: true, ended: false)
+        // Two, so Temple asks rather than linking on its own.
+        remote.suggestionsResult = .candidates([suggestion("c6"), suggestion("c7")])
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        model.remoteTabs.retryIdentity(tab)
+        await settle(tab.remote?.suggestions.count == 2)
+        for candidate in tab.remote?.suggestions ?? [] { model.remoteTabs.decline(candidate, in: tab) }
+        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.noOtherCandidate)
+        let hold = Gate()
+        let lookups = remote.suggestionLookups.count
+        remote.suggestionsQueue = [(gate: { await hold.wait() }, answer: .candidates([])),
+                                   (gate: nil, answer: .candidates([suggestion("c8")]))]
+        model.remoteTabs.retryIdentity(tab)
+        await settle(self.remote.suggestionLookups.count == lookups + 1, "the older lookup is out")
+        model.remoteTabs.retryIdentity(tab)
+        await settle(tab.remote?.suggestions.map(\.sessionID) == ["c8"], "the newer one's candidate")
+        XCTAssertNil(tab.remote?.identityNote, "no empty-state line beside a candidate")
+        await hold.open()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(tab.remote?.suggestions.map(\.sessionID), ["c8"], "the older, empty answer changes nothing")
+    }
+
     /// Not this one's write that fails changes nothing: the tab is still
     /// the linked session (its saved tab and row as they were), the failure
     /// is said once, and Not this one can be tried again.
@@ -1281,11 +1333,14 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(RemoteCopy.closeHostTabHelp("box", agent: .claude),
                        "Close tab. Stops Claude Code on box if it is waiting for input; asks first if it is working.")
         XCTAssertEqual(RemoteCopy.stopWorkingTitle("Fix it", host: "box"), "Stop \u{201C}Fix it\u{201D} on box?")
-        XCTAssertEqual(RemoteCopy.stopWorkingMessage(agent: .codex, uncertain: false, tabOpen: true, resumable: true),
+        XCTAssertEqual(RemoteCopy.stopWorkingMessage(agent: .codex, uncertain: false, tabOpen: true, resumable: .kept),
                        "Codex is working on it. Stopping ends it, interrupting anything it is doing, and closes its tab. Its conversation is kept: resume it later from its row in the sidebar.")
-        XCTAssertEqual(RemoteCopy.stopWorkingMessage(agent: .claude, uncertain: true, tabOpen: false, resumable: false),
+        XCTAssertEqual(RemoteCopy.stopWorkingMessage(agent: .claude, uncertain: true, tabOpen: false, resumable: .unknown),
                        "Claude Code may still be working on it; Temple reconnected a moment ago and can't tell yet. Stopping ends it, interrupting anything it is doing. "
-                       + "It can't be resumed afterwards, because Temple has no transcript of it.")
+                       + "Temple doesn't know yet whether it can be resumed afterwards.")
+        XCTAssertEqual(RemoteCopy.stopWorkingMessage(agent: .codex, uncertain: false, tabOpen: false, resumable: .absent),
+                       "Codex is working on it. Stopping ends it, interrupting anything it is doing. "
+                       + "It can't be resumed afterwards: no transcript of it was found on the host.")
         XCTAssertEqual(RemoteCopy.workingCLIRefusal("box"),
                        "Its agent is working on box. Pass --force to detach it (it keeps running), or stop it in Temple.")
         // Remove, singular and plural.

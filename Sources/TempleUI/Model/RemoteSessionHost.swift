@@ -479,14 +479,22 @@ public enum RemoteCopy {
     /// (`uncertain`: reconnected a moment ago), what Stop does (its tab
     /// closes only when one is open), and that the conversation can be
     /// resumed only when it can (`resumable`: a session with a transcript).
-    public static func stopWorkingMessage(agent: Agent, uncertain: Bool, tabOpen: Bool, resumable: Bool) -> String {
+    /// Whether a session's conversation can be resumed after a stop: its
+    /// transcript is known (kept), proven absent (no transcript carries its
+    /// id), or not known yet (an unidentified run may already have one).
+    public enum Resumability: Equatable { case kept, unknown, absent }
+
+    public static func stopWorkingMessage(agent: Agent, uncertain: Bool, tabOpen: Bool, resumable: Resumability) -> String {
         let state = uncertain
             ? "\(agent.displayName) may still be working on it; Temple reconnected a moment ago and can't tell yet."
             : "\(agent.displayName) is working on it."
         let stop = tabOpen ? " Stopping ends it, interrupting anything it is doing, and closes its tab."
             : " Stopping ends it, interrupting anything it is doing."
-        return state + stop + (resumable ? " Its conversation is kept: resume it later from its row in the sidebar."
-                                         : " It can't be resumed afterwards, because Temple has no transcript of it.")
+        switch resumable {
+        case .kept: return state + stop + " Its conversation is kept: resume it later from its row in the sidebar."
+        case .absent: return state + stop + " It can't be resumed afterwards: no transcript of it was found on the host."
+        case .unknown: return state + stop + " Temple doesn't know yet whether it can be resumed afterwards."
+        }
     }
 
     /// The quit prompt, when a host has a connected tab: this Mac's working
@@ -1016,6 +1024,8 @@ public enum RemoteCopy {
         + "any you said weren't this tab's. Temple checks again every minute while the tab is connected; Try again checks now. "
         + "The tab keeps working; it gets a sidebar row once Temple finds its session."
     /// Try again, while it checks, and when it found nothing new.
+    /// Try again's lookup failed: why.
+    public static func checkFailed(_ reason: String) -> String { "Couldn't check again: \(sentence(reason))" }
     public static let checkingAgain = "Checking again\u{2026}"
     public static let checkedStillNone = "Checked again: still no new Codex session in this folder."
 

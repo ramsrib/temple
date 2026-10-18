@@ -766,7 +766,7 @@ public final class RemoteTabController {
     /// known; its tab closes only when one is open; resuming later is said
     /// only when `resumable`.
     public func stopQuestion(host hostID: HostID, agent: Agent, title: String, sessionID: String? = nil,
-                             handle: String? = nil, resumable: Bool) -> (title: String, message: String) {
+                             handle: String? = nil, resumable: RemoteCopy.Resumability) -> (title: String, message: String) {
         let tab = model.tabs.first { tab in
             tab.kind == .session && tab.host == hostID && tab.remote != nil
                 && ((sessionID != nil && tab.sessionID == sessionID) || (handle != nil && tab.remote?.handle == handle))
@@ -1335,12 +1335,19 @@ public final class RemoteTabController {
         tab.remote?.retryResult = nil
         lastIdentityCheck[tab.id] = Date()
         let ticket = gate.ticket(for: tab)
+        lastLookup[handle] = nil
         operations.run(host: tab.host, .identity) { [weak self] in
             await self?.checkIdentity(ticket, host: host, handle: handle)
             guard let self, self.gate.admit(.identityResult, ticket), let tab = ticket.tab else { return }
             tab.remote?.retrying = false
-            if self.isPending(tab), tab.remote?.suggestions.isEmpty == true {
-                tab.remote?.retryResult = RemoteCopy.checkedStillNone
+            guard self.isPending(tab) else { return }
+            // Said only from what this check's lookup found: "still none"
+            // after a lookup that came back complete and empty; why, when it
+            // couldn't look; nothing when no lookup ran.
+            switch self.lastLookup[handle] {
+            case .candidates(0)?: tab.remote?.retryResult = RemoteCopy.checkedStillNone
+            case .unavailable(let reason)?: tab.remote?.retryResult = RemoteCopy.checkFailed(reason)
+            default: tab.remote?.retryResult = nil
             }
         }
     }
@@ -1363,10 +1370,24 @@ public final class RemoteTabController {
         }
     }
 
+    /// What the last lookup for a run that reached its tab found: its
+    /// candidates (how many, after filtering), or why it couldn't look.
+    enum LookupOutcome: Equatable { case candidates(Int), unavailable(String) }
+    private var lastLookup: [String: LookupOutcome] = [:]
+    /// Each run's lookups in the order they began: only the newest one's
+    /// answer reaches the tab (an older, emptier answer never erases it).
+    private var lookupGeneration: [String: Int] = [:]
+
     private func loadSuggestions(_ ticket: RemoteTicket, host: RemoteSessionHost, handle: String) async {
+        let generation = (lookupGeneration[handle] ?? 0) + 1
+        lookupGeneration[handle] = generation
         let answer = await host.suggestions(handle)
-        guard gate.admit(.suggestionsLoaded, ticket), let tab = ticket.tab, isPending(tab),
-              case .candidates(let found) = answer else { return }
+        guard lookupGeneration[handle] == generation else { return }
+        guard gate.admit(.suggestionsLoaded, ticket), let tab = ticket.tab, isPending(tab) else { return }
+        guard case .candidates(let found) = answer else {
+            if case .unavailable(let reason) = answer { lastLookup[handle] = .unavailable(reason) }
+            return
+        }
         let refused = refusedClaims[handle]?.id
         // Never one the user declined for this run, even before the host's
         // own record of the decline is written (Try again included).
@@ -1386,9 +1407,13 @@ public final class RemoteTabController {
         tab.remote?.suggestions = offered.sorted {
             $0.startedAt != $1.startedAt ? $0.startedAt < $1.startedAt : $0.id.lexicographicallyPrecedes($1.id)
         }
+        lastLookup[handle] = .candidates(offered.count)
+        // The candidates and what the tab says of them, together: with
+        // some, no empty-state text stays up.
         if !offered.isEmpty {
             asked.insert(handle)
             tab.remote?.retryResult = nil
+            if tab.remote?.identityNote == RemoteCopy.noOtherCandidate { tab.remote?.identityNote = nil }
         }
         // Once asked, the tab is never bare: with no candidate left (the
         // last one declined), it says no other session has started there.

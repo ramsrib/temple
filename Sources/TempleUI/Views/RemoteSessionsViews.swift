@@ -95,7 +95,7 @@ struct RemoteSessionsSheet: View {
     private func stopQuestion(_ session: RemoteTrackedSession) -> (title: String, message: String) {
         model.openSessions.remoteTabs.stopQuestion(host: sheet.request.host, agent: session.agent,
                                                    title: model.trackedTitle(session), handle: session.handle,
-                                                   resumable: model.canResumeLater(session.sessionID))
+                                                   resumable: model.resumability(session.sessionID))
     }
 
     /// Open here: a live tab of the run in this Temple ("Running in a tab").

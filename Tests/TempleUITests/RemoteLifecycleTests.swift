@@ -293,8 +293,16 @@ final class FakeRemoteHost: RemoteSessionHost {
     /// As the host does: a declined candidate is never offered again for
     /// its run (opt-in, so older tests keep their fixed answers).
     var excludesDeclined = false
+    /// Answers for the next lookups, in order, each with its own gate
+    /// (then `suggestionsResult`).
+    var suggestionsQueue: [(gate: (() async -> Void)?, answer: RemoteSuggestions)] = []
     func suggestions(_ handle: String) async -> RemoteSuggestions {
         suggestionLookups.append(handle)
+        if !suggestionsQueue.isEmpty {
+            let next = suggestionsQueue.removeFirst()
+            if let gate = next.gate { await gate() }
+            return next.answer
+        }
         if let suggestionsGate { await suggestionsGate() }
         guard excludesDeclined, case .candidates(let found) = suggestionsResult else { return suggestionsResult }
         let declined = Set(declines.filter { $0.handle == handle }.map(\.path))
@@ -851,18 +859,18 @@ final class RemoteLifecycleTests: XCTestCase {
                        "Temple reattached to it a moment ago and can't tell yet. Detach leaves it running on box; Stop ends it.")
         // The Stop question says the same, by session and by run.
         let uncertain = model.remoteTabs.stopQuestion(host: hostID, agent: .claude, title: "Title", sessionID: "s1",
-                                                      resumable: true)
+                                                      resumable: .kept)
         XCTAssertEqual(uncertain.title, "Stop \u{201C}Title\u{201D} on box?")
         XCTAssertEqual(uncertain.message, "Claude Code may still be working on it; Temple reconnected a moment ago and can't tell yet. "
                        + "Stopping ends it, interrupting anything it is doing, and closes its tab. Its conversation is kept: resume it later from its row in the sidebar.")
         XCTAssertEqual(model.remoteTabs.stopQuestion(host: hostID, agent: .claude, title: "Title", handle: "kept",
-                                                     resumable: false).message,
+                                                     resumable: .unknown).message,
                        "Claude Code may still be working on it; Temple reconnected a moment ago and can't tell yet. "
-                       + "Stopping ends it, interrupting anything it is doing, and closes its tab. It can't be resumed afterwards, because Temple has no transcript of it.", "said, without a transcript")
+                       + "Stopping ends it, interrupting anything it is doing, and closes its tab. Temple doesn't know yet whether it can be resumed afterwards.", "unknown: said so, not claimed either way")
         model.surfaceDidReceiveInput(try XCTUnwrap(tab.surface))
         XCTAssertFalse(model.workingIsUncertain(tab), "input since: the usual reading")
         XCTAssertEqual(model.remoteTabs.stopQuestion(host: hostID, agent: .claude, title: "Title", sessionID: "s1",
-                                                     resumable: true).message,
+                                                     resumable: .kept).message,
                        "Claude Code is working on it. Stopping ends it, interrupting anything it is doing, and closes its tab. Its conversation is kept: resume it later from its row in the sidebar.")
 
         let created = await openRow("s2")

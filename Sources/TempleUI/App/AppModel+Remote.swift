@@ -286,11 +286,14 @@ extension AppModel {
         }
     }
 
-    /// Whether a session's conversation can be resumed after a stop: it
-    /// has a row whose transcript Temple knows.
-    public func canResumeLater(_ sessionID: String?) -> Bool {
-        guard let sessionID, let row = overlay.rows[sessionID] else { return false }
-        return row.transcriptPath != nil
+    /// Whether a session's conversation can be resumed after a stop: kept
+    /// when its row's transcript is known, absent only when the host's
+    /// enumeration proved no transcript carries its id, unknown otherwise
+    /// (an unidentified run, or a transcript not looked up yet).
+    public func resumability(_ sessionID: String?) -> RemoteCopy.Resumability {
+        guard let sessionID, let row = overlay.rows[sessionID] else { return .unknown }
+        if row.transcriptPath != nil { return .kept }
+        return sessions.first(where: { $0.id == sessionID })?.transcriptConfirmedMissing == true ? .absent : .unknown
     }
 
     /// A tracked session's name as Running sessions shows it: its row's
