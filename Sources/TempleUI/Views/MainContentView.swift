@@ -87,7 +87,7 @@ private struct SessionTerminalView: View {
                 // A new Codex session Temple has not identified yet asks,
                 // while it runs, whether one of its candidates is it.
                 if remote.phase == .connected, tab.sessionID == nil,
-                   !remote.suggestions.isEmpty || remote.identityNote != nil {
+                   !remote.suggestions.isEmpty || remote.identityNote != nil || !remote.declined.isEmpty {
                     question(remote).band()
                 }
                 // Temple said yes on its own to the lone candidate: one
@@ -214,6 +214,27 @@ private struct SessionTerminalView: View {
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, 22)
+        }
+        // Each candidate the user declined for this run, offered back on
+        // its own quieter line: the way back from Not this one.
+        ForEach(remote.declined) { suggestion in
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(RemoteCopy.declinedLine(suggestion))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                if remote.confirming == suggestion.id {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button(RemoteCopy.relink) { model.openSessions.remoteTabs.relink(suggestion, in: tab) }
+                        .help(RemoteCopy.relinkHelp)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(remote.confirming != nil)
                 }
                 Spacer(minLength: 0)
             }

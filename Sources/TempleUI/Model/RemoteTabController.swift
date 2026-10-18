@@ -43,7 +43,7 @@ public final class RemoteTabController {
     /// person, so it is not archived (an earlier Not this one archived it
     /// for another tab's link). Keeps "an archived row has no tab", which
     /// `restore()` relies on.
-    public var claimJoinedHandler: ((_ sessionID: String, _ host: HostID) -> Void)?
+    public var claimJoinedHandler: ((_ sessionID: String, _ host: HostID, _ handle: String) -> Void)?
     /// The title a tab's chip shows (the app's `tabDisplayTitle`).
     public var tabTitleProvider: (SessionTab) -> String = { $0.title.isEmpty ? $0.agent.newSessionTitle : $0.title }
     /// Not this one detached the tab: the notice, whose Open reopens the
@@ -1095,7 +1095,7 @@ public final class RemoteTabController {
             let open = SessionOpen(id: id, host: hostID, via: .created, agent: .codex, locator: nil)
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
-                claimJoinedHandler?(id, hostID)
+                claimJoinedHandler?(id, hostID, handle)
                 if let directory { model.launchDirectoryHandler?(id, hostID, directory) }
                 operations.run(host: hostID, .write) {
                     do { try await host.markJoined(handle) } catch {
@@ -1175,6 +1175,7 @@ public final class RemoteTabController {
         // resumes it, never starts it again.
         tab.inputSubmitted = true
         tab.remote?.suggestions = []
+        tab.remote?.declined = []
         tab.remote?.identityNote = nil
         tab.remote?.confirming = nil
         tab.remote?.identityRefused = false
@@ -1401,8 +1402,12 @@ public final class RemoteTabController {
         let refused = refusedClaims[handle]?.id
         // Never one the user declined for this run, even before the host's
         // own record of the decline is written (Try again included).
-        let declined = declinedHere[handle] ?? []
-        let offered = found.filter { $0.sessionID != refused && !declined.contains($0.id) }
+        let declinedPaths = declinedHere[handle] ?? []
+        let isDeclined: (RemoteSuggestion) -> Bool = { $0.declined || declinedPaths.contains($0.id) }
+        let offered = found.filter { $0.sessionID != refused && !isDeclined($0) }
+        // The declined ones, offered back on their own lines (Link it after
+        // all), in the question's order; never in the question itself.
+        let declinedOnes = found.filter { $0.sessionID != refused && isDeclined($0) }
         // Exactly one eligible candidate for a connected run that was typed
         // into and never asked about: Temple says yes on its own, through
         // the yes's own path (owner, round 2; Fable's decision). Two or
@@ -1414,9 +1419,11 @@ public final class RemoteTabController {
             return
         }
         // In start order: the question reads earliest first.
-        tab.remote?.suggestions = offered.sorted {
+        let earliestFirst: (RemoteSuggestion, RemoteSuggestion) -> Bool = {
             $0.startedAt != $1.startedAt ? $0.startedAt < $1.startedAt : $0.id.lexicographicallyPrecedes($1.id)
         }
+        tab.remote?.suggestions = offered.sorted(by: earliestFirst)
+        tab.remote?.declined = declinedOnes.sorted(by: earliestFirst)
         lastLookup[handle] = .candidates(offered.count)
         // The candidates and what the tab says of them, together: with
         // some, no empty-state text stays up.
@@ -1472,7 +1479,7 @@ public final class RemoteTabController {
         tab.remote?.confirming = suggestion.id
         let ticket = gate.ticket(for: tab)
         operations.run(host: tab.host, .write) { [weak self] in
-            let identity = await host.confirm(handle, suggestion: suggestion, automatic: automatic)
+            let identity = await host.confirm(handle, suggestion: suggestion, automatic: automatic, relink: false)
             guard let self else { return }
             switch identity {
             case .adopted(let id, let directory), .known(let id, let directory):
@@ -1514,12 +1521,56 @@ public final class RemoteTabController {
     /// record of a decline is the durable one, across launches).
     private var declinedHere: [String: Set<[UInt8]>] = [:]
 
+    /// "Link it after all", on a candidate the user declined for this run:
+    /// the ordinary yes, except that the host's claim withdraws the decline
+    /// in its own transaction (a refused claim keeps it). The join that
+    /// follows unarchives the row an earlier Not this one archived. A
+    /// person's yes: no "linked on its own" note. Never Temple's own.
+    public func relink(_ suggestion: RemoteSuggestion, in tab: SessionTab) {
+        guard isPending(tab), let handle = tab.remote?.handle, let host = remoteHost(for: tab),
+              tab.remote?.confirming == nil, !isQuitting else { return }
+        tab.remote?.confirming = suggestion.id
+        let ticket = gate.ticket(for: tab)
+        operations.run(host: tab.host, .write) { [weak self] in
+            let identity = await host.confirm(handle, suggestion: suggestion, automatic: false, relink: true)
+            guard let self else { return }
+            switch identity {
+            case .adopted(let id, let directory), .known(let id, let directory):
+                self.declinedHere[handle]?.remove(suggestion.id)
+                let same = id.utf8.elementsEqual(suggestion.sessionID.utf8)
+                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket,
+                                   titleHint: same ? suggestion.firstPrompt : nil)
+            case .taken:
+                guard self.gate.admit(.confirmResult, ticket), let tab = ticket.tab else { return }
+                tab.remote?.confirming = nil
+                tab.remote?.declined.removeAll { $0.id == suggestion.id }
+                tab.remote?.identityNote = RemoteCopy.relinkTaken(suggestion, host: host.hostName)
+            case .inconclusive(let reason, _, _):
+                guard self.gate.admit(.confirmResult, ticket), let tab = ticket.tab else { return }
+                tab.remote?.confirming = nil
+                tab.remote?.declined.removeAll { $0.id == suggestion.id }
+                tab.remote?.identityNote = RemoteCopy.relinkRefused(suggestion, reason: reason)
+            case .storage(let detail):
+                guard self.gate.admit(.confirmResult, ticket), let tab = ticket.tab else { return }
+                tab.remote?.confirming = nil
+                tab.remote?.identityNote = RemoteCopy.unrecorded(host.hostName, detail: detail)
+            }
+        }
+    }
+
     /// "Not this one": gone from the tab at once, and never offered again
     /// for this run (durable).
     public func decline(_ suggestion: RemoteSuggestion, in tab: SessionTab) {
         guard isPending(tab), let handle = tab.remote?.handle, let host = remoteHost(for: tab) else { return }
         declinedHere[handle, default: []].insert(suggestion.id)
         tab.remote?.suggestions.removeAll { $0.id == suggestion.id }
+        // Offered back at once on its own line (the next lookup brings the
+        // list from the host's record).
+        if tab.remote?.declined.contains(where: { $0.id == suggestion.id }) == false {
+            var declined = suggestion
+            declined.declined = true
+            tab.remote?.declined.append(declined)
+        }
         asked.insert(handle)
         // The last one declined, on a running tab: it says no other session
         // has started there (with Try again), never goes bare.
@@ -1711,7 +1762,7 @@ public final class RemoteTabController {
             let open = SessionOpen(id: claim.sessionID, host: hostID, via: .created, agent: .codex, locator: nil)
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
-                claimJoinedHandler?(claim.sessionID, hostID)
+                claimJoinedHandler?(claim.sessionID, hostID, claim.handle)
                 if let directory = claim.directory { model.launchDirectoryHandler?(claim.sessionID, hostID, directory) }
                 joined.insert(claim.handle)
                 do { try await host.markJoined(claim.handle) } catch {

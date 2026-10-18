@@ -357,9 +357,12 @@ final class CodexIdentityTests: XCTestCase {
         guard case .headers(let now, let files) = listing else { return XCTFail("\(listing)") }
         XCTAssertLessThan(abs(now - Int(Date().timeIntervalSince1970)), 5)
         XCTAssertEqual(Set(files.map(\.path)).count, 5, "only the folder's rollouts are read")
-        let eligible = CodexSuggestionLookup.eligible(files, directory: f.folder, since: since,
-                                                      until: Date(timeIntervalSince1970: TimeInterval(since + 3600)),
-                                                      declined: [RemotePath(declined.path)], held: [held.id])
+        let all = CodexSuggestionLookup.eligible(files, directory: f.folder, since: since,
+                                                 until: Date(timeIntervalSince1970: TimeInterval(since + 3600)),
+                                                 declined: [RemotePath(declined.path)], held: [held.id])
+        // A declined one comes back flagged (offered back on its own line).
+        XCTAssertEqual(all.filter(\.declined).map(\.rolloutPath), [declined.path])
+        let eligible = all.filter { !$0.declined }
         XCTAssertEqual(eligible.map(\.sessionID), [blank.id, mine.id])
         let fetched = await CodexSuggestionLookup.heads(eligible.map(\.rolloutPath), using: f.exec)
         let heads = try XCTUnwrap(fetched)
@@ -560,6 +563,37 @@ final class CodexIdentityTests: XCTestCase {
         XCTAssertEqual(try store.pendingRuns(host: HostID(rawValue: "box")), [], "detached: not restored as a tab")
         XCTAssertEqual(try store.declined("a"), ["/r/c1"])
         XCTAssertEqual(try store.claim("a", sessionID: "c1", how: .verified, rolloutPath: "/r/c1"), .declined)
+    }
+
+    /// Link it after all: a decline is withdrawn only with the claim that
+    /// replaces it, in the claim's own transaction.
+    func testAWithdrawnDeclineGoesOnlyWithTheClaimThatReplacesIt() throws {
+        let store = try RemoteStateStore()
+        try pendingRun(store, "a")
+        try store.decline("a", rolloutPath: "/r/1")
+        XCTAssertEqual(try store.claim("a", sessionID: "z1", how: .confirmed, rolloutPath: "/r/1"), .declined)
+        XCTAssertEqual(try store.claim("a", sessionID: "z1", how: .confirmed, rolloutPath: "/r/1", withdrawingDecline: true),
+                       .claimed)
+        XCTAssertEqual(try store.declined("a"), [])
+        XCTAssertEqual(try store.run("a")?.sessionID, "z1")
+        XCTAssertEqual(try store.run("a")?.claim, .confirmed)
+    }
+
+    /// A withdrawal whose claim is refused keeps the decline; Temple's own
+    /// yes never withdraws one.
+    func testAWithdrawalRefusedKeepsTheDecline() throws {
+        let store = try RemoteStateStore()
+        try pendingRun(store, "a")
+        try pendingRun(store, "b")
+        XCTAssertEqual(try store.claim("b", sessionID: "z1", how: .verified), .claimed)
+        try store.decline("a", rolloutPath: "/r/1")
+        XCTAssertEqual(try store.claim("a", sessionID: "z1", how: .confirmed, rolloutPath: "/r/1", withdrawingDecline: true),
+                       .taken)
+        XCTAssertEqual(try store.declined("a"), ["/r/1"])
+        XCTAssertEqual(try store.claim("a", sessionID: "z2", how: .automatic, rolloutPath: "/r/1", withdrawingDecline: true),
+                       .declined)
+        XCTAssertEqual(try store.declined("a"), ["/r/1"])
+        XCTAssertNil(try store.run("a")?.sessionID)
     }
 
     func testDeclinedCandidatesAndPendingRestore() throws {

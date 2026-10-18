@@ -268,16 +268,18 @@ final class RemoteHostLauncher: RemoteSessionHost {
             .candidates(found.map {
                 RemoteSuggestion(rolloutPath: $0.rolloutPath, sessionID: $0.sessionID, firstPrompt: $0.firstPrompt,
                                  startedAt: $0.startedAt, directory: $0.directory, promptKnown: $0.promptKnown,
-                                 hostClockOffset: $0.hostClockOffset)
+                                 hostClockOffset: $0.hostClockOffset, declined: $0.declined)
             })
         }
     }
 
-    func confirm(_ handle: String, suggestion: RemoteSuggestion, automatic: Bool) async -> RemoteIdentity {
+    func confirm(_ handle: String, suggestion: RemoteSuggestion, automatic: Bool, relink: Bool) async -> RemoteIdentity {
         let candidate = CodexSuggestion(rolloutPath: suggestion.rolloutPath, sessionID: suggestion.sessionID,
                                         firstPrompt: suggestion.firstPrompt, startedAt: suggestion.startedAt,
-                                        directory: suggestion.directory, promptKnown: suggestion.promptKnown)
-        return await identity(await sessions.confirm(handle, suggestion: candidate, automatic: automatic), handle: handle)
+                                        directory: suggestion.directory, promptKnown: suggestion.promptKnown,
+                                        declined: suggestion.declined)
+        return await identity(await sessions.confirm(handle, suggestion: candidate, automatic: automatic,
+                                                     withdrawingDecline: relink), handle: handle)
     }
 
     func decline(_ handle: String, rolloutPath: String) async throws {

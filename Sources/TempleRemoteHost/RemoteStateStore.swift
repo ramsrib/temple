@@ -480,8 +480,16 @@ public final class RemoteStateStore: @unchecked Sendable {
     /// transaction across processes: refused when any other run on the
     /// host already holds that id (a claim, or a run of that session).
     /// Written before the core join; a claimed conversation exists.
-    public func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim, rolloutPath: String? = nil) throws -> ClaimOutcome {
-        try queue.writeWithoutTransaction { database in
+    /// `withdrawingDecline`: the user's "Link it after all" on a candidate
+    /// they declined for this run. The decline of `rolloutPath` does not
+    /// refuse it, and is deleted in this transaction, after every other
+    /// check and right before the claim: a withdrawn decline leaves only
+    /// with the claim that replaces it (a refused claim keeps it). Never
+    /// for Temple's own yes.
+    public func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim, rolloutPath: String? = nil,
+                      withdrawingDecline: Bool = false) throws -> ClaimOutcome {
+        let withdrawing = withdrawingDecline && how != .automatic
+        return try queue.writeWithoutTransaction { database in
             var outcome = ClaimOutcome.gone
             try database.inTransaction(.immediate) {
                 guard let run = try Row.fetchOne(database, sql: "SELECT * FROM runs WHERE handle = ?",
@@ -492,7 +500,7 @@ public final class RemoteStateStore: @unchecked Sendable {
                     outcome = .alreadyKnown(known)
                     return .commit
                 }
-                if let rolloutPath, try Int.fetchOne(database, sql: """
+                if !withdrawing, let rolloutPath, try Int.fetchOne(database, sql: """
                     SELECT COUNT(*) FROM declined_candidates WHERE handle = ? AND rollout_path = ?
                     """, arguments: [handle, rolloutPath]) ?? 0 > 0 {
                     outcome = .declined
@@ -529,6 +537,10 @@ public final class RemoteStateStore: @unchecked Sendable {
                 guard held == 0 else {
                     outcome = .taken
                     return .commit
+                }
+                if withdrawing, let rolloutPath {
+                    try database.execute(sql: "DELETE FROM declined_candidates WHERE handle = ? AND rollout_path = ?",
+                                         arguments: [handle, rolloutPath])
                 }
                 try database.execute(sql: """
                     UPDATE runs SET session_id = ?, claim = ?, conversation = ?, joined_at = NULL WHERE handle = ?

@@ -92,6 +92,94 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertEqual(RemoteCopy.leftRunningCount(1, host: "box"), "A session you closed is still running on box.")
     }
 
+    /// Link it after all over one database: Reopen tab takes the notice
+    /// down, the reopened tab offers the declined session back, and the
+    /// relink unarchives its row; a relaunch restores the tab as it.
+    func testLinkItAfterAllUnarchivesTheRowAndTakesTheNoticeDown() async throws {
+        let db = try TempleDB.inMemory()
+        let remote = FakeRemoteHost("box")
+        remote.excludesDeclined = true
+        remote.suggestionsResult = .candidates([RemoteSuggestion(rolloutPath: "/r/c7.jsonl", sessionID: "c7", firstPrompt: "hi",
+                                                                 startedAt: Date(), directory: "/home/u/p")])
+        let app = try app(remote, db: db)
+        app.openSessions.remoteTabs.identitySchedule = [0.01]
+        app.openSessions.remoteTabs.identityInterval = 0.05
+        let tab = app.openSessions.newSession(agent: .codex, project: ProjectKey(host: hostID, path: "/home/u/p"))
+        await settle { tab.hasLiveProcess }
+        app.openSessions.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle { tab.remote?.linkedOnItsOwn == true }
+        app.openSessions.remoteTabs.unlink(tab)
+        await settle { app.overlay.rows["c7"]?.archived == true && app.remoteNotice != nil }
+        if case .unlinked? = app.remoteNotice?.kind {} else { XCTFail("the Not this one notice") }
+        app.actOnRemoteNotice(try XCTUnwrap(app.remoteNotice))
+        XCTAssertNil(app.remoteNotice)
+        let reopened = try XCTUnwrap(app.openSessions.tabs.first { $0.remote?.handle == "p1" })
+        await settle { reopened.remote?.declined.map(\.sessionID) == ["c7"] }
+        app.openSessions.remoteTabs.relink(try XCTUnwrap(reopened.remote?.declined.first), in: reopened)
+        await settle { reopened.sessionID == "c7" && app.overlay.rows["c7"]?.archived == false }
+        XCTAssertEqual(app.overlay.rows["c7"]?.archived, false, "back from Archived sessions")
+        app.openSessions.persist()
+        XCTAssertTrue(DBTabPersistence(db: db).load().contains { $0.sessionID == "c7" })
+        let relaunched = try self.app(remote, db: db)
+        XCTAssertTrue(relaunched.openSessions.tabs.contains { $0.sessionID == "c7" }, "restores as that tab")
+    }
+
+    /// The run opened another way (Running sessions) while the notice is
+    /// still up: the relink's join takes down that run's notice, and only
+    /// that run's.
+    func testAJoinOfTheRunTakesItsNoticeDown() async throws {
+        let remote = FakeRemoteHost("box")
+        remote.excludesDeclined = true
+        remote.suggestionsResult = .candidates([RemoteSuggestion(rolloutPath: "/r/c7.jsonl", sessionID: "c7", firstPrompt: "hi",
+                                                                 startedAt: Date(), directory: "/home/u/p")])
+        let app = try app(remote)
+        app.openSessions.remoteTabs.identitySchedule = [0.01]
+        app.openSessions.remoteTabs.identityInterval = 0.05
+        let tab = app.openSessions.newSession(agent: .codex, project: ProjectKey(host: hostID, path: "/home/u/p"))
+        await settle { tab.hasLiveProcess }
+        app.openSessions.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle { tab.remote?.linkedOnItsOwn == true }
+        app.openSessions.remoteTabs.unlink(tab)
+        await settle { app.remoteNotice != nil }
+        app.openSessions.remoteTabs.openPendingRun(handle: "p1", host: hostID, directory: "/home/u/p")
+        let reopened = try XCTUnwrap(app.openSessions.tabs.first { $0.remote?.handle == "p1" })
+        await settle { reopened.remote?.declined.isEmpty == false }
+        XCTAssertNotNil(app.remoteNotice, "still up while the run is pending")
+        app.openSessions.remoteTabs.relink(try XCTUnwrap(reopened.remote?.declined.first), in: reopened)
+        await settle { reopened.sessionID == "c7" }
+        XCTAssertNil(app.remoteNotice, "the join took it down")
+        // Another run's notice is left alone.
+        app.remoteNotice = RemoteNotice(host: hostID, message: "x", kind: .unlinked(handle: "p9", directory: "/home/u/p"))
+        app.openSessions.remoteTabs.claimJoinedHandler?("c7", hostID, "p1")
+        XCTAssertNotNil(app.remoteNotice)
+    }
+
+    /// The user restored the row from Archived sessions before relinking:
+    /// the relink joins and leaves it unarchived, nothing else.
+    func testLinkItAfterAllAfterTheUserRestoredTheRow() async throws {
+        let remote = FakeRemoteHost("box")
+        remote.excludesDeclined = true
+        remote.suggestionsResult = .candidates([RemoteSuggestion(rolloutPath: "/r/c7.jsonl", sessionID: "c7", firstPrompt: "hi",
+                                                                 startedAt: Date(), directory: "/home/u/p")])
+        let app = try app(remote)
+        app.openSessions.remoteTabs.identitySchedule = [0.01]
+        app.openSessions.remoteTabs.identityInterval = 0.05
+        let tab = app.openSessions.newSession(agent: .codex, project: ProjectKey(host: hostID, path: "/home/u/p"))
+        await settle { tab.hasLiveProcess }
+        app.openSessions.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle { tab.remote?.linkedOnItsOwn == true }
+        app.openSessions.remoteTabs.unlink(tab)
+        await settle { app.overlay.rows["c7"]?.archived == true }
+        app.overlay.setArchived(false, sessionID: "c7")
+        app.actOnRemoteNotice(try XCTUnwrap(app.remoteNotice))
+        let reopened = try XCTUnwrap(app.openSessions.tabs.first { $0.remote?.handle == "p1" })
+        await settle { reopened.remote?.declined.isEmpty == false }
+        app.openSessions.remoteTabs.relink(try XCTUnwrap(reopened.remote?.declined.first), in: reopened)
+        await settle { reopened.sessionID == "c7" }
+        XCTAssertEqual(app.overlay.rows["c7"]?.archived, false)
+        XCTAssertNil(app.remoteNotice)
+    }
+
     /// End to end over one database: Not this one while a quit begins
     /// archives the row; the next launch restores no tab of the rejected
     /// session, opens nothing of it, and its run stays under Running
@@ -477,10 +565,7 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertEqual(remote.pending.first?.dismissed, false, "its run is kept: listed under Running sessions")
         let notice = try XCTUnwrap(app.remoteNotice)
         // The tab by the title its chip showed (no terminal title here).
-        XCTAssertEqual(notice.message, "Closed the tab \u{201C}New Codex session\u{201D} and archived \u{201C}hi\u{201D}, the session "
-                       + "Temple linked to it by mistake (restore it from Archived sessions). The Codex agent that was running "
-                       + "in the tab keeps running on box. Reopen tab reconnects a tab to that agent; Temple then looks again "
-                       + "for its session, leaving out \u{201C}hi\u{201D}.")
+        XCTAssertEqual(notice.message, RemoteCopy.unlinked("hi", tab: "New Codex session", host: "box"))
         XCTAssertEqual(app.remoteNoticeAction(notice), "Reopen tab")
         app.actOnRemoteNotice(notice)
         XCTAssertNil(app.remoteNotice)

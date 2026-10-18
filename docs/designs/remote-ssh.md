@@ -3305,3 +3305,13 @@ cold read of the real screens, as built:
   it always did. Remote's only other row deletion that a saved tab could
   outlive would be the ADR-030 sweep, whose SQL already requires no saved
   tab.
+- *Link it after all* (Fable's decision on undoing Not this one). A
+  declined candidate is offered back on its own line in the tab's question
+  band ("You said “…” wasn't this tab's session.", Link it after all),
+  through the yes path; the store's claim deletes the decline in the same
+  transaction as the claim, after every refusal check, so a refused claim
+  keeps it. The lookup returns declined candidates flagged instead of
+  dropping them, and Temple's own yes counts only the undeclined ones (the
+  store still refuses an automatic claim for a run with a decline). The
+  join unarchives the row Not this one archived and takes that run's
+  notice down. Temple never relinks on its own.

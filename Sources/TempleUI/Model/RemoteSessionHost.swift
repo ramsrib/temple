@@ -146,17 +146,20 @@ public struct RemoteSuggestion: Equatable, Identifiable {
     /// How far the host's clock was ahead of this Mac's when the lookup
     /// asked (negative: behind); nil when unknown. Display only.
     public let hostClockOffset: TimeInterval?
+    /// The user declined it for this run (offered back on its own line).
+    public var declined: Bool
     public init(rolloutPath: String, sessionID: String, firstPrompt: String?, startedAt: Date, directory: String,
-                promptKnown: Bool = true, hostClockOffset: TimeInterval? = nil) {
+                promptKnown: Bool = true, hostClockOffset: TimeInterval? = nil, declined: Bool = false) {
         self.rolloutPath = rolloutPath; self.sessionID = sessionID; self.firstPrompt = firstPrompt
         self.startedAt = startedAt; self.directory = directory; self.promptKnown = promptKnown
-        self.hostClockOffset = hostClockOffset
+        self.hostClockOffset = hostClockOffset; self.declined = declined
     }
 
     public static func == (lhs: RemoteSuggestion, rhs: RemoteSuggestion) -> Bool {
         lhs.id == rhs.id && Array(lhs.sessionID.utf8) == Array(rhs.sessionID.utf8)
             && lhs.firstPrompt == rhs.firstPrompt && lhs.startedAt == rhs.startedAt
             && Array(lhs.directory.utf8) == Array(rhs.directory.utf8) && lhs.promptKnown == rhs.promptKnown
+            && lhs.declined == rhs.declined
     }
 }
 
@@ -285,7 +288,9 @@ public protocol RemoteSessionHost: HostLauncher {
     /// claimed under the same uniqueness as a verified id; an automatic
     /// one only while it is still the only candidate and the run has no
     /// declined candidate.
-    func confirm(_ handle: String, suggestion: RemoteSuggestion, automatic: Bool) async -> RemoteIdentity
+    /// `relink`: the user's "Link it after all" on a candidate they
+    /// declined; the claim withdraws the decline with itself.
+    func confirm(_ handle: String, suggestion: RemoteSuggestion, automatic: Bool, relink: Bool) async -> RemoteIdentity
     /// "Not this one": never offered again for this run.
     func decline(_ handle: String, rolloutPath: String) async throws
     /// The core join refused the id: the run is pending again.
@@ -379,6 +384,9 @@ public struct RemoteTabState: Equatable {
     public var linkedSuggestion: RemoteSuggestion?
     /// Not this one's write is out: the button waits for it.
     public var unlinking = false
+    /// Candidates the user declined for this run, offered back on their
+    /// own lines ("Link it after all").
+    public var declined: [RemoteSuggestion] = []
     /// Try again is checking; what it found when that was nothing new.
     public var retrying = false
     public var retryResult: String?
@@ -850,13 +858,15 @@ public enum RemoteCopy {
 
     public static let openSettings = "Open Settings"
 
-    /// Not this one closed the tab: what happened, and Reopen tab. (The
-    /// run stays under Running sessions on <host>, with Open.)
+    /// Not this one closed the tab: what happened, and Reopen tab. The way
+    /// back is in the reopened tab (Link it after all); the session alone
+    /// comes back from Archived sessions.
     public static func unlinked(_ session: String, tab: String, host: String) -> String {
-        "Closed the tab \u{201C}\(tab)\u{201D} and archived \u{201C}\(session)\u{201D}, the session Temple linked to it "
-            + "by mistake (restore it from Archived sessions). The Codex agent that was running in the tab keeps running on "
-            + "\(host). Reopen tab reconnects a tab to that agent; Temple then looks again for its session, leaving out "
-            + "\u{201C}\(session)\u{201D}."
+        "Closed the tab \u{201C}\(tab)\u{201D} and archived \u{201C}\(session)\u{201D}, the session you said wasn't that tab's. "
+            + "The Codex agent that was running in the tab keeps running on \(host). Reopen tab reconnects a tab to that "
+            + "agent and asks again which session it is; if \u{201C}\(session)\u{201D} was that tab's after all, the reopened "
+            + "tab has Link it after all, which also brings the session back from Archived sessions. To bring back the "
+            + "session alone, without a tab, restore it from Archived sessions on the start page (\u{2318}\u{21E7}Y)."
     }
     public static let unlinkedOpen = "Reopen tab"
 
@@ -997,6 +1007,32 @@ public enum RemoteCopy {
         formatter.dateStyle = Calendar.current.isDate(date, inSameDayAs: now) ? .none : .medium
         formatter.timeStyle = .short
         return formatter.string(from: date)
+    }
+
+    /// A declined candidate, offered back on its own line: its prompt in
+    /// quotes, else when it started.
+    public static func declinedLine(_ suggestion: RemoteSuggestion, now: Date = Date()) -> String {
+        "You said \(declinedSubject(suggestion, now: now)) wasn't this tab's session."
+    }
+
+    static func declinedSubject(_ suggestion: RemoteSuggestion, now: Date) -> String {
+        if let prompt = suggestion.firstPrompt { return "\u{201C}\(prompt)\u{201D}" }
+        let note = suggestion.promptKnown ? "no prompt yet" : "first prompt unreadable"
+        return "the session started \(startTime(suggestion.startedAt, now: now)) (\(note))"
+    }
+
+    public static let relink = "Link it after all"
+    public static let relinkHelp = "Links this tab to that session, as Yes, that's it would have. "
+        + "If Not this one archived the session, it comes back from Archived sessions."
+
+    /// Link it after all, refused: another run holds the session.
+    public static func relinkTaken(_ suggestion: RemoteSuggestion, host: String, now: Date = Date()) -> String {
+        "Couldn't link \(declinedSubject(suggestion, now: now)) to this tab: another tab on \(host) has that session now."
+    }
+
+    /// Link it after all, refused for a reason the host gave.
+    public static func relinkRefused(_ suggestion: RemoteSuggestion, reason: String, now: Date = Date()) -> String {
+        "Couldn't link \(declinedSubject(suggestion, now: now)) to this tab: \(lowercasedFirst(sentence(reason)))"
     }
 
     public static let suggestionYes = "Yes, that's it"
