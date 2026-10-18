@@ -343,11 +343,13 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(joins.map(\.id), ["c7"])
     }
 
-    /// A wrong link is undone with Not this one (the cold-read round): the
-    /// claim on that id is released and the candidate declined in one
-    /// write, the row the link made is archived (reversibly), and the tab
-    /// goes back to the question without that candidate. Nothing is
-    /// stopped: the agent keeps running, its client attached.
+    /// A wrong link is undone with Not this one (the cold-read round). The
+    /// write comes first: until the claim is released and the candidate
+    /// declined, nothing changes (the tab is still that session, its row
+    /// not archived, its saved tab kept). Once it commits, the row the link
+    /// made is archived (reversibly) and the tab goes back to the question
+    /// without that candidate. Nothing is stopped: the agent keeps running,
+    /// its client attached.
     func testNotThisOneOnALinkReturnsToTheQuestionAndKeepsTheAgentRunning() async throws {
         var archived: [String] = []
         model.remoteTabs.unlinkHandler = { id, _ in archived.append(id) }
@@ -361,26 +363,38 @@ final class RemoteCodexIdentityTests: XCTestCase {
         let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
         // A second candidate turned up meanwhile.
         remote.suggestionsResult = .candidates([suggestion(), suggestion("c8")])
+        let hold = Gate()
+        remote.unlinkGate = { await hold.wait() }
         model.remoteTabs.unlink(tab)
-        XCTAssertNil(tab.sessionID, "the tab is unidentified again")
+        await settle(self.remote.unlinks.count == 1)
+        XCTAssertEqual(tab.sessionID, "c7", "nothing changes before the write commits")
+        XCTAssertEqual(tab.remote?.unlinking, true, "Not this one waits for it")
+        XCTAssertEqual(archived, [])
+        XCTAssertTrue(persistence.load().contains { $0.sessionID == "c7" })
+        model.remoteTabs.unlink(tab)
+        XCTAssertEqual(remote.unlinks.count, 1, "one write at a time")
+        await hold.open()
+        await settle(tab.sessionID == nil, "the tab is unidentified again")
         XCTAssertTrue(tab.isProvisional)
         XCTAssertEqual(tab.remote?.linkedOnItsOwn, false)
+        XCTAssertEqual(tab.remote?.unlinking, false)
         XCTAssertEqual(archived, ["c7"], "the row the link made is archived (History restores it)")
         XCTAssertTrue(model.tabs.contains { $0 === tab }, "the tab stays")
         XCTAssertFalse(surface.didTerminate, "its client stays attached")
-        await settle(self.remote.unlinks.map(\.sessionID) == ["c7"], "released and declined in one write")
         XCTAssertEqual(remote.unlinks.first?.path, suggestion().rolloutPath)
         await settle(tab.remote?.suggestions.map(\.sessionID) == ["c8"], "back to the question, without c7")
+        XCTAssertNil(tab.remote?.identityNote, "the question replaces couldn't tell")
         XCTAssertTrue(remote.stops.isEmpty, "the agent keeps running")
-        XCTAssertNil(tab.remote?.identityNote)
         XCTAssertFalse(persistence.load().contains { $0.sessionID == "c7" }, "no saved tab of c7")
         try await Task.sleep(for: .milliseconds(150))
         XCTAssertEqual(remote.automaticConfirms.count, 1, "never linked on its own again for this run")
     }
 
-    /// Not this one with no candidate left: the tab says Temple couldn't
-    /// tell (it keeps working, unidentified), with Try again.
-    func testNotThisOneWithNothingLeftSaysTempleCouldNotTell() async throws {
+    /// Not this one with no candidate left, or with the question's lookup
+    /// unavailable: the tab says Temple couldn't tell (it keeps working,
+    /// unidentified), with Try again, and Try again keeps saying so until
+    /// candidates come. Never a bare tab.
+    func testNotThisOneWithNothingToAskSaysTempleCouldNotTell() async throws {
         remote.excludesDeclined = true
         remote.suggestionsResult = .candidates([suggestion()])
         let tab = await newCodex()
@@ -391,6 +405,24 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(tab.remote?.suggestions, [])
         XCTAssertTrue(tab.hasLiveProcess)
         XCTAssertTrue(remote.stops.isEmpty)
+        // Detached, so it is no unidentified neighbour of the next one.
+        model.remoteTabs.detach(tab.id)
+
+        remote.suggestionsResult = .candidates([suggestion("c5")])
+        let unavailable = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(unavailable.surface))
+        await settle(unavailable.remote?.linkedOnItsOwn == true)
+        remote.suggestionsResult = .unavailable("ssh: connect to host box port 22: Connection refused")
+        let lookups = remote.suggestionLookups.count
+        model.remoteTabs.unlink(unavailable)
+        await settle(self.remote.suggestionLookups.count > lookups, "the question is asked for")
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNil(unavailable.sessionID)
+        XCTAssertEqual(unavailable.remote?.identityNote, RemoteCopy.couldNotTell, "a failed lookup leaves it saying so")
+        model.remoteTabs.retryIdentity(unavailable)
+        XCTAssertEqual(unavailable.remote?.identityNote, RemoteCopy.couldNotTell, "Try again keeps it until candidates come")
+        model.remoteTabs.detach(unavailable.id)
+
         // The last candidate declined by hand says the same.
         remote.suggestionsResult = .candidates([suggestion("c8"), suggestion("c9")])
         let second = await newCodex()
@@ -400,9 +432,12 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(second.remote?.identityNote, RemoteCopy.couldNotTell)
     }
 
-    /// Not this one's write that fails is said once; the tab is still
-    /// unidentified (the run is checked again when it is activated).
-    func testNotThisOneThatCannotBeWrittenIsSaid() async throws {
+    /// Not this one's write that fails changes nothing: the tab is still
+    /// the linked session (its saved tab and row as they were), the failure
+    /// is said once, and Not this one can be tried again.
+    func testNotThisOneThatCannotBeWrittenChangesNothingAndCanBeRetried() async throws {
+        var archived: [String] = []
+        model.remoteTabs.unlinkHandler = { id, _ in archived.append(id) }
         remote.suggestionsResult = .candidates([suggestion()])
         remote.unlinkError = CocoaError(.fileWriteUnknown)
         let tab = await newCodex()
@@ -411,7 +446,36 @@ final class RemoteCodexIdentityTests: XCTestCase {
         model.remoteTabs.unlink(tab)
         await settle(self.notices.count == 1)
         XCTAssertTrue(notices.first?.hasPrefix("Temple couldn't save its record of this session on box") == true)
-        XCTAssertNil(tab.sessionID)
+        XCTAssertEqual(tab.sessionID, "c7", "still that session")
+        XCTAssertEqual(tab.remote?.linkedOnItsOwn, true)
+        XCTAssertEqual(tab.remote?.unlinking, false, "ready to try again")
+        XCTAssertEqual(archived, [])
+        XCTAssertTrue(persistence.load().contains { $0.sessionID == "c7" }, "its saved tab is kept")
+        remote.unlinkError = nil
+        model.remoteTabs.unlink(tab)
+        await settle(tab.sessionID == nil, "tried again, it goes through")
+        XCTAssertEqual(archived, ["c7"])
+    }
+
+    /// A hand-over the link owed that is still being written when Not this
+    /// one commits can't mark the run afterwards: it is written only while
+    /// the run holds the claim it was owed for, so the run stays restorable
+    /// by its handle.
+    func testALateHandOverCannotUndoNotThisOne() async throws {
+        let hold = Gate()
+        remote.ledgerGate = { await hold.wait() }
+        remote.suggestionsResult = .candidates([suggestion()])
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(tab.remote?.linkedOnItsOwn == true)
+        await settle(self.remote.ledgerWrites == ["p1"], "the hand-over's write is out")
+        model.remoteTabs.unlink(tab)
+        await settle(tab.sessionID == nil)
+        XCTAssertFalse(model.remoteTabs.owesHandOver("p1"), "the obligation is dropped")
+        await hold.open()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(remote.pending.first?.tabClosed, false, "still restorable by its handle")
+        XCTAssertTrue(remote.closedPending.isEmpty)
     }
 
     /// An automatic yes that can't be written says why and asks: it is not

@@ -1407,6 +1407,16 @@ extension OpenSessionsModel {
 
     /// A Codex session whose id was claimed after its pending tab was saved
     /// (the quit froze the tab set first): a resume chip of that session.
+    /// A tab of a session on a host opened by its id (Running sessions'
+    /// Open, for a session with no row): it resumes, so it attaches.
+    @discardableResult
+    func appendSessionChip(host: HostID, sessionID: String, agent: Agent, directory: String) -> SessionTab {
+        let tab = SessionTab(kind: .session, sessionID: sessionID, agent: agent, projectPath: directory,
+                             title: agent.newSessionTitle, isResume: true, host: host)
+        tabs.append(tab)
+        return tab
+    }
+
     @discardableResult
     func appendClaimedChip(host: HostID, sessionID: String, directory: String) -> SessionTab {
         let tab = SessionTab(kind: .session, sessionID: sessionID, agent: .codex, projectPath: directory,

@@ -1114,19 +1114,42 @@ public final class RemoteSessions {
         return (tracked, reached)
     }
 
-    /// At launch, for a host with flags the sidebar has not shown: each
-    /// flagged run is asked about on its pinned server; nil when the host
-    /// did not answer, otherwise how many are still left running.
+    /// At launch, the flagged runs whose line has not been shown are asked
+    /// about, each on its own pinned server (an absent one is Ended). Nil
+    /// when the host did not answer; else how many of the unnoticed flags
+    /// are still there.
     public func contactLeftRunning() async -> Int? {
+        guard await contactFlagged() != nil else { return nil }
+        return await unnoticedLeftRunning().count
+    }
+
+    /// The same contact, its answer split by cause and proven: the handles
+    /// whose probe found them present, still flagged and unnoticed after
+    /// the probes (a reattach meanwhile clears its flag), those a close
+    /// left running (`closed`) and those whose tab was connected when
+    /// Temple quit (`quit`). A probe that could not tell counts for neither.
+    public func contactLeftRunningByCause() async -> (closed: [String], quit: [String])? {
+        guard let present = await contactFlagged() else { return nil }
+        let flagged = await unnoticedLeftRunning().filter { present.contains($0.handle) }
+        return (flagged.filter { $0.leftRunningReason != .detachedAtQuit }.map(\.handle),
+                flagged.filter { $0.leftRunningReason == .detachedAtQuit }.map(\.handle))
+    }
+
+    /// Probes every unnoticed flagged run; the handles found present, or nil
+    /// when the host did not answer at all.
+    private func contactFlagged() async -> Set<String>? {
         let flagged = await unnoticedLeftRunning()
         guard !flagged.isEmpty, let exec = try? await queryExec(refresh: true) else { return nil }
         var reached = false
+        var present = Set<String>()
         for found in flagged {
             guard !retired, !Task.isCancelled else { return nil }
             let run = await pinned(found)
             guard !retired, !Task.isCancelled else { return nil }
             switch await keepAlive.probe(session: run.sessionName, socket: run.socketPath, using: exec) {
-            case .present: reached = true
+            case .present:
+                reached = true
+                present.insert(run.handle)
             case .absent:
                 reached = true
                 if (try? await markEnded(run.handle, evidence: .absent)) != nil, !retired {
@@ -1135,17 +1158,7 @@ public final class RemoteSessions {
             case .unknown(_, let reachedHost): reached = reached || reachedHost
             }
         }
-        guard reached else { return nil }
-        return await unnoticedLeftRunning().count
-    }
-
-    /// The same contact, its answer split: flags a close left (`closed`),
-    /// and runs whose tab was connected when Temple quit (`quit`).
-    public func contactLeftRunningByCause() async -> (closed: Int, quit: Int)? {
-        guard await contactLeftRunning() != nil else { return nil }
-        let flagged = await unnoticedLeftRunning()
-        let quit = flagged.filter { $0.leftRunningReason == .detachedAtQuit }.count
-        return (flagged.count - quit, quit)
+        return reached ? present : nil
     }
 
     /// The folder sheet's advisory check.

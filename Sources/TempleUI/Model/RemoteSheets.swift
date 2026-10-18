@@ -68,14 +68,32 @@ final class RemoteSessionsSheetModel: ObservableObject {
     }
 
     /// Open: a tab attached to the running session, as clicking its
-    /// sidebar row does; a new Codex session Temple has not identified has
-    /// no row, so its run opens in a tab of its own (it attaches).
-    func open(_ session: RemoteTrackedSession, rows: [Session]) {
+    /// sidebar row does. A run with no row in Temple's list opens by its
+    /// run instead: a Codex run (unidentified, or identified but never
+    /// joined, a claim whose core join failed) through the pending path,
+    /// which rejoins an identified one before it attaches; any other by
+    /// its session id, which joins it as opening a session does. With no
+    /// folder on record it can't open, and the row says what to do. Whether
+    /// a tab is opening (the sheet closes only then).
+    @discardableResult
+    func open(_ session: RemoteTrackedSession, rows: [Session]) -> Bool {
         if let id = session.sessionID, let row = rows.first(where: { $0.id == id && $0.host == request.host }) {
             openSessions.openSession(row)
-        } else if session.sessionID == nil, let directory = session.directory {
-            openSessions.remoteTabs.openPendingRun(handle: session.handle, host: request.host, directory: directory)
+            return true
         }
+        guard let directory = session.directory else {
+            results[session.handle] = RemoteCopy.cannotOpenTracked(session.handle)
+            return false
+        }
+        if session.agent == .codex {
+            openSessions.remoteTabs.openPendingRun(handle: session.handle, host: request.host, directory: directory)
+        } else if let id = session.sessionID {
+            openSessions.remoteTabs.openSession(id, agent: session.agent, host: request.host, directory: directory)
+        } else {
+            results[session.handle] = RemoteCopy.cannotOpenTracked(session.handle)
+            return false
+        }
+        return true
     }
 
     /// Show tab: the tab this session is open in, focused.
@@ -146,15 +164,26 @@ final class RemoteFolderSheetModel: ObservableObject {
     func testConnection() -> ConnectionTest? { startTest() }
 
     /// The test's sheet closed: back here, the typed path as it was; a test
-    /// that passed checks the folder again.
-    func testClosed(_ test: ConnectionTest) {
-        guard test.phase == .finished, test.summary?.failure == nil, !trimmedPath.isEmpty else { return }
-        confirm()
+    /// that passed checks the folder again, as advice only: nothing starts
+    /// until Start (the user reviews the path first).
+    func testClosed(passed: Bool) {
+        guard passed, !trimmedPath.isEmpty else { return }
+        checkFolder(thenStart: false)
     }
 
+    /// Whether a test ran to the end and connected.
+    static func passed(_ test: ConnectionTest) -> Bool { test.phase == .finished && test.summary?.failure == nil }
+
+    /// Start (or Return, or a recent folder): the folder is checked, and a
+    /// session starts there once it is found.
     func confirm() {
+        guard tmuxProblem == nil else { return }
+        checkFolder(thenStart: true)
+    }
+
+    private func checkFolder(thenStart: Bool) {
         let typed = trimmedPath
-        guard !typed.isEmpty, check != .checking, tmuxProblem == nil, let launcher = launcher() else { return }
+        guard !typed.isEmpty, check != .checking, let launcher = launcher() else { return }
         check = .checking
         if let checking { openSessions.remoteTabs.operations.cancel(id: checking) }
         let ticket = openSessions.remoteTabs.gate.ticket(host: request.host, sheet: request.id)
@@ -165,7 +194,7 @@ final class RemoteFolderSheetModel: ObservableObject {
             switch result {
             case .exists(let resolved):
                 self.check = .resolved(resolved)
-                self.start(resolved)
+                if thenStart, self.tmuxProblem == nil { self.start(resolved) }
             case .missing:
                 self.check = .problem(RemoteCopy.noFolder(typed, host: self.host))
             case .cannotEnter(let line):

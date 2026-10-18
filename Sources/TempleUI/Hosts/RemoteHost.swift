@@ -206,7 +206,7 @@ final class RemoteHostLauncher: RemoteSessionHost {
         }
     }
 
-    func contactLeftRunning() async -> (closed: Int, quit: Int)? { await sessions.contactLeftRunningByCause() }
+    func contactLeftRunning() async -> (closed: [String], quit: [String])? { await sessions.contactLeftRunningByCause() }
 
     func noticeLeftRunning() async { try? await sessions.noticeLeftRunning() }
 
@@ -333,9 +333,9 @@ final class RemoteStoreLedger: RemoteRunLedger {
     private let store: RemoteStateStore
     init(store: RemoteStateStore) { self.store = store }
 
-    func markTabClosed(_ handle: String) async throws {
+    func markTabClosed(_ handle: String, sessionID: String) async throws {
         let now = Date()
-        _ = try await store.perform { try $0.update(handle) { $0.tabClosedAt = now } }
+        _ = try await store.perform { try $0.markTabClosed(handle, sessionID: sessionID, at: now) }
     }
 }
 

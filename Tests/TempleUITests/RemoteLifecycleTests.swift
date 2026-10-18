@@ -165,11 +165,15 @@ final class FakeRemoteHost: RemoteSessionHost {
     var unnoticed = 0
     /// Unnoticed runs whose tab was connected when Temple quit.
     var unnoticedQuit = 0
+    /// Their handles, when a test names them (else made up from the counts).
+    var unnoticedQuitHandles: [String]?
     var hostAnswers = true
     var contactGate: (() async -> Void)?
-    func contactLeftRunning() async -> (closed: Int, quit: Int)? {
+    func contactLeftRunning() async -> (closed: [String], quit: [String])? {
         if let contactGate { await contactGate() }
-        return hostAnswers ? (unnoticed, unnoticedQuit) : nil
+        guard hostAnswers else { return nil }
+        return ((0..<unnoticed).map { "closed-\($0)" },
+                unnoticedQuitHandles ?? (0..<unnoticedQuit).map { "quit-\($0)" })
     }
     func noticeLeftRunning() async { unnoticed = 0; unnoticedQuit = 0 }
     var folder: RemoteFolderCheck = .missing
@@ -252,7 +256,7 @@ final class FakeRemoteHost: RemoteSessionHost {
     final class Ledger: RemoteRunLedger {
         weak var host: FakeRemoteHost?
         init(_ host: FakeRemoteHost) { self.host = host }
-        func markTabClosed(_ handle: String) async throws {
+        func markTabClosed(_ handle: String, sessionID: String) async throws {
             guard let host else { return }
             host.ledgerWrites.append(handle)
             if let gate = host.ledgerGate { await gate() }
@@ -260,6 +264,8 @@ final class FakeRemoteHost: RemoteSessionHost {
                 host.ledgerFailures -= 1
                 throw CocoaError(.fileWriteUnknown)
             }
+            // As the store's statement: only while the run holds that claim.
+            if let run = host.pending.first(where: { $0.handle == handle }), run.sessionID != sessionID { return }
             host.closedPending.append(handle)
             if let index = host.pending.firstIndex(where: { $0.handle == handle }) { host.pending[index].tabClosed = true }
         }
@@ -332,8 +338,10 @@ final class FakeRemoteHost: RemoteSessionHost {
     /// the candidate declined and the run restorable again, in one write.
     private(set) var unlinks: [(handle: String, sessionID: String, path: String)] = []
     var unlinkError: Error?
+    var unlinkGate: (() async -> Void)?
     func unlink(_ handle: String, sessionID: String, rolloutPath: String) async throws {
         unlinks.append((handle, sessionID, rolloutPath))
+        if let unlinkGate { await unlinkGate() }
         if let unlinkError { throw unlinkError }
         declines.append((handle, rolloutPath))
         if let index = pending.firstIndex(where: { $0.handle == handle }) {

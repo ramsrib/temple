@@ -90,6 +90,7 @@ private struct SessionTerminalView: View {
                     notice(symbol: "link", text: note) {
                         // Right after the sentence, as the question's answers sit.
                         Button(RemoteCopy.suggestionNo) { model.openSessions.remoteTabs.unlink(tab) }
+                            .disabled(remote.unlinking)
                     } dismiss: {
                         EmptyView()
                     }

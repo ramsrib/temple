@@ -111,6 +111,34 @@ final class RemoteColdReadTests: XCTestCase {
         XCTAssertNil(other.remoteHosts.record(named: "box"), "then removed")
     }
 
+    /// A session with a connected tab here counts as running for Remove,
+    /// whatever the host's probe of it said, and even when the listing
+    /// lacks it: the alert asks, and Stop them and remove stops it.
+    func testAConnectedTabCannotBypassRemovesQuestion() async throws {
+        let remote = FakeRemoteHost("box")
+        let app = try app(remote)
+        let tab = try await connectedTab(app)
+        let handle = try XCTUnwrap(tab.remote?.handle)
+        for listing in [[RemoteTrackedSession(handle: handle, sessionID: "s1", agent: .claude,
+                                              state: .unknown("tmux answered without a count"), leftRunning: nil)],
+                        []] {
+            remote.tracked = (listing, true)
+            var removal: RemoteRemoval?
+            app.requestRemoveHost("box") { removal = $0 }
+            await settle { removal != nil }
+            XCTAssertEqual(removal?.live.map(\.handle), [handle], "the connected tab's session is counted")
+            XCTAssertNotNil(app.remoteHosts.record(named: "box"), "so the alert asks")
+        }
+        var removal: RemoteRemoval?
+        app.requestRemoveHost("box") { removal = $0 }
+        await settle { removal != nil }
+        var failures: [String]?
+        app.stopSessionsAndRemoveHost(try XCTUnwrap(removal)) { failures = $0 }
+        await settle { failures != nil }
+        XCTAssertEqual(remote.stops.map(\.handle), [handle], "Stop them and remove stops it too")
+        XCTAssertNil(app.remoteHosts.record(named: "box"))
+    }
+
     /// A stop that fails cancels the removal and says why.
     func testAStopThatFailsKeepsTheHost() async throws {
         let remote = FakeRemoteHost("box")
@@ -231,6 +259,41 @@ final class RemoteColdReadTests: XCTestCase {
         XCTAssertTrue(remote.stops.isEmpty, "it keeps running")
     }
 
+    /// Open on a session Temple tracks but has no row for opens it all the
+    /// same (by its run, which rejoins it), and one it can't open (no
+    /// folder on record) says what to do instead of closing the sheet on
+    /// nothing.
+    func testOpenOnARowlessSessionOpensItOrSaysWhy() async throws {
+        let remote = FakeRemoteHost("box")
+        remote.runs = [.init(handle: "h9", sessionID: "s9", resume: true)]
+        remote.pending = [.init(handle: "p3", directory: "/home/u/p", sessionID: "c3", claimed: true)]
+        let app = try app(remote)
+        app.showRemoteSessions(hostID)
+        let sheet = app.sessionsSheetModel(try XCTUnwrap(app.remoteSessionsSheet))
+        XCTAssertNil(app.overlay.rows["s9"])
+        let claude = RemoteTrackedSession(handle: "h9", sessionID: "s9", agent: .claude, state: .present(attached: false),
+                                          leftRunning: nil, directory: "/home/u/p")
+        XCTAssertTrue(sheet.open(claude, rows: app.sessions))
+        let tab = try XCTUnwrap(app.openSessions.openTab(forSessionID: "s9"))
+        await settle { tab.hasLiveProcess }
+        XCTAssertEqual(tab.remote?.handle, "h9", "attached to its run")
+        await settle { app.overlay.rows["s9"] != nil }
+        XCTAssertNotNil(app.overlay.rows["s9"], "joined as opening a session joins it")
+
+        // A Codex run identified but never joined: through the pending path.
+        let codex = RemoteTrackedSession(handle: "p3", sessionID: "c3", agent: .codex, state: .present(attached: false),
+                                         leftRunning: nil, directory: "/home/u/p")
+        XCTAssertTrue(sheet.open(codex, rows: app.sessions))
+        await settle { app.openSessions.openTab(forSessionID: "c3") != nil }
+        XCTAssertNotNil(app.overlay.rows["c3"], "rejoined before it opens")
+
+        let nowhere = RemoteTrackedSession(handle: "h8", sessionID: "s8", agent: .claude, state: .present(attached: false),
+                                           leftRunning: nil)
+        XCTAssertFalse(sheet.open(nowhere, rows: app.sessions), "the sheet stays")
+        XCTAssertEqual(sheet.results["h8"], RemoteCopy.cannotOpenTracked("h8"))
+        XCTAssertNil(app.openSessions.openTab(forSessionID: "s8"))
+    }
+
     /// A Stop from the sheet that fails is said under its row, still
     /// running (orange in the view).
     func testAFailedStopInTheSheetSaysSo() async throws {
@@ -263,10 +326,32 @@ final class RemoteColdReadTests: XCTestCase {
         XCTAssertEqual(test.record.name, "box")
         XCTAssertNil(app.openSessions.activeTab, "Settings is not opened")
         test.cancel()
-        sheet.testClosed(test)
+        XCTAssertFalse(RemoteFolderSheetModel.passed(test))
+        sheet.testClosed(passed: RemoteFolderSheetModel.passed(test))
         XCTAssertEqual(sheet.path, "~/Projects/temple", "back with the typed path")
         if case .unreachable = sheet.check {} else { XCTFail("an unfinished test checks nothing: \(sheet.check)") }
         app.remoteHosts.endTest(test)
+    }
+
+    /// After a test that passed the folder is checked again as advice:
+    /// the sheet shows where it resolved and nothing starts until Start.
+    func testAPassingTestChecksTheFolderButStartsNothing() async throws {
+        let remote = FakeRemoteHost("box")
+        remote.folder = .exists(resolved: "/home/u/Projects/temple")
+        let app = try app(remote)
+        app.chooseRemoteFolder(host: hostID, agent: .claude)
+        let sheet = app.folderSheetModel(try XCTUnwrap(app.remoteFolderSheet))
+        sheet.path = "~/Projects/temple"
+        sheet.testClosed(passed: true)
+        XCTAssertEqual(sheet.check, .checking, "the advisory check runs")
+        await settle { sheet.check != .checking }
+        XCTAssertEqual(sheet.check, .resolved("/home/u/Projects/temple"), "where it resolved, for review")
+        XCTAssertNotNil(app.remoteFolderSheet, "the sheet stays")
+        XCTAssertTrue(app.openSessions.tabs.isEmpty, "the agent is not started")
+        XCTAssertEqual(sheet.path, "~/Projects/temple")
+        sheet.confirm()
+        await settle { !app.openSessions.tabs.isEmpty }
+        XCTAssertFalse(app.openSessions.tabs.isEmpty, "Start starts it")
     }
 
     // MARK: One tmux rule
@@ -324,6 +409,20 @@ final class RemoteColdReadTests: XCTestCase {
                        RemoteCopy.leftRunningCount(1, host: "box") + " " + RemoteCopy.quitCount(1, host: "box"))
         other.dismissRemoteNotice()
         await settle { both.unnoticed == 0 && both.unnoticedQuit == 0 }
+    }
+
+    /// A session reattached while the host was being asked is not news:
+    /// the notice leaves it out (and says nothing when nothing is left).
+    func testTheLaunchNoticeLeavesOutSessionsOpenInATab() async throws {
+        let remote = FakeRemoteHost("box")
+        let hold = Gate()
+        remote.contactGate = { await hold.wait() }
+        let app = try app(remote)
+        let tab = try await connectedTab(app)
+        remote.unnoticedQuitHandles = [try XCTUnwrap(tab.remote?.handle)]
+        await hold.open()
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertNil(app.remoteNotice, "its only session is open in a tab here")
     }
 
     /// Only a tab connected at the quit is flagged: a disconnected one, or

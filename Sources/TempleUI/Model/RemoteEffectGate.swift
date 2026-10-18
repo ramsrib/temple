@@ -81,6 +81,9 @@ public enum RemoteCompletion: String, CaseIterable, Sendable {
     case sheetStopOutcome
     /// The folder sheet received its check (and may start a session).
     case folderCheckResult
+    /// Not this one's write committed (or failed): the tab becomes
+    /// unidentified again and asks (or is ready to try again).
+    case unlinkResult
     /// Remove asked the host what is still running there: the host goes,
     /// or the alert asks.
     case removalCheck

@@ -566,6 +566,20 @@ public final class RemoteStateStore: @unchecked Sendable {
         }
     }
 
+    /// A hand-over's mark: the run restores through `open_tabs` from now
+    /// on. Written only while the run still holds the claim the hand-over
+    /// was owed for (`sessionID`), in the write's own statement: a retry
+    /// that lands after Not this one released it (and cleared the mark)
+    /// changes nothing. Whether it was written.
+    @discardableResult
+    public func markTabClosed(_ handle: String, sessionID: String, at date: Date) throws -> Bool {
+        try queue.write { database in
+            try database.execute(sql: "UPDATE runs SET tab_closed_at = ? WHERE handle = ? AND session_id = ?",
+                                 arguments: [date.timeIntervalSince1970, handle, sessionID])
+            return database.changesCount > 0
+        }
+    }
+
     /// The claim reached core (joined, or found joined).
     public func markJoined(_ handle: String, at date: Date) throws {
         try queue.write { database in

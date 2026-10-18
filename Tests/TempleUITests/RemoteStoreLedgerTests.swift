@@ -21,9 +21,15 @@ final class RemoteStoreLedgerTests: XCTestCase {
         _ = try store.claim("p1", sessionID: "c1", how: .verified)
         XCTAssertEqual(try store.pendingRuns(host: HostID(rawValue: "box")).map(\.handle), ["p1"])
         let ledger: RemoteRunLedger = RemoteStoreLedger(store: store)
-        try await ledger.markTabClosed("p1")
+        try await ledger.markTabClosed("p1", sessionID: "c1")
         XCTAssertNotNil(try store.run("p1")?.tabClosedAt)
         XCTAssertEqual(try store.pendingRuns(host: HostID(rawValue: "box")), [], "no longer restored from its run")
+        // Not this one released the claim (and cleared the mark): a late
+        // retry of the hand-over owed for c1 marks nothing.
+        try store.unlink("p1", sessionID: "c1", rolloutPath: "/r/c1")
+        try await ledger.markTabClosed("p1", sessionID: "c1")
+        XCTAssertNil(try store.run("p1")?.tabClosedAt, "the late hand-over is refused in its own statement")
+        XCTAssertEqual(try store.pendingRuns(host: HostID(rawValue: "box")).map(\.handle), ["p1"], "restorable by its handle")
     }
 
     /// Temple's own yes is an ordinary claim (`.automatic`), refused in the

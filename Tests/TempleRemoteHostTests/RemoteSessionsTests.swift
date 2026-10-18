@@ -306,6 +306,45 @@ final class RemoteSessionsTests: XCTestCase {
         XCTAssertNil(try store.run("h1")?.endedAt)
     }
 
+    /// The launch contact counts only runs the host proved present: one a
+    /// probe couldn't tell about is in neither count, and each count comes
+    /// as handles, by cause (a close's flag, or the quit's).
+    func testTheLaunchContactCountsOnlyProvenRunsByHandleAndCause() async throws {
+        let host = StandIn()
+        let store = try RemoteStateStore()
+        for (handle, reason) in [("q1", RemoteRun.LeftRunningReason.detachedAtQuit), ("c1", .hostDidNotAnswer),
+                                 ("u1", .hostDidNotAnswer)] {
+            try insertRun(store, handle: handle) {
+                $0.sessionID = "sess-\(handle)"
+                $0.socketPath = "/tmp/s"
+                $0.leftRunningAt = Date()
+                $0.leftRunningReason = reason
+            }
+        }
+        let probes = ProbeExec(present: ["temple-q1", "temple-c1"])
+        let sessions = RemoteSessions(record: record, stateDirectory: host.tree.url, sshPath: "/usr/bin/ssh",
+                                      store: { store }, resolve: { _ in .resolved([:]) }, makeExec: { _, _, _ in probes })
+        let found = await sessions.contactLeftRunningByCause()
+        XCTAssertEqual(found?.closed, ["c1"], "u1's probe couldn't tell: not counted")
+        XCTAssertEqual(found?.quit, ["q1"])
+        XCTAssertNil(try store.run("u1")?.endedAt, "unknown is not an end")
+    }
+
+    /// Answers the probe by session name: present (attached 0) for those
+    /// named, an error Temple can't read for the rest; the environment
+    /// query gets a PATH.
+    final class ProbeExec: RemoteExec, @unchecked Sendable {
+        let present: Set<String>
+        init(present: Set<String>) { self.present = present }
+        func run(script: String, args: [String], input: Data?, deadline: TimeInterval) async throws -> RemoteOutput {
+            if script.contains("temple_login_path") {
+                return RemoteOutput(status: 0, stdout: "shell /bin/sh\n\(args.first ?? "")\n/usr/bin\n", stderr: "")
+            }
+            if args.count == 2, present.contains(args[1]) { return RemoteOutput(status: 0, stdout: "0\n", stderr: "") }
+            return RemoteOutput(status: 1, stdout: "", stderr: "tmux: something unexpected\n")
+        }
+    }
+
     final class CountingExec: RemoteExec, @unchecked Sendable {
         private let lock = NSLock()
         private var count = 0

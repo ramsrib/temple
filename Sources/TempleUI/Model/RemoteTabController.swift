@@ -516,42 +516,55 @@ public final class RemoteTabController {
     }
 
     /// "Not this one" on a link Temple made on its own (B11): the link is
-    /// undone and the agent keeps running. The claim on that session id is
-    /// released and the candidate declined for this run (durable, in one
-    /// write, which also makes the run restorable by its handle again);
-    /// the row the link created is archived, reversibly (restore it from
-    /// History); and the tab goes back to the question without that
-    /// candidate, or says Temple couldn't tell, with Try again.
+    /// undone and the agent keeps running. The durable part comes first,
+    /// in one write: the claim on that session id is released, the
+    /// candidate declined for this run and the run made restorable by its
+    /// handle again. Only once it has committed is anything else touched:
+    /// the hand-over the link owed is dropped (and a late retry of it can
+    /// no longer mark the run, `markTabClosed`), the row the link created
+    /// is archived (reversibly), and, through the gate, the tab becomes
+    /// unidentified again, saying Temple couldn't tell (with Try again)
+    /// until the question's candidates arrive. A write that fails changes
+    /// nothing: the tab is still that session, said once in a notice, and
+    /// Not this one can be tried again.
     public func unlink(_ tab: SessionTab) {
-        guard tab.remote?.linkedOnItsOwn == true, let linked = tab.remote?.linkedSuggestion,
+        guard tab.remote?.linkedOnItsOwn == true, tab.remote?.unlinking != true, let linked = tab.remote?.linkedSuggestion,
               let sid = tab.sessionID, let handle = tab.remote?.handle, let host = remoteHost(for: tab),
               !isQuitting else { return }
         let hostID = tab.host
-        // The run is pending again: whatever hand-over the link owed is
-        // void (the write below reopens the run's own restoration).
-        handOvers[handle] = nil
-        tab.sessionID = nil
-        tab.isProvisional = true
-        tab.remote?.linkedOnItsOwn = false
-        tab.remote?.linkedSuggestion = nil
-        tab.remote?.identityNote = nil
-        tab.remote?.confirming = nil
-        tab.remote?.suggestions = []
-        asked.insert(handle)
-        model.forgetClosedTabs(sessionID: sid)
-        unlinkHandler?(sid, hostID)
-        model.persist()
+        tab.remote?.unlinking = true
         let ticket = gate.ticket(for: tab)
         let noticeTicket = gate.ticket(host: hostID)
+        let archive = unlinkHandler
         operations.run(host: hostID, .write) { [weak self] in
             do {
                 try await host.unlink(handle, sessionID: sid, rolloutPath: linked.rolloutPath)
             } catch {
-                guard let self, self.gate.admit(.identityNotice, noticeTicket) else { return }
-                self.noticeHandler?(hostID, RemoteCopy.unrecorded(host.hostName, detail: error.localizedDescription))
+                guard let self else { return }
+                if self.gate.admit(.unlinkResult, ticket), let tab = ticket.tab { tab.remote?.unlinking = false }
+                if self.gate.admit(.identityNotice, noticeTicket) {
+                    self.noticeHandler?(hostID, RemoteCopy.unrecorded(host.hostName, detail: error.localizedDescription))
+                }
                 return
             }
-            await self?.loadSuggestions(ticket, host: host, handle: handle)
+            // Committed: durable from here, whatever the tab does.
+            self?.handOvers[handle] = nil
+            archive?(sid, hostID)
+            guard let self, self.gate.admit(.unlinkResult, ticket), let tab = ticket.tab, tab.sessionID == sid else { return }
+            tab.sessionID = nil
+            tab.isProvisional = true
+            tab.remote?.unlinking = false
+            tab.remote?.linkedOnItsOwn = false
+            tab.remote?.linkedSuggestion = nil
+            tab.remote?.confirming = nil
+            tab.remote?.suggestions = []
+            // Never bare: this stays until a query brings candidates.
+            tab.remote?.identityNote = RemoteCopy.couldNotTell
+            tab.remote?.unlinkFallback = true
+            self.asked.insert(handle)
+            self.model.forgetClosedTabs(sessionID: sid)
+            self.model.persist()
+            await self.loadSuggestions(ticket, host: host, handle: handle)
         }
     }
 
@@ -852,6 +865,9 @@ public final class RemoteTabController {
     /// again).
     private struct HandOver {
         let ledger: RemoteRunLedger
+        /// The claim it is owed for: the mark is written only while the
+        /// run still holds it (Not this one may release it meanwhile).
+        let sessionID: String
         let hostID: HostID
         let hostName: String
         let tabID: SessionTab.ID
@@ -1091,7 +1107,7 @@ public final class RemoteTabController {
         tab.remote?.identityOperation = nil
         if let handle = tab.remote?.handle {
             refusedClaims[handle] = nil
-            oweHandOver(handle: handle, tabID: tab.id, host: host, hostID: hostID, untilGone: true)
+            oweHandOver(handle: handle, sessionID: id, tabID: tab.id, host: host, hostID: hostID, untilGone: true)
         }
         // Its removal finishes the hand-over (`tabRemoved`).
         model.removeTab(tab.id)
@@ -1121,7 +1137,9 @@ public final class RemoteTabController {
     /// retired (`tab_closed_at`) once the tab set is written, or once the
     /// tab is gone, whichever comes first, and not before.
     private func handOver(_ tab: SessionTab, handle: String, host: RemoteSessionHost) {
-        guard oweHandOver(handle: handle, tabID: tab.id, host: host, hostID: tab.host, untilGone: false) else { return }
+        guard let sessionID = tab.sessionID,
+              oweHandOver(handle: handle, sessionID: sessionID, tabID: tab.id, host: host, hostID: tab.host,
+                          untilGone: false) else { return }
         // The tab set's ordinary save: its acknowledgement settles this.
         model.persist()
         settleHandOvers()
@@ -1131,13 +1149,13 @@ public final class RemoteTabController {
     /// only once its tab is gone (a tab that never becomes the session, so
     /// no save of the tab set holds it); otherwise also once a save has.
     @discardableResult
-    private func oweHandOver(handle: String, tabID: SessionTab.ID, host: RemoteSessionHost, hostID: HostID,
+    private func oweHandOver(handle: String, sessionID: String, tabID: SessionTab.ID, host: RemoteSessionHost, hostID: HostID,
                              untilGone: Bool) -> Bool {
         guard let ledger = host.runLedger() else {
             TempleUILog.db.error("no run store to hand a run over with; it stays restorable by its run")
             return false
         }
-        handOvers[handle] = HandOver(ledger: ledger, hostID: hostID, hostName: host.hostName, tabID: tabID,
+        handOvers[handle] = HandOver(ledger: ledger, sessionID: sessionID, hostID: hostID, hostName: host.hostName, tabID: tabID,
                                      savesBefore: untilGone ? .max : model.acknowledgedSaves)
         return true
     }
@@ -1176,7 +1194,7 @@ public final class RemoteTabController {
             for delay in [0] + retries {
                 if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
                 do {
-                    try await obligation.ledger.markTabClosed(handle)
+                    try await obligation.ledger.markTabClosed(handle, sessionID: obligation.sessionID)
                     failure = nil
                     break
                 } catch {
@@ -1264,7 +1282,9 @@ public final class RemoteTabController {
         guard isPending(tab), let handle = tab.remote?.handle, let host = remoteHost(for: tab) else { return }
         refusedClaims[handle] = nil
         tab.remote?.identityRefused = false
-        tab.remote?.identityNote = nil
+        // "Couldn't tell" stays until candidates arrive (never a bare tab);
+        // a refusal's reason goes with the refusal.
+        if tab.remote?.identityNote != RemoteCopy.couldNotTell { tab.remote?.identityNote = nil }
         lastIdentityCheck[tab.id] = Date()
         let ticket = gate.ticket(for: tab)
         operations.run(host: tab.host, .identity) { [weak self] in
@@ -1305,6 +1325,12 @@ public final class RemoteTabController {
            !hasUnidentifiedNeighbour(tab) {
             claim(offered[0], in: tab, automatic: true)
             return
+        }
+        // After Not this one, the question replaces "couldn't tell" once
+        // there is something to ask about.
+        if !offered.isEmpty, tab.remote?.unlinkFallback == true {
+            tab.remote?.unlinkFallback = false
+            if tab.remote?.identityNote == RemoteCopy.couldNotTell { tab.remote?.identityNote = nil }
         }
         // In start order: the question reads earliest first.
         tab.remote?.suggestions = offered.sorted {
@@ -1605,6 +1631,19 @@ public final class RemoteTabController {
             }
         }
         return joined
+    }
+
+    /// "Open" in Running sessions on a session with an id but no row in
+    /// Temple's list: a tab of it, opened by its id (the open joins it,
+    /// then attaches to its live run on the host).
+    public func openSession(_ id: String, agent: Agent, host hostID: HostID, directory: String) {
+        if let tab = model.tabs.first(where: { $0.kind == .session && $0.sessionID == id && $0.host == hostID }) {
+            model.activate(tab)
+            return
+        }
+        let tab = model.appendSessionChip(host: hostID, sessionID: id, agent: agent, directory: directory)
+        model.activate(tab)
+        model.persist()
     }
 
     /// "Open" on a pending Codex session in Running sessions on <host>: its tab, or

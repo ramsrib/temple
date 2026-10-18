@@ -222,7 +222,9 @@ public enum RemoteFolderCheck: Equatable {
 /// since. One store on this Mac, held by the obligation that needs it.
 @MainActor
 public protocol RemoteRunLedger: AnyObject {
-    func markTabClosed(_ handle: String) async throws
+    /// Marks the run handed over, only while it still holds `sessionID`
+    /// (the claim the hand-over was owed for).
+    func markTabClosed(_ handle: String, sessionID: String) async throws
 }
 
 @MainActor
@@ -260,10 +262,11 @@ public protocol RemoteSessionHost: HostLauncher {
     /// whether the host answered at all.
     func trackedSessions() async -> (sessions: [RemoteTrackedSession], checked: Bool)
     func keep(_ handle: String) async
-    /// At launch: how many flagged sessions are still running there and unnoticed:
-    /// those a close left running, and those whose tab was connected when
-    /// Temple quit. Nil when the host did not answer.
-    func contactLeftRunning() async -> (closed: Int, quit: Int)?
+    /// At launch: the flagged, unnoticed sessions the host proved still
+    /// running there, by handle: those a close left running, and those
+    /// whose tab was connected when Temple quit. Nil when the host did not
+    /// answer.
+    func contactLeftRunning() async -> (closed: [String], quit: [String])?
     func noticeLeftRunning() async
     func checkFolder(_ path: String) async -> RemoteFolderCheck
     /// The host was removed or edited: nothing queries it again.
@@ -374,6 +377,11 @@ public struct RemoteTabState: Equatable {
     public var linkedOnItsOwn = false
     /// The candidate that link was to (what Not this one declines).
     public var linkedSuggestion: RemoteSuggestion?
+    /// Not this one's write is out: the button waits for it.
+    public var unlinking = false
+    /// Not this one committed: "couldn't tell" shows until the question's
+    /// candidates arrive.
+    public var unlinkFallback = false
 
     public init(phase: Phase) { self.phase = phase }
 
@@ -534,6 +542,11 @@ public enum RemoteCopy {
     public static func trackedHandleHelp(_ handle: String) -> String { "tmux session temple-\(handle)" }
 
     public static let openTracked = "Open"
+    /// Open, for a run Temple can't open (no folder on record): what to do.
+    public static func cannotOpenTracked(_ handle: String) -> String {
+        "Temple can't open this session: it has no folder on record. Stop it here, "
+            + "or attach from a terminal on the host with tmux -L temple attach -t temple-\(handle)."
+    }
     public static let openTrackedHelp = "Opens a tab attached to this running session."
     public static let showTab = "Show tab"
     public static func stopTrackedHelp(_ host: String) -> String {

@@ -131,13 +131,19 @@ extension AppModel {
             guard let launcher = remoteHost(host) else { continue }
             let ticket = openSessions.remoteTabs.gate.ticket(host: host)
             openSessions.remoteTabs.operations.run(host: host, .query) { [weak self] in
-                let counts = await launcher.contactLeftRunning()
-                guard let self, self.openSessions.remoteTabs.gate.admit(.contactNotice, ticket),
-                      let counts, counts.closed + counts.quit > 0, self.remoteNotice == nil else { return }
-                let lines = [counts.closed > 0 ? RemoteCopy.leftRunningCount(counts.closed, host: host.rawValue) : nil,
-                             counts.quit > 0 ? RemoteCopy.quitCount(counts.quit, host: host.rawValue) : nil]
+                let found = await launcher.contactLeftRunning()
+                guard let self, self.openSessions.remoteTabs.gate.admit(.contactNotice, ticket), let found,
+                      self.remoteNotice == nil else { return }
+                // Proven running there, and not open in a tab here now (one
+                // reattached while the host was asked is not news).
+                let tabs = self.openSessions.remoteTabs
+                let closed = found.closed.filter { !tabs.hasLiveTab(handle: $0, host: host) }.count
+                let quit = found.quit.filter { !tabs.hasLiveTab(handle: $0, host: host) }.count
+                guard closed + quit > 0 else { return }
+                let lines = [closed > 0 ? RemoteCopy.leftRunningCount(closed, host: host.rawValue) : nil,
+                             quit > 0 ? RemoteCopy.quitCount(quit, host: host.rawValue) : nil]
                 self.remoteNotice = RemoteNotice(host: host, message: lines.compactMap { $0 }.joined(separator: " "),
-                                                 kind: .count(counts.closed + counts.quit))
+                                                 kind: .count(closed + quit))
             }
         }
     }
@@ -159,7 +165,7 @@ extension AppModel {
         openSessions.remoteTabs.operations.run(host: record.host, .query) { [weak self] in
             let answer = await launcher.trackedSessions()
             guard let self, self.openSessions.remoteTabs.gate.admit(.removalCheck, ticket) else { return }
-            let live = answer.checked ? answer.sessions.filter { if case .present = $0.state { true } else { false } } : []
+            let live = self.runningForRemoval(record.host, answer: answer)
             guard !live.isEmpty else {
                 self.remoteHosts.remove(name)
                 completion(nil)
@@ -167,6 +173,29 @@ extension AppModel {
             }
             completion(RemoteRemoval(name: name, fromConfig: record.source == .config, live: live))
         }
+    }
+
+    /// What Remove counts as running on a host: what the host proved
+    /// present when it answered, and, whatever it answered, every session
+    /// with a connected tab here (a live client proves its agent runs,
+    /// even where the host's probe of it came back unknown). A tab's run
+    /// the listing lacks is added from the tab.
+    func runningForRemoval(_ host: HostID, answer: (sessions: [RemoteTrackedSession], checked: Bool))
+        -> [RemoteTrackedSession] {
+        let tabs = openSessions.remoteTabs
+        var live = answer.sessions.filter { session in
+            if answer.checked, case .present = session.state { return true }
+            return tabs.hasLiveTab(handle: session.handle, host: host)
+        }
+        let listed = Set(answer.sessions.map(\.handle))
+        for tab in openSessions.tabs where tab.kind == .session && tab.host == host {
+            guard let handle = tab.remote?.handle, !listed.contains(handle),
+                  tabs.hasLiveTab(handle: handle, host: host) else { continue }
+            live.append(RemoteTrackedSession(handle: handle, sessionID: tab.sessionID, agent: tab.agent,
+                                             state: .present(attached: true), leftRunning: nil,
+                                             directory: tab.projectPath))
+        }
+        return live
     }
 
     /// "Remove, leave them running": the host goes; its connected tabs are

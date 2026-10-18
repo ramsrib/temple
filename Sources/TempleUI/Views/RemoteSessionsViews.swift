@@ -127,8 +127,7 @@ struct RemoteSessionsSheet: View {
                             }
                         } else {
                             Button(RemoteCopy.openTracked) {
-                                sheet.open(session, rows: model.sessions)
-                                dismiss()
+                                if sheet.open(session, rows: model.sessions) { dismiss() }
                             }
                             .help(RemoteCopy.openTrackedHelp)
                         }
@@ -281,7 +280,7 @@ struct RemoteFolderSheet: View {
     /// folder again.
     private func closeTest(_ test: ConnectionTest) {
         self.test = nil
-        sheet.testClosed(test)
+        sheet.testClosed(passed: RemoteFolderSheetModel.passed(test))
     }
 
     @ViewBuilder
