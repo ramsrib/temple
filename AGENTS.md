@@ -329,6 +329,20 @@ during that refactor:
   remote shipped without touching the core schema, and the owner keeps the
   rule.)
 
+## User-facing words get a cold read, not just a design review
+
+Any change that adds or rewords a label, button, link, menu item, sheet
+title, banner, notice or empty state runs the cold-read procedure in
+[docs/copy-review.md](docs/copy-review.md) before it is pushed: the strings,
+with where they appear and nothing about what they do, go to a reviewer that
+has never seen the design (Opus or Fable, never the copy's author), who says
+what each one does and walks a few plain tasks. Design reviews with full
+context missed "Sessions…" and "Turn off" on the Hosts card because the
+reviewers already knew what they did, the prompts asked about looks, and
+each round shortened labels for layout. Never shorten a label at the cost
+of its meaning; change the layout instead. Screenshot and computer-use
+checks never assert exact strings.
+
 ## Sessions on hosts (ADR-036): where remote lives
 
 Remote shipped with **no core schema change**: core migrations still end at
