@@ -931,7 +931,7 @@ public enum RemoteCopy {
     /// declined, or the one it would claim is another session's): the tab
     /// keeps working, unidentified, with Try again.
     public static let couldNotTell = "Temple couldn't tell which Codex session this is. "
-        + "The tab keeps working; its row stays \u{201C}New Codex session\u{201D} until Temple can tell."
+        + "The tab keeps working; it gets a sidebar row once Temple can tell."
 
     /// "Discard" said which, per row (one meaning: a session that is not
     /// running; nothing is stopped): removed, or archived when the row is

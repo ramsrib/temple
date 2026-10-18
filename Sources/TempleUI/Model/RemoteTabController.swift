@@ -549,6 +549,7 @@ public final class RemoteTabController {
             }
             // Committed: durable from here, whatever the tab does.
             self?.handOvers[handle] = nil
+            self?.declinedHere[handle, default: []].insert(linked.id)
             archive?(sid, hostID)
             guard let self, self.gate.admit(.unlinkResult, ticket), let tab = ticket.tab, tab.sessionID == sid else { return }
             tab.sessionID = nil
@@ -1315,7 +1316,10 @@ public final class RemoteTabController {
         guard gate.admit(.suggestionsLoaded, ticket), let tab = ticket.tab, isPending(tab),
               case .candidates(let found) = answer else { return }
         let refused = refusedClaims[handle]?.id
-        let offered = found.filter { $0.sessionID != refused }
+        // Never one the user declined for this run, even before the host's
+        // own record of the decline is written (Try again included).
+        let declined = declinedHere[handle] ?? []
+        let offered = found.filter { $0.sessionID != refused && !declined.contains($0.id) }
         // Exactly one eligible candidate for a connected run that was typed
         // into and never asked about: Temple says yes on its own, through
         // the yes's own path (owner, round 2; Fable's decision). Two or
@@ -1421,10 +1425,16 @@ public final class RemoteTabController {
         }
     }
 
+    /// Candidates declined for each run this launch, by rollout path: never
+    /// offered again here, whatever the host's lookup returns (its own
+    /// record of a decline is the durable one, across launches).
+    private var declinedHere: [String: Set<[UInt8]>] = [:]
+
     /// "Not this one": gone from the tab at once, and never offered again
     /// for this run (durable).
     public func decline(_ suggestion: RemoteSuggestion, in tab: SessionTab) {
         guard isPending(tab), let handle = tab.remote?.handle, let host = remoteHost(for: tab) else { return }
+        declinedHere[handle, default: []].insert(suggestion.id)
         tab.remote?.suggestions.removeAll { $0.id == suggestion.id }
         asked.insert(handle)
         // The last one declined, on a running tab: it says Temple couldn't

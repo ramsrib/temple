@@ -432,6 +432,42 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(second.remote?.identityNote, RemoteCopy.couldNotTell)
     }
 
+    /// Try again never brings back a candidate declined in this tab, even
+    /// where the host's lookup still returns it (its own record of the
+    /// decline not written yet): neither one declined by hand nor the one a
+    /// link was undone for.
+    func testTryAgainNeverReoffersADeclinedCandidate() async throws {
+        remote.identityResult = .inconclusive("shared server", lasting: true, ended: false)
+        remote.suggestionsResult = .candidates([suggestion("c7"), suggestion("c8")])
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(tab.remote?.suggestions.count == 2)
+        for candidate in tab.remote?.suggestions ?? [] { model.remoteTabs.decline(candidate, in: tab) }
+        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.couldNotTell)
+        XCTAssertEqual(RemoteCopy.couldNotTell,
+                       "Temple couldn't tell which Codex session this is. The tab keeps working; it gets a sidebar row once Temple can tell.")
+        let lookups = remote.suggestionLookups.count
+        model.remoteTabs.retryIdentity(tab)
+        await settle(self.remote.suggestionLookups.count > lookups)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(tab.remote?.suggestions, [], "neither comes back")
+        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.couldNotTell)
+        model.remoteTabs.detach(tab.id)
+
+        // After Not this one, the same.
+        remote.identityResult = .inconclusive("no session file is open right now", lasting: false, ended: false)
+        remote.suggestionsResult = .candidates([suggestion("c9")])
+        let linked = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(linked.surface))
+        await settle(linked.remote?.linkedOnItsOwn == true)
+        model.remoteTabs.unlink(linked)
+        await settle(linked.sessionID == nil)
+        model.remoteTabs.retryIdentity(linked)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(linked.remote?.suggestions, [], "the unlinked candidate is not offered again")
+        XCTAssertNil(linked.sessionID)
+    }
+
     /// Not this one's write that fails changes nothing: the tab is still
     /// the linked session (its saved tab and row as they were), the failure
     /// is said once, and Not this one can be tried again.
