@@ -259,13 +259,19 @@ struct HostsSettingsSection: View {
     }
 
     private func links(_ record: RemoteHostRecord) -> some View {
-        WrappingRow(spacing: 14) {
+        // Small bordered buttons, as the tab band's actions: a row of plain
+        // medium-weight links read as one bold line, not as four actions.
+        WrappingRow(spacing: 8) {
             ForEach(Self.actions(for: record), id: \.self) { action in
                 if action == .remove, removing.contains(record.name) {
                     ProgressView().controlSize(.mini)
                 } else {
-                    HostLink(action.title(record.name)) { perform(action, record) }
-                        .help(action == .remove ? RemoteCopy.removeHostHelp(fromConfig: record.source == .config) : "")
+                    Button(action.title(record.name), role: action == .remove ? .destructive : nil) {
+                        perform(action, record)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help(action == .remove ? RemoteCopy.removeHostHelp(fromConfig: record.source == .config) : "")
                 }
             }
         }
