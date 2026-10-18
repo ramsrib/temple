@@ -3,6 +3,7 @@ import Foundation
 @testable import TempleCore
 @testable import TempleUI
 import TempleTerminalAPI
+import TempleRemoteHost
 
 /// New Codex sessions on a host (docs/designs/remote-ssh.md section 3,
 /// phase 1b), from the tab's side: a pending run, identified by its process
@@ -164,6 +165,50 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(tab.remote?.identityNote, JoinConflict.host(HostID(rawValue: "jet")).message)
         await settle(self.remote.released.map(\.sessionID).contains("c9"))
         XCTAssertTrue(remote.joinedMarks.isEmpty)
+    }
+
+    func testV5rCoreRefusalWaitsForTheDurableRelease() async throws {
+        let store = try RemoteStateStore()
+        try store.insert(RemoteRun(handle: "p1", host: hostID, agent: .codex, mode: .new,
+                                   directoryIntent: "~/project", sessionID: nil, recordPath: "r-p1", startedAt: Date()))
+        _ = try store.claim("p1", sessionID: "c9", how: .verified)
+        let release = Gate(), stale = Gate()
+        remote.releaseAction = { handle, id in
+            await release.wait()
+            try store.releaseClaim(handle, sessionID: id)
+        }
+        model.remoteTabs.identitySchedule = [60]
+        model.remoteTabs.activationRecheck = 0
+        let tab = await newCodex()
+        await settle(tab.remote?.identityOperation != nil)
+        model.remoteTabs.operations.cancel(id: try XCTUnwrap(tab.remote?.identityOperation))
+        remote.identityResult = .known("c9", directory: "/home/u/project")
+        remote.identityGate = { await stale.wait() }
+        model.remoteTabs.activated(tab)
+        await settle(self.remote.identifies.count == 1)
+        remote.identityGate = nil
+        joinAnswer = .refused(.agent(.claude))
+        model.remoteTabs.retryIdentity(tab)
+        await settle(!self.remote.released.isEmpty)
+        XCTAssertEqual(try store.run("p1")?.sessionID, "c9")
+        XCTAssertNil(tab.remote?.identityNote, "a refusal cannot invite a retry before release commits")
+        joinAnswer = .joined
+        model.remoteTabs.activated(tab)
+        await settle(self.model.remoteTabs.operations.count(.identity) <= 2)
+        XCTAssertNil(tab.sessionID, "an independent check must not join during release")
+        await release.open()
+        await settle(tab.remote?.identityRefused == true)
+        XCTAssertNil(try store.run("p1")?.sessionID)
+        // A new retry clears the refusal, but cannot authorize the earlier known result.
+        remote.identityResult = .inconclusive("not found", lasting: false, ended: false)
+        model.remoteTabs.retryIdentity(tab)
+        await settle(tab.remote?.retrying == false)
+        await stale.open()
+        let drained = await model.remoteTabs.operations.waitForAll(until: Date().addingTimeInterval(3))
+        XCTAssertTrue(drained)
+        XCTAssertNil(tab.sessionID, "a pre-release result is stale even after the refusal is cleared")
+        XCTAssertEqual(joins.count, 1)
+        XCTAssertNil(try store.run("p1")?.sessionID)
     }
 
     /// Two rollouts whose paths differ only in normalization (a precomposed

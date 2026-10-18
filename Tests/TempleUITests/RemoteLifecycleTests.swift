@@ -237,8 +237,8 @@ final class FakeRemoteHost: RemoteSessionHost {
     private(set) var identifies: [String] = []
     func identify(_ handle: String) async -> RemoteIdentity {
         identifies.append(handle)
-        if let identityGate { await identityGate() }
         let answer = identityAnswers.isEmpty ? identityResult : identityAnswers.removeFirst()
+        if let identityGate { await identityGate() }
         claim(answer, handle)
         return answer
     }
@@ -339,9 +339,11 @@ final class FakeRemoteHost: RemoteSessionHost {
         if let declineError { throw declineError }
     }
 
+    var releaseAction: ((String, String) async throws -> Void)?
     private(set) var released: [(handle: String, sessionID: String)] = []
     func releaseClaim(_ handle: String, sessionID: String) async throws {
         released.append((handle, sessionID))
+        if let releaseAction { try await releaseAction(handle, sessionID) }
         if let index = pending.firstIndex(where: { $0.handle == handle }) {
             pending[index].sessionID = nil
             pending[index].claimed = false
