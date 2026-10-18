@@ -3232,7 +3232,7 @@ archive blocker, Open / Show tab / Dismiss, a failed sheet stop, the folder
 sheet's test, the tmux rule, the launch notice and which runs the quit
 flags); `RemoteCodexIdentityTests` (the automatic link's note and ordinary
 close, candidate decline, lookup, claim ordering, ended answers, host
-retirement and canonical tabs); `CodexIdentityTests` (verified declines
+retirement); `CodexIdentityTests` (verified declines
 and unavailable run reads); the gate walk's two new completions. Computer-use passes check tasks, not
 labels (docs/copy-review.md).
 
@@ -3431,3 +3431,5 @@ opened, both tabs can remain attached to the same tmux session. This is
 rare and harmless. The owner accepts the duplicate tabs rather than a
 canonical-tab mechanism with recovery hand-over obligations. Commit
 `cb40209` and its test are reverted; either tab can be closed as usual.
+The window still saves: one descriptor is kept per folder and session id,
+with the active flag preserved if either duplicate is active.
