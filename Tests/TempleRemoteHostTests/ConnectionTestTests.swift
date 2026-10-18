@@ -113,7 +113,7 @@ final class ConnectionTestTests: XCTestCase {
         ])
         XCTAssertEqual(finished?.statusLine, "Connected as mentes@10.0.0.2. Found Claude Code 2.1.283, tmux 3.4. "
                        + "No codex command on PATH. Sessions here end when you log out (logind KillUserProcesses=yes); "
-                       + "run loginctl enable-linger on the host. Not checked whether Claude Code and Codex are signed in.")
+                       + "run loginctl enable-linger on the host.")
         XCTAssertEqual(finished?.unavailableReason(for: .codex), "No codex command on PATH.")
         test.terminalExited()
         XCTAssertEqual(test.phase, .finished, "a later end changes nothing")

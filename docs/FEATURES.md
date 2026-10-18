@@ -704,8 +704,7 @@ Changes apply live where applicable.
   when you log out (`KillUserProcesses`), each with **Show output**. The
   status line says what it found ("Connected as <user@address>. Found
   Claude Code 2.1.283, Codex 0.48.0, tmux 3.4."), each problem in a
-  sentence, and that it did not check whether Claude Code and Codex are
-  signed in; until a test runs it says "Not tested since Temple started."
+  sentence; until a test runs it says "Not tested since Temple started."
   (results are kept for this run only). A host that was never tested can
   still start sessions; only a test that ran and found a CLI unusable, or
   tmux missing or too old, rules it out. The card is always there, with no

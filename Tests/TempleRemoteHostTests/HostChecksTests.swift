@@ -61,7 +61,7 @@ final class HostChecksTests: XCTestCase {
         let check = await TmuxCheck.run(nonce: "abc", using: host(tree))
         XCTAssertEqual(check, .refused(version: "3.0a", command: "prefix None", line: "invalid key: None"))
         XCTAssertEqual(HostTestSummary(tmux: check).statusLine,
-                       "Connected. tmux 3.0a couldn't start a session: invalid key: None. Not checked whether Claude Code and Codex are signed in.")
+                       "Connected. tmux 3.0a couldn't start a session: invalid key: None.")
         let calls = try String(contentsOfFile: log, encoding: .utf8)
         XCTAssertTrue(calls.contains("-L temple-check-abc -f /dev/null start-server ; set -g default-shell /bin/sh ;"),
                       "the chain, one queue, on a throwaway socket: \(calls)")
@@ -79,7 +79,7 @@ final class HostChecksTests: XCTestCase {
         let check = await TmuxCheck.run(nonce: "n", using: exec)
         XCTAssertEqual(check, .missing)
         XCTAssertEqual(HostTestSummary(tmux: check).statusLine,
-                       "Connected. No tmux on this host: sessions can't start here until tmux 3.2 or newer is installed. Not checked whether Claude Code and Codex are signed in.")
+                       "Connected. No tmux on this host: sessions can't start here until tmux 3.2 or newer is installed.")
         XCTAssertTrue(HostTestSummary(tmux: check).provesTmuxUnusable, "the tmux rule: missing")
     }
 
@@ -187,7 +187,7 @@ final class HostChecksTests: XCTestCase {
             claude: .runs(path: "/home/mentes/.local/bin/claude", version: "2.1.283 (Claude Code)", output: ""),
             codex: .runs(path: "/home/mentes/.local/bin/codex", version: "codex-cli 0.52.0", output: ""),
             tmux: .accepted(version: "3.4", passthrough: true), logind: .killsUserProcesses(false))
-        XCTAssertEqual(healthy.statusLine, "Connected as mentes@10.0.0.2. Found Claude Code 2.1.283, Codex 0.52.0, tmux 3.4. Not checked whether Claude Code and Codex are signed in.")
+        XCTAssertEqual(healthy.statusLine, "Connected as mentes@10.0.0.2. Found Claude Code 2.1.283, Codex 0.52.0, tmux 3.4.")
         XCTAssertFalse(healthy.isAdvisory)
         XCTAssertFalse(healthy.provesTmuxUnusable)
         XCTAssertNil(healthy.unavailableReason(for: .claude))
@@ -201,7 +201,7 @@ final class HostChecksTests: XCTestCase {
                        + "Codex is there but didn't run: Error: something. "
                        + "Copying from the terminal won't reach your Mac's clipboard (needs tmux 3.3 or newer). "
                        + "Couldn't read the login shell's PATH (the login shell didn't answer within 5 seconds), "
-                       + "so agents installed under your home folder may not be found. Not checked whether Claude Code and Codex are signed in.")
+                       + "so agents installed under your home folder may not be found.")
         XCTAssertEqual(broken.unavailableReason(for: .claude), "No claude command on PATH.")
         XCTAssertEqual(broken.unavailableReason(for: .codex), "Codex is there but didn't run: Error: something.")
         XCTAssertTrue(broken.isAdvisory)
@@ -209,7 +209,7 @@ final class HostChecksTests: XCTestCase {
         var lingering = healthy
         lingering.logind = .killsUserProcesses(true)
         XCTAssertEqual(lingering.statusLine, "Connected as mentes@10.0.0.2. Found Claude Code 2.1.283, Codex 0.52.0, tmux 3.4. "
-                       + "Sessions here end when you log out (logind KillUserProcesses=yes); run loginctl enable-linger on the host. Not checked whether Claude Code and Codex are signed in.")
+                       + "Sessions here end when you log out (logind KillUserProcesses=yes); run loginctl enable-linger on the host.")
         XCTAssertTrue(lingering.isAdvisory, "the logind finding reads orange")
 
         var old = healthy

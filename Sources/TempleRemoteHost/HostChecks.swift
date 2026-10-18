@@ -393,11 +393,6 @@ public struct HostTestSummary: Sendable, Equatable {
 
     public static let notTested = "Not tested since Temple started. Test the connection to check this host."
 
-    /// The last sentence of every connected status line: Temple runs each
-    /// CLI's `--version` and never asks whether it is signed in (AGENTS.md:
-    /// no opinion on how a CLI works).
-    public static let loginsNotChecked = "Not checked whether Claude Code and Codex are signed in."
-
     /// One status line: how it connected and what it found there, then each
     /// problem in its own sentence, then what was not checked. Prose names
     /// the products; a command's name appears only as what was looked for.
@@ -420,7 +415,6 @@ public struct HostTestSummary: Sendable, Equatable {
         if let environment, environment.path == nil {
             sentences.append(Self.pathUnread(environment.problem))
         }
-        sentences.append(Self.loginsNotChecked)
         return sentences.joined(separator: " ")
     }
 
