@@ -361,8 +361,9 @@ deletable without touching core rows; keep it that way
   project masks) lives in `remote-state.sqlite` (its own migrator) and the
   host list in the `temple.settings.remoteHosts` key, never in
   `session_state`, `open_tabs` or `project_state`. A session on a host is
-  still an ordinary row and its tab an ordinary saved tab. Temple never
-  archives or unarchives a row on its own, and never undoes a link it made:
+  still an ordinary row and its tab an ordinary saved tab. Linking a Codex
+  tab on a host never archives or unarchives a row, and Temple never undoes a
+  link it made (the ADR-030 sweep is the only automatic archive):
   a person's open (the activation sink, ADR-017) brings a row back, and a wrong automatic link is closed as any tab is; a claim, a join,
   a verified identity and a reconcile leave every archive as it is. A saved
   tab whose row is archived restores as an inert chip, local and remote alike.

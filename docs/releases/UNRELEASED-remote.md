@@ -10,6 +10,8 @@
 
 ## Known limits
 
+- When a new Codex tab on a host can't look for its session at first (the host doesn't answer, or Temple can't read its own records), the tab shows nothing about it and keeps working; Temple checks again every minute while the tab is connected.
+- If a new Codex tab links itself at the same moment you open that session's row, you can end up with two tabs on the same session. Close either one.
 - A host needs tmux 3.2 or newer to start sessions; Test connection says when it doesn't have it, and such a host isn't offered for new sessions. With tmux older than 3.3 (Ubuntu 22.04 ships 3.2a), Codex shows its own default colours instead of Temple's, and a drag-selection doesn't reach the Mac clipboard (⇧-drag still selects in Temple's own terminal).
 - Claude Code has to be logged in on the host itself. If it isn't, run `claude` there once (in a Temple tab on that host, or in any terminal) and log in.
 - Scrollback belongs to tmux on a host: the wheel scrolls the terminal's scrollback, and the first key you type returns to the prompt. ⌘F searches what the tab has shown since it connected.
