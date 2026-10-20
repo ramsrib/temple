@@ -164,6 +164,31 @@ the band hit-tests to: mark a new band control `TitleBandControl` instead.
 `TEMPLE_DEBUG_TITLEBAR=1` logs every band double-click (category
 `titlebar`): what it hit, AppKit's own verdict, and what was done.
 
+## The keyboard is shared with the agents — global shortcuts are ⌘ chords and ⌃⇥
+
+Claude Code and Codex are keyboard-driven TUIs in Temple's terminal, and
+their keys are ⌃, plain ⌥, Esc, ⇧⇥ and function keys. While a terminal has
+the keyboard, Temple's global shortcuts are **⌘ chords and ⌃⇥ / ⌃⇧⇥,
+nothing else**. A Temple panel that is open (a switcher, the palette,
+History) owns its own arrows, Return and Esc; that is focus, not a global
+binding. The agent map, the clash check, and the Chrome + Cursor rule for
+choosing a ⌘ key are in ADR-037. Three traps:
+
+- **`charactersIgnoringModifiers` drops ⌥ and ⌃.** A KeyCatcher case on
+  `"f"` also answered ⌃⌘F (Enter Full Screen). Check both modifiers in
+  every binding, and match brackets and punctuation by character, never
+  key position: the US `]` key is `+` on a German layout.
+- **Don't bind a plain ⌃ or ⌥ chord**, not even one neither agent uses
+  today. They add keys between releases, a user can rebind theirs, and a
+  key Temple swallows never reaches the terminal at all.
+- **`macos-option-as-alt` alone was not enough.** The embedder composes
+  the text, from the event AppKit hands it; with ⌥ still on that event ⌥P
+  is "π" whatever the config says. It works because
+  `GhosttySurfaceView.keyDown` asks `ghostty_surface_key_translation_mods`
+  first and `NSEvent.ghosttyMods` sends which side each modifier is on.
+  Before relying on any other option that changes how text is composed,
+  check upstream Ghostty's `SurfaceView_AppKit` for an embedder-side step.
+
 ## Quitting: ask before the window goes, and never reply early
 
 Temple is single-window, so **closing the window quits** — the red button routes

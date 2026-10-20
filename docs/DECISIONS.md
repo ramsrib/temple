@@ -2370,3 +2370,90 @@ rollout by folder and time, or by uniqueness of a match, without saying so
 (Temple's own yes to a lone candidate is said in the tab);
 deferred stops of any kind; stopping anything at quit; listing the private server's sessions as "Not in Temple";
 `open_tabs.host`; Temple passing `--no-daemon`; a byte-exact core locator.
+
+---
+
+## ADR-037 — Keyboard shortcuts follow the Mac apps people come from
+**Date:** 2026-10-19 · **Status:** Accepted
+
+Temple is for developers, so its keys should be the best of the two places
+they come from: the browser (Chrome) and the editor (Cursor, VS Code). An
+audit of every binding against Safari, Chrome, Terminal, Xcode, Finder,
+Cursor, VS Code and Ghostty (`ghostty +list-keybinds --default`, the terminal Temple
+is built on) found Temple alone in using `⌘⇧[` / `⌘⇧]` for something other
+than tabs, with no key at all that steps through tabs in order. The keys a
+user leans on daily (`⌃⇥`, `⌘P`, `⌘T`, `⌘W`, `⌘⇧T`, `⌘K`) already matched
+and are unchanged.
+
+**Decisions.**
+
+- **`⌥` means "the other agent".** `⌥⌘T` starts the non-default agent in
+  the active project, `⌥⌘N` opens the picker for it (was `⌘⇧N`). `⌘⇧T` is
+  Reopen Closed Tab in every browser, so the T variant could only take `⌥`,
+  and one modifier for one idea beats `⇧` on N and `⌥` on T. `⌥` is also
+  macOS's own alternate-command modifier (`⌥⌘W` Close All, `⌥⌘H` Hide
+  Others). With no active project, `⌥⌘T` opens that picker: `⌘T` falls back
+  to the launcher, which starts only the default agent.
+- **`⌘⇧[` / `⌘⇧]` step through tabs**, the strip's chips in the order shown,
+  wrapping; projects move to `⌥⌘[` / `⌥⌘]`. `⌃⇥` stays the most-recent
+  switcher (VS Code's reading of it), so tabs have both an order key and a
+  recency key.
+- **`⌘9` is the last session tab**, as in Safari, Chrome and Ghostty;
+  `⌘1`–`⌘8` are positional. Both count the active project's session tabs
+  only, as before; the bracket walk includes History and Settings, because
+  it follows the strip as drawn.
+- **`⌘⇧P` also opens the palette**, Cursor's and VS Code's command palette
+  key, beside `⌘K`. `⌘P` stays the project switcher, the editors' "go to"
+  key. It is not Print: Temple has nothing to print.
+- **Every global binding checks `⌃` and `⌥` itself.** `charactersIgnoringModifiers`
+  drops both, so the key monitor answered `⌃⌘F` (the system's Enter Full
+  Screen) with the terminal's find bar, and would have answered `⌥⌘T` as
+  `⌘T`; `⌃⇥` likewise answered `⌃⌥⇥` and `⌃⌘⇥`. No `⌃⌘` chord is
+  Temple's; the only `⌥⌘` chords are the ones above. A switcher that is
+  up owns every key until it closes, which is focus, not a binding.
+  Caps lock without `⇧` is the plain key. The bracket chords match the
+  character the layout gives, as the menu's key equivalents do, not the US
+  key position (on a German layout that key is `+`).
+
+**The agents' keys come first.** Audited 2026-10-19 against Claude Code
+2.1.304 ([interactive mode](https://code.claude.com/docs/en/interactive-mode),
+[keybindings](https://code.claude.com/docs/en/keybindings),
+[fullscreen](https://code.claude.com/docs/en/fullscreen#clear-the-conversation))
+and Codex 0.163.0 (built-in defaults in
+[`codex-rs/tui/src/keymap.rs` at 0910087](https://github.com/openai/codex/blob/0910087/codex-rs/tui/src/keymap.rs)).
+By default they bind `⌃` letters (`⌃R` history search, `⌃T`, `⌃O`, `⌃G`, `⌃L`,
+`⌃K` / `⌃Y` kill and yank, `⌃B`, `⌃S`, `⌃/`, `⌃]`), plain `⌥` (Claude Code
+`⌥P` model, `⌥T` thinking, `⌥O` fast mode; Codex `⌥R`, `⌥,` / `⌥.` effort,
+`⌥B` / `⌥F` / `⌥D` words), Esc and Esc Esc, `⇧⇥` (Claude Code's permission
+modes) and `F2`, `F3`, `F4`, `F8`, `F9` (Codex). Their only `⌘` keys are `⌘K` (Claude Code:
+clear, the same as `⌃L`), `⌘C` / `⌘V`, and `⌘←` / `⌘→` / `⌘⌫` (Codex; the
+terminal turns those into `⌃A` / `⌃E` / `⌃U`, which both honor). Neither
+binds `⌃⇥`. So while a terminal has the keyboard Temple's global shortcuts
+are `⌘` chords and `⌃⇥` / `⌃⇧⇥`, and nothing else. That avoids every
+audited default except one deliberate override: `⌘K` stays the palette, and
+inside an agent `⌃L` does the job (Claude Code: a full redraw keeping input
+and conversation; Codex: `clear_terminal`). It cannot rule out a clash
+with a default added later, or a user's own `cmd` binding in Claude Code's
+`keybindings.json` (honored only where the terminal reports ⌘); keeping
+Temple off plain `⌃` and `⌥` keeps that surface to `⌘`.
+
+**The left `⌥` is Meta.** Temple's terminal config set no
+`macos-option-as-alt`, so `⌥P` typed `π` and the agents' Meta shortcuts
+were unavailable (Claude Code's `⌥T` is documented to work without Meta;
+`⌥P` is documented to need it). `macos-option-as-alt = left` makes the left `⌥` the
+terminal's Alt and keeps the right one for `⌥`-characters, which non-US
+layouts type with it. In an embedder the line alone does nothing:
+`GhosttySurfaceView.keyDown` now asks the core which modifiers shape the
+text (`ghostty_surface_key_translation_mods`) and composes from an event
+without the `⌥` it takes, and `NSEvent.ghosttyMods` sends the side bits
+(`GHOSTTY_MODS_ALT_RIGHT` and kin), without which both `⌥` keys are
+"left". A key that ends a composition (a dead key, an IME preedit) now
+sends the committed text bare, with no key or modifiers, so a right-`⌥`
+dead key finished with the left `⌥` gives "é", not Alt-E. All three are
+ported from Ghostty's macOS app. Not a setting yet: the
+shipped default until someone needs the other one.
+
+The menu bar and the `⌘/` card follow: Window ▸ Show Previous / Next Tab,
+File's other-agent items, Refresh retitled Check Agents Again on Settings
+(where `⌘R` already worked under a greyed item), and a History section on
+the card for the keys that page owns.
