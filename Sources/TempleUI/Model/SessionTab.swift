@@ -76,8 +76,7 @@ public final class SessionTab: ObservableObject, Identifiable {
     public var resumeTargetMissingMessage: String? {
         guard resumeTargetMissing else { return nil }
         if resumeTargetAbsentAtLaunch {
-            let resumer = agent == .claude ? "Claude" : agent.displayName
-            return "No transcript on disk carries this session, so \(resumer) has nothing to resume. "
+            return "No transcript on disk carries this session, so \(agent.displayName) has nothing to resume. "
                 + "Archive it, or import a newer file from History."
         }
         return "No transcript on disk carries this ID. It was deleted or pruned, or the conversation continued "

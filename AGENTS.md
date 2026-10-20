@@ -46,8 +46,9 @@ Four traps, each hit for real:
   animation nothing outside the process can trigger without input injection:
   `kill -USR2 <pid>` toggles the sidebar (⌘B), `kill -INFO <pid>` folds/unfolds
   the first project. Fire USR1 in a 50ms loop right after either to get frames.
-  `TEMPLE_SNAPSHOT_PRESENT=palette|history|archived` opens that panel two seconds
-  after launch, for snapshots of rows no key chord can be posted to reach.
+  `TEMPLE_SNAPSHOT_PRESENT=palette|history|archived|shortcuts|picker` opens that
+  panel two seconds after launch (`picker-choose-folder` also arrows its
+  selection to the last row, in-process), for snapshots of rows no key chord can be posted to reach.
   **Keep the window at least partly uncovered while snapshotting:** a fully
   covered window counts as occluded, its terminals are told they are hidden
   (`GhosttySurfaceView.syncRendererState`), and they stop updating — the shot

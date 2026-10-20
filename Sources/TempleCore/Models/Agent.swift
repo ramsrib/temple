@@ -12,8 +12,12 @@ public enum Agent: String, Codable, CaseIterable, Sendable {
         }
     }
 
-    /// A session's title before the agent or the user gives it one; the
-    /// launcher's "New Claude session" row uses the same words.
+    /// A session's title before the agent or the user gives it one. Short on
+    /// purpose ("Claude", not "Claude Code": it sits in a narrow chip), and
+    /// fixed: saved tabs carry these exact words, and the remote paths tell a
+    /// placeholder from a real title by comparing against them, so a renamed
+    /// one would turn every older saved placeholder into a recorded title.
+    /// A change needs the old words kept as an alias in those comparisons.
     public var newSessionTitle: String {
         switch self {
         case .claude: return "New Claude session"

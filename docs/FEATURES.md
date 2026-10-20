@@ -478,7 +478,10 @@ it. What follows appears for an enabled host only.
 `⌘⇧H` shows the home page without closing existing tabs. Its masthead presents
 Temple and the tagline “Where agents answer the call.”
 
-The **Get Started** section provides New Claude session, New Codex session, New
+The **Get Started** section provides a New session row for each agent, named
+in full (New Claude Code session, New Codex session) with the default agent
+first, as the `+` menu orders them, showing `⌘T` and `⌥⌘T` while a project is
+active (the keys' condition); then New
 session in folder…, Command palette, Keyboard shortcuts, and Settings. An agent
 row uses the last-used project, or asks for a folder if none exists; the folder
 row uses the default agent.
@@ -785,13 +788,14 @@ footer to click.
 ## Menu bar
 
 The native menu bar mirrors Temple's commands instead of WindowGroup's
-defaults: **File** carries the session lifecycle (New Session, New Session in
-Project…, the other-agent variant, Reopen Closed Tab, Close Tab) in place of
+defaults: **File** carries the session lifecycle (New Claude Code Session, New Claude
+Code Session in Project…, each with its other-agent variant named the same
+way, Reopen Closed Tab, Close Tab) in place of
 New Window, each new-session item beside its `⌥` other-agent variant; **Edit** replaces the system Find submenu with Find in Terminal
 (`⌘F`, retitled Find in History on the History tab), Find Next and Find
 Previous, disabled when no terminal is showing; **View** owns Toggle Sidebar
 at `⌘B` plus the palette, Session History, Refresh History (`⌘R`, on the
-History tab; Check Agents Again on Settings), Archived Sessions, home, and shortcuts card; a **Project** menu mirrors the switcher and project
+History tab; Check for Claude Code and Codex Again on Settings; plain Refresh, disabled, elsewhere), Archived Sessions, home, and shortcuts card; a **Project** menu mirrors the switcher and project
 cycling; **Window** carries Show Previous / Next Tab; **Settings…** sits in the app menu. Menu items call the same actions
 as the shortcuts below — the in-app key monitor remains the keyboard's source
 of truth.

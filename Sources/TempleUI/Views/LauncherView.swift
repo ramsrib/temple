@@ -164,11 +164,19 @@ struct LauncherView: View {
         VStack(alignment: .leading, spacing: 2) {
             SectionRule("Get started")
 
-            LauncherRow(icon: .agent(.claude), title: "New Claude session", shortcut: "⌘T") {
-                newSession(.claude)
-            }
-            LauncherRow(icon: .agent(.codex), title: "New Codex session") {
-                newSession(.codex)
+            // As the + menu orders them: the default agent first with ⌘T,
+            // the other with ⌥⌘T. Both by the agent's name ("Claude Code",
+            // never the bare "Claude", which is the assistant and its apps).
+            // The hints only where they are true, as in the + menu: a row
+            // starts in the active project or else the last-used one, while
+            // ⌘T and ⌥⌘T need an active project (without one ⌘T stays here
+            // and ⌥⌘T asks where).
+            ForEach(launcherAgents, id: \.self) { agent in
+                LauncherRow(icon: .agent(agent), title: "New \(agent.displayName) session",
+                            shortcut: model.openSessions.activeProjectKey == nil ? nil
+                                : agent == model.settings.defaultAgent ? "⌘T" : "⌥⌘T") {
+                    newSession(agent)
+                }
             }
             LauncherRow(icon: .symbol("folder.badge.plus"), title: "New session in folder…") {
                 openFolder()
@@ -232,6 +240,10 @@ struct LauncherView: View {
     // MARK: Actions
 
     /// Start `agent` in the last-used project; if none is known, ask for a folder.
+    private var launcherAgents: [Agent] {
+        [model.settings.defaultAgent] + Agent.allCases.filter { $0 != model.settings.defaultAgent }
+    }
+
     private func newSession(_ agent: Agent) {
         if let key = model.launcherDefaultProjectKey {
             model.openSessions.newSession(agent: agent, project: key)

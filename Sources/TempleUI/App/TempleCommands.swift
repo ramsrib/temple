@@ -23,7 +23,9 @@ public struct TempleCommands: Commands {
         // single-window app (multi-window is roadmap), so the default
         // WindowGroup item would spawn a second, unsupported window.
         CommandGroup(replacing: .newItem) {
-            Button("New Session") {
+            // Both agents by name: a bare "New Session" beside "New Codex
+            // Session" left the default to be inferred (cold read).
+            Button("New \(model.settings.defaultAgent.displayName) Session") {
                 if model.openSessions.newSessionDefaultAgent() == nil {
                     model.openSessions.showHome()
                 }
@@ -34,7 +36,7 @@ public struct TempleCommands: Commands {
             Button("New \(model.alternateAgent.displayName) Session") { model.newSessionAlternateAgent() }
                 .keyboardShortcut("t", modifiers: [.command, .option])
 
-            Button("New Session in Project…") { model.toggleNewSessionPicker() }
+            Button("New \(model.settings.defaultAgent.displayName) Session in Project…") { model.toggleNewSessionPicker() }
                 .keyboardShortcut("n")
 
             Button("New \(model.alternateAgent.displayName) Session in Project…") {
@@ -121,7 +123,13 @@ public struct TempleCommands: Commands {
             Button {
                 if model.historyActive { model.history.refresh() } else { model.toolchain.detect() }
             } label: {
-                Label(settingsActive ? "Check Agents Again" : "Refresh History", systemImage: "arrow.clockwise")
+                // Names what is checked: "Check Agents Again" read as the
+                // running sessions, not the installed CLIs (cold read).
+                // Elsewhere it does nothing, and a greyed item naming History
+                // read as History being broken: plain "Refresh" there.
+                Label(settingsActive ? "Check for \(agentNames) Again"
+                        : model.historyActive ? "Refresh History" : "Refresh",
+                      systemImage: "arrow.clockwise")
             }
             .keyboardShortcut("r")
             .disabled(!model.historyActive && !settingsActive)
@@ -165,6 +173,10 @@ public struct TempleCommands: Commands {
                 .keyboardShortcut("]", modifiers: [.command, .shift])
             Divider()
         }
+    }
+
+    private var agentNames: String {
+        Agent.allCases.map(\.displayName).joined(separator: " and ")
     }
 
     private var settingsActive: Bool {

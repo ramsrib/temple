@@ -169,6 +169,11 @@ private struct PickerRowChrome<Content: View>: View {
         content()
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
+            // Fill the row's slot before painting: a one-line row ("Choose
+            // folder…") otherwise lit a band ~33pt tall inside its 46pt slot,
+            // gapped where a two-line project row was lit edge to edge, and
+            // took clicks only on that band.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .background(selected ? Palette.selectionFill
                                  : (hovering ? Palette.hoverFill : Color.clear))
             .contentShape(Rectangle())

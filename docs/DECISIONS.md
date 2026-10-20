@@ -2454,6 +2454,10 @@ ported from Ghostty's macOS app. Not a setting yet: the
 shipped default until someone needs the other one.
 
 The menu bar and the `⌘/` card follow: Window ▸ Show Previous / Next Tab,
-File's other-agent items, Refresh retitled Check Agents Again on Settings
-(where `⌘R` already worked under a greyed item), and a History section on
-the card for the keys that page owns.
+File's other-agent items, Refresh retitled on Settings (where `⌘R`
+already worked under a greyed item), and a History section on the card for
+the keys that page owns. A cold read (docs/copy-review.md) then named both
+agents in File's items and on the card, where "New Session" beside "New
+Codex Session" and "the other agent" left the default to be inferred, and
+named what ⌘R checks on Settings ("Check for Claude Code and Codex Again"):
+"Check Agents Again" read as the running sessions.

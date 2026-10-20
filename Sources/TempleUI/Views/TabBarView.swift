@@ -414,8 +414,6 @@ private struct ProjectSwitcher: View {
                     Text("switch project")
                         .font(.system(size: 10.5))
                     Spacer(minLength: 0)
-                    Text("⌥⌘[ ⌥⌘]")
-                        .foregroundStyle(.quaternary)
                 }
                 .font(.system(size: 10.5, design: .monospaced))
                 .foregroundStyle(.tertiary)

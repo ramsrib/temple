@@ -54,7 +54,7 @@ public struct RootView: View {
         .onReceive(WindowSnapshot.debugPublisher(for: .templeDebugToggleSidebar)) { _ in
             withAnimation { model.toggleSidebar() }
         }
-        // Dev-only, same gate: TEMPLE_SNAPSHOT_PRESENT=palette|history|archived|…
+        // Dev-only, same gate: TEMPLE_SNAPSHOT_PRESENT=palette|history|archived|shortcuts|picker|…
         // opens the ⌘K palette, the History tab or its Archived scope once the
         // window has settled, so it can be snapshotted without a key chord.
         .onAppear {
@@ -82,6 +82,17 @@ public struct RootView: View {
                 // prove the page's own key handling fires (SettingsKeysProbe).
                 case "settings-keys": SettingsKeysProbe.run(model: model)
                 case "archived": model.showArchived()
+                case "shortcuts": if !model.shortcutsPresented { model.toggleShortcuts() }
+                // The ⌘N picker, and the same with its last row selected
+                // ("Choose folder…" with no host): its selection is the
+                // view's own state, reached only by keys, so ↓ is delivered
+                // in-process (SettingsKeysProbe), never to the system.
+                case "picker", "picker-choose-folder":
+                    if !model.newSessionPickerPresented { model.toggleNewSessionPicker() }
+                    guard panel == "picker-choose-folder" else { break }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                        for _ in 0..<60 { SettingsKeysProbe.press(.down) }
+                    }
                 default: break
                 }
             }
@@ -246,7 +257,9 @@ public struct RootView: View {
                 OverlayBackdrop { model.shortcutsPresented = false }
                     .ignoresSafeArea()
                 PanelHost(focus: model.overlayFocus, token: model.overlayFocus.token) {
-                    ShortcutsView(maxHeight: max(200, geo.size.height - 2 * ShortcutsView.windowMargin),
+                    ShortcutsView(defaultAgent: model.settings.defaultAgent,
+                                  otherAgent: model.alternateAgent,
+                                  maxHeight: max(200, geo.size.height - 2 * ShortcutsView.windowMargin),
                                   remoteNote: model.remoteHosts.hasHosts)
                 }
                 .fixedSize()

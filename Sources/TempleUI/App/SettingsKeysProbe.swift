@@ -86,7 +86,9 @@ enum SettingsKeysProbe {
         NotificationCenter.default.post(name: .templeDebugFocusSettingsField, object: field)
     }
 
-    private enum Key {
+    /// Internal so other snapshot modes can walk a panel's list the same
+    /// in-process way (RootView's `picker-choose-folder`).
+    enum Key {
         case up, down, escape, character(Character)
 
         var keyCode: UInt16 {
@@ -118,7 +120,7 @@ enum SettingsKeysProbe {
         ]
     }
 
-    private static func press(_ key: Key) {
+    static func press(_ key: Key) {
         guard let window else { return }
         for type in [NSEvent.EventType.keyDown, .keyUp] {
             guard let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: key.flags,
