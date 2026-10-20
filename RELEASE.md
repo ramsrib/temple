@@ -114,6 +114,28 @@ points").
 > only write a ticket to the `.app`/`.dmg` — which is why submit and staple are
 > separate steps in the script.
 
+## Releasing over SSH
+
+`make release` needs two things from the session it runs in, and an SSH
+session gives you at most one of them (v0.6.1, cut from another Mac):
+
+- **Signing.** `codesign` reaches the Developer ID key only in a session whose
+  login keychain is unlocked. A fresh SSH session's is not, and signing fails
+  with `errSecInternalComponent` after a full build. Unlock it in that session
+  first (`security unlock-keychain ~/Library/Keychains/login.keychain-db`), or
+  run inside something that was started from the GUI login.
+- **The dmg.** `create-dmg` styles the window by scripting Finder, and macOS
+  charges that to the *responsible* process. A tmux server reused from another
+  job is charged to whatever started it (a `node` agent, once); with no grant
+  the call waits on a prompt nobody sees and fails with `AppleEvent timed out
+  (-1712)`. Probe before a 10-minute run:
+  `osascript -e 'tell application "Finder" to get name of startup disk'`.
+
+Both failures come before tagging, so a failed run publishes nothing and can
+simply be run again. And `gh` publishes as whichever account is active: from
+a machine signed in to more than one, run the release step with
+`GH_TOKEN=$(gh auth token --user <owner>)`, or the release API answers 404.
+
 ## Verifying a published release
 
 ```sh
