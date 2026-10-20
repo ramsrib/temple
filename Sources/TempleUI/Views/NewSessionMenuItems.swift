@@ -10,10 +10,10 @@ import TempleCore
 /// - The agent's own mark leads the row, not another `plus`. The `+` you clicked
 ///   already said "new"; repeating it gave two rows that differed by one word in
 ///   the middle, where the eye lands last.
-/// - The default agent comes first and shows `⌘T`, so the menu teaches the
-///   keyboard path that makes it unnecessary. The hint appears only where it is
-///   true: `⌘T` starts a session in the *active* project, so a `+` on some other
-///   project's row shows no shortcut.
+/// - The default agent comes first and shows `⌘T`, the other `⌥⌘T`, so the
+///   menu teaches the keyboard path that makes it unnecessary. The hints appear
+///   only where they are true: both start a session in the *active* project, so
+///   a `+` on some other project's row shows no shortcut.
 /// - An agent we have *proof* won't launch is disabled and says which kind of
 ///   proof. Only a failure can be proven (AGENTS.md), so there is deliberately
 ///   no tick, badge or reassurance on the agent that looks fine.
@@ -64,12 +64,14 @@ struct NewSessionMenuItems: View {
         .disabled(availability != .available)
         // The optional overload, so the row keeps one identity whether or not it
         // carries the shortcut.
-        .keyboardShortcut(showsShortcut(agent) ? KeyboardShortcut("t") : nil)
+        .keyboardShortcut(shortcut(agent))
     }
 
-    /// `⌘T` is only the truth for the default agent in the *active* project.
-    private func showsShortcut(_ agent: Agent) -> Bool {
-        agent == model.settings.defaultAgent
-            && project == model.openSessions.activeProjectKey
+    /// `⌘T` / `⌥⌘T` are only the truth in the *active* project.
+    private func shortcut(_ agent: Agent) -> KeyboardShortcut? {
+        guard project == model.openSessions.activeProjectKey else { return nil }
+        return agent == model.settings.defaultAgent
+            ? KeyboardShortcut("t")
+            : KeyboardShortcut("t", modifiers: [.command, .option])
     }
 }

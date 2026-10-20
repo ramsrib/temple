@@ -307,7 +307,7 @@ extension AppModel {
                                })
     }
 
-    /// ⌘N's and the launcher's "Folder on <host>…".
+    /// ⌘N's "Choose folder on <host>…" and the launcher's host row.
     public func chooseRemoteFolder(host: HostID, agent: Agent? = nil) {
         newSessionPickerPresented = false
         guard remoteHost(host) != nil else { return }

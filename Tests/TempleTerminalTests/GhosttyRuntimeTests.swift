@@ -71,6 +71,8 @@ final class GhosttyRuntimeTests: XCTestCase {
         GhosttyApp.shared.update(appearance: TerminalAppearance(fontSize: 17, colorScheme: .dark))
         let written = try String(contentsOf: state.appendingPathComponent("ghostty.conf"), encoding: .utf8)
         XCTAssertTrue(written.contains("font-size = 17"))
+        XCTAssertTrue(written.contains("macos-option-as-alt = left"),
+                      "the agents' ⌥ shortcuts need the left ⌥ as Meta (ADR-037)")
         XCTAssertFalse(written.contains("cursor-click-to-move"),
                        "libghostty's own prompt-click behaviour, app-wide, as before remote")
     }
@@ -107,6 +109,44 @@ final class GhosttyRuntimeTests: XCTestCase {
         XCTAssertEqual(NSEvent.ghosttyKeyText("a"), "a")
         XCTAssertEqual(NSEvent.ghosttyKeyText("é"), "é")
         XCTAssertEqual(NSEvent.ghosttyKeyText("日本"), "日本")
+    }
+
+    // `macos-option-as-alt = left` only works if the core can tell the two
+    // ⌥ keys apart and the text is composed without the ⌥ it takes (ADR-037).
+    func testOptionSidesReachTheCore() {
+        let left = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.option.rawValue | 0x20)
+        let right = NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.option.rawValue | 0x40)
+        XCTAssertEqual(NSEvent.ghosttyMods(left).rawValue & GHOSTTY_MODS_ALT_RIGHT.rawValue, 0)
+        XCTAssertNotEqual(NSEvent.ghosttyMods(right).rawValue & GHOSTTY_MODS_ALT_RIGHT.rawValue, 0)
+        XCTAssertNotEqual(NSEvent.ghosttyMods(left).rawValue & GHOSTTY_MODS_ALT.rawValue, 0)
+        XCTAssertEqual(NSEvent.modifierFlags(NSEvent.ghosttyMods([.option, .shift])), [.option, .shift])
+    }
+
+    func testATakenOptionComposesThePlainLetter() throws {
+        let optionP = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: .option, timestamp: 0, windowNumber: 0,
+            context: nil, characters: "π", charactersIgnoringModifiers: "p", isARepeat: false, keyCode: 35))
+        XCTAssertTrue(optionP.ghosttyTranslationEvent(mods: .option) === optionP, "⌥ kept: the event as it was")
+        let translated = optionP.ghosttyTranslationEvent(mods: [])
+        XCTAssertEqual(translated.characters, "p", "⌥ is the terminal's Alt, so no π")
+        XCTAssertFalse(translated.modifierFlags.contains(.option))
+        let key = optionP.ghosttyKeyEvent(GHOSTTY_ACTION_PRESS, translationMods: translated.modifierFlags)
+        XCTAssertNotEqual(key.mods.rawValue & GHOSTTY_MODS_ALT.rawValue, 0, "Alt is still sent")
+        XCTAssertEqual(key.consumed_mods.rawValue & GHOSTTY_MODS_ALT.rawValue, 0, "but not spent on the text")
+    }
+
+    // After a composition commits, only arrows act as keys (upstream's rule).
+    @MainActor
+    func testOnlyArrowsReplayAfterACommit() throws {
+        func key(_ code: UInt16, _ flags: NSEvent.ModifierFlags = []) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                                           windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "",
+                                           isARepeat: false, keyCode: code))
+        }
+        XCTAssertFalse(GhosttySurfaceView.replaysAfterCommit(try key(14, .option)), "⌥E finishing a dead key")
+        XCTAssertTrue(GhosttySurfaceView.replaysAfterCommit(try key(125)))
+        XCTAssertFalse(GhosttySurfaceView.replaysAfterCommit(try key(123)), "plain ←: AppKit kept the caret")
+        XCTAssertTrue(GhosttySurfaceView.replaysAfterCommit(try key(123, .shift)))
     }
 
     // Dropping a file/image onto an agent must type a path it can actually read.

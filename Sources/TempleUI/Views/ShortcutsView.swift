@@ -11,30 +11,44 @@ struct ShortcutsView: View {
 
     private static let sessions: [Shortcut] = [
         .init(keys: "⌘T", action: "New session in the current project (default agent)"),
+        .init(keys: "⌥⌘T", action: "New session in the current project, the other agent"),
         .init(keys: "⌘W", action: "Close the current tab (asks first if the agent is working)"),
         .init(keys: "⌘⇧T", action: "Reopen the last closed tab"),
         .init(keys: "⌘N", action: "New session in a project you pick (default agent)"),
-        .init(keys: "⌘⇧N", action: "Same picker, the other agent"),
+        .init(keys: "⌥⌘N", action: "Same picker, the other agent"),
         .init(keys: "⌘O", action: "Open a project folder Temple hasn't seen yet"),
         .init(keys: "⌘⇧H", action: "Go to the home page"),
-        .init(keys: "⌘1–9", action: "Switch to tab 1–9 in the active project"),
+        .init(keys: "⌘⇧[ / ⌘⇧]", action: "Previous / next tab"),
+        .init(keys: "⌘1–8", action: "Switch to session 1–8 in the active project"),
+        .init(keys: "⌘9", action: "Switch to the active project's last session"),
         .init(keys: "⌃⇥ / ⌃⇧⇥", action: "Last visited tab — hold ⌃ to walk the list, ⇧ reverses"),
-        .init(keys: "⌘⇧[ / ⌘⇧]", action: "Previous / next project (returns to its last session)"),
         .init(keys: "⌘F", action: "Find in the terminal"),
         .init(keys: "⌘G / ⌘⇧G", action: "Next / previous match (Return / ⇧Return in the find field)"),
     ]
 
     private static let navigation: [Shortcut] = [
         .init(keys: "⌘P", action: "Switch project — hold ⌘ and tap P to walk, release to land"),
-        .init(keys: "⌘K", action: "Command palette (recent sessions + search)"),
+        .init(keys: "⌥⌘[ / ⌥⌘]", action: "Previous / next project (returns to its last session)"),
+        .init(keys: "⌘K / ⌘⇧P", action: "Command palette (recent sessions + search)"),
         .init(keys: "⌘Y", action: "Session history"),
         .init(keys: "⌘⇧Y", action: "Archived sessions, in History"),
         .init(keys: "↑ ↓ / Return", action: "Browse the sidebar / open the highlighted session"),
         .init(keys: "⌘B", action: "Toggle the sidebar"),
     ]
 
+    private static let history: [Shortcut] = [
+        .init(keys: "⌘F", action: "Search History"),
+        .init(keys: "⌘R", action: "Refresh the list"),
+        .init(keys: "⌘A", action: "Select every row in view"),
+        .init(keys: "⌘I", action: "Import the selection"),
+        .init(keys: "⌘C", action: "Copy the selection's resume commands"),
+        .init(keys: "⌘⌫", action: "Archive the selection"),
+        .init(keys: "⌘Z", action: "Undo an import, archive or restore"),
+    ]
+
     private static let app: [Shortcut] = [
         .init(keys: "⌘,", action: "Settings"),
+        .init(keys: "⌘R", action: "On Settings: check the agents again"),
         .init(keys: "⌘/", action: "This panel"),
         .init(keys: "Esc", action: "Dismiss palette / dialogs / find bar"),
         .init(keys: "⌘Q", action: "Quit — closing the window does the same; asks if an agent is working"),
@@ -62,6 +76,7 @@ struct ShortcutsView: View {
                 VStack(alignment: .leading, spacing: 22) {
                     section("Sessions & tabs", Self.sessions)
                     section("Navigation", Self.navigation)
+                    section("On the History tab", Self.history)
                     section("App", Self.app)
                     if remoteNote {
                         Text(Self.remoteScrollingNote)

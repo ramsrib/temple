@@ -147,6 +147,12 @@ public final class GhosttyApp {
             // (docs/designs/remote-ssh.md section 4). libghostty's default,
             // pinned so it cannot drift; reads still ask.
             "clipboard-write = allow",
+            // The left ⌥ is Meta, so the agents' ⌥ shortcuts arrive (Claude
+            // Code's ⌥P model picker, Codex's ⌥R, ⌥B/⌥F word moves); the
+            // right ⌥ still types ⌥-characters, which non-US layouts need
+            // (# is ⌥3 on a UK keyboard). Takes effect through
+            // `GhosttySurfaceView.keyDown`'s translation step (ADR-037).
+            "macos-option-as-alt = left",
         ]
         if let family = appearance.fontFamily, !family.isEmpty {
             lines.append("font-family = \(family)")

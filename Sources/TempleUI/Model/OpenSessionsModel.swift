@@ -1087,11 +1087,29 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     // MARK: Keyboard switching
 
-    /// ⌘1–9 within the active project (1-based, session tabs only).
+    /// ⌘1–8 within the active project (1-based, session tabs only); ⌘9 is
+    /// the last one however many there are, as in Safari, Chrome and Ghostty.
     public func selectTab(index: Int) {
         let sessionTabs = tabs.filter { $0.kind == .session && $0.projectKey == activeProjectKey }
+        if index == 9, let last = sessionTabs.last { return activate(last) }
         guard index >= 1, index <= sessionTabs.count else { return }
         activate(sessionTabs[index - 1])
+    }
+
+    /// ⌘⇧] / ⌘⇧[ — the next / previous chip in the strip, in the order it
+    /// shows them (utility tabs included), wrapping at the ends. From the
+    /// launcher, where no chip is active, next is the first and previous
+    /// the last.
+    public func selectNextTab() { stepTab(by: 1) }
+    public func selectPreviousTab() { stepTab(by: -1) }
+
+    private func stepTab(by delta: Int) {
+        let strip = visibleTabs
+        guard !strip.isEmpty else { return }
+        guard let current = strip.firstIndex(where: { $0.id == activeTabID }) else {
+            return activate(delta > 0 ? strip[0] : strip[strip.count - 1])
+        }
+        activate(strip[(current + delta + strip.count) % strip.count])
     }
 
     /// What the ⌃⇥ switcher walks: every open tab, most recently visited first

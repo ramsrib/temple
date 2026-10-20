@@ -20,7 +20,7 @@ struct NewSessionPickerView: View {
         let hosts = model.remoteLaunchHosts
         // The trailing pseudo-rows: "Choose folder…" is always reachable by
         // keyboard, so a project Temple has never indexed is never mouse-only;
-        // below it, "Folder on <host>…" per host a session can start on.
+        // below it, "Choose folder on <host>…" per host a session can start on.
         let rowCount = projects.count + 1 + hosts.count
         VStack(spacing: 0) {
             HStack(spacing: 8) {
@@ -125,7 +125,7 @@ struct NewSessionPickerView: View {
                 }
                 .font(.system(size: 14))
                 .foregroundStyle(.secondary)
-                Text("Folder on \(host.rawValue)…")
+                Text("Choose folder on \(host.rawValue)…")
                     .font(.system(size: 13))
                 Spacer()
             }

@@ -190,7 +190,7 @@ The sidebar and tab bar form a two-part navigation model:
   open in, most recently used first, and release `⌘` to land — so one tap returns
   you to the project you were just in. The project you are leaving is marked
   *current*. Landing on a project returns you to the session you last used there.
-  `⌘⇧[` / `⌘⇧]` cycle without showing the switcher. Sessions get a search palette
+  `⌥⌘[` / `⌥⌘]` cycle without showing the switcher. Sessions get a search palette
   (`⌘K`); projects get a switcher, because you hold a handful of them in your head
   and search a hundred sessions.
 - `⌃⇥` is the same gesture one level down: hold `⌃` and tap `⇥` to walk the open
@@ -201,12 +201,24 @@ The sidebar and tab bar form a two-part navigation model:
   From the home page the bounce returns to the tab you left. The trail spans
   projects, and each row names the project it would take you to; landing
   elsewhere switches the strip. The tab you are leaving is marked *current*, and
-  a dot flags tabs whose agent is running or waiting. `⌘1`–`⌘9` remain the
-  positional route within the active project.
+  a dot flags tabs whose agent is running or waiting. The positional routes
+  are the browser's: `⌘⇧[` / `⌘⇧]` step to the previous / next chip in the
+  strip, History and Settings included (wrapping); `⌘1`–`⌘8` pick a session
+  tab in the active project, and `⌘9` its last session tab.
 
 The active libghostty terminal fills the main content area. Temple launches the
 agent directly in the session's working directory and sends keyboard input to
 the terminal; there is no bottom composer and no intervening shell.
+
+- While a terminal has the keyboard, Temple's global shortcuts are `⌘`
+  chords and `⌃⇥` / `⌃⇧⇥`; every `⌃` letter, plain `⌥`, Esc, `⇧⇥` and
+  function key reaches the agent. (A Temple panel that is open, such as
+  the palette, a switcher or History, keeps its own arrows, Return and Esc.)
+  The left `⌥` is Meta, so the agents' Meta shortcuts work (Claude Code's
+  `⌥P` model picker, Codex's `⌥R`, `⌥B` / `⌥F` word moves); the right `⌥`
+  still types `⌥`-characters (`π`, or `#` on a UK keyboard). `⌘K` is the
+  palette, not the terminal's clear; inside an agent use its `⌃L` (a full
+  redraw in Claude Code, clear-terminal in Codex). The map is in ADR-037.
 
 - `⌘F` opens a find bar over the terminal's top-right corner; libghostty
   matches and highlights in the scrollback and the bar counts them ("3/12"). Return
@@ -224,7 +236,7 @@ the terminal; there is no bottom composer and no intervening shell.
   switcher and history rows as a wash. Marks are keyed to the session, so they
   survive closing the tab and relaunching Temple.
 - The trailing `+` menu starts a new Claude or Codex session in the active
-  project. `⌘T` takes the default-agent fast path.
+  project. `⌘T` takes the default-agent fast path, `⌥⌘T` the other agent's.
 - Tabs are drag-reorderable within their project. Temple persists each
   project's open-tab set and order.
 - Open tabs restore lazily after relaunch as inert chips. No agent process starts
@@ -283,7 +295,8 @@ New sessions are empty agent sessions, ready for terminal input. Temple can
 start one from the launcher, a project-header `+` menu, the tab-bar `+` menu, or
 `⌘T`. Both `+` menus name only the choice they offer — the agent, under a **New
 session** heading, each row carrying that agent's own mark. The default agent
-leads and shows `⌘T` where that is true (the active project only). An agent
+leads and shows `⌘T`, the other `⌥⌘T`, where that is true (the active
+project only). An agent
 Temple has proof it cannot launch is disabled there and says which kind of
 proof; there is no tick for one that looks fine. **Choose folder…** starts in a
 directory that is not yet indexed. Claude
@@ -305,11 +318,10 @@ anywhere else in Temple: no host rows in `⌘N` or the launcher, no shortcuts
 note, no sidebar notices; local tabs behave exactly as they would without
 it. What follows appears for an enabled host only.
 
-- **Starting one.** `⌘N` lists **Folder on <host>…** under **Choose
+- **Starting one.** `⌘N` lists **Choose folder on <host>…** under **Choose
   folder…** for each host, the launcher has one row per host naming the
   agent it starts ("New Claude Code session on <host>…", the default
-  agent), and a host project's `+` and `⌘T` start there (Codex on a host:
-  the `+` menu or `⌘N`). The folder sheet takes a path on the host (`~/…`
+  agent), and a host project's `+`, `⌘T` and `⌥⌘T` start there. The folder sheet takes a path on the host (`~/…`
   works), checks it there and shows where it resolved; under the field,
   "Recent folders on this host. Click one to start there." lists the host's
   earlier folders. When the host does not answer, it offers **Test
@@ -775,12 +787,12 @@ footer to click.
 The native menu bar mirrors Temple's commands instead of WindowGroup's
 defaults: **File** carries the session lifecycle (New Session, New Session in
 Project…, the other-agent variant, Reopen Closed Tab, Close Tab) in place of
-New Window; **Edit** replaces the system Find submenu with Find in Terminal
+New Window, each new-session item beside its `⌥` other-agent variant; **Edit** replaces the system Find submenu with Find in Terminal
 (`⌘F`, retitled Find in History on the History tab), Find Next and Find
 Previous, disabled when no terminal is showing; **View** owns Toggle Sidebar
 at `⌘B` plus the palette, Session History, Refresh History (`⌘R`, on the
-History tab), Archived Sessions, home, and shortcuts card; a **Project** menu mirrors the switcher and project
-cycling; **Settings…** sits in the app menu. Menu items call the same actions
+History tab; Check Agents Again on Settings), Archived Sessions, home, and shortcuts card; a **Project** menu mirrors the switcher and project
+cycling; **Window** carries Show Previous / Next Tab; **Settings…** sits in the app menu. Menu items call the same actions
 as the shortcuts below — the in-app key monitor remains the keyboard's source
 of truth.
 
@@ -789,18 +801,20 @@ of truth.
 | Shortcut | Action |
 |---|---|
 | **⌘T** | New empty session in the current project with the default agent. |
+| **⌥⌘T** | The same with the other agent (with no project open, the `⌥⌘N` picker). |
 | **⌘W** | Close the current tab; asks first only when its agent is running. On a host, an idle agent is stopped and a working one asks Detach, Stop or Cancel. |
 | **⌘⇧T** | Reopen the last closed tab (user-initiated closes only). |
-| **⌘N** | New session in a project you pick (default agent); `⌘⇧N` uses the other agent. |
+| **⌘N** | New session in a project you pick (default agent); `⌥⌘N` uses the other agent. |
 | **⌘⇧H** | Show the launcher/home page; existing tabs stay open. |
-| **⌘1–9** | Switch to tab *N* in the active project. |
+| **⌘⇧[ / ⌘⇧]** | Previous / next tab in the strip, wrapping. |
+| **⌘1–8 / ⌘9** | Switch to session tab *N* in the active project / to its last session tab (History and Settings are not numbered). |
 | **⌃⇥ / ⌃⇧⇥** | Tab switcher: last visited tab (hold ⌃ to walk the MRU list, ⇧ reverses mid-walk, release to land). |
-| **⌘⇧[ / ⌘⇧]** | Previous / next project; returns to the session last used there. |
+| **⌥⌘[ / ⌥⌘]** | Previous / next project; returns to the session last used there. |
 | **⌘Q** | Quit, draining every agent first; closing the window does the same. Asks first if an agent is mid-task. Agents on a host keep running. |
 | **⌘P** | Project switcher (hold ⌘, tap P to walk, release to land). |
 | **⌘F** | Find in the active terminal (bar over the top-right corner); on the History tab, its search. |
 | **⌘G / ⌘⇧G** | Next / previous match while the find bar is open. |
-| **⌘K** | Command palette: open sessions by recency when empty; ranked search over everything when typed. |
+| **⌘K / ⌘⇧P** | Command palette (`⌘⇧P` as in Cursor and VS Code): open sessions by recency when empty; ranked search over everything when typed. |
 | **⌘Y** | History tab: every session on disk, by day. Opens or focuses it; pressed on it, stays. |
 | **⌘R / ⌘I / ⌘A** | On the History tab: refresh the snapshot / import the selection / select every row in view (from the list; in the search field ⌘A selects its text). |
 | **⌘⌫** | On the History tab: archive the selection, when every selected row can be (from the list; in the search field it deletes text). |

@@ -1730,13 +1730,27 @@ public final class AppModel: ObservableObject {
         cancelTabSwitcher()
     }
 
+    /// The agent that isn't the default: what ⌥ asks for in ⌥⌘T and ⌥⌘N.
+    public var alternateAgent: Agent {
+        Agent.allCases.first { $0 != settings.defaultAgent } ?? settings.defaultAgent
+    }
+
+    /// ⌥⌘T — ⌘T with the other agent: a new session in the active project.
+    /// With no active project there is nowhere to start, so it asks where,
+    /// with the picker ⌥⌘N opens (⌘T shows the launcher instead, which only
+    /// starts the default agent).
+    public func newSessionAlternateAgent() {
+        guard let project = openSessions.activeProjectKey else {
+            return toggleNewSessionPicker(alternateAgent: true)
+        }
+        openSessions.newSession(agent: alternateAgent, project: project)
+    }
+
     /// ⌘N — pick a project, start a new session in it with the default agent.
-    /// ⌘⇧N (`alternateAgent`) — same picker, the OTHER agent: shift scales the
-    /// verb from "my usual" to "the other one" without a settings trip.
+    /// ⌥⌘N (`alternateAgent`) — same picker, the OTHER agent: ⌥ is the
+    /// "other agent" modifier, as in ⌥⌘T.
     public func toggleNewSessionPicker(alternateAgent: Bool = false) {
-        let agent = alternateAgent
-            ? (Agent.allCases.first { $0 != settings.defaultAgent } ?? settings.defaultAgent)
-            : settings.defaultAgent
+        let agent = alternateAgent ? self.alternateAgent : settings.defaultAgent
         // Re-invoking while up: same agent dismisses (a toggle); the other
         // shortcut retargets the open panel instead of blinking it.
         if newSessionPickerPresented, newSessionPickerAgent == agent {

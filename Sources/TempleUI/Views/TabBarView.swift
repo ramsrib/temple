@@ -11,7 +11,7 @@ struct TabStripPinnedCluster: View {
     var body: some View {
         // The strip shows one project at a time; this names the project the
         // chips belong to, and switches between the projects you have work
-        // open in (⌘⇧[ / ⌘⇧]).
+        // open in (⌘P; ⌥⌘[ / ⌥⌘] step through them).
         if !model.openSessions.visibleTabs.isEmpty,
            !model.openSessions.openProjectKeys.isEmpty {
             HStack(spacing: 3) {
@@ -375,7 +375,7 @@ private struct ProjectSwitcher: View {
         // back to the text's ideal, defeating the full-band hover/click area.
         .fixedSize(horizontal: true, vertical: false)
         .onHover { hovering = $0 }
-        .help("Switch project (⌘⇧[ / ⌘⇧])")
+        .help("Switch project (⌘P)")
         .popover(isPresented: $presented, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 1) {
                 ForEach(model.openSessions.openProjectKeys, id: \.self) { path in
@@ -414,7 +414,7 @@ private struct ProjectSwitcher: View {
                     Text("switch project")
                         .font(.system(size: 10.5))
                     Spacer(minLength: 0)
-                    Text("⌘⇧[ ⌘⇧]")
+                    Text("⌥⌘[ ⌥⌘]")
                         .foregroundStyle(.quaternary)
                 }
                 .font(.system(size: 10.5, design: .monospaced))

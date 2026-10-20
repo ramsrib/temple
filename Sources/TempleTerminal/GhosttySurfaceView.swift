@@ -444,19 +444,43 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         keyTextAccumulator = []
         defer { keyTextAccumulator = nil }
 
+        // libghostty decides which modifiers shape the text: under
+        // `macos-option-as-alt` the left ⌥ is the terminal's Alt, so ⌥P must
+        // compose "p" (sent as Alt-p, which the agents bind), never "π".
+        // Without this step the config line does nothing.
+        let translationMods = NSEvent.modifierFlags(
+            ghostty_surface_key_translation_mods(surface, NSEvent.ghosttyMods(event.modifierFlags)))
+        let translationEvent = event.ghosttyTranslationEvent(mods: translationMods)
+
         // Route through the input system so IME / dead keys produce composed text
         // (delivered to insertText / setMarkedText).
-        interpretKeyEvents([event])
+        interpretKeyEvents([translationEvent])
+
+        // A key that ends a composition (a dead key, an IME's preedit) commits
+        // text that is not the key's own: send the text bare, no key and no
+        // modifiers, or a right-⌥ dead key finished with the left ⌥ arrives
+        // as Alt-E instead of "é". Only arrows still act after the commit.
+        // Ported from upstream's `committedTextAction`.
+        if markedBefore, let list = keyTextAccumulator, !list.isEmpty {
+            for text in list { sendCommittedText(surface, action: action, text: text) }
+            if Self.replaysAfterCommit(translationEvent) {
+                sendKey(surface, event: event, action: action, text: nil, composing: false,
+                        translationMods: translationEvent.modifierFlags)
+            }
+            return
+        }
 
         if let list = keyTextAccumulator, !list.isEmpty {
             for text in list {
-                sendKey(surface, event: event, action: action, text: text, composing: false)
+                sendKey(surface, event: event, action: action, text: text, composing: false,
+                        translationMods: translationEvent.modifierFlags)
             }
         } else {
             sendKey(
                 surface, event: event, action: action,
-                text: event.ghosttyCharacters,
-                composing: markedText.length > 0 || markedBefore)
+                text: translationEvent.ghosttyCharacters,
+                composing: markedText.length > 0 || markedBefore,
+                translationMods: translationEvent.modifierFlags)
         }
     }
 
@@ -486,9 +510,10 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         event: NSEvent,
         action: ghostty_input_action_e,
         text: String?,
-        composing: Bool
+        composing: Bool,
+        translationMods: NSEvent.ModifierFlags? = nil
     ) {
-        var key = event.ghosttyKeyEvent(action)
+        var key = event.ghosttyKeyEvent(action, translationMods: translationMods)
         key.composing = composing
         if let text = NSEvent.ghosttyKeyText(text) {
             text.withCString { ptr in
@@ -498,6 +523,33 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         } else {
             key.text = nil
             _ = ghostty_surface_key(surface, key)
+        }
+    }
+
+    /// Committed composition text, alone: libghostty sends it as typed text.
+    private func sendCommittedText(_ surface: ghostty_surface_t, action: ghostty_input_action_e, text: String) {
+        guard let text = NSEvent.ghosttyKeyText(text) else { return }
+        var key = ghostty_input_key_s()
+        key.action = action
+        key.keycode = 0
+        key.composing = false
+        key.mods = GHOSTTY_MODS_NONE
+        key.consumed_mods = GHOSTTY_MODS_NONE
+        key.unshifted_codepoint = 0
+        text.withCString { ptr in
+            key.text = ptr
+            _ = ghostty_surface_key(surface, key)
+        }
+    }
+
+    /// After a commit only arrows still move the terminal's cursor; a plain
+    /// ← is left alone, since AppKit already leaves the caret in place after
+    /// a Korean IME commits (upstream's `shouldReplayCommittedPreeditKey`).
+    static func replaysAfterCommit(_ event: NSEvent) -> Bool {
+        switch event.keyCode {
+        case 125, 124, 126: return true                                   // ↓ → ↑
+        case 123: return !event.modifierFlags.isDisjoint(with: [.shift, .control, .option, .command])  // ←
+        default: return false
         }
     }
 

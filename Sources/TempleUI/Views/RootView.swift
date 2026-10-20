@@ -277,7 +277,7 @@ public struct RootView: View {
         .transition(.opacity)
     }
 
-    /// ⌘N / ⌘⇧N — the project picker for a new session; ⌘K's chrome exactly.
+    /// ⌘N / ⌥⌘N — the project picker for a new session; ⌘K's chrome exactly.
     private var newSessionPickerOverlay: some View {
         GeometryReader { geo in
             ZStack(alignment: .top) {
@@ -557,7 +557,13 @@ struct KeyCatcher: NSViewRepresentable {
             let cmd = flags.contains(.command)
             let ctrl = flags.contains(.control)
             let shift = flags.contains(.shift)
-            let chars = event.charactersIgnoringModifiers ?? ""
+            let option = flags.contains(.option)
+            // `charactersIgnoringModifiers` drops ⌥ and ⌃ (only ⇧ survives),
+            // so every binding below checks them itself: an unchecked "f"
+            // took ⌃⌘F, the system's Enter Full Screen. Caps lock without ⇧
+            // is the plain key.
+            let rawChars = event.charactersIgnoringModifiers ?? ""
+            let chars = shift ? rawChars : rawChars.lowercased()
 
             // While the switcher is up it OWNS the keyboard, exactly like ⌘⇥:
             // ⌘P walks it, arrows walk it, Return lands, Esc leaves you where you
@@ -595,7 +601,7 @@ struct KeyCatcher: NSViewRepresentable {
             // most-recently-visited first, so one tap-and-release bounces to
             // the tab you were just on. Terminals never see ⌃⇥ anyway — Tab IS
             // ⌃I, so the combination has no escape sequence to forward.
-            if ctrl && event.keyCode == 48 {
+            if ctrl && !cmd && !option && event.keyCode == 48 {
                 // Direction is deliberately NOT passed here: a fresh press of
                 // either chord opens on the previously visited tab (the
                 // bounce). Shift only steers the walk in the presented block
@@ -605,14 +611,20 @@ struct KeyCatcher: NSViewRepresentable {
                 return true
             }
 
-            // ⌘⇧[ / ⌘⇧] — previous / next project. Matched on keyCode because
-            // with shift held AppKit reports these as "{" / "}".
-            if cmd && shift {
-                switch event.keyCode {
-                case 33: model.openSessions.selectPreviousProject(); return true   // [
-                case 30: model.openSessions.selectNextProject(); return true       // ]
-                default: break
+            // ⌘⇧[ / ⌘⇧] — previous / next tab, as in every Mac tabbed app;
+            // ⌥⌘[ / ⌥⌘] — previous / next project. Matched on the character
+            // the layout gives (⇧ makes it "{" / "}"), as the menu's key
+            // equivalents are, never on a key position: on a German layout
+            // the US "]" key is "+".
+            if cmd && !ctrl && shift != option {
+                let step: (() -> Void)? = switch (shift, chars) {
+                case (true, "}"), (true, "]"): model.openSessions.selectNextTab
+                case (true, "{"), (true, "["): model.openSessions.selectPreviousTab
+                case (false, "]"): model.openSessions.selectNextProject
+                case (false, "["): model.openSessions.selectPreviousProject
+                default: nil
                 }
+                if let step { step(); return true }
             }
 
 
@@ -652,11 +664,23 @@ struct KeyCatcher: NSViewRepresentable {
                 }
             }
 
-            guard cmd else { return false }
+            guard cmd, !ctrl else { return false }
+
+            // ⌥ means "the other agent": ⌥⌘T and ⌥⌘N are ⌘T and ⌘N with it.
+            // No other ⌥⌘ chord is Temple's.
+            if option {
+                switch chars {
+                case "t":
+                    model.newSessionAlternateAgent(); return true
+                case "n":
+                    model.toggleNewSessionPicker(alternateAgent: true); return true
+                default:
+                    return false
+                }
+            }
 
             switch chars {
             case "T":
-                guard shift else { return false }
                 model.openSessions.reopenLastClosedTab(); return true
             case "t":
                 if model.openSessions.newSessionDefaultAgent() == nil { model.openSessions.showHome() }
@@ -665,12 +689,9 @@ struct KeyCatcher: NSViewRepresentable {
                 model.openSessions.requestCloseActiveTab(); return true
             case "n":
                 model.toggleNewSessionPicker(); return true
-            case "N":   // ⇧ (or caps lock — treat as plain ⌘N then)
-                model.toggleNewSessionPicker(alternateAgent: shift); return true
             case "o":
                 model.openProjectFolder(); return true
             case "H":   // ⌘⇧H — home; plain ⌘H stays the system Hide
-                guard shift else { return false }
                 model.openSessions.showHome(); return true
             case "f":
                 // Find in the terminal. With no terminal showing the key falls
@@ -687,13 +708,13 @@ struct KeyCatcher: NSViewRepresentable {
                 guard let find = model.activeTerminalFind, find.isPresented else { return false }
                 if shift { find.previous() } else { find.next() }
                 return true
-            case "k":
+            case "k", "P":   // ⌘⇧P is the command palette in Cursor and VS Code
                 model.toggleCommandPalette(); return true
             case "y", "Y":   // ⌘⇧Y — History's Archived scope; ⌘Y (caps lock too) the History tab
                 if shift { model.showArchived() } else { model.showHistory() }
                 return true
             case "p":
-                model.advanceProjectSwitcher(by: shift ? -1 : 1); return true
+                model.advanceProjectSwitcher(by: 1); return true
             case "/":
                 model.toggleShortcuts(); return true
             case "b":  // VS Code / ChatGPT convention (supersedes UX.md's ⌘\)

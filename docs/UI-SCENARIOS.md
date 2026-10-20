@@ -362,14 +362,14 @@ Fixture variants must be described in the run log with titles, IDs, membership, 
 #### HOM-002: Creation menus and project picker, cancel path
 - **Priority:** P1. **Safety:** Needs care, stop before any start or folder confirmation.
 - **Preconditions:** Base demo and verified keyboard target.
-- **Steps:** Open a project-header `+`, inspect agent choices, dismiss. Open `⌘N` and `⌘⇧N` picker, inspect projects and Choose folder, then Esc. Open `⌘O` folder chooser and Cancel.
+- **Steps:** Open a project-header `+`, inspect agent choices, dismiss. Open `⌘N` and `⌥⌘N` picker, inspect projects and Choose folder, then Esc. Open `⌘O` folder chooser and Cancel.
 - **Expected:** New session heading, agent marks and default-first order; `⌘T` only where it applies to active project. Known unlaunchable agents are disabled with a reason. Picker has no outside or archived projects. Folder command is available away from the sidebar toggle.
 - **Notes:** Never press Return on a picker project or confirm the chooser in the baseline pass. No successful-arguments tick is expected.
 
 #### HOM-003: New sessions from every entry point
 - **Priority:** P1. **Safety:** Manual only, explicitly permits creation in an isolated live fixture.
 - **Preconditions:** Isolated account, verified test CLI storage, known default agent and disposable folders.
-- **Steps:** Create using launcher agent row, New session in folder, recent project, project `+`, tab `+`, `⌘T`, `⌘N`, `⌘⇧N` and `⌘O` across separate controlled attempts. Cancel one chooser before selecting; test no prior project and a last-used project.
+- **Steps:** Create using launcher agent row, New session in folder, recent project, project `+`, tab `+`, `⌘T`, `⌥⌘T`, `⌘N`, `⌥⌘N` and `⌘O` across separate controlled attempts. Cancel one chooser before selecting; test no prior project and a last-used project.
 - **Expected:** Each authorized entry point creates one Temple chip in the intended project with the selected agent badge. Unknown project selection asks for a folder; cancellation creates no chip. Existing default-agent choice is respected. Do not inspect terminal contents, CLI arguments, rollout adoption or agent responses.
 - **Notes:** Never run in the seeded demo or change Settings to prepare a default. This manual scenario covers only Temple selection and chip presentation; session behavior is outside scope.
 
@@ -399,7 +399,7 @@ Fixture variants must be described in the run log with titles, IDs, membership, 
 #### TAB-003: Tab drag order and overflow
 - **Priority:** P1. **Safety:** Manual only, isolated live or prepared inert chips; activation may resume.
 - **Preconditions:** Enough tabs in two projects to overflow the strip at narrow width.
-- **Steps:** Reorder within one project. Scroll strip and use left/right overflow cues; select a clipped tab by `⌘1` through `⌘9`; add/close an edge tab; switch projects and back; expand/collapse sidebar.
+- **Steps:** Reorder within one project. Scroll strip and use left/right overflow cues; select a clipped tab by `⌘1` through `⌘8`; with more than nine sessions, `⌘9` lands on the last; walk the strip with `⌘⇧]` and `⌘⇧[` past both ends (wrapping) with History or Settings open, which the walk includes and `⌘1`–`⌘9` do not; add/close an edge tab; switch projects and back; expand/collapse sidebar.
 - **Expected:** Order changes only within its project. Selected/new chip becomes visible; cue click reveals the nearest hidden chip. No oscillating gutters, permanent blank tail or overlap with traffic lights. Project-specific scroll position restores coherently. Open-tab order survives relaunch.
 - **Notes:** Current TitlebarTabStrip implements overflow cues; record actual behavior if a concurrent revision differs.
 
@@ -434,7 +434,7 @@ Fixture variants must be described in the run log with titles, IDs, membership, 
 #### TAB-008: Project switcher and cycling
 - **Priority:** P1. **Safety:** Manual only, may activate/resume isolated sessions.
 - **Preconditions:** Three open test projects with known last-used sessions.
-- **Steps:** Use folder project control; inspect names, containing folders, counts and dots. Hold `⌘`, tap P repeatedly, then release; reverse with available switcher controls and cancel once with Esc. Try `⌘⇧[` and `⌘⇧]`.
+- **Steps:** Use folder project control; inspect names, containing folders, counts and dots. Hold `⌘`, tap P repeatedly, then release; reverse with available switcher controls and cancel once with Esc. Try `⌥⌘[` and `⌥⌘]`.
 - **Expected:** `⌘P` walks MRU projects, marks current, and one tap returns to previous project; release lands on its last-used session. Bracket shortcuts cycle without HUD. Folder chooser cancels safely. Control is a folder, not a new-session plus.
 - **Notes:** Tools that cannot hold modifiers must report the hold/release branch SKIP.
 
@@ -774,17 +774,19 @@ Retired 2026-10-05. Outside the owner-defined Temple app UI scope. No executable
 | Shortcut | Expected action/context | Scenario and baseline restriction |
 |---|---|---|
 | ⌘T | New default-agent session in current project | HOM-003, live isolated only |
-| ⌘N / ⌘⇧N | Project picker, default/other agent | HOM-002 Cancel; HOM-003 launch |
+| ⌥⌘T | New other-agent session in current project | HOM-003, live isolated only |
+| ⌘N / ⌥⌘N | Project picker, default/other agent | HOM-002 Cancel; HOM-003 launch |
 | ⌘O | Open Project Folder chooser | HOM-002 Cancel; HOM-003 confirm |
 | ⌘W | Close current tab, busy confirmation when running | TAB-002/005; failure window quits |
 | ⌘⇧T | Resume last user-closed tab | TAB-006, live isolated only |
 | ⌘⇧H | Home without closing tabs | HOM-001, TAB-007 |
-| ⌘1 through ⌘9 | Positional tab in active project | TAB-003, activation may resume |
+| ⌘⇧[ / ⌘⇧] | Previous/next chip in the strip (utility tabs included), wrapping | TAB-003, activation may resume |
+| ⌘1 through ⌘8, ⌘9 | Session tab N in active project; ⌘9 its last session | TAB-003, activation may resume |
 | ⌃⇥ / ⌃⇧⇥ | MRU tab switcher, release Control to land | TAB-009, isolated only |
 | ⌘P | MRU project switcher, release Command to land | TAB-008, isolated only |
-| ⌘⇧[ / ⌘⇧] | Previous/next project | TAB-008, activation may resume |
+| ⌥⌘[ / ⌥⌘] | Previous/next project | TAB-008, activation may resume |
 | ⌘F | Focus History search when History is active | HIS-004; terminal behavior excluded |
-| ⌘K | Palette | PAL-001 through PAL-005 |
+| ⌘K / ⌘⇧P | Palette | PAL-001 through PAL-005 |
 | ⌘Y | Open or focus History; repeat on History stays | HIS-001 |
 | ⌘⇧Y | History Archived, retaining filters; repeat stays | HIS-001 |
 | ⌘R | Refresh History; Check again on Settings | HIS-016; SET-002 inspect only |

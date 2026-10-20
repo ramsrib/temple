@@ -18,10 +18,6 @@ public struct TempleCommands: Commands {
         self.model = model
     }
 
-    private var alternateAgent: Agent {
-        Agent.allCases.first { $0 != model.settings.defaultAgent } ?? model.settings.defaultAgent
-    }
-
     public var body: some Commands {
         // File: session lifecycle replaces New Window — Temple is a
         // single-window app (multi-window is roadmap), so the default
@@ -34,13 +30,17 @@ public struct TempleCommands: Commands {
             }
             .keyboardShortcut("t")
 
+            // ⌥ is "the other agent" for both new-session commands.
+            Button("New \(model.alternateAgent.displayName) Session") { model.newSessionAlternateAgent() }
+                .keyboardShortcut("t", modifiers: [.command, .option])
+
             Button("New Session in Project…") { model.toggleNewSessionPicker() }
                 .keyboardShortcut("n")
 
-            Button("New \(alternateAgent.displayName) Session in Project…") {
+            Button("New \(model.alternateAgent.displayName) Session in Project…") {
                 model.toggleNewSessionPicker(alternateAgent: true)
             }
-            .keyboardShortcut("n", modifiers: [.command, .shift])
+            .keyboardShortcut("n", modifiers: [.command, .option])
 
             Button("Open Project Folder…") { model.openProjectFolder() }
                 .keyboardShortcut("o")
@@ -116,11 +116,15 @@ public struct TempleCommands: Commands {
                 Label("Session History", systemImage: "clock.arrow.circlepath")
             }
             .keyboardShortcut("y")
-            Button { model.history.refresh() } label: {
-                Label("Refresh History", systemImage: "arrow.clockwise")
+            // ⌘R refreshes the page in front, retitled the way Find is: the
+            // History snapshot, or Settings' agent check.
+            Button {
+                if model.historyActive { model.history.refresh() } else { model.toolchain.detect() }
+            } label: {
+                Label(settingsActive ? "Check Agents Again" : "Refresh History", systemImage: "arrow.clockwise")
             }
             .keyboardShortcut("r")
-            .disabled(!model.historyActive)
+            .disabled(!model.historyActive && !settingsActive)
             Button { model.showArchived() } label: {
                 Label("Archived Sessions", systemImage: "archivebox")
             }
@@ -147,9 +151,23 @@ public struct TempleCommands: Commands {
                 .keyboardShortcut("p")
             Divider()
             Button("Next Project") { model.openSessions.selectNextProject() }
-                .keyboardShortcut("]", modifiers: [.command, .shift])
+                .keyboardShortcut("]", modifiers: [.command, .option])
             Button("Previous Project") { model.openSessions.selectPreviousProject() }
-                .keyboardShortcut("[", modifiers: [.command, .shift])
+                .keyboardShortcut("[", modifiers: [.command, .option])
         }
+
+        // Window: tab stepping where Safari keeps it, at the keys every Mac
+        // tabbed app uses for it. The ⌃⇥ switcher walks by recency instead.
+        CommandGroup(before: .windowArrangement) {
+            Button("Show Previous Tab") { model.openSessions.selectPreviousTab() }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+            Button("Show Next Tab") { model.openSessions.selectNextTab() }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+            Divider()
+        }
+    }
+
+    private var settingsActive: Bool {
+        model.openSessions.activeTab?.kind == .settings
     }
 }
