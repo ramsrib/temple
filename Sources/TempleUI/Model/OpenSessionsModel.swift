@@ -836,13 +836,14 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Close a tab from the UI. Session tabs end their process gracefully; the
     /// eventual `.exited` delegate callback removes the tab. Inert chips and the
     /// Settings tab are removed immediately.
-    /// A tab the person never typed into this run: nothing sent, and no key
-    /// at all since its last spawn (a prompt answered with one, keypad
-    /// Enter, a paste). Closing or ending such a tab is not the person
-    /// using the session: no recency bump, and no touch that could spend a
-    /// keep while the close's drop is being decided (ADR-038). A key that
-    /// was not Return keeps the touch, since it may be the only record of
-    /// that use; it does not make the session started (`startedNothing`).
+    /// A tab the person never used this run: nothing submitted, and no
+    /// terminal input since its latest spawn (a key, committed text, a
+    /// paste, a click delivered to the program: `surfaceDidReceiveInput`).
+    /// Closing or ending such a tab is not the person using the session:
+    /// no recency bump, and no touch that could spend a keep while the
+    /// close's drop is being decided (ADR-038). Input without Return keeps
+    /// the touch, since it may be the only record of that use; it does not
+    /// make the session started (`startedNothing`).
     func unusedThisRun(_ tab: SessionTab) -> Bool {
         tab.startedNothing && !inputSinceSpawn.contains(tab.id)
     }

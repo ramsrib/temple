@@ -370,7 +370,10 @@ public actor SessionEngine: HostEngine {
         // (a row joined moments ago, before a callback told it) or holds an
         // older membership of the id (a leave and rejoin the callbacks have
         // not caught up with, or one made through another connection): the
-        // proof is for the membership asked about, or for none.
+        // proof is for the membership asked about, or for none. A row read
+        // that fails leaves the member as it was, so a caller's write still
+        // names the incarnation itself (TempleDB.discardNeverStarted does);
+        // an engine with no database has no incarnations and confirms none.
         reconcileMembership(ref.id, awaitingCreation: false)
         guard var member = members[ref.id], member.incarnation == ref.incarnation else { return false }
         member.awaitingCreation = false

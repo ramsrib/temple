@@ -2480,48 +2480,43 @@ and did what ADR-030 says: archived it and told.
 
 **Decisions.**
 
-- **The row says whether a session ever started; the tab says whether
-  anything was sent this run.** `startedNothing` no longer requires a tab
-  started this run. Its handler asks the row: Temple created it
-  (`joined_via = created`) and no transcript was ever recorded for it
-  (`transcript_path IS NULL`). Only then is the engine asked for a fresh
-  completed absence, and only on that is the row dropped. A row with a
-  transcript on record is never even asked about, so a History open or a
-  restored chip of a real session costs no re-read when closed unused.
+- **The row decides eligibility; the tab only says nothing was sent this
+  run.** `startedNothing` no longer requires a tab started this run. Its
+  handler asks the row: Temple created it (`joined_via = created`) and no
+  transcript was ever recorded for it (`transcript_path IS NULL`). Only
+  then is the engine asked for a fresh completed absence, and only on
+  that is the row dropped. A row with a transcript on record is never
+  asked about, so a History open or a restored chip of a real session
+  needs no transcript lookup when closed unused.
 - **One boundary for both drops, named by membership.** The tab's close
   and the sweep delete through the same statement
   (`TempleDB.discardNeverStarted`): Temple created the row, no transcript
   was ever recorded for it, it carries none of a person's marks as they
   stand now (pin, name, colour, an open from History, a keep, an archive),
-  and it is in no restorable tab; the sweep adds its idle cutoff. The
-  close-time drop used to check less than the sweep (no `last_opened_at`,
-  `kept_at` or `archive_reason`), which did not matter while it ran only
-  for a tab new this run, and would have let a row opened from History
-  go once restored chips qualified. Both name the membership (`id, host,
-  incarnation`) the absence was confirmed for: a row that left and joined
-  again during the check is another session.
+  and it is in no restorable tab; the sweep adds its idle cutoff. Both
+  name the membership (`id, host, incarnation`) the absence was confirmed
+  for: a row that left and joined again during the check is another
+  session.
 - **The close decides on durable state, and writes nothing that could
-  change it meanwhile.** Three review rounds found the close-time path
-  racing its own and other writers (the sweep has none of these: it acts
-  a week after the last touch, on a proof the host seam binds to a
-  membership). So: closing or ending a tab the person never typed into
-  this run (nothing sent, and no key since its spawn: `unusedThisRun`,
-  local and remote exits alike) touches nothing (no recency bump; a touch
-  dated after a person's restore would spend the keep, and such a close
-  is not the person using the session; a key that was not Return keeps
-  the touch, as it may be the only record of that use). The
-  handler writes this process's pending touch for the row (the spawn's),
-  then reads the row from the database, not from the overlay, whose view
-  another process on the same file (the installed Temple beside a dev
-  build) does not update; the whole boundary is read there and rechecked
-  in the statement. The engine confirms absence for a `MembershipRef`,
-  re-reading the row first: a membership it still holds from before a
-  leave and rejoin is neither answered for the new one nor answered for
-  itself (`confirmAbsence(_:)`). After the proof, a tab of the row open
-  in this process (⌘⇧T while the check was out) keeps it, since another
+  change it meanwhile.** Closing or ending a tab the person never used
+  this run — nothing submitted, and no terminal input (a key, committed
+  text, a paste, a click delivered to the program) since its latest spawn:
+  `unusedThisRun`, local and remote exits alike — touches nothing: no
+  recency bump, because a touch dated after a person's restore would
+  spend the keep, and such a close is not the person using the session.
+  Input without Return keeps the touch (it may be the only record of that
+  use) and protects nothing else. The handler writes this process's
+  pending activity for the row, then reads the row from the database
+  rather than from the overlay, whose view another process on the same
+  file (the installed Temple beside a dev build) does not update; the
+  whole boundary is read there and rechecked in the statement. The engine
+  confirms absence for a `MembershipRef`, re-reading the row first, so a
+  membership it still holds from before a leave and rejoin answers
+  neither for the new one nor for itself (`confirmAbsence(_:)`; a row read
+  that fails leaves the member as it was, which is why the statement's
+  incarnation check stays). After the proof, a tab of the row open in
+  this process (⌘⇧T while the check was out) keeps it, since another
   process saving its tab set replaces this one's rows in `open_tabs`.
-  A drop refused for want of a confirmed absence is logged; a statement
-  that matched no row is not.
 - **The sweep drops what was never a session, with no notice.** Of the
   rows ADR-030's sweep would archive for a missing transcript, those that
   match the boundary above are deleted instead; the notice counts the
@@ -2536,9 +2531,14 @@ and did what ADR-030 says: archived it and told.
   `created` session typed into whose file was gone before Temple ever read
   it (Temple not running for the month the CLI's retention waits, or a
   deletion in between); its row held an id, a title and a folder, and
-  nothing on disk to resume, and it is dropped rather than archived. A
-  persisted "input was sent" marker would veto that case cheaply and is
-  not required to ship this.
+  nothing on disk to resume, and it is dropped rather than archived. No
+  "input was submitted" marker is persisted to veto that case; the case is
+  accepted.
+- **Hosts.** A session on a host is never dropped today: `RemoteSessionSource`
+  supplies no completed absence (ADR-036). A host that one day does must
+  first settle live-run ownership — a remote tab's close or detach leaves
+  its agent running, able to write the transcript after the drop — and
+  "the tab's process is gone by now" is a local fact, not a general one.
 
 **Amends ADR-030:** "archived, labelled, and come back when a person
 restores them" gains "a row that was never a session is dropped instead,
