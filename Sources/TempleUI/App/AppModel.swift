@@ -759,13 +759,18 @@ public final class AppModel: ObservableObject {
         openSessions.unstartedHandler = { [weak self] id, host in
             guard let self, let row = self.overlay.rows[id], row.host == host,
                   row.joinedVia == .created, row.transcriptPath == nil,
+                  let incarnation = row.incarnation,
                   let engine = self.engineSet.engine(for: host) else { return }
+            // The membership the absence is confirmed for is the one the
+            // drop names: a row that left and joined again during the check
+            // is another session, not this one.
+            let ref = MembershipRef(id: id, host: host, incarnation: incarnation)
             Task { @MainActor [weak self] in
                 guard await engine.confirmAbsence(id) else {
                     TempleUILog.db.notice("unstarted session \(id, privacy: .public) kept: absence not confirmed")
                     return
                 }
-                guard let self, self.overlay.discardUnstartedCreation(id, host: host) else { return }
+                guard let self, self.overlay.discardUnstartedCreation(ref) else { return }
                 self.openSessions.forgetClosedTabs(sessionID: id)
             }
         }

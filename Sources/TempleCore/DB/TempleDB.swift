@@ -689,40 +689,26 @@ public final class TempleDB: @unchecked Sendable {
     }
 
     /// A session Temple created whose tab closed before anything was sent:
-    /// the row goes only while it still says nothing beyond that creation —
-    /// never pinned, named, colored or archived, in no restorable tab, and
-    /// never given a transcript path. A terminal title alone does not keep it
-    /// (an idle agent titles itself). The caller must also have a completed,
-    /// fresh absence verdict for it. Returns whether it went.
+    /// the row goes only while it still says nothing beyond that creation
+    /// (`discardNeverStarted`'s boundary, with no idle cutoff), and only
+    /// under the membership the caller confirmed absent — a row that left
+    /// and joined again since is not it. A terminal title alone does not keep
+    /// it (an idle agent titles itself). The caller must also have a
+    /// completed, fresh absence verdict for that membership. Returns whether
+    /// it went.
     @discardableResult
-    public func discardUnstartedCreation(sessionID: String, host: HostID) throws -> Bool {
-        let left = try db.write { database in
-            try database.execute(
-                sql: """
-                    DELETE FROM session_state
-                    WHERE id = ? AND host = ? AND joined_via = ?
-                      AND transcript_path IS NULL
-                      AND pinned = 0 AND archived = 0
-                      AND custom_name IS NULL AND color IS NULL
-                      AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
-                    """,
-                arguments: [sessionID, host.rawValue, JoinedVia.created.rawValue, sessionID]
-            )
-            return database.changesCount > 0
-        }
-        if left {
-            committedLeave(sessionID)
-            committedRowChange(sessionID)
-        }
-        return left
+    public func discardUnstartedCreation(_ ref: MembershipRef) throws -> Bool {
+        try !discardNeverStarted([ref], idleBefore: nil).isEmpty
     }
 
-    /// The sweep's drop of rows that never started (ADR-038): each named
-    /// membership goes, in one transaction, while the row still says nothing
-    /// beyond its creation — the guards of `discardUnstartedCreation`, plus
-    /// never opened from History, never kept, and idle past the cutoff by
-    /// the dates the sweep plans on. Returns the ids that went.
-    public func discardNeverStarted(_ refs: [MembershipRef], idleBefore: Date) throws -> [String] {
+    /// The one boundary for dropping a row that never started (ADR-038), at
+    /// a tab's close or by the sweep: each named membership goes, in one
+    /// transaction, while the row still says nothing beyond its creation —
+    /// Temple created it, no transcript was ever recorded for it, not
+    /// pinned, named, coloured, archived or kept, never opened from History,
+    /// in no restorable tab — and, when `idleBefore` is given, idle past that
+    /// cutoff by the dates the sweep plans on. Returns the ids that went.
+    public func discardNeverStarted(_ refs: [MembershipRef], idleBefore: Date?) throws -> [String] {
         guard !refs.isEmpty else { return [] }
         let gone = try db.write { database -> [String] in
             var gone: [String] = []
@@ -735,11 +721,13 @@ public final class TempleDB: @unchecked Sendable {
                           AND pinned = 0 AND archived = 0
                           AND custom_name IS NULL AND color IS NULL
                           AND last_opened_at IS NULL AND kept_at IS NULL AND archive_reason IS NULL
-                          AND (COALESCE(last_active_at, \(Self.activityBeforeRepair), joined_at) IS NULL
+                          AND (? IS NULL
+                               OR COALESCE(last_active_at, \(Self.activityBeforeRepair), joined_at) IS NULL
                                OR COALESCE(last_active_at, \(Self.activityBeforeRepair), joined_at) <= ?)
                           AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
                         """,
-                    arguments: [ref.id, ref.host.rawValue, ref.incarnation, JoinedVia.created.rawValue, idleBefore, ref.id])
+                    arguments: [ref.id, ref.host.rawValue, ref.incarnation, JoinedVia.created.rawValue,
+                                idleBefore, idleBefore, ref.id])
                 if database.changesCount > 0 { gone.append(ref.id) }
             }
             return gone

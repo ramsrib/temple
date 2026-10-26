@@ -129,10 +129,11 @@ open tabs; any other session returns the next time it is opened
   It is not on `⌘Z`: the user did not do it. A session brought back by Undo or
   Restore is not archived again until it has seen new activity.
   A session Temple created that never started (a ⌘T closed before anything
-  was typed; the CLI writes no transcript for it) is dropped, not archived
-  and not counted: at its close, or by the sweep if the close was missed
-  (a relaunch in between). Nothing a person touched — pinned, named,
-  coloured, opened from History — is dropped this way.
+  was sent; the CLI writes no transcript for it) is removed for good, not
+  archived and not counted in that line: when its tab closes, or later by
+  the same sweep. Only a row with nothing of a person's on it goes this
+  way: pinned, named, coloured, opened from History or restored, it is
+  archived like any other.
 - A session on another machine ([Sessions on a host](#sessions-on-a-host))
   belongs to the project of its folder on that host. That project's heading
   is one line, like a local one, with the host after the name:

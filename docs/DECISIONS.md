@@ -2483,29 +2483,44 @@ and did what ADR-030 says: archived it and told.
 - **The row says whether a session ever started; the tab says whether
   anything was sent this run.** `startedNothing` no longer requires a tab
   started this run. Its handler asks the row: Temple created it
-  (`joined_via = created`) and no transcript was ever seen for it
+  (`joined_via = created`) and no transcript was ever recorded for it
   (`transcript_path IS NULL`). Only then is the engine asked for a fresh
-  completed absence, and only on that is the row dropped — the same proof
-  and the same `discardUnstartedCreation` guards as before (no pin, name,
-  colour or open tab). A row with a transcript on record is never even
-  asked about, so a History open or a restored chip of a real session
-  costs no re-read when closed unused.
-- **A refused drop is logged**, and `confirmAbsence` reads a row the
-  engine has not met yet (joined moments ago, before a callback told it)
-  instead of answering "not confirmed" for a row that is its host's.
+  completed absence, and only on that is the row dropped. A row with a
+  transcript on record is never even asked about, so a History open or a
+  restored chip of a real session costs no re-read when closed unused.
+- **One boundary for both drops, named by membership.** The tab's close
+  and the sweep delete through the same statement
+  (`TempleDB.discardNeverStarted`): Temple created the row, no transcript
+  was ever recorded for it, it carries none of a person's marks as they
+  stand now (pin, name, colour, an open from History, a keep, an archive),
+  and it is in no restorable tab; the sweep adds its idle cutoff. The
+  close-time drop used to check less than the sweep (no `last_opened_at`,
+  `kept_at` or `archive_reason`), which did not matter while it ran only
+  for a tab new this run, and would have let a row opened from History
+  go once restored chips qualified. Both name the membership (`id, host,
+  incarnation`) the absence was confirmed for: a row that left and joined
+  again during the check is another session.
+- **`confirmAbsence` reads a row the engine has not met yet** (joined
+  moments ago, before a callback told it) instead of answering "not
+  confirmed" for a row that is its host's. A drop refused for want of a
+  confirmed absence is logged; a statement that matched no row is not.
 - **The sweep drops what was never a session, with no notice.** Of the
   rows ADR-030's sweep would archive for a missing transcript, those that
-  never started — `created`, no transcript ever seen, and nothing a person
-  did to the row (no pin, name, colour, open from History or keep) — are
-  deleted instead (`discardNeverStarted`, under `id, host, incarnation`,
-  rechecking every guard and the idle cutoff in its own SQL). The notice
-  counts the rest. ADR-030's "only reversibly" holds for sessions: there
-  was nothing to restore here, Restore would have launched a resume of an
-  id the CLI has never heard of, and ⌘W already dropped the same rows
-  outright. The accepted edge: a `created` session typed into whose file
-  was deleted before Temple ever read it (Temple not running for the
-  month the CLI's retention waits) is dropped rather than archived; its
-  row held an id, a title and a folder, and nothing on disk to resume.
+  match the boundary above are deleted instead; the notice counts the
+  rest, and folder-only evidence still archives. ADR-030 counted "ids
+  that never got a file" among what it archives, so this is a change to
+  it, not a gap in it: its "only reversibly" is for sessions, and there
+  was nothing to restore here — Restore would have launched a resume of an
+  id the CLI never wrote a conversation for, and ⌘W already dropped the
+  same rows outright. The predicate is provenance plus the absence of a
+  record, not proof that no conversation happened: `transcript_path IS
+  NULL` says Temple never recorded a locator. The accepted edge is a
+  `created` session typed into whose file was gone before Temple ever read
+  it (Temple not running for the month the CLI's retention waits, or a
+  deletion in between); its row held an id, a title and a folder, and
+  nothing on disk to resume, and it is dropped rather than archived. A
+  persisted "input was sent" marker would veto that case cheaply and is
+  not required to ship this.
 
 **Amends ADR-030:** "archived, labelled, and come back when a person
 restores them" gains "a row that was never a session is dropped instead,

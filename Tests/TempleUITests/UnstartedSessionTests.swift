@@ -152,7 +152,29 @@ final class UnstartedSessionTests: XCTestCase {
 
         try db.join(sessionID: "hinted", via: .created, agent: .claude,
                     locator: TranscriptLocator(localURL: URL(fileURLWithPath: "/gone/hinted.jsonl")))
-        XCTAssertFalse(try db.discardUnstartedCreation(sessionID: "hinted", host: .local))
+        let hinted = try XCTUnwrap(db.sessionState("hinted"))
+        XCTAssertFalse(try db.discardUnstartedCreation(
+            MembershipRef(id: "hinted", host: .local, incarnation: try XCTUnwrap(hinted.incarnation))))
         XCTAssertNotNil(try db.sessionState("hinted"))
+    }
+
+    /// A row a person opened from History is theirs, however it came to
+    /// be: closing that tab unused (the resume found no conversation) keeps
+    /// it, as the sweep would.
+    func testARowOpenedFromHistoryIsKeptWhenItsTabClosesUnused() async throws {
+        let store = root.appendingPathComponent("claude")
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+        let db = try TempleDB.inMemory()
+        let id = UUID().uuidString.lowercased()
+        try db.join(sessionID: id, via: .created, agent: .claude,
+                    core: SessionCore(host: .local, directory: "/p", directorySource: .tab))
+        let app = model(db, storeRoot: store)
+        let row = try XCTUnwrap(app.sessions.first { $0.id == id })
+        app.openSessions.openSession(row)
+        let tab = try XCTUnwrap(app.openSessions.openTab(forSessionID: id))
+        XCTAssertNotNil(try XCTUnwrap(db.sessionState(id)).lastOpenedAt, "the open is recorded")
+        app.openSessions.closeTab(tab.id)
+        await quiesce()
+        XCTAssertNotNil(try db.sessionState(id), "opened from History: a person's row")
     }
 }

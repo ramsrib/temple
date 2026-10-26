@@ -1195,7 +1195,7 @@ extension DBTests {
     func testDiscardNeverStartedGoesOnlyForAnUntouchedIdleCreation() throws {
         let (db, _) = try database()
         let idle = Date(timeIntervalSince1970: 1_900_000_000)
-        let ids = ["plain", "imported", "pinned", "named", "coloured", "opened", "seen", "open-tab", "recent"]
+        let ids = ["plain", "imported", "pinned", "named", "coloured", "opened", "seen", "open-tab", "recent", "replaced"]
         for id in ids {
             try db.join(sessionID: id, via: id == "imported" ? .imported : .created, agent: .claude,
                         locator: id == "seen" ? TranscriptLocator(host: .local, path: "/x/seen.jsonl") : nil,
@@ -1211,14 +1211,19 @@ extension DBTests {
             let state = try XCTUnwrap(db.sessionState(id))
             return MembershipRef(id: id, host: state.host, incarnation: try incarnation ?? XCTUnwrap(state.incarnation))
         }
-        var refs = try ids.map { try ref($0) }
-        refs.append(try ref("named", incarnation: "stale"))
+        // "replaced" is as eligible as "plain", but named by a membership it
+        // no longer has: a row that left and joined again is another session.
+        let refs = try ids.map { try ref($0, incarnation: $0 == "replaced" ? "stale" : nil) }
         let events = observed(db)
         XCTAssertEqual(try db.discardNeverStarted(refs, idleBefore: idle), ["plain"])
         XCTAssertNil(try db.sessionState("plain"))
         for id in ids.dropFirst() { XCTAssertNotNil(try db.sessionState(id), id) }
         XCTAssertEqual(events().leaves, ["plain"], "the drop is a leave")
         XCTAssertEqual(try db.discardNeverStarted([], idleBefore: idle), [])
+        // The tab's close: the same boundary without the idle cutoff.
+        XCTAssertTrue(try db.discardUnstartedCreation(ref("recent")))
+        XCTAssertFalse(try db.discardUnstartedCreation(ref("opened")), "opened from History: a person's")
+        XCTAssertFalse(try db.discardUnstartedCreation(ref("replaced", incarnation: "stale")))
     }
 
     func testEveryGuardedWriteTouchesOnlyTheOwningHostsRow() throws {
@@ -1234,7 +1239,7 @@ extension DBTests {
         try db.observeLaunchDirectory(sessionID: "r", host: .local, "/local")
         XCTAssertEqual(try db.fillCoreFields(sessionID: "r", host: .local, agent: .claude, directory: "/d", title: "T", lastActiveAt: date), .ownershipMismatch)
         XCTAssertEqual(try db.updateTranscriptHint(sessionID: "r", agent: .claude, locator: TranscriptLocator(host: .local, path: "/x.jsonl")), .ownershipMismatch)
-        XCTAssertFalse(try db.discardUnstartedCreation(sessionID: "r", host: .local))
+        XCTAssertFalse(try db.discardUnstartedCreation(MembershipRef(id: "r", host: .local, incarnation: try XCTUnwrap(untouched.incarnation))))
         XCTAssertFalse(try db.leave(sessionID: "r", host: .local))
         XCTAssertEqual(try db.sessionState("r"), untouched)
         XCTAssertTrue(events().rows.isEmpty && events().leaves.isEmpty, "rejected writes notify nobody")

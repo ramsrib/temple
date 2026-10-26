@@ -348,6 +348,13 @@ during that refactor:
   the restore. Don't add an automatic archive path
   without a reason column and a person's way back, don't put it on the
   window's undo stack, and don't make the engine watch archived rows.
+  The one thing Temple deletes on its own is a row that was never a
+  session (ADR-038): Temple created it, no transcript was ever recorded
+  for it, no person marked it (pin, name, colour, History open, keep),
+  and its absence is proven now — at the tab's close or by the sweep,
+  through one boundary (`TempleDB.discardNeverStarted`), under the
+  membership the proof was for. Don't widen that predicate, and don't
+  add a second delete path beside it.
 - **Schema changes stay additive.** Builds before ADR-029 have no
   newer-schema guard, so a dropped or retyped column breaks the installed
   app running beside a dev build on the same file. `generated_title` is

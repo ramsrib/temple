@@ -797,6 +797,9 @@ final class EngineMatrixTests: XCTestCase {
         let h = try harness()
         await h.engine.start()
         let id = uuid()
+        // The join's callback is held, so the engine cannot have met the
+        // row by any other way than reading it for this check.
+        h.engine.holdDatabaseCallbacks()
         try join(h, id)
         let unmet = await h.engine.operationRevision(id)
         XCTAssertNil(unmet, "not a member yet")
@@ -804,6 +807,7 @@ final class EngineMatrixTests: XCTestCase {
         XCTAssertTrue(absent)
         let stranger = await h.engine.confirmAbsence(uuid())
         XCTAssertFalse(stranger, "a row this host does not own is nobody's to confirm")
+        h.engine.releaseDatabaseCallbacks(reversed: false)
     }
 
     /// `confirmAbsence` asked while an older listing is held: that listing's
