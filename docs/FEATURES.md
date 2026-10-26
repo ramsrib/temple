@@ -370,7 +370,9 @@ it. What follows appears for an enabled host only.
 - **Left running.** When the host does not answer as you close a tab, or
   another terminal is attached to the session, Temple leaves it running and
   says so once, in orange, naming the session ("“<title>” wasn't stopped:
-  <host> didn't answer when you closed its tab. It may still be running.").
+  <host> didn't answer when you closed its tab. It may still be running.";
+  a Stop whose session Temple could not even look up, its record of
+  sessions unreadable, says that instead).
   It never stops anything later on its own. **Running sessions on <host>…**
   (in Settings ▸ Hosts, in a host project heading's context menu, on a tab
   whose stop failed, and on every such notice) lists every session Temple

@@ -768,7 +768,16 @@ public final class RemoteTabController {
             resolved.reason = reason
             if let handle = resolved.handle { await host.leaveRunning(handle, reason: reason) }
         }) { [weak self] in
-            guard let handle = await host.liveRunHandle(sessionID: sessionID) else { return }
+            let found: String?
+            do { found = try await host.liveRunHandle(sessionID: sessionID) } catch {
+                // The run store could not be read: the chip is gone, so the
+                // stop that did not happen is said once (nothing is retried).
+                guard let self, self.gate.admit(.rowStopNotice, ticket) else { return }
+                self.noticeHandler?(hostID, RemoteCopy.couldNotFindRun(host.hostName, session: name,
+                                                                       detail: error.localizedDescription))
+                return
+            }
+            guard let handle = found else { return }
             if Task.isCancelled {
                 resolved.handle = handle
                 if let reason = resolved.reason { await host.leaveRunning(handle, reason: reason) }

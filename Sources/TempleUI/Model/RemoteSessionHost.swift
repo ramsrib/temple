@@ -256,7 +256,9 @@ public protocol RemoteSessionHost: HostLauncher {
     /// Whether the session has a run that is not Ended (as last read).
     func hasLiveRun(sessionID: String) -> Bool
     /// The session's live run's handle, read now.
-    func liveRunHandle(sessionID: String) async -> String?
+    /// The session's run that is not Ended, nil with none; throws when the
+    /// run store could not be read (a stop by row then says so).
+    func liveRunHandle(sessionID: String) async throws -> String?
     func manualStopCommand(handle: String) -> String
     /// The tracked sessions, each checked on its own server; `checked`:
     /// whether the host answered at all.
@@ -667,6 +669,13 @@ public enum RemoteCopy {
     /// Temple's own record could not be written. `session`: the session's
     /// name as a notice gives it; nil where the session is in view ("this
     /// session", in a band or the sheet).
+    /// A stop asked for by row (a chip's Stop, a row's menu) whose run
+    /// Temple could not look up: said once, as a stop that did not happen.
+    public static func couldNotFindRun(_ host: String, session: String, detail: String) -> String {
+        "\(capitalized(session)) wasn't stopped: Temple couldn't read its record of sessions on \(host) "
+            + "(\(trimmed(detail))). " + mayStillBeRunning
+    }
+
     public static func unrecorded(_ host: String, detail: String, session: String? = nil) -> String {
         if let session {
             return "Temple couldn't save its record of \(session) on \(host) (\(trimmed(detail))), "

@@ -275,6 +275,16 @@ public final class RemoteSessions {
         return await read { try $0.liveRun(host: host, sessionID: sessionID) } ?? nil
     }
 
+    /// The session's run that is not Ended, nil with none (a store that
+    /// does not exist yet included); a store that cannot be opened or read
+    /// throws, so a stop asked for by row can say it could not look.
+    public func liveRunIfReadable(sessionID: String) async throws -> RemoteRun? {
+        guard openedStore != nil || storeExists() else { return nil }
+        let host = host
+        let store = try store()
+        return try await store.perform { try $0.liveRun(host: host, sessionID: sessionID) }
+    }
+
     /// A run lookup that preserves a failed read separately from a missing row.
     private func checkedRun(_ handle: String) async throws -> RemoteRun? {
         guard openedStore != nil || storeExists() else { return nil }

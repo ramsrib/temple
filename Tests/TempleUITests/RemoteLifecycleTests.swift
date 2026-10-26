@@ -157,8 +157,11 @@ final class FakeRemoteHost: RemoteSessionHost {
 
     func hasLiveRun(sessionID: String) -> Bool { live(sessionID) != nil }
     var liveRunGate: (() async -> Void)?
-    func liveRunHandle(sessionID: String) async -> String? {
+    /// The run store could not be read: the lookup throws this.
+    var liveRunError: Error?
+    func liveRunHandle(sessionID: String) async throws -> String? {
         if let liveRunGate { await liveRunGate() }
+        if let liveRunError { throw liveRunError }
         return live(sessionID).map { runs[$0].handle }
     }
     func manualStopCommand(handle: String) -> String { "tmux -L temple kill-session -t temple-\(handle)" }
@@ -1389,6 +1392,26 @@ final class RemoteLifecycleTests: XCTestCase {
         await fulfillment(of: [done], timeout: 5)
         XCTAssertEqual(remote.stops.map(\.handle), ["kept"], "the stop ran inside the quit's window")
         XCTAssertTrue(remote.runs[0].ended)
+    }
+
+    /// A chip's Stop whose run Temple could not look up (the run store
+    /// unreadable) is said once as a stop that did not happen, never taken
+    /// for "nothing to stop": the chip is gone, and nothing is retried.
+    func testAChipStopWhoseLookupFailedIsSaidOnce() async throws {
+        remote.runs = [.init(handle: "kept", sessionID: "s1", resume: false)]
+        rows["s1"] = Fixture.row("s1", project: "/home/u/project", host: hostID)
+        saveChip()
+        model.restore()
+        let chip = try XCTUnwrap(model.tabs.first)
+        remote.liveRunError = CocoaError(.fileReadUnknown)
+        model.requestClose(tabID: chip.id)
+        model.remoteTabs.confirmStop()
+        XCTAssertTrue(model.tabs.isEmpty)
+        await settle(self.notices.count == 1, "said once")
+        XCTAssertTrue(notices[0].hasPrefix("“Title” wasn't stopped: Temple couldn't read its record of sessions on box ("), notices[0])
+        XCTAssertTrue(notices[0].hasSuffix("It may still be running."))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(remote.stops.isEmpty)
     }
 
     /// A chip's Stop cancelled before its run was known (the host removed,
