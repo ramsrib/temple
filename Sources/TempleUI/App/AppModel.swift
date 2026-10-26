@@ -757,8 +757,12 @@ public final class AppModel: ObservableObject {
         // relaunch goes the same way, and a session with a transcript on
         // record is never even asked about.
         openSessions.unstartedHandler = { [weak self] id, host in
+            // The whole boundary (AutoArchivePolicy.neverStarted) on the row
+            // as it stands at the close, not only in the statement later:
+            // the close's own touch clears a keep when it flushes, which
+            // could be while the absence check is still out.
             guard let self, let row = self.overlay.rows[id], row.host == host,
-                  row.joinedVia == .created, row.transcriptPath == nil,
+                  AutoArchivePolicy.neverStarted(row),
                   let incarnation = row.incarnation,
                   let engine = self.engineSet.engine(for: host) else { return }
             // The membership the absence is confirmed for is the one the

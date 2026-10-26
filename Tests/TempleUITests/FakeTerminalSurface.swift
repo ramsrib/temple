@@ -138,8 +138,10 @@ final class FakeEngine: HostEngine, @unchecked Sendable {
     private var continuations: [UUID: AsyncStream<EngineSnapshot>.Continuation] = [:]
     private var requests: [String] = []
     private var reconciles: [String] = []
-    /// What `confirmAbsence` answers.
+    /// What `confirmAbsence` answers, after `absenceGate` when set (a
+    /// check held while something else happens).
     var absent = false
+    var absenceGate: (() async -> Void)?
 
     init(_ index: CatalogFixtureIndex? = nil, host: HostID = .local, snapshot: EngineSnapshot? = nil) {
         self.host = host
@@ -190,7 +192,10 @@ final class FakeEngine: HostEngine, @unchecked Sendable {
     }
     func requestResolution(_ id: String, awaitingCreation: Bool) async { lock.lock(); requests.append(id); lock.unlock() }
     func reconcileMembership(_ id: String) async { lock.lock(); reconciles.append(id); lock.unlock() }
-    func confirmAbsence(_ id: String) async -> Bool { absent }
+    func confirmAbsence(_ id: String) async -> Bool {
+        if let absenceGate { await absenceGate() }
+        return absent
+    }
 }
 
 

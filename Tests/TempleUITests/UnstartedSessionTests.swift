@@ -101,6 +101,65 @@ final class UnstartedSessionTests: XCTestCase {
         XCTAssertNotNil(try db.sessionState(usedID), "a transcript carries it")
     }
 
+    /// A model over an engine whose absence check a test holds and answers.
+    private func model(_ db: TempleDB, engine: FakeEngine) -> AppModel {
+        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [engine],
+                           persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
+                           database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+                           hostRegistry: Fixture.hostsWithoutFolderEvidence())
+        app.start()
+        return app
+    }
+
+    /// The membership the absence was confirmed for is the one dropped: a
+    /// row that left and joined again while the check was out is another
+    /// session, and stays.
+    func testAMembershipReplacedDuringTheAbsenceCheckIsNotDropped() async throws {
+        let db = try TempleDB.inMemory()
+        let engine = FakeEngine()
+        engine.absent = true
+        let gate = Gate()
+        engine.absenceGate = { await gate.wait() }
+        let app = model(db, engine: engine)
+        let tab = app.openSessions.newSession(agent: .claude, project: Fixture.key("/p"))
+        let id = try XCTUnwrap(tab.sessionID)
+        let old = try XCTUnwrap(try XCTUnwrap(db.sessionState(id)).incarnation)
+        app.openSessions.closeTab(tab.id)
+        // While the check is out: the old membership goes (by any means),
+        // and the id joins again as a new one.
+        XCTAssertEqual(try db.discardNeverStarted([MembershipRef(id: id, host: .local, incarnation: old)], idleBefore: nil), [id])
+        try db.join(sessionID: id, via: .created, agent: .claude, core: SessionCore(host: .local, directory: "/p", directorySource: .tab))
+        let fresh = try XCTUnwrap(try XCTUnwrap(db.sessionState(id)).incarnation)
+        XCTAssertNotEqual(old, fresh)
+        await gate.open()
+        await quiesce()
+        XCTAssertEqual(try db.sessionState(id)?.incarnation, fresh, "the old membership's absence says nothing about the new one")
+    }
+
+    /// A row a person restored is kept: the close's own touch clears the
+    /// keep when it flushes, which may be while the absence check is still
+    /// out, so the keep is read before the check, not only in the statement.
+    func testAKeptRowStaysWhenItsCloseTouchFlushesDuringTheAbsenceCheck() async throws {
+        let db = try TempleDB.inMemory()
+        let engine = FakeEngine()
+        engine.absent = true
+        let gate = Gate()
+        engine.absenceGate = { await gate.wait() }
+        let app = model(db, engine: engine)
+        let tab = app.openSessions.newSession(agent: .claude, project: Fixture.key("/p"))
+        let id = try XCTUnwrap(tab.sessionID)
+        // A restore a minute ago: the close's touch, dated now, outranks it.
+        try db.setArchived(true, sessionID: id)
+        try db.setArchived(false, sessionID: id, at: Date().addingTimeInterval(-60))
+        XCTAssertNotNil(try XCTUnwrap(db.sessionState(id)).keptAt, "restored by a person: kept")
+        app.openSessions.closeTab(tab.id)
+        app.overlay.flushPendingTouches()
+        XCTAssertNil(try XCTUnwrap(db.sessionState(id)).keptAt, "the close's touch spent the keep")
+        await gate.open()
+        await quiesce()
+        XCTAssertNotNil(try db.sessionState(id), "kept when the close decided")
+    }
+
     /// A listing that fails proves nothing, whatever the snapshot said.
     func testAFailedScanKeepsTheRow() async throws {
         let notADirectory = root.appendingPathComponent("claude")

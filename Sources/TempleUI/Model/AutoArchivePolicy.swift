@@ -105,6 +105,7 @@ struct AutoArchivePolicy {
         state.joinedVia == .created && state.transcriptPath == nil
             && !state.pinned && state.customName == nil && state.color == nil
             && state.lastOpenedAt == nil && state.keptAt == nil
+            && !state.archived && state.archiveReason == nil
     }
 
     /// The plan's transcript entries whose row never started, apart from

@@ -1193,9 +1193,10 @@ extension DBTests {
     /// cutoff; everything a person did, a transcript on record, an open
     /// tab, another way in, or a membership replaced since keeps it.
     func testDiscardNeverStartedGoesOnlyForAnUntouchedIdleCreation() throws {
-        let (db, _) = try database()
+        let (db, queue) = try rawDatabase()
         let idle = Date(timeIntervalSince1970: 1_900_000_000)
-        let ids = ["plain", "imported", "pinned", "named", "coloured", "opened", "seen", "open-tab", "recent", "replaced"]
+        let ids = ["plain", "imported", "pinned", "named", "coloured", "opened", "seen", "open-tab", "recent", "replaced",
+                   "kept", "reasoned"]
         for id in ids {
             try db.join(sessionID: id, via: id == "imported" ? .imported : .created, agent: .claude,
                         locator: id == "seen" ? TranscriptLocator(host: .local, path: "/x/seen.jsonl") : nil,
@@ -1207,6 +1208,13 @@ extension DBTests {
         try db.recordOpened(sessionID: "opened", host: .local, at: idle.addingTimeInterval(-1))
         try db.setOpenTabs(projectPath: "/p", sessionIDs: ["open-tab"])
         try db.touch(sessionID: "recent", host: .local, at: idle.addingTimeInterval(1))
+        // A person's restore (kept), and an older build's restore of
+        // Temple's archive (the reason left on an unarchived row).
+        try db.setArchived(true, sessionID: "kept")
+        try db.setArchived(false, sessionID: "kept", at: idle.addingTimeInterval(-1))
+        try queue.write {
+            try $0.execute(sql: "UPDATE session_state SET archive_reason = 'transcript_missing' WHERE id = 'reasoned'")
+        }
         func ref(_ id: String, incarnation: String? = nil) throws -> MembershipRef {
             let state = try XCTUnwrap(db.sessionState(id))
             return MembershipRef(id: id, host: state.host, incarnation: try incarnation ?? XCTUnwrap(state.incarnation))
