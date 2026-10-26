@@ -378,6 +378,18 @@ public final class SessionOverlayStore: ObservableObject {
         return left
     }
 
+    /// The sweep's drop of rows that never started (ADR-038; see
+    /// `TempleDB.discardNeverStarted`). Returns the ids that went.
+    func discardNeverStarted(_ refs: [MembershipRef], idleBefore: Date) -> [String] {
+        guard !refs.isEmpty else { return [] }
+        do {
+            return try db.discardNeverStarted(refs, idleBefore: idleBefore)
+        } catch {
+            TempleUILog.db.error("dropping never-started sessions failed: \(String(describing: error), privacy: .public)")
+            return []
+        }
+    }
+
     /// A created session whose tab closed unused (see
     /// `TempleDB.discardUnstartedCreation`).
     @discardableResult

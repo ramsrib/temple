@@ -375,9 +375,20 @@ public final class AppModel: ObservableObject {
             rows: overlay.rows.values, snapshot: latestEngineSnapshot, proofs: proofs, requested: requested,
             folders: folders, openSessionIDs: Set(openSessions.openSessionIDsInTabOrder), now: at, host: host)
         guard !entries.isEmpty else { return }
-        let archived = Set(overlay.autoArchive(entries, idleBefore: at.addingTimeInterval(-AutoArchivePolicy.idleAfter)))
+        let idleBefore = at.addingTimeInterval(-AutoArchivePolicy.idleAfter)
+        // A row that was never a session (Temple created it, nothing was ever
+        // sent, no transcript was ever seen) is dropped, as its tab's close
+        // would have dropped it, not archived: there is nothing to restore
+        // and nothing to tell (ADR-038).
+        let (dropped, archivable) = AutoArchivePolicy.partition(entries, rows: overlay.rows)
+        let discarded = overlay.discardNeverStarted(dropped.map(\.ref), idleBefore: idleBefore)
+        if !discarded.isEmpty {
+            TempleUILog.db.notice("dropped \(discarded.count, privacy: .public) sessions that never started")
+            discarded.forEach { openSessions.forgetClosedTabs(sessionID: $0) }
+        }
+        let archived = Set(overlay.autoArchive(archivable, idleBefore: idleBefore))
         guard !archived.isEmpty else { return }
-        let done = entries.filter { archived.contains($0.ref.id) }
+        let done = archivable.filter { archived.contains($0.ref.id) }
         let folderCount = done.filter { $0.reason == .folderMissing }.count
         TempleUILog.db.notice("auto-archived \(done.count, privacy: .public) sessions: \(done.count - folderCount, privacy: .public) without a transcript, \(folderCount, privacy: .public) without a folder")
         // A straggling batch joins the line already showing: one notice, one Undo.
@@ -740,13 +751,21 @@ public final class AppModel: ObservableObject {
         // process is gone by now; only a fresh, completed absence from the
         // owning engine lets the row go — never a cached verdict. When in
         // doubt the stray row stays: deleting one the user cares about is
-        // the worse mistake.
+        // the worse mistake. The tab says nothing was sent this run; the
+        // row says whether the session ever started (Temple created it and
+        // no transcript was ever seen for it), so a chip restored across a
+        // relaunch goes the same way, and a session with a transcript on
+        // record is never even asked about.
         openSessions.unstartedHandler = { [weak self] id, host in
-            guard let self, self.overlay.rows[id]?.host == host,
+            guard let self, let row = self.overlay.rows[id], row.host == host,
+                  row.joinedVia == .created, row.transcriptPath == nil,
                   let engine = self.engineSet.engine(for: host) else { return }
             Task { @MainActor [weak self] in
-                guard await engine.confirmAbsence(id), let self,
-                      self.overlay.discardUnstartedCreation(id, host: host) else { return }
+                guard await engine.confirmAbsence(id) else {
+                    TempleUILog.db.notice("unstarted session \(id, privacy: .public) kept: absence not confirmed")
+                    return
+                }
+                guard let self, self.overlay.discardUnstartedCreation(id, host: host) else { return }
                 self.openSessions.forgetClosedTabs(sessionID: id)
             }
         }

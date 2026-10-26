@@ -717,6 +717,40 @@ public final class TempleDB: @unchecked Sendable {
         return left
     }
 
+    /// The sweep's drop of rows that never started (ADR-038): each named
+    /// membership goes, in one transaction, while the row still says nothing
+    /// beyond its creation — the guards of `discardUnstartedCreation`, plus
+    /// never opened from History, never kept, and idle past the cutoff by
+    /// the dates the sweep plans on. Returns the ids that went.
+    public func discardNeverStarted(_ refs: [MembershipRef], idleBefore: Date) throws -> [String] {
+        guard !refs.isEmpty else { return [] }
+        let gone = try db.write { database -> [String] in
+            var gone: [String] = []
+            for ref in refs {
+                try database.execute(
+                    sql: """
+                        DELETE FROM session_state
+                        WHERE id = ? AND host = ? AND incarnation = ? AND joined_via = ?
+                          AND transcript_path IS NULL
+                          AND pinned = 0 AND archived = 0
+                          AND custom_name IS NULL AND color IS NULL
+                          AND last_opened_at IS NULL AND kept_at IS NULL AND archive_reason IS NULL
+                          AND (COALESCE(last_active_at, \(Self.activityBeforeRepair), joined_at) IS NULL
+                               OR COALESCE(last_active_at, \(Self.activityBeforeRepair), joined_at) <= ?)
+                          AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
+                        """,
+                    arguments: [ref.id, ref.host.rawValue, ref.incarnation, JoinedVia.created.rawValue, idleBefore, ref.id])
+                if database.changesCount > 0 { gone.append(ref.id) }
+            }
+            return gone
+        }
+        for id in gone {
+            committedLeave(id)
+            committedRowChange(id)
+        }
+        return gone
+    }
+
     /// What a Discard did to its row.
     public enum DiscardDisposition: Sendable, Equatable {
         /// The row said nothing beyond its creation: it went.

@@ -2461,3 +2461,52 @@ agents in File's items and on the card, where "New Session" beside "New
 Codex Session" and "the other agent" left the default to be inferred, and
 named what ⌘R checks on Settings ("Check for Claude Code and Codex Again"):
 "Check Agents Again" read as the running sessions.
+
+---
+
+## ADR-038 — A row that was never a session is dropped, not archived
+**Date:** 2026-10-26 · **Status:** Accepted; amends ADR-030
+
+Six rows archived over a week with "6 sessions archived: no transcript on
+disk". Each was a ⌘T closed before anything was typed: Temple had joined
+the minted id as `created`, Claude Code writes a transcript only on the
+first message, and the close that should have dropped the row never did.
+The path that drops it (the tab's close, a fresh completed absence from the
+owning engine, then `discardUnstartedCreation`) ran only for a tab that
+was new *this run*: a tab that outlived a relaunch (three installs that
+week) came back as a restored chip (`isResume`), and a chip's close was
+not that path. The sweep then found a row idle a week with no transcript
+and did what ADR-030 says: archived it and told.
+
+**Decisions.**
+
+- **The row says whether a session ever started; the tab says whether
+  anything was sent this run.** `startedNothing` no longer requires a tab
+  started this run. Its handler asks the row: Temple created it
+  (`joined_via = created`) and no transcript was ever seen for it
+  (`transcript_path IS NULL`). Only then is the engine asked for a fresh
+  completed absence, and only on that is the row dropped — the same proof
+  and the same `discardUnstartedCreation` guards as before (no pin, name,
+  colour or open tab). A row with a transcript on record is never even
+  asked about, so a History open or a restored chip of a real session
+  costs no re-read when closed unused.
+- **A refused drop is logged**, and `confirmAbsence` reads a row the
+  engine has not met yet (joined moments ago, before a callback told it)
+  instead of answering "not confirmed" for a row that is its host's.
+- **The sweep drops what was never a session, with no notice.** Of the
+  rows ADR-030's sweep would archive for a missing transcript, those that
+  never started — `created`, no transcript ever seen, and nothing a person
+  did to the row (no pin, name, colour, open from History or keep) — are
+  deleted instead (`discardNeverStarted`, under `id, host, incarnation`,
+  rechecking every guard and the idle cutoff in its own SQL). The notice
+  counts the rest. ADR-030's "only reversibly" holds for sessions: there
+  was nothing to restore here, Restore would have launched a resume of an
+  id the CLI has never heard of, and ⌘W already dropped the same rows
+  outright. The accepted edge: a `created` session typed into whose file
+  was deleted before Temple ever read it (Temple not running for the
+  month the CLI's retention waits) is dropped rather than archived; its
+  row held an id, a title and a folder, and nothing on disk to resume.
+
+**Amends ADR-030:** "archived, labelled, and come back when a person
+restores them" gains "a row that was never a session is dropped instead,
+and not counted in the notice".

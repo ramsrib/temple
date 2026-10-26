@@ -364,7 +364,13 @@ public actor SessionEngine: HostEngine {
     /// completed absence; incomplete, unreadable, a failed listing, a stop or
     /// a member that left all answer false.
     public func confirmAbsence(_ id: String) async -> Bool {
-        guard running, var member = members[id] else { return false }
+        guard running else { return false }
+        // A row joined moments ago may not be a member yet (membership
+        // follows the database through callbacks): read it now, as a
+        // request does, rather than answer "not confirmed" for a row that
+        // is this host's.
+        if members[id] == nil { reconcileMembership(id, awaitingCreation: false) }
+        guard var member = members[id] else { return false }
         member.awaitingCreation = false
         members[id] = member
         requestResolution(id, awaitingCreation: false)

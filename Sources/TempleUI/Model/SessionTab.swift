@@ -96,8 +96,11 @@ public final class SessionTab: ObservableObject, Identifiable {
     /// The user has sent this tab's agent something (Return). A new tab
     /// closed before that started no conversation.
     var inputSubmitted = false
-    /// A tab that started a new session and closed before anything was sent.
-    var startedNothing: Bool { kind == .session && !isResume && !inputSubmitted && sessionID != nil }
+    /// A tab closed before anything was sent this run: a new session, or a
+    /// chip restored from one (a relaunch between the ⌘T and the close, a
+    /// resume that found no conversation). Whether its session ever started
+    /// is the row's to say (`AppModel.unstartedHandler`), not the tab's.
+    var startedNothing: Bool { kind == .session && !inputSubmitted && sessionID != nil }
 
     /// The command the surface spawned; set at spawn, nil before (and for a
     /// utility tab).

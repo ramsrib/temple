@@ -20,11 +20,14 @@ final class UnstartedSessionTests: XCTestCase {
 
     /// `storeRoot` is the Claude store; pass a regular file to make every
     /// listing fail.
-    private func model(_ db: TempleDB, storeRoot: URL) -> AppModel {
+    private func model(_ db: TempleDB, storeRoot: URL, saved: [PersistedTab] = []) -> AppModel {
         let source = LocalSessionSource(stores: [ClaudeSessionStore(root: storeRoot)], debounceInterval: 0.01,
                                         monitorChanges: false)
+        let persistence = UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults())
+        persistence.save(saved)
         let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
                            engines: [SessionEngine(source: source, database: db)],
+                           persistence: persistence,
                            database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
                            hostRegistry: Fixture.hostsWithoutFolderEvidence())
         app.start()
@@ -63,6 +66,39 @@ final class UnstartedSessionTests: XCTestCase {
         app.openSessions.reopenLastClosedTab()
         app.openSessions.reopenLastClosedTab()
         XCTAssertNotEqual(app.openSessions.activeTab?.sessionID, abandonedID, "nothing to reopen for a discarded row")
+    }
+
+    /// A relaunch between the ⌘T and the close (an install, a crash): the
+    /// tab comes back as a restored chip, and closing it unused drops the
+    /// row the same way, on the same fresh proof. A chip of a session with a
+    /// transcript stays, closed unused or not.
+    func testAChipRestoredFromAnUnusedNewTabIsDroppedWhenClosed() async throws {
+        let store = root.appendingPathComponent("claude")
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+        let db = try TempleDB.inMemory()
+        let unusedID = UUID().uuidString.lowercased(), usedID = UUID().uuidString.lowercased()
+        for id in [unusedID, usedID] {
+            try db.join(sessionID: id, via: .created, agent: .claude,
+                        core: SessionCore(host: .local, directory: "/p", directorySource: .tab))
+        }
+        let project = store.appendingPathComponent("-p")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try "{\"type\":\"user\",\"sessionId\":\"\(usedID)\",\"cwd\":\"/p\",\"message\":{\"content\":\"Hi\"}}\n"
+            .write(to: project.appendingPathComponent("\(usedID).jsonl"), atomically: true, encoding: .utf8)
+        let app = model(db, storeRoot: store, saved: [
+            PersistedTab(sessionID: unusedID, agent: .claude, projectPath: "/p", title: "New Claude session"),
+            PersistedTab(sessionID: usedID, agent: .claude, projectPath: "/p", title: "New Claude session")])
+        app.openSessions.restore()
+        let unused = try XCTUnwrap(app.openSessions.openTab(forSessionID: unusedID))
+        let used = try XCTUnwrap(app.openSessions.openTab(forSessionID: usedID))
+        XCTAssertTrue(unused.isResume && used.isResume, "restored chips")
+
+        app.openSessions.closeTab(unused.id)
+        app.openSessions.closeTab(used.id)
+        try await settle { try db.sessionState(unusedID) == nil }
+        XCTAssertNil(try db.sessionState(unusedID), "never a session: the chip's close drops it as ⌘W would have")
+        await quiesce()
+        XCTAssertNotNil(try db.sessionState(usedID), "a transcript carries it")
     }
 
     /// A listing that fails proves nothing, whatever the snapshot said.

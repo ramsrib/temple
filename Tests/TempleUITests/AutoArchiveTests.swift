@@ -175,6 +175,36 @@ final class AutoArchiveTests: XCTestCase {
 
     private let loaded = MemberResolution.loaded(URL(fileURLWithPath: "/tmp/there.jsonl"))
 
+    // MARK: Never started
+
+    /// ADR-038: a row that was never a session — Temple created it, nothing
+    /// was ever sent, no transcript was ever seen — is dropped by the sweep
+    /// as its tab's close would have dropped it, with no notice. One a
+    /// person named, one opened from History and one whose transcript was
+    /// on record are sessions that were had: archived and told, as before.
+    func testARowThatNeverStartedIsDroppedNotArchived() async throws {
+        var h = harness([row("gone")])
+        for id in ["never", "named", "opened", "seen"] {
+            try h.database.join(sessionID: id, via: .created, agent: .claude,
+                                locator: id == "seen" ? TranscriptLocator(localURL: URL(fileURLWithPath: "/gone/seen.jsonl")) : nil,
+                                core: SessionCore(host: .local, directory: "/p", directorySource: .tab, title: "New Claude session"))
+        }
+        h.overlay.rename("named", to: "Mine")
+        h.overlay.recordOpened("opened", host: .local)
+        let ids = ["gone", "never", "named", "opened", "seen"]
+        var resolutions: [String: MemberResolution] = [:]
+        for id in ids { resolutions[id] = .confirmedAbsent }
+        h.publish(resolutions)
+        await h.settle()
+
+        XCTAssertNil(h.state("never"), "nothing to restore, nothing to tell")
+        XCTAssertFalse(h.model.sessions.contains { $0.id == "never" })
+        XCTAssertEqual(h.archived(ids), ["gone", "named", "opened", "seen"])
+        XCTAssertEqual(h.model.autoArchiveNotice?.count, 4)
+        XCTAssertEqual(h.model.autoArchiveNotice?.message, "4 sessions archived: no transcript on disk")
+        XCTAssertFalse(h.model.autoArchiveNotice?.memberships.contains { $0.id == "never" } ?? true)
+    }
+
     // MARK: Transcript gone
 
     func testOnlyAProvenAbsenceOfAnIdleUnusedRowIsArchived() async throws {

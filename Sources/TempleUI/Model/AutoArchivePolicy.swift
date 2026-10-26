@@ -94,6 +94,34 @@ struct AutoArchivePolicy {
         }
     }
 
+    /// A row that was never a session: Temple created it (a ⌘T, a + menu),
+    /// no transcript was ever seen for it, and no person made it theirs
+    /// (no pin, name, colour, open from History or keep). With its absence
+    /// proven there is nothing to restore, so the sweep drops it as the
+    /// tab's close would have (`TempleDB.discardUnstartedCreation`), with
+    /// no notice. A `created` row whose transcript was seen and later
+    /// removed is a session that was had, and is archived as any other.
+    static func neverStarted(_ state: SessionState) -> Bool {
+        state.joinedVia == .created && state.transcriptPath == nil
+            && !state.pinned && state.customName == nil && state.color == nil
+            && state.lastOpenedAt == nil && state.keptAt == nil
+    }
+
+    /// The plan's transcript entries whose row never started, apart from
+    /// the entries to archive.
+    static func partition(_ entries: [AutoArchiveEntry], rows: [String: SessionState])
+        -> (dropped: [AutoArchiveEntry], archived: [AutoArchiveEntry]) {
+        var dropped: [AutoArchiveEntry] = [], archived: [AutoArchiveEntry] = []
+        for entry in entries {
+            if entry.reason == .transcriptMissing, let state = rows[entry.ref.id], neverStarted(state) {
+                dropped.append(entry)
+            } else {
+                archived.append(entry)
+            }
+        }
+        return (dropped, archived)
+    }
+
     /// `host`: only that host's rows (each host's archives are written as
     /// soon as its own proofs are in).
     static func plan(rows: Dictionary<String, SessionState>.Values, snapshot: EngineSnapshot?,

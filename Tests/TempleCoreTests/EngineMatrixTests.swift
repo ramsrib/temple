@@ -788,6 +788,24 @@ final class EngineMatrixTests: XCTestCase {
         XCTAssertEqual(h.writes.succeeded.map(\.incarnation), [fresh])
     }
 
+    /// `confirmAbsence` for a row joined after the engine loaded its
+    /// membership and before any callback told it (a ⌘T closed at once):
+    /// the engine reads the row itself, as a request does, and answers
+    /// from its own listing — not "not confirmed" for a row that is its
+    /// host's.
+    func testAbsenceIsConfirmedForARowTheEngineHasNotMetYet() async throws {
+        let h = try harness()
+        await h.engine.start()
+        let id = uuid()
+        try join(h, id)
+        let unmet = await h.engine.operationRevision(id)
+        XCTAssertNil(unmet, "not a member yet")
+        let absent = await h.engine.confirmAbsence(id)
+        XCTAssertTrue(absent)
+        let stranger = await h.engine.confirmAbsence(uuid())
+        XCTAssertFalse(stranger, "a row this host does not own is nobody's to confirm")
+    }
+
     /// `confirmAbsence` asked while an older listing is held: that listing's
     /// failure does not answer it; its own listing (complete, nothing
     /// there) does — true.
