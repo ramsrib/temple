@@ -157,6 +157,15 @@ extension AppModel {
     /// themselves are the store's: the stop cleared this run's.
     func remoteRunEnded(host: HostID, handle: String) {
         stoppedRemoteHandles[host, default: []].insert(handle)
+        reconcileRemoteNotices(host: host)
+    }
+
+    /// A run was attached to by a tab here: a line counting it as running
+    /// with no tab counts it no more.
+    func remoteRunAttached(host: HostID) { reconcileRemoteNotices(host: host) }
+
+    /// Every line, shown or waiting, as of now.
+    private func reconcileRemoteNotices(host: HostID) {
         queuedRemoteNotices = queuedRemoteNotices.compactMap(current)
         if let shown = remoteNotice, shown.host == host {
             if let updated = current(shown) {

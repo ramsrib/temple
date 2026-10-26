@@ -72,7 +72,11 @@ final class RemoteHostLauncher: RemoteSessionHost {
     }
 
     private func refreshLiveSessions() async {
-        liveSessions = Set(await sessions.runs().filter { !$0.isEnded && $0.dismissedAt == nil }.compactMap(\.sessionID))
+        // A read that failed leaves what was known (nil at first: a run may
+        // be there); only a read that answered, an absent store included,
+        // says which sessions have one.
+        guard let runs = await sessions.runsIfReadable() else { return }
+        liveSessions = Set(runs.filter { !$0.isEnded && $0.dismissedAt == nil }.compactMap(\.sessionID))
     }
 
     func open(agent: Agent, sessionID: String, resume: Bool, directory: String, resumeAnyway: Bool,

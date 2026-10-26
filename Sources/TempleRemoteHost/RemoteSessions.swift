@@ -288,6 +288,15 @@ public final class RemoteSessions {
         return await read { try $0.runs(host: host) } ?? []
     }
 
+    /// The runs, or nil when the store could not be read: a store that
+    /// does not exist yet has none (an answer), a store that failed to open
+    /// or read has an unknown number (not one).
+    public func runsIfReadable() async -> [RemoteRun]? {
+        guard openedStore != nil || storeExists() else { return [] }
+        let host = host
+        return await read { try $0.runs(host: host) }
+    }
+
     // MARK: Connection
 
     /// The connection, keyed by where `ssh -G` resolves the host (as the

@@ -34,6 +34,9 @@ public final class RemoteTabController {
     /// or Running sessions…): a sidebar line counting it as running is
     /// reconciled.
     public var runEndedHandler: ((_ host: HostID, _ handle: String) -> Void)?
+    /// A run is attached to by a tab here (its client connected): a sidebar
+    /// line counting it as running with no tab is reconciled.
+    public var runAttachedHandler: ((_ host: HostID, _ handle: String) -> Void)?
     /// Discard on a session whose conversation was never confirmed: the
     /// app lets its row go (or archives it, if the row is the user's), only
     /// while the row is still the membership Discard was chosen for.
@@ -180,6 +183,9 @@ public final class RemoteTabController {
         // creation's pane reported, once persisted.
         tab.launchObservation = SessionTab.LaunchObservation(at: spawnedAt, directory: nil)
         if let sid = tab.sessionID, !isQuitting { model.touchHandler?(sid, tab.host, spawnedAt) }
+        // Open in a tab here now: a sidebar line counting it as running
+        // without one is reconciled.
+        if !plan.creating { runAttachedHandler?(tab.host, plan.handle) }
         tab.activity = .running
         model.markSpawned(tab, startsAgent: plan.creating)
         model.lastTitleChange[tab.id] = Date()
@@ -753,12 +759,22 @@ public final class RemoteTabController {
         // as a query would be cancelled, and the stop never started);
         // cancelled before its answer, it is recorded left running once
         // the run is known, as any stop is.
-        let resolved = ResolvedHandle()
+        let resolved = ResolvedStop()
         operations.run(host: hostID, .stop, onCancel: { reason in
+            // Whichever of the two learns the other's part second records
+            // the outcome (both run on the main actor, each setting its
+            // part before reading the other's): a cancellation before the
+            // run was known still ends as a stop that did not happen.
+            resolved.reason = reason
             if let handle = resolved.handle { await host.leaveRunning(handle, reason: reason) }
         }) { [weak self] in
-            guard let handle = await host.liveRunHandle(sessionID: sessionID), !Task.isCancelled, let self,
-                  self.gate.launcher(hostID).map(ObjectIdentifier.init) == ticket.launcher else { return }
+            guard let handle = await host.liveRunHandle(sessionID: sessionID) else { return }
+            if Task.isCancelled {
+                resolved.handle = handle
+                if let reason = resolved.reason { await host.leaveRunning(handle, reason: reason) }
+                return
+            }
+            guard let self, self.gate.launcher(hostID).map(ObjectIdentifier.init) == ticket.launcher else { return }
             resolved.handle = handle
             guard let result = try? await host.stop(handle, fromAttachedTab: false) else { return }
             self.ended(result, host: hostID, handle: handle)
@@ -767,8 +783,12 @@ public final class RemoteTabController {
         }
     }
 
-    /// The run a stop by row resolved, for its cancellation to record.
-    @MainActor private final class ResolvedHandle { var handle: String? }
+    /// A stop by row's two parts, each learned on its own: the run it
+    /// resolved, and the reason it was cancelled with, if it was.
+    @MainActor private final class ResolvedStop {
+        var handle: String?
+        var reason: RemoteLeftRunningReason?
+    }
 
     /// A stop that was confirmed: said to the app, which takes the run out
     /// of any sidebar line that still counts it as running.

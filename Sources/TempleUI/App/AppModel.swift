@@ -739,6 +739,7 @@ public final class AppModel: ObservableObject {
         openSessions.remoteTabs.runEndedHandler = { [weak self] host, handle in
             self?.remoteRunEnded(host: host, handle: handle)
         }
+        openSessions.remoteTabs.runAttachedHandler = { [weak self] host, _ in self?.remoteRunAttached(host: host) }
         openSessions.remoteTabs.gate.sheetIsActive = { [weak self] id in
             self?.remoteSessionsSheet?.id == id || self?.remoteFolderSheet?.id == id
         }

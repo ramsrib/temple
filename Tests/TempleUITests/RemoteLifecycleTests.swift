@@ -1372,16 +1372,45 @@ final class RemoteLifecycleTests: XCTestCase {
         saveChip()
         model.restore()
         let chip = try XCTUnwrap(model.tabs.first)
-        let lookup = Gate()
-        remote.liveRunGate = { await lookup.wait() }
+        let lookup = Gate(), looking = Gate()
+        remote.liveRunGate = { await looking.open(); await lookup.wait() }
         model.requestClose(tabID: chip.id)
         model.remoteTabs.confirmStop()
         XCTAssertTrue(model.tabs.isEmpty)
+        await looking.wait()
+        // The quit's cancellations happen while the lookup is still out: a
+        // query would be cancelled here, and the stop never started.
         model.prepareForQuit()
+        let plan = model.quitDrainPlan()
         await lookup.open()
-        _ = await drain()
+        let done = expectation(description: "drained")
+        SessionRuntimeController(gracefulTimeout: 0.5).drainAll(graceful: plan.graceful, detach: plan.detach,
+                                                                remote: model.remoteTabs.operations) { done.fulfill() }
+        await fulfillment(of: [done], timeout: 5)
         XCTAssertEqual(remote.stops.map(\.handle), ["kept"], "the stop ran inside the quit's window")
         XCTAssertTrue(remote.runs[0].ended)
+    }
+
+    /// A chip's Stop cancelled before its run was known (the host removed,
+    /// the quit's window closed) is still recorded as a stop that did not
+    /// happen once the lookup answers, and the run is never stopped late.
+    func testAChipStopCancelledBeforeItsRunWasKnownIsRecorded() async throws {
+        remote.runs = [.init(handle: "kept", sessionID: "s1", resume: false)]
+        rows["s1"] = Fixture.row("s1", project: "/home/u/project", host: hostID)
+        saveChip()
+        model.restore()
+        let chip = try XCTUnwrap(model.tabs.first)
+        let lookup = Gate(), looking = Gate()
+        remote.liveRunGate = { await looking.open(); await lookup.wait() }
+        model.requestClose(tabID: chip.id)
+        model.remoteTabs.confirmStop()
+        await looking.wait()
+        model.remoteTabs.operations.expireStops()
+        await lookup.open()
+        await settle(self.remote.leftRunningCalls.map(\.0) == ["kept"], "recorded once the run is known")
+        XCTAssertEqual(remote.leftRunningCalls.first?.1, .quitDeadline)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(remote.stops.isEmpty, "never stopped after the cancellation")
     }
 
     /// A creation detached before its launch reached the host is recorded

@@ -165,6 +165,31 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertTrue(app.queuedRemoteNotices.isEmpty)
     }
 
+    /// A shown launch line counts a run no more once a tab here attaches to
+    /// it: "running there and not open in a tab" holds as of now.
+    func testAShownCountLineDropsARunATabAttachesTo() async throws {
+        let remote = FakeRemoteHost("box")
+        remote.runs = [.init(handle: "quit-0", sessionID: "s1", resume: false),
+                       .init(handle: "quit-1", sessionID: "s2", resume: false)]
+        remote.unnoticedQuit = 2
+        let db = try TempleDB.inMemory()
+        let row = Fixture.row("s1", project: "/home/u/p", host: hostID)
+        Fixture.join([row, Fixture.row("s2", project: "/home/u/p", host: hostID)], to: db)
+        let defaults = Fixture.uniqueDefaults()
+        defaults.set(try JSONEncoder().encode([["name": "box", "source": "config"]]), forKey: RemoteHostsModel.hostsKey)
+        let local = Fixture.hostsWithoutFolderEvidence().entries[0]
+        let hosts = HostRegistry(entries: [local, .init(source: FakeHostSource(host: hostID), launcher: remote)])
+        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), database: db,
+                           settings: SettingsStore(defaults: defaults), hostRegistry: hosts,
+                           remoteHosts: RemoteHostsModel(defaults: defaults, readConfigAliases: { [] }))
+        app.start()
+        await settle { app.remoteNotice != nil }
+        XCTAssertEqual(app.remoteNotice?.message, "2 sessions from before you quit are running on box.")
+        app.openSessions.openSession(row)
+        await settle { app.remoteNotice?.message == "A session from before you quit is running on box." }
+        XCTAssertEqual(app.remoteNotice?.message, "A session from before you quit is running on box.")
+    }
+
     /// The command line's close of a restored chip whose session still has
     /// a run on its host: refused (⌘W would ask); `--force` removes the
     /// chip and leaves the run as it is.

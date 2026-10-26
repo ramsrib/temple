@@ -2179,8 +2179,8 @@ rows ("Removing remote", below).
   sessions you closed are still running on <host>." line shows once per
   flag, one line at a time: a line that arrives while another shows (a
   second host answering at launch) waits its turn, and a line, shown or
-  waiting, counts a run no more once its stop is confirmed (a line left
-  with nothing goes). Stopping a working agent from that sheet or a row's menu asks
+  waiting, counts a run no more once its stop is confirmed or a tab here
+  attaches to it (a line left with nothing goes). Stopping a working agent from that sheet or a row's menu asks
   first; one waiting for input stops at once. There is no deferred
   stop, sweep, lock or retry: two review rounds found that any kill decided
   after the fact needs idle evidence Temple cannot get remotely. Temple
