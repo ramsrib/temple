@@ -102,14 +102,32 @@ extension AppModel {
         // Only for an enabled host: a notice or menu of one that is gone
         // opens nothing.
         guard remoteHost(host) != nil else {
-            if remoteNotice?.host == host { remoteNotice = nil }
+            dropRemoteNotices(host: host)
             return
         }
         if case .count? = remoteNotice?.kind, remoteNotice?.host == host, let launcher = remoteHost(host) {
-            remoteNotice = nil
+            advanceRemoteNotice()
             openSessions.remoteTabs.operations.run(host: host, .write) { await launcher.noticeLeftRunning() }
         }
         remoteSessionsSheet = RemoteSessionsRequest(host: host)
+    }
+
+    /// One line at a time: a notice that arrives while one shows waits its
+    /// turn, so a second host's launch count, or a close's notice during
+    /// the launch line, is not lost.
+    func showRemoteNotice(_ notice: RemoteNotice) {
+        if remoteNotice == nil { remoteNotice = notice } else { queuedRemoteNotices.append(notice) }
+    }
+
+    /// The shown notice goes; the next waiting one, if any, takes its place.
+    private func advanceRemoteNotice() {
+        remoteNotice = queuedRemoteNotices.isEmpty ? nil : queuedRemoteNotices.removeFirst()
+    }
+
+    /// Nothing of a host that is gone stays on screen or in the queue.
+    func dropRemoteNotices(host: HostID) {
+        queuedRemoteNotices.removeAll { $0.host == host }
+        if remoteNotice?.host == host { advanceRemoteNotice() }
     }
 
     /// The notice's action opens the host's running sessions.
@@ -124,7 +142,7 @@ extension AppModel {
 
     public func dismissRemoteNotice() {
         guard let notice = remoteNotice else { return }
-        remoteNotice = nil
+        advanceRemoteNotice()
         if case .count = notice.kind, let launcher = remoteHost(notice.host) {
             openSessions.remoteTabs.operations.run(host: notice.host, .write) { await launcher.noticeLeftRunning() }
         }
@@ -142,8 +160,7 @@ extension AppModel {
             let ticket = openSessions.remoteTabs.gate.ticket(host: host)
             openSessions.remoteTabs.operations.run(host: host, .query) { [weak self] in
                 let found = await launcher.contactLeftRunning()
-                guard let self, self.openSessions.remoteTabs.gate.admit(.contactNotice, ticket), let found,
-                      self.remoteNotice == nil else { return }
+                guard let self, self.openSessions.remoteTabs.gate.admit(.contactNotice, ticket), let found else { return }
                 // Proven running there, and not open in a tab here now (one
                 // reattached while the host was asked is not news).
                 let tabs = self.openSessions.remoteTabs
@@ -152,8 +169,8 @@ extension AppModel {
                 guard closed + quit > 0 else { return }
                 let lines = [closed > 0 ? RemoteCopy.leftRunningCount(closed, host: host.rawValue) : nil,
                              quit > 0 ? RemoteCopy.quitCount(quit, host: host.rawValue) : nil]
-                self.remoteNotice = RemoteNotice(host: host, message: lines.compactMap { $0 }.joined(separator: " "),
-                                                 kind: .count(closed + quit))
+                self.showRemoteNotice(RemoteNotice(host: host, message: lines.compactMap { $0 }.joined(separator: " "),
+                                                   kind: .count(closed + quit)))
             }
         }
     }

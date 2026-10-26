@@ -612,6 +612,11 @@ public final class RemoteTabController {
             guard let host, let handle else {
                 detachClient()
                 model.removeTab(tab.id)
+                // A restored chip never opened this run has no handle of
+                // its own: its session's live run on the host is stopped by
+                // row, as "Stop on <host>" does, with no Temple client
+                // attached (there is none), and the outcome said once.
+                if let host, handle == nil, let sid = tab.sessionID { stopByRow(sessionID: sid, host: host, hostID: hostID) }
                 return
             }
             tab.remote?.phase = .stopping
@@ -717,6 +722,13 @@ public final class RemoteTabController {
             return
         }
         guard let host = model.launcherForHost(hostID) as? RemoteSessionHost else { return }
+        stopByRow(sessionID: sessionID, host: host, hostID: hostID)
+    }
+
+    /// A stop of a session's live run with no tab of it open here: the
+    /// run is looked up by row, stopped with no Temple client attached,
+    /// and a stop that did not happen is said once, naming the row.
+    private func stopByRow(sessionID: String, host: RemoteSessionHost, hostID: HostID) {
         let row = model.sessionRow(sessionID)
         let name = RemoteCopy.sessionName(title: row?.displayTitle, agent: row?.agent ?? .claude,
                                           directory: row?.directory ?? "")

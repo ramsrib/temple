@@ -2084,7 +2084,7 @@ needing a grant. Two reasons against, from review:
 ---
 
 ## ADR-036 — Sessions on another machine, through the user's own ssh
-**Date:** 2026-10-16 · **Status:** Accepted; amends ADR-010, ADR-029 and ADR-034; revised 2026-10-18 (close a wrong link as any tab, with no undo; Discard never stops; Remove asks; the launch notice after a quit); shipped in v0.6.0. Detail, review history and the as-built notes: [designs/remote-ssh.md](./designs/remote-ssh.md)
+**Date:** 2026-10-16 · **Status:** Accepted; amends ADR-010, ADR-029 and ADR-034; revised 2026-10-18 (close a wrong link as any tab, with no undo; Discard never stops; Remove asks; the launch notice after a quit); shipped in v0.6.0; revised 2026-10-26 after the remote audit (a restored chip's close asks; an archived active tab restores inert; the command line's open reconnects; notices take turns; ⌘T keeps the tmux rule). Detail, review history and the as-built notes: [designs/remote-ssh.md](./designs/remote-ssh.md)
 
 The owner's goal, verbatim: "I have a remote machine that runs Claude and
 Codex. I want to connect to it and run from that machine." What matters is
@@ -2170,12 +2170,15 @@ rows ("Removing remote", below).
   the marker is the end evidence; the marker means another terminal is
   attached; no answer means unconfirmed. A stop Temple could not carry out
   and confirm at that moment leaves the session **left running**: the tab
-  closes with one notice, the reason is on the run, and a row waits in
+  closes with one notice (an explicit Stop from the working prompt keeps
+  the tab, saying why in its band, until it is closed again), the reason
+  is on the run, and a row waits in
   **Running sessions on <host>**
   with Open (or Show tab) and Stop, and Dismiss on a flagged row (it clears
   the flag; the session keeps running either way); the sidebar's "N
   sessions you closed are still running on <host>." line shows once per
-  flag. Stopping a working agent from that sheet or a row's menu asks
+  flag, one line at a time: a line that arrives while another shows (a
+  second host answering at launch) waits its turn. Stopping a working agent from that sheet or a row's menu asks
   first; one waiting for input stops at once. There is no deferred
   stop, sweep, lock or retry: two review rounds found that any kill decided
   after the fact needs idle evidence Temple cannot get remotely. Temple
@@ -2189,7 +2192,13 @@ rows ("Removing remote", below).
   round 2: an idle stop at quit could only be decided from the settle
   timer's reading, which can take a long, quiet tool call for idle). Every
   run, pending Codex ones included, is left as it is and comes back as a
-  tab next launch, where closing it stops it. Each run whose tab was
+  tab next launch, where closing it stops it: a chip not yet opened that
+  run, of a session whose run is not Ended, asks first ("may still be
+  working", since nothing has said), Detach leaving the run and Stop
+  stopping it by row with no client attached; the command line refuses
+  such a chip without `--force`, which removes the chip and stops nothing
+  (revised 2026-10-26: closing the chip had removed it and left the run
+  running, unlisted until the next launch). Each run whose tab was
   connected is flagged `detached at quit` (a left-running reason in the
   remote store, no migration), so the next launch says once, for a host
   that answers, how many sessions from before the quit still run there and
@@ -2246,7 +2255,10 @@ rows ("Removing remote", below).
   anything, and its link says whether the row is removed or archived);
   never typed into,
   Temple stops tracking it. Quit treats pending runs like any: detached,
-  left running, back as chips next launch. Saying yes to an ended session
+  left running, back as chips next launch. A saved tab whose row is
+  archived (a link to an archived row keeps the archive) restores inert
+  even when it was the active one: the launch opens it for nobody, since
+  an open is what brings an archived row back. Saying yes to an ended session
   records which session it was and closes the tab, as a local exit does;
   its row is the way back, and nothing launches until asked.
   Claims are made unique per host by a partial unique index on claimed
@@ -2354,7 +2366,7 @@ migrates back. What stays in core by design: `host` in `session_state`,
 
 **Out of v1, said so:** a host without tmux 3.2 (Test connection says so,
 and, one rule everywhere, it leaves the launcher and ⌘N, is greyed in the
-`+` menu and the folder sheet won't start); tmux before 3.3 has no OSC 52 passthrough and
+`+` menu, the folder sheet won't start and ⌘T starts nothing there); tmux before 3.3 has no OSC 52 passthrough and
 no colour reports (Codex there uses its default palette); importing or
 listing sessions Temple did not start; per-host arguments (Settings'
 arguments apply on hosts too, `--dangerously-skip-permissions` included, as

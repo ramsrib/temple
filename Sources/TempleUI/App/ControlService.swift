@@ -93,6 +93,18 @@ extension AppModel {
             if tab.hasSurface, working, request.force != true {
                 return .failure(.refused, "Its agent is working. Pass --force to close it anyway.")
             }
+            // A restored chip of a session with a live run on its host: ⌘W
+            // asks whether to stop it; the command line can't, so it refuses,
+            // and with --force removes the chip and leaves the run as it is.
+            if openSessions.chipMayBeRunning(tab) {
+                guard request.force == true else {
+                    return .failure(.refused, RemoteCopy.mayBeRunningCLIRefusal(tab.host.rawValue))
+                }
+                let closed = controlSession(tab)
+                guard commit.commit() else { return Self.expired }
+                openSessions.closeTab(tab.id)
+                return ControlResponse(session: closed)
+            }
             let closed = controlSession(tab, atRest: atRest)
             guard commit.commit() else { return Self.expired }
             if atRest { openSessions.settleNow(tab) }
@@ -198,7 +210,9 @@ extension AppModel {
     private func openSession(_ id: String, commit: ControlCommit) async -> ControlResponse {
         if let tab = openSessions.openTab(forSessionID: id) {
             guard commit.commit() else { return Self.expired }
-            openSessions.activate(tab)
+            // As the sidebar's click: a tab on a host whose client ended
+            // reconnects, not only comes forward.
+            openSessions.focusOrReconnect(tab)
             return opened(id)
         }
         guard let lookup = await HistoryReader.lookup(id, hosts: hostRegistry, members: sessions) else {
@@ -215,7 +229,9 @@ extension AppModel {
         if openSessions.isQuitting { return Self.quitting }
         if let tab = openSessions.openTab(forSessionID: id) {
             guard commit.commit() else { return Self.expired }
-            openSessions.activate(tab)
+            // As the sidebar's click: a tab on a host whose client ended
+            // reconnects, not only comes forward.
+            openSessions.focusOrReconnect(tab)
             return opened(id)
         }
         let openTabs = Set(openSessions.tabs.compactMap { tab in tab.sessionID.map { SessionKey(id: $0, host: tab.host) } })

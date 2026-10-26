@@ -157,8 +157,9 @@ public struct RootView: View {
             Button("Cancel", role: .cancel) { model.openSessions.remoteTabs.cancelClose() }
         } message: {
             if let tab = model.openSessions.pendingRemoteCloseTab {
-                Text(model.openSessions.workingIsUncertain(tab) ? RemoteCopy.mayStillBeWorkingMessage(tab.host.rawValue)
-                                                                : RemoteCopy.stillWorkingMessage(tab.host.rawValue))
+                Text(model.openSessions.chipMayBeRunning(tab) ? RemoteCopy.chipMayBeRunningMessage(tab.host.rawValue)
+                     : model.openSessions.workingIsUncertain(tab) ? RemoteCopy.mayStillBeWorkingMessage(tab.host.rawValue)
+                     : RemoteCopy.stillWorkingMessage(tab.host.rawValue))
             }
         }
         .sheet(item: $model.remoteSessionsSheet) { request in
@@ -181,8 +182,9 @@ public struct RootView: View {
 
     private var pendingRemoteCloseTitle: String {
         guard let tab = model.openSessions.pendingRemoteCloseTab else { return "" }
-        // Just reattached, and nothing has said yet: "may still be working".
-        return model.openSessions.workingIsUncertain(tab)
+        // Just reattached, or never opened this run, and nothing has said
+        // yet: "may still be working".
+        return model.openSessions.workingIsUncertain(tab) || model.openSessions.chipMayBeRunning(tab)
             ? RemoteCopy.mayStillBeWorking(tab.host.rawValue, agent: tab.agent)
             : RemoteCopy.stillWorking(tab.host.rawValue, agent: tab.agent)
     }

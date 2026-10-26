@@ -508,6 +508,18 @@ public enum RemoteCopy {
         "Its agent is working on \(host). Pass --force to detach it (it keeps running), or stop it in Temple."
     }
 
+    /// The command line's close of a restored chip whose session still has
+    /// a run on its host: Temple can't tell whether its agent is working.
+    public static func mayBeRunningCLIRefusal(_ host: String) -> String {
+        "Its agent may still be working on \(host). Pass --force to close the tab (it keeps running), or stop it in Temple."
+    }
+
+    /// The close prompt for a restored chip not opened this run, whose
+    /// session has a run on its host that is not Ended.
+    public static func chipMayBeRunningMessage(_ host: String) -> String {
+        "This tab hasn't been opened since Temple launched, so Temple can't tell. Detach leaves it running on \(host); Stop ends it."
+    }
+
     // MARK: Closing and detaching (P4, P6, the File menu, the tab's ×)
 
     /// Closes a tab on a host and leaves its agent running there.

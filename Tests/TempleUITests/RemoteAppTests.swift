@@ -92,6 +92,66 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertEqual(RemoteCopy.leftRunningCount(1, host: "box"), "A session you closed is still running on box.")
     }
 
+    /// Two hosts answering at launch: the second line is not lost to the
+    /// first; it shows when the first is dismissed, and each marks its own
+    /// host's flags seen.
+    func testLaunchNoticesFromTwoHostsShowInTurn() async throws {
+        let box = FakeRemoteHost("box"), jet = FakeRemoteHost("jet")
+        box.unnoticed = 2
+        jet.unnoticedQuit = 1
+        let jetID = HostID(rawValue: "jet")
+        let defaults = Fixture.uniqueDefaults()
+        defaults.set(try JSONEncoder().encode([["name": "box", "source": "config"], ["name": "jet", "source": "config"]]),
+                     forKey: RemoteHostsModel.hostsKey)
+        let local = Fixture.hostsWithoutFolderEvidence().entries[0]
+        let hosts = HostRegistry(entries: [local, .init(source: FakeHostSource(host: hostID), launcher: box),
+                                           .init(source: FakeHostSource(host: jetID), launcher: jet)])
+        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), database: try TempleDB.inMemory(),
+                           settings: SettingsStore(defaults: defaults), hostRegistry: hosts,
+                           remoteHosts: RemoteHostsModel(defaults: defaults, readConfigAliases: { [] }))
+        app.start()
+        await settle { app.remoteNotice != nil && !app.queuedRemoteNotices.isEmpty }
+        let first = try XCTUnwrap(app.remoteNotice)
+        app.dismissRemoteNotice()
+        let second = try XCTUnwrap(app.remoteNotice, "the other host's line takes its turn")
+        XCTAssertEqual(Set([first.host, second.host]), [hostID, jetID])
+        XCTAssertEqual(Set([first.message, second.message]),
+                       ["2 sessions you closed are still running on box.",
+                        "A session from before you quit is running on jet."])
+        await settle { box.unnoticed == 0 || jet.unnoticedQuit == 0 }
+        XCTAssertTrue(first.host == hostID ? box.unnoticed == 0 && jet.unnoticedQuit == 1
+                                           : jet.unnoticedQuit == 0 && box.unnoticed == 2,
+                      "only the dismissed line's flags are marked seen")
+        app.dismissRemoteNotice()
+        XCTAssertNil(app.remoteNotice)
+        await settle { box.unnoticed == 0 && jet.unnoticedQuit == 0 }
+    }
+
+    /// The command line's close of a restored chip whose session still has
+    /// a run on its host: refused (⌘W would ask); `--force` removes the
+    /// chip and leaves the run as it is.
+    func testTheCommandLineRefusesAChipThatMayBeRunning() async throws {
+        let remote = FakeRemoteHost("box")
+        remote.runs = [.init(handle: "kept", sessionID: "s1", resume: false)]
+        let db = try TempleDB.inMemory()
+        Fixture.join([Fixture.row("s1", project: "/home/u/p", host: hostID)], to: db)
+        let app = try app(remote, db: db)
+        let chip = app.openSessions.appendSessionChip(host: hostID, sessionID: "s1", agent: .claude, directory: "/home/u/p")
+        XCTAssertTrue(app.openSessions.chipMayBeRunning(chip))
+
+        let refused = await app.handleControl(ControlRequest(.sessionsClose, id: "s1"))
+        XCTAssertEqual(refused.error?.code, .refused)
+        XCTAssertEqual(refused.error?.message,
+                       "Its agent may still be working on box. Pass --force to close the tab (it keeps running), or stop it in Temple.")
+        XCTAssertNotNil(app.openSessions.openTab(forSessionID: "s1"))
+
+        let closed = await app.handleControl(ControlRequest(.sessionsClose, id: "s1", force: true))
+        XCTAssertEqual(closed.session?.id, "s1")
+        XCTAssertNil(app.openSessions.openTab(forSessionID: "s1"))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(remote.stops.isEmpty, "--force closes the tab, never stops")
+    }
+
     /// The launch's reconciliation joins a claim and never unarchives its row.
     func testReconciliationJoinsAndNeverUnarchives() async throws {
         let db = try TempleDB.inMemory()

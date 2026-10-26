@@ -83,6 +83,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// does not take the keyboard from one. The app answers; the default is
     /// for tests.
     public var keyboardHeldByField: () -> Bool = { false }
+    /// Whether a new session may start on a host (the tmux rule: not on one
+    /// whose last test proved tmux unusable). The launcher, ⌘N and the `+`
+    /// menu apply it themselves; ⌘T asks here.
+    public var canStartOnHost: (HostID) -> Bool = { _ in true }
     public var launchDirectoryHandler: ((_ sessionID: String, _ host: HostID, _ directory: String) -> Void)?
     /// A new Codex session on a host was identified by the user's yes: the
     /// candidate's first prompt stands in for its row's title until the
@@ -256,9 +260,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     public func openSession(_ session: Session) {
         // Focusing a live process does not require resume facts or spawn again.
         if let existing = sessionTab(withSessionID: session.id), existing.hasSurface {
-            activate(existing)
-            // A tab on a host whose client ended: opening it again reconnects.
-            if existing.remote.map(RemoteTabController.reconnectable) == true { remoteTabs.reconnect(existing) }
+            focusOrReconnect(existing)
             return
         }
         guard session.canResume, let agent = session.agent, let directory = session.directory else {
@@ -344,6 +346,12 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     @discardableResult
     public func newSessionDefaultAgent(project: ProjectKey? = nil) -> SessionTab? {
         guard let key = project ?? activeProjectKey else { return nil }
+        // The tmux rule, one rule everywhere: a host proven unable to keep a
+        // session starts none from ⌘T either (the launcher says why).
+        guard canStartOnHost(key.host) else {
+            TempleUILog.launch.notice("new session refused on \(key.host.rawValue, privacy: .public): tmux unusable")
+            return nil
+        }
         return newSession(agent: defaultAgent(), project: key)
     }
 
@@ -697,6 +705,26 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             && !inputSinceSpawn.contains(tab.id)
     }
 
+    /// A restored chip of a session on a host, not opened this run, whose
+    /// session has a run there that is not Ended (as the host's store last
+    /// read it): its agent may be working, and Temple has nothing that says.
+    /// Its close asks, as a reattached tab's does; the command line refuses
+    /// it without `--force`.
+    public func chipMayBeRunning(_ tab: SessionTab) -> Bool {
+        guard tab.kind == .session, !tab.host.isLocal, tab.remote == nil, !tab.hasSurface,
+              let sid = tab.sessionID else { return false }
+        return remoteTabs.hasRun(sessionID: sid, host: tab.host)
+    }
+
+    /// Click a tab's chip or sidebar row, or the command line's open, for a
+    /// tab that exists: focused, and, on a host whose client ended
+    /// (Disconnected, or Status unknown), reconnected: an attach, never a
+    /// creation.
+    public func focusOrReconnect(_ tab: SessionTab) {
+        activate(tab)
+        if tab.hasSurface, tab.remote.map(RemoteTabController.reconnectable) == true { remoteTabs.reconnect(tab) }
+    }
+
     private func settleIfQuiet(_ tab: SessionTab) {
         // The timer's reading is taken: whatever it says is evidence.
         unsettledReattach.remove(tab.id)
@@ -808,8 +836,12 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         // rest once its title is quiet, whether or not the settle timer has
         // fired. Never on this Mac (`isAtRestNow`).
         if isAtRestNow(tab) { settleNow(tab) }
-        // A working agent on a host: Detach (it keeps working) or Stop.
-        if tab.kind == .session, tab.remote != nil, tab.hasLiveProcess, tab.activity == .running {
+        // A working agent on a host: Detach (it keeps working) or Stop. A
+        // restored chip never opened this run, whose session has a run on
+        // its host that is not Ended, may be working too: the same question,
+        // since closing it stops the run (as closing its open tab would).
+        let working = tab.kind == .session && tab.remote != nil && tab.hasLiveProcess && tab.activity == .running
+        if working || chipMayBeRunning(tab) {
             pendingRemoteCloseTabID = tabID
             return
         }
@@ -1236,6 +1268,14 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             return
         }
         let active = tabs[activeIndex]
+        // A saved tab whose row is archived restores as an inert chip, the
+        // active one included: activating it would open it, and an open is
+        // what brings an archived row back. (A tab linked to an archived
+        // Codex row keeps the archive, ADR-036; its chip waits for a click.)
+        if let sid = active.sessionID, sessionRow(sid)?.state.archived == true {
+            activeTabID = nil
+            return
+        }
         activate(active)
         if !active.hasSurface, active.launchPreparationError == Self.unknownDirectoryMessage {
             pendingRestoreActivation = active.id

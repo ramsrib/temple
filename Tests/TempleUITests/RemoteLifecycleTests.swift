@@ -1308,6 +1308,119 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertEqual(factory.created.last?.startedCommand?.argv.prefix(2), ["ssh", "create"])
     }
 
+    // MARK: Restored chips (the remote audit, 2026-10-26)
+
+    private func saveChip(active: Bool = false) {
+        persistence.save([PersistedTab(sessionID: "s1", agent: .claude, projectPath: "/home/u/project", title: "T", isActive: active)])
+    }
+
+    /// A restored chip not opened this run, whose session still has a run
+    /// on its host: Temple can't tell whether its agent is working, so its
+    /// close asks, as a reattached tab's does. Detach leaves the run; Stop
+    /// stops it by row, with no Temple client to detach first. A chip of a
+    /// session whose run ended closes at once, as before.
+    func testClosingARestoredChipWithALiveRunAsksThenStopsByRow() async throws {
+        remote.runs = [.init(handle: "kept", sessionID: "s1", resume: false)]
+        rows["s1"] = Fixture.row("s1", project: "/home/u/project", host: hostID)
+        saveChip()
+        model.restore()
+        let chip = try XCTUnwrap(model.tabs.first)
+        XCTAssertFalse(chip.hasSurface)
+        XCTAssertTrue(model.chipMayBeRunning(chip))
+        model.requestClose(tabID: chip.id)
+        XCTAssertEqual(model.pendingRemoteCloseTabID, chip.id, "asked: the run may be working")
+        model.remoteTabs.confirmDetach()
+        XCTAssertTrue(model.tabs.isEmpty)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(remote.stops.isEmpty, "Detach leaves it running")
+
+        saveChip()
+        makeModel()
+        model.restore()
+        let again = try XCTUnwrap(model.tabs.first)
+        model.requestClose(tabID: again.id)
+        XCTAssertEqual(model.pendingRemoteCloseTabID, again.id)
+        model.remoteTabs.confirmStop()
+        XCTAssertTrue(model.tabs.isEmpty, "the chip goes; the stop is owned by the controller")
+        await settle(self.remote.stops.count == 1, "stopped by row")
+        XCTAssertEqual(remote.stops.first?.handle, "kept")
+        XCTAssertEqual(remote.stops.first?.fromAttachedTab, false, "no Temple client was attached")
+        XCTAssertTrue(remote.runs[0].ended)
+
+        saveChip()
+        makeModel()
+        model.restore()
+        let ended = try XCTUnwrap(model.tabs.first)
+        XCTAssertFalse(model.chipMayBeRunning(ended), "its run ended")
+        model.requestClose(tabID: ended.id)
+        XCTAssertNil(model.pendingRemoteCloseTabID)
+        XCTAssertTrue(model.tabs.isEmpty, "closed at once, as a chip always was")
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(remote.stops.count, 1, "nothing more was stopped")
+    }
+
+    /// A local restored chip is never asked about: there is no run.
+    func testALocalRestoredChipClosesAtOnce() throws {
+        persistence.save([PersistedTab(sessionID: "l1", agent: .claude, projectPath: "/p", title: "T", isActive: false)])
+        rows["l1"] = Fixture.row("l1", project: "/p")
+        model.restore()
+        let chip = try XCTUnwrap(model.tabs.first)
+        XCTAssertFalse(model.chipMayBeRunning(chip))
+        model.requestClose(tabID: chip.id)
+        XCTAssertNil(model.pendingRemoteCloseTabID)
+        XCTAssertTrue(model.tabs.isEmpty)
+    }
+
+    /// A saved tab whose row is archived restores as an inert chip, the
+    /// active one included: the launch opens nothing (an open is what
+    /// brings an archived row back); a click still opens it.
+    func testAnArchivedActiveTabRestoresInert() async throws {
+        remote.runs = [.init(handle: "kept", sessionID: "s1", resume: false)]
+        let open = Fixture.row("s1", project: "/home/u/project", host: hostID).state
+        rows["s1"] = Session(state: SessionState(
+            id: open.id, pinned: false, archived: true, customName: nil, color: nil, generatedTitle: nil,
+            lastOpenedAt: nil, joinedVia: open.joinedVia, joinedAt: nil, agent: open.agent, host: open.host,
+            directory: open.directory, directorySource: open.directorySource, title: open.title,
+            lastActiveAt: open.lastActiveAt))
+        saveChip(active: true)
+        model.restore()
+        let chip = try XCTUnwrap(model.tabs.first)
+        XCTAssertNil(model.activeTabID, "the active chip stays inert")
+        XCTAssertEqual(model.activeProjectKey, chip.projectKey, "its project is still the one shown")
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(chip.hasSurface)
+        XCTAssertTrue(remote.opens.isEmpty, "nothing attached at launch")
+        model.activate(chip)
+        await settle(chip.hasLiveProcess, "a click opens it")
+    }
+
+    /// The command line's open, like the sidebar's click, reconnects a tab
+    /// on a host whose client ended, instead of only bringing it forward.
+    func testFocusOrReconnectReattachesADisconnectedTab() async throws {
+        let tab = await openRow()
+        let handle = try XCTUnwrap(tab.remote?.handle)
+        try await Task.sleep(for: .milliseconds(600))
+        remote.liveness = .present
+        factory.created.last?.simulateExit(status: 255)
+        await settle(tab.remote?.phase == .disconnected)
+        let spawned = factory.created.count
+        model.focusOrReconnect(tab)
+        await settle(tab.hasLiveProcess, "reconnected")
+        XCTAssertEqual(factory.created.count, spawned + 1)
+        XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["ssh", "attach", handle], "an attach, never a creation")
+        model.focusOrReconnect(tab)
+        XCTAssertEqual(factory.created.count, spawned + 1, "a connected tab only comes forward")
+    }
+
+    /// ⌘T applies the tmux rule as the launcher and ⌘N do: a host whose
+    /// last test proved tmux unusable starts nothing, and no row is minted.
+    func testCommandTObeysTheTmuxRule() {
+        model.canStartOnHost = { $0.isLocal }
+        XCTAssertNil(model.newSessionDefaultAgent(project: ProjectKey(host: hostID, path: "/home/u/p")))
+        XCTAssertTrue(model.tabs.isEmpty)
+        XCTAssertNotNil(model.newSessionDefaultAgent(project: Fixture.key("/p")), "this Mac is never refused")
+    }
+
     func testACodexRowWithAnIDResumes() async throws {
         let row = Fixture.row("c1", agent: .codex, project: "/p", host: hostID)
         rows["c1"] = row

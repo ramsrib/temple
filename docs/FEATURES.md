@@ -396,10 +396,16 @@ it. What follows appears for an enabled host only.
   this Mac is still working." about local working agents and adds
   "Sessions on <host> keep running; their tabs reconnect when you open them
   next launch." (with no host, it reads as it always did). After relaunch
-  each comes back as a tab that attaches when opened; a host that answers
+  each comes back as a tab that attaches when opened; closing one you have
+  not opened yet, while its session still runs on the host, asks ("Claude
+  Code may still be working on <host>.": **Detach** keeps it running,
+  **Stop** ends it). A saved tab whose row is archived comes back as an
+  inert chip even if it was the one on screen: nothing opens it until you
+  do. A host that answers
   says once, in the sidebar, how many sessions from before the quit it found
   still running there and not open in a tab, with **Running sessions on
-  <host>…**; that or × marks them seen.
+  <host>…**; that or × marks them seen. Sidebar lines about hosts show one
+  at a time: a second host's line waits until the first is dismissed.
 - **When Temple can't tell.** If Temple cannot tell whether a session is
   still running on its host, opening it only tries to attach. **Resume
   anyway…** starts it again from its transcript; the sheet says that the
@@ -477,7 +483,11 @@ it. What follows appears for an enabled host only.
 - **What stays on this Mac.** The usage meter, Reveal in Finder and
   `temple sessions new`. The command line lists, opens and closes sessions on
   hosts; `temple sessions close` refuses one that is working, and `--force`
-  detaches it rather than stopping it.
+  detaches it rather than stopping it; it also refuses a restored chip whose
+  session may still be running on its host (`⌘W` asks about that one), and
+  `--force` closes the chip and leaves the session as it is. `temple
+  sessions open` on a tab whose connection ended reconnects it, as clicking
+  its row does.
 
 ## Launcher / home page
 

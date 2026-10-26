@@ -413,6 +413,10 @@ public final class AppModel: ObservableObject {
     /// A session on a host was left running (at a close, or found at
     /// launch): one line at the foot of the rail, with Show.
     @Published public var remoteNotice: RemoteNotice?
+    /// Notices that arrived while one was showing (two hosts answering at
+    /// launch, a close's notice during the launch line): each shows in
+    /// turn, when the one before is dismissed or acted on.
+    var queuedRemoteNotices: [RemoteNotice] = []
     /// Hosts removed from Temple this run (by name): a tab still open for
     /// one says so at once. Adding the host again takes it out.
     @Published public internal(set) var removedRemoteHosts: Set<HostID> = []
@@ -727,7 +731,7 @@ public final class AppModel: ObservableObject {
         }
         openSessions.touchHandler = { [weak self] id, host, at in self?.overlay.touch(id, host: host, at: at) }
         openSessions.remoteTabs.noticeHandler = { [weak self] host, message in
-            self?.remoteNotice = RemoteNotice(host: host, message: message, kind: .closed)
+            self?.showRemoteNotice(RemoteNotice(host: host, message: message, kind: .closed))
         }
         openSessions.remoteTabs.gate.sheetIsActive = { [weak self] id in
             self?.remoteSessionsSheet?.id == id || self?.remoteFolderSheet?.id == id
@@ -791,6 +795,11 @@ public final class AppModel: ObservableObject {
             }
         }
         openSessions.keyboardHeldByField = { NSApp.keyWindow?.firstResponder is NSText }
+        // The tmux rule, for ⌘T as for the launcher and ⌘N: no session
+        // starts on a host whose last test proved tmux unusable.
+        openSessions.canStartOnHost = { [weak self] host in
+            host.isLocal || self?.remoteTmuxProblem(host) == nil
+        }
         openSessions.launchDirectoryHandler = { [weak self] id, host, cwd in
             self?.overlay.observeLaunchDirectory(id, host: host, cwd)
         }
@@ -1031,7 +1040,7 @@ public final class AppModel: ObservableObject {
             managedRemoteHosts.removeValue(forKey: host)
             // Nothing of a host that is gone stays on screen: its notice and
             // any sheet asked for it (no remote UI without an enabled host).
-            if remoteNotice?.host == host { remoteNotice = nil }
+            dropRemoteNotices(host: host)
             if remoteSessionsSheet?.host == host { remoteSessionsSheet = nil }
             if remoteFolderSheet?.host == host { remoteFolderSheet = nil }
         }
