@@ -49,8 +49,10 @@ final class RemoteHostLauncher: RemoteSessionHost {
     private let check: (Agent) -> LaunchAvailability
     private let extraArgs: (Agent) -> [String]
     /// Session ids with a run that is not Ended, as last read (for a row's
-    /// menu, which is built synchronously).
-    private var liveSessions: Set<String> = []
+    /// menu, which is built synchronously). Nil until the first read: a
+    /// question asked before it answers conservatively (a run may be there),
+    /// so a chip closed right after launch is asked about, not dropped.
+    private var liveSessions: Set<String>?
 
     init(sessions: RemoteSessions, availability: @escaping (Agent) -> LaunchAvailability,
          extraArgs: @escaping (Agent) -> [String]) {
@@ -172,7 +174,7 @@ final class RemoteHostLauncher: RemoteSessionHost {
         }
     }
 
-    func hasLiveRun(sessionID: String) -> Bool { liveSessions.contains(sessionID) }
+    func hasLiveRun(sessionID: String) -> Bool { liveSessions?.contains(sessionID) ?? true }
 
     func liveRunHandle(sessionID: String) async -> String? { await sessions.liveRun(sessionID: sessionID)?.handle }
 

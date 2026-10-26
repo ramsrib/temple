@@ -156,7 +156,11 @@ final class FakeRemoteHost: RemoteSessionHost {
     }
 
     func hasLiveRun(sessionID: String) -> Bool { live(sessionID) != nil }
-    func liveRunHandle(sessionID: String) async -> String? { live(sessionID).map { runs[$0].handle } }
+    var liveRunGate: (() async -> Void)?
+    func liveRunHandle(sessionID: String) async -> String? {
+        if let liveRunGate { await liveRunGate() }
+        return live(sessionID).map { runs[$0].handle }
+    }
     func manualStopCommand(handle: String) -> String { "tmux -L temple kill-session -t temple-\(handle)" }
     var tracked: (sessions: [RemoteTrackedSession], checked: Bool) = ([], true)
     var trackedGate: (() async -> Void)?
@@ -1357,6 +1361,64 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertTrue(model.tabs.isEmpty, "closed at once, as a chip always was")
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(remote.stops.count, 1, "nothing more was stopped")
+    }
+
+    /// A chip's Stop is one owned stop from the moment it is asked for, the
+    /// run's lookup included: a quit that begins before the lookup answers
+    /// lets it run inside the quit's window, as any stop a close started.
+    func testAChipStopIsOwnedFromTheMomentItIsAsked() async throws {
+        remote.runs = [.init(handle: "kept", sessionID: "s1", resume: false)]
+        rows["s1"] = Fixture.row("s1", project: "/home/u/project", host: hostID)
+        saveChip()
+        model.restore()
+        let chip = try XCTUnwrap(model.tabs.first)
+        let lookup = Gate()
+        remote.liveRunGate = { await lookup.wait() }
+        model.requestClose(tabID: chip.id)
+        model.remoteTabs.confirmStop()
+        XCTAssertTrue(model.tabs.isEmpty)
+        model.prepareForQuit()
+        await lookup.open()
+        _ = await drain()
+        XCTAssertEqual(remote.stops.map(\.handle), ["kept"], "the stop ran inside the quit's window")
+        XCTAssertTrue(remote.runs[0].ended)
+    }
+
+    /// A creation detached before its launch reached the host is recorded
+    /// (failed if never sent, so the next open creates again; unproven if
+    /// it may have run, so the next open only attaches): nothing is stopped.
+    func testDetachingACreationBeforeItsLaunchReachedTheHostRecordsIt() async throws {
+        remote.stageAfterSpawn = true
+        let hold = Gate()
+        remote.stageGate = { await hold.wait() }
+        let tab = model.newSession(agent: .claude, project: Fixture.key("~/project", host: hostID))
+        await settle(tab.hasLiveProcess)
+        XCTAssertEqual(tab.remote?.creating, true)
+        tab.activity = .running
+        model.requestClose(tabID: tab.id)
+        XCTAssertEqual(model.pendingRemoteCloseTabID, tab.id)
+        model.remoteTabs.confirmDetach()
+        await settle(!self.model.tabs.contains { $0 === tab })
+        await settle(self.remote.unproven == ["h1"], "the creation's outcome is recorded at the detach")
+        XCTAssertTrue(remote.stops.isEmpty, "Detach stops nothing")
+        await hold.open()
+    }
+
+    /// The quit records the same for a creation it catches mid-launch,
+    /// beside the detached-at-quit flag, so the next launch's open does not
+    /// attach for good to a session that never existed.
+    func testAQuitRecordsACreationWhoseLaunchMayNotHaveReachedTheHost() async throws {
+        remote.stageAfterSpawn = true
+        let hold = Gate()
+        remote.stageGate = { await hold.wait() }
+        let tab = model.newSession(agent: .claude, project: Fixture.key("~/project", host: hostID))
+        await settle(tab.hasLiveProcess)
+        model.prepareForQuit()
+        _ = await drain()
+        XCTAssertEqual(remote.unproven, ["h1"])
+        XCTAssertEqual(remote.leftRunningCalls.map(\.0), ["h1"], "flagged at the quit as before")
+        XCTAssertTrue(remote.stops.isEmpty)
+        await hold.open()
     }
 
     /// A local restored chip is never asked about: there is no run.

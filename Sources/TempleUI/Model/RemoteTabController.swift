@@ -30,6 +30,10 @@ public final class RemoteTabController {
 
     /// A session on a host was left running when it was closed: one notice.
     public var noticeHandler: ((_ host: HostID, _ message: String) -> Void)?
+    /// A run's stop was confirmed (by a close, a row's menu, a chip's Stop,
+    /// or Running sessions…): a sidebar line counting it as running is
+    /// reconciled.
+    public var runEndedHandler: ((_ host: HostID, _ handle: String) -> Void)?
     /// Discard on a session whose conversation was never confirmed: the
     /// app lets its row go (or archives it, if the row is the user's), only
     /// while the row is still the membership Discard was chosen for.
@@ -312,8 +316,18 @@ public final class RemoteTabController {
         let userClosed = model.closingTabIDs.remove(tab.id) != nil
         if userClosed {
             // Detach and Stop now remove the tab; an explicit Stop keeps it
-            // until its outcome is known.
-            if tab.remote?.phase != .stopping { model.removeTab(tab.id) } else { tab.activity = .exited(status: status) }
+            // until its outcome is known. A creation detached before its
+            // launch reached the host is recorded failed (the next open
+            // creates again), or unproven once it may have (attach-only):
+            // the stop's own path does the same for a Stop.
+            if tab.remote?.phase != .stopping {
+                if tab.remote?.creating == true, let host = remoteHost(for: tab), let handle = tab.remote?.handle {
+                    operations.run(host: tab.host, .write) { _ = await host.markCreationUnproven(handle) }
+                }
+                model.removeTab(tab.id)
+            } else {
+                tab.activity = .exited(status: status)
+            }
             return
         }
         guard let host = remoteHost(for: tab), let state = tab.remote, let handle = state.handle else {
@@ -656,8 +670,9 @@ public final class RemoteTabController {
                            completion: @escaping @MainActor (RemoteStopResult) -> Void) {
         operations.run(host: hostID, .stop, onCancel: { reason in
             await host.leaveRunning(handle, reason: reason)
-        }) {
+        }) { [weak self] in
             guard let result = try? await host.stop(handle, fromAttachedTab: fromAttachedTab) else { return }
+            self?.ended(result, host: hostID, handle: handle)
             completion(result)
         }
     }
@@ -733,14 +748,32 @@ public final class RemoteTabController {
         let name = RemoteCopy.sessionName(title: row?.displayTitle, agent: row?.agent ?? .claude,
                                           directory: row?.directory ?? "")
         let ticket = gate.ticket(host: hostID)
-        operations.run(host: hostID, .query) { [weak self] in
+        // One stop from the moment it is asked for, the run's lookup
+        // included: the quit lets it run inside its window (a lookup run
+        // as a query would be cancelled, and the stop never started);
+        // cancelled before its answer, it is recorded left running once
+        // the run is known, as any stop is.
+        let resolved = ResolvedHandle()
+        operations.run(host: hostID, .stop, onCancel: { reason in
+            if let handle = resolved.handle { await host.leaveRunning(handle, reason: reason) }
+        }) { [weak self] in
             guard let handle = await host.liveRunHandle(sessionID: sessionID), !Task.isCancelled, let self,
                   self.gate.launcher(hostID).map(ObjectIdentifier.init) == ticket.launcher else { return }
-            self.startStop(host: host, hostID: hostID, handle: handle, fromAttachedTab: false) { [weak self] result in
-                guard let self, self.gate.admit(.rowStopNotice, ticket) else { return }
-                self.notice(result, host: host, hostID: hostID, session: name)
-            }
+            resolved.handle = handle
+            guard let result = try? await host.stop(handle, fromAttachedTab: false) else { return }
+            self.ended(result, host: hostID, handle: handle)
+            guard self.gate.admit(.rowStopNotice, ticket) else { return }
+            self.notice(result, host: host, hostID: hostID, session: name)
         }
+    }
+
+    /// The run a stop by row resolved, for its cancellation to record.
+    @MainActor private final class ResolvedHandle { var handle: String? }
+
+    /// A stop that was confirmed: said to the app, which takes the run out
+    /// of any sidebar line that still counts it as running.
+    private func ended(_ result: RemoteStopResult, host: HostID, handle: String) {
+        if result == .stopped { runEndedHandler?(host, handle) }
     }
 
     /// Stop, from "Running sessions on <host>": a tracked run, no Temple client
@@ -835,6 +868,14 @@ public final class RemoteTabController {
         // which the quit's barrier waits for.
         if let host = remoteHost(for: tab), let handle = tab.remote?.handle, flaggedAtQuit.insert(handle).inserted {
             operations.run(host: tab.host, .write) { await host.leaveRunning(handle, reason: .detachedAtQuit) }
+            // A creation the quit caught before its launch reached the host
+            // (its staging was just cancelled) is recorded failed, so the
+            // next launch's open creates again instead of attaching to a
+            // session that never existed; one that may have run is unproven,
+            // attach-only. A collected creation is left as it is.
+            if tab.remote?.creating == true {
+                operations.run(host: tab.host, .write) { _ = await host.markCreationUnproven(handle) }
+            }
         }
         return surface
     }
@@ -1081,7 +1122,11 @@ public final class RemoteTabController {
         if let at = tab.launchObservation?.at { model.touchHandler?(id, hostID, at) }
         // An ended tab's title is the terminal's last, never the session's
         // own: the transcript's fill titles the row (the hint until then).
-        if tab.remote?.phase == .endedPending {
+        // A tab whose stop is out learned its id at the last chance
+        // (`closePending`): the stop decides the run, and the tab closes as
+        // an identified one does, never becoming a resumable tab that a
+        // save (or the quit's) could restore and resume after the stop.
+        if tab.remote?.phase == .endedPending || tab.remote?.phase == .stopping {
             concludeEnded(tab, id: id, host: host)
             return
         }
@@ -1589,6 +1634,7 @@ public final class RemoteTabController {
             // Durable: nothing typed and nothing learned, and it stopped:
             // there is nothing to keep.
             guard let self else { return }
+            self.ended(result, host: hostID, handle: handle)
             if result == .stopped, !identified, !typed {
                 await self.reportWrite(host, noticeTicket) { try await host.dismissRun(handle) }
             }

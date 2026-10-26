@@ -127,6 +127,44 @@ final class RemoteAppTests: XCTestCase {
         await settle { box.unnoticed == 0 && jet.unnoticedQuit == 0 }
     }
 
+    /// A launch line counts a run no more once its stop is confirmed, shown
+    /// or still waiting its turn: no line says a session is running that
+    /// was just stopped; a line left with nothing goes.
+    func testACountLineDropsARunWhoseStopWasConfirmed() async throws {
+        let box = FakeRemoteHost("box"), jet = FakeRemoteHost("jet")
+        box.unnoticed = 2
+        jet.unnoticedQuit = 1
+        let jetID = HostID(rawValue: "jet")
+        let defaults = Fixture.uniqueDefaults()
+        defaults.set(try JSONEncoder().encode([["name": "box", "source": "config"], ["name": "jet", "source": "config"]]),
+                     forKey: RemoteHostsModel.hostsKey)
+        let local = Fixture.hostsWithoutFolderEvidence().entries[0]
+        let hosts = HostRegistry(entries: [local, .init(source: FakeHostSource(host: hostID), launcher: box),
+                                           .init(source: FakeHostSource(host: jetID), launcher: jet)])
+        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), database: try TempleDB.inMemory(),
+                           settings: SettingsStore(defaults: defaults), hostRegistry: hosts,
+                           remoteHosts: RemoteHostsModel(defaults: defaults, readConfigAliases: { [] }))
+        let jetAnswers = Gate()
+        jet.contactGate = { await jetAnswers.wait() }
+        app.start()
+        await settle { app.remoteNotice?.host == hostID }
+        await jetAnswers.open()
+        await settle { !app.queuedRemoteNotices.isEmpty }
+        XCTAssertEqual(app.queuedRemoteNotices.first?.host, jetID)
+        // The waiting line's only run is stopped from Running sessions…:
+        // the line never shows.
+        app.openSessions.remoteTabs.stopTracked(handle: "quit-0", host: jetID, agent: .claude) { _ in }
+        await settle { app.queuedRemoteNotices.isEmpty }
+        XCTAssertEqual(app.remoteNotice?.host, hostID, "the shown line is as it was")
+        // The shown line's runs, one by one.
+        app.openSessions.remoteTabs.stopTracked(handle: "closed-0", host: hostID, agent: .claude) { _ in }
+        await settle { app.remoteNotice?.message == "A session you closed is still running on box." }
+        app.openSessions.remoteTabs.stopTracked(handle: "closed-1", host: hostID, agent: .claude) { _ in }
+        await settle { app.remoteNotice == nil }
+        XCTAssertNil(app.remoteNotice, "nothing left to say")
+        XCTAssertTrue(app.queuedRemoteNotices.isEmpty)
+    }
+
     /// The command line's close of a restored chip whose session still has
     /// a run on its host: refused (⌘W would ask); `--force` removes the
     /// chip and leaves the run as it is.

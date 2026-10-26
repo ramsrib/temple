@@ -7,10 +7,22 @@ public struct RemoteNotice: Equatable, Identifiable {
     public enum Kind: Equatable {
         /// A close could not stop the session (shown once, at the close).
         case closed
-        /// Found at launch: `count` sessions are flagged on a host that just
-        /// answered (shown once per flag).
-        case count(Int)
+        /// Found at launch: these runs (those a close left running, those
+        /// whose tab was connected at the quit) are flagged on a host that
+        /// just answered, and were running there and not open in a tab
+        /// (shown once per flag). A run stopped or reattached since is
+        /// taken out before the line shows, or while it does.
+        case count(closed: [String], quit: [String])
      }
+
+    /// The launch line for a host's flagged runs, or nil with none left.
+    static func count(host: HostID, closed: [String], quit: [String]) -> RemoteNotice? {
+        guard !closed.isEmpty || !quit.isEmpty else { return nil }
+        let lines = [closed.isEmpty ? nil : RemoteCopy.leftRunningCount(closed.count, host: host.rawValue),
+                     quit.isEmpty ? nil : RemoteCopy.quitCount(quit.count, host: host.rawValue)]
+        return RemoteNotice(host: host, message: lines.compactMap { $0 }.joined(separator: " "),
+                            kind: .count(closed: closed, quit: quit))
+    }
     public let id = UUID()
     public let host: HostID
     public let message: String
@@ -116,12 +128,43 @@ extension AppModel {
     /// turn, so a second host's launch count, or a close's notice during
     /// the launch line, is not lost.
     func showRemoteNotice(_ notice: RemoteNotice) {
+        guard let notice = current(notice) else { return }
         if remoteNotice == nil { remoteNotice = notice } else { queuedRemoteNotices.append(notice) }
     }
 
-    /// The shown notice goes; the next waiting one, if any, takes its place.
+    /// The shown notice goes; the next waiting one that still holds, if
+    /// any, takes its place.
     private func advanceRemoteNotice() {
-        remoteNotice = queuedRemoteNotices.isEmpty ? nil : queuedRemoteNotices.removeFirst()
+        remoteNotice = nil
+        while !queuedRemoteNotices.isEmpty, remoteNotice == nil {
+            remoteNotice = current(queuedRemoteNotices.removeFirst())
+        }
+    }
+
+    /// A count line as of now: a run stopped since (its stop confirmed) or
+    /// open in a tab here is taken out; nil once none is left. A close's
+    /// notice is as it was said.
+    private func current(_ notice: RemoteNotice) -> RemoteNotice? {
+        guard case .count(let closed, let quit) = notice.kind else { return notice }
+        let stopped = stoppedRemoteHandles[notice.host] ?? []
+        let tabs = openSessions.remoteTabs
+        func still(_ handle: String) -> Bool { !stopped.contains(handle) && !tabs.hasLiveTab(handle: handle, host: notice.host) }
+        return RemoteNotice.count(host: notice.host, closed: closed.filter(still), quit: quit.filter(still))
+    }
+
+    /// A run's stop was confirmed: a line counting it, shown or waiting,
+    /// counts it no more (a line left with nothing goes). The flags
+    /// themselves are the store's: the stop cleared this run's.
+    func remoteRunEnded(host: HostID, handle: String) {
+        stoppedRemoteHandles[host, default: []].insert(handle)
+        queuedRemoteNotices = queuedRemoteNotices.compactMap(current)
+        if let shown = remoteNotice, shown.host == host {
+            if let updated = current(shown) {
+                if updated.message != shown.message { remoteNotice = updated }
+            } else {
+                advanceRemoteNotice()
+            }
+        }
     }
 
     /// Nothing of a host that is gone stays on screen or in the queue.
@@ -164,13 +207,9 @@ extension AppModel {
                 // Proven running there, and not open in a tab here now (one
                 // reattached while the host was asked is not news).
                 let tabs = self.openSessions.remoteTabs
-                let closed = found.closed.filter { !tabs.hasLiveTab(handle: $0, host: host) }.count
-                let quit = found.quit.filter { !tabs.hasLiveTab(handle: $0, host: host) }.count
-                guard closed + quit > 0 else { return }
-                let lines = [closed > 0 ? RemoteCopy.leftRunningCount(closed, host: host.rawValue) : nil,
-                             quit > 0 ? RemoteCopy.quitCount(quit, host: host.rawValue) : nil]
-                self.showRemoteNotice(RemoteNotice(host: host, message: lines.compactMap { $0 }.joined(separator: " "),
-                                                   kind: .count(closed + quit)))
+                let closed = found.closed.filter { !tabs.hasLiveTab(handle: $0, host: host) }
+                let quit = found.quit.filter { !tabs.hasLiveTab(handle: $0, host: host) }
+                if let notice = RemoteNotice.count(host: host, closed: closed, quit: quit) { self.showRemoteNotice(notice) }
             }
         }
     }

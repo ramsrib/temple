@@ -724,6 +724,30 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertTrue(joins.map(\.id).contains("c5"), "learned at the close, it joined core")
     }
 
+    /// An id learned at the close, while the stop is out, never makes the
+    /// tab a resumable one: no save of the tab set holds it (a quit's
+    /// save meanwhile would restore and resume the session the stop then
+    /// ended). The tab closes as an identified one does; the run is handed
+    /// over once the tab is gone; the row is the way back.
+    func testAnIDLearnedDuringTheStopNeverSavesAResumableTab() async throws {
+        model.remoteTabs.identitySchedule = [60]
+        let tab = await newCodex()
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        remote.identityResult = .adopted("c5", directory: "/home/u/project")
+        let stop = Gate()
+        remote.stopGate = { _ in await stop.wait() }
+        tab.activity = .idle
+        model.closeTab(tab.id)
+        await settle(self.joins.map(\.id).contains("c5"), "learned at the close, it joined core")
+        await settle(!self.model.tabs.contains { $0 === tab }, "the tab closes as an identified one does")
+        XCTAssertFalse(persistence.load().contains { $0.sessionID == "c5" }, "never saved as a resumable tab")
+        XCTAssertNotEqual(remote.pending.first?.ended, true, "the stop is still out")
+        await stop.open()
+        await settle(self.remote.pending.first?.ended == true, "the stop ends the run")
+        XCTAssertFalse(persistence.load().contains { $0.sessionID == "c5" })
+        await settle(self.remote.closedPending == ["p1"], "its own restoration is retired once the tab is gone")
+    }
+
     /// Closed unidentified after something was typed: the tab stays with
     /// the question; nothing typed: it goes and is no longer tracked.
     func testClosingAnUnidentifiedPendingTab() async throws {

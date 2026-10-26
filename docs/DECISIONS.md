@@ -2178,7 +2178,9 @@ rows ("Removing remote", below).
   the flag; the session keeps running either way); the sidebar's "N
   sessions you closed are still running on <host>." line shows once per
   flag, one line at a time: a line that arrives while another shows (a
-  second host answering at launch) waits its turn. Stopping a working agent from that sheet or a row's menu asks
+  second host answering at launch) waits its turn, and a line, shown or
+  waiting, counts a run no more once its stop is confirmed (a line left
+  with nothing goes). Stopping a working agent from that sheet or a row's menu asks
   first; one waiting for input stops at once. There is no deferred
   stop, sweep, lock or retry: two review rounds found that any kill decided
   after the fact needs idle evidence Temple cannot get remotely. Temple
@@ -2198,7 +2200,13 @@ rows ("Removing remote", below).
   stopping it by row with no client attached; the command line refuses
   such a chip without `--force`, which removes the chip and stops nothing
   (revised 2026-10-26: closing the chip had removed it and left the run
-  running, unlisted until the next launch). Each run whose tab was
+  running, unlisted until the next launch). That stop, its lookup of the
+  run included, is one owned stop from the moment it is asked for, so a
+  quit lets it run inside its window. A creation the quit (or a Detach)
+  catches before its launch reached the host is recorded failed, and one
+  that may have run unproven, as a Cancel or Stop records it, so the next
+  open creates again or attaches, never attaches for good to a session
+  that never existed. Each run whose tab was
   connected is flagged `detached at quit` (a left-running reason in the
   remote store, no migration), so the next launch says once, for a host
   that answers, how many sessions from before the quit still run there and
@@ -2247,7 +2255,9 @@ rows ("Removing remote", below).
   its own.
   A host without `/proc` is question-only. A pending session's own
   lifecycle: closing it while idle checks its identity once more, then
-  stops it; identified, the tab closes; unidentified and typed into, the
+  stops it; identified, the tab closes (at once, while the stop is still
+  out: it never becomes a resumable tab a save, or the quit's, could
+  restore and resume after the stop); unidentified and typed into, the
   tab stays with "Codex ended on <host> before Temple learned which session
   this was." and
   the question, **Start a new session here** and **Remove from Temple**

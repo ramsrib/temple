@@ -405,7 +405,9 @@ it. What follows appears for an enabled host only.
   says once, in the sidebar, how many sessions from before the quit it found
   still running there and not open in a tab, with **Running sessions on
   <host>…**; that or × marks them seen. Sidebar lines about hosts show one
-  at a time: a second host's line waits until the first is dismissed.
+  at a time: a second host's line waits until the first is dismissed, and a
+  line stops counting a session the moment you stop it (from the sheet, a
+  row's menu, or a tab you close), going away when none is left.
 - **When Temple can't tell.** If Temple cannot tell whether a session is
   still running on its host, opening it only tries to attach. **Resume
   anyway…** starts it again from its transcript; the sheet says that the

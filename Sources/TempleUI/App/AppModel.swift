@@ -417,6 +417,9 @@ public final class AppModel: ObservableObject {
     /// launch, a close's notice during the launch line): each shows in
     /// turn, when the one before is dismissed or acted on.
     var queuedRemoteNotices: [RemoteNotice] = []
+    /// Runs whose stop was confirmed this run, per host: a count line never
+    /// says one of them is still running.
+    var stoppedRemoteHandles: [HostID: Set<String>] = [:]
     /// Hosts removed from Temple this run (by name): a tab still open for
     /// one says so at once. Adding the host again takes it out.
     @Published public internal(set) var removedRemoteHosts: Set<HostID> = []
@@ -732,6 +735,9 @@ public final class AppModel: ObservableObject {
         openSessions.touchHandler = { [weak self] id, host, at in self?.overlay.touch(id, host: host, at: at) }
         openSessions.remoteTabs.noticeHandler = { [weak self] host, message in
             self?.showRemoteNotice(RemoteNotice(host: host, message: message, kind: .closed))
+        }
+        openSessions.remoteTabs.runEndedHandler = { [weak self] host, handle in
+            self?.remoteRunEnded(host: host, handle: handle)
         }
         openSessions.remoteTabs.gate.sheetIsActive = { [weak self] id in
             self?.remoteSessionsSheet?.id == id || self?.remoteFolderSheet?.id == id
