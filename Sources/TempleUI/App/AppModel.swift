@@ -757,24 +757,36 @@ public final class AppModel: ObservableObject {
         // relaunch goes the same way, and a session with a transcript on
         // record is never even asked about.
         openSessions.unstartedHandler = { [weak self] id, host in
-            // The whole boundary (AutoArchivePolicy.neverStarted) on the row
-            // as it stands at the close, not only in the statement later:
-            // the close's own touch clears a keep when it flushes, which
-            // could be while the absence check is still out.
-            guard let self, let row = self.overlay.rows[id], row.host == host,
-                  AutoArchivePolicy.neverStarted(row),
-                  let incarnation = row.incarnation,
+            guard let self, self.overlay.rows[id]?.host == host,
                   let engine = self.engineSet.engine(for: host) else { return }
-            // The membership the absence is confirmed for is the one the
-            // drop names: a row that left and joined again during the check
-            // is another session, not this one.
+            // Decided on durable state: this process's own activity on the
+            // row is written first (a touch still pending from the spawn),
+            // then the row is read from the database rather than this
+            // store's view of it, which another process on the same file
+            // (a person's restore in the installed Temple beside a dev
+            // build) does not update. The whole boundary
+            // (AutoArchivePolicy.neverStarted) is read here and rechecked in
+            // the statement; the close itself touches nothing for an unused
+            // tab, so no write of this close's own can spend a keep after
+            // this read.
+            self.overlay.flushPendingTouch(id)
+            guard let row = self.overlay.storedRow(id), row.host == host,
+                  AutoArchivePolicy.neverStarted(row),
+                  let incarnation = row.incarnation else { return }
+            // The proof is for this membership (the engine re-reads the row
+            // and answers for it or for none), and so is the drop: a row
+            // that left and joined again is another session, not this one.
             let ref = MembershipRef(id: id, host: host, incarnation: incarnation)
             Task { @MainActor [weak self] in
-                guard await engine.confirmAbsence(id) else {
+                guard await engine.confirmAbsence(ref) else {
                     TempleUILog.db.notice("unstarted session \(id, privacy: .public) kept: absence not confirmed")
                     return
                 }
-                guard let self, self.overlay.discardUnstartedCreation(ref) else { return }
+                // A tab of it opened meanwhile (⌘⇧T while the check was out)
+                // keeps it, whatever the saved tab set says: another process
+                // saving its own tabs replaces this one's saved set.
+                guard let self, self.openSessions.openTab(forSessionID: id) == nil,
+                      self.overlay.discardUnstartedCreation(ref) else { return }
                 self.openSessions.forgetClosedTabs(sessionID: id)
             }
         }

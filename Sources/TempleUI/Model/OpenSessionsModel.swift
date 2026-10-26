@@ -839,7 +839,10 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     public func closeTab(_ tabID: SessionTab.ID) {
         guard !isQuitting, let tab = tabs.first(where: { $0.id == tabID }) else { return }
         if tab.kind == .session, let sessionID = tab.sessionID {
-            touchHandler?(sessionID, tab.host, nil)
+            // Closing a tab nothing was sent through is not the person using
+            // the session: no recency bump, and no touch that could spend a
+            // keep while the close's drop is being decided (ADR-038).
+            if !tab.startedNothing { touchHandler?(sessionID, tab.host, nil) }
             closedTabs.append(ClosedTabRecord(
                 host: tab.host,
                 sessionID: sessionID,
@@ -1250,7 +1253,7 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
                 remoteTabs.handleExit(tab, surface: surface, status: status)
                 return
             }
-            if let sid = tab.sessionID { touchHandler?(sid, tab.host, nil) }
+            if let sid = tab.sessionID, !tab.startedNothing { touchHandler?(sid, tab.host, nil) }
             // Whatever the launch reported is read now, before deciding: a
             // launcher failure written just before the exit is not missed.
             tab.launchResult?.finish()
@@ -1493,7 +1496,7 @@ extension OpenSessionsModel {
     /// A tab the user closed, for ⌘⇧T.
     func recordClosed(_ tab: SessionTab) {
         guard tab.kind == .session, let sessionID = tab.sessionID else { return }
-        touchHandler?(sessionID, tab.host, nil)
+        if !tab.startedNothing { touchHandler?(sessionID, tab.host, nil) }
         closedTabs.append(ClosedTabRecord(host: tab.host, sessionID: sessionID, agent: tab.agent,
                                           projectPath: tab.projectPath, title: tab.title))
         if closedTabs.count > Self.closedTabLimit { closedTabs.removeFirst(closedTabs.count - Self.closedTabLimit) }

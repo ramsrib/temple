@@ -346,6 +346,18 @@ public final class SessionOverlayStore: ObservableObject {
         for id in Array(pendingTouches.keys) { flushTouch(id) }
     }
 
+    /// One session's pending touch written now: a decision about the row
+    /// (its drop at a tab's close) is made on what the database says after
+    /// this process's own activity has landed, not before.
+    public func flushPendingTouch(_ id: String) { flushTouch(id) }
+
+    /// The row as the database has it this instant, past this store's own
+    /// view of it: another process on the same file (an installed Temple
+    /// beside a dev build) writes without telling this one.
+    public func storedRow(_ id: String) -> SessionState? {
+        try? db.sessionState(id)
+    }
+
     /// Undo of an import (`TempleDB.leave`): each row goes only if it is
     /// still an untouched import. Returns the ids that left; the rest stay
     /// Temple's, holding whatever was decided about them since.

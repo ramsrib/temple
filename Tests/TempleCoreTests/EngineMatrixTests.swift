@@ -803,11 +803,42 @@ final class EngineMatrixTests: XCTestCase {
         try join(h, id)
         let unmet = await h.engine.operationRevision(id)
         XCTAssertNil(unmet, "not a member yet")
-        let absent = await h.engine.confirmAbsence(id)
+        let absent = await h.engine.confirmAbsence(try ref(h, id))
         XCTAssertTrue(absent)
-        let stranger = await h.engine.confirmAbsence(uuid())
+        let stranger = await h.engine.confirmAbsence(MembershipRef(id: uuid(), host: h.source.host, incarnation: "none"))
         XCTAssertFalse(stranger, "a row this host does not own is nobody's to confirm")
         h.engine.releaseDatabaseCallbacks(reversed: false)
+    }
+
+    /// The proof is for the membership asked about, or for none: the engine
+    /// re-reads the row before answering, so a membership it still holds
+    /// from before a leave and rejoin (callbacks not caught up, or another
+    /// connection's writes) neither answers for the new one nor is answered
+    /// for itself. The new membership's own file decides it.
+    func testAbsenceIsConfirmedForTheMembershipAskedAboutOnly() async throws {
+        let h = try harness()
+        let id = uuid()
+        try join(h, id)
+        await h.engine.start()
+        try await waitUntil("absent") { self.resolution(h, id) == .confirmedAbsent }
+        let old = try ref(h, id)
+        // Replaced behind the engine's back: it still holds `old`.
+        h.engine.holdDatabaseCallbacks()
+        XCTAssertTrue(try h.db.leave(sessionID: id, host: h.source.host))
+        h.source.write(claudePath(id), agent: .claude, data: claudeData(id))
+        try join(h, id, path: claudePath(id))
+        let fresh = try ref(h, id)
+        XCTAssertNotEqual(old, fresh)
+        let forOld = await h.engine.confirmAbsence(old)
+        XCTAssertFalse(forOld, "the old membership is gone: nothing to confirm")
+        let forFresh = await h.engine.confirmAbsence(fresh)
+        XCTAssertFalse(forFresh, "the new membership has a file: not absent")
+        h.engine.releaseDatabaseCallbacks(reversed: false)
+    }
+
+    func ref(_ h: Harness, _ id: String) throws -> MembershipRef {
+        let state = try XCTUnwrap(try row(h, id))
+        return MembershipRef(id: id, host: state.host, incarnation: try XCTUnwrap(state.incarnation))
     }
 
     /// `confirmAbsence` asked while an older listing is held: that listing's
@@ -823,7 +854,8 @@ final class EngineMatrixTests: XCTestCase {
         await h.engine.requestResolution(id)
         try await waitUntil("listing held") { gate.arrivals == 1 }
         h.source.failNextLocates(1)
-        let answer = Task { await h.engine.confirmAbsence(id) }
+        let asked = try ref(h, id)
+        let answer = Task { await h.engine.confirmAbsence(asked) }
         try await waitUntil("asked") { (await h.engine.operationRevision(id) ?? 0) >= 2 }
         gate.open()
         let absent = await answer.value

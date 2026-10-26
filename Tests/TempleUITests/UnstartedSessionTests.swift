@@ -1,5 +1,6 @@
 import XCTest
-import TempleCore
+import GRDB
+@testable import TempleCore
 @testable import TempleUI
 @testable import TempleLocalHost
 
@@ -136,11 +137,15 @@ final class UnstartedSessionTests: XCTestCase {
         XCTAssertEqual(try db.sessionState(id)?.incarnation, fresh, "the old membership's absence says nothing about the new one")
     }
 
-    /// A row a person restored is kept: the close's own touch clears the
-    /// keep when it flushes, which may be while the absence check is still
-    /// out, so the keep is read before the check, not only in the statement.
-    func testAKeptRowStaysWhenItsCloseTouchFlushesDuringTheAbsenceCheck() async throws {
-        let db = try TempleDB.inMemory()
+    /// A row a person restored in another Temple on the same file (the
+    /// installed app beside a dev build) is kept: this process's store never
+    /// heard of the restore, so the close reads the row from the database
+    /// before deciding, and closing an unused tab touches nothing that could
+    /// spend the keep meanwhile (the spawn's touch predates it).
+    func testAKeepMadeByAnotherProcessIsSeenAndNotSpentByTheClose() async throws {
+        let path = root.appendingPathComponent("temple.sqlite")
+        let db = try TempleDB(path: path)
+        let other = try TempleDB(path: path)
         let engine = FakeEngine()
         engine.absent = true
         let gate = Gate()
@@ -148,16 +153,43 @@ final class UnstartedSessionTests: XCTestCase {
         let app = model(db, engine: engine)
         let tab = app.openSessions.newSession(agent: .claude, project: Fixture.key("/p"))
         let id = try XCTUnwrap(tab.sessionID)
-        // A restore a minute ago: the close's touch, dated now, outranks it.
-        try db.setArchived(true, sessionID: id)
-        try db.setArchived(false, sessionID: id, at: Date().addingTimeInterval(-60))
-        XCTAssertNotNil(try XCTUnwrap(db.sessionState(id)).keptAt, "restored by a person: kept")
+        try other.setArchived(true, sessionID: id)
+        try other.setArchived(false, sessionID: id)
+        XCTAssertNil(app.overlay.rows[id]?.keptAt, "this store never heard of the restore")
         app.openSessions.closeTab(tab.id)
         app.overlay.flushPendingTouches()
-        XCTAssertNil(try XCTUnwrap(db.sessionState(id)).keptAt, "the close's touch spent the keep")
+        XCTAssertNotNil(try XCTUnwrap(db.sessionState(id)).keptAt, "nothing of this close's spent the keep")
         await gate.open()
         await quiesce()
-        XCTAssertNotNil(try db.sessionState(id), "kept when the close decided")
+        XCTAssertNotNil(try XCTUnwrap(db.sessionState(id)).keptAt, "kept, and still kept")
+    }
+
+    /// ⌘⇧T while the check is out brings the row back into a tab. Another
+    /// process saving its own tabs replaces this one's saved set, so the
+    /// statement's open-tab guard is not enough: the drop asks this
+    /// process's own tabs first.
+    func testARowReopenedDuringTheAbsenceCheckKeepsItsRow() async throws {
+        let queue = try DatabaseQueue()
+        let db = try TempleDB(database: queue)
+        let engine = FakeEngine()
+        engine.absent = true
+        let gate = Gate()
+        engine.absenceGate = { await gate.wait() }
+        let app = model(db, engine: engine)
+        let tab = app.openSessions.newSession(agent: .claude, project: Fixture.key("/p"))
+        let id = try XCTUnwrap(tab.sessionID)
+        app.openSessions.closeTab(tab.id)
+        app.openSessions.reopenLastClosedTab()
+        let reopened = try XCTUnwrap(app.openSessions.openTab(forSessionID: id))
+        // The other process: its saved tab set replaces this one's; and the
+        // reopen left no mark of its own on the row (a chip whose folder
+        // is gone records no open).
+        try queue.inDatabase { try $0.execute(sql: "UPDATE session_state SET last_opened_at = NULL WHERE id = ?", arguments: [id]) }
+        try db.replaceOpenTabs([])
+        await gate.open()
+        await quiesce()
+        XCTAssertNotNil(try db.sessionState(id), "a tab of it is open here")
+        XCTAssertTrue(app.openSessions.tabs.contains { $0 === reopened })
     }
 
     /// A listing that fails proves nothing, whatever the snapshot said.

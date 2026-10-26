@@ -192,7 +192,7 @@ final class FakeEngine: HostEngine, @unchecked Sendable {
     }
     func requestResolution(_ id: String, awaitingCreation: Bool) async { lock.lock(); requests.append(id); lock.unlock() }
     func reconcileMembership(_ id: String) async { lock.lock(); reconciles.append(id); lock.unlock() }
-    func confirmAbsence(_ id: String) async -> Bool {
+    func confirmAbsence(_ ref: MembershipRef) async -> Bool {
         if let absenceGate { await absenceGate() }
         return absent
     }

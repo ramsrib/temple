@@ -2500,10 +2500,25 @@ and did what ADR-030 says: archived it and told.
   go once restored chips qualified. Both name the membership (`id, host,
   incarnation`) the absence was confirmed for: a row that left and joined
   again during the check is another session.
-- **`confirmAbsence` reads a row the engine has not met yet** (joined
-  moments ago, before a callback told it) instead of answering "not
-  confirmed" for a row that is its host's. A drop refused for want of a
-  confirmed absence is logged; a statement that matched no row is not.
+- **The close decides on durable state, and writes nothing that could
+  change it meanwhile.** Three review rounds found the close-time path
+  racing its own and other writers (the sweep has none of these: it acts
+  a week after the last touch, on a proof the host seam binds to a
+  membership). So: closing a tab nothing was sent through touches
+  nothing (no recency bump; a touch dated after a person's restore would
+  spend the keep, and a close is not the person using the session). The
+  handler writes this process's pending touch for the row (the spawn's),
+  then reads the row from the database, not from the overlay, whose view
+  another process on the same file (the installed Temple beside a dev
+  build) does not update; the whole boundary is read there and rechecked
+  in the statement. The engine confirms absence for a `MembershipRef`,
+  re-reading the row first: a membership it still holds from before a
+  leave and rejoin is neither answered for the new one nor answered for
+  itself (`confirmAbsence(_:)`). After the proof, a tab of the row open
+  in this process (⌘⇧T while the check was out) keeps it, since another
+  process saving its tab set replaces this one's rows in `open_tabs`.
+  A drop refused for want of a confirmed absence is logged; a statement
+  that matched no row is not.
 - **The sweep drops what was never a session, with no notice.** Of the
   rows ADR-030's sweep would archive for a missing transcript, those that
   match the boundary above are deleted instead; the notice counts the

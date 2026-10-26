@@ -17,8 +17,9 @@ public protocol HostEngine: AnyObject, Sendable {
     func requestResolution(_ id: String, awaitingCreation: Bool) async
     /// Re-read the member's row and follow it (join, leave, rejoin, a new hint).
     func reconcileMembership(_ id: String) async
-    /// A fresh, completed "no transcript at all" for a member (see `SessionEngine`).
-    func confirmAbsence(_ id: String) async -> Bool
+    /// A fresh, completed "no transcript at all" for exactly this membership
+    /// (see `SessionEngine`): false for any other, or none.
+    func confirmAbsence(_ ref: MembershipRef) async -> Bool
 }
 
 public extension HostEngine {
@@ -363,19 +364,20 @@ public actor SessionEngine: HostEngine {
     /// is resolved explicitly (a refreshed listing). True only for a
     /// completed absence; incomplete, unreadable, a failed listing, a stop or
     /// a member that left all answer false.
-    public func confirmAbsence(_ id: String) async -> Bool {
-        guard running else { return false }
-        // A row joined moments ago may not be a member yet (membership
-        // follows the database through callbacks): read it now, as a
-        // request does, rather than answer "not confirmed" for a row that
-        // is this host's.
-        if members[id] == nil { reconcileMembership(id, awaitingCreation: false) }
-        guard var member = members[id] else { return false }
+    public func confirmAbsence(_ ref: MembershipRef) async -> Bool {
+        guard running, ref.host == host else { return false }
+        // The row as the database has it now, whether the engine has met it
+        // (a row joined moments ago, before a callback told it) or holds an
+        // older membership of the id (a leave and rejoin the callbacks have
+        // not caught up with, or one made through another connection): the
+        // proof is for the membership asked about, or for none.
+        reconcileMembership(ref.id, awaitingCreation: false)
+        guard var member = members[ref.id], member.incarnation == ref.incarnation else { return false }
         member.awaitingCreation = false
-        members[id] = member
-        requestResolution(id, awaitingCreation: false)
+        members[ref.id] = member
+        requestResolution(ref.id, awaitingCreation: false)
         return await withCheckedContinuation { continuation in
-            absenceWaiters[id, default: []].append(continuation)
+            absenceWaiters[ref.id, default: []].append(continuation)
         }
     }
 
