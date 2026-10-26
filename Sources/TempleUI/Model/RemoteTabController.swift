@@ -295,7 +295,9 @@ public final class RemoteTabController {
     /// collection, then the exit check on the pinned server, decide; every
     /// effect on the tab passes the gate after its last await.
     func handleExit(_ tab: SessionTab, surface: TerminalSurface, status: Int32) {
-        if let sid = tab.sessionID { model.touchHandler?(sid, tab.host, nil) }
+        // As the local exit: an unused tab's end is not the person using the
+        // session, and must not spend a keep while a drop is decided.
+        if let sid = tab.sessionID, !model.unusedThisRun(tab) { model.touchHandler?(sid, tab.host, nil) }
         // The client is gone: a launch not yet staged never will be.
         if let staging = tab.remote?.stageOperation {
             operations.cancel(id: staging)

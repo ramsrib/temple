@@ -2504,9 +2504,12 @@ and did what ADR-030 says: archived it and told.
   change it meanwhile.** Three review rounds found the close-time path
   racing its own and other writers (the sweep has none of these: it acts
   a week after the last touch, on a proof the host seam binds to a
-  membership). So: closing a tab nothing was sent through touches
-  nothing (no recency bump; a touch dated after a person's restore would
-  spend the keep, and a close is not the person using the session). The
+  membership). So: closing or ending a tab the person never typed into
+  this run (nothing sent, and no key since its spawn: `unusedThisRun`,
+  local and remote exits alike) touches nothing (no recency bump; a touch
+  dated after a person's restore would spend the keep, and such a close
+  is not the person using the session; a key that was not Return keeps
+  the touch, as it may be the only record of that use). The
   handler writes this process's pending touch for the row (the spawn's),
   then reads the row from the database, not from the overlay, whose view
   another process on the same file (the installed Temple beside a dev

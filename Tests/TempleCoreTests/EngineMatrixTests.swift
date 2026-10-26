@@ -814,7 +814,9 @@ final class EngineMatrixTests: XCTestCase {
     /// re-reads the row before answering, so a membership it still holds
     /// from before a leave and rejoin (callbacks not caught up, or another
     /// connection's writes) neither answers for the new one nor is answered
-    /// for itself. The new membership's own file decides it.
+    /// for itself. The new membership is another agent's, with a file only
+    /// that agent's store holds: the old member's own listing would have
+    /// proven it absent.
     func testAbsenceIsConfirmedForTheMembershipAskedAboutOnly() async throws {
         let h = try harness()
         let id = uuid()
@@ -822,11 +824,12 @@ final class EngineMatrixTests: XCTestCase {
         await h.engine.start()
         try await waitUntil("absent") { self.resolution(h, id) == .confirmedAbsent }
         let old = try ref(h, id)
-        // Replaced behind the engine's back: it still holds `old`.
+        // Replaced behind the engine's back: it still holds `old`, a Claude
+        // membership; the new one is Codex's, and its file is there.
         h.engine.holdDatabaseCallbacks()
         XCTAssertTrue(try h.db.leave(sessionID: id, host: h.source.host))
-        h.source.write(claudePath(id), agent: .claude, data: claudeData(id))
-        try join(h, id, path: claudePath(id))
+        h.source.write(codexPath(id), agent: .codex, data: codexData(id))
+        try join(h, id, agent: .codex, path: codexPath(id))
         let fresh = try ref(h, id)
         XCTAssertNotEqual(old, fresh)
         let forOld = await h.engine.confirmAbsence(old)
