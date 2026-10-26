@@ -183,8 +183,10 @@ public final class RemoteTabController {
         // The activation that asked for this surface focused a tab with none
         // yet (the open is async, unlike a local spawn), so the keyboard is
         // claimed here, for the tab still on screen; a tab connecting behind
-        // another keeps its hands off.
-        if model.activeTabID == tab.id { surface.focus() }
+        // another keeps its hands off, and so does one whose connect took
+        // long enough for the person to start typing in a field meanwhile
+        // (the sidebar's search, a rename): their later intent wins.
+        if model.activeTabID == tab.id, !model.keyboardHeldByField() { surface.focus() }
         if plan.creating {
             pollRecords(tab, host: host, handle: plan.handle)
         } else if let directory = plan.evidenceDirectory {

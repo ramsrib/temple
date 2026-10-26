@@ -769,6 +769,7 @@ public final class AppModel: ObservableObject {
                 self.openSessions.forgetClosedTabs(sessionID: id)
             }
         }
+        openSessions.keyboardHeldByField = { NSApp.keyWindow?.firstResponder is NSText }
         openSessions.launchDirectoryHandler = { [weak self] id, host, cwd in
             self?.overlay.observeLaunchDirectory(id, host: host, cwd)
         }

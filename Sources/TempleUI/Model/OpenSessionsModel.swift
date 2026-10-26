@@ -77,6 +77,12 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     public var touchHandler: ((_ sessionID: String, _ host: HostID, _ at: Date?) -> Void)?
     /// A new session's tab went away before anything was sent to it.
     public var unstartedHandler: ((_ sessionID: String, _ host: HostID) -> Void)?
+    /// Whether a text field holds the window's keyboard right now (the
+    /// sidebar's search, a rename). A surface that arrives late, after an
+    /// activation that could not focus it (a session on a host connecting),
+    /// does not take the keyboard from one. The app answers; the default is
+    /// for tests.
+    public var keyboardHeldByField: () -> Bool = { false }
     public var launchDirectoryHandler: ((_ sessionID: String, _ host: HostID, _ directory: String) -> Void)?
     /// A new Codex session on a host was identified by the user's yes: the
     /// candidate's first prompt stands in for its row's title until the

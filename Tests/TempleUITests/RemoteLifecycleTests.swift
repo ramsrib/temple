@@ -1077,6 +1077,19 @@ final class RemoteLifecycleTests: XCTestCase {
         let behindSurface = try XCTUnwrap(behind.surface as? FakeTerminalSurface)
         XCTAssertEqual(behindSurface.focusCount, 0, "not on screen: no claim")
         XCTAssertEqual(surface.focusCount, 2, "the tab switched back to was focused by its activation")
+
+        // A connect slow enough for the person to start typing in a field
+        // (the sidebar's search) meanwhile: their later intent wins.
+        let fieldGate = Gate()
+        remote.openGate = { await fieldGate.wait() }
+        let typingRow = Fixture.row("typing", project: "/p", host: hostID)
+        rows["typing"] = typingRow
+        model.openSession(typingRow)
+        let typing = try XCTUnwrap(model.activeTab)
+        model.keyboardHeldByField = { true }
+        await fieldGate.open()
+        await settle(typing.hasLiveProcess, "the tab connects")
+        XCTAssertEqual(try XCTUnwrap(typing.surface as? FakeTerminalSurface).focusCount, 0, "a field has the keyboard")
     }
 
     func testAFinalCollectionAfterACloseChangesNothing() async throws {
