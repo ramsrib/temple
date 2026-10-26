@@ -180,6 +180,11 @@ public final class RemoteTabController {
         model.markSpawned(tab, startsAgent: plan.creating)
         model.lastTitleChange[tab.id] = Date()
         model.scheduleSettle(for: tab)
+        // The activation that asked for this surface focused a tab with none
+        // yet (the open is async, unlike a local spawn), so the keyboard is
+        // claimed here, for the tab still on screen; a tab connecting behind
+        // another keeps its hands off.
+        if model.activeTabID == tab.id { surface.focus() }
         if plan.creating {
             pollRecords(tab, host: host, handle: plan.handle)
         } else if let directory = plan.evidenceDirectory {

@@ -1053,6 +1053,32 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertEqual(factory.created.count, 1)
     }
 
+    /// A remote open answers after the activation that asked for it (a
+    /// local spawn is synchronous, so `activate` focuses it; here the
+    /// surface does not exist yet): the surface takes the keyboard when it
+    /// arrives, as long as its tab is still the one on screen. Seen: a new
+    /// session on a host opened with Claude running and nothing focused,
+    /// a click in the terminal needed before typing.
+    func testASurfaceSpawnedAfterItsActivationTakesTheKeyboard() async throws {
+        let tab = await openRow()
+        let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
+        XCTAssertEqual(surface.focusCount, 1, "the tab shown while it connected gets the keyboard once connected")
+
+        // A tab that connects behind another leaves the keyboard alone.
+        let openGate = Gate()
+        remote.openGate = { await openGate.wait() }
+        let row = Fixture.row("behind", project: "/p", host: hostID)
+        rows["behind"] = row
+        model.openSession(row)
+        let behind = try XCTUnwrap(model.activeTab)
+        model.activate(tab)
+        await openGate.open()
+        await settle(behind.hasLiveProcess, "the tab connects")
+        let behindSurface = try XCTUnwrap(behind.surface as? FakeTerminalSurface)
+        XCTAssertEqual(behindSurface.focusCount, 0, "not on screen: no claim")
+        XCTAssertEqual(surface.focusCount, 2, "the tab switched back to was focused by its activation")
+    }
+
     func testAFinalCollectionAfterACloseChangesNothing() async throws {
         let gate = Gate()
         remote.exitGate = { await gate.wait() }
