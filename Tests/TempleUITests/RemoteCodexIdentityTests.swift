@@ -79,6 +79,32 @@ final class RemoteCodexIdentityTests: XCTestCase {
     /// terminal reports it empty, never this Mac's folder): the pending tab
     /// keeps "New Codex session", and the title still counts as tmux
     /// drawing (no "Still connecting").
+    /// Temple's own reattach of a pending tab whose id another Temple
+    /// learned meanwhile stays what it is: the session is joined, and the
+    /// attach is bound to that run, not a person's open of the session.
+    func testAReattachOfAPendingTabIdentifiedMeanwhileStaysOne() async throws {
+        let tab = await newCodex()
+        try await Task.sleep(for: .milliseconds(400))
+        // As if this client were Temple's own, the second short one in a row.
+        (tab.surface as? FakeTerminalSurface)?.simulateTitle("tmux")
+        tab.remote?.automatic = true
+        tab.remote?.automaticShortLived = 1
+        let hold = Gate()
+        remote.pendingOpenGate = { await hold.wait() }
+        remote.liveness = .present
+        remote.clientExitStatus = 255
+        (tab.surface as? FakeTerminalSurface)?.simulateExit(status: 0)
+        await settle(self.remote.pendingOpens.count == 2, "the reattach asks for the run")
+        remote.pending[0].sessionID = "c9"
+        await hold.open()
+        await settle(tab.sessionID == "c9" && tab.hasLiveProcess, "joined, then back in the run")
+        XCTAssertEqual(remote.reattaches, ["p1"])
+        XCTAssertTrue(remote.opens.isEmpty, "never an open that could create or resume")
+        XCTAssertEqual(tab.remote?.automatic, true)
+        XCTAssertEqual(tab.remote?.automaticShortLived, 2, "the budget carries through the hand-over")
+        XCTAssertEqual(joins.map(\.via), [.created], "the join, and no person's open")
+    }
+
     func testAPendingTabKeepsItsTitleThroughTmuxsEmptyOne() async throws {
         model.remoteTabs.startupEvidenceDeadline = 0.2
         let tab = await newCodex()

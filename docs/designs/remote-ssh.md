@@ -648,10 +648,10 @@ that asked:
 
 | result | meaning | authorizes |
 |---|---|---|
-| exit 0 | **present** | nothing automatic; the tab is kept with "Disconnected from <host>. Open the session again to reconnect." |
+| exit 0 | **present** | an attach to this run on Temple's own when the tab is eligible (ssh's 255 as the tab's command recorded it), its budget allows it and no Stop owns the tab (ADR-036, revised 2026-10-26); otherwise the tab is kept with "Disconnected from <host>. The session is still running there." and Reconnect |
 | exit 1, stderr `can't find session` | **positively absent**: the pinned server answered and does not have it | automatic close of a tab that was running; `ended_at`; the next Open with an id creates a new run with `resume` |
-| exit 1, stderr `no server running on <socket>` or (tmux 3.2a) `error connecting to <socket> (No such file or directory)` | **unknown** in v1: tmux can lose its socket while the server lives (it documents `SIGUSR1` to recreate it), so a missing socket is not proof that the agent is gone | nothing automatic; attach-only plus the explicit button. A repair path (pin the server pid and start time, send `SIGUSR1`, retry, auto-resume when the pid is gone) is designed but **deferred** until acceptance shows the case occurs in practice |
-| anything else: 127 (no tmux on PATH), ssh 255, deadline, `protocol version mismatch`, `error connecting to … (Permission denied)`, an unreadable `/proc` | **unknown** | nothing; the tab is kept with "Disconnected from <host>. Temple can't tell whether <agent> is still running there: <first stderr line>." |
+| exit 1, stderr `no server running on <socket>` or (tmux 3.2a) `error connecting to <socket> (No such file or directory)` | **unknown** in v1: tmux can lose its socket while the server lives (it documents `SIGUSR1` to recreate it), so a missing socket is not proof that the agent is gone | no automatic attach, creation or resume; after a connection failure the question is asked again on a bounded schedule (ADR-036, revised 2026-10-26); attach-only plus the explicit button. A repair path (pin the server pid and start time, send `SIGUSR1`, retry, auto-resume when the pid is gone) is designed but **deferred** until acceptance shows the case occurs in practice |
+| anything else: 127 (no tmux on PATH), ssh 255, deadline, `protocol version mismatch`, `error connecting to … (Permission denied)`, an unreadable `/proc` | **unknown** | as above; the tab is kept with "Disconnected from <host>. Temple can't tell whether <agent> is still running there: <first stderr line>." |
 
 Only a positive absence closes a tab or marks a run Ended; unknown never
 does, and from Unknown every Open is attach-only. The launch wrapper never
@@ -719,9 +719,14 @@ cannot guarantee across processes and a network. The one destructive action
 is a Stop the user performs, carried out at once or not at all, and the
 Sessions on <host> sheet is where what was left is seen and stopped.
 
-**Disconnect without close** (sleep, network): nothing changes on the host;
-the tab stays "Disconnected" and the next Open attaches. Closing that kept
-tab is a Close as above (Stop now if the host answers, left running if not).
+**Disconnect without close** (sleep, network): nothing changes on the host.
+When the client's end was the connection failing (ssh's 255, written by the
+tab's own command since the terminal reports `login`'s status; never a clean
+detach), Temple reattaches on its own, to that run alone, once the host says
+the session is there, asking again on a bounded schedule and on a wake or a
+network change while it cannot tell (ADR-036, revised 2026-10-26); otherwise
+the tab stays "Disconnected" and the next Open attaches. Closing that kept tab is a Close
+as above (Stop now if the host answers, left running if not).
 
 **The Remote sessions sheet** (Hosts card → "Sessions…", a host project
 heading's context menu → "Sessions on <host>…", and

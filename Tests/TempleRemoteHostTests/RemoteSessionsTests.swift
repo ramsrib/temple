@@ -102,7 +102,27 @@ final class RemoteSessionsTests: XCTestCase {
         // First Open: a creation, its row written before anything runs.
         let first = try plan(await sessions.open(request()))
         XCTAssertTrue(first.creating)
-        XCTAssertEqual(Array(first.argv.prefix(3)), ["/usr/bin/env", "TERM=xterm-256color", "/usr/bin/ssh"])
+        // The tab's command: ssh behind a `sh` that writes ssh's own exit
+        // status for the run (the terminal's is `login`'s), read once.
+        let status = sessions.clientStatusPath(first.handle, attachment: first.attachment)
+        XCTAssertEqual(Array(first.argv.prefix(8)), ["/usr/bin/env", "TERM=xterm-256color", "/bin/sh", "-c",
+                                                      RemoteSessions.clientScript, "temple-ssh", status.path, "/usr/bin/ssh"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: status.path), "a fresh client starts with no status on file")
+        let clientStatus: Int32? = await sessions.clientExitStatus(first.handle, attachment: first.attachment)
+        XCTAssertNil(clientStatus, "nothing written: a client ended from this side")
+        try "255".write(to: status, atomically: true, encoding: .utf8)
+        let written: Int32? = await sessions.clientExitStatus(first.handle, attachment: first.attachment)
+        XCTAssertEqual(written, 255)
+        let again: Int32? = await sessions.clientExitStatus(first.handle, attachment: first.attachment)
+        XCTAssertNil(again, "consumed by the read")
+        // Two clients of one run (another Temple's, say) keep their own.
+        let other = sessions.clientStatusPath(first.handle, attachment: first.attachment + 1)
+        try "0".write(to: other, atomically: true, encoding: .utf8)
+        try "255".write(to: status, atomically: true, encoding: .utf8)
+        let mine: Int32? = await sessions.clientExitStatus(first.handle, attachment: first.attachment)
+        XCTAssertEqual(mine, 255)
+        let theirs: Int32? = await sessions.clientExitStatus(first.handle, attachment: first.attachment + 1)
+        XCTAssertEqual(theirs, 0, "the other client's result is intact")
         XCTAssertTrue(first.argv.contains("-t"))
         XCTAssertEqual(first.argv[first.argv.count - 2], "box")
         XCTAssertEqual(first.agentArgv, ["claude", "--model", "x", "--session-id", "sess-1"])
@@ -439,6 +459,41 @@ final class RemoteSessionsTests: XCTestCase {
         XCTAssertEqual(plans.filter(\.creating).count, 1)
         XCTAssertEqual(Set(plans.map(\.handle)).count, 1)
         XCTAssertEqual(try one.runs(host: record.host, sessionID: "sess-1").count, 1)
+    }
+
+    /// Two reattaches of one unproven run, planned together (two Temples on
+    /// one state directory): the recovering collect refreshes the run's
+    /// facts but never its reservation's attachment, so each client keeps
+    /// its own number and its own status file.
+    func testTwoReattachesPlannedTogetherKeepTheirOwnAttachments() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("temple-reattach-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try RemoteStateStore()
+        var run = RemoteRun(handle: "h1", host: record.host, agent: .claude, mode: .new, directoryIntent: "~",
+                            sessionID: "sess-1", recordPath: "r-h1", startedAt: Date())
+        run.creation = .unproven
+        try store.insert(run)
+        let request = RemoteSessions.OpenRequest(agent: .claude, sessionID: "sess-1", mode: .resume, directory: "~")
+        let resolve: ([String]) async -> ConnectionTest.Resolution = { _ in
+            .resolved(["hostname": "box.example", "user": "u", "port": "22"])
+        }
+        let box = Interleave()
+        let second = RemoteSessions(record: record, stateDirectory: directory, sshPath: "/usr/bin/ssh", store: { store },
+                                    resolve: resolve, makeExec: { _, _, _ in StubExec(hook: {}) }, masterCheck: { _ in false })
+        let first = RemoteSessions(record: record, stateDirectory: directory, sshPath: "/usr/bin/ssh", store: { store },
+                                   resolve: resolve, makeExec: { _, _, _ in
+            // The first reattach's collect: the second reserves and plans
+            // whole while it is out.
+            StubExec(hook: {
+                guard !box.triggered else { return }
+                box.triggered = true
+                box.second = try? await second.reattach(request, handle: "h1")
+            })
+        }, masterCheck: { _ in false })
+        let a = try plan(await first.reattach(request, handle: "h1"))
+        let b = try plan(try XCTUnwrap(box.second))
+        XCTAssertEqual(Set([a.attachment, b.attachment]), [2, 3])
+        XCTAssertNotEqual(a.argv[6], b.argv[6], "their own status files")
     }
 
     /// A stopped new session whose conversation was never confirmed is not
@@ -1113,4 +1168,18 @@ final class RemoteSessionsTests: XCTestCase {
         do { _ = try await sessions.openPending(handle: first.handle, directory: "~", extraArguments: []); XCTFail() }
         catch RemoteSessions.OpenError.refused {}
     }
+}
+
+/// A transport that answers a failure, after a hook (for interleaving).
+private struct StubExec: RemoteExec {
+    let hook: @MainActor @Sendable () async -> Void
+    func run(script: String, args: [String], input: Data?, deadline: TimeInterval) async throws -> RemoteOutput {
+        await hook()
+        return RemoteOutput(status: 255, stdout: "", stderr: "local test transport stub", reachedCommand: false)
+    }
+}
+
+@MainActor private final class Interleave {
+    var triggered = false
+    var second: RemoteSessions.OpenOutcome?
 }

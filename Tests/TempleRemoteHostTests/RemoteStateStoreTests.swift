@@ -41,6 +41,28 @@ final class RemoteStateStoreTests: XCTestCase {
         XCTAssertEqual(try RemoteStateStore(directory: tree.url).run("h1")?.sessionName, "temple-h1")
     }
 
+    /// A reattach reserves the one run it is for, and nothing else: not an
+    /// ended one, not another session's, and never an insert.
+    func testReserveRunTakesOneRunAndNothingElse() throws {
+        let store = try RemoteStateStore()
+        var old = run("old", at: 1)
+        old.endedAt = Date(timeIntervalSince1970: 50)
+        try store.insert(old)
+        var live = run("live", at: 2)
+        live.leftRunningAt = Date(timeIntervalSince1970: 60)
+        live.leftRunningReason = .quitDeadline
+        try store.insert(live)
+        try store.insert(run("other", session: "s2", at: 3))
+        XCTAssertNil(try store.reserveRun("old", sessionID: "s1"), "ended")
+        XCTAssertNil(try store.reserveRun("other", sessionID: "s1"), "another session's")
+        XCTAssertNil(try store.reserveRun("missing", sessionID: "s1"))
+        let reserved = try XCTUnwrap(try store.reserveRun("live", sessionID: "s1"))
+        XCTAssertEqual(reserved.attachment, 2)
+        XCTAssertNil(reserved.leftRunningAt)
+        XCTAssertNil(try store.run("live")?.leftRunningReason, "as an Open does")
+        XCTAssertEqual(try store.runs(host: host).map(\.handle).sorted(), ["live", "old", "other"], "nothing inserted")
+    }
+
     func testEveryFieldRoundTrips() throws {
         let store = try RemoteStateStore()
         var original = run("h1", at: 100)

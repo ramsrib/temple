@@ -84,6 +84,35 @@ final class FakeRemoteHost: RemoteSessionHost {
                                     stage: stageAfterSpawn ? "stage-\(run.handle)" : nil))
     }
 
+    private(set) var reattaches: [String] = []
+    var reattachGate: (() async -> Void)?
+    func reattach(agent: Agent, sessionID: String, directory: String, handle: String) async throws -> RemoteOpenResult {
+        reattaches.append(handle)
+        if let reattachGate { await reattachGate() }
+        if let openError { throw openError }
+        guard let index = runs.firstIndex(where: { $0.handle == handle && $0.sessionID == sessionID && !$0.ended && !$0.dismissed }) else {
+            // A pending run identified meanwhile serves the session too.
+            if let index = pending.firstIndex(where: { $0.handle == handle && $0.sessionID == sessionID && !$0.ended && !$0.dismissed }) {
+                pending[index].attachment += 1
+                return .plan(RemoteOpenPlan(handle: handle, attachment: pending[index].attachment, creating: false,
+                                            command: TerminalCommand(argv: ["ssh", "attach", handle], cwd: "/Users/me"),
+                                            displayArgv: ["codex"], evidenceDirectory: "/home/u/evidence"))
+            }
+            // A known end is one; a dismissed, untracked or another
+            // session's run says nothing about the agent.
+            let known = runs.first { $0.handle == handle }.map { $0.sessionID == sessionID && !$0.dismissed && $0.ended }
+                ?? pending.first { $0.handle == handle }.map { $0.sessionID == sessionID && !$0.dismissed && $0.ended }
+            return known == true ? .ended : .unavailable
+        }
+        runs[index].attachment += 1
+        runs[index].leftRunning = nil
+        return .plan(RemoteOpenPlan(handle: handle, attachment: runs[index].attachment, creating: false,
+                                    command: TerminalCommand(argv: ["ssh", "attach", handle], cwd: "/Users/me"),
+                                    displayArgv: ["claude", "--resume", sessionID],
+                                    evidenceDirectory: "/home/u/evidence",
+                                    stage: stageAfterSpawn ? "stage-\(handle)" : nil))
+    }
+
     func abandon(_ handle: String) async { abandoned.append(handle) }
     func collect(_ handle: String) async -> RemoteLaunchOutcome {
         collects.append(handle)
@@ -123,7 +152,18 @@ final class FakeRemoteHost: RemoteSessionHost {
         for index in runs.indices where runs[index].sessionID == sessionID { runs[index].dismissed = true }
     }
 
+    /// What the run's last client's command wrote, consumed by the read.
+    var clientExitStatus: Int32?
+    private(set) var statusReads: [(String, Int)] = []
+    func clientExitStatus(_ handle: String, attachment: Int) async -> Int32? {
+        statusReads.append((handle, attachment))
+        defer { clientExitStatus = nil }
+        return clientExitStatus
+    }
+
+    private(set) var exitChecks = 0
     func exitCheck(_ handle: String) async -> RemoteLiveness {
+        exitChecks += 1
         if let exitGate { await exitGate() }
         if liveness == .absent, let index = runs.firstIndex(where: { $0.handle == handle }) { runs[index].ended = true }
         if liveness == .absent, let index = pending.firstIndex(where: { $0.handle == handle }) { pending[index].ended = true }
@@ -538,10 +578,11 @@ final class RemoteLifecycleTests: XCTestCase {
         factory.created.last?.simulateExit(status: 0)
         await settle(tab.remote?.phase == .disconnected)
         XCTAssertTrue(model.tabs.contains { $0 === tab })
-        // Open again: an attach, never a creation.
+        // Open again: an attach, never a creation (bound to the run).
         model.openSession(rows["s1"]!)
         await settle(tab.hasLiveProcess)
-        XCTAssertEqual(remote.opens.count, 2)
+        XCTAssertEqual(remote.opens.count, 1)
+        XCTAssertEqual(remote.reattaches, ["h1"])
         XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["ssh", "attach", "h1"])
         XCTAssertEqual(remote.runs.count, 1)
     }
@@ -570,6 +611,433 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertEqual(remote.opens.last?.resume, true)
         XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["ssh", "create", "h2"])
         XCTAssertFalse(remote.runs[0].ended, "the old run is kept, so Stop still reaches it")
+    }
+
+    // MARK: Reattach on Temple's own
+
+    /// ssh's 255 is the connection failing (a sleep, a network change):
+    /// with the session there, the tab is back in it on its own, by an
+    /// attach that is not a person's open.
+    func testAConnectionFailureWhoseSessionIsThereReattachesOnItsOwn() async throws {
+        var opened = 0
+        model.openedHandler = { _ in opened += 1; return .joined }
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        remote.liveness = .present
+        remote.clientExitStatus = 255
+        factory.created.last?.simulateExit(status: 0)
+        await settle(self.factory.created.count == 2 && tab.hasLiveProcess, "reattached")
+        XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["ssh", "attach", "h1"])
+        XCTAssertEqual(remote.opens.count, 1, "not an open: an attach bound to the run the tab was in")
+        XCTAssertEqual(remote.reattaches, ["h1"])
+        XCTAssertEqual(tab.remote?.automatic, true)
+        XCTAssertEqual(opened, 1, "a reattach of Temple's own is not a person's open")
+        XCTAssertEqual(remote.runs.count, 1)
+    }
+
+    /// A clean end of the client (a detach from the host's side) is not a
+    /// connection failure: the tab stays Disconnected with Reconnect, and
+    /// a wake asks nothing for it.
+    func testACleanDetachIsNotReattached() async throws {
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        remote.liveness = .present
+        factory.created.last?.simulateExit(status: 0)
+        await settle(tab.remote?.phase == .disconnected)
+        model.remoteTabs.recheckTriggerDelay = 0.01
+        model.remoteTabs.connectivityMayHaveChanged()
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(factory.created.count, 1)
+        XCTAssertEqual(remote.exitChecks, 1)
+        XCTAssertFalse(tab.hasLiveProcess)
+    }
+
+    /// A reattach of Temple's own that finds the session gone is the end
+    /// (the tab closes, as a finished agent's does), never a resume.
+    func testAReattachThatFindsNothingNeverResumes() async throws {
+        var touches = 0
+        model.touchHandler = { _, _, _ in touches += 1 }
+        var gone: [String] = []
+        model.remoteTabs.sessionGoneHandler = { _, id in gone.append(id) }
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        remote.liveness = .present
+        remote.clientExitStatus = 255
+        factory.created.last?.simulateExit(status: 0)
+        await settle(self.factory.created.count == 2 && tab.hasLiveProcess)
+        remote.liveness = .absent
+        factory.created.last?.simulateExit(status: 1)
+        await settle(!self.model.tabs.contains { $0 === tab })
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(factory.created.count, 2, "no resume")
+        XCTAssertEqual(remote.opens.count, 1)
+        XCTAssertEqual(touches, 1, "the person's open touched the row; Temple's own reattach and its end did not")
+        XCTAssertEqual(gone, ["s1"], "said once, by session: no longer running there")
+    }
+
+    /// Temple's own attach ending before any sign of life is the last one
+    /// on its own: the band's Reconnect is the way, and clears it.
+    func testAReattachThatEndsBeforeAnySignOfLifeStopsTrying() async throws {
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        remote.liveness = .present
+        remote.clientExitStatus = 255
+        factory.created.last?.simulateExit(status: 0)
+        await settle(self.factory.created.count == 2 && tab.hasLiveProcess)
+        remote.clientExitStatus = 255
+        factory.created.last?.simulateExit(status: 0)
+        await settle(tab.remote?.phase == .disconnected)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(factory.created.count, 2, "not tried again on its own")
+        XCTAssertEqual(tab.remote?.automaticAttachFailed, true)
+        model.remoteTabs.connectivityMayHaveChanged()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(factory.created.count, 2)
+        // A person's Reconnect clears it: the next failure reattaches again.
+        model.remoteTabs.reconnect(tab)
+        await settle(self.factory.created.count == 3 && tab.hasLiveProcess)
+        XCTAssertEqual(tab.remote?.automatic, false)
+        XCTAssertEqual(tab.remote?.automaticAttachFailed, false)
+        remote.clientExitStatus = 255
+        factory.created.last?.simulateExit(status: 0)
+        await settle(self.factory.created.count == 4 && tab.hasLiveProcess, "reattached again")
+    }
+
+    /// While the host cannot tell, it is asked again on the schedule; once
+    /// it says the session is there, the tab is back in it.
+    func testWhileTheHostCannotTellItIsAskedAgainUntilItCan() async throws {
+        model.remoteTabs.recheckDelays = Array(repeating: 0.05, count: 20)
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        remote.liveness = .unknown(reason: "ssh: connect to host box port 22: Network is unreachable")
+        remote.clientExitStatus = 255
+        factory.created.last?.simulateExit(status: 0)
+        await settle(self.remote.exitChecks >= 3)
+        XCTAssertEqual(tab.remote?.phase, .unknown(reason: "ssh: connect to host box port 22: Network is unreachable"))
+        remote.liveness = .present
+        await settle(self.factory.created.count == 2 && tab.hasLiveProcess, "reattached once the host answered")
+        XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["ssh", "attach", "h1"])
+    }
+
+    /// The schedule is bounded: with the host still unable to tell at its
+    /// end, the tab stays Unknown with its answers, asked no more; a wake
+    /// or a network change asks again, at once.
+    func testTheQuestionEndsWithTheScheduleAndAWakeAsksAgain() async throws {
+        model.remoteTabs.recheckDelays = [0.05, 0.05]
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        remote.liveness = .unknown(reason: "no server running on /tmp/tmux-1000/temple")
+        remote.clientExitStatus = 255
+        factory.created.last?.simulateExit(status: 0)
+        await settle(self.remote.exitChecks == 3)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(remote.exitChecks, 3, "the exit's check and the schedule's two")
+        XCTAssertEqual(tab.remote?.phase, .unknown(reason: "no server running on /tmp/tmux-1000/temple"))
+        XCTAssertNil(tab.remote?.recheckOperation)
+        model.remoteTabs.recheckTriggerDelay = 0.01
+        remote.liveness = .present
+        model.remoteTabs.connectivityMayHaveChanged()
+        await settle(self.factory.created.count == 2 && tab.hasLiveProcess)
+    }
+
+    /// A later check that finds the session gone is the end: the tab
+    /// closes, as a finished agent's does.
+    func testALaterCheckThatFindsTheSessionGoneClosesTheTab() async throws {
+        model.remoteTabs.recheckDelays = Array(repeating: 0.05, count: 20)
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        remote.liveness = .unknown(reason: "deadline")
+        remote.clientExitStatus = 255
+        factory.created.last?.simulateExit(status: 0)
+        await settle(self.remote.exitChecks >= 2)
+        remote.liveness = .absent
+        await settle(!self.model.tabs.contains { $0 === tab })
+        XCTAssertEqual(factory.created.count, 1)
+        XCTAssertTrue(remote.runs[0].ended)
+    }
+
+    /// A person's open ends the schedule: nothing of it reaches the tab.
+    func testAPersonsOpenEndsTheSchedule() async throws {
+        model.remoteTabs.recheckDelays = Array(repeating: 0.05, count: 40)
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        remote.liveness = .unknown(reason: "deadline")
+        remote.clientExitStatus = 255
+        factory.created.last?.simulateExit(status: 0)
+        await settle(self.remote.exitChecks >= 2)
+        model.remoteTabs.reconnect(tab)
+        await settle(tab.hasLiveProcess)
+        let checks = remote.exitChecks
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(remote.exitChecks, checks, "asked no more")
+    }
+
+    /// The quit ends it too: nothing is asked or attached from then on.
+    func testTheQuitEndsTheSchedule() async throws {
+        model.remoteTabs.recheckDelays = Array(repeating: 0.05, count: 40)
+        _ = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        remote.liveness = .unknown(reason: "deadline")
+        remote.clientExitStatus = 255
+        factory.created.last?.simulateExit(status: 0)
+        await settle(self.remote.exitChecks >= 2)
+        model.prepareForQuit()
+        let checks = remote.exitChecks
+        remote.liveness = .present
+        _ = await drain()
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(remote.exitChecks, checks)
+        XCTAssertEqual(factory.created.count, 1)
+    }
+
+    /// A Stop from Running sessions on a tab whose state the host could not
+    /// give ends the question: nothing reattaches while the stop is out,
+    /// and a confirmed stop closes the tab.
+    func testAStopOnAnUnknownTabRevokesTheReattach() async throws {
+        model.remoteTabs.recheckDelays = Array(repeating: 0.05, count: 100)
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        remote.liveness = .unknown(reason: "deadline")
+        remote.clientExitStatus = 255
+        factory.created.last?.simulateExit(status: 0)
+        await settle(self.remote.exitChecks >= 2)
+        let hold = Gate()
+        remote.stopGate = { _ in await hold.wait() }
+        var outcome: RemoteStopResult?
+        model.remoteTabs.stopTracked(handle: "h1", host: hostID, agent: .claude) { outcome = $0 }
+        XCTAssertEqual(tab.remote?.phase, .stopping)
+        remote.liveness = .present
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(factory.created.count, 1, "nothing reattaches while the stop is out")
+        await hold.open()
+        await settle(outcome == .stopped)
+        await settle(!self.model.tabs.contains { $0 === tab })
+    }
+
+    /// A Stop chosen while the exit check is still out owns the tab: a late
+    /// "present" neither takes its band nor reattaches it.
+    func testALateVerdictDoesNotReattachATabBeingStopped() async throws {
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        let check = Gate(), stop = Gate()
+        remote.exitGate = { await check.wait() }
+        remote.stopGate = { _ in await stop.wait() }
+        remote.liveness = .present
+        remote.clientExitStatus = 255
+        factory.created.last?.simulateExit(status: 0)
+        await settle(tab.remote?.phase == .checking)
+        model.remoteTabs.close(tab, .stop)
+        XCTAssertEqual(tab.remote?.phase, .stopping)
+        await check.open()
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(factory.created.count, 1)
+        XCTAssertEqual(tab.remote?.phase, .stopping)
+        await stop.open()
+        await settle(!self.model.tabs.contains { $0 === tab })
+    }
+
+    /// Retiring the host (removed or edited) ends the question for good: a
+    /// wake after it asks nothing of the host that replaced it.
+    func testRetiringTheHostClearsTheReattach() async throws {
+        model.remoteTabs.recheckDelays = Array(repeating: 0.05, count: 100)
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        remote.liveness = .unknown(reason: "deadline")
+        remote.clientExitStatus = 255
+        factory.created.last?.simulateExit(status: 0)
+        await settle(self.remote.exitChecks >= 2)
+        model.remoteTabs.retireHost(hostID)
+        let checks = remote.exitChecks
+        model.remoteTabs.recheckTriggerDelay = 0.01
+        remote.liveness = .present
+        model.remoteTabs.connectivityMayHaveChanged()
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(remote.exitChecks, checks)
+        XCTAssertEqual(factory.created.count, 1)
+        XCTAssertEqual(tab.remote?.connectionFailed, false)
+    }
+
+    /// A connection that keeps dropping: Temple's own reattach stops after
+    /// a few clients that each lived under a minute, title or not.
+    func testAFlappingConnectionExhaustsTheReattach() async throws {
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        remote.liveness = .present
+        for round in 1...3 {
+            remote.clientExitStatus = 255
+            factory.created.last?.simulateExit(status: 0)
+            await settle(self.factory.created.count == round + 1 && tab.hasLiveProcess, "reattach \(round)")
+            factory.created.last?.simulateTitle("tmux")
+            await settle(tab.remote?.evidenceSeen == true)
+        }
+        remote.clientExitStatus = 255
+        factory.created.last?.simulateExit(status: 0)
+        await settle(tab.remote?.phase == .disconnected)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(factory.created.count, 4, "three short-lived clients, then no more on its own")
+        XCTAssertEqual(tab.remote?.automaticAttachFailed, true)
+    }
+
+    /// Wakes and path updates come in bursts: one restart of the schedule
+    /// per interval, the rest dropped.
+    func testTriggersInABurstAskOnce() async throws {
+        model.remoteTabs.recheckDelays = [10]
+        model.remoteTabs.recheckTriggerDelay = 0.01
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        remote.liveness = .unknown(reason: "deadline")
+        remote.clientExitStatus = 255
+        factory.created.last?.simulateExit(status: 0)
+        await settle(tab.remote?.phase == .unknown(reason: "deadline"))
+        for _ in 1...5 { model.remoteTabs.connectivityMayHaveChanged() }
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(remote.exitChecks, 2, "the exit's check and one for the burst")
+    }
+
+    /// A Stop chosen while Temple's own reattach is out owns the tab: the
+    /// open's answer spawns nothing, and the stop decides the tab.
+    func testAStopDuringAReattachOwnsTheTab() async throws {
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        let hold = Gate()
+        remote.reattachGate = { await hold.wait() }
+        remote.liveness = .present
+        remote.clientExitStatus = 255
+        factory.created.last?.simulateExit(status: 0)
+        await settle(self.remote.reattaches == ["h1"], "the reattach is out")
+        XCTAssertEqual(tab.remote?.phase, .opening)
+        XCTAssertEqual(tab.remote?.handle, "h1", "the run is the tab's from the start")
+        let stop = Gate()
+        remote.stopGate = { _ in await stop.wait() }
+        var outcome: RemoteStopResult?
+        model.remoteTabs.stopTracked(handle: "h1", host: hostID, agent: .claude) { outcome = $0 }
+        XCTAssertEqual(tab.remote?.phase, .stopping)
+        // The open answers while the stop is still out: nothing spawns,
+        // and the tab is still the stop's.
+        await hold.open()
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(factory.created.count, 1, "the open's answer spawned nothing")
+        XCTAssertEqual(tab.remote?.phase, .stopping)
+        XCTAssertTrue(model.tabs.contains { $0 === tab })
+        await stop.open()
+        await settle(outcome == .stopped)
+        await settle(!self.model.tabs.contains { $0 === tab })
+    }
+
+    /// A late "absent" for a tab whose Stop was chosen meanwhile never
+    /// resumes it (as a person's early attach that found nothing would).
+    func testALateAbsentDoesNotResumeATabBeingStopped() async throws {
+        remote.runs = [.init(handle: "old", sessionID: "s1", resume: false)]
+        let tab = await openRow()
+        let check = Gate(), stop = Gate()
+        remote.exitGate = { await check.wait() }
+        remote.stopGate = { _ in await stop.wait() }
+        remote.liveness = .absent
+        factory.created.last?.simulateExit(status: 1)
+        await settle(tab.remote?.phase == .checking)
+        model.remoteTabs.close(tab, .stop)
+        XCTAssertEqual(tab.remote?.phase, .stopping)
+        await check.open()
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(factory.created.count, 1, "no resume")
+        await stop.open()
+        await settle(!self.model.tabs.contains { $0 === tab })
+    }
+
+    /// A Stop that failed before the late verdict arrives still owns the
+    /// tab: the verdict does not start a reattach over its outcome.
+    func testALateVerdictAfterAFailedStopReattachesNothing() async throws {
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        let check = Gate()
+        remote.exitGate = { await check.wait() }
+        remote.liveness = .present
+        remote.clientExitStatus = 255
+        remote.stopResult = .leftRunning(.hostDidNotAnswer, detail: "ssh: timed out")
+        factory.created.last?.simulateExit(status: 0)
+        await settle(tab.remote?.phase == .checking)
+        model.remoteTabs.close(tab, .stop)
+        await settle({ if case .stopFailed? = tab.remote?.phase { return true }; return false }())
+        await check.open()
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(factory.created.count, 1)
+        if case .stopFailed? = tab.remote?.phase {} else { XCTFail("the stop's outcome stays: \(String(describing: tab.remote?.phase))") }
+    }
+
+    /// A run the reattach cannot have (dismissed meanwhile) says nothing
+    /// about the agent: the tab waits for a person, and no line claims
+    /// the session is gone.
+    func testAReattachRefusedForAnUntrackedRunLeavesTheTabDisconnected() async throws {
+        var gone: [String] = []
+        model.remoteTabs.sessionGoneHandler = { _, id in gone.append(id) }
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        let hold = Gate()
+        remote.reattachGate = { await hold.wait() }
+        remote.liveness = .present
+        remote.clientExitStatus = 255
+        factory.created.last?.simulateExit(status: 0)
+        await settle(self.remote.reattaches == ["h1"])
+        remote.runs[0].dismissed = true
+        await hold.open()
+        await settle(tab.remote?.phase == .unknown(reason: RemoteCopy.runNoLongerTracked), "neither running nor gone is claimed")
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(factory.created.count, 1)
+        XCTAssertTrue(model.tabs.contains { $0 === tab })
+        XCTAssertTrue(gone.isEmpty)
+        XCTAssertTrue(notices.isEmpty)
+    }
+
+    /// A person's Reconnect is bound to the run the tab was in: from
+    /// Unknown (here, a run Temple no longer tracks) it attaches or does
+    /// nothing, counting as their open; Resume anyway is the way out.
+    func testAPersonsReconnectFromUnknownNeverCreates() async throws {
+        var opened = 0
+        model.openedHandler = { _ in opened += 1; return .joined }
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        remote.liveness = .unknown(reason: "deadline")
+        remote.clientExitStatus = 255
+        factory.created.last?.simulateExit(status: 0)
+        await settle(tab.remote?.phase == .unknown(reason: "deadline"))
+        remote.runs[0].dismissed = true
+        model.remoteTabs.reconnect(tab)
+        await settle(tab.remote?.phase == .unknown(reason: RemoteCopy.runNoLongerTracked))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(remote.reattaches, ["h1"], "bound to the run")
+        XCTAssertEqual(remote.opens.count, 1, "no open that could create")
+        XCTAssertEqual(factory.created.count, 1)
+        XCTAssertEqual(opened, 2, "the person's Reconnect is their open")
+        // The sidebar's click and the command line's open are the same
+        // open, by the tab's state, not by the button.
+        model.openSession(rows["s1"]!)
+        await settle(self.remote.reattaches.count == 2)
+        model.focusOrReconnect(tab)
+        await settle(self.remote.reattaches.count == 3)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(remote.opens.count, 1)
+        XCTAssertEqual(factory.created.count, 1)
+        XCTAssertEqual(tab.remote?.phase, .unknown(reason: RemoteCopy.runNoLongerTracked))
+        // Resume anyway: the deliberate creation.
+        model.remoteTabs.resumeAnyway(tab)
+        await settle(self.factory.created.count == 2 && tab.hasLiveProcess)
+        XCTAssertEqual(remote.opens.last?.resumeAnyway, true)
+    }
+
+    /// A person's Reconnect of a Disconnected tab whose run has ended since
+    /// is their open of the session, as any: it resumes.
+    func testAPersonsReconnectOfAnEndedRunResumesAsAnOpenDoes() async throws {
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        remote.liveness = .present
+        factory.created.last?.simulateExit(status: 0)
+        await settle(tab.remote?.phase == .disconnected)
+        remote.runs[0].ended = true
+        model.remoteTabs.reconnect(tab)
+        await settle(self.factory.created.count == 2 && tab.hasLiveProcess)
+        XCTAssertEqual(remote.reattaches, ["h1"], "asked for the run first")
+        XCTAssertEqual(remote.opens.count, 2, "then the ordinary open")
+        XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["ssh", "create", "h2"])
     }
 
     func testAnAgentThatFinishedClosesItsTab() async throws {
@@ -1515,7 +1983,8 @@ final class RemoteLifecycleTests: XCTestCase {
         let handle = try XCTUnwrap(tab.remote?.handle)
         try await Task.sleep(for: .milliseconds(600))
         remote.liveness = .present
-        factory.created.last?.simulateExit(status: 255)
+        // A detach (a clean end), which Temple leaves to the person.
+        factory.created.last?.simulateExit(status: 0)
         await settle(tab.remote?.phase == .disconnected)
         let spawned = factory.created.count
         model.focusOrReconnect(tab)

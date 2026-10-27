@@ -154,6 +154,20 @@ final class RemoteGateWalkTests: XCTestCase {
                 await self.settle { tab.remote?.phase == .checking }
             }, effect: { $0.tab?.remote?.phase == .unknown(reason: "verdict") }),
 
+            Scenario(completion: .recheckVerdict, disruptions: evidence, arm: { h in
+                h.remote.liveness = .unknown(reason: "verdict")
+                h.app.openSessions.remoteTabs.recheckDelays = [0.05, 10]
+                let tab = await self.connectedTab(h, creating: false)
+                h.remote.clientExitStatus = 255
+                (tab.surface as? FakeTerminalSurface)?.simulateExit(status: 0)
+                await self.settle { tab.remote?.phase == .unknown(reason: "verdict") }
+                // The schedule's first question is held; a present answer
+                // would reattach the tab.
+                h.remote.exitGate = { await h.hold.wait() }
+                h.remote.liveness = .present
+                await self.settle { h.remote.exitChecks >= 2 }
+            }, effect: { $0.tab?.hasLiveProcess == true || $0.tab?.remote?.phase == .disconnected }),
+
             Scenario(completion: .exitDiagnostics, disruptions: evidence, arm: { h in
                 h.remote.liveness = .absent
                 h.remote.diagnosticsText = "boom"

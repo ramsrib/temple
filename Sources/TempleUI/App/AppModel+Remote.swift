@@ -13,7 +13,20 @@ public struct RemoteNotice: Equatable, Identifiable {
         /// (shown once per flag). A run stopped or reattached since is
         /// taken out before the line shows, or while it does.
         case count(closed: [String], quit: [String])
+        /// Temple's own doing (a reattach, a later check) found these
+        /// sessions gone on the host and closed their tabs. One line per
+        /// host, merged as they come; a session opened again is taken out.
+        case gone(sessions: [String])
      }
+
+    /// The line for sessions found gone, or nil with none left.
+    static func gone(host: HostID, sessions: [String], name: (String) -> String) -> RemoteNotice? {
+        guard let first = sessions.first else { return nil }
+        let message = sessions.count == 1
+            ? RemoteCopy.tabClosedGone(name(first), host: host.rawValue)
+            : RemoteCopy.tabsClosedGone(sessions.count, host: host.rawValue)
+        return RemoteNotice(host: host, message: message, kind: .gone(sessions: sessions))
+    }
 
     /// The launch line for a host's flagged runs, or nil with none left.
     static func count(host: HostID, closed: [String], quit: [String]) -> RemoteNotice? {
@@ -129,7 +142,34 @@ extension AppModel {
     /// the launch line, is not lost.
     func showRemoteNotice(_ notice: RemoteNotice) {
         guard let notice = current(notice) else { return }
+        // Sessions found gone on one host share a line, shown or waiting.
+        if case .gone(let sessions) = notice.kind {
+            func merged(_ existing: RemoteNotice) -> RemoteNotice? {
+                guard existing.host == notice.host, case .gone(let had) = existing.kind else { return nil }
+                return RemoteNotice.gone(host: notice.host, sessions: had + sessions.filter { !had.contains($0) },
+                                         name: remoteSessionName)
+            }
+            if let shown = remoteNotice, let line = merged(shown) { remoteNotice = line; return }
+            if let index = queuedRemoteNotices.firstIndex(where: { merged($0) != nil }), let line = merged(queuedRemoteNotices[index]) {
+                queuedRemoteNotices[index] = line
+                return
+            }
+        }
         if remoteNotice == nil { remoteNotice = notice } else { queuedRemoteNotices.append(notice) }
+    }
+
+    /// A session found gone by Temple's own doing: its tab is closed
+    /// already; the sidebar says so, by session.
+    func remoteSessionGone(host: HostID, sessionID: String) {
+        guard let notice = RemoteNotice.gone(host: host, sessions: [sessionID], name: remoteSessionName) else { return }
+        showRemoteNotice(notice)
+    }
+
+    /// A session's name as the remote bands say it.
+    private func remoteSessionName(_ sessionID: String) -> String {
+        let session = sessions.first { $0.id == sessionID }
+        return RemoteCopy.sessionName(title: session?.displayTitle, agent: session?.agent ?? .claude,
+                                      directory: session?.directory ?? "")
     }
 
     /// The shown notice goes; the next waiting one that still holds, if
@@ -145,6 +185,11 @@ extension AppModel {
     /// open in a tab here is taken out; nil once none is left. A close's
     /// notice is as it was said.
     private func current(_ notice: RemoteNotice) -> RemoteNotice? {
+        if case .gone(let sessions) = notice.kind {
+            // A session opened again since is no news.
+            let left = sessions.filter { openSessions.openTab(forSessionID: $0) == nil }
+            return RemoteNotice.gone(host: notice.host, sessions: left, name: remoteSessionName)
+        }
         guard case .count(let closed, let quit) = notice.kind else { return notice }
         let stopped = stoppedRemoteHandles[notice.host] ?? []
         let tabs = openSessions.remoteTabs
@@ -165,7 +210,7 @@ extension AppModel {
     func remoteRunAttached(host: HostID) { reconcileRemoteNotices(host: host) }
 
     /// Every line, shown or waiting, as of now.
-    private func reconcileRemoteNotices(host: HostID) {
+    func reconcileRemoteNotices(host: HostID) {
         queuedRemoteNotices = queuedRemoteNotices.compactMap(current)
         if let shown = remoteNotice, shown.host == host {
             if let updated = current(shown) {
@@ -182,13 +227,26 @@ extension AppModel {
         if remoteNotice?.host == host { advanceRemoteNotice() }
     }
 
-    /// The notice's action opens the host's running sessions.
+    /// The notice's action: the host's running sessions, or, for one
+    /// session found gone, its ordinary open (a person's, which may resume
+    /// it); the line then goes.
     public func actOnRemoteNotice(_ notice: RemoteNotice) {
+        if case .gone(let sessions) = notice.kind {
+            guard sessions.count == 1, let id = sessions.first, let session = self.sessions.first(where: { $0.id == id }) else { return }
+            openSessions.openSession(session)
+            reconcileRemoteNotices(host: notice.host)
+            return
+        }
         showRemoteSessions(notice.host)
     }
 
-    /// The notice's action's label.
-    public func remoteNoticeAction(_ notice: RemoteNotice) -> String {
+    /// The notice's action's label; nil for a line with no action (several
+    /// sessions found gone, or one whose row is gone: Dismiss alone).
+    public func remoteNoticeAction(_ notice: RemoteNotice) -> String? {
+        if case .gone(let sessions) = notice.kind {
+            guard sessions.count == 1, let id = sessions.first, self.sessions.contains(where: { $0.id == id }) else { return nil }
+            return RemoteCopy.openSession
+        }
         return RemoteCopy.sessionsOnMenuItem(notice.host.rawValue)
     }
 

@@ -66,6 +66,12 @@ public enum RemoteOpenResult: Equatable {
     /// transcript found for it (`checked`), or none Temple could check: the
     /// tab offers Start a new session and Discard (and Resume, unchecked).
     case needsDecision(checked: Bool)
+    /// A reattach's run has ended: nothing was reserved, created or resumed.
+    case ended
+    /// A reattach's run is not one to attach to (dismissed, no longer
+    /// tracked, another session's now): nothing was reserved, and nothing
+    /// is known about the session.
+    case unavailable
 }
 
 /// What a creation's records said, once persisted.
@@ -235,6 +241,10 @@ public protocol RemoteSessionHost: HostLauncher {
     /// the open) when the run store cannot be read or written.
     func open(agent: Agent, sessionID: String, resume: Bool, directory: String, resumeAnyway: Bool,
               startNew: Bool, resumeUnconfirmed: Bool) async throws -> RemoteOpenResult
+    /// Temple's own reattach after a connection failure: an attach to the
+    /// one run the tab was in, and nothing else (`.ended` when that run is
+    /// over; never a creation, a resume or a newer run).
+    func reattach(agent: Agent, sessionID: String, directory: String, handle: String) async throws -> RemoteOpenResult
     /// An open that was planned but never spawned.
     func abandon(_ handle: String) async
     func collect(_ handle: String) async -> RemoteLaunchOutcome
@@ -253,6 +263,10 @@ public protocol RemoteSessionHost: HostLauncher {
     /// Throws `CancellationError` only when cancelled before any answer.
     func stop(_ handle: String, fromAttachedTab: Bool) async throws -> RemoteStopResult
     func leaveRunning(_ handle: String, reason: RemoteLeftRunningReason) async
+    /// ssh's own exit status for the run's last client, if its command
+    /// wrote one (the terminal's status is not ssh's), consumed by the
+    /// read.
+    func clientExitStatus(_ handle: String, attachment: Int) async -> Int32?
     /// Whether the session has a run that is not Ended (as last read).
     func hasLiveRun(sessionID: String) -> Bool
     /// The session's live run's handle, read now.
@@ -370,6 +384,22 @@ public struct RemoteTabState: Equatable {
     /// Try again is checking; what it found when that was nothing new.
     public var retrying = false
     public var retryResult: String?
+    /// Consecutive clients of Temple's own reattach that ended within a
+    /// minute (a flapping connection): a few, and it stops trying.
+    public var automaticShortLived = 0
+    /// This open is Temple's own reattach after its connection failed: an
+    /// attach that started no agent, so never a resume when it finds
+    /// nothing, and the last one on its own if it ends before any sign of
+    /// life.
+    public var automatic = false
+    /// An automatic reattach's client ended before any sign of life: no
+    /// more on Temple's own until a person opens the tab again.
+    public var automaticAttachFailed = false
+    /// The client's end was the connection failing (ssh's 255), not a
+    /// detach: what the host answers decides a reattach.
+    var connectionFailed = false
+    /// The owned schedule asking the host again while it cannot tell.
+    var recheckOperation: UUID?
 
     public init(phase: Phase) { self.phase = phase }
 
@@ -411,6 +441,23 @@ public enum RemoteCopy {
     public static func couldNotReconnect(_ session: String, host: String, reason: String) -> String {
         "Temple couldn't reconnect \(session) to \(host): \(sentence(reason))"
     }
+
+    /// Temple's own reattach (or a later check) found the session gone: the
+    /// tab closed while nobody was looking at it, so the sidebar says.
+    public static func tabClosedGone(_ session: String, host: String) -> String {
+        "Temple closed the tab for \(session) because it is no longer running on \(host)."
+    }
+
+    public static func tabsClosedGone(_ count: Int, host: String) -> String {
+        "Temple closed \(count) tabs because their sessions are no longer running on \(host)."
+    }
+
+    /// The gone line's action: the session's ordinary open.
+    public static let openSession = "Open session"
+
+    /// Why Temple can't tell after its own reattach was refused: the run
+    /// the tab was in is not one Temple tracks any more.
+    public static let runNoLongerTracked = "Temple no longer tracks the run this tab was in"
 
     public static func cannotEnter(_ directory: String, host: String) -> String {
         "Temple couldn't enter the folder \(directory) on \(host)."

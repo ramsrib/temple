@@ -25,6 +25,32 @@ final class RemoteAppTests: XCTestCase {
         while !condition(), Date() < deadline { try? await Task.sleep(for: .milliseconds(10)) }
     }
 
+    /// Sessions found gone by Temple's own doing share one sidebar line per
+    /// host; one session's line opens it (a person's open), several have
+    /// Dismiss alone; a session opened again is taken out of the line.
+    func testSessionsFoundGoneShareOneLineWhoseActionOpensTheSession() async throws {
+        let remote = FakeRemoteHost("box")
+        let db = try TempleDB.inMemory()
+        let a = Fixture.row("a", project: "/home/u/p", host: hostID), b = Fixture.row("b", project: "/home/u/q", host: hostID)
+        Fixture.join([a, b], to: db)
+        let app = try app(remote, db: db)
+        await settle { app.sessions.contains { $0.id == "b" } }
+        app.remoteSessionGone(host: hostID, sessionID: "a")
+        XCTAssertEqual(app.remoteNotice?.message, "Temple closed the tab for “Title” because it is no longer running on box.")
+        XCTAssertEqual(app.remoteNoticeAction(app.remoteNotice!), "Open session")
+        app.remoteSessionGone(host: hostID, sessionID: "b")
+        XCTAssertEqual(app.remoteNotice?.message, "Temple closed 2 tabs because their sessions are no longer running on box.")
+        XCTAssertTrue(app.queuedRemoteNotices.isEmpty, "one line per host")
+        XCTAssertNil(app.remoteNoticeAction(app.remoteNotice!), "Dismiss alone")
+        // A person's open of one of them: the line counts it no more.
+        app.openSessions.openSession(app.sessions.first { $0.id == "b" }!)
+        await settle { app.remoteNotice?.kind == .gone(sessions: ["a"]) }
+        XCTAssertEqual(app.remoteNoticeAction(app.remoteNotice!), "Open session")
+        app.actOnRemoteNotice(app.remoteNotice!)
+        await settle { app.remoteNotice == nil }
+        XCTAssertNotNil(app.openSessions.openTab(forSessionID: "a"))
+    }
+
     func testTheCommandLineRefusesAWorkingRemoteAgentDetachesWithForceAndStopsAnIdleOne() async throws {
         let remote = FakeRemoteHost("box")
         let app = try app(remote)

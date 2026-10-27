@@ -37,6 +37,9 @@ public final class RemoteTabController {
     /// A run is attached to by a tab here (its client connected): a sidebar
     /// line counting it as running with no tab is reconciled.
     public var runAttachedHandler: ((_ host: HostID, _ handle: String) -> Void)?
+    /// Temple's own doing (a reattach, a later check) found a session gone
+    /// and closed its tab: said in the sidebar, by session.
+    public var sessionGoneHandler: ((HostID, String) -> Void)?
     /// Discard on a session whose conversation was never confirmed: the
     /// app lets its row go (or archives it, if the row is the user's), only
     /// while the row is still the membership Discard was chosen for.
@@ -58,6 +61,21 @@ public final class RemoteTabController {
     /// How long a remote open may show no sign of life (no record, no
     /// title from tmux) before its tab says it is still connecting.
     var startupEvidenceDeadline: TimeInterval = 20
+    /// When the host is asked again whether a session is there, after a
+    /// connection failure it could not answer about: about half an hour
+    /// in all, then only a wake or a network change asks again.
+    var recheckDelays: [TimeInterval] = [5, 15, 30, 60, 120, 300, 600, 900]
+    /// How soon after a wake or a network change the first question goes.
+    var recheckTriggerDelay: TimeInterval = 1
+    /// Wakes and path updates arrive in bursts (a VPN, roaming): one
+    /// restart of the schedule per this many seconds.
+    var recheckTriggerMinimumInterval: TimeInterval = 30
+    private var lastConnectivityTrigger: Date?
+    /// A client of Temple's own reattach that ended sooner than this is a
+    /// short one; `shortLivedAttachBudget` of them in a row, and the
+    /// reattach stops trying on its own.
+    var shortLivedAttachSeconds: TimeInterval = 60
+    var shortLivedAttachBudget = 3
 
     init(model: OpenSessionsModel) {
         self.model = model
@@ -100,26 +118,50 @@ public final class RemoteTabController {
     /// writes the run before anything spawns. The open is owned: a host
     /// change or the quit cancels it, and an answer the gate refuses
     /// spawns nothing (a creation it planned is abandoned durably).
+    /// `automatic`: Temple's own reattach (bound to the run, not a person's
+    /// open). A person's open of a tab that was in a run (Disconnected or
+    /// Unknown, from the band's Reconnect, the sidebar, the command line)
+    /// is bound to that run too, whichever way it arrives: its open counts
+    /// as theirs; a run proven ended takes the ordinary open, which may
+    /// resume; one no longer tracked leaves the tab Unknown. The explicit
+    /// ways out (Resume anyway, Start a new session, Resume) are not bound.
     func ensureSurface(for tab: SessionTab, on host: RemoteSessionHost, resumeAnyway: Bool,
-                       startNew: Bool = false, resumeUnconfirmed: Bool = false) {
+                       startNew: Bool = false, resumeUnconfirmed: Bool = false, automatic: Bool = false) {
         // One open at a time: a second activation while the first decides
         // would race it for the same run.
         if tab.remote?.phase == .opening { return }
+        endRecheck(tab)
         guard let sid = tab.sessionID else {
             // A new Codex session: Codex mints the id, so the run starts
             // pending and is identified later (phase 1b).
-            ensurePending(tab, on: host, startNew: false)
+            ensurePending(tab, on: host, startNew: false, automatic: automatic)
             return
         }
-        // A session Temple already has on another host is not run here.
-        if let conflict = model.openedHandler?(SessionOpen(id: sid, host: tab.host, via: tab.isResume ? .opened : .created,
+        // A session Temple already has on another host is not run here. A
+        // reattach of Temple's own is not a person's open: the row was
+        // joined by the open that connected this tab, and it is not opened
+        // again (nothing unarchives, no `last_opened_at`).
+        if !automatic,
+           let conflict = model.openedHandler?(SessionOpen(id: sid, host: tab.host, via: tab.isResume ? .opened : .created,
                                                            agent: tab.agent, locator: tab.transcriptHint)).conflict {
             tab.launchPreparationError = conflict.message
             tab.activity = .exited(status: -1)
             return
         }
+        // A reattach (Temple's own, or a person's open of a tab that was in
+        // a run) is bound to that run: an attach to that one, never a
+        // creation, a resume or a newer run while it is not proven ended.
+        let explicit = resumeAnyway || startNew || resumeUnconfirmed
+        let wasInARun = tab.remote.map(Self.reconnectable) == true && !explicit
+        let reattachHandle = (automatic || wasInARun) ? tab.remote?.handle : nil
+        if automatic, reattachHandle == nil { return }
         var state = RemoteTabState(phase: .opening)
         state.resumedAfterAbsence = tab.remote?.resumedAfterAbsence ?? false
+        state.automatic = automatic
+        state.automaticShortLived = automatic ? (tab.remote?.automaticShortLived ?? 0) : 0
+        // The run a reattach is bound to is the tab's from the start, so a
+        // Stop for it finds the tab while the open is out.
+        state.handle = reattachHandle
         tab.remote = state
         let ticket = gate.ticket(for: tab)
         let agent = tab.agent, directory = tab.projectPath
@@ -127,15 +169,35 @@ public final class RemoteTabController {
         // id is used again, never resumed.
         let resume = (tab.isResume || tab.inputSubmitted || resumeAnyway || resumeUnconfirmed) && !startNew
         operations.run(host: tab.host, .open) { [weak self] in
-            let result: Result<RemoteOpenResult, Error>
+            var result: Result<RemoteOpenResult, Error>
             do {
-                result = .success(try await host.open(agent: agent, sessionID: sid, resume: resume, directory: directory,
-                                                      resumeAnyway: resumeAnyway, startNew: startNew,
-                                                      resumeUnconfirmed: resumeUnconfirmed))
+                if let reattachHandle {
+                    result = .success(try await host.reattach(agent: agent, sessionID: sid, directory: directory,
+                                                              handle: reattachHandle))
+                    // A person's Reconnect whose run is proven ended is
+                    // their open of the session, as any: it may resume
+                    // (never so for Temple's own reattach, and never for a
+                    // run merely lost).
+                    if !automatic, case .success(.ended) = result {
+                        result = .success(try await host.open(agent: agent, sessionID: sid, resume: resume, directory: directory,
+                                                              resumeAnyway: resumeAnyway, startNew: startNew,
+                                                              resumeUnconfirmed: resumeUnconfirmed))
+                    }
+                } else {
+                    result = .success(try await host.open(agent: agent, sessionID: sid, resume: resume, directory: directory,
+                                                          resumeAnyway: resumeAnyway, startNew: startNew,
+                                                          resumeUnconfirmed: resumeUnconfirmed))
+                }
             } catch {
                 result = .failure(error)
             }
             guard let self, self.gate.admit(.openResult, ticket), let tab = ticket.tab else {
+                if case .success(.plan(let plan)) = result, plan.creating { await host.abandon(plan.handle) }
+                return
+            }
+            // A Stop chosen while the open was out owns the tab: nothing of
+            // this open reaches it (a creation planned meanwhile is let go).
+            guard tab.remote?.phase == .opening else {
                 if case .success(.plan(let plan)) = result, plan.creating { await host.abandon(plan.handle) }
                 return
             }
@@ -148,6 +210,16 @@ public final class RemoteTabController {
                 tab.activity = .exited(status: -1)
             case .success(.needsDecision(let checked)):
                 tab.remote?.phase = .needsDecision(checked: checked)
+            case .success(.ended):
+                // The run ended between the host's "present" and this
+                // attach: the session is gone, and said so.
+                self.sessionGone(tab, host: host)
+            case .success(.unavailable):
+                // The run is not one to attach to any more (dismissed, no
+                // longer tracked): nothing is known either way, so the tab
+                // says so and waits for a person (Reconnect, Resume anyway).
+                TempleUILog.launch.notice("remote reattach refused: the run is not available")
+                tab.remote?.phase = .unknown(reason: RemoteCopy.runNoLongerTracked)
             case .success(.plan(let plan)):
                 guard tab.surface == nil else {
                     if plan.creating { self.operations.run(host: tab.host, .write) { await host.abandon(plan.handle) } }
@@ -182,7 +254,8 @@ public final class RemoteTabController {
         // Only a created pane reports a folder; an attach replays what its
         // creation's pane reported, once persisted.
         tab.launchObservation = SessionTab.LaunchObservation(at: spawnedAt, directory: nil)
-        if let sid = tab.sessionID, !isQuitting { model.touchHandler?(sid, tab.host, spawnedAt) }
+        // A reattach of Temple's own is not the person's activity.
+        if let sid = tab.sessionID, !isQuitting, tab.remote?.automatic != true { model.touchHandler?(sid, tab.host, spawnedAt) }
         // Open in a tab here now: a sidebar line counting it as running
         // without one is reconciled.
         if !plan.creating { runAttachedHandler?(tab.host, plan.handle) }
@@ -307,7 +380,9 @@ public final class RemoteTabController {
     func handleExit(_ tab: SessionTab, surface: TerminalSurface, status: Int32) {
         // As the local exit: an unused tab's end is not the person using the
         // session, and must not spend a keep while a drop is decided.
-        if let sid = tab.sessionID, !model.unusedThisRun(tab) { model.touchHandler?(sid, tab.host, nil) }
+        if let sid = tab.sessionID, !model.unusedThisRun(tab), tab.remote?.automatic != true {
+            model.touchHandler?(sid, tab.host, nil)
+        }
         // The client is gone: a launch not yet staged never will be.
         if let staging = tab.remote?.stageOperation {
             operations.cancel(id: staging)
@@ -349,8 +424,36 @@ public final class RemoteTabController {
         tab.activity = .exited(status: status)
         let ticket = gate.ticket(for: tab)
         let grace = model.earlyExitGraceSeconds
-        let early = age < grace
+        // A reattach of Temple's own started no agent, so its end is never
+        // early: nothing it finds absent is resumed, and nothing it printed
+        // is diagnostics.
+        let automatic = state.automatic
+        let soon = age < grace
+        let early = soon && !automatic
+        // Temple's own attach that ended before any sign of life, or the
+        // last of a few that each lived under a minute (a flapping
+        // connection), is the last one on its own: the band's Reconnect is
+        // the way, and clears it.
+        let shortLived = automatic && (!state.evidenceSeen || age < shortLivedAttachSeconds)
+        let shortLivedCount = shortLived ? state.automaticShortLived + 1 : 0
+        let exhausted = automatic && (!state.evidenceSeen || shortLivedCount >= shortLivedAttachBudget)
+        let budget = shortLivedAttachBudget
         operations.run(host: tab.host, .exitCheck) { [weak self] in
+            // ssh's own exit status, which the terminal's is not (it
+            // launches through `login`): 255 is the connection failing (a
+            // sleep, a network change, the master gone), never a detach,
+            // which exits as tmux does. What the host answers then decides
+            // a reattach; a stop out for the run decides instead.
+            let connectionFailed = await host.clientExitStatus(handle, attachment: state.attachment) == 255
+            if let self, self.gate.valid(ticket), let tab = ticket.tab {
+                tab.remote?.connectionFailed = connectionFailed
+                tab.remote?.automaticShortLived = shortLivedCount
+                if exhausted {
+                    tab.remote?.automaticAttachFailed = true
+                    TempleUILog.launch.notice("remote reattach stopped on its own: \(shortLivedCount, privacy: .public) short-lived of \(budget, privacy: .public)")
+                }
+            }
+            let mayReattach = connectionFailed && !exhausted
             var outcome = RemoteLaunchOutcome.nothing
             if creating {
                 outcome = await host.collect(handle)
@@ -405,15 +508,27 @@ public final class RemoteTabController {
             guard let self, self.gate.admit(.exitVerdict, ticket, runAttachment: runAttachment),
                   let tab = ticket.tab else { return }
             var wantDiagnostics = false
+            // A Stop chosen while the check was out owns the tab's fate,
+            // out or answered (`stopping`, `stopFailed`, or back to
+            // disconnected): the verdict neither reconnects nor resumes
+            // the tab, nor takes its band. The run's end, if that is what
+            // it found, is recorded all the same.
+            guard tab.remote?.phase == .checking else { return }
             switch liveness {
             case .present:
                 tab.remote?.phase = .disconnected
+                // The session is there and the connection failed: back
+                // into it, on Temple's own.
+                if mayReattach { self.reattach(tab, host: host) }
             case .unknown(let reason):
                 tab.remote?.phase = .unknown(reason: reason)
                 // An agent that ended at once as the server's only session
                 // takes the server with it, and the check can't tell; what
                 // it printed is still shown, and proves nothing either way.
                 wantDiagnostics = early
+                // The host could not say (unreachable, or its server
+                // gone): it is asked again for a while.
+                if mayReattach { self.scheduleRecheck(tab, host: host, handle: handle, delays: self.recheckDelays) }
             case .absent:
                 if !creating, !state.resumedAfterAbsence, early, tab.sessionID != nil {
                     // The attach found nothing there: the end is proven, so
@@ -426,20 +541,12 @@ public final class RemoteTabController {
                     // printed when that can be had.
                     tab.remote?.phase = .exitedEarly
                     wantDiagnostics = true
-                } else if self.isPending(tab) {
-                    // Codex finished before Temple learned its id: what was
-                    // typed into it may be a conversation to identify; if
-                    // nothing was, there is nothing to keep.
-                    if tab.inputSubmitted {
-                        tab.remote?.phase = .endedPending
-                        self.loadSuggestions(tab, host: host, handle: handle)
-                    } else {
-                        self.model.removeTab(tab.id)
-                        self.pendingWrite(host, tab.host) { try await host.dismissRun(handle) }
-                    }
                 } else {
-                    // The agent finished: the tab closes, as a local one does.
-                    self.model.removeTab(tab.id)
+                    // Temple's own attach found nothing there: nobody saw
+                    // the agent finish, so the close is said (one that
+                    // finishes later, under the person's eyes, closes as a
+                    // local one does).
+                    self.agentFinished(tab, host: host, handle: handle, say: automatic && soon)
                 }
             }
             guard wantDiagnostics else { return }
@@ -461,7 +568,110 @@ public final class RemoteTabController {
         tab.dropSurface()
         tab.launchPreparationError = nil
         tab.activity = .idle
+        // Bound to the run the tab was in (`ensureSurface` sees the state):
+        // from Unknown every open only attaches (Resume anyway is the way
+        // out), and from Disconnected too, unless that run is proven ended.
         model.ensureSurface(for: tab)
+    }
+
+    /// Temple's own reattach, after a connection failure the host answered
+    /// about with "present": an attach, never a creation or a resume, and
+    /// not a person's open.
+    private func reattach(_ tab: SessionTab, host: RemoteSessionHost) {
+        guard tab.remote != nil, !tab.hasLiveProcess, !isQuitting else { return }
+        tab.dropSurface()
+        tab.launchPreparationError = nil
+        tab.activity = .idle
+        ensureSurface(for: tab, on: host, resumeAnyway: false, automatic: true)
+    }
+
+    /// The agent finished (a positive absence, not early): the tab closes,
+    /// as a local one does; a pending Codex tab that was typed into keeps
+    /// the question of which session it was, one never typed into is let
+    /// go with its run.
+    private func agentFinished(_ tab: SessionTab, host: RemoteSessionHost, handle: String, say: Bool = false) {
+        if isPending(tab) {
+            if tab.inputSubmitted {
+                tab.remote?.phase = .endedPending
+                loadSuggestions(tab, host: host, handle: handle)
+            } else {
+                model.removeTab(tab.id)
+                pendingWrite(host, tab.host) { try await host.dismissRun(handle) }
+            }
+        } else if say {
+            sessionGone(tab, host: host)
+        } else {
+            model.removeTab(tab.id)
+        }
+    }
+
+    /// A session found gone by Temple's own doing (a reattach, a later
+    /// check), not by an agent ending under the person's eyes: the tab
+    /// closes as a finished agent's does, and one notice says so.
+    private func sessionGone(_ tab: SessionTab, host: RemoteSessionHost) {
+        let name = sessionName(tab), hostID = tab.host, sessionID = tab.sessionID
+        model.removeTab(tab.id)
+        if let sessionID, let sessionGoneHandler {
+            sessionGoneHandler(hostID, sessionID)
+        } else {
+            noticeHandler?(hostID, RemoteCopy.tabClosedGone(name, host: host.hostName))
+        }
+    }
+
+    /// While Temple can't tell (the host unreachable, its server gone)
+    /// after a connection failure, the host is asked again on a bounded
+    /// schedule: present reattaches, absent is the end, unknown waits for
+    /// the next turn, and the schedule ends with the question still open.
+    /// One schedule per tab; a person's open, a close or the quit ends it.
+    private func scheduleRecheck(_ tab: SessionTab, host: RemoteSessionHost, handle: String, delays: [TimeInterval]) {
+        endRecheck(tab)
+        let ticket = gate.ticket(for: tab)
+        tab.remote?.recheckOperation = operations.run(host: tab.host, .exitCheck) { [weak self] in
+            for delay in delays {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard let self, self.gate.valid(ticket), ticket.tab?.hasLiveProcess == false else { return }
+                let liveness = await host.exitCheck(handle)
+                let runAttachment = await host.attachment(of: handle)
+                guard self.gate.admit(.recheckVerdict, ticket, runAttachment: runAttachment),
+                      let tab = ticket.tab, case .unknown = tab.remote?.phase else { return }
+                switch liveness {
+                case .present:
+                    tab.remote?.phase = .disconnected
+                    tab.remote?.recheckOperation = nil
+                    self.reattach(tab, host: host)
+                    return
+                case .absent:
+                    tab.remote?.recheckOperation = nil
+                    self.agentFinished(tab, host: host, handle: handle, say: true)
+                    return
+                case .unknown(let reason):
+                    tab.remote?.phase = .unknown(reason: reason)
+                }
+            }
+            guard let self, self.gate.valid(ticket) else { return }
+            ticket.tab?.remote?.recheckOperation = nil
+        }
+    }
+
+    private func endRecheck(_ tab: SessionTab) {
+        guard let operation = tab.remote?.recheckOperation else { return }
+        operations.cancel(id: operation)
+        tab.remote?.recheckOperation = nil
+    }
+
+    /// A wake from sleep, or a network path usable again: every tab whose
+    /// connection failed and whose session's state the host could not give
+    /// asks it again now (and then on the schedule, from the start).
+    public func connectivityMayHaveChanged() {
+        guard !isQuitting else { return }
+        let now = Date()
+        if let last = lastConnectivityTrigger, now.timeIntervalSince(last) < recheckTriggerMinimumInterval { return }
+        lastConnectivityTrigger = now
+        for tab in model.tabs where tab.kind == .session && !tab.hasLiveProcess {
+            guard let state = tab.remote, case .unknown = state.phase, state.connectionFailed,
+                  !state.automaticAttachFailed, let handle = state.handle, let host = remoteHost(for: tab) else { continue }
+            scheduleRecheck(tab, host: host, handle: handle, delays: [recheckTriggerDelay] + recheckDelays)
+        }
     }
 
     /// The explicit way out of Unknown: a new run under a new handle that
@@ -593,6 +803,8 @@ public final class RemoteTabController {
     }
 
     func close(_ tab: SessionTab, _ how: Close) {
+        // A close ends the question: nothing asks the host for a tab that went.
+        endRecheck(tab)
         if isPending(tab), tab.remote?.handle != nil {
             closePending(tab, how)
             return
@@ -825,6 +1037,20 @@ public final class RemoteTabController {
             }
             return
         }
+        // A tab of the run with no client (disconnected, or unknown): the
+        // stop owns it from here, so nothing reattaches it meanwhile.
+        if let tab = model.tabs.first(where: { $0.host == hostID && $0.remote?.handle == handle }) {
+            endRecheck(tab)
+            tab.remote?.phase = .stopping
+            let ticket = gate.ticket(for: tab)
+            startStop(host: host, hostID: hostID, handle: handle, fromAttachedTab: false) { [weak self] result in
+                if let self, self.gate.admit(.trackedStopTabOutcome, ticket), let tab = ticket.tab {
+                    if result == .stopped { self.model.removeTab(tab.id) } else { tab.remote?.phase = .disconnected }
+                }
+                completion(result)
+            }
+            return
+        }
         startStop(host: host, hostID: hostID, handle: handle, fromAttachedTab: false, completion: completion)
     }
 
@@ -843,6 +1069,10 @@ public final class RemoteTabController {
             tab.remote?.openToken = UUID()
             tab.remote?.confirming = nil
             tab.remote?.retrying = false
+            // The connection that failed was the old host's: nothing
+            // reattaches through the new one until a person opens the tab.
+            tab.remote?.connectionFailed = false
+            tab.remote?.recheckOperation = nil
             if tab.remote?.handle == nil {
                 tab.remote = nil
                 continue
@@ -966,11 +1196,14 @@ public final class RemoteTabController {
     /// Opens a pending Codex session: a new run (no handle, or Start a new
     /// session), or the tab's own run by its handle (attach-only while it
     /// runs). Owned, and gated like every open.
-    func ensurePending(_ tab: SessionTab, on host: RemoteSessionHost, startNew: Bool) {
+    func ensurePending(_ tab: SessionTab, on host: RemoteSessionHost, startNew: Bool, automatic: Bool = false) {
         if tab.remote?.phase == .opening { return }
+        endRecheck(tab)
         let handle = startNew ? nil : tab.remote?.handle
         var state = RemoteTabState(phase: .opening)
         state.handle = handle
+        state.automatic = automatic
+        state.automaticShortLived = automatic ? (tab.remote?.automaticShortLived ?? 0) : 0
         state.suggestions = startNew ? [] : (tab.remote?.suggestions ?? [])
         // A refusal this launch remembers for the run is said again whenever
         // it reopens, with Try again (round 3).
@@ -987,6 +1220,11 @@ public final class RemoteTabController {
                 result = .failure(error)
             }
             guard let self, self.gate.admit(.pendingOpenResult, ticket), let tab = ticket.tab else {
+                if case .success(.plan(let plan)) = result, plan.creating { await host.abandon(plan.handle) }
+                return
+            }
+            // As for a known session: a Stop chosen meanwhile owns the tab.
+            guard tab.remote?.phase == .opening else {
                 if case .success(.plan(let plan)) = result, plan.creating { await host.abandon(plan.handle) }
                 return
             }
@@ -1009,6 +1247,17 @@ public final class RemoteTabController {
                 guard let handle else { return }
                 await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
                 guard tab.sessionID == id, self.model.tabs.contains(where: { $0 === tab }) else { return }
+                // Temple's own reattach stays one: bound to this run, and
+                // not a person's open of the session it turned out to be.
+                if automatic {
+                    let shortLived = tab.remote?.automaticShortLived ?? 0
+                    tab.remote = RemoteTabState(phase: .disconnected)
+                    tab.remote?.handle = handle
+                    tab.remote?.automatic = true
+                    tab.remote?.automaticShortLived = shortLived
+                    self.ensureSurface(for: tab, on: host, resumeAnyway: false, automatic: true)
+                    return
+                }
                 tab.remote = nil
                 self.model.ensureSurface(for: tab)
             case .success(.plan(let plan)):
@@ -1148,7 +1397,8 @@ public final class RemoteTabController {
         if let titleHint = titleHint?.trimmingCharacters(in: .whitespacesAndNewlines), !titleHint.isEmpty {
             model.titleHintHandler?(id, titleHint)
         }
-        if let at = tab.launchObservation?.at { model.touchHandler?(id, hostID, at) }
+        // Temple's own reattach is not the person's activity.
+        if let at = tab.launchObservation?.at, tab.remote?.automatic != true { model.touchHandler?(id, hostID, at) }
         // An ended tab's title is the terminal's last, never the session's
         // own: the transcript's fill titles the row (the hint until then).
         // A tab whose stop is out learned its id at the last chance

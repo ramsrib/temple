@@ -2084,7 +2084,7 @@ needing a grant. Two reasons against, from review:
 ---
 
 ## ADR-036 — Sessions on another machine, through the user's own ssh
-**Date:** 2026-10-16 · **Status:** Accepted; amends ADR-010, ADR-029 and ADR-034; revised 2026-10-18 (close a wrong link as any tab, with no undo; Discard never stops; Remove asks; the launch notice after a quit); shipped in v0.6.0; revised 2026-10-26 after the remote audit (a restored chip's close asks; an archived active tab restores inert; the command line's open reconnects; notices take turns; ⌘T keeps the tmux rule). Detail, review history and the as-built notes: [designs/remote-ssh.md](./designs/remote-ssh.md)
+**Date:** 2026-10-16 · **Status:** Accepted; amends ADR-010, ADR-029 and ADR-034; revised 2026-10-18 (close a wrong link as any tab, with no undo; Discard never stops; Remove asks; the launch notice after a quit); shipped in v0.6.0; revised 2026-10-26 after the remote audit (a restored chip's close asks; an archived active tab restores inert; the command line's open reconnects; notices take turns; ⌘T keeps the tmux rule; a failed connection is reattached on Temple's own). Detail, review history and the as-built notes: [designs/remote-ssh.md](./designs/remote-ssh.md)
 
 The owner's goal, verbatim: "I have a remote machine that runs Claude and
 Codex. I want to connect to it and run from that machine." What matters is
@@ -2155,6 +2155,51 @@ rows ("Removing remote", below).
   session with no id yet), whose copy says the original may still be
   running and how to stop it on the host. Repairing a lost socket is
   deferred until it is seen in practice.
+  A connection that failed is reattached on Temple's own (revised
+  2026-10-26: the tab had waited for a click). A recorded ssh status of
+  255 makes the tab eligible; it does not name the cause (a transport
+  failure, the master gone and an escape such as `~.` can all give it, and
+  a sleep or a network change may leave the client connected), and a tmux
+  detach exits cleanly and stays Disconnected for the person. Eligible,
+  the host's answer decides. "Present" reattaches at once. "Unknown" (the
+  host unreachable, or its server gone, as after a reboot) is checked
+  again on a bounded schedule of about 34 minutes plus query time; a wake
+  or a usable network path restarts it (watched only while a host is
+  enabled), at most once every 30 seconds; when it ends the tab stays
+  Unknown with Reconnect and Resume anyway, and is never resumed on its
+  own. "Absent" ends the run under the exit rules above. A reattach that
+  finds the run already ended, an automatic attach that finds it absent
+  within the early-exit grace, or a later check that finds it absent
+  closes an identified session's tab and says so in the sidebar ("Temple
+  closed the tab for <session> because it is no longer running on
+  <host>."), one line per host merged as sessions come; one session's line
+  has Open session (the session's ordinary open) while its row is there,
+  several have Dismiss alone, and a session opened again is taken out. An
+  agent that finishes later closes its tab as before, with no line.
+  Temple's own attach is bound to the run the tab was in (`reattach`, a
+  reservation of that handle alone: never a creation, a resume or a newer
+  run; a run that ended meanwhile is that same end, one dismissed or no
+  longer tracked leaves the tab Unknown, saying Temple no longer tracks
+  it, with no reattach on its own) and is not a person's open (nothing
+  unarchives, no `last_opened_at`, no touch); a pending Codex tab
+  identified meanwhile is joined and reattached the same way. A person's
+  Reconnect is bound to the run too (their open, with its activation):
+  from the band's Reconnect, the sidebar or the command line alike: it
+  attaches, or a run proven ended takes the ordinary open (which may
+  resume), or a run no longer tracked leaves the tab Unknown; it never
+  creates while the run is not proven ended (Resume anyway is the way
+  out). Temple stops trying on its own when an automatic client ends
+  before any sign of life, or when three in a row each lived under a
+  minute; a person's Reconnect clears that. A Stop out for the run owns
+  the tab from the moment it is chosen (an open or a verdict that answers
+  later changes nothing); a person's open, a close, retiring the host
+  (nothing reattaches through a host's replacement) and the quit end the
+  schedule. The status itself: the terminal reports `login`'s exit, not
+  ssh's, so the tab's command is the user's ssh behind a fixed `sh` line
+  that writes ssh's status to `<state dir>/ssh/exit-<handle>-<attachment>`
+  (one file per client, cleared when the client is planned, consumed by
+  the one read at its end). A client Temple ended itself never authorizes
+  a reattach, and no recorded status means none either.
 - **Close means what it means locally; nothing is stopped later.** The
   tab's activity gate decides, as for a local tab, plus an early rest rule
   for tabs on a host only (⌘W and the CLI take a running tab there as at

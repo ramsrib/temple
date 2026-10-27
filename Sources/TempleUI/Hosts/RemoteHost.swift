@@ -86,9 +86,25 @@ final class RemoteHostLauncher: RemoteSessionHost {
                                                     resumeAnyway: resumeAnyway, startNew: startNew,
                                                     resumeUnconfirmed: resumeUnconfirmed))
         await refreshLiveSessions()
+        return Self.result(outcome)
+    }
+
+    func reattach(agent: Agent, sessionID: String, directory: String, handle: String) async throws -> RemoteOpenResult {
+        let outcome = try await sessions.reattach(.init(agent: agent, sessionID: sessionID, mode: .resume, directory: directory,
+                                                        extraArguments: extraArgs(agent), resumeAnyway: false, startNew: false,
+                                                        resumeUnconfirmed: false), handle: handle)
+        await refreshLiveSessions()
+        return Self.result(outcome)
+    }
+
+    private static func result(_ outcome: RemoteSessions.OpenOutcome) -> RemoteOpenResult {
         switch outcome {
         case .needsDecision(let checked):
             return .needsDecision(checked: checked)
+        case .ended:
+            return .ended
+        case .unavailable:
+            return .unavailable
         case .plan(let plan):
             // The terminal's working directory is this Mac's home: a remote
             // path never becomes a local cwd.
@@ -228,6 +244,10 @@ final class RemoteHostLauncher: RemoteSessionHost {
     }
 
     func retire() { sessions.retire() }
+
+    func clientExitStatus(_ handle: String, attachment: Int) async -> Int32? {
+        await sessions.clientExitStatus(handle, attachment: attachment)
+    }
 
     // MARK: Codex identity
 

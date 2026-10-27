@@ -401,7 +401,7 @@ private struct AutoArchiveNoticeBar: View {
 /// every such line is.
 private struct RemoteNoticeBar: View {
     let notice: RemoteNotice
-    let showTitle: String
+    let showTitle: String?
     let show: () -> Void
     let dismiss: () -> Void
 
@@ -423,15 +423,17 @@ private struct RemoteNoticeBar: View {
                 .buttonStyle(.plain)
                 .help("Dismiss")
             }
-            HStack(spacing: 12) {
-                Spacer(minLength: 0)
-                Button(action: show) {
-                    Text(showTitle)
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .lineLimit(2)
-                        .multilineTextAlignment(.trailing)
+            if let showTitle {
+                HStack(spacing: 12) {
+                    Spacer(minLength: 0)
+                    Button(action: show) {
+                        Text(showTitle)
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .lineLimit(2)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 10)

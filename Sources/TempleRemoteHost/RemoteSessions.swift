@@ -95,6 +95,13 @@ public final class RemoteSessions {
         /// and the host has no transcript for it (`checked`), or Temple
         /// couldn't check (then Resume is offered too).
         case needsDecision(checked: Bool)
+        /// A reattach's run has ended: nothing was reserved, created or
+        /// resumed.
+        case ended
+        /// A reattach's run is not one to attach to (dismissed, no longer
+        /// tracked, or another session's now): nothing was reserved, and
+        /// nothing is known about the session.
+        case unavailable
     }
 
     /// What the launch records said, once persisted.
@@ -475,12 +482,47 @@ public final class RemoteSessions {
         return try await reserveAndPlan(request, candidate: candidate, connection: connection, recovering: true)
     }
 
+    /// Temple's own reattach after a connection failure: an attach to the
+    /// one run the tab was in, `handle`, and nothing else. The run must
+    /// still serve the session, undismissed and not ended; an ended one is
+    /// `.ended`, any other refusal `.unavailable`, and either way nothing is
+    /// reserved, created or resumed. An `ok` never collected is recovered
+    /// before the attach, as an Open does.
+    public func reattach(_ request: OpenRequest, handle: String) async throws -> OpenOutcome {
+        guard RemoteQuoting.isSafeToken(request.sessionID) else { throw OpenError.refused("This session id can't be sent to a host.") }
+        // A known end is said as one; anything else that refuses the run
+        // (dismissed, gone, another session's) says nothing about the agent.
+        if let refusal = refusal(await self.run(handle), sessionID: request.sessionID) { return refusal }
+        let connection = try await resolvedConnection(refresh: true)
+        return try await reserveAndPlan(request, candidate: newRun(request, resume: request.mode == .resume),
+                                        connection: connection, recovering: true, exact: handle)
+    }
+
+    /// Why a reattach cannot have its run, one way for both checks: not
+    /// tracked, another session's or dismissed is `.unavailable` (nothing
+    /// is known about the agent); only a run still the session's that has
+    /// ended is `.ended`. Nil: the run is one to attach to.
+    private func refusal(_ run: RemoteRun?, sessionID: String) -> OpenOutcome? {
+        guard let run, run.sessionID == sessionID, run.dismissedAt == nil else { return .unavailable }
+        return run.isEnded ? .ended : nil
+    }
+
     private func reserveAndPlan(_ request: OpenRequest, candidate: RemoteRun, connection: SSHConnection,
                                 recovering: Bool, allowUnconfirmed: Bool = false,
-                                verifiedRoot: RemoteEnvironment.ClaudeConfig? = nil) async throws -> OpenOutcome {
+                                verifiedRoot: RemoteEnvironment.ClaudeConfig? = nil,
+                                exact: String? = nil) async throws -> OpenOutcome {
         let reservation: RemoteStateStore.Reservation
         let allow = allowUnconfirmed || request.resumeUnconfirmed
-        do { reservation = try await write { try $0.reserve(candidate, allowUnconfirmed: allow) } } catch {
+        do {
+            if let exact {
+                guard let run = try await write({ try $0.reserveRun(exact, sessionID: request.sessionID) }) else {
+                    return refusal(await self.run(exact), sessionID: request.sessionID) ?? .unavailable
+                }
+                reservation = .existing(run)
+            } else {
+                reservation = try await write { try $0.reserve(candidate, allowUnconfirmed: allow) }
+            }
+        } catch {
             throw OpenError.store(error.localizedDescription)
         }
         switch reservation {
@@ -504,13 +546,20 @@ public final class RemoteSessions {
             if recovering, run.creation == nil || run.creation == .unproven {
                 switch await collect(run.handle) {
                 case .failedCD:
-                    // Never created: reserve again, which now creates.
+                    // Never created: reserve again, which now creates. A
+                    // reattach creates nothing: that run is over.
+                    if exact != nil { return .ended }
                     return try await reserveAndPlan(request, candidate: newRun(request, resume: candidate.mode == .resume),
                                                     connection: connection, recovering: false)
                 case .storage(let reason):
                     throw OpenError.store(reason)
                 default:
+                    // The run's facts as collected, under the attachment
+                    // this reservation took: two clients planned together
+                    // never share one (its status file is named by it).
+                    let reserved = run.attachment
                     run = await self.run(run.handle) ?? run
+                    run.attachment = reserved
                 }
             }
             return .plan(try await attachPlan(run, connection: connection,
@@ -529,7 +578,7 @@ public final class RemoteSessions {
         let staged = try await stageBeforeSpawn(plan.stage, handle: run.handle, creating: false,
                                                 script: keepAlive.attachScript(plan), connection: connection)
         return OpenPlan(handle: run.handle, attachment: run.attachment, creating: false,
-                        argv: localArgv(connection, LaunchStage.command(stage: plan.stage)), agentArgv: agentArgv,
+                        argv: localArgv(connection, LaunchStage.command(stage: plan.stage), handle: run.handle, attachment: run.attachment), agentArgv: agentArgv,
                         directoryIntent: run.directoryIntent,
                         evidenceDirectory: run.creation == .proven ? run.directory : nil,
                         stage: plan.stage, staged: staged, launch: plan)
@@ -577,7 +626,7 @@ public final class RemoteSessions {
         let staged = try await stageBeforeSpawn(plan.stage, handle: run.handle, creating: true,
                                                 script: keepAlive.createScript(plan), connection: connection)
         return OpenPlan(handle: run.handle, attachment: run.attachment, creating: true,
-                        argv: localArgv(connection, LaunchStage.command(stage: plan.stage)), agentArgv: argv,
+                        argv: localArgv(connection, LaunchStage.command(stage: plan.stage), handle: run.handle, attachment: run.attachment), agentArgv: argv,
                         directoryIntent: run.directoryIntent, evidenceDirectory: nil,
                         stage: plan.stage, staged: staged, launch: plan)
     }
@@ -701,8 +750,42 @@ public final class RemoteSessions {
     /// Temple's own terminal is `xterm-ghostty`, which a stock host has no
     /// terminfo for; the tmux client sees xterm-256color, the pane
     /// tmux-256color.
-    private func localArgv(_ connection: SSHConnection, _ remote: String) -> [String] {
-        ["/usr/bin/env", "TERM=xterm-256color"] + connection.argv(.interactive, remoteCommand: remote)
+    /// The tab's command: the user's ssh, interactive, behind a `sh` that
+    /// writes ssh's own exit status to a file for the handle. The terminal
+    /// reports the status of the process it launched through
+    /// (`/usr/bin/login`, which drops its child's), so a dropped connection
+    /// (ssh's 255) and a detach (tmux's 0) are told apart by this file,
+    /// read once at the client's end (`clientExitStatus`). `env` first, so
+    /// the terminal's login-shell exec does not make `sh` a login shell.
+    /// One file per client (the reservation's attachment): a status left
+    /// under this client's name by an earlier plan that never ran goes now.
+    private func localArgv(_ connection: SSHConnection, _ remote: String, handle: String, attachment: Int) -> [String] {
+        let status = clientStatusPath(handle, attachment: attachment)
+        try? FileManager.default.createDirectory(at: status.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: status)
+        return ["/usr/bin/env", "TERM=xterm-256color", "/bin/sh", "-c", Self.clientScript, "temple-ssh", status.path]
+            + connection.argv(.interactive, remoteCommand: remote)
+    }
+
+    /// `$1` is the status file; the rest is ssh and its arguments.
+    static let clientScript = #"f=$1; shift; "$@"; s=$?; printf '%s' "$s" > "$f"; exit "$s""#
+
+    /// Where a tab's client leaves ssh's exit status: in the state
+    /// directory, by the run's handle (a safe token) and the client's
+    /// attachment (one per reservation, so two clients of one run, this
+    /// Temple's or another's on the same state directory, never share).
+    func clientStatusPath(_ handle: String, attachment: Int) -> URL {
+        stateDirectory.appendingPathComponent("ssh", isDirectory: true).appendingPathComponent("exit-\(handle)-\(attachment)")
+    }
+
+    /// ssh's own exit status for that client of the run, if its command
+    /// wrote one, consumed by the read: nil when the client was ended from
+    /// this side (nothing written) or the file cannot be read.
+    public func clientExitStatus(_ handle: String, attachment: Int) async -> Int32? {
+        let path = clientStatusPath(handle, attachment: attachment)
+        defer { try? FileManager.default.removeItem(at: path) }
+        guard let text = try? String(contentsOf: path, encoding: .utf8) else { return nil }
+        return Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     /// The agent's argv, `exec`ed by the pane: the binary by name on the
@@ -1245,7 +1328,12 @@ public final class RemoteSessions {
                 case .storage(let reason):
                     throw OpenError.store(reason)
                 default:
+                    // The run's facts as collected, under the attachment
+                    // this reservation took: two clients planned together
+                    // never share one (its status file is named by it).
+                    let reserved = run.attachment
                     run = await self.run(run.handle) ?? run
+                    run.attachment = reserved
                 }
             }
             return .plan(try await attachPlan(run, connection: connection,

@@ -343,9 +343,26 @@ it. What follows appears for an enabled host only.
 - **It keeps running.** The agent runs inside a hidden tmux server of
   Temple's own on the host (`tmux -L temple`, tmux 3.2 or newer), so it
   survives a dropped connection, a sleeping Mac and a Temple quit while it
-  works. A tab that loses its connection says "Disconnected from <host>.
-  The session is still running there." with **Reconnect**, which attaches to
-  the same agent.
+  works. A tab that loses its connection says so: "Disconnected from
+  <host>. The session is still running there." when the host confirms it,
+  or that Temple can't tell; **Reconnect** attaches to the same session.
+  When the connection itself failed (the Mac slept, the network changed),
+  Temple reattaches on its own as soon as the host confirms the session is
+  still running, to that same session and nothing else: it never starts
+  or resumes anything by itself. While it can't tell, it checks again for
+  about 34 minutes; your Mac waking, or a network path becoming usable,
+  restarts those checks while Temple is still trying; when they stop, the
+  tab stays disconnected and Reconnect is yours. A client detached from the host's side stays disconnected.
+  Temple stops retrying when an automatic connection ends before reaching
+  the session, or when three in a row each last under a minute; choose
+  Reconnect to try again. If a reattach finds the session already
+  gone, or a later check confirms it ended, Temple closes the tab and says
+  why in the sidebar; a line for one session offers Open session while the
+  session is still there (opening it can resume the conversation from its
+  transcript), and lines for several sessions are grouped by host. After a host
+  reboot the missing tmux server leaves Temple unable to tell: the tab
+  stays disconnected with Reconnect and Resume anyway, never resumed on
+  its own.
 - **Working and waiting.** An agent on a host is working while it is busy
   with a task and waiting otherwise; only a working one is ever asked about.
 - **Closing a tab** means what it means locally: closing a tab whose agent

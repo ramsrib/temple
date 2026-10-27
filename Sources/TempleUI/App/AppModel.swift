@@ -583,6 +583,12 @@ public final class AppModel: ObservableObject {
     /// Remote hosts this model registered (never ones a caller passed in),
     /// with the record each was registered from.
     private var managedRemoteHosts: [HostID: RemoteHostRecord] = [:]
+    /// A wake or a network change asks hosts again about tabs whose
+    /// connection failed while they could not tell; watched only while a
+    /// host is enabled.
+    private lazy var connectivityWatcher = ConnectivityWatcher { [weak self] in
+        self?.openSessions.remoteTabs.connectivityMayHaveChanged()
+    }
     private let makeEngine: (any HostSessionSource) -> any HostEngine
 
     private var cancellables: Set<AnyCancellable> = []
@@ -726,6 +732,8 @@ public final class AppModel: ObservableObject {
             // opened since, even once its tab is closed (TempleDB.leave
             // keeps a row with last_opened_at set).
             if open.via == .opened { self.overlay.recordOpened(open.id, host: open.host) }
+            // A session found gone and opened again: its line is no news.
+            if !open.host.isLocal { self.reconcileRemoteNotices(host: open.host) }
             if let engine = self.engineSet.engine(for: open.host) {
                 if case .loaded = engine.latestSnapshot?.resolutions[open.id] { return result }
                 Task { await engine.requestResolution(open.id) }
@@ -738,6 +746,9 @@ public final class AppModel: ObservableObject {
         }
         openSessions.remoteTabs.runEndedHandler = { [weak self] host, handle in
             self?.remoteRunEnded(host: host, handle: handle)
+        }
+        openSessions.remoteTabs.sessionGoneHandler = { [weak self] host, sessionID in
+            self?.remoteSessionGone(host: host, sessionID: sessionID)
         }
         openSessions.remoteTabs.runAttachedHandler = { [weak self] host, _ in self?.remoteRunAttached(host: host) }
         openSessions.remoteTabs.gate.sheetIsActive = { [weak self] id in
@@ -1064,6 +1075,7 @@ public final class AppModel: ObservableObject {
             managedRemoteHosts[record.host] = record
             openSessions.hostAvailable(record.host)
         }
+        if managedRemoteHosts.isEmpty { connectivityWatcher.stop() } else { connectivityWatcher.start() }
         attachRemoteProjectState()
     }
 

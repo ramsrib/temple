@@ -455,6 +455,32 @@ public final class RemoteStateStore: @unchecked Sendable {
         }
     }
 
+    /// One run and nothing else, for Temple's own reattach: the run under
+    /// `handle` while it still serves `sessionID`, is not dismissed and
+    /// has not ended (its attachment incremented, its left-running flag
+    /// cleared, as an Open does); nil otherwise, and nothing is inserted.
+    public func reserveRun(_ handle: String, sessionID: String) throws -> RemoteRun? {
+        try queue.writeWithoutTransaction { database in
+            var result: RemoteRun?
+            try database.inTransaction(.immediate) {
+                guard var run = try Row.fetchOne(database, sql: "SELECT * FROM runs WHERE handle = ?",
+                                                 arguments: [handle]).map(Self.run),
+                      run.sessionID == sessionID, run.dismissedAt == nil, !run.isEnded else { return .commit }
+                run.attachment += 1
+                run.leftRunningAt = nil
+                run.leftRunningReason = nil
+                run.leftRunningNoticedAt = nil
+                try database.execute(sql: """
+                    UPDATE runs SET attachment = ?, left_running_at = NULL, left_running_reason = NULL,
+                        left_running_noticed_at = NULL WHERE handle = ?
+                    """, arguments: [run.attachment, run.handle])
+                result = run
+                return .commit
+            }
+            return result
+        }
+    }
+
     // MARK: Codex identity
 
     /// What claiming an id for a pending run came to.

@@ -51,6 +51,9 @@ public enum RemoteCompletion: String, CaseIterable, Sendable {
     /// The exit check's verdict: Disconnected, Unknown, a resume, an early
     /// failure kept, or the tab closed.
     case exitVerdict
+    /// A later check's verdict, asked while Temple could not tell: a
+    /// reattach, the tab closed, or the reason updated.
+    case recheckVerdict
     /// What an agent that ended at once printed: the header's lines.
     case exitDiagnostics
     /// A storage failure reported by a collection: one notice.
@@ -160,7 +163,7 @@ public final class RemoteEffectGate {
     /// another Temple instance attaching to the run (or a newer open here)
     /// suppresses it.
     static let requiresRunEvidence: Set<RemoteCompletion> = [
-        .pollDirectory, .exitCollectDirectory, .exitFailedToStart, .exitDiagnostics, .exitVerdict,
+        .pollDirectory, .exitCollectDirectory, .exitFailedToStart, .exitDiagnostics, .exitVerdict, .recheckVerdict,
     ]
 
     /// Whether `completion`'s effect may happen now. `runAttachment`: the
