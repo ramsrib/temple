@@ -340,6 +340,27 @@ it. What follows appears for an enabled host only.
   same line. The project's heading shows in the sidebar at once, from the
   folder you typed, and moves to the folder the session reports it entered;
   only that one is recorded.
+- **Continuing one that exists.** A host that runs Temple (another Mac) has
+  its own page in History: the menu before the search field lists **This
+  Mac** and each enabled host. Choosing one reads that host's Temple once
+  (and again on Refresh) and lists its sessions, with its names and
+  colours, beside the ones Temple here already has there; the scopes read
+  **All · In Temple here · Archived here · Only there**. **Open** resumes it on
+  the host in a tab here; **Import** brings it into the sidebar with its
+  name and colour, with Undo. "In a tab on <host>" says that Temple has a
+  saved tab for it; opening it anyway runs it in a second place and the
+  tab says so once. A host without Temple, an unreadable or too-new
+  database, or a host that didn't answer is said in a line above the rows,
+  which never hides the sessions Temple has there. On This Mac, a search
+  that finds little offers "Not here? Look on <host>"
+  ([ADR-039](./DECISIONS.md#adr-039--a-hosts-own-temple-and-any-session-by-id)).
+- **Open a session by id.** Paste a session id into `⌘K` (**Open session
+  3f2a1c…**), or choose **Open a session on <host> by id…** in the launcher or
+  `⌘N`, or **Open a session by id…** on a host's History page: give the host
+  and the id, and Temple finds which agent it is and the folder it ran in,
+  asking for either only when it can't tell. It says "No session … on
+  <host>" only when it looked everywhere; a host that didn't answer is said
+  as that.
 - **It keeps running.** The agent runs inside a hidden tmux server of
   Temple's own on the host (`tmux -L temple`, tmux 3.2 or newer), so it
   survives a dropped connection, a sleeping Mac and a Temple quit while it
@@ -595,6 +616,10 @@ join and archived ones come back
   and end in **Import**. Conditions are a tag after the title, for any of
   Temple's rows: **No transcript** or **No folder**. The last message, model,
   message count and file path are in the tooltip.
+- **Whose sessions.** With a host enabled, a menu before the search field
+  chooses **This Mac** (this page, as described here; it contacts no host)
+  or a host, whose page lists the sessions in that host's own Temple
+  ([Sessions on a host](#sessions-on-a-host)).
 - **Search and filters** narrow the page in place and keep the day grouping:
   search matches the displayed and original titles, project, branch, the last
   message, and a session-id prefix. A segmented **All / In Temple / Archived

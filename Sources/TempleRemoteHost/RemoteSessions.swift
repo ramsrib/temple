@@ -1276,6 +1276,17 @@ public final class RemoteSessions {
         }
     }
 
+    /// The other Temple on this host, if one runs here
+    /// (docs/designs/open-existing-sessions.md section 2). A transport
+    /// failure throws.
+    public func readPeerTemple() async throws -> PeerTempleAnswer {
+        let exec: RemoteExec
+        do { exec = try await queryExec(refresh: true) } catch {
+            throw PeerTempleError.transport(error.localizedDescription)
+        }
+        return try await PeerTemple.read(exec: exec)
+    }
+
     /// The command that stops a session from the host itself, for copy.
     public nonisolated static func manualStopCommand(handle: String) -> String {
         "tmux -L temple kill-session -t temple-\(handle)"

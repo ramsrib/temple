@@ -9,6 +9,32 @@ public struct SessionOpen {
     public let via: JoinedVia
     public let agent: Agent?
     public let locator: TranscriptLocator?
+    /// Another Temple's name and colour, for a row this open makes.
+    public var carried: CarriedMarks? = nil
+}
+
+/// Open a session that exists on a host, whether or not it is Temple's yet
+/// (docs/designs/open-existing-sessions.md section 4): what History's peer
+/// rows and Open a session by id hand over. Everything here is a hint for
+/// this launch; the row records its folder only from the launch itself.
+public struct ResumeRequest: Equatable {
+    public let host: HostID
+    public let agent: Agent
+    public let id: String
+    /// Verified by the engine like any hint.
+    public let locator: TranscriptLocator?
+    /// The tab's label until the row has a title.
+    public let title: String
+    /// Where this launch starts when the row records no folder.
+    public let launchDirectory: String
+    public let carried: CarriedMarks?
+    /// The launch header's one line, when the other Temple has a tab for it.
+    public let peerTabNote: String?
+    public init(host: HostID, agent: Agent, id: String, locator: TranscriptLocator?, title: String,
+                launchDirectory: String, carried: CarriedMarks? = nil, peerTabNote: String? = nil) {
+        self.host = host; self.agent = agent; self.id = id; self.locator = locator; self.title = title
+        self.launchDirectory = launchDirectory; self.carried = carried; self.peerTabNote = peerTabNote
+    }
 }
 
 struct ClosedTabRecord {
@@ -287,6 +313,55 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         TempleUILog.launch.notice("session not opened: id=\(session.id, privacy: .public) reason=\(reason, privacy: .public)")
     }
 
+    /// A `ResumeRequest`: a live tab for the same host, agent and id is
+    /// focused, a restored chip resumes in place, a member with a recorded
+    /// folder resumes in its folder, and anything else launches in the
+    /// request's folder. The join happens at launch, as for every resume,
+    /// and nothing runs unless it succeeds (`launchRefusal`). A row or tab
+    /// for this id on another host or as another agent is not this
+    /// session: refused, and the caller says why. Returns whether a tab now
+    /// shows the session.
+    @discardableResult
+    public func resume(_ request: ResumeRequest) -> Bool {
+        // The tab set is frozen once quitting starts (an answer that comes
+        // back then opens nothing).
+        guard !isQuitting else { return false }
+        if let row = sessionRow(request.id), row.host != request.host || (row.agent != nil && row.agent != request.agent) {
+            TempleUILog.launch.notice("resume refused for \(request.id, privacy: .public): the row is another host's or agent's")
+            return false
+        }
+        if let existing = sessionTab(withSessionID: request.id) {
+            guard existing.host == request.host, existing.agent == request.agent else { return false }
+            if existing.hasSurface { focusOrReconnect(existing); return true }
+            existing.peerTabNote = request.peerTabNote ?? existing.peerTabNote
+            if let row = sessionRow(request.id), row.canResume {
+                openSession(row)
+                return true
+            }
+            // A restored chip of a member with no folder recorded: this
+            // launch starts in the request's folder, as a new tab would.
+            existing.transcriptHint = request.locator ?? existing.transcriptHint
+            if !existing.hasSurface, existing.isResume { existing.setProjectPath(request.launchDirectory) }
+            activate(existing)
+            return true
+        }
+        if let row = sessionRow(request.id), row.canResume {
+            openSession(row)
+            sessionTab(withSessionID: request.id)?.peerTabNote = request.peerTabNote
+            return true
+        }
+        let tab = SessionTab(kind: .session, sessionID: request.id, agent: request.agent,
+                             projectPath: request.launchDirectory, title: request.title,
+                             isResume: true, host: request.host)
+        tab.transcriptHint = request.locator
+        tab.carriedMarks = request.carried
+        tab.peerTabNote = request.peerTabNote
+        tabs.append(tab)
+        activate(tab)
+        persist()
+        return true
+    }
+
     public func openSession(_ session: TranscriptSummary) {
         if let row = sessionRow(session.id) {
             openSession(row)
@@ -521,10 +596,11 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         }
         // A session Temple already has on another host is not run here.
         if let sid = tab.sessionID,
-           let conflict = openedHandler?(SessionOpen(id: sid, host: tab.host, via: tab.isResume ? .opened : .created,
-                                                     agent: tab.agent, locator: tab.transcriptHint)).conflict {
+           let refusal = openedHandler?(SessionOpen(id: sid, host: tab.host, via: tab.isResume ? .opened : .created,
+                                                    agent: tab.agent, locator: tab.transcriptHint,
+                                                    carried: tab.carriedMarks)).launchRefusal {
             launch.result?.cancel()
-            tab.launchPreparationError = conflict.message
+            tab.launchPreparationError = refusal
             tab.activity = .exited(status: -1)
             return
         }

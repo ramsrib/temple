@@ -163,6 +163,12 @@ struct HistoryTabView: View {
                 narrowedLine
                     .padding(.top, 8)
             }
+            if let host = history.page.host {
+                peerLine(host)
+            } else if let hosts = bridgeHosts {
+                bridgeLine(hosts)
+                    .padding(.top, 8)
+            }
             if case .reading(let read, let total) = history.readState {
                 readingLine(read: read, total: total)
                     .padding(.top, 8)
@@ -179,8 +185,20 @@ struct HistoryTabView: View {
         PageHeader(title: "History", subtitle: Text(subtitle)) { updatedLine }
     }
 
-    /// What is in the box, not what is showing.
+    /// What is in the box, not what is showing. A host's page says whose
+    /// list it is and when it was read, in one phrasing.
     private var subtitle: String {
+        if let host = history.page.host {
+            let name = host.displayName
+            let state = history.peerPages[host]
+            if state?.reading == true { return "Sessions on \(name) · reading its Temple…" }
+            guard let state, let at = state.readAt, state.listing != nil else { return "Sessions on \(name)" }
+            var line = "Sessions on \(name) · from its Temple, read \(PageChrome.relative(at, now: Date()))"
+            if let skipped = state.listing?.skipped, skipped > 0 {
+                line += " · \(skipped.formatted()) not listed: no folder or agent recorded"
+            }
+            return line
+        }
         if history.allRows.isEmpty, history.lastUpdated == nil { return "Every session on disk" }
         return history.countsLine
     }
@@ -190,7 +208,9 @@ struct HistoryTabView: View {
     private var updatedLine: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             HStack(spacing: 4) {
-                if let last = history.lastUpdated {
+                if history.page.host != nil {
+                    // The subtitle dates a host's page.
+                } else if let last = history.lastUpdated {
                     Text("Updated \(PageChrome.relative(last, now: context.date))")
                     Text("·")
                 }
@@ -210,18 +230,36 @@ struct HistoryTabView: View {
         switch tier {
         case .wide:
             HStack(spacing: 10) {
+                if !history.enabledHosts().isEmpty { pageMenu }
                 searchField(minWidth: 220)
                 scopePicker(width: 390)
-                agentMenu(width: 130)
-                projectMenu(width: 150)
+                // The page menu takes the room the two menus had: they are
+                // one Filter menu then, so the row fits the page's column
+                // (130 + 220 + 390 + 110 + gaps, under its 1044 pt cap).
+                if history.enabledHosts().isEmpty {
+                    agentMenu(width: 130)
+                    projectMenu(width: 150)
+                } else {
+                    filterMenu
+                }
             }
         case .compact, .narrow:
+            // A host's page under 692 pt: its 390 pt scopes take the second
+            // row alone, and Filter joins the search row (narrowest: a 900 pt
+            // window with a 360 pt sidebar leaves ~484 pt).
+            let filterUp = tier == .narrow && history.page.host != nil
             VStack(alignment: .leading, spacing: 8) {
-                searchField(minWidth: 160)
+                HStack(spacing: 8) {
+                    if !history.enabledHosts().isEmpty { pageMenu }
+                    searchField(minWidth: 160)
+                    if filterUp { filterMenu }
+                }
                 HStack(spacing: 8) {
                     scopePicker(width: 344)
                     Spacer(minLength: 8)
-                    if tier == .narrow {
+                    if filterUp {
+                        EmptyView()
+                    } else if tier == .narrow || history.page.host != nil {
                         filterMenu
                     } else {
                         agentMenu(width: 120)
@@ -264,10 +302,118 @@ struct HistoryTabView: View {
 
     /// Picking any segment clears the "Archived just now" chip.
     private func scopePicker(width: CGFloat) -> some View {
-        FlatSegmentedPicker(label: "Show",
+        // A host's labels are a fixed set ("In Temple here", 87 pt at the
+        // control's 12.5 pt, measured) that needs 390 pt for four equal
+        // segments whatever the host is called; never cut.
+        let width = history.page.host != nil ? max(width, 390) : width
+        return FlatSegmentedPicker(label: "Show",
                             selection: Binding(get: { history.scope }, set: { history.pickScope($0) }),
                             options: Array(HistoryScope.allCases),
-                            optionTitle: { $0.label }, width: width)
+                            optionTitle: { [page = history.page] in $0.label(on: page) }, width: width)
+    }
+
+    /// Whose sessions the page shows: this Mac's (History as it always
+    /// was) or a host's, which reads that host's Temple when chosen. Only
+    /// with a host enabled; no host is contacted to build it.
+    private var pageMenu: some View {
+        Menu {
+            Picker("", selection: $history.page) {
+                Text("This Mac").tag(HistoryPage.thisMac)
+                Divider()
+                ForEach(history.enabledHosts(), id: \.self) { host in
+                    if history.noTempleHosts.contains(host) {
+                        Text("\(host.displayName)    no Temple, open by id only").tag(HistoryPage.host(host))
+                    } else {
+                        Text(host.displayName).tag(HistoryPage.host(host))
+                    }
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            Text(pageMenuTitle).lineLimit(1)
+        }
+        .menuIndicator(.visible)
+        // Grows with the host's name (the search field beside it gives way),
+        // up to what the wide row has at its narrowest (944 pt: 190 + 220 +
+        // 390 + 110 + gaps); a longer name is in full in the subtitle and
+        // the tooltip.
+        .modifier(FlatToolbarMenu(width: min(190, max(130, Self.textWidth(pageMenuTitle) + 44))))
+        .help(history.page.host.map { "Showing the sessions in Temple on \($0.displayName). Choose whose sessions to show." }
+              ?? "Whose sessions to show: this Mac's, or the sessions in Temple on a host")
+    }
+
+    private var pageMenuTitle: String { history.page.host?.displayName ?? "This Mac" }
+
+    /// A label's width at the toolbar menus' 12.5 pt.
+    static func textWidth(_ text: String) -> CGFloat {
+        ceil((text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12.5)]).width)
+    }
+
+    /// On This Mac, a search that finds little points at the hosts whose
+    /// Temple may have it. Nothing is contacted until one is clicked.
+    private var bridgeHosts: [HostID]? {
+        guard !history.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              history.visibleRows.count <= 3 else { return nil }
+        let hosts = history.enabledHosts().filter { !history.noTempleHosts.contains($0) }
+        return hosts.isEmpty ? nil : hosts
+    }
+
+    private func bridgeLine(_ hosts: [HostID]) -> some View {
+        HStack(spacing: 6) {
+            Text("Not here? Look on")
+            ForEach(Array(hosts.enumerated()), id: \.element) { index, host in
+                if index > 0 { separator }
+                Button(host.displayName) { history.page = .host(host) }
+                    .buttonStyle(.plain)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.primary)
+                    .help("Show the sessions in Temple on \(host.displayName)")
+            }
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+    }
+
+    /// A host's page: what reading its Temple came to when it listed
+    /// nothing, above this Mac's own rows for the host (never in their
+    /// place), and the way to open a session by id.
+    @ViewBuilder
+    private func peerLine(_ host: HostID) -> some View {
+        let name = host.displayName
+        let problem = history.peerPages[host]?.problem
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if let problem {
+                Text(Self.peerProblem(problem, host: name))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Spacer(minLength: 0)
+            }
+            Button("Open a session by id…") { history.openByID(host) }
+                .buttonStyle(.plain)
+                .fontWeight(.semibold)
+                .foregroundStyle(.primary)
+                .help("Open a session on \(name) by its id, when this list doesn't show it")
+        }
+        .font(.system(size: 11.5))
+        .foregroundStyle(.secondary)
+        .padding(.top, 8)
+    }
+
+    /// The design's lines (section 1, Failures), one per answer.
+    static func peerProblem(_ problem: PeerRead, host: String) -> String {
+        switch problem {
+        case .listed: ""
+        case .noTemple: "No Temple on \(host), so its sessions can't be listed. You can still open one by id."
+        case .noReader: "Temple can't list sessions on \(host): sqlite3 isn't installed there. You can still open one by id."
+        case .needsOpen: "Temple on \(host) needs to be opened once before its sessions can be read."
+        case .incompatible: "Temple on \(host) keeps its sessions in a form this version can't read. Updating Temple on both Macs usually fixes this."
+        case .tooLarge: "Temple on \(host) has too many sessions to list here, so none are shown. You can still open one by id."
+        case .unreadable(let line): "Temple on \(host) couldn't be read: \(line). Refresh to try again."
+        case .unreachable(let line): "Couldn't reach \(host): \(line)"
+        }
     }
 
     /// Counts are over every row, not the filtered view.
@@ -640,6 +786,19 @@ struct HistoryTabView: View {
     }
 
     private var emptyCopy: EmptyCopy? {
+        if let host = history.page.host, history.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let name = host.displayName
+            let state = history.peerPages[host]
+            if history.allRows.isEmpty {
+                // Reading, or a line above says what the read came to.
+                if state?.reading == true || state?.problem != nil { return nil }
+                return EmptyCopy(title: "No sessions on \(name)",
+                                 detail: "\(name)'s Temple lists none, and Temple here has none there.")
+            }
+            if history.scope == .notInTemple, history.agentFilter == nil, history.projectKeyFilter == nil {
+                return EmptyCopy(title: "Every session in Temple on \(name) is on this Mac too")
+            }
+        }
         // Rows stream in under the reading line; a first read with nothing yet
         // is not "no sessions".
         if history.allRows.isEmpty, history.isReading || history.lastUpdated == nil { return nil }
@@ -762,6 +921,24 @@ private struct HistoryPageRow: View, Equatable {
                             .foregroundStyle(Color.secondary.opacity(0.8))
                             .lineLimit(1)
                             .help(session.tagTooltip ?? "")
+                    }
+                    // Another Temple's marks, as what they are. Neither gates
+                    // anything: a session may run in two places.
+                    if let peer = session.peer {
+                        if peer.tabThere {
+                            Text("In a tab on \(peer.host.displayName)")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Color.secondary)
+                                .lineLimit(1)
+                                .help("Temple on \(peer.host.displayName) has a saved tab for this session. It may still be running there; opening it here runs it in a second place.")
+                        }
+                        if peer.archivedThere {
+                            Text("Archived on \(peer.host.displayName)")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color.secondary.opacity(0.8))
+                                .lineLimit(1)
+                                .help("Archived in Temple on \(peer.host.displayName). That doesn't change anything here.")
+                        }
                     }
                     if let activity = inputs.activity {
                         ActivityDot(state: activity)

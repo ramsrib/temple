@@ -46,6 +46,10 @@ public protocol HostSessionSource: Sendable {
     /// identity verified, facts from bounded bytes (at most one wider head)
     /// with the agent's shared inputs. Throws `TranscriptReadError`.
     func read(_ locator: TranscriptLocator, agent: Agent, expecting id: String, facts: Bool) async throws -> TranscriptRead
+    /// One session by an id a person typed, per agent (`SessionLookup`).
+    /// Throws `LocateError.transport` only. The default builds it from
+    /// `locate` and `read`.
+    func lookup(id: String) async throws -> SessionLookup
     /// Owning-host directory evidence, by whatever transport the host uses;
     /// unknown must not be treated as missing.
     func directoryEvidence(_ path: String) async -> DirectoryEvidence

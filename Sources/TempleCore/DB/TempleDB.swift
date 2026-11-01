@@ -140,6 +140,26 @@ public struct MembershipRef: Hashable, Sendable {
     }
 }
 
+/// A name and colour another Temple gave a session, brought in by an import
+/// from it (docs/designs/open-existing-sessions.md section 3), exactly as
+/// that Temple stores them: NULL and an empty string stay apart, so Undo's
+/// comparison is exact.
+public struct CarriedMarks: Hashable, Sendable {
+    public let name: String?
+    public let color: String?
+    public init(name: String?, color: String?) { self.name = name; self.color = color }
+    public var isEmpty: Bool { name == nil && color == nil }
+}
+
+/// What one join did: whether it made the row, the membership's
+/// incarnation, and the marks it wrote (only a join that made the row
+/// writes any). An undo of an import names exactly this.
+public struct JoinReceipt: Hashable, Sendable {
+    public let inserted: Bool
+    public let incarnation: String?
+    public let marks: CarriedMarks
+}
+
 public struct SessionState: Codable, Hashable, Sendable {
     public let id: String
     public let pinned: Bool
@@ -601,9 +621,21 @@ public final class TempleDB: @unchecked Sendable {
     @discardableResult
     public func join(sessionID: String, via: JoinedVia, at: Date = Date(),
                      agent: Agent? = nil, locator: TranscriptLocator? = nil, core: SessionCore? = nil) throws -> String? {
+        try join(sessionID: sessionID, via: via, at: at, agent: agent, locator: locator, core: core,
+                 carrying: CarriedMarks(name: nil, color: nil)).incarnation
+    }
+
+    /// `join`, carrying another Temple's name and colour: written in the
+    /// same transaction, and only when that transaction made the row. A
+    /// session already Temple's keeps its own marks, deliberate empty ones
+    /// included, however it got here first.
+    @discardableResult
+    public func join(sessionID: String, via: JoinedVia, at: Date = Date(),
+                     agent: Agent? = nil, locator: TranscriptLocator? = nil, core: SessionCore? = nil,
+                     carrying marks: CarriedMarks) throws -> JoinReceipt {
         let host = core?.host ?? .local
         if let locator, locator.host != host { throw TempleDBError.locatorHostMismatch }
-        let changed = try db.write { database -> (join: Bool, row: Bool, incarnation: String?) in
+        let changed = try db.write { database -> (join: Bool, row: Bool, incarnation: String?, inserted: Bool) in
             // Insert first: the write lock is taken before anything is read,
             // so a concurrent join on another connection cannot slip between
             // the check and the write.
@@ -612,7 +644,7 @@ public final class TempleDB: @unchecked Sendable {
                 arguments: [sessionID, via.rawValue, at, host.rawValue])
             let inserted = database.changesCount > 0
             guard let row = try Row.fetchOne(database, sql: "SELECT host, agent, transcript_path, incarnation FROM session_state WHERE id = ?", arguments: [sessionID]) else {
-                return (false, false, nil)
+                return (false, false, nil, false)
             }
             let existingHost = HostID(rawValue: (row["host"] as String?) ?? "")
             guard existingHost == host else { throw TempleDBError.hostConflict(existing: existingHost) }
@@ -638,11 +670,16 @@ public final class TempleDB: @unchecked Sendable {
                                        core.title, core.lastActiveAt, sessionID, core.directory, core.title, core.lastActiveAt])
                 coreChanged = database.changesCount > 0
             }
-            return (inserted || hintChanged, inserted || hintChanged || coreChanged, row["incarnation"])
+            if inserted, !marks.isEmpty {
+                try database.execute(sql: "UPDATE session_state SET custom_name = ?, color = ? WHERE id = ?",
+                                     arguments: [marks.name, marks.color, sessionID])
+            }
+            return (inserted || hintChanged, inserted || hintChanged || coreChanged, row["incarnation"], inserted)
         }
         if changed.join { committedJoin(sessionID, awaitingCreation: via == .created && agent == .claude && locator == nil) }
         if changed.row { committedRowChange(sessionID) }
-        return changed.incarnation
+        return JoinReceipt(inserted: changed.inserted, incarnation: changed.incarnation,
+                           marks: changed.inserted ? marks : CarriedMarks(name: nil, color: nil))
     }
 
     /// Undo of an import: the one write that removes membership. It deletes
@@ -662,8 +699,13 @@ public final class TempleDB: @unchecked Sendable {
     /// a row that left and joined again (another agent's file under the same
     /// id, or the same one re-imported) is a new membership, and an undo of
     /// the old one leaves it alone.
+    ///
+    /// `marks`: the name and colour the import itself wrote (a carried
+    /// import's receipt), which are then not a change since; anything else
+    /// in those columns keeps the row, as any rename or recolour does.
     @discardableResult
-    public func leave(sessionID: String, host: HostID, agent: Agent? = nil, incarnation: String? = nil) throws -> Bool {
+    public func leave(sessionID: String, host: HostID, agent: Agent? = nil, incarnation: String? = nil,
+                      marks: CarriedMarks = CarriedMarks(name: nil, color: nil)) throws -> Bool {
         let left = try db.write { database in
             try database.execute(
                 sql: """
@@ -672,12 +714,13 @@ public final class TempleDB: @unchecked Sendable {
                       AND (? IS NULL OR agent IS ?) AND (? IS NULL OR incarnation IS ?)
                       AND pinned = 0 AND kept_at IS NULL
                       AND ((archived = 0 AND archive_reason IS NULL) OR (archived != 0 AND archive_reason IS NOT NULL))
-                      AND custom_name IS NULL AND color IS NULL
+                      AND custom_name IS ? AND color IS ?
                       AND generated_title IS NULL AND last_opened_at IS NULL
                       AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
                     """,
                 arguments: [sessionID, host.rawValue, JoinedVia.imported.rawValue,
-                            agent?.rawValue, agent?.rawValue, incarnation, incarnation, sessionID]
+                            agent?.rawValue, agent?.rawValue, incarnation, incarnation,
+                            marks.name, marks.color, sessionID]
             )
             return database.changesCount > 0
         }

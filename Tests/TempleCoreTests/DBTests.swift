@@ -73,6 +73,51 @@ final class DBTests: XCTestCase {
         XCTAssertTrue(try db.leave(sessionID: "r", host: .local, agent: .codex, incarnation: second))
     }
 
+    /// An import from another Temple carries its name and colour into a row
+    /// it makes, never into one that was already Temple's, and its undo
+    /// treats exactly those marks as part of the import
+    /// (docs/designs/open-existing-sessions.md section 3).
+    func testCarriedMarksGoOnlyIntoANewRowAndTheirUndoComparesThem() throws {
+        let db = try TempleDB.inMemory()
+        let host = HostID(rawValue: "mac-b")
+        let marks = CarriedMarks(name: "Fix login", color: "blue")
+        let receipt = try db.join(sessionID: "p", via: .imported, agent: .claude, core: SessionCore(host: host), carrying: marks)
+        XCTAssertTrue(receipt.inserted)
+        XCTAssertEqual(receipt.marks, marks)
+        XCTAssertEqual(try db.sessionState("p")?.customName, "Fix login")
+        XCTAssertEqual(try db.sessionState("p")?.color, "blue")
+        XCTAssertFalse(try db.leave(sessionID: "p", host: host, agent: .claude, incarnation: receipt.incarnation),
+                       "without the receipt's marks, they read as a rename")
+        XCTAssertTrue(try db.leave(sessionID: "p", host: host, agent: .claude, incarnation: receipt.incarnation, marks: receipt.marks))
+
+        // Renamed here after the import: kept.
+        let again = try db.join(sessionID: "p", via: .imported, agent: .claude, core: SessionCore(host: host), carrying: marks)
+        try db.setCustomName("Mine", sessionID: "p")
+        XCTAssertFalse(try db.leave(sessionID: "p", host: host, agent: .claude, incarnation: again.incarnation, marks: again.marks))
+        XCTAssertEqual(try db.sessionState("p")?.customName, "Mine")
+
+        // Already Temple's (joined first by anything): its own marks stay,
+        // a deliberate empty one included, and the receipt says nothing was written.
+        try db.join(sessionID: "q", via: .opened, agent: .claude, core: SessionCore(host: host))
+        let late = try db.join(sessionID: "q", via: .imported, agent: .claude, core: SessionCore(host: host), carrying: marks)
+        XCTAssertFalse(late.inserted)
+        XCTAssertEqual(late.marks, CarriedMarks(name: nil, color: nil))
+        XCTAssertNil(try db.sessionState("q")?.customName)
+        XCTAssertNil(try db.sessionState("q")?.color)
+
+        // A refused join writes no marks.
+        XCTAssertThrowsError(try db.join(sessionID: "q", via: .imported, agent: .codex, core: SessionCore(host: host), carrying: marks))
+        XCTAssertNil(try db.sessionState("q")?.customName)
+
+        // An empty mark is carried as it is, and compared exactly.
+        let empty = try db.join(sessionID: "e", via: .imported, agent: .claude, core: SessionCore(host: host),
+                                carrying: CarriedMarks(name: "", color: nil))
+        XCTAssertEqual(try db.sessionState("e")?.customName, "")
+        try db.setCustomName(nil, sessionID: "e")
+        XCTAssertFalse(try db.leave(sessionID: "e", host: host, agent: .claude, incarnation: empty.incarnation, marks: empty.marks),
+                       "a name cleared here since is a change the undo keeps")
+    }
+
     func testLeaveDeletesOnlyAnUntouchedImportedRow() throws {
         let (db, _) = try database()
         try db.join(sessionID: "fresh", via: .imported, agent: .claude,

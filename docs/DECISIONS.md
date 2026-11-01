@@ -2610,3 +2610,62 @@ and did what ADR-030 says: archived it and told.
 **Amends ADR-030:** "archived, labelled, and come back when a person
 restores them" gains "a row that was never a session is dropped instead,
 and not counted in the notice".
+
+## ADR-039 — A host's own Temple, and any session by id
+**Date:** 2026-11-01 · **Status:** Accepted; amends ADR-036's "no discovery"
+
+On this Mac, History is the door to every session: one Temple never saw is
+imported or resumed from there. On a host there was no door at all: ADR-036
+put discovery of sessions Temple did not start out of v1, so the owner's
+everyday case (two Macs, each running Temple, each the other's host) was
+still done by hand, with ssh, tmux and `claude --resume <id>`. Design and its
+three review rounds: [docs/designs/open-existing-sessions.md](./designs/open-existing-sessions.md).
+
+**Decisions.**
+
+- **A host that runs Temple is read from Temple's own database, not from
+  its session files.** History's page menu (**This Mac**, then each enabled
+  host by name) reads that host's `temple.sqlite` once when the host is
+  chosen and on Refresh: one ssh exec, `sqlite3` read-only, one
+  transaction, a host-side watchdog at 2 s (under the other Temple's 5 s
+  busy timeout), the answer written to a private file and sent only after
+  the transaction ended. No session file is listed for it. This Mac's page
+  is History as it was and contacts no host.
+- **The other Temple's rows are evidence, never this Temple's decisions.**
+  They are a third origin in History's projection, beside catalog rows and
+  members: no transcript evidence, no absence, no catalog completion.
+  `RemoteSessionSource.catalog` and `complete` are unchanged. Only its own
+  sessions (`host = ''`) are listed; one it runs on a third host is
+  reachable by id only.
+- **Import brings the other Temple's name and colour, and Undo still
+  works.** The join writes them only when it makes the row, in the same
+  transaction, and returns a receipt; `TempleDB.leave` compares against the
+  receipt's marks instead of requiring none. No title, folder, pin or
+  archive is copied. An Undo earned survives the host being edited or
+  removed; its Redo, which imports from the host again, does not.
+- **What was read is bound to the host's configuration.** A host edited,
+  removed, or removed and added again drops its listing and every pending
+  action taken from it.
+- **Open a session by id**, on This Mac or a host: id and host, then Open.
+  The agent and folder come from a lookup of that one id
+  (`HostSessionSource.lookup`), confirmed by a read; the agent is asked only
+  when both agents have the id, the folder only when the transcript records
+  none. "No session" is said only when every store was listed to the end;
+  a host that didn't answer, or a store that couldn't be listed, is never
+  "not found". Entry points: a whole id pasted into `⌘K`, **Resume a
+  session on <host>…** in the launcher and `⌘N`, and a host's History page
+  and its problem lines.
+- **Nothing launches that Temple couldn't record.** Both doors hand a
+  `ResumeRequest` to the tab model; a member's own folder wins, and any
+  launch, these and the existing ones, needs a join that succeeded (a
+  failed write used to slip past the conflict-only check).
+- **Two places at once is allowed.** "In a tab on <host>" says the other
+  Temple has a saved tab; opening it here says so once in the tab, and is
+  never refused.
+
+**Rejected.** Listing a host's session files over `find` (a remote catalog,
+still out); reading the other Temple through its `temple` CLI (needs the CLI
+on a non-interactive PATH, and the database is additive by rule, so a fixed
+column projection from v10 reads every later build); copying the other
+Temple's title (a NULL-only fill would freeze it); probing hosts to decide
+which to list in the menu.

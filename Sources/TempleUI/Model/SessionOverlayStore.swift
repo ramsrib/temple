@@ -25,6 +25,15 @@ public enum JoinResult {
 
     public var isJoined: Bool { if case .joined = self { true } else { false } }
     public var conflict: JoinConflict? { if case .refused(let conflict) = self { conflict } else { nil } }
+    /// Why a launch must not go ahead: a conflict, or a join whose write
+    /// failed. Nothing runs that Temple could not record as its session.
+    public var launchRefusal: String? {
+        switch self {
+        case .joined: nil
+        case .refused(let conflict): conflict.message
+        case .failed(let error): "Temple couldn't record this session: \(error.localizedDescription)"
+        }
+    }
 }
 
 /// App-state overlay the CLIs don't track: pins, custom names, color marks,
@@ -234,9 +243,10 @@ public final class SessionOverlayStore: ObservableObject {
     /// here (`TempleDB.join`).
     @discardableResult
     public func join(_ id: String, via: JoinedVia, agent: Agent? = nil, locator: TranscriptLocator? = nil,
-                     core: SessionCore = SessionCore()) -> JoinResult {
+                     core: SessionCore = SessionCore(), carrying marks: CarriedMarks? = nil) -> JoinResult {
         do {
-            try db.join(sessionID: id, via: via, agent: agent, locator: locator, core: core)
+            try db.join(sessionID: id, via: via, agent: agent, locator: locator, core: core,
+                        carrying: marks ?? CarriedMarks(name: nil, color: nil))
             // A join that wrote reached `rows` through the observer already;
             // one that found the row there (another connection inserted it
             // since this store last read) wrote nothing and notified nobody.
@@ -308,6 +318,41 @@ public final class SessionOverlayStore: ObservableObject {
         }
     }
 
+    /// What one import of another Temple's session came to.
+    enum PeerImportOutcome {
+        /// The receipt names the membership and the marks it wrote.
+        case joined(JoinReceipt)
+        /// Already Temple's on its host: left as it is.
+        case skipped
+        case failed(Error)
+    }
+
+    /// Bring another Temple's sessions in without running them
+    /// (docs/designs/open-existing-sessions.md section 3): one `.imported`
+    /// join each on its host, its recorded transcript as the engine's hint,
+    /// and its name and colour written only into a row the join makes.
+    /// Nothing else of the other Temple's is written: no title, folder,
+    /// pin or archive.
+    func importPeers(_ peers: [PeerRow]) -> [PeerImportOutcome] {
+        guard !Task.isCancelled else { return peers.map { _ in .failed(CancellationError()) } }
+        let before = rows
+        var joined: Set<String> = []
+        return peers.map { peer in
+            guard before[peer.id]?.host != peer.host else { return .skipped }
+            do {
+                let receipt = try db.join(sessionID: peer.id, via: .imported, agent: peer.agent, locator: peer.locator,
+                                          core: SessionCore(host: peer.host), carrying: peer.marks)
+                refreshRow(peer.id)
+                // Joined meanwhile by another window or connection: not this import's.
+                guard receipt.inserted, joined.insert(peer.id).inserted else { return .skipped }
+                return .joined(receipt)
+            } catch {
+                TempleUILog.db.error("import failed for session \(peer.id, privacy: .public): \(String(describing: error), privacy: .public)")
+                return .failed(error)
+            }
+        }
+    }
+
     public func observeLaunchDirectory(_ id: String, host: HostID, _ directory: String) {
         guard isTempleSession(id) else { return }
         try? db.observeLaunchDirectory(sessionID: id, host: host, directory)
@@ -371,6 +416,8 @@ public final class SessionOverlayStore: ObservableObject {
         let key: SessionKey
         let agent: Agent?
         let incarnation: String?
+        /// The name and colour the import itself wrote (another Temple's).
+        var marks = CarriedMarks(name: nil, color: nil)
     }
 
     /// Undo of an import, narrowed to the membership that import made: a
@@ -381,7 +428,8 @@ public final class SessionOverlayStore: ObservableObject {
             let key = item.key
             guard isTempleSession(key.id) else { return false }
             do {
-                return try db.leave(sessionID: key.id, host: key.host, agent: item.agent, incarnation: item.incarnation)
+                return try db.leave(sessionID: key.id, host: key.host, agent: item.agent, incarnation: item.incarnation,
+                                    marks: item.marks)
             } catch {
                 TempleUILog.db.error("leave failed for session \(key.id, privacy: .public): \(String(describing: error), privacy: .public)")
                 return false

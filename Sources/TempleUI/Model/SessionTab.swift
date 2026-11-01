@@ -127,6 +127,12 @@ public final class SessionTab: ObservableObject, Identifiable {
     var coordinator: AnyObject?
     /// Optional join hint, consumed at spawn; it never supplies launch facts.
     var transcriptHint: TranscriptLocator?
+    /// Another Temple's name and colour for this session, written by the
+    /// launch's join only if that join makes the row (a peer row's Open).
+    var carriedMarks: CarriedMarks?
+    /// Said once in the launch header: the other Temple has a saved tab for
+    /// this session too (a peer row's "In a tab on <host>").
+    @Published public var peerTabNote: String?
 
     /// Was this tab spawned to RESUME an existing conversation (sidebar open,
     /// relaunch restore) rather than to start a fresh one? Only a resume can

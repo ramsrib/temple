@@ -430,6 +430,78 @@ extension AppModel {
                                })
     }
 
+    /// Open a session by id: History's host page and its lines, the
+    /// launcher's and ⌘N's host rows ("Open a session on <host> by id…"), and
+    /// ⌘K given a whole id (This Mac, the id filled in).
+    public func openSessionByID(host: HostID, sessionID: String = "") {
+        newSessionPickerPresented = false
+        guard host.isLocal || remoteHost(host) != nil else { return }
+        openByIDSheet = OpenByIDRequest(host: host, sessionID: sessionID)
+    }
+
+    /// ⌘K given a whole session id: a session Temple has opens; any other
+    /// opens the sheet with the id filled in, on This Mac.
+    public func openPastedSessionID(_ text: String) {
+        commandPalettePresented = false
+        let id = OpenByIDSheetModel.normalized(text)
+        if let member = sessions.first(where: { $0.id == id }) {
+            openPaletteResult(member)
+            return
+        }
+        openSessionByID(host: .local, sessionID: id)
+    }
+
+    func openByIDSheetModel(_ request: OpenByIDRequest) -> OpenByIDSheetModel {
+        let dependencies = OpenByIDSheetModel.Dependencies(
+            hosts: { [weak self] in [HostID.local] + (self?.remoteHostIDs ?? []) },
+            lookup: { [weak self] host, id in
+                guard let source = await self?.hostRegistry.entry(for: host)?.source else {
+                    throw LocateError.transport("\(host.displayName) isn't connected.")
+                }
+                return try await source.lookup(id: id)
+            },
+            checkFolder: { [weak self] host, path in
+                guard !host.isLocal else {
+                    let expanded = (path as NSString).expandingTildeInPath
+                    var isDirectory: ObjCBool = false
+                    guard FileManager.default.fileExists(atPath: expanded, isDirectory: &isDirectory) else { return .missing }
+                    return isDirectory.boolValue ? .exists(expanded) : .problem("\(path) isn't a folder.")
+                }
+                guard let launcher = await self?.remoteHost(host) else { return .transport("\(host.displayName) isn't connected") }
+                switch await launcher.checkFolder(path) {
+                case .exists(let resolved): return .exists(resolved)
+                case .missing: return .missing
+                case .cannotEnter(let line): return .problem("Temple can't enter \(path) on \(host.displayName): \(RemoteCopy.trimmed(line)).")
+                case .transport(let line): return .transport(line)
+                }
+            },
+            member: { [weak self] id in self?.sessions.first { $0.id == id } },
+            hasLiveTab: { [weak self] id, host in
+                guard let tab = self?.openSessions.openTab(forSessionID: id) else { return false }
+                return tab.host == host && tab.hasSurface
+            },
+            openMember: { [weak self] in self?.openSessions.openSession($0) },
+            resume: { [weak self] in self?.openSessions.resume($0) ?? false },
+            configuration: { [weak self] host in
+                guard let self else { return nil }
+                if host.isLocal { return 0 }
+                guard self.remoteHost(host) != nil else { return nil }
+                return self.history.hostConfiguration(host)
+            },
+            canAct: { [weak self] in
+                guard let self else { return false }
+                return self.openByIDSheet?.id == request.id && !self.openSessions.isQuitting
+            },
+            recentFolders: { [weak self] host in
+                guard let self else { return [] }
+                return host.isLocal ? [] : self.recentRemoteFolders(host)
+            })
+        return OpenByIDSheetModel(request: request, dependencies: dependencies) { [weak self] in
+            guard let self, self.openByIDSheet?.id == request.id else { return }
+            self.openByIDSheet = nil
+        }
+    }
+
     /// ⌘N's "Choose folder on <host>…" and the launcher's host row.
     public func chooseRemoteFolder(host: HostID, agent: Agent? = nil) {
         newSessionPickerPresented = false

@@ -75,6 +75,11 @@ public struct HistoryRow: Identifiable, Equatable, Sendable {
     /// another agent: shown as the catalog has it, never attached to that
     /// member, and never imported or opened from here.
     public let conflict: JoinConflict?
+    /// The session as another Temple on its host lists it (a host's page):
+    /// alone for a session not Temple's here, or beside the member it is,
+    /// whose own presentation it never changes. Its folder is where Open
+    /// launches a member that records none.
+    public let peer: PeerRow?
 
     // MARK: Presentation, precomputed
 
@@ -123,7 +128,7 @@ public struct HistoryRow: Identifiable, Equatable, Sendable {
 
     public var sessionID: String { id.sessionID }
     public var host: HostID { id.host }
-    public var agent: Agent? { member != nil ? member?.agent : catalog?.agent }
+    public var agent: Agent? { member != nil ? member?.agent : catalog?.agent ?? peer?.agent }
     public var projectPath: String { project?.path ?? "" }
     public var isMember: Bool { member != nil }
     public var isArchived: Bool { if case .archived = standing { true } else { false } }
@@ -137,7 +142,8 @@ public struct HistoryRow: Identifiable, Equatable, Sendable {
     /// Computed when an action asks, never stored or drawn.
     public var resumeArgv: [String] {
         if let member { return SessionLauncher.resumeArgv(member) }
-        return catalog.map { $0.agent.resumeArgv(sessionID: $0.id) } ?? []
+        if let catalog { return catalog.agent.resumeArgv(sessionID: catalog.id) }
+        return peer.map { $0.agent.resumeArgv(sessionID: $0.id) } ?? []
     }
     public var archiveStatus: ArchiveStatus? {
         if case .archived(let status) = standing { return status }
@@ -146,19 +152,20 @@ public struct HistoryRow: Identifiable, Equatable, Sendable {
 
     /// A row built outside a projection (tests, a one-off): nothing archived
     /// by project, no tab open, no folder evidence.
-    public init(member: Session? = nil, catalog: TranscriptSummary? = nil, conflict: JoinConflict? = nil) {
-        self = HistoryRowBuilder().row(member: member, catalog: catalog, conflict: conflict,
+    public init(member: Session? = nil, catalog: TranscriptSummary? = nil, conflict: JoinConflict? = nil,
+                peer: PeerRow? = nil) {
+        self = HistoryRowBuilder().row(member: member, catalog: catalog, conflict: conflict, peer: peer,
                                        context: HistoryRowBuilder.Context())
     }
 
-    fileprivate init(id: HistoryKey, member: Session?, catalog: TranscriptSummary?, conflict: JoinConflict?,
+    fileprivate init(id: HistoryKey, member: Session?, catalog: TranscriptSummary?, conflict: JoinConflict?, peer: PeerRow?,
                      title: String, updatedAt: Date, day: Date, timeText: String, project: ProjectKey?,
                      projectName: String, standing: HistoryStanding, transcriptMissing: Bool,
                      folderMissing: Bool, kept: Bool, canResume: Bool, hasResumeCommand: Bool, canArchive: Bool,
                      projectArchived: Bool, colorMark: TabColorMark?, statusTooltip: String?,
                      conditionTag: HistoryConditionTag?, tagTooltip: String?, membershipTooltip: String,
                      rowTooltip: String, searchKey: [UInt8], idKey: [UInt8]) {
-        self.id = id; self.member = member; self.catalog = catalog; self.conflict = conflict
+        self.id = id; self.member = member; self.catalog = catalog; self.conflict = conflict; self.peer = peer
         self.title = title; self.updatedAt = updatedAt; self.day = day; self.timeText = timeText
         self.project = project; self.projectName = projectName; self.standing = standing
         self.transcriptMissing = transcriptMissing; self.folderMissing = folderMissing; self.kept = kept
@@ -231,9 +238,10 @@ final class HistoryRowBuilder {
         return key.host.isLocal ? (parent as NSString).abbreviatingWithTildeInPath : parent
     }
 
-    func row(member: Session?, catalog: TranscriptSummary?, conflict: JoinConflict?, context: Context) -> HistoryRow {
-        precondition(member != nil || catalog != nil)
-        precondition(conflict == nil || (member == nil && catalog != nil))
+    func row(member: Session?, catalog: TranscriptSummary?, conflict: JoinConflict?, peer: PeerRow? = nil,
+             context: Context) -> HistoryRow {
+        precondition(member != nil || catalog != nil || peer != nil)
+        precondition(conflict == nil || (member == nil && (catalog != nil || peer != nil)))
         // Attached to a catalog row, a member shows disk time: its activity
         // is left out so a touch compares equal.
         var member = member
@@ -242,15 +250,21 @@ final class HistoryRowBuilder {
             state.lastActiveAt = nil
             member = Session(state: state, resolution: attached.resolution)
         }
-        let id = catalog.map(HistoryKey.init) ?? HistoryKey(member!)
-        let title = member?.displayTitle ?? catalog!.catalogTitle
-        let updatedAt = catalog?.modifiedAt ?? member!.sortDate
+        let id = catalog.map(HistoryKey.init) ?? member.map(HistoryKey.init) ?? peer!.key
+        let title = member?.displayTitle ?? catalog?.catalogTitle ?? peer!.displayTitle
+        let updatedAt = catalog?.modifiedAt ?? member?.sortDate ?? peer?.lastActiveAt ?? .distantPast
         let undated = updatedAt == .distantPast
         let day = undated ? Date.distantPast : calendar.startOfDay(for: updatedAt)
-        let project: ProjectKey? = member.map(\.project) ?? catalog.flatMap {
-            // No folder at all is "No project", not a key for the empty path ("/").
-            $0.catalogDirectory.isEmpty ? nil : ProjectKey(host: $0.locator.host, path: $0.catalogDirectory)
-        }
+        let project: ProjectKey? = {
+            // A member's own folder only: another Temple's is a launch hint
+            // (section 4), never where this Temple files the row.
+            if let member { return member.project }
+            if let catalog {
+                // No folder at all is "No project", not a key for the empty path ("/").
+                return catalog.catalogDirectory.isEmpty ? nil : ProjectKey(host: catalog.locator.host, path: catalog.catalogDirectory)
+            }
+            return peer?.project
+        }()
 
         var standing: HistoryStanding = .outside
         var transcriptMissing = false
@@ -283,8 +297,9 @@ final class HistoryRowBuilder {
         let archived: Bool = { if case .archived = standing { return true }; return false }()
         let canResume: Bool = {
             if conflict != nil { return false }
-            guard let member else { return catalog != nil }
-            return member.canResume && !(archived && (transcriptMissing || folderMissing))
+            guard let member else { return catalog != nil || peer != nil }
+            // A member with no folder recorded opens in its peer's (section 4).
+            return (member.canResume || (peer != nil && member.agent != nil)) && !(archived && (transcriptMissing || folderMissing))
         }()
         let openTab = member.map { context.openTabs.contains(SessionKey(id: $0.id, host: $0.host)) } ?? false
         let canArchive = member != nil && !archived && !openTab
@@ -309,28 +324,33 @@ final class HistoryRowBuilder {
         if let count = catalog?.messageCount { details.append("\(count) messages") }
         let localURL = catalog?.locator.localURL ?? member?.transcript?.localURL
         if let url = localURL { details.append((url.path as NSString).abbreviatingWithTildeInPath) }
-        let rowTooltip = [conflict?.message, catalog?.lastMessagePreview, details.joined(separator: " · ")]
+        // Another Temple's row: how to continue it, since its only button is Import.
+        let peerLine = peer.flatMap { peer in
+            conflict == nil && canResume ? "Double-click or press Return to continue it here; it runs on \(peer.host.displayName)." : nil
+        }
+        let rowTooltip = [conflict?.message, peerLine, catalog?.lastMessagePreview, details.joined(separator: " · ")]
             .compactMap { $0 }
             .joined(separator: "\n")
         // The displayed title and every original one the row or its listing
         // has: a renamed session is still found by what it was first called.
         var titles = member?.searchTitles ?? [title]
-        for listed in [catalog?.titleFact, catalog?.firstPrompt] {
+        for listed in [catalog?.titleFact, catalog?.firstPrompt, peer?.customName, peer?.title] {
             if let listed, !listed.isEmpty, !titles.contains(listed) { titles.append(listed) }
         }
         let searchable = (titles + [project?.path ?? "", catalog?.gitBranch ?? "", catalog?.lastMessagePreview ?? ""])
             .joined(separator: "\n").lowercased()
 
         return HistoryRow(
-            id: id, member: member, catalog: catalog, conflict: conflict,
+            id: id, member: member, catalog: catalog, conflict: conflict, peer: peer,
             title: title, updatedAt: updatedAt, day: day,
             timeText: undated ? "" : timeFormatter.string(from: updatedAt),
             project: project, projectName: project?.displayName ?? "No project",
             standing: standing, transcriptMissing: transcriptMissing, folderMissing: folderMissing,
             kept: kept, canResume: canResume,
-            hasResumeCommand: !(member.map(SessionLauncher.resumeArgv) ?? catalog.map { $0.agent.resumeArgv(sessionID: $0.id) } ?? []).isEmpty,
+            hasResumeCommand: !(member.map(SessionLauncher.resumeArgv) ?? catalog.map { $0.agent.resumeArgv(sessionID: $0.id) }
+                ?? peer.map { $0.agent.resumeArgv(sessionID: $0.id) } ?? []).isEmpty,
             canArchive: canArchive, projectArchived: projectArchived,
-            colorMark: member?.state.color.flatMap(TabColorMark.init(rawValue:)),
+            colorMark: (member != nil ? member?.state.color : peer?.color).flatMap(TabColorMark.init(rawValue:)),
             statusTooltip: statusTooltip, conditionTag: tag, tagTooltip: tagTooltip,
             membershipTooltip: membership, rowTooltip: rowTooltip,
             searchKey: Array(searchable.utf8), idKey: Array(id.sessionID.lowercased().utf8))

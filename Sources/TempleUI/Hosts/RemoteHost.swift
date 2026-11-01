@@ -245,6 +245,33 @@ final class RemoteHostLauncher: RemoteSessionHost {
 
     func retire() { sessions.retire() }
 
+    func readPeerTemple() async -> PeerRead {
+        do {
+            switch try await sessions.readPeerTemple() {
+            case .snapshot(let snapshot):
+                return .listed(PeerListing(
+                    sessions: snapshot.sessions.map { session in
+                        PeerRow(host: host, id: session.id, agent: session.agent, directory: session.directory,
+                                transcriptPath: session.transcriptPath, customName: session.customName,
+                                title: session.title, color: session.color,
+                                archivedThere: snapshot.isArchived(session),
+                                tabThere: snapshot.openTabIDs.contains(session.id),
+                                lastActiveAt: session.lastActiveAt ?? session.lastOpenedAt)
+                    },
+                    skipped: snapshot.skipped))
+            case .noTemple: return .noTemple
+            case .noReader: return .noReader
+            case .busy: return .unreadable("it was busy")
+            case .needsOpen: return .needsOpen
+            case .incompatible: return .incompatible
+            case .tooLarge: return .tooLarge
+            case .unreadable(let line): return .unreadable(line)
+            }
+        } catch {
+            return .unreachable(error.localizedDescription)
+        }
+    }
+
     func clientExitStatus(_ handle: String, attachment: Int) async -> Int32? {
         await sessions.clientExitStatus(handle, attachment: attachment)
     }

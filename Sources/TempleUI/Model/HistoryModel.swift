@@ -54,6 +54,23 @@ public final class HistoryModel: ObservableObject {
         public let title: String
         public let message: String
         public let confirmLabel: String
+        /// Another Temple's sessions, from a host's page (never mixed with
+        /// `sessions`: catalog rows are only on This Mac's page).
+        public var peers: [PeerRow] = []
+    }
+
+    /// One host's Temple, as this tab has read it.
+    public struct PeerPageState: Equatable {
+        public var reading = false
+        /// The last read that listed sessions, and when; a failed Refresh
+        /// keeps it.
+        public var listing: PeerListing?
+        public var readAt: Date?
+        /// The latest read's answer when it listed nothing: the line above
+        /// the rows.
+        public var problem: PeerRead?
+        /// The host's configuration the listing was read under.
+        var configuration: Int?
     }
 
     public struct ImportFailure: Identifiable, Equatable {
@@ -145,6 +162,17 @@ public final class HistoryModel: ObservableObject {
     /// Temple's own rows, with the engine's verdicts.
     var memberRows: () -> [Session] = { [] }
     var openMember: (Session) -> Void = { _ in }
+    /// The host's own Temple, read once; nil when the host isn't registered.
+    var readPeer: (HostID) async -> PeerRead? = { _ in nil }
+    /// The host's configuration as it stands now (nil: not a host any
+    /// more). What was read under another one is not that host's.
+    var hostConfiguration: (HostID) -> Int? = { _ in nil }
+    /// Open a session on its host, Temple's or not (section 4).
+    var resumeSession: (ResumeRequest) -> Bool = { _ in false }
+    /// The hosts the page menu lists: every enabled one, none contacted.
+    public var enabledHosts: () -> [HostID] = { [] }
+    /// Open a session by id, on this host (section 5).
+    public var openByID: (HostID) -> Void = { _ in }
 
     // MARK: Data
 
@@ -192,6 +220,15 @@ public final class HistoryModel: ObservableObject {
         }
     }
     @Published public var scope: HistoryScope = .all { didSet { if scope != oldValue { filtersChanged() } } }
+    /// Whose sessions the page shows (docs/designs/open-existing-sessions.md
+    /// section 1). Choosing a host reads that host's Temple, once.
+    @Published public var page: HistoryPage = .thisMac { didSet { if page != oldValue { pageChanged() } } }
+    /// Each host's Temple as this tab has read it. View state: it goes when
+    /// the tab closes.
+    @Published public private(set) var peerPages: [HostID: PeerPageState] = [:]
+    /// Hosts that answered "no Temple" since launch, muted in the menu.
+    @Published public private(set) var noTempleHosts: Set<HostID> = []
+    private var peerReadIDs: [HostID: Int] = [:]
     @Published public var agentFilter: Agent? { didSet { if agentFilter != oldValue { filtersChanged() } } }
     @Published public var projectKeyFilter: ProjectKey? { didSet { if projectKeyFilter != oldValue { filtersChanged() } } }
     @Published public var justArchivedChip: JustArchivedChip? { didSet { if justArchivedChip != oldValue { filtersChanged() } } }
@@ -424,6 +461,12 @@ public final class HistoryModel: ObservableObject {
         cancelPendingCommands()
         draft = ""
         query = ""; scope = .all; agentFilter = nil; projectKeyFilter = nil; justArchivedChip = nil
+        page = .thisMac
+        for host in peerPages.keys { peerReadIDs[host, default: 0] += 1 }
+        if !peerPages.isEmpty {
+            peerPages = [:]
+            sendPeers()
+        }
     }
 
     /// ⌘R, and every activation. A read already running is replaced.
@@ -464,6 +507,7 @@ public final class HistoryModel: ObservableObject {
             self.readState = .done
             self.readTask = nil
         }
+        if let host = page.host { readPeerPage(host) }
     }
 
     private func receive(_ event: HistoryCatalogRead.Event, read id: Int) async {
@@ -570,7 +614,7 @@ public final class HistoryModel: ObservableObject {
     }
 
     private var currentQuery: HistoryQuery {
-        HistoryQuery(scope: scope, agent: agentFilter, project: projectKeyFilter,
+        HistoryQuery(page: page, scope: scope, agent: agentFilter, project: projectKeyFilter,
                      search: normalizedQuery, justArchived: justArchivedChip?.memberships)
     }
 
@@ -971,6 +1015,11 @@ public final class HistoryModel: ObservableObject {
         selectedRows.filter(\.canImport).compactMap(\.catalog)
     }
 
+    /// What the bulk Import would bring in from another Temple.
+    public var selectedOutsidePeers: [PeerRow] {
+        selectedRows.filter { $0.canImport && $0.catalog == nil }.compactMap(\.peer)
+    }
+
     private func refreshSelectionSummary() {
         let index = snapshot.indexByKey
         var summary = SelectionSummary()
@@ -1148,6 +1197,7 @@ public final class HistoryModel: ObservableObject {
     @discardableResult
     public func open(_ row: HistoryRow) -> Bool {
         guard row.canResume else { return false }
+        if let peer = row.peer { return openPeer(peer, title: row.title) }
         if let member = row.member { openMember(member) }
         else if let catalog = row.catalog { openSession(catalog) }
         else { return false }
@@ -1155,9 +1205,16 @@ public final class HistoryModel: ObservableObject {
     }
 
     public func open(_ session: TranscriptSummary) { openSession(session) }
-    public func requestImport(_ rows: [HistoryRow]) { requestImport(rows.filter(\.canImport).compactMap(\.catalog)) }
+    public func requestImport(_ rows: [HistoryRow]) {
+        let importable = rows.filter(\.canImport)
+        askToImport(importable.compactMap(\.catalog), peers: importable.filter { $0.catalog == nil }.compactMap(\.peer))
+    }
 
-    public func showOnly(project key: ProjectKey) { projectKeyFilter = key }
+    /// A host's project narrows that host's page; any other goes to This Mac.
+    public func showOnly(project key: ProjectKey) {
+        if page.host != key.host || key.host.isLocal { page = .thisMac }
+        projectKeyFilter = key
+    }
 
     // MARK: Import
 
@@ -1170,12 +1227,18 @@ public final class HistoryModel: ObservableObject {
         askToImport(sessions)
     }
 
-    private func performImportSelection() { askToImport(selectedOutsideRows) }
+    private func performImportSelection() { askToImport(selectedOutsideRows, peers: selectedOutsidePeers) }
 
-    private func askToImport(_ sessions: [TranscriptSummary]) {
+    private func askToImport(_ sessions: [TranscriptSummary], peers: [PeerRow] = []) {
         let candidates = sessions.filter(isImportable)
-        guard !candidates.isEmpty else { return }
-        pendingImport = makeImportRequest(for: candidates)
+        let peerCandidates = peers.filter { overlay.rows[$0.id] == nil && peerIsCurrent($0) }
+        guard !candidates.isEmpty || !peerCandidates.isEmpty else { return }
+        if peerCandidates.isEmpty {
+            pendingImport = makeImportRequest(for: candidates)
+        } else {
+            pendingImport = Self.importRequest(forPeers: peerCandidates,
+                                               isProjectArchived: { [overlay] in overlay.isProjectArchived($0) })
+        }
     }
 
     /// The copy in the words the page shows: display titles, and where each
@@ -1251,28 +1314,43 @@ public final class HistoryModel: ObservableObject {
         guard let request = request ?? pendingImport else { return }
         pendingImport = nil
         let sessions = request.sessions.filter(isImportable)
-        guard !sessions.isEmpty else { return }
-        finishImport(sessions, undoManager: undoManager)
+        // A host whose configuration changed since the page read it is not
+        // the host those rows came from.
+        let peers = request.peers.filter(peerIsCurrent)
+        guard !sessions.isEmpty || !peers.isEmpty else { return }
+        finishImport(sessions, peers: peers, undoManager: undoManager)
         await settle()
     }
 
-    private func finishImport(_ sessions: [TranscriptSummary], undoManager: UndoManager?) {
+    private func finishImport(_ sessions: [TranscriptSummary], peers: [PeerRow] = [], undoManager: UndoManager?) {
         // Redo replays rows captured earlier: skip any that joined since.
         let attempted = sessions.filter { !overlay.isTempleSession($0.id) }
-        guard !attempted.isEmpty else { return }
+        let attemptedPeers = peers.filter { !overlay.isTempleSession($0.id) }
+        guard !attempted.isEmpty || !attemptedPeers.isEmpty else { return }
         // One outcome per row: two rows sharing an id (two hosts, two
         // agents) are not both imported — the second is refused, with why.
         let outcomes = overlay.import(attempted)
         var imported: [HistoryKey] = []
         var incarnations: [HistoryKey: String] = [:]
-        var failed: [(TranscriptSummary, Error)] = []
+        var marks: [HistoryKey: CarriedMarks] = [:]
+        var failed: [(String, Error)] = []
         for (session, outcome) in zip(attempted, outcomes) {
             switch outcome {
             case .joined(let incarnation):
                 imported.append(HistoryKey(session))
                 incarnations[HistoryKey(session)] = incarnation
             case .skipped: break
-            case .failed(let error): failed.append((session, error))
+            case .failed(let error): failed.append((overlay.displayTitle(for: session), error))
+            }
+        }
+        for (peer, outcome) in zip(attemptedPeers, overlay.importPeers(attemptedPeers)) {
+            switch outcome {
+            case .joined(let receipt):
+                imported.append(peer.key)
+                incarnations[peer.key] = receipt.incarnation
+                marks[peer.key] = receipt.marks
+            case .skipped: break
+            case .failed(let error): failed.append((peer.displayTitle, error))
             }
         }
         clearSelection()
@@ -1281,11 +1359,12 @@ public final class HistoryModel: ObservableObject {
             markJustImported(imported)
             showNotice(Notice(text: imported.count == 1 ? "1 session imported" : "\(imported.count) sessions imported",
                               offersUndo: undoManager != nil))
-            registerUndo(undoManager, imported: imported, incarnations: incarnations,
-                         sessions: attempted.filter { importedKeys.contains(HistoryKey($0)) })
+            registerUndo(undoManager, imported: imported, incarnations: incarnations, marks: marks,
+                         sessions: attempted.filter { importedKeys.contains(HistoryKey($0)) },
+                         peers: attemptedPeers.filter { importedKeys.contains($0.key) })
         }
         if !failed.isEmpty {
-            let failedTitles = failed.map { overlay.displayTitle(for: $0.0) }
+            let failedTitles = failed.map(\.0)
             let errors = Set(failed.map { $0.1.localizedDescription }).sorted()
             var lines = errors + [failedTitles.joined(separator: " · ")]
             if !imported.isEmpty {
@@ -1311,20 +1390,28 @@ public final class HistoryModel: ObservableObject {
     /// untouched import not running in a tab (`TempleDB.leave`). Redo imports
     /// what the undo removed. The pair re-registers itself, so ⌘Z / ⌘⇧Z
     /// bounce as often as the user likes.
+    ///
+    /// An undo of another Temple's sessions needs nothing of that host: it
+    /// is this Mac's rows, compared with the marks the import wrote (its
+    /// receipt), so it works after the host is edited or removed. Its Redo
+    /// imports from the host again, so it is refused once the host's
+    /// configuration has changed.
     private func registerUndo(_ undoManager: UndoManager?, imported keys: [HistoryKey], incarnations: [HistoryKey: String],
-                              sessions: [TranscriptSummary]) {
+                              marks: [HistoryKey: CarriedMarks] = [:], sessions: [TranscriptSummary], peers: [PeerRow] = []) {
         guard let undoManager else { return }
         undoManager.registerUndo(withTarget: self) { [weak undoManager] model in
             MainActor.assumeIsolated {
-                let left = Set(model.undoImport(keys, incarnations: incarnations))
+                let left = Set(model.undoImport(keys, incarnations: incarnations, marks: marks))
                 guard let undoManager, !left.isEmpty else { return }
                 let back = sessions.filter { left.contains(HistoryKey($0)) }
+                let backPeers = peers.filter { left.contains($0.key) }
                 undoManager.registerUndo(withTarget: model) { [weak undoManager] model in
                     MainActor.assumeIsolated {
                         // Redo must register its inverse synchronously inside UndoManager's
                         // callback. The catalog rows captured by the original import carry
                         // the same facts it committed.
-                        model.finishImport(back, undoManager: undoManager)
+                        let samePeers = backPeers.filter(model.peerIsCurrent)
+                        model.finishImport(back, peers: samePeers, undoManager: undoManager)
                     }
                 }
                 undoManager.setActionName("Import")
@@ -1340,12 +1427,14 @@ public final class HistoryModel: ObservableObject {
     /// removed. A committed leave tells the live engine itself
     /// (`TempleDB.observeLeaves`); nothing to re-read here.
     @discardableResult
-    func undoImport(_ keys: [HistoryKey], incarnations: [HistoryKey: String] = [:]) -> [HistoryKey] {
+    func undoImport(_ keys: [HistoryKey], incarnations: [HistoryKey: String] = [:],
+                    marks: [HistoryKey: CarriedMarks] = [:]) -> [HistoryKey] {
         let open = Set(keys.filter { hasOpenTab($0) })
         let candidates = keys.filter { !open.contains($0) }
         let left = Set(overlay.leave(candidates.map {
             SessionOverlayStore.ImportedMembership(key: SessionKey(id: $0.sessionID, host: $0.host),
-                                                   agent: $0.agent, incarnation: incarnations[$0])
+                                                   agent: $0.agent, incarnation: incarnations[$0],
+                                                   marks: marks[$0] ?? CarriedMarks(name: nil, color: nil))
         }))
         let leftKeys = candidates.filter { left.contains($0.sessionID) }
         justImported.subtract(leftKeys)
@@ -1398,5 +1487,136 @@ public final class HistoryModel: ObservableObject {
     public func dismissNotice() {
         noticeTask?.cancel()
         notice = nil
+    }
+}
+
+// MARK: Another Temple's sessions (docs/designs/open-existing-sessions.md)
+
+extension HistoryModel {
+    private func pageChanged() {
+        filtersChanged()
+        if isActive, let host = page.host { readPeerPage(host) }
+    }
+
+    /// Read the host's Temple once. Only the latest read for the host, made
+    /// under the configuration the host still has and while this tab
+    /// lives, is installed; a failed read keeps the last listing and says
+    /// what happened above it.
+    func readPeerPage(_ host: HostID) {
+        let token = hostConfiguration(host)
+        let id = (peerReadIDs[host] ?? 0) + 1
+        peerReadIDs[host] = id
+        peerPages[host, default: PeerPageState()].reading = true
+        Task { [weak self] in
+            guard let self else { return }
+            let answer = await self.readPeer(host)
+            guard self.peerReadIDs[host] == id else { return }
+            guard let token, self.hostConfiguration(host) == token else {
+                self.peerPages[host] = nil
+                self.sendPeers()
+                return
+            }
+            var state = self.peerPages[host] ?? PeerPageState()
+            state.reading = false
+            switch answer {
+            case .listed(let listing)?:
+                state.listing = PeerListing(sessions: listing.sessions.map { var row = $0; row.readUnder = token; return row },
+                                            skipped: listing.skipped)
+                state.readAt = self.now()
+                state.problem = nil
+                state.configuration = token
+                self.noTempleHosts.remove(host)
+            case let other?:
+                state.problem = other
+                if other == .noTemple { self.noTempleHosts.insert(host) }
+            case nil:
+                state.problem = .unreachable("\(host.displayName) isn't connected.")
+            }
+            self.peerPages[host] = state
+            self.sendPeers()
+        }
+    }
+
+    /// The host's record changed, was removed, or was removed and added
+    /// again: what was read from it, and any action captured from that, is
+    /// no longer that host's. An Undo already earned is not affected.
+    public func hostConfigurationChanged(_ host: HostID) {
+        peerReadIDs[host, default: 0] += 1
+        noTempleHosts.remove(host)
+        cancelPendingCommands()
+        if pendingImport?.peers.contains(where: { $0.host == host }) == true { pendingImport = nil }
+        guard peerPages.removeValue(forKey: host) != nil else { return }
+        sendPeers()
+    }
+
+    /// Whether rows read from `host` still describe it.
+    func peerIsCurrent(_ host: HostID) -> Bool {
+        guard let state = peerPages[host], let configuration = state.configuration else { return false }
+        return hostConfiguration(host) == configuration
+    }
+
+    /// Whether this row, as it was read, still describes its host: the
+    /// configuration it was read under is the host's now. A row captured
+    /// before the host was replaced stays refused after the replacement is
+    /// read too.
+    func peerIsCurrent(_ row: PeerRow) -> Bool {
+        guard let readUnder = row.readUnder else { return false }
+        return hostConfiguration(row.host) == readUnder
+    }
+
+    private func sendPeers() {
+        var peers: [HostID: [PeerRow]] = [:]
+        for (host, state) in peerPages where peerIsCurrent(host) { peers[host] = state.listing?.sessions ?? [] }
+        enqueue(HistoryProjectionInput(peers: peers), urgent: true)
+    }
+
+    /// Open on a row another Temple listed: its member when it is Temple's
+    /// and can resume, else a launch on its host in the other Temple's
+    /// folder, carrying its name and colour into a row the launch makes.
+    private func openPeer(_ peer: PeerRow, title: String) -> Bool {
+        guard peerIsCurrent(peer) else { return false }
+        if let live = overlay.rows[peer.id], live.host != peer.host || (live.agent != nil && live.agent != peer.agent) {
+            return false
+        }
+        // A member resumes in its own folder through the same handoff, so
+        // it gets the note too (`OpenSessionsModel.resume`).
+        let note = peer.tabThere ? "\(peer.host.displayName)'s Temple also has a tab for this session, so it may be running there too." : nil
+        return resumeSession(ResumeRequest(host: peer.host, agent: peer.agent, id: peer.id, locator: peer.locator,
+                                           title: title, launchDirectory: peer.directory,
+                                           carried: overlay.rows[peer.id] == nil ? peer.marks : nil,
+                                           peerTabNote: note))
+    }
+
+    /// The import sheet for another Temple's sessions: where they will be
+    /// listed, as for any import, and that nothing on that host changes.
+    static func importRequest(forPeers peers: [PeerRow], isProjectArchived: (ProjectKey) -> Bool = { _ in false }) -> ImportRequest {
+        let host = peers.first?.host.displayName ?? ""
+        var counts: [ProjectKey: Int] = [:]
+        for peer in peers { counts[peer.project, default: 0] += 1 }
+        let keys = counts.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key.path < $1.key.path }.map(\.key)
+        let sidebar = keys.filter { !isProjectArchived($0) }.map { projectName($0.path) }
+        let archive = keys.filter(isProjectArchived).map { projectName($0.path) }
+        var places: [String] = []
+        if !sidebar.isEmpty { places.append("in the sidebar under \(projectList(sidebar))") }
+        if !archive.isEmpty {
+            places.append("in History under Archived, because \(projectList(archive)) \(archive.count == 1 ? "is" : "are") archived")
+        }
+        let destination = places.joined(separator: ", and ")
+        if peers.count == 1, let peer = peers.first {
+            var request = ImportRequest(
+                sessions: [],
+                title: "Import “\(peer.displayTitle)” into Temple on this Mac?",
+                message: "It will appear \(destination), with its name and colour from \(host). Nothing runs until you open it; then it runs on \(host). Nothing on \(host) changes.",
+                confirmLabel: "Import")
+            request.peers = peers
+            return request
+        }
+        var request = ImportRequest(
+            sessions: [],
+            title: "Import \(peers.count) sessions into Temple on this Mac?",
+            message: "They will appear \(destination), with their names and colours from \(host). Nothing runs until you open one; then it runs on \(host). Nothing on \(host) changes.",
+            confirmLabel: "Import \(peers.count)")
+        request.peers = peers
+        return request
     }
 }

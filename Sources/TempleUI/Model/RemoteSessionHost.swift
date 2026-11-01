@@ -236,6 +236,8 @@ public protocol RemoteRunLedger: AnyObject {
 @MainActor
 public protocol RemoteSessionHost: HostLauncher {
     var hostName: String { get }
+    /// The host's own Temple, read once (History's page for this host).
+    func readPeerTemple() async -> PeerRead
     /// Decides attach or create (one transaction), recovers an uncollected
     /// record first, and writes the run before returning. Throws (refusing
     /// the open) when the run store cannot be read or written.

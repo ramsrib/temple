@@ -53,7 +53,18 @@ final class FakeRemoteHost: RemoteSessionHost {
     private(set) var kept: [String] = []
     private(set) var discarded: [String] = []
 
+    /// What `readPeerTemple` answers, and how many times it was asked.
+    var peerRead: PeerRead = .noTemple
+    var peerGate: (() async -> Void)?
+    private(set) var peerReads = 0
+
     init(_ name: String) { hostName = name }
+
+    func readPeerTemple() async -> PeerRead {
+        peerReads += 1
+        await peerGate?()
+        return peerRead
+    }
 
     func availability(_ agent: Agent) -> LaunchAvailability { .available }
     func prepare(_ spec: AgentLaunchSpec) throws -> AgentLaunch { throw HostLaunchError.preparation("async only") }

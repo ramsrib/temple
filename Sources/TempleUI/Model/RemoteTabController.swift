@@ -142,9 +142,10 @@ public final class RemoteTabController {
         // joined by the open that connected this tab, and it is not opened
         // again (nothing unarchives, no `last_opened_at`).
         if !automatic,
-           let conflict = model.openedHandler?(SessionOpen(id: sid, host: tab.host, via: tab.isResume ? .opened : .created,
-                                                           agent: tab.agent, locator: tab.transcriptHint)).conflict {
-            tab.launchPreparationError = conflict.message
+           let refusal = model.openedHandler?(SessionOpen(id: sid, host: tab.host, via: tab.isResume ? .opened : .created,
+                                                          agent: tab.agent, locator: tab.transcriptHint,
+                                                          carried: tab.carriedMarks)).launchRefusal {
+            tab.launchPreparationError = refusal
             tab.activity = .exited(status: -1)
             return
         }

@@ -18,6 +18,21 @@ public enum HistoryScope: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// On a host's page the scopes are worded from this Mac, so they can't
+    /// be read as the other Temple's ("In Temple" beside a header naming
+    /// mac-b's Temple read as the opposite): here, and there, the host the
+    /// subtitle names. Fixed words, so no host name can widen the control.
+    /// Same meaning either way.
+    public func label(on page: HistoryPage) -> String {
+        guard page.host != nil else { return label }
+        switch self {
+        case .all: return "All"
+        case .inTemple: return "In Temple here"
+        case .archived: return "Archived here"
+        case .notInTemple: return "Only there"
+        }
+    }
+
     func admits(_ row: HistoryRow) -> Bool {
         switch self {
         case .all: true
@@ -28,9 +43,29 @@ public enum HistoryScope: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Whose sessions History shows (docs/designs/open-existing-sessions.md
+/// section 1): this Mac's page is History as it always was; a host's page
+/// is the sessions Temple has there plus that host's own Temple's.
+public enum HistoryPage: Hashable, Sendable {
+    case thisMac
+    case host(HostID)
+
+    public var host: HostID? { if case .host(let host) = self { host } else { nil } }
+
+    /// This page lists the row: This Mac's never lists a row only another
+    /// Temple knows; a host's lists only that host's rows.
+    func lists(_ row: HistoryRow) -> Bool {
+        switch self {
+        case .thisMac: row.member != nil || row.catalog != nil
+        case .host(let host): row.host == host
+        }
+    }
+}
+
 /// The question the page asks of the rows: scope, filters, search, and the
 /// "Archived just now" chip. A value, handed to the projection whole.
 struct HistoryQuery: Equatable, Sendable {
+    var page: HistoryPage = .thisMac
     var scope: HistoryScope = .all
     var agent: Agent?
     var project: ProjectKey?
@@ -39,10 +74,11 @@ struct HistoryQuery: Equatable, Sendable {
     /// The chip: exactly these memberships (the sidebar notice's).
     var justArchived: Set<MembershipRef>?
 
-    var isDefault: Bool { self == HistoryQuery() }
+    /// Nothing narrows the page beyond which page it is.
+    var isDefault: Bool { self == HistoryQuery(page: page) }
 
     func admits(_ row: HistoryRow, needle: [UInt8]) -> Bool {
-        guard scope.admits(row) else { return false }
+        guard page.lists(row), scope.admits(row) else { return false }
         if let agent, row.agent != agent { return false }
         if let project, row.project != project { return false }
         if let justArchived {
@@ -115,6 +151,9 @@ enum CatalogDelta: Sendable {
 struct HistoryProjectionInput: Sendable {
     var catalog: [CatalogDelta] = []
     var members: [Session]?
+    /// Each host's Temple as last read, whole (a host absent here has
+    /// nothing listed).
+    var peers: [HostID: [PeerRow]]?
     var archivedProjects: Set<ProjectKey>?
     var openTabs: Set<SessionKey>?
     var query: HistoryQuery?
@@ -125,12 +164,13 @@ struct HistoryProjectionInput: Sendable {
     var rebuildAll = false
 
     var isEmpty: Bool {
-        catalog.isEmpty && members == nil && archivedProjects == nil && openTabs == nil && query == nil && !rebuildAll
+        catalog.isEmpty && members == nil && peers == nil && archivedProjects == nil && openTabs == nil && query == nil && !rebuildAll
     }
 
     mutating func merge(_ other: HistoryProjectionInput) {
         catalog += other.catalog
         members = other.members ?? members
+        peers = other.peers ?? peers
         archivedProjects = other.archivedProjects ?? archivedProjects
         openTabs = other.openTabs ?? openTabs
         query = other.query ?? query
@@ -197,6 +237,7 @@ actor HistoryProjector {
     private var folders: [ProjectKey: DirectoryEvidence] = [:]
     private var coverage: [HostID: CatalogCoverage] = [:]
     private var members: [String: Session] = [:]
+    private var peersByID: [String: [PeerRow]] = [:]
     private var memberIDsByProject: [ProjectKey: Set<String>] = [:]
     private var archivedProjects: Set<ProjectKey> = []
     private var openTabs: Set<SessionKey> = []
@@ -247,6 +288,7 @@ actor HistoryProjector {
         }
         for delta in input.catalog { applyCatalog(delta, dirty: &dirty) }
         if let next = input.members { applyMembers(next, dirty: &dirty) }
+        if let next = input.peers { applyPeers(next, dirty: &dirty) }
         if let next = input.archivedProjects, next != archivedProjects {
             for key in next.symmetricDifference(archivedProjects) { dirty.formUnion(memberIDsByProject[key] ?? []) }
             archivedProjects = next
@@ -255,13 +297,17 @@ actor HistoryProjector {
             for key in next.symmetricDifference(openTabs) { dirty.insert(key.id) }
             openTabs = next
         }
-        if rebuildAll { dirty = Set(keysByID.keys).union(members.keys) }
+        if rebuildAll { dirty = Set(keysByID.keys).union(members.keys).union(peersByID.keys) }
+        let queryChanged = input.generation != generation || (input.query.map { $0 != query } ?? false)
+        let pageChanged = input.query.map { $0.page != query.page } ?? false
+        if let next = input.query { query = next }
+        // A member carries another Temple's row only on that host's page:
+        // This Mac's rows never change because another Temple was read.
+        if pageChanged { dirty.formUnion(peersByID.keys) }
 
         let rowsChanged = rebuildRows(dirty, full: rebuildAll)
-        if rowsChanged { recount() }
-
-        let queryChanged = input.generation != generation || (input.query.map { $0 != query } ?? false)
-        if let next = input.query { query = next }
+        // The counts and projects are the page's own.
+        if rowsChanged || pageChanged { recount() }
         generation = max(generation, input.generation)
         let day = builder.calendar.startOfDay(for: now())
         let dayMoved = day != today
@@ -317,6 +363,16 @@ actor HistoryProjector {
         }
     }
 
+    private func applyPeers(_ next: [HostID: [PeerRow]], dirty: inout Set<String>) {
+        var incoming: [String: [PeerRow]] = [:]
+        for host in next.keys.sorted(by: { $0.rawValue < $1.rawValue }) {
+            for row in next[host] ?? [] { incoming[row.id, default: []].append(row) }
+        }
+        for (id, rows) in incoming where peersByID[id] != rows { dirty.insert(id) }
+        for id in peersByID.keys where incoming[id] == nil { dirty.insert(id) }
+        peersByID = incoming
+    }
+
     private func applyMembers(_ next: [Session], dirty: inout Set<String>) {
         let incoming = Dictionary(next.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for (id, member) in incoming where members[id] != member { dirty.insert(id) }
@@ -362,7 +418,8 @@ actor HistoryProjector {
     }
 
     private func rows(for id: String, context: HistoryRowBuilder.Context) -> [HistoryRow] {
-        let rows = Self.rows(member: members[id], disk: facts(for: id).disk, builder: builder, context: context)
+        let rows = Self.rows(member: members[id], disk: facts(for: id).disk, peers: peersByID[id] ?? [],
+                             attachingOn: query.page.host, builder: builder, context: context)
         stats.rowsBuilt += rows.count
         return rows
     }
@@ -385,10 +442,25 @@ actor HistoryProjector {
     /// History's rule for one id, the one the page uses: a member attaches
     /// to its own agent's summary on its host; a summary another member owns
     /// is a conflict; any other is outside; noise shows only attached.
+    ///
+    /// Another Temple's row for the id: beside its member when the member
+    /// is on that host as that agent (never changing the member's own
+    /// presentation), a conflict when the id is Temple's elsewhere, outside
+    /// otherwise. A peer row is never a catalog row: it carries no
+    /// transcript evidence at all.
     static func rows(member: Session?, disk: [(key: HistoryKey, summary: TranscriptSummary, noise: Bool)],
+                     peers: [PeerRow] = [], attachingOn page: HostID? = nil,
                      builder: HistoryRowBuilder, context: HistoryRowBuilder.Context) -> [HistoryRow] {
         var rows: [HistoryRow] = []
         var attached = false
+        var memberPeer: PeerRow?
+        for peer in peers {
+            switch HistoryModel.standing(of: peer.key, member: member?.state, otherAgentListed: false) {
+            case .member: if peer.host == page { memberPeer = memberPeer ?? peer }
+            case .conflict(let conflict): rows.append(builder.row(member: nil, catalog: nil, conflict: conflict, peer: peer, context: context))
+            case .outside: rows.append(builder.row(member: nil, catalog: nil, conflict: nil, peer: peer, context: context))
+            }
+        }
         for (key, summary, isNoise) in disk {
             let otherAgentListed = disk.contains { $0.key.host == key.host && $0.key.agent != key.agent }
             switch HistoryModel.standing(of: key, member: member?.state, otherAgentListed: otherAgentListed) {
@@ -401,7 +473,9 @@ actor HistoryProjector {
                 if !isNoise { rows.append(builder.row(member: nil, catalog: summary, conflict: nil, context: context)) }
             }
         }
-        if let member, !attached { rows.append(builder.row(member: member, catalog: nil, conflict: nil, context: context)) }
+        if let member, !attached {
+            rows.append(builder.row(member: member, catalog: nil, conflict: nil, peer: memberPeer, context: context))
+        }
         return rows.sorted(by: newerFirst)
     }
 
@@ -430,8 +504,10 @@ actor HistoryProjector {
     private func recount() {
         var counts = HistoryCounts()
         var byProject: [ProjectKey: Int] = [:]
-        counts.all = ordered.count
-        for row in ordered {
+        let page = query.page
+        let listed = ordered.filter { page.lists($0) }
+        counts.all = listed.count
+        for row in listed {
             if row.isArchived { counts.archived += 1 } else if row.isMember { counts.inTemple += 1 }
             if row.transcriptMissing { counts.transcriptMissing += 1 }
             if let agent = row.agent {
@@ -451,8 +527,9 @@ actor HistoryProjector {
 
     private func project() -> HistorySnapshot {
         let visible: [HistoryRow]
+        let pageRows = ordered.filter { query.page.lists($0) }
         if query.isDefault {
-            visible = ordered
+            visible = pageRows
         } else {
             let needle = Array(query.search.lowercased().utf8)
             visible = ordered.filter { query.admits($0, needle: needle) }
@@ -462,7 +539,7 @@ actor HistoryProjector {
         var index: [HistoryKey: Int] = [:]
         index.reserveCapacity(visible.count)
         for (offset, row) in visible.enumerated() { index[row.id] = offset }
-        return HistorySnapshot(generation: generation, query: query, allRows: ordered, visibleRows: visible,
+        return HistorySnapshot(generation: generation, query: query, allRows: pageRows, visibleRows: visible,
                                groups: groups, groupStarts: starts, indexByKey: index, counts: counts,
                                projects: projects, archivedProjects: archivedProjects)
     }

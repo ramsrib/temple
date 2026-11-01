@@ -29,7 +29,8 @@ struct CommandPaletteView: View {
         let all = model.paletteResults(query)
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty, all.isEmpty || cursor.onHistoryRow {
-            model.searchHistory(trimmed)
+            if OpenByIDSheetModel.isSessionID(trimmed) { model.openPastedSessionID(trimmed) }
+            else { model.searchHistory(trimmed) }
             return
         }
         let session: Session?
@@ -173,8 +174,11 @@ struct CommandPaletteView: View {
         Self.submit(cursor, query: query, model: model)
     }
 
+    /// A whole session id opens it (Open a session by id); anything else
+    /// searches History.
     private func searchHistory() {
-        model.searchHistory(trimmedQuery)
+        if OpenByIDSheetModel.isSessionID(trimmedQuery) { model.openPastedSessionID(trimmedQuery) }
+        else { model.searchHistory(trimmedQuery) }
     }
 }
 
@@ -244,12 +248,14 @@ private struct SearchHistoryRow: View {
     @State private var hovering = false
 
     var body: some View {
+        // A pasted session id: open that session, here or on a host.
+        let isID = OpenByIDSheetModel.isSessionID(query)
         HStack(spacing: 10) {
-            Image(systemName: "clock.arrow.circlepath")
+            Image(systemName: isID ? "arrow.uturn.forward.circle" : "clock.arrow.circlepath")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .frame(width: 14)
-            Text("Search history for “\(query)”")
+            Text(isID ? "Open session \(query.prefix(8))…" : "Search history for “\(query)”")
                 .font(.system(size: 13))
                 .lineLimit(1)
             Spacer()

@@ -429,6 +429,9 @@ public final class AppModel: ObservableObject {
     @Published public var remoteSessionsSheet: RemoteSessionsRequest?
     /// The folder sheet for a new session on a host, when shown.
     @Published public var remoteFolderSheet: RemoteFolderRequest?
+    /// Open a session by id, on This Mac or a host
+    /// (docs/designs/open-existing-sessions.md section 5).
+    @Published public var openByIDSheet: OpenByIDRequest?
     /// Remote's sheets that are up (the Hosts card's form and Test
     /// connection, a tab's confirmation, the two above): the key catcher
     /// leaves every key to them (`remoteSheet`).
@@ -583,6 +586,10 @@ public final class AppModel: ObservableObject {
     /// Remote hosts this model registered (never ones a caller passed in),
     /// with the record each was registered from.
     private var managedRemoteHosts: [HostID: RemoteHostRecord] = [:]
+    /// Bumped each time a host is registered (added, or re-added after an
+    /// edit or a removal): what was read from an earlier registration is
+    /// not this one's (History's peer rows).
+    private var remoteHostGenerations: [HostID: Int] = [:]
     /// A wake or a network change asks hosts again about tabs whose
     /// connection failed while they could not tell; watched only while a
     /// host is enabled.
@@ -726,7 +733,7 @@ public final class AppModel: ObservableObject {
         openSessions.openedHandler = { [weak self] open in
             guard let self else { return .joined }
             let result = self.overlay.join(open.id, via: open.via, agent: open.agent, locator: open.locator,
-                                           core: SessionCore(host: open.host))
+                                           core: SessionCore(host: open.host), carrying: open.carried)
             guard result.conflict == nil else { return result }
             // Durably: History's Undo Import must keep a session that was
             // opened since, even once its tab is closed (TempleDB.leave
@@ -944,6 +951,14 @@ public final class AppModel: ObservableObject {
         history.restoreProjectAction = { [weak self] in self?.restoreProject($0, undoManager: $1) }
         history.showInSidebar = { [weak self] in self?.showInSidebar($0) }
         history.openMember = { [weak self] in self?.openSessions.openSession($0) }
+        history.readPeer = { [weak self] host in await self?.remoteHost(host)?.readPeerTemple() }
+        history.hostConfiguration = { [weak self] host in
+            guard let self, self.remoteHost(host) != nil else { return nil }
+            return self.remoteHostGenerations[host] ?? 0
+        }
+        history.resumeSession = { [weak self] in self?.openSessions.resume($0) ?? false }
+        history.enabledHosts = { [weak self] in self?.remoteHostIDs ?? [] }
+        history.openByID = { [weak self] host in self?.openSessionByID(host: host) }
         var historyWasOpen = false
         openSessions.$tabs
             .sink { [weak self] tabs in
@@ -993,6 +1008,7 @@ public final class AppModel: ObservableObject {
     public func searchHistory(_ query: String) {
         commandPalettePresented = false
         history.cancelPendingCommands()
+        history.page = .thisMac
         history.justArchivedChip = nil
         history.scope = .all
         history.agentFilter = nil
@@ -1061,6 +1077,10 @@ public final class AppModel: ObservableObject {
             dropRemoteNotices(host: host)
             if remoteSessionsSheet?.host == host { remoteSessionsSheet = nil }
             if remoteFolderSheet?.host == host { remoteFolderSheet = nil }
+            if openByIDSheet?.host == host { openByIDSheet = nil }
+            // What History read from it is not the host any more.
+            history.hostConfigurationChanged(host)
+            if history.page == .host(host), wantedByHost[host] == nil { history.page = .thisMac }
         }
         for record in wanted where managedRemoteHosts[record.host] == nil {
             // A host the caller registered itself (tests) is theirs.
@@ -1073,6 +1093,7 @@ public final class AppModel: ObservableObject {
             hostBox.value = hostBox.value.adding(entry)
             engineSet.add(makeEngine(entry.source))
             managedRemoteHosts[record.host] = record
+            remoteHostGenerations[record.host, default: 0] += 1
             openSessions.hostAvailable(record.host)
         }
         if managedRemoteHosts.isEmpty { connectivityWatcher.stop() } else { connectivityWatcher.start() }
@@ -1542,6 +1563,7 @@ public final class AppModel: ObservableObject {
     /// "Not in Temple", another agent or project would hide the session.
     public func showInHistory(sessionID: String) {
         history.cancelPendingCommands()
+        history.page = .thisMac
         history.justArchivedChip = nil
         history.scope = .all
         history.agentFilter = nil
@@ -1726,8 +1748,9 @@ public final class AppModel: ObservableObject {
     /// showing Archived it changes nothing but a floating panel.
     public func showArchived() {
         putFloatingPanelsAway()
-        if history.scope != .archived {
+        if history.scope != .archived || history.page != .thisMac {
             history.cancelPendingCommands()
+            history.page = .thisMac
             history.scope = .archived
         }
         openSessions.openHistory()
@@ -1752,6 +1775,7 @@ public final class AppModel: ObservableObject {
         guard let notice = autoArchiveNotice else { return }
         autoArchiveNotice = nil
         history.cancelPendingCommands()
+        history.page = .thisMac
         history.query = ""
         history.agentFilter = nil
         history.projectKeyFilter = nil
@@ -1764,6 +1788,7 @@ public final class AppModel: ObservableObject {
     /// project, archived ones one segment away.
     public func showInHistory(project key: ProjectKey) {
         history.cancelPendingCommands()
+        history.page = .thisMac
         history.justArchivedChip = nil
         history.query = ""
         history.agentFilter = nil

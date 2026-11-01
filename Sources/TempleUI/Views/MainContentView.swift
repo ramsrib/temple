@@ -104,6 +104,15 @@ private struct SessionTerminalView: View {
             } else if case .exited(let status) = tab.activity {
                 launchFailure(status: status)
             }
+            // Opened from another Temple's row that has a tab for it there:
+            // said once, never a gate (a session may run in two places).
+            if let note = tab.peerTabNote {
+                notice(symbol: "rectangle.on.rectangle", text: note) {
+                    EmptyView()
+                } dismiss: {
+                    Button("OK") { tab.peerTabNote = nil }
+                }
+            }
             if let remote = tab.remote, remote.phase == .endedPending {
                 // tmux's exit leaves the client's screen as it was before
                 // tmux drew (blank), and the pane's last screen is not kept:

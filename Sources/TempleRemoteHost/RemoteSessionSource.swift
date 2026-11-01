@@ -98,6 +98,21 @@ public struct RemoteSessionSource: HostSessionSource {
         return try await access.read(locator, agent: agent, expecting: id, facts: facts)
     }
 
+    /// The listing's own answer per store decides "not found": only a
+    /// store root that was there and listed to the end can say it. Remote
+    /// `complete` stays empty for the engine; this asks the listing itself.
+    public func lookup(id: String) async throws -> SessionLookup {
+        guard let access else { throw LocateError.transport("Temple doesn't read transcripts on \(host.rawValue).") }
+        let listed = try await access.lookupListing(id)
+        var agents: [Agent: AgentLookup] = [:]
+        for agent in Agent.allCases {
+            let entry = listed[agent] ?? ([], .storeUnknown)
+            agents[agent] = try await SessionLookup.resolve(id: id, agent: agent, candidates: entry.candidates,
+                                                            listed: entry.shortfall, source: self)
+        }
+        return SessionLookup(agents: agents)
+    }
+
     public func directoryEvidence(_ path: String) async -> DirectoryEvidence { .unknown }
 
     public func proveAbsent(ids: Set<String>, agent: Agent) async -> AbsenceProof { .unproven }
@@ -418,6 +433,40 @@ actor RemoteTranscriptAccess {
         succeeded()
         if lostTransport { lostTransport = false; coverage &+= 1 }
         return Listing(context: context, groups: groups, answer: answer, coverage: coverage)
+    }
+
+    /// Open by id's listing: one refreshed exec for this id, every agent,
+    /// outside the coalesced batches (a person is waiting on exactly this),
+    /// with each agent's candidates and, when its store was not there and
+    /// listed to the end, why. An id no host could name has nothing to
+    /// list.
+    func lookupListing(_ id: String) async throws -> [Agent: (candidates: [TranscriptCandidate], shortfall: LookupUncertainty?)] {
+        guard !shut else { throw LocateError.transport("Temple is quitting") }
+        let request = LocateRequest(id: id, refresh: true)
+        // An id no host could name is no id: never "not found", and the
+        // host isn't asked (the sheet takes whole ids only).
+        guard RemoteQuoting.isSafeToken(id) else { throw LocateError.transport("“\(id)” isn't a session id.") }
+        let listing = try await listing([request])
+        var result: [Agent: (candidates: [TranscriptCandidate], shortfall: LookupUncertainty?)] = [:]
+        for agent in Agent.allCases {
+            let shortfall: LookupUncertainty?
+            if let root = listing.context.roots[id]?[agent],
+               let index = listing.groups.firstIndex(of: Group(agent: agent, root: root)) {
+                switch listing.answer.roots[index] {
+                case .ok?:
+                    if listing.answer.noStore.contains(index) { shortfall = .noStore }
+                    else if case .files? = listing.answer.lists[index] { shortfall = nil }
+                    else { shortfall = .listingFailed }
+                case RemoteTranscripts.RootOutcome.none?: shortfall = .noStore
+                case .failed?: shortfall = .listingFailed
+                case .unknown?, nil: shortfall = .storeUnknown
+                }
+            } else {
+                shortfall = .storeUnknown
+            }
+            result[agent] = (candidates(request, agent: agent, listing), shortfall)
+        }
+        return result
     }
 
     /// One caller's answer from the shared listing: its own ids, agents and

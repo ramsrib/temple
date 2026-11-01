@@ -54,7 +54,7 @@ public struct RootView: View {
         .onReceive(WindowSnapshot.debugPublisher(for: .templeDebugToggleSidebar)) { _ in
             withAnimation { model.toggleSidebar() }
         }
-        // Dev-only, same gate: TEMPLE_SNAPSHOT_PRESENT=palette|history|archived|shortcuts|picker|…
+        // Dev-only, same gate: TEMPLE_SNAPSHOT_PRESENT=palette|history|history-host|open-by-id|archived|shortcuts|picker|…
         // opens the ⌘K palette, the History tab or its Archived scope once the
         // window has settled, so it can be snapshotted without a key chord.
         .onAppear {
@@ -77,6 +77,13 @@ public struct RootView: View {
                         model.history.moveCursor(by: -6, extend: true)
                         if panel == "history-import" { model.history.requestImport() }
                     }
+                // A host's History page (the first enabled host), and the
+                // Open a session by id sheet on it.
+                case "history-host":
+                    model.openSessions.openHistory()
+                    if let host = model.remoteHostIDs.first { model.history.page = .host(host) }
+                case "open-by-id":
+                    model.openSessionByID(host: model.remoteHostIDs.first ?? .local)
                 case "settings": model.openSessions.openSettings()
                 // Keys pressed in Settings' fields, delivered in-process, to
                 // prove the page's own key handling fires (SettingsKeysProbe).
@@ -169,6 +176,11 @@ public struct RootView: View {
         }
         .sheet(item: $model.remoteFolderSheet) { request in
             RemoteFolderSheet(sheet: model.folderSheetModel(request))
+                .environmentObject(model)
+                .remoteSheet(model)
+        }
+        .sheet(item: $model.openByIDSheet) { request in
+            OpenByIDSheetView(sheet: model.openByIDSheetModel(request))
                 .environmentObject(model)
                 .remoteSheet(model)
         }
@@ -559,7 +571,7 @@ struct KeyCatcher: NSViewRepresentable {
             // tab is active. Shortcuts do not act on the window behind it.
             // Only remote's sheets (each marked `remoteSheet`): every other
             // key path is as it was before remote.
-            if model.remoteFolderSheet != nil || model.remoteSessionsSheet != nil
+            if model.remoteFolderSheet != nil || model.remoteSessionsSheet != nil || model.openByIDSheet != nil
                 || !model.openRemoteSheets.isEmpty { return false }
 
             // History's import sheet and its failure alert own the keyboard

@@ -108,7 +108,8 @@ enum RemoteTranscripts {
     /// and `list<TAB><i><TAB><hex>` (the matching files as NUL-terminated
     /// `type<TAB>size<TAB>mtime<TAB>inode<TAB>path` records, then `S<find's
     /// status>`), or `root<TAB><i><TAB>none` (nothing there) or `failed`
-    /// or `unknown`. Per hint: `hint<TAB><hex path><TAB>ok<TAB><stat>`,
+    /// or `unknown`; a root whose sessions folder isn't there adds
+    /// `nostore<TAB><i>` after its (empty) listing. Per hint: `hint<TAB><hex path><TAB>ok<TAB><stat>`,
     /// `missing` or `unreadable`. Then `done`.
     static let locateScript = common + "\n" + #"""
     temple_find() {
@@ -142,6 +143,7 @@ enum RemoteTranscripts {
         case $h in /) p=/$sub ;; *) p=$h/$sub ;; esac
         if [ ! -e "$p" ] && [ ! -L "$p" ]; then
           printf 'list\t%s\t%s\n' "$i" "$(printf 'S0' | temple_hex)"
+          printf 'nostore\t%s\n' "$i"
         else
           printf 'list\t%s\t%s\n' "$i" "$( (temple_find "$ag" "$p" "$ids"; printf 'S%s' "$?") | temple_hex)"
         fi
@@ -240,6 +242,10 @@ enum RemoteTranscripts {
         /// Per group with a root: its files, or a listing that failed.
         var lists: [Int: ListOutcome] = [:]
         var hints: [RemotePath: CandidateStat] = [:]
+        /// Groups whose root was there and its sessions folder was not: an
+        /// empty listing that searched nothing (Open by id's lookup says
+        /// "can't tell", never "not found"; the engine reads it as before).
+        var noStore: Set<Int> = []
     }
 
     /// Strict: every line known, every group answered once, `done` last
@@ -270,6 +276,9 @@ enum RemoteTranscripts {
                       answer.lists[index] == nil, let bytes = hexBytes(fields[2]),
                       let listed = listing(bytes) else { return nil }
                 answer.lists[index] = listed
+            case "nostore":
+                guard fields.count == 2, let index = Int(fields[1]), case .ok? = answer.roots[index],
+                      answer.lists[index] != nil, answer.noStore.insert(index).inserted else { return nil }
             case "hint":
                 guard fields.count >= 3, let path = utf8Path(fields[1]) else { return nil }
                 switch (fields[2], fields.count) {
