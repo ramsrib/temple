@@ -51,6 +51,9 @@ public enum TempleCLI {
         case .help(let noun):
             console.out(ArgumentParser.helpText(noun))
             return .ok
+        case .version:
+            console.out(versionText(app: AppLauncher.enclosingApp()))
+            return .ok
         case .usageError(let message, let noun):
             console.err("temple: \(message)")
             console.err("Run `temple \(noun.map { "\($0.rawValue) " } ?? "")--help` for usage.")
@@ -69,6 +72,17 @@ public enum TempleCLI {
                 return .failure
             }
         }
+    }
+
+    /// The version of the Temple.app this binary ships in, as its About box
+    /// shows it. A binary outside an app (`swift run temple`) has none.
+    static func versionText(app: URL?) -> String {
+        let info = app.flatMap { NSDictionary(contentsOf: $0.appendingPathComponent("Contents/Info.plist")) }
+        guard let version = info?["CFBundleShortVersionString"] as? String else {
+            return "temple (development build, not inside Temple.app)"
+        }
+        let build = (info?["CFBundleVersion"] as? String).map { " (\($0))" } ?? ""
+        return "temple \(version)\(build)"
     }
 
     /// History as the tab reads it: this Mac's stores, Temple's members and

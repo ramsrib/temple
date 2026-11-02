@@ -30,6 +30,26 @@ final class ArgumentParserTests: XCTestCase {
         XCTAssertEqual(parse("history ls --help"), .help(.history))
     }
 
+    func testVersion() {
+        XCTAssertEqual(parse("--version"), .version)
+        XCTAssertEqual(parse("version"), .version)
+        for line in ["version extra", "--version sessions", "sessions ls --version", "version --json",
+                     "--version --json"] {
+            guard case .usageError = parse(line) else { return XCTFail("\"\(line)\" should be a usage error") }
+        }
+    }
+
+    func testVersionTextReadsTheEnclosingApp() throws {
+        let app = URL(fileURLWithPath: "/private/tmp/temple-cli-version-\(UUID().uuidString)/Temple.app")
+        let contents = app.appendingPathComponent("Contents")
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: app.deletingLastPathComponent()) }
+        let info: NSDictionary = ["CFBundleShortVersionString": "0.8.0", "CFBundleVersion": "760"]
+        XCTAssertTrue(info.write(to: contents.appendingPathComponent("Info.plist"), atomically: true))
+        XCTAssertEqual(TempleCLI.versionText(app: app), "temple 0.8.0 (760)")
+        XCTAssertEqual(TempleCLI.versionText(app: nil), "temple (development build, not inside Temple.app)")
+    }
+
     func testMistakesAreUsageErrorsNotGuesses() {
         let usage: [String] = [
             "", "tabs ls", "sessions", "sessions list", "history new", "history open abc",

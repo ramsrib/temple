@@ -907,7 +907,11 @@ temple projects ls | get <dir>
 temple sessions ls [--project DIR] [--cli NAME] | search <term> | get <id>
 temple sessions new [dir] [--cli NAME] | open <id> | close <id> [--force]
 temple history ls [--project DIR] [--cli NAME] | search <term> | get <id>
+temple --version
 ```
+
+`temple --version` (or `temple version`) prints the version of the Temple.app
+it ships in, the same number About shows.
 
 - **`projects` and `sessions` are what has a tab**, as the running app shows
   it: state (running, idle, attention, exited, or restored for a chip whose

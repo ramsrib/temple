@@ -1845,7 +1845,14 @@ temple sessions close <id> [--force]
 temple history ls [--project DIR] [--cli NAME]
 temple history search <term> [--cli NAME]
 temple history get <id>
+
+temple --version                            # also `temple version`
 ```
+
+`--version` (added 2026-11-02, v0.8.1) prints the version of the Temple.app
+the binary ships in, read from that bundle's Info.plist, so the command line
+and the app it came with never disagree; a binary outside an app says it is
+a development build. It takes no other word or flag.
 
 **Two scopes.**
 

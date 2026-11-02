@@ -54,6 +54,8 @@ public enum ParseResult: Equatable, Sendable {
     case run(Invocation)
     /// Help text for the whole command, or for one noun.
     case help(Invocation.Noun?)
+    /// `temple --version` or `temple version`.
+    case version
     case usageError(String, Invocation.Noun?)
 }
 
@@ -66,6 +68,7 @@ public enum ArgumentParser {
         var json = false
         var seenFlags: [String] = []
         var wantsHelp = false
+        var wantsVersion = false
         var index = 0
         while index < arguments.count {
             let word = arguments[index]
@@ -73,6 +76,8 @@ public enum ArgumentParser {
             switch word {
             case "-h", "--help":
                 wantsHelp = true
+            case "--version":
+                wantsVersion = true
             case "--json":
                 json = true; seenFlags.append(word)
             case "--force":
@@ -97,6 +102,12 @@ public enum ArgumentParser {
                 if word.hasPrefix("-"), word.count > 1 { return .usageError("unknown flag \(word)", noun(words)) }
                 words.append(word)
             }
+        }
+        if wantsVersion || words.first == "version" {
+            guard words.count <= (wantsVersion ? 0 : 1), seenFlags.isEmpty else {
+                return .usageError("version takes no arguments or flags", nil)
+            }
+            return wantsHelp ? .help(nil) : .version
         }
         guard let first = words.first else { return wantsHelp ? .help(nil) : .usageError("missing a command", nil) }
         guard let noun = Invocation.Noun(rawValue: first) else {
@@ -146,6 +157,7 @@ public enum ArgumentParser {
               projects   Projects with an open tab
               sessions   Sessions with an open tab; start, open and close them
               history    Every session: open, closed, archived, never imported
+              version    The Temple version
 
             Run `temple <command> --help` for its verbs.
             """
