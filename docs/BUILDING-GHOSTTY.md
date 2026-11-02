@@ -49,8 +49,10 @@ The artifact *shape* is identical either way, so nothing downstream changes.
 
 ## Toolchain gotchas on macOS 26 (Tahoe) / Xcode 26
 
-Two things bite a clean build on current macOS; the script handles both
-automatically. Documented here so the failure modes are recognizable.
+Three things bite a clean build on current macOS. The script works around
+all three, but two need something installed by hand first: a macOS 15 SDK
+(1) and the Metal Toolchain (2). Documented here so the failure modes are
+recognizable.
 
 1. **arm64e-only SDK.** The macOS 26 SDK's `libSystem.B.tbd` lists only
    `arm64e-macos` (and x86_64), not plain `arm64-macos`. Zig 0.15.2 compiles for
@@ -64,8 +66,22 @@ automatically. Documented here so the failure modes are recognizable.
    Xcode; override with `GHOSTTY_SDKROOT`), routed in via a temporary `xcrun`
    PATH shim that answers `--show-sdk-path` with that SDK. This affects **build
    time only** — the resulting library still targets the normal deployment
-   version. A macOS 15.x SDK must be present (ship with the Command Line Tools);
-   if none is found the script errors with instructions.
+   version. If none is found the script errors with instructions.
+
+   **A current Mac has no such SDK.** Every SDK from Xcode 26 and its Command
+   Line Tools on lists only `arm64e-macos` (checked 2026-11-01: Xcode 27.1 and
+   27.2, Command Line Tools 26.5, 27.0 and 27.2), so the engines on Sri's Macs
+   date from when a 15.x SDK was still installed, and neither can build one
+   from scratch. Two ways to get one:
+   - Install Xcode 16.4 beside the current Xcode (developer.apple.com/download)
+     and point the script at its SDK:
+     `GHOSTTY_SDKROOT=/Applications/Xcode_16.4.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk ./Scripts/build-ghostty.sh`.
+     Keep the current Xcode selected: its Metal compiler and libtool are
+     what the rest of this page assumes.
+   - For a release from GitHub nothing is needed: the workflow's `engine`
+     job builds on the `macos-15` image, which carries exactly that pair
+     (RELEASE.md, Releasing from GitHub). That engine stays in the
+     workflow's cache; it is not something a Mac can download.
 
 2. **Metal Toolchain not installed.** Xcode 26 makes the Metal compiler an
    optional component, so compiling ghostty's shaders fails with
@@ -153,24 +169,27 @@ environment variable. The `zig build` step installs them to:
 Vendor/ghostty/zig-out/share/ghostty/
 ```
 
-Contents that the eventual `.app` bundle must carry (and that
-`GHOSTTY_RESOURCES_DIR` must point at):
+What the build produces, and what of it the `.app` ships
+(`GHOSTTY_RESOURCES_DIR` points at the shipped `ghostty` folder):
 
-- `terminfo/` — the `xterm-ghostty` terminfo database. Without it, `TERM=xterm-ghostty`
-  programs misbehave; ghostty also auto-installs it into `~/.terminfo` at runtime
-  in some cases, but the bundle should carry it.
-- `shell-integration/` — per-shell (bash/zsh/fish/elvish) integration scripts
-  for prompt marking, cwd reporting (OSC 7), etc.
-- `themes/` — bundled color themes referenced by config.
+- `shell-integration/` (shipped) — per-shell (bash/zsh/fish/elvish)
+  integration scripts for prompt marking, cwd reporting (OSC 7), etc.
+- `themes/` (shipped) — bundled color themes referenced by config.
+- `terminfo` — the `xterm-ghostty` terminfo database, built beside the
+  `ghostty` folder in `zig-out/share/terminfo`, **not** inside it, so the
+  bundle does not carry it today (see "Bundled" below). Without it,
+  `TERM=xterm-ghostty` programs can misbehave; ghostty also auto-installs it
+  into `~/.terminfo` at runtime in some cases.
 
 **Un-bundled (dev):** `terminal-demo` and the test suite set
 `GHOSTTY_RESOURCES_DIR` to the checkout path above automatically, so they work
 without an `.app` bundle.
 
-**Bundled (later, integration phase):** the Xcode app target (U6) copies
-`share/ghostty` into `Temple.app/Contents/Resources/ghostty` and sets
-`GHOSTTY_RESOURCES_DIR` to that path at launch. Actual bundling is out of Track
-T's scope; this section is the contract for whoever does U6/T7 integration.
+**Bundled:** `Scripts/build-app.sh` copies `share/ghostty` into
+`Temple.app/Contents/Resources/ghostty` and re-signs the bundle, and the app
+points `GHOSTTY_RESOURCES_DIR` there at launch. Only what sits under
+`share/ghostty` ships (in v0.7.0: `shell-integration`, `themes` and `doc`);
+`terminfo` is built beside it, in `share/terminfo`, and is not bundled.
 
 ## Rebuilding after a bump
 

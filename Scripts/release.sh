@@ -16,7 +16,8 @@
 #      artifacts via `gh release create`, its notes from docs/releases/<version>.md.
 #
 # Env knobs: VERSION (required, e.g. v0.1.0) · NOTES (default
-# docs/releases/<version>.md) · DRAFT=1 · notarization creds
+# docs/releases/<version>.md) · DRAFT=1 · NO_PUBLISH=1 (stop after packaging:
+# nothing tagged or published, no notes needed) · notarization creds
 # from .env (NOTARY_KEY_PATH + NOTARY_KEY_ID + NOTARY_ISSUER, or NOTARY_PROFILE)
 set -euo pipefail
 
@@ -70,22 +71,26 @@ fi
 # "Full Changelog". The notes are committed with the code (the dirty-tree
 # check below holds them to that), and are published as written.
 NOTES="${NOTES:-docs/releases/$VERSION.md}"
-if [[ ! -e "$NOTES" ]]; then
+if [[ -n "${NO_PUBLISH:-}" ]]; then
+  echo "==> NO_PUBLISH: building, signing, notarizing and packaging only (notes not needed)"
+elif [[ ! -e "$NOTES" ]]; then
   # Draft them, then stop: what is published is what was read and committed.
   echo "==> no release notes at $NOTES; drafting them"
   NOTES="$NOTES" ./Scripts/release-notes.sh
   echo "    (release stopped for the review; nothing was built, tagged or published)"
   exit 1
 fi
-[[ -s "$NOTES" ]] || { echo "error: $NOTES is empty" >&2; exit 1; }
-DASHES="$(grep -nE '—| -- ' -- "$NOTES")" && rc=0 || rc=$?
-case $rc in
-  0) echo "error: $NOTES has an em-dash; release notes go out as Sri, who writes without them:" >&2
-     echo "$DASHES" >&2
-     exit 1 ;;
-  1) ;;  # none
-  *) echo "error: could not read $NOTES" >&2; exit 1 ;;
-esac
+if [[ -z "${NO_PUBLISH:-}" ]]; then
+  [[ -s "$NOTES" ]] || { echo "error: $NOTES is empty" >&2; exit 1; }
+  DASHES="$(grep -nE '—| -- ' -- "$NOTES")" && rc=0 || rc=$?
+  case $rc in
+    0) echo "error: $NOTES has an em-dash; release notes go out as Sri, who writes without them:" >&2
+       echo "$DASHES" >&2
+       exit 1 ;;
+    1) ;;  # none
+    *) echo "error: could not read $NOTES" >&2; exit 1 ;;
+  esac
+fi
 
 # The tag must name code that others can actually get.
 [[ -z "$(git status --porcelain)" ]] \
@@ -113,6 +118,13 @@ if [[ "$BUILT_VERSION" != "${VERSION#v}" ]]; then
   exit 1
 fi
 echo "    version: $BUILT_VERSION ($(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist"))"
+
+# The two checks RELEASE.md asks of every release build, run here so a release
+# cannot skip them: the shipped binary carries the remote code and gives the
+# host list no default, and each binary records the SDK it was built with
+# (AGENTS.md, "Two entry points").
+./Scripts/check-remote-code.sh "$APP"
+./Scripts/check-sdk-linkage.sh "$APP/Contents/MacOS/Temple" "$APP/Contents/Helpers/temple"
 
 # 2. notarize (optional) --------------------------------------------------
 # notarytool only accepts .zip/.dmg/.pkg uploads; stapler only writes tickets to
@@ -181,6 +193,11 @@ fi
 
 echo "    $(du -h "$ZIP" | cut -f1)  $ZIP"
 echo "    $(du -h "$DMG" | cut -f1)  $DMG"
+
+if [[ -n "${NO_PUBLISH:-}" ]]; then
+  echo "✓ $VERSION built, signed, notarized and packaged; NO_PUBLISH, so nothing was tagged or published"
+  exit 0
+fi
 
 # 4. tag + release -----------------------------------------------------------
 if ! git rev-parse "$VERSION" >/dev/null 2>&1; then

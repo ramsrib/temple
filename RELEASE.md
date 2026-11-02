@@ -12,7 +12,9 @@ The first run drafts `docs/releases/v0.x.y.md` and stops. Read it, edit it,
 commit it, and run the same command again.
 
 That single command builds, signs, notarizes, staples, packages, tags, and
-publishes. Everything below is the setup it depends on — done once.
+publishes. Everything below is the setup it depends on — done once. The same
+release can also run on GitHub Actions, with no Mac of yours holding the
+signing key: see [Releasing from GitHub](#releasing-from-github).
 
 ## Release notes
 
@@ -54,6 +56,9 @@ brew install xcodegen create-dmg   # project generation + styled dmg
 ```
 
 Xcode 26+ and the GitHub CLI (`gh`, authenticated) are also required.
+Building the engine from scratch also needs a macOS 15 SDK, which no current
+Xcode or Command Line Tools carries; see
+[docs/BUILDING-GHOSTTY.md](docs/BUILDING-GHOSTTY.md), gotcha 1.
 
 **Signing.** A *Developer ID Application* certificate must be in the login
 keychain; `Scripts/build-app.sh` finds it automatically (falling back to Apple
@@ -104,11 +109,12 @@ notarization, and downloaders have to approve the app in System Settings.
 5. **Publish** — tags `<version>`, pushes the tag, and creates the GitHub
    release with both artifacts and `docs/releases/<version>.md` as its notes.
 
-Before releasing, build the app (`make app`) and run
-`Scripts/check-remote-code.sh dist/Temple.app`: it proves the shipped binary
-carries the code for sessions on hosts and that nothing gives the host list
-a default, so a fresh install shows no remote UI (AGENTS.md, "Two entry
-points").
+Between steps 1 and 2 the release runs two checks on the built app and stops
+on either: `Scripts/check-remote-code.sh` proves the shipped binary carries
+the code for sessions on hosts and that nothing gives the host list a
+default, so a fresh install shows no remote UI, and
+`Scripts/check-sdk-linkage.sh` proves each binary records the SDK it was
+built with (AGENTS.md, "Two entry points").
 
 > `notarytool` accepts only `.zip`/`.dmg`/`.pkg` uploads, while `stapler` can
 > only write a ticket to the `.app`/`.dmg` — which is why submit and staple are
@@ -132,9 +138,99 @@ session gives you at most one of them (v0.6.1, cut from another Mac):
   `osascript -e 'tell application "Finder" to get name of startup disk'`.
 
 Both failures come before tagging, so a failed run publishes nothing and can
-simply be run again. And `gh` publishes as whichever account is active: from
+simply be run again. A release from GitHub (next section) has a keychain of
+its own, unlocked for the job. And `gh` publishes as whichever account is active: from
 a machine signed in to more than one, run the release step with
 `GH_TOKEN=$(gh auth token --user <owner>)`, or the release API answers 404.
+
+## Releasing from GitHub
+
+`.github/workflows/release.yml` runs the same `Scripts/release.sh` on
+GitHub-hosted Macs, so no Mac of yours needs the signing key. It has three
+modes:
+
+```sh
+gh workflow run release                                   # build only, ad-hoc signed: no secret used
+gh workflow run release -f version=v0.x.y -f verify=true  # sign, notarize, package; nothing tagged or published
+gh workflow run release -f version=v0.x.y                 # release (add -f draft=true for a draft)
+```
+
+`gh run watch` follows the run. Every run that gets as far as packaging keeps
+what it built (the app's zip, and for a signed run the dmg) for 14 days:
+`gh run download <run-id>`. A release's summary prints the published dmg's
+sha256 for the Homebrew cask; a verify's dmg is a separate build, so its hash
+is for inspection only.
+
+**The first time**, after setting the secrets, run a verify with the next
+unused version (`make version` prints the last). A verify needs no notes,
+tags nothing, and leaves that version free for the real release.
+
+Before a release, on a Mac:
+
+- **Run the tests.** The workflow runs none: it builds, signs and checks the
+  binary (the two checks between steps 1 and 2 above), nothing more.
+- **Write the notes**: `make release-notes VERSION=v0.x.y`, read, commit,
+  push. The workflow refuses a release without them, and refuses any signed
+  run from a branch other than `main` or without the secrets below.
+
+**A draft still uses up the version.** `release.sh` pushes the tag before it
+creates the release, draft or not, and refuses a version whose tag exists.
+Publish the draft rather than running the workflow again:
+`gh release edit v0.x.y --draft=false`.
+
+**If a release fails after tagging** (the release upload, a timeout, a
+cancelled run), the tag is public and the version cannot be run again; do
+not delete the tag. Finish the release by hand from what the run built:
+
+1. Get the zip and dmg: `gh run download <run-id>`. A run cancelled or timed
+   out before its last step may have kept none; then rebuild them on a Mac
+   from the tagged commit (`git checkout v0.x.y`, then the steps in
+   `Scripts/release.sh` up to packaging), or cut the next version instead.
+2. `gh release view v0.x.y` says whether a release exists. `gh` creates one
+   as a draft while it uploads, so a failure can leave one behind.
+   - None: `gh release create v0.x.y Temple-v0.x.y-arm64.zip Temple-v0.x.y-arm64.dmg --title "Temple v0.x.y" --notes-file docs/releases/v0.x.y.md --generate-notes`,
+     adding `--draft` if the run asked for a draft.
+   - One exists: upload what it lacks with
+     `gh release upload v0.x.y <file> --clobber`, then publish it with
+     `gh release edit v0.x.y --draft=false` unless a draft was meant.
+
+- **Xcode is pinned by build number** (`XCODE_BUILD` in the workflow), on
+  the `xcode-27` runner. The Xcode decides the SDK the app records, and macOS
+  picks AppKit/SwiftUI behaviour by it, so the job fails rather than build
+  with another one. v0.7.0 was built with 27A9275 (Xcode 27.1, SDK 27.0).
+  Bump it only after testing a build from the new one.
+- **The Ghostty engine is built in a job of its own, on `macos-15`**: zig
+  0.15 cannot link against any macOS 26+ SDK (they list only arm64e;
+  [docs/BUILDING-GHOSTTY.md](docs/BUILDING-GHOSTTY.md), gotcha 1), and that
+  image still carries Xcode 16.4's macOS 15 SDK beside Xcode 26.3. The job's
+  build steps are skipped when the engine is cached; the cache key is its
+  stamp (ADR-026), a digest of `Scripts/build-ghostty.sh`, the slice, and the
+  Xcode and SDK builds. GitHub drops a cache that has not been used for 7
+  days (sooner under storage pressure), so a release more than a week after
+  the last run builds it again, about 6 minutes. The engine lives only in
+  the cache: a Mac still builds its own.
+- **Not yet proven on a runner:** the signed path (keychain, notarization,
+  stapling, the styled dmg, which scripts Finder). The build-only run has
+  passed; run a `verify` before the first release from GitHub.
+- **Secrets** (Settings → Secrets and variables → Actions):
+
+  | Secret | Value |
+  |---|---|
+  | `TEMPLE_DEVELOPER_ID_P12` | the Developer ID Application certificate and its private key, exported from Keychain Access as `.p12`, base64-encoded |
+  | `TEMPLE_DEVELOPER_ID_P12_PASSWORD` | the password chosen at export |
+  | `NOTARY_KEY_P8` | the contents of the App Store Connect `AuthKey_<KEYID>.p8` |
+  | `NOTARY_KEY_ID` | its Key ID |
+  | `NOTARY_ISSUER` | its Issuer ID |
+
+  Set them from the Mac that holds them, for example
+  `base64 -i developer-id.p12 | gh secret set TEMPLE_DEVELOPER_ID_P12 -R ramsrib/temple`
+  and `gh secret set NOTARY_KEY_P8 -R ramsrib/temple < AuthKey_<KEYID>.p8`.
+  The Developer ID certificate expires on 2027-02-01, with the intermediate
+  that issued it: after renewing it, export the new one and set
+  `TEMPLE_DEVELOPER_ID_P12` and its password again, or signing fails.
+
+The tag is pushed as `github-actions[bot]`, and the release is created by the
+repository's own token, so the `gh` account question above does not arise.
 
 ## Verifying a published release
 
@@ -149,7 +245,9 @@ hdiutil detach /Volumes/Temple
 ## Homebrew
 
 The cask lives in [ramsrib/homebrew-tap](https://github.com/ramsrib/homebrew-tap)
-(`Casks/temple.rb`). After publishing a release, bump it:
+(`Casks/temple.rb`). After publishing a release, bump it. A release from
+GitHub has no local dmg: take the sha256 from the run's summary, or download
+the published dmg first (`gh release download <version> -p '*.dmg' -D dist`).
 
 ```sh
 shasum -a 256 dist/Temple-<version>-arm64.dmg      # new sha256
@@ -181,7 +279,11 @@ the wrong one no matter what you release (v0.1.1 shipped saying `0.1.0` this
 way). A local `make install` build takes its version from the last tag and its
 build number from the commit count.
 
-**Git tags are the record of what shipped.** To see where things stand:
+**Tags record the versions that are taken; published GitHub releases record
+what shipped.** The two differ only while a release is a draft or failed
+after tagging (see Releasing from GitHub). `make version`'s `released:` line
+lists tags, so it counts such a version; `published:` lists releases. To see
+where things stand:
 
 ```sh
 make version

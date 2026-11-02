@@ -403,10 +403,10 @@ deletable without touching core rows; keep it that way
 - **Two entry points.** The host list (`temple.settings.remoteHosts`) and
   the registry are built by `AppStartup`/`AppModel`, which both
   `TempleApp.swift` files share; anything remote added at launch goes
-  there, not into one `@main`. Before a release, run
-  `Scripts/check-remote-code.sh` on the built `.app`: it proves the shipped
-  binary carries the remote code and that nothing gives the host list a
-  default.
+  there, not into one `@main`. Every release runs
+  `Scripts/check-remote-code.sh` on the built `.app` (`release.sh`, from a
+  Mac or the release workflow): it proves the shipped binary carries the
+  remote code and that nothing gives the host list a default.
 - **No host enabled means nothing happens, and local is unchanged.** There
   is no flag. With no host enabled the registry holds this Mac only, no ssh
   config is read until Settings' Hosts card is shown, nothing is spawned,
