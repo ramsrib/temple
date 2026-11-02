@@ -82,26 +82,35 @@ The workflow refuses a release without committed notes, and refuses any
 signed run from a branch other than `main` or without the secrets below. It
 runs no tests: it builds, signs, and runs the two binary checks, nothing more.
 
-**A draft still uses up the version.** `release.sh` pushes the tag before it
-creates the release, draft or not, and refuses a version whose tag exists.
-Publish the draft rather than running the workflow again:
+**A run that fails partway is finished by running it again**, with the same
+version from the same commit. A release creates its GitHub release as a draft
+with both files first, pushes the tag second, and publishes the draft last, so
+no failure leaves a public tag without its release. The next run of that
+version finds what the last one left and carries on: it rebuilds, replaces an
+unpublished draft, keeps a tag already at that commit, and publishes. Don't
+publish a draft by hand, or start a Mac release, while a run of the same
+version is going: the run could replace the draft just as it is published.
+The same
+goes for a release run as a draft (`-f draft=true`): run it again without
+`draft` to publish it, or publish it as built with
 `gh release edit v0.x.y --draft=false`.
 
-**If a release fails after tagging** (the release upload, a timeout, a
-cancelled run), the tag is public and the version cannot be run again; do
-not delete the tag. Finish the release by hand from what the run built:
+A version is refused only once it is published, or when GitHub's tag for it
+names another commit than the one being built. The workflow builds `main`, so
+once `main` has moved on after a failed run it cannot finish that version.
+Then either:
 
-1. Get the zip and dmg: `gh run download <run-id>`. A run cancelled or timed
-   out before its last step may have kept none; then rebuild them on a Mac
-   from the tagged commit (`git checkout v0.x.y`, then the steps in
-   `Scripts/release.sh` up to packaging), or cut the next version instead.
-2. `gh release view v0.x.y` says whether a release exists. `gh` creates one
-   as a draft while it uploads, so a failure can leave one behind.
-   - None: `gh release create v0.x.y Temple-v0.x.y-arm64.zip Temple-v0.x.y-arm64.dmg --title "Temple v0.x.y" --notes-file docs/releases/v0.x.y.md --generate-notes`,
-     adding `--draft` if the run asked for a draft.
-   - One exists: upload what it lacks with
-     `gh release upload v0.x.y <file> --clobber`, then publish it with
-     `gh release edit v0.x.y --draft=false` unless a draft was meant.
+- from a Mac with the signing key, check out the tagged commit and run the
+  release there: `git checkout v0.x.y && make release VERSION=v0.x.y`. The
+  version check does not apply to a version that was already started, so a
+  newer release shipped meanwhile does not block it; or
+- finish it by hand from the failed run's files (`gh run download <run-id>`).
+  `gh release view v0.x.y` says what exists: with no release, run
+  `gh release create v0.x.y <zip> <dmg> --title "Temple v0.x.y" --notes-file docs/releases/v0.x.y.md --generate-notes`;
+  with a draft, `gh release upload v0.x.y <zip> <dmg> --clobber` then
+  `gh release edit v0.x.y --draft=false`. A run cancelled before it kept its
+  files leaves only the Mac route; or
+- cut the next version.
 
 - **Xcode is pinned by build number** (`XCODE_BUILD` in the workflow), on
   the `xcode-27` runner. The Xcode decides the SDK the app records, and macOS
@@ -157,8 +166,10 @@ to what is published.
    drag-to-Applications `Temple-<version>-<arch>.dmg` (create-dmg).
 4. **Notarize the dmg** — submits and staples it too, so the disk image itself
    opens clean.
-5. **Publish** — tags `<version>`, pushes the tag, and creates the GitHub
-   release with both artifacts and `docs/releases/<version>.md` as its notes.
+5. **Publish** — creates the GitHub release as a draft with both artifacts
+   and `docs/releases/<version>.md` as its notes, then tags `<version>` and
+   pushes the tag, then publishes the draft (unless `DRAFT=1`). A run that
+   fails partway is finished by running it again (see Releasing from GitHub).
 
 Between steps 1 and 2 the release runs two checks on the built app and stops
 on either: `Scripts/check-remote-code.sh` proves the shipped binary carries
@@ -295,9 +306,10 @@ way). A local `make install` build takes its version from the last tag and its
 build number from the commit count.
 
 **Tags record the versions that are taken; published GitHub releases record
-what shipped.** The two differ only while a release is a draft or failed
-after tagging (see Releasing from GitHub). `make version`'s `released:` line
-lists tags, so it counts such a version; `published:` lists releases. To see
+what shipped.** The two differ only while a release is a draft or a run failed
+after pushing its tag, until that version is run again (see Releasing from
+GitHub). `make version`'s `released:` line lists tags, so it counts such a
+version; `published:` lists releases. To see
 where things stand:
 
 ```sh
@@ -318,7 +330,7 @@ anything, and each check is a mistake that cannot be undone once published:
 | Refused | Why |
 |---|---|
 | `0.1.2` (no `v`), `v0.1` | Must be `vX.Y.Z` — a malformed tag breaks the cask's `livecheck` and the artifact URLs. |
-| A version that already has a tag or release | Releases are immutable. Re-publishing under a version someone already downloaded gives two different builds the same name. |
+| A version that is already published, or tagged at another commit | Releases are immutable. Re-publishing under a version someone already downloaded gives two different builds the same name. (A version that is tagged at this commit, or only has a draft, is a run that did not finish: running it again finishes it.) |
 | A version that skips one (`v0.1.3` after `v0.1.1`) | A gap in the tags is indistinguishable from a release whose artifacts went missing. To skip one deliberately (e.g. leaving `v0.2.0` for a feature still landing), release from a Mac with `FORCE_VERSION=1`; the workflow has no such override. |
 | A dirty working tree | The tag would name code that exists only on your machine. |
 | Commits not pushed to `origin/main` | Same: the tag would point at code nobody else can fetch. |

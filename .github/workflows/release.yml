@@ -23,7 +23,7 @@ on:
         type: boolean
         default: false
       draft:
-        description: "Publish the GitHub release as a draft (the tag is still pushed, and the version is used up)"
+        description: "Leave the GitHub release as a draft (the tag is pushed; run again without draft to publish)"
         type: boolean
         default: false
 
