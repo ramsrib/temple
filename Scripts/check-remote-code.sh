@@ -20,7 +20,10 @@ KEY=temple.settings.remoteHosts
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 
 [ -x "$BIN" ] || { echo "✗ no binary at $BIN (make app first)"; exit 1; }
-strings "$BIN" | grep -q "$KEY" || { echo "✗ $BIN does not carry $KEY: the remote code is not in this build"; exit 1; }
+# Not `grep -q`: it exits at the first match and closes the pipe, and
+# `strings` then fails writing the rest ("failed to flush output"), a red
+# error line in release logs, and a failure under pipefail.
+strings "$BIN" | grep -F "$KEY" >/dev/null ||{ echo "✗ $BIN does not carry $KEY: the remote code is not in this build"; exit 1; }
 if /usr/libexec/PlistBuddy -c Print "$APP/Contents/Info.plist" | grep -q "$KEY"; then
     echo "✗ Info.plist sets $KEY"; exit 1
 fi
