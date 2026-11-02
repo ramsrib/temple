@@ -20,10 +20,8 @@ struct NewSessionPickerView: View {
         let hosts = model.remoteLaunchHosts
         // The trailing pseudo-rows: "Choose folder…" is always reachable by
         // keyboard, so a project Temple has never indexed is never mouse-only;
-        // below it, per host a session can start on, "Choose folder on
-        // <host>…" and "Open a session on <host> by id…" (continuing beside
-        // starting; docs/designs/open-existing-sessions.md section 5).
-        let rowCount = projects.count + 1 + hosts.count * 2
+        // below it, "Choose folder on <host>…" per host a session can start on.
+        let rowCount = projects.count + 1 + hosts.count
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -67,12 +65,9 @@ struct NewSessionPickerView: View {
                             .frame(height: Self.rowHeight)
                             .id(Self.chooseFolderID)
                         ForEach(Array(hosts.enumerated()), id: \.element) { offset, host in
-                            hostFolderRow(host, selected: selection == projects.count + 1 + offset * 2)
+                            hostFolderRow(host, selected: selection == projects.count + 1 + offset)
                                 .frame(height: Self.rowHeight)
                                 .id("temple.picker.host.\(host.rawValue)")
-                            hostResumeRow(host, selected: selection == projects.count + 2 + offset * 2)
-                                .frame(height: Self.rowHeight)
-                                .id("temple.picker.resume.\(host.rawValue)")
                         }
                     }
                 }
@@ -82,11 +77,7 @@ struct NewSessionPickerView: View {
                     let target: AnyHashable
                     if selection < projects.count { target = AnyHashable(projects[selection].key) }
                     else if selection == projects.count { target = AnyHashable(Self.chooseFolderID) }
-                    else {
-                        let offset = selection - projects.count - 1
-                        let host = hosts[offset / 2].rawValue
-                        target = AnyHashable(offset % 2 == 0 ? "temple.picker.host.\(host)" : "temple.picker.resume.\(host)")
-                    }
+                    else { target = AnyHashable("temple.picker.host.\(hosts[selection - projects.count - 1].rawValue)") }
                     proxy.scrollTo(target, anchor: .center)
                 }
             }
@@ -141,22 +132,6 @@ struct NewSessionPickerView: View {
         } action: { model.chooseRemoteFolder(host: host, agent: model.newSessionPickerAgent) }
     }
 
-    private func hostResumeRow(_ host: HostID, selected: Bool) -> some View {
-        PickerRowChrome(selected: selected) {
-            HStack(spacing: 10) {
-                ZStack {
-                    Image(systemName: "folder.badge.plus").hidden()
-                    Image(systemName: "arrow.uturn.forward")
-                }
-                .font(.system(size: 14))
-                .foregroundStyle(.secondary)
-                Text("Open a session on \(host.rawValue) by id…")
-                    .font(.system(size: 13))
-                Spacer()
-            }
-        } action: { model.openSessionByID(host: host) }
-    }
-
     private func move(_ delta: Int, rowCount: Int) {
         selection = max(0, min(rowCount - 1, selection + delta))
     }
@@ -166,13 +141,8 @@ struct NewSessionPickerView: View {
             model.openSessions.newSession(agent: model.newSessionPickerAgent,
                                           project: projects[index].key)
             model.newSessionPickerPresented = false
-        } else if index > projects.count, hosts.indices.contains((index - projects.count - 1) / 2) {
-            let offset = index - projects.count - 1
-            if offset % 2 == 0 {
-                model.chooseRemoteFolder(host: hosts[offset / 2], agent: model.newSessionPickerAgent)
-            } else {
-                model.openSessionByID(host: hosts[offset / 2])
-            }
+        } else if index > projects.count, hosts.indices.contains(index - projects.count - 1) {
+            model.chooseRemoteFolder(host: hosts[index - projects.count - 1], agent: model.newSessionPickerAgent)
         } else {
             chooseFolder()
         }

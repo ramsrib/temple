@@ -312,32 +312,28 @@ struct ResumeRequest {
 
 ### Where it is
 
-Only where the list cannot help:
+(As built after the owner's testing; the entry points first designed here, the
+launcher's and ⌘N's host rows, were removed.)
 
-- **⌘K, by pasting an id.** A query that is a whole session id offers
-  **Open session 3f2a1c…** (if the id is already a row here, ⌘K's own
-  result for that session comes first). It opens the sheet with the id
-  filled in and the host on This Mac. The fastest path for an id copied
-  from a terminal or from `claude --resume`; it also covers This Mac, whose
-  History search already matches an id prefix.
-- **The launcher's host rows** (its natural home), and ⌘N's, next to
-  "Choose folder on <host>…": **Resume a session on <host>…**.
-- **A host's History page**, in its header: **Open a session by id…** (not
-  on This Mac's page, where the search field beside it does the job
-  better).
-- **The lines that leave a host's page without a list**: no Temple, no
-  `sqlite3`, a form this version can't read, more sessions than can be
-  read at once.
+- **File ▸ Open Session by ID…**, where the owner looks first. Host: This Mac.
+- **History's page**, for This Mac and for each host, and the lines that
+  leave a host's page without a list: **Open Session by ID…**, with that
+  page's machine chosen.
+- **⌘K, by pasting a whole id**: a session Temple has opens; any other opens
+  the sheet on This Mac with the id filled in.
 
-Not in the sidebar or a project's `+` menu, which stay as they are. Every
-label here runs the cold read in [copy-review.md](../copy-review.md) before
-it is pushed (AGENTS.md).
+Not in the launcher, ⌘N, the sidebar or a project's `+` menu.
+Every label here runs the cold read in [copy-review.md](../copy-review.md)
+before it is pushed (AGENTS.md).
 
 ### The sheet
 
-It opens as **host** (set by where it was opened, changeable), **session
-id**, and **Open**: paste, Open, the flow `claude --resume <id>` was. The
-agent and the folder are found, not asked:
+**Session ID** first, with the hint "Any Claude Code or Codex session. Temple
+finds which agent it is and the folder it ran in." Below it **Host** (This Mac
+by default, or the page's host), shown only when a host is connected, or
+while a host chosen in it has since been removed so This Mac can be chosen
+again. One machine is asked at a time; nothing looks on every host at once.
+The agent and the folder are found, not asked:
 
 - **Agent** appears only when the lookup finds this id in both Claude's and
   Codex's stores (two sessions, one id): a Claude | Codex choice, then Open.
@@ -345,10 +341,6 @@ agent and the folder are found, not asked:
   the host's recent folders (as the folder sheet). Otherwise the
   transcript's folder is used: Claude resumes a session only from its own
   project folder, so asking would only invite a mismatch.
-
-(The owner's first spec asked for id, agent and folder up front; on
-Fable's read, that the lookup answers both and asking invites a guess the
-sheet then corrects, the owner chose this.)
 
 **Open** runs the check, then hands off:
 
@@ -479,3 +471,12 @@ From revision 3:
   muted in the menu; "In a tab on <host>" in the status column and said
   once in the launch header; the incompatible-database line suggests
   updating; the third-host limit stated.
+
+From owner testing (after the build):
+- Open by id's entry points are File ▸ **Open Session by ID…** and the same
+  link on History's page for This Mac and each host (plus `⌘K` paste); the
+  launcher and `⌘N` rows are removed. **Host** defaults to This Mac, a
+  host's page presets that host, and the field is hidden with no host
+  connected. Searching every host at once was proposed and rejected: one
+  machine is asked at a time. The sheet's hint says it opens any Claude Code
+  or Codex session and finds the agent and folder itself.

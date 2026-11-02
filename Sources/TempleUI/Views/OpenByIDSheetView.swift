@@ -15,26 +15,29 @@ struct OpenByIDSheetView: View {
 
     var body: some View {
         RemoteSheetChrome {
-            RemoteSheetTitle(title: "Open a session by id")
-            RemoteFormRow(label: "Host") {
-                Picker("", selection: $sheet.host) {
-                    ForEach(sheet.hosts, id: \.self) { host in
-                        Text(host.isLocal ? "This Mac" : host.displayName).tag(host)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .frame(maxWidth: 220, alignment: .leading)
-            }
-            RemoteFormRow(label: "Session id") {
+            RemoteSheetTitle(title: "Open Session by ID")
+            RemoteFormRow(label: "Session ID") {
                 TextField("", text: $sheet.sessionID, prompt: Text("3f2a1c7e-…"))
-                    .accessibilityLabel("Session id")
+                    .accessibilityLabel("Session ID")
                     .textFieldStyle(.plain)
                     .font(.system(size: 12, design: .monospaced))
                     .focused($focus, equals: .id)
                     .onSubmit { sheet.confirm() }
                     .templeFieldChrome(focused: focus == .id)
-                RemoteHint("The id from claude --resume or codex resume, or a session's Copy session ID.")
+                RemoteHint("Any Claude Code or Codex session. Temple finds which agent it is and the folder it ran in.")
+            }
+            // With no host connected there is only this Mac: nothing to choose.
+            if sheet.showsHost {
+                RemoteFormRow(label: "Host") {
+                    Picker("", selection: $sheet.host) {
+                        ForEach(sheet.hostChoices, id: \.self) { host in
+                            Text(host.isLocal ? "This Mac" : host.displayName).tag(host)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 220, alignment: .leading)
+                }
             }
             if sheet.showsAgent {
                 RemoteFormRow(label: "Agent") {

@@ -2652,9 +2652,12 @@ three review rounds: [docs/designs/open-existing-sessions.md](./designs/open-exi
   when both agents have the id, the folder only when the transcript records
   none. "No session" is said only when every store was listed to the end;
   a host that didn't answer, or a store that couldn't be listed, is never
-  "not found". Entry points: a whole id pasted into `⌘K`, **Resume a
-  session on <host>…** in the launcher and `⌘N`, and a host's History page
-  and its problem lines.
+  "not found". Entry points (owner, after trying it): File ▸ **Open Session
+  by ID…**, the same link on History's page for This Mac and for each host
+  and on its problem lines, and a whole id pasted into `⌘K`. **Host**
+  defaults to This Mac (a host's page presets that host) and is hidden with
+  no host connected; one machine is asked at a time, never every host at
+  once. Not in the launcher or `⌘N`.
 - **Nothing launches that Temple couldn't record.** Both doors hand a
   `ResumeRequest` to the tab model; a member's own folder wins, and any
   launch, these and the existing ones, needs a join that succeeded (a

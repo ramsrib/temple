@@ -354,13 +354,15 @@ it. What follows appears for an enabled host only.
   which never hides the sessions Temple has there. On This Mac, a search
   that finds little offers "Not here? Look on <host>"
   ([ADR-039](./DECISIONS.md#adr-039--a-hosts-own-temple-and-any-session-by-id)).
-- **Open a session by id.** Paste a session id into `⌘K` (**Open session
-  3f2a1c…**), or choose **Open a session on <host> by id…** in the launcher or
-  `⌘N`, or **Open a session by id…** on a host's History page: give the host
-  and the id, and Temple finds which agent it is and the folder it ran in,
-  asking for either only when it can't tell. It says "No session … on
-  <host>" only when it looked everywhere; a host that didn't answer is said
-  as that.
+- **Open Session by ID.** File ▸ **Open Session by ID…**, the same link on
+  History's page for This Mac or a host, or a session id pasted into `⌘K`
+  (**Open session 3f2a1c…**): give the id, and with a host connected choose
+  **Host** (This Mac unless you opened it from a host's page; only that one
+  machine is asked). Any Claude Code or Codex session there opens, Temple's
+  or not: Temple finds which agent it is and the folder it ran in, asking
+  for either only when it can't tell. It says "No session … on <host>" only
+  when it looked through every store there; a host that didn't answer is
+  said as that.
 - **It keeps running.** The agent runs inside a hidden tmux server of
   Temple's own on the host (`tmux -L temple`, tmux 3.2 or newer), so it
   survives a dropped connection, a sleeping Mac and a Temple quit while it

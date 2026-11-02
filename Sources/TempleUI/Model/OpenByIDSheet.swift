@@ -2,12 +2,13 @@ import Foundation
 import TempleCore
 
 /// Open a session by id (docs/designs/open-existing-sessions.md section 5):
-/// which host, and the id to look up there.
+/// the id, and the one machine to look on, This Mac unless said otherwise.
+/// Nothing ever looks on every host at once.
 public struct OpenByIDRequest: Identifiable, Equatable {
     public let id = UUID()
     public let host: HostID
     public let sessionID: String
-    public init(host: HostID, sessionID: String = "") { self.host = host; self.sessionID = sessionID }
+    public init(host: HostID = .local, sessionID: String = "") { self.host = host; self.sessionID = sessionID }
 }
 
 /// What the sheet's folder check found.
@@ -78,6 +79,13 @@ final class OpenByIDSheetModel: ObservableObject {
     }
 
     var hosts: [HostID] { dependencies.hosts() }
+    /// With no host connected there is only This Mac: nothing to choose,
+    /// unless the chosen host has gone since (then the field stays, so This
+    /// Mac can be chosen again).
+    var showsHost: Bool { hosts.count > 1 || !host.isLocal }
+    /// The Host menu's entries: the connected ones, and the chosen one even
+    /// once it is not, so the menu still says what is chosen.
+    var hostChoices: [HostID] { hosts.contains(host) ? hosts : hosts + [host] }
     var trimmedID: String { Self.normalized(sessionID) }
     var trimmedFolder: String { folder.trimmingCharacters(in: .whitespacesAndNewlines) }
     var recentFolders: [String] { dependencies.recentFolders(host) }
@@ -119,6 +127,10 @@ final class OpenByIDSheetModel: ObservableObject {
     func confirm() {
         guard canOpen, dependencies.canAct() else { return }
         let id = trimmedID, host = host
+        guard hosts.contains(host) else {
+            check = .problem("\(host.displayName) isn't connected any more. Choose This Mac or another host.")
+            return
+        }
         guard Self.isSessionID(id) else {
             check = .problem("That isn't a session id. One looks like 3f2a1c7e-5b6d-4c3a-9e1f-2a7b8c9d0e1f.")
             return

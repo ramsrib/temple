@@ -251,4 +251,36 @@ final class OpenByIDSheetTests: XCTestCase {
         elsewhere.openElsewhere()
         XCTAssertTrue(world.opened.isEmpty, "Open it is gated too")
     }
+
+    func testThisMacIsTheDefaultAndTheHostFieldAppearsOnlyWithAHost() {
+        XCTAssertEqual(OpenByIDRequest().host, .local)
+        let world = World()
+        let withHost = sheet(world, host: .local)
+        XCTAssertTrue(withHost.showsHost)
+        let alone = OpenByIDSheetModel(request: OpenByIDRequest(), dependencies: OpenByIDSheetModel.Dependencies(
+            hosts: { [.local] }, lookup: { _, _ in world.lookup }, checkFolder: { _, path in .exists(path) },
+            member: { _ in nil }, hasLiveTab: { _, _ in false }, openMember: { _ in }, resume: { _ in true },
+            configuration: { _ in 0 }, recentFolders: { _ in [] })) {}
+        XCTAssertFalse(alone.showsHost, "with no host connected there is nothing to choose")
+        XCTAssertEqual(alone.host, .local)
+    }
+
+    /// A host chosen in the sheet and removed meanwhile: the field stays so
+    /// This Mac can be chosen again, and Open says why it can't go on.
+    func testAHostRemovedWhileChosenKeepsTheFieldAndSaysSo() {
+        let world = World()
+        var connected: [HostID] = [.local, box]
+        let model = OpenByIDSheetModel(request: OpenByIDRequest(sessionID: id), dependencies: OpenByIDSheetModel.Dependencies(
+            hosts: { connected }, lookup: { _, _ in world.lookup }, checkFolder: { _, path in .exists(path) },
+            member: { _ in nil }, hasLiveTab: { _, _ in false }, openMember: { _ in }, resume: { _ in true },
+            configuration: { _ in 1 }, recentFolders: { _ in [] })) {}
+        model.host = box
+        connected = [.local]
+        XCTAssertTrue(model.showsHost, "still shown, so This Mac can be chosen again")
+        XCTAssertEqual(model.hostChoices, [.local, box])
+        model.confirm()
+        XCTAssertEqual(model.check, .problem("mac-b isn't connected any more. Choose This Mac or another host."))
+        model.host = .local
+        XCTAssertFalse(model.showsHost)
+    }
 }

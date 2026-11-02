@@ -430,10 +430,10 @@ extension AppModel {
                                })
     }
 
-    /// Open a session by id: History's host page and its lines, the
-    /// launcher's and ⌘N's host rows ("Open a session on <host> by id…"), and
+    /// Open Session by ID: File ▸ Open Session by ID… (This Mac), History's
+    /// page for This Mac or a host and its problem lines (that machine), and
     /// ⌘K given a whole id (This Mac, the id filled in).
-    public func openSessionByID(host: HostID, sessionID: String = "") {
+    public func openSessionByID(host: HostID = .local, sessionID: String = "") {
         newSessionPickerPresented = false
         guard host.isLocal || remoteHost(host) != nil else { return }
         openByIDSheet = OpenByIDRequest(host: host, sessionID: sessionID)

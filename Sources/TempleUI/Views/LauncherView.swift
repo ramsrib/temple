@@ -188,11 +188,6 @@ struct LauncherView: View {
                             title: RemoteCopy.newSessionOn(host.rawValue, agent: model.settings.defaultAgent)) {
                     model.chooseRemoteFolder(host: host)
                 }
-                // Continuing beside starting: an existing session there, by id
-                // (docs/designs/open-existing-sessions.md section 5).
-                LauncherRow(icon: .symbol("arrow.uturn.forward"), title: "Open a session on \(host.rawValue) by id…") {
-                    model.openSessionByID(host: host)
-                }
             }
             LauncherRow(icon: .symbol("command"), title: "Command palette", shortcut: "⌘K") {
                 model.toggleCommandPalette()

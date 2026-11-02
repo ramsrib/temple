@@ -374,6 +374,15 @@ final class RemoteAppTests: XCTestCase {
         app.showRemoteSessions(hostID)
         XCTAssertFalse(catcher.handle(returnKey(), app), "the Sessions sheet owns Return too")
         app.remoteSessionsSheet = nil
+        // Open Session by ID (File menu, This Mac) owns Return, Esc and ⌘W too.
+        app.openSessionByID()
+        XCTAssertEqual(app.openByIDSheet?.host, .local)
+        XCTAssertFalse(catcher.handle(returnKey(), app), "the Open Session by ID sheet owns Return")
+        XCTAssertFalse(catcher.handle(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                                                       timestamp: 0, windowNumber: 0, context: nil, characters: "w",
+                                                       charactersIgnoringModifiers: "w", isARepeat: false, keyCode: 13)!, app),
+                       "and no shortcut acts behind it")
+        app.openByIDSheet = nil
         // Any other remote sheet (the Hosts card's, a tab's confirmation)
         // is marked while it is up; nothing else changes the catcher.
         app.openSessions.showHome()

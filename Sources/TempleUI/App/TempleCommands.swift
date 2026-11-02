@@ -47,6 +47,10 @@ public struct TempleCommands: Commands {
             Button("Open Project Folder…") { model.openProjectFolder() }
                 .keyboardShortcut("o")
 
+            // A session by its id, on This Mac or a connected host
+            // (docs/designs/open-existing-sessions.md section 5).
+            Button("Open Session by ID…") { model.openSessionByID() }
+
             Button("Reopen Closed Tab") { model.openSessions.reopenLastClosedTab() }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
         }

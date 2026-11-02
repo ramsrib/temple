@@ -165,9 +165,15 @@ struct HistoryTabView: View {
             }
             if let host = history.page.host {
                 peerLine(host)
-            } else if let hosts = bridgeHosts {
-                bridgeLine(hosts)
-                    .padding(.top, 8)
+            } else {
+                // This Mac: the same way in as a host's page, beside the
+                // "Not here? Look on …" line when a search found little.
+                HStack(spacing: 8) {
+                    if let hosts = bridgeHosts { bridgeLine(hosts) }
+                    Spacer(minLength: 0)
+                    openByIDLink(.local)
+                }
+                .padding(.top, 8)
             }
             if case .reading(let read, let total) = history.readState {
                 readingLine(read: read, total: total)
@@ -391,15 +397,22 @@ struct HistoryTabView: View {
             } else {
                 Spacer(minLength: 0)
             }
-            Button("Open a session by id…") { history.openByID(host) }
-                .buttonStyle(.plain)
-                .fontWeight(.semibold)
-                .foregroundStyle(.primary)
-                .help("Open a session on \(name) by its id, when this list doesn't show it")
+            openByIDLink(host)
         }
         .font(.system(size: 11.5))
         .foregroundStyle(.secondary)
         .padding(.top, 8)
+    }
+
+    /// File ▸ Open Session by ID…, on this page's machine.
+    private func openByIDLink(_ host: HostID) -> some View {
+        Button("Open Session by ID…") { history.openByID(host) }
+            .buttonStyle(.plain)
+            .font(.system(size: 11.5))
+            .fontWeight(.semibold)
+            .foregroundStyle(.primary)
+            .help(host.isLocal ? "Open a session on this Mac by its ID"
+                  : "Open a session on \(host.displayName) by its ID, when this list doesn't show it")
     }
 
     /// The design's lines (section 1, Failures), one per answer.
