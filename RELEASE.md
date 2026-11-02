@@ -26,13 +26,14 @@ same `Scripts/release.sh` and is the fallback:
 
 ## Release notes
 
-Every release publishes `docs/releases/<version>.md` as its notes, and
-A release refuses to start without that file (`NOTES=` points elsewhere).
+Every release publishes `docs/releases/<version>.md` as its notes, and a
+release refuses to start without that file, committed on `main`. (From a
+Mac, `NOTES=` points `make release` at another file.)
 GitHub's generated notes list merged PRs; Temple lands on `main` without
 them, so until v0.5.0 almost every release said only "Full Changelog" (they were
 backfilled since).
 
-`make release-notes VERSION=v0.x.y` (or a release with no notes yet) has a
+`make release-notes VERSION=v0.x.y` (or, from a Mac, `make release` with no notes yet) has a
 headless Claude agent draft them by these rules, via `claude-run` from Sri's
 dotfiles, and report whether the version fits what is new. It is a draft:
 nothing ships until you have read and committed it. By hand or by agent,
@@ -318,7 +319,7 @@ anything, and each check is a mistake that cannot be undone once published:
 |---|---|
 | `0.1.2` (no `v`), `v0.1` | Must be `vX.Y.Z` — a malformed tag breaks the cask's `livecheck` and the artifact URLs. |
 | A version that already has a tag or release | Releases are immutable. Re-publishing under a version someone already downloaded gives two different builds the same name. |
-| A version that skips one (`v0.1.3` after `v0.1.1`) | A gap in the tags is indistinguishable from a release whose artifacts went missing. Pass `FORCE_VERSION=1` to skip deliberately — e.g. leaving `v0.2.0` for a feature still landing. |
+| A version that skips one (`v0.1.3` after `v0.1.1`) | A gap in the tags is indistinguishable from a release whose artifacts went missing. To skip one deliberately (e.g. leaving `v0.2.0` for a feature still landing), release from a Mac with `FORCE_VERSION=1`; the workflow has no such override. |
 | A dirty working tree | The tag would name code that exists only on your machine. |
 | Commits not pushed to `origin/main` | Same: the tag would point at code nobody else can fetch. |
 
