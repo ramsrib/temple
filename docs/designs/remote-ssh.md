@@ -528,6 +528,8 @@ create)
     set -g set-titles on \; set -g set-titles-string '#T' \; \
     set -g mouse on \; set -g history-limit 50000 \; set -g set-clipboard on \; \
     set -gq allow-passthrough on \; \
+    set -s extended-keys on \; set -sq extended-keys-format csi-u \; \
+    set -s escape-time 10 \; \
     set -g detach-on-destroy on \; set -g destroy-unattached off \; \
     bind -T copy-mode Any send-keys -X cancel \; \
     new-session -s "$s" -c "$HOME" -e PATH="$PATH" "$pane" \
@@ -537,6 +539,26 @@ create)
   rm -f "$mdir/$m.err"; exit $st ;;
 esac
 ```
+
+`extended-keys on` is what lets Shift+Enter add a newline in the agent's
+prompt: with it off (tmux's default), tmux turns the outer terminal's
+`CSI 27;2;13~` into a plain Enter, which sends the message. With it on,
+tmux honours the modifyOtherKeys request Claude and Codex both make at
+start and hands the pane `CSI 13;2u` (3.2 to 3.4 always use that form;
+`extended-keys-format` is 3.5+, hence `-q`). It is a server option, so an
+agent that started while it was off keeps plain keys until it restarts
+(measured on tmux 3.8, 2026-11-13; `TmuxChain.configure` has the detail).
+`escape-time 10` goes with it: before 3.5 tmux waits 500 ms after an Esc
+for the rest of a sequence, which delays Esc (Claude's interrupt), and
+under extended keys an Esc pressed twice in that wait reaches the agent as
+Alt+Esc, so Esc Esc stops clearing the prompt (measured with Claude, tmux
+3.8 set to 500). 10 ms is tmux's own default from 3.5. With every key a
+Claude Code user reaches for checked through a tmux client the way Ghostty
+drives it (typing, Shift+Enter, Option+Enter, Ctrl+J, Backspace,
+Option+Backspace, Ctrl+W/U/A/E/K, arrows, Home/End, Option+arrows,
+Option+B/F, Ctrl+C, Esc Esc, Tab, Up history, bracketed paste, Shift+Tab,
+Ctrl+R, Option+P, Option+T, Ctrl+O, Ctrl+G, Enter), all 29 behave as in a
+local tab.
 
 `new-session` without `-A`: a fresh handle has no session on the host, and
 if one is there anyway (a handle reused by mistake), "duplicate session" is
@@ -1842,7 +1864,14 @@ Recorded after the first sol and astra review of phase 1a. Decisions 1 to
     run of this check passed vacuously, its resolver script mangled by a
     missing newline, and now also asserts the hang ran); the resolver runs in a process group of
     its own (`setsid` on Linux, where dash has no job control without a
-    tty; the shell's job control where `setsid` is missing), and at the
+    tty; perl's `POSIX::setsid` on macOS, which has no `setsid` command;
+    the shell's job control only where both are missing). A session of
+    its own matters in the launch, which runs on the tab's pty: an
+    interactive login shell opens `/dev/tty` and makes its group the
+    terminal's foreground, and under job control it left the terminal to
+    a dead group, so the tmux client exec'd next never got a resize's
+    SIGWINCH (a macOS host, 2026-11-13; the launch shell can't take the
+    terminal back from inside `$(…)`). At the
     budget the whole group is sent TERM, then KILL, and its leader reaped
     (`kill -SIG -<pgid>`, the spelling dash and bash both take). Where
     neither containment exists it spawns nothing and falls back. So the

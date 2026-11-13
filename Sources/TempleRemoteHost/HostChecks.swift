@@ -85,6 +85,25 @@ public enum TmuxChain {
         ("history-limit", "set -g history-limit 50000"),
         ("set-clipboard", "set -g set-clipboard on"),
         ("allow-passthrough", "set -gq allow-passthrough on"),
+        // Shift+Enter (a newline in Claude's and Codex's prompts) needs
+        // extended keys: with them off tmux turns the outer terminal's
+        // `CSI 27;2;13~` into a plain Enter, which sends the message.
+        // `on` honours the agent's own request (both ask for
+        // modifyOtherKeys at start) and asks the outer terminal for them;
+        // the pane gets `CSI 13;2u`, which both read as a newline (3.2 to
+        // 3.4 send that form too; the format option is 3.5+, so `-q`).
+        // Measured on tmux 3.8, 2026-11-13. A server
+        // option, so it is on for every session once any creation ran;
+        // an agent that started while it was off never asked again.
+        ("extended-keys", "set -s extended-keys on"),
+        ("extended-keys-format", "set -sq extended-keys-format csi-u"),
+        // tmux waits this long after an Esc for the rest of a sequence:
+        // 500 ms before 3.5 (10 since). Esc is how Claude is interrupted,
+        // and with extended keys an Esc pressed twice within the wait
+        // reaches the agent as Alt+Esc, not Esc Esc (and Esc then Enter
+        // as Alt+Enter, a newline). Measured with Claude on tmux 3.8 set
+        // to 500, 2026-11-13. 10 is tmux's own default from 3.5.
+        ("escape-time", "set -s escape-time 10"),
         ("detach-on-destroy", "set -g detach-on-destroy on"),
         ("destroy-unattached", "set -g destroy-unattached off"),
         ("copy-mode Any", "bind -T copy-mode Any send-keys -X cancel"),

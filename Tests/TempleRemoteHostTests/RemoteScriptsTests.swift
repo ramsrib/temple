@@ -157,6 +157,8 @@ final class RemoteScriptsTests: XCTestCase {
             process.standardError = FileHandle.nullDevice
             try process.run()
         }
+        /// Bytes as the outer terminal would send them for keys pressed.
+        func send(_ text: String) { input.fileHandleForWriting.write(Data(text.utf8)) }
         /// Temple's Detach: the local client goes; the agent stays.
         private var ended = false
         func end() {
@@ -607,6 +609,47 @@ final class RemoteScriptsTests: XCTestCase {
             let out = try await LocalShellExec(path: nil, environment: host.environment)
                 .run(script: "sh \"$1\"", args: [probe.path], deadline: 10)
             XCTAssertEqual(out.stdout, expected, shell)
+        }
+    }
+
+    /// The launch runs its resolver on the tab's pty, and an interactive
+    /// login shell (zsh's `-i`) opens `/dev/tty` and makes its own group the
+    /// terminal's foreground. The resolver gives it a session of its own,
+    /// so the launch shell (and the tmux client it execs) stays in the
+    /// foreground and still gets a resize's SIGWINCH. Before, on macOS,
+    /// with no `setsid` command, the resolver's job-control fallback left
+    /// the terminal to a dead group, and a remote tab never resized.
+    /// An inherited `PERL5OPT` that would fail perl is set throughout.
+    func testTheLaunchsResolverLeavesTheTerminalWithTheLaunch() throws {
+        let host = StandIn()
+        let zsh = "/bin/zsh"
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: zsh), "needs zsh, a login shell that takes the tty")
+        host.tree.write("bin/ttyshell", """
+        #!/bin/sh
+        while [ $# -gt 1 ]; do shift; done
+        PATH="/login/bin:$PERL5LIB:$PERL5OPT:${PERLLIB-unset}:/usr/bin:/bin"; export PATH
+        exec \(zsh) -f -i -c "$1"
+        """, executable: true)
+        // Perl's own startup settings, inherited, must not stop the
+        // resolver, and the login shell still gets them as they were.
+        host.extra = ["SHELL": host.bin + "/ttyshell", "PERL5OPT": "-T -Mno::such::module", "PERL5LIB": "/nonexistent"]
+        let result = host.tree.path + "/foreground"
+        let probe = host.tree.write("probe.sh", RemoteEnvironment.resolverFunction + "\n"
+            + #"e=$(temple_bounded m1) && temple_parse_env "$e" m1 || TEMPLE_ENV_PATH=none"# + "\n"
+            + #"printf '%s %s\n' "$(ps -o pgid= -p $$ | tr -d ' ')" "$(ps -o tpgid= -p $$ | tr -d ' ')" > "$1.tmp""# + "\n"
+            + #"printf '%s\n' "$TEMPLE_ENV_PATH" >> "$1.tmp"; mv "$1.tmp" "$1""# + "\n")
+        for shell in ["/bin/sh", "/bin/dash"] where FileManager.default.isExecutableFile(atPath: shell) {
+            try? FileManager.default.removeItem(atPath: result)
+            let client = try PTYClient("exec \(shell) '\(probe.path)' '\(result)'", environment: host.environment)
+            defer { client.end() }
+            XCTAssertTrue(waitFor(10) { FileManager.default.fileExists(atPath: result) }, shell)
+            let lines = try String(contentsOfFile: result, encoding: .utf8).split(separator: "\n").map(String.init)
+            XCTAssertEqual(lines.count, 2, "\(shell): \(lines)")
+            let groups = lines.first?.split(separator: " ").map(String.init) ?? []
+            XCTAssertEqual(groups.count, 2, "\(shell): \(lines)")
+            XCTAssertEqual(groups.first, groups.last, "\(shell): the launch's group (first) is the terminal's foreground (second)")
+            XCTAssertEqual(lines.last, "/login/bin:/nonexistent:-T -Mno::such::module:unset:/usr/bin:/bin",
+                           "\(shell): the login shell answered, with its Perl settings as inherited")
         }
     }
 
@@ -1080,6 +1123,42 @@ final class RemoteScriptsTests: XCTestCase {
         FileManager.default.createFile(atPath: out + "/go", contents: nil)
         XCTAssertTrue(try waitFor { FileManager.default.fileExists(atPath: out + "/set") })
         XCTAssertTrue(try waitFor { try outer() == "Agent, title" })
+    }
+
+    /// Shift+Enter reaches the agent as Shift+Enter (a newline in its
+    /// prompt), not as Enter (which sends the message): the outer
+    /// terminal's `CSI 27;2;13~` arrives as an extended key once the
+    /// agent asks for modifyOtherKeys, as Claude and Codex do at start.
+    func testRealTmuxShiftEnterReachesTheAgentAsAnExtendedKey() throws {
+        let host = StandIn()
+        try host.installRealTmux()
+        let keepAlive = TmuxKeepAlive()
+        defer { _ = try? host.tmux(["-L", "temple", "kill-server"]) }
+        let out = host.tree.path
+        let client = try launchClient(host, host.staged(keepAlive.createScript(plan(host, handle: "hk", marker: "mk",
+            argv: ["/bin/sh", "-c", "stty raw -echo; printf '\\033[>4;2m'; touch \(out)/ready; "
+                   + "exec dd bs=1 of=\(out)/keys 2>/dev/null"]))))
+        defer { client.end() }
+        XCTAssertTrue(try waitFor { FileManager.default.fileExists(atPath: out + "/ready") })
+        XCTAssertEqual(try host.tmux(["-L", "temple", "show", "-sv", "extended-keys"]).stdout
+            .trimmingCharacters(in: .newlines), "on")
+        // Not tmux's 500 ms before 3.5: an Esc Esc in that wait reaches
+        // the agent as Alt+Esc under extended keys.
+        XCTAssertEqual(try host.tmux(["-L", "temple", "show", "-sv", "escape-time"]).stdout
+            .trimmingCharacters(in: .newlines), "10")
+        // `pane_key_mode` is tmux 3.5+; older tmux says nothing, and the
+        // bytes below are the proof there.
+        let version = TmuxVersion(try host.tmux(["-V"]).stdout.trimmingCharacters(in: .whitespacesAndNewlines))
+        if let version, version >= TmuxVersion(major: 3, minor: 5) {
+            XCTAssertTrue(try waitFor {
+                try host.tmux(["-L", "temple", "display-message", "-p", "-t", "=temple-hk:", "#{pane_key_mode}"]).stdout
+                    .trimmingCharacters(in: .newlines) == "Ext 2"
+            }, "tmux honours the agent's request")
+        }
+        client.send("a\u{1b}[27;2;13~b")
+        func keys() -> String { (try? String(contentsOfFile: out + "/keys", encoding: .utf8)) ?? "" }
+        XCTAssertTrue(waitFor { keys().hasSuffix("b") }, keys().debugDescription)
+        XCTAssertEqual(keys(), "a\u{1b}[13;2ub", "Shift+Enter, not Enter")
     }
 
 }

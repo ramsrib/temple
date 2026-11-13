@@ -86,9 +86,26 @@ public struct RemoteEnvironment: Sendable, Equatable {
     /// the launch and the transcript check (one policy, section 2).
     ///
     /// - `temple_bounded <marker>` runs `loginScript` contained in a process
-    ///   group of its own (`setsid` where the host has it, the shell's job
-    ///   control otherwise; `kill -SIG -<pgid>` is the spelling dash and
-    ///   bash both take) and never waits past the budget: a group still
+    ///   group of its own (`kill -SIG -<pgid>` is the spelling dash and
+    ///   bash both take) and never waits past the budget. Containment is a
+    ///   session of its own where it can be had: the `setsid` command
+    ///   (Linux), else perl's `POSIX::setsid` (macOS has no `setsid`
+    ///   command); the shell's job control only on a host with neither.
+    ///   Perl runs clear of inherited startup settings (`PERL5OPT`, a
+    ///   library path, `-f` for sitecustomize): `PERL5OPT=-T`, or a `-M` of
+    ///   a missing module, would fail it before the login shell ran. Perl
+    ///   puts them back before it execs the login shell, whose own startup
+    ///   may need them (a perl helper that builds PATH). The subshell
+    ///   execs perl, so `$!` is still the group leader's pid.
+    ///   A new session matters in the tab's launch, which runs on the tab's
+    ///   pty: an interactive login shell (`-lic`) opens `/dev/tty` even with
+    ///   stdin from /dev/null, makes its own group the terminal's
+    ///   foreground, and exits without handing it back, so the tmux client
+    ///   exec'd after it sits in a background group and never gets the
+    ///   SIGWINCH of a resize (seen on a macOS host, 2026-11-13). In a
+    ///   session of its own the login shell has no terminal to take. Job
+    ///   control can't contain that, and the launch shell can't take the
+    ///   terminal back from inside `$(…)`. A group still
     ///   running then is sent TERM, then KILL, and its leader reaped, so no
     ///   login shell or descendant is left behind. Where neither containment
     ///   is available it spawns nothing and answers "no answer" at once.
@@ -104,6 +121,17 @@ public struct RemoteEnvironment: Sendable, Equatable {
           case $- in *m*) _was_m=1 ;; *) _was_m= ;; esac
           if [ -z "$_was_m" ] && command -v setsid >/dev/null 2>&1; then
             setsid sh -c "$TEMPLE_LOGIN_SCRIPT" temple-env "$@" > "$_f" 2>/dev/null &
+            _pid=$!
+          elif [ -z "$_was_m" ] && command -v perl >/dev/null 2>&1; then
+            ( [ -z "${PERL5OPT+x}" ] || { TEMPLE_KEEP_PERL5OPT=$PERL5OPT; export TEMPLE_KEEP_PERL5OPT; }
+              [ -z "${PERL5LIB+x}" ] || { TEMPLE_KEEP_PERL5LIB=$PERL5LIB; export TEMPLE_KEEP_PERL5LIB; }
+              [ -z "${PERLLIB+x}" ] || { TEMPLE_KEEP_PERLLIB=$PERLLIB; export TEMPLE_KEEP_PERLLIB; }
+              [ -z "${PERL5DB+x}" ] || { TEMPLE_KEEP_PERL5DB=$PERL5DB; export TEMPLE_KEEP_PERL5DB; }
+              unset PERL5OPT PERL5LIB PERLLIB PERL5DB
+              exec perl -f -MPOSIX -e 'POSIX::setsid() >= 0 or exit 126;
+                for (qw(PERL5OPT PERL5LIB PERLLIB PERL5DB)) { $ENV{$_} = delete $ENV{"TEMPLE_KEEP_$_"} if exists $ENV{"TEMPLE_KEEP_$_"} }
+                exec @ARGV or exit 127' \
+                sh -c "$TEMPLE_LOGIN_SCRIPT" temple-env "$@" ) > "$_f" 2>/dev/null &
             _pid=$!
           else
             set -m 2>/dev/null
