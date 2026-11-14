@@ -39,7 +39,7 @@ final class GhosttyAnimatedResizeTests: XCTestCase {
         func updateNSView(_ nsView: NSView, context: Context) {}
     }
 
-    private func assertZoomPushesOnlyTheFinalSize(hosted: Bool, file: StaticString = #filePath, line: UInt = #line) {
+    private func assertZoomPushesOnlyTheFinalSize(hosted: Bool, file: StaticString = #filePath, line: UInt = #line) throws {
         let view = GhosttySurfaceView(app: GhosttyApp.shared, appearance: .default)
         let window = window(containing: view, hosted: hosted)
         defer { window.close() }
@@ -58,19 +58,23 @@ final class GhosttyAnimatedResizeTests: XCTestCase {
 
         let after = view.frame.size
         XCTAssertNotEqual(after, before, "the window did not zoom", file: file, line: line)
-        XCTAssertGreaterThan(framesDuringZoom, 3, "the zoom was not animated, so this proves nothing", file: file, line: line)
+        // macOS zooms in one step with the screen locked or the display
+        // asleep (measured): no animation, nothing to hold, nothing proved.
+        if framesDuringZoom <= 3 {
+            throw XCTSkip("the zoom was not animated (\(framesDuringZoom) sizes): screen locked or display asleep?")
+        }
         XCTAssertFalse(pushes.isEmpty, "the final size never reached the surface", file: file, line: line)
         XCTAssertEqual(pushes, [after], "only the landed size may reach the surface, once", file: file, line: line)
     }
 
-    func testAZoomHandsTheTerminalOnlyItsFinalSize() {
-        assertZoomPushesOnlyTheFinalSize(hosted: false)
+    func testAZoomHandsTheTerminalOnlyItsFinalSize() throws {
+        try assertZoomPushesOnlyTheFinalSize(hosted: false)
     }
 
     /// Temple's terminal sits in SwiftUI, which lays the view out once more
     /// after the live resize ends.
-    func testAZoomHandsAHostedTerminalOnlyItsFinalSize() {
-        assertZoomPushesOnlyTheFinalSize(hosted: true)
+    func testAZoomHandsAHostedTerminalOnlyItsFinalSize() throws {
+        try assertZoomPushesOnlyTheFinalSize(hosted: true)
     }
 
     /// Outside a live resize (a sidebar toggle, a window moved by code),
