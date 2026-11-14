@@ -178,17 +178,40 @@ enum TitleBand {
     /// band controls, or the split view itself (its divider runs up through
     /// the band, and a double-click there resets the sidebar width). What
     /// is left must be something AppKit would move the window from.
+    ///
+    /// A toolbar *space* is the exception among toolbar items: it is empty
+    /// band. The sidebar's flexible space (`SidebarView`, the `Spacer` that
+    /// puts the rail's buttons by the divider) has an item viewer of its
+    /// own, and since the macOS 26 glass toolbar that viewer covers the band
+    /// over the sidebar from the traffic lights to the buttons. Counting it
+    /// as a toolbar item left that whole stretch dead to a double-click:
+    /// AppKit didn't zoom there either (TitleBandDoubleClickTests, measured
+    /// 2026-11-13).
     static func isEmpty(_ hit: NSView?) -> Bool {
         guard let hit, !(hit is NSSplitView), hit.mouseDownCanMoveWindow else { return false }
         var view: NSView? = hit
         while let current = view {
-            if current is NSControl || current is NSText || current is TitleBandControl
-                || current.className.contains("ToolbarItemViewer") {
+            if current is NSControl || current is NSText || current is TitleBandControl {
+                return false
+            }
+            if current.className.contains("ToolbarItemViewer"), !isSpaceViewer(current) {
                 return false
             }
             view = current.superview
         }
         return true
+    }
+
+    /// Whether a toolbar item viewer holds a space or flexible space. AppKit
+    /// gives no public way from a viewer to its item; the viewer's `item`
+    /// getter is private, so it is asked only after `responds(to:)`, and a
+    /// viewer that can't say counts as a real item (not empty), as every
+    /// viewer did before.
+    static func isSpaceViewer(_ viewer: NSView) -> Bool {
+        let getter = Selector(("item"))
+        guard viewer.responds(to: getter),
+              let item = viewer.perform(getter)?.takeUnretainedValue() as? NSToolbarItem else { return false }
+        return item.itemIdentifier == .flexibleSpace || item.itemIdentifier == .space
     }
 
     /// System Settings ▸ Desktop & Dock ▸ "Double-click a window's title bar

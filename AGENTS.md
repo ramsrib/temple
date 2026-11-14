@@ -162,7 +162,13 @@ It acts only when the gesture's first click was on empty band too: a first
 click can dismiss a panel's backdrop and leave empty band under the second.
 Don't add a per-page zoom shim, and don't "fix" a dead spot by changing what
 the band hit-tests to: mark a new band control `TitleBandControl` instead.
-`TEMPLE_DEBUG_TITLEBAR=1` logs every band double-click (category
+A toolbar item's viewer is a control, except a space's: since the macOS 26
+glass toolbar, the sidebar's flexible space has a viewer covering the band
+from the traffic lights to the rail's buttons, and counting it as an item
+left that stretch dead to double-clicks for every build on the Xcode 27 SDK
+(62 failures in the title-band tests, read for weeks as an environment
+quirk). If those tests fail, the band has a dead spot: look before calling
+it noise. `TEMPLE_DEBUG_TITLEBAR=1` logs every band double-click (category
 `titlebar`): what it hit, AppKit's own verdict, and what was done.
 
 ## The keyboard is shared with the agents — global shortcuts are ⌘ chords and ⌃⇥

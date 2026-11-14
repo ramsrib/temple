@@ -198,19 +198,50 @@ final class PeerTempleTests: XCTestCase {
         writer.standardInput = input
         writer.standardOutput = Pipe()
         try writer.run()
-        defer { writer.terminate(); writer.waitUntilExit() }
+        // `isRunning` is polled, never `waitUntilExit`: in this async test
+        // on the main thread it once waited for an exit notification that
+        // never came, long after sqlite3 had gone (2026-11-13), and hung
+        // the whole suite.
+        defer {
+            if writer.isRunning { writer.terminate() }
+            let deadline = Date().addingTimeInterval(5)
+            while writer.isRunning, Date() < deadline { usleep(20_000) }
+            if writer.isRunning { kill(writer.processIdentifier, SIGKILL) }
+        }
         input.fileHandleForWriting.write(Data("BEGIN EXCLUSIVE;\nINSERT INTO ui_state (key, value) VALUES ('k', 'v');\nSELECT 'locked';\n".utf8))
-        // Wait for the writer to say it holds the lock.
+        // Wait for the writer to say it holds the lock, for at most 10 s:
+        // `availableData` blocks on an empty pipe, so it is read only once
+        // `poll` says there is something (data, or the end of it). An
+        // empty read is the end: sqlite3 is gone, and the loop must not
+        // spin on it.
         let out = (writer.standardOutput as! Pipe).fileHandleForReading
         var seen = Data()
-        while !String(decoding: seen, as: UTF8.self).contains("locked") { seen.append(out.availableData) }
+        func readUntil(_ marker: String) -> Bool {
+            let deadline = Date().addingTimeInterval(10)
+            while !String(decoding: seen, as: UTF8.self).contains(marker) {
+                let left = deadline.timeIntervalSinceNow
+                guard left > 0 else { return false }
+                var ready = pollfd(fd: out.fileDescriptor, events: Int16(POLLIN), revents: 0)
+                let count = poll(&ready, 1, Int32(min(left, 1) * 1000))
+                if count < 0, errno == EINTR { continue }
+                guard count >= 0 else { return false }
+                if count == 0 { continue }
+                let chunk = out.availableData
+                if chunk.isEmpty { return false }
+                seen.append(chunk)
+            }
+            return true
+        }
+        guard readUntil("locked") else {
+            return XCTFail("sqlite3 ended or went quiet before it held the lock: \(String(decoding: seen, as: UTF8.self))")
+        }
 
         let answer = try await box.read()
         XCTAssertEqual(answer, .busy)
 
         // The read left no lock behind: the writer commits.
         input.fileHandleForWriting.write(Data("COMMIT;\nSELECT 'committed';\n".utf8))
-        while !String(decoding: seen, as: UTF8.self).contains("committed") { seen.append(out.availableData) }
+        XCTAssertTrue(readUntil("committed"), "sqlite3 ended or went quiet before it committed: \(String(decoding: seen, as: UTF8.self))")
     }
 
     /// A read that runs too long is killed on the host by the watchdog, well
