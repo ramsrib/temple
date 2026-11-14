@@ -153,7 +153,7 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         // Prime size + scale from the current geometry, and resolve the
         // config's light:/dark: theme pair for the current app appearance.
         contentSize = bounds.size
-        if bounds.size != .zero { pushSize(bounds.size) }
+        if bounds.size != .zero { pushSize(bounds.size, evenIfUnchanged: true) }
         pushContentScale()
         apply(terminalAppearance)
         syncRendererState()
@@ -209,7 +209,7 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
     public override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         contentSize = newSize
-        pushSize(newSize)
+        if !holdsSize { pushSize(newSize) }
     }
 
     public override func viewDidChangeBackingProperties() {
@@ -221,12 +221,94 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
             CATransaction.commit()
         }
         pushContentScale()
-        pushSize(contentSize)
+        if !holdsSize { pushSize(contentSize) }
     }
 
-    private func pushSize(_ size: CGSize) {
-        guard let surface, size.width > 0, size.height > 0 else { return }
+    // MARK: Animated resizes
+
+    /// Whether the live resize under way is one AppKit animates by itself
+    /// (a zoom, Fill, tiling, a double-clicked edge): nil outside a live
+    /// resize, false for one that follows the pointer.
+    ///
+    /// A zoom is a live resize too (measured: `inLiveResize` is true for all
+    /// 21 sizes of a 350 ms `performZoom`). Passing each size on reflows the
+    /// grid every frame, and libghostty resizes the pty at most every 25 ms,
+    /// so the program gets about ten SIGWINCHes. Claude Code and Codex
+    /// clear and redraw their screens on each, and the zoom reads as the
+    /// text being rewritten under the animation. Held, the surface keeps
+    /// its grid (libghostty's layer is top-left gravity, so the frame stays
+    /// put and crisp) and takes the final size once, when the window lands.
+    /// An edge drag still reflows live: the terminal follows the pointer.
+    private var animatedResize: Bool?
+
+    /// The window is animating its frame and this view is holding its grid.
+    /// Gated on `inLiveResize`, the window's own truth, so a verdict left
+    /// behind by a resize whose end this view never heard holds nothing.
+    private var holdsSize: Bool {
+        guard inLiveResize else { return false }
+        // A view that joined the window mid-resize never heard it start.
+        if animatedResize == nil { beginLiveResize() }
+        return animatedResize == true
+    }
+
+    public override func viewWillStartLiveResize() {
+        super.viewWillStartLiveResize()
+        beginLiveResize()
+    }
+
+    public override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        endLiveResize()
+    }
+
+    /// The size held through an animation goes to libghostty once, a turn
+    /// later: SwiftUI lays the view out once more after the live resize
+    /// ends (measured: 1799 pt wide at the end, 1800 from that layout), and
+    /// a size it has already pushed by then is not pushed again. A scale
+    /// change during the hold changes the pixels, so the size still goes.
+    private func endLiveResize() {
+        guard animatedResize == true else { animatedResize = nil; return }
+        animatedResize = nil
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.holdsSize else { return }
+            self.pushSize(self.contentSize)
+        }
+    }
+
+    private func beginLiveResize() {
+        animatedResize = !Self.pointerDrivesResize(NSApp.currentEvent)
+    }
+
+    /// Whether a live resize starting during `event` follows the pointer: the
+    /// left button is down, from a single click (an edge drag). A double
+    /// click is a zoom (the title bar) or an edge expanding to the screen,
+    /// and a menu item, a key or the window buttons act with no button held.
+    nonisolated static func pointerDrivesResize(_ event: NSEvent?, pressedButtons: Int = NSEvent.pressedMouseButtons) -> Bool {
+        guard pressedButtons & 1 != 0, let event else { return false }
+        switch event.type {
+        case .leftMouseDown, .leftMouseDragged: return event.clickCount < 2
+        default: return false
+        }
+    }
+
+    /// Every size handed to libghostty, in points, for tests: whether a
+    /// view has a surface or not, this is what it would have been told.
+    var onSizePushed: ((CGSize) -> Void)?
+
+    /// The last size handed to libghostty, in backing pixels: what it
+    /// stores, so a scale change at the same size in points still counts as
+    /// a change (libghostty's content-scale callback keeps its old pixels).
+    private var pushedPixels: CGSize?
+
+    /// A size already pushed is not pushed again (a layout often repeats one:
+    /// SwiftUI sets the landed size of a zoom three times); starting a surface
+    /// primes it regardless, since sizes recorded before it existed went nowhere.
+    private func pushSize(_ size: CGSize, evenIfUnchanged: Bool = false) {
         let scaled = convertToBacking(CGRect(origin: .zero, size: size)).size
+        guard evenIfUnchanged || scaled != pushedPixels else { return }
+        pushedPixels = scaled
+        onSizePushed?(size)
+        guard let surface, size.width > 0, size.height > 0 else { return }
         ghostty_surface_set_size(surface, UInt32(scaled.width), UInt32(scaled.height))
     }
 
@@ -324,7 +406,11 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         super.viewWillMove(toWindow: newWindow)
         // Out of its window a view can't hold the keyboard, and AppKit doesn't
         // always say so (removing the first responder skips resign).
-        if newWindow !== window { isResponder = false }
+        if newWindow !== window {
+            isResponder = false
+            // A resize this view leaves mid-animation never tells it the end.
+            endLiveResize()
+        }
         if let occlusionObserver {
             NotificationCenter.default.removeObserver(occlusionObserver)
             self.occlusionObserver = nil

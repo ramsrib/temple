@@ -226,6 +226,12 @@ the terminal; there is no bottom composer and no intervening shell.
   palette, not the terminal's clear; inside an agent use its `⌃L` (a full
   redraw in Claude Code, clear-terminal in Codex). The map is in ADR-037.
 
+- Zooming the window (a title-bar double-click, Window ▸ Zoom, Fill, tiling)
+  resizes the terminal once, when the window has landed: the text holds still
+  while the window grows or shrinks around it, and the agent redraws once
+  instead of on every frame of the animation. Dragging a window edge still
+  reflows the terminal as you drag (ADR-040).
+
 - `⌘F` opens a find bar over the terminal's top-right corner; libghostty
   matches and highlights in the scrollback and the bar counts them ("3/12"). Return
   / `⌘G` walks forward, ⇧Return / `⌘⇧G` back; Esc closes it and returns the

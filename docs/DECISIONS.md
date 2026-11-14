@@ -2679,3 +2679,35 @@ on a non-interactive PATH, and the database is additive by rule, so a fixed
 column projection from v10 reads every later build); copying the other
 Temple's title (a NULL-only fill would freeze it); probing hosts to decide
 which to list in the menu.
+
+## ADR-040 — A zoom resizes the terminal once, when the window lands
+**Date:** 2026-11-14 · **Status:** Accepted
+
+Zooming the window with Claude Code open looked jarring: the text was
+rewritten under the animation. Measured: `performZoom` is a synchronous
+live resize of about 350 ms that hands the terminal view 21 sizes, each
+went to `ghostty_surface_set_size`, and libghostty resizes the pty at most
+every 25 ms, so the agent got about ten SIGWINCHes and redrew its whole
+screen on each. Fill is a live resize too, asynchronous, of 42 sizes.
+
+**Decisions.**
+
+- **A live resize the window animates by itself holds the grid.** Decided
+  when it starts, from the event that started it: a single-click drag of an
+  edge follows the pointer and reflows live, as every Mac terminal does;
+  anything else (a double-click on the title bar or an edge, Window ▸ Zoom,
+  Fill, a window button, and tiling, which is not measured) is an animation, and the surface keeps its
+  grid until the resize ends, then takes the landed size once, a run-loop
+  turn later because SwiftUI lays the view out again after it ends.
+- **Nothing extra is drawn meanwhile.** libghostty sizes each frame from its
+  layer's bounds, not the grid, so a held grid draws pinned top-left over
+  the terminal's own background as the window opens around it.
+- **The hold is gated on the window's `inLiveResize`**, so a resize whose
+  end the view never heard (it left the window mid-animation, which also
+  releases the hold) can't hold the next size.
+
+**Rejected.** Debouncing every size change (it lags a sidebar toggle and a
+drag alike, and still passes the first frame of a zoom through); holding
+edge drags too (the terminal would stop following the pointer); bracketing
+only Temple's own double-click handler (Window ▸ Zoom, Fill and tiling
+animate the same way).
